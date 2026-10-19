@@ -181,8 +181,17 @@ its PCI devices, the physical networks of its provider networks, a
 userspace `br-int` for vhost-user NICs on cluster networks, an OVN
 version as new as the cluster's, and the node of any disk or node
 network it uses. Among candidates it picks the least allocated
-(the larger of CPU and memory share after placing), then the one with
-fewest VMs.
+(the largest of the CPU, memory and, for a VM in hugepages, hugepage
+shares after placing), then the one with fewest VMs.
+
+A node's hugepages are its own resource: the pool the kernel reserved
+(`vm.nr_hugepages`, and per size under `/sys/kernel/mm/hugepages`), less
+what OVS-DPDK takes for `dpdk-socket-mem`. They don't count as ordinary
+memory, and a node's allocatable memory leaves them out. VMs placed on
+the node hold theirs whether running or not. Before a VM in hugepages
+starts, its node checks that enough of them are free; if not, the start
+fails with the counts. Hugepages used outside Glidex (another process,
+or DPDK beyond `dpdk-socket-mem`) show up that way.
 
 Room is each node's CPUs and memory minus a reserve, times an
 overcommit ratio. The defaults, in `/etc/glidex/control-plane.json`:

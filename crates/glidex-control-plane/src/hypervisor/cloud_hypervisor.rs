@@ -114,6 +114,9 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     }
     if config.hugepages {
         mem.push_str(",hugepages=on");
+        if let Some(size) = &config.hugepage_size {
+            mem.push_str(&format!(",hugepage_size={size}"));
+        }
     }
     a.push("--memory".into());
     a.push(mem);
@@ -317,6 +320,15 @@ mod tests {
             ]
             .map(image_type_name),
             ["raw", "qcow2", "vhdx", "vhd"]
+        );
+    }
+
+    #[test]
+    fn hugepages_of_a_given_size() {
+        let c = config(serde_json::json!({"hugepages": true, "hugepage_size": "2M"}));
+        assert_eq!(
+            values(&args(&c, "/s"), "--memory"),
+            ["size=1024M,hugepages=on,hugepage_size=2M"]
         );
     }
 

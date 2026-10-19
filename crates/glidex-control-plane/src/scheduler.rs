@@ -2,7 +2,7 @@
 //! after that the VM stays (D6).
 
 use crate::cluster::config::SchedulerConfig;
-use crate::models::Tristate;
+use crate::models::{SMALL_PAGE_KIB, Tristate, hugepage_size_name};
 use crate::node::{Node, NodePhase};
 use std::collections::{BTreeMap, HashMap};
 
@@ -13,7 +13,13 @@ pub struct Request {
     pub mem_mib: u64,
     /// `cloudhypervisor` or `qemu`, as nodes report their hypervisors.
     pub hypervisor: String,
+    /// Guest RAM in hugepages, asked for (spec/host-topology.md §8a.3).
     pub hugepages: bool,
+    /// Their size in KiB; `None`: the node's default size.
+    pub hugepage_kib: Option<u64>,
+    /// A vhost-user NIC: hugepages without asking, when the node has them
+    /// to spare.
+    pub vhost_user: bool,
     /// `spec.node`: an id or a name.
     pub pin: Option<String>,
     /// The node of each disk the VM uses, `None` for one not bound yet.
@@ -38,11 +44,20 @@ pub struct Request {
 #[derive(Debug, Clone, Default)]
 pub struct Load {
     pub vcpus: u64,
+    /// Guest RAM in ordinary memory.
     pub mem_mib: u64,
     pub vms: u64,
     /// PCI devices its VMs claim (spec/host-topology.md §8.4): address →
     /// the VM's name.
     pub devices: BTreeMap<String, String>,
+    /// Guest RAM in hugepages: page size in KiB → MiB.
+    pub hugepage_mib: BTreeMap<u64, u64>,
+}
+
+impl Load {
+    fn hugepages_taken(&self, page_kib: u64) -> u64 {
+        self.hugepage_mib.get(&page_kib).copied().unwrap_or(0)
+    }
 }
 
 /// One VM placed on a node, for [`loads`].
@@ -53,6 +68,9 @@ pub struct Placed {
     pub name: String,
     /// Its spec's VFIO devices and those its instance still holds.
     pub devices: Vec<String>,
+    /// The page size its RAM is counted in ([`SMALL_PAGE_KIB`]: ordinary
+    /// memory).
+    pub page_kib: u64,
 }
 
 /// A device's PCI address, from a sysfs path or an address: what nodes
@@ -82,64 +100,115 @@ pub fn device_taken(
     })
 }
 
-fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Option<String> {
+/// MiB of `page_kib` hugepages VMs may take on `n`.
+fn hugepage_capacity(n: &Node, page_kib: u64) -> u64 {
+    n.status.allocatable.pages(page_kib) * page_kib / 1024
+}
+
+/// The node's default hugepage size; 2 MiB from a node that doesn't say.
+fn default_page_kib(n: &Node) -> u64 {
+    match n.status.features.hugepage_kib {
+        0 => 2048,
+        k => k,
+    }
+}
+
+/// The page size guest RAM of `req` gets on `n` (spec/host-topology.md
+/// §8a.3), or why it can't: asked-for hugepages must fit what is left of
+/// the node's; a vhost-user VM gets 2 MiB pages when they cover its RAM
+/// plus a quarter (at least 256 MiB) to spare, else ordinary memory.
+pub fn page_kib(n: &Node, load: &Load, req: &Request) -> Result<u64, String> {
+    if req.hugepages {
+        let kib = req.hugepage_kib.unwrap_or_else(|| default_page_kib(n));
+        let name = hugepage_size_name(kib);
+        let cap = hugepage_capacity(n, kib);
+        if cap == 0 {
+            return Err(format!("no {name} hugepages"));
+        }
+        if !req.mem_mib.is_multiple_of((kib / 1024).max(1)) {
+            return Err(format!(
+                "{} MiB is not a whole number of {name} pages",
+                req.mem_mib
+            ));
+        }
+        let taken = load.hugepages_taken(kib);
+        if taken + req.mem_mib > cap {
+            return Err(format!(
+                "not enough {name} hugepages ({taken} of {cap} MiB taken)"
+            ));
+        }
+        return Ok(kib);
+    }
+    if req.vhost_user && req.mem_mib.is_multiple_of(2) {
+        let spare = hugepage_capacity(n, 2048).saturating_sub(load.hugepages_taken(2048));
+        if spare >= req.mem_mib + (req.mem_mib / 4).max(256) {
+            return Ok(2048);
+        }
+    }
+    Ok(SMALL_PAGE_KIB)
+}
+
+/// The page size `req` gets on `n`, or why it can't go there.
+fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Result<u64, String> {
     if let Some(pin) = &req.pin
         && &n.meta.id != pin
         && &n.spec.name != pin
     {
-        return Some(format!("pinned to {pin}"));
+        return Err(format!("pinned to {pin}"));
     }
     if n.status.phase != NodePhase::Active || n.spec.unschedulable {
-        return Some(
-            if n.spec.unschedulable {
-                "draining"
-            } else {
-                "not active"
-            }
-            .into(),
-        );
+        return Err(if n.spec.unschedulable {
+            "draining"
+        } else {
+            "not active"
+        }
+        .into());
     }
     if n.status.ready != Tristate::True {
-        return Some("not ready".into());
+        return Err("not ready".into());
     }
     let (cpu_cap, mem_cap) = (
         n.status.allocatable.cpus as f64 * cfg.cpu_overcommit,
         n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit,
     );
     if (load.vcpus + req.vcpus as u64) as f64 > cpu_cap {
-        return Some(format!(
+        return Err(format!(
             "not enough CPU ({} of {:.0} vCPUs taken)",
             load.vcpus, cpu_cap
         ));
     }
-    if (load.mem_mib + req.mem_mib) as f64 > mem_cap {
-        return Some(format!(
+    let page = page_kib(n, load, req)?;
+    // RAM in hugepages doesn't take ordinary memory.
+    let mem = if page == SMALL_PAGE_KIB {
+        req.mem_mib
+    } else {
+        0
+    };
+    if (load.mem_mib + mem) as f64 > mem_cap {
+        return Err(format!(
             "not enough memory ({} of {:.0} MiB taken)",
             load.mem_mib, mem_cap
         ));
     }
-    if req.hugepages && n.status.allocatable.hugepages.is_empty() {
-        return Some("no hugepages".into());
-    }
     if !req.hypervisor.is_empty() && !n.status.features.hypervisors.contains(&req.hypervisor) {
-        return Some(format!("{} is not installed", req.hypervisor));
+        return Err(format!("{} is not installed", req.hypervisor));
     }
     if !n.status.features.runs_arch(&req.arch) {
-        return Some(format!(
+        return Err(format!(
             "it is {}; the VM's image is {}",
             n.status.features.arch, req.arch
         ));
     }
     for p in &req.physnets {
         if !n.status.features.physnets.contains_key(p) {
-            return Some(format!("it does not reach physical network {p}"));
+            return Err(format!("it does not reach physical network {p}"));
         }
     }
     if let Some(why) = crate::node::ovn_outdated(n, req.ovn_northd.as_deref()) {
-        return Some(why);
+        return Err(why);
     }
     if req.vhost_user_on_cluster && n.status.features.br_int_datapath.as_deref() != Some("netdev") {
-        return Some("br-int is not on the userspace (netdev) datapath".into());
+        return Err("br-int is not on the userspace (netdev) datapath".into());
     }
     for d in &req.vfio {
         let addr = pci_address(d);
@@ -149,23 +218,23 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Optio
             .iter()
             .any(|p| p.eq_ignore_ascii_case(&addr))
         {
-            return Some(format!("no PCI device {addr}"));
+            return Err(format!("no PCI device {addr}"));
         }
         if let Some(why) = device_taken(&n.status.pci_groups, &load.devices, d) {
-            return Some(why);
+            return Err(why);
         }
     }
     for dn in req.disk_nodes.iter().flatten() {
         if dn != &n.meta.id {
-            return Some("a disk is bound to another node".into());
+            return Err("a disk is bound to another node".into());
         }
     }
     for nn in &req.net_nodes {
         if nn != &n.meta.id {
-            return Some("a network exists on another node".into());
+            return Err("a network exists on another node".into());
         }
     }
-    None
+    Ok(page)
 }
 
 /// One node's answer to a request (`POST /scheduler/preview`,
@@ -183,7 +252,14 @@ pub struct NodeFit {
     pub mem_mib_taken: u64,
     pub mem_mib_capacity: u64,
     pub vms: u64,
-    /// `max(cpu share, memory share)` after placing: lower is preferred.
+    /// The page size in KiB its RAM would be in ([`SMALL_PAGE_KIB`]:
+    /// ordinary memory), and for hugepages, what is taken of that size and
+    /// may be taken.
+    pub page_kib: u64,
+    pub hugepages_mib_taken: u64,
+    pub hugepages_mib_capacity: u64,
+    /// `max(cpu share, memory share, hugepage share)` after placing: lower
+    /// is preferred.
     #[serde(skip)]
     score: f64,
 }
@@ -195,21 +271,39 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
     let mut out: Vec<NodeFit> = nodes
         .iter()
         .map(|(n, load)| {
+            let (refused, page) = match failing(n, load, req, cfg) {
+                Ok(p) => (None, p),
+                Err(why) => (Some(why), page_kib(n, load, req).unwrap_or(SMALL_PAGE_KIB)),
+            };
+            let small = page == SMALL_PAGE_KIB;
             let cpu =
                 (load.vcpus + req.vcpus as u64) as f64 / (n.status.allocatable.cpus.max(1) as f64);
-            let mem = (load.mem_mib + req.mem_mib) as f64
+            let mem = (load.mem_mib + if small { req.mem_mib } else { 0 }) as f64
                 / (n.status.allocatable.memory_mib.max(1) as f64);
+            let (hp_taken, hp_cap) = if small {
+                (0, 0)
+            } else {
+                (load.hugepages_taken(page), hugepage_capacity(n, page))
+            };
+            let hp = if small {
+                0.0
+            } else {
+                (hp_taken + req.mem_mib) as f64 / (hp_cap.max(1) as f64)
+            };
             NodeFit {
                 id: n.meta.id.clone(),
                 name: n.spec.name.clone(),
-                refused: failing(n, load, req, cfg),
+                refused,
                 vcpus_taken: load.vcpus,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
                 mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit)
                     as u64,
                 vms: load.vms,
-                score: cpu.max(mem),
+                page_kib: page,
+                hugepages_mib_taken: hp_taken,
+                hugepages_mib_capacity: hp_cap,
+                score: cpu.max(mem).max(hp),
             }
         })
         .collect();
@@ -230,16 +324,26 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
     out
 }
 
+/// Where a VM goes: the node, and the page size its RAM is counted in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub node: String,
+    pub page_kib: u64,
+}
+
 /// The node a VM goes to, or why each node refused it (the first of
 /// [`evaluate`], so the answer is deterministic).
 pub fn schedule(
     req: &Request,
     nodes: &[(Node, Load)],
     cfg: &SchedulerConfig,
-) -> Result<String, Vec<(String, String)>> {
+) -> Result<Choice, Vec<(String, String)>> {
     let all = evaluate(req, nodes, cfg);
     match all.first() {
-        Some(f) if f.refused.is_none() => Ok(f.id.clone()),
+        Some(f) if f.refused.is_none() => Ok(Choice {
+            node: f.id.clone(),
+            page_kib: f.page_kib,
+        }),
         _ => {
             let mut refused: Vec<(String, String)> = all
                 .into_iter()
@@ -274,7 +378,11 @@ pub fn loads(placed: impl IntoIterator<Item = Placed>) -> HashMap<String, Load> 
     for p in placed {
         let l = m.entry(p.node).or_default();
         l.vcpus += p.vcpus;
-        l.mem_mib += p.mem_mib;
+        if p.page_kib == SMALL_PAGE_KIB {
+            l.mem_mib += p.mem_mib;
+        } else {
+            *l.hugepage_mib.entry(p.page_kib).or_default() += p.mem_mib;
+        }
         l.vms += 1;
         for d in &p.devices {
             l.devices.insert(pci_address(d), p.name.clone());
@@ -443,7 +551,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            schedule(&req(2, 1024), &nodes, &cfg()).unwrap(),
+            schedule(&req(2, 1024), &nodes, &cfg()).unwrap().node,
             "a",
             "equal load, equal count: by name"
         );
@@ -468,7 +576,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            schedule(&req(2, 1024), &nodes, &cfg()).unwrap(),
+            schedule(&req(2, 1024), &nodes, &cfg()).unwrap().node,
             "b",
             "equal load: fewer VMs"
         );
@@ -502,7 +610,7 @@ mod tests {
             "capacity is allocatable times the overcommit"
         );
         assert_eq!(
-            schedule(&req(2, 1024), &nodes, &cfg()).unwrap(),
+            schedule(&req(2, 1024), &nodes, &cfg()).unwrap().node,
             all[0].id,
             "the scheduler takes the preview's first"
         );
@@ -564,13 +672,13 @@ mod tests {
         ];
         let mut r = req(1, 512);
         r.vfio = vec!["0000:41:00.0".into()];
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "gpu");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "gpu");
         let mut r = req(1, 512);
         r.disk_nodes = vec![Some("plain".into())];
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "plain");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "plain");
         let mut r = req(1, 512);
         r.pin = Some("gpu".into());
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "gpu");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "gpu");
         r.net_nodes = vec!["plain".into()];
         assert!(
             schedule(&r, &nodes, &cfg()).is_err(),
@@ -582,6 +690,133 @@ mod tests {
             schedule(&r, &nodes, &cfg()).is_err(),
             "disks on two nodes fit nowhere"
         );
+    }
+
+    fn with_hugepages(id: &str, mem: u64, pages_2m: u64, pages_1g: u64) -> Node {
+        let mut n = node(id, 8, mem);
+        for (kib, pages) in [(2048u64, pages_2m), (1_048_576, pages_1g)] {
+            if pages > 0 {
+                n.status
+                    .allocatable
+                    .hugepages
+                    .insert(kib.to_string(), pages);
+            }
+        }
+        n.status.features.hugepage_kib = 2048;
+        n
+    }
+
+    #[test]
+    fn hugepages_are_counted_apart_from_memory_and_never_overcommitted() {
+        // 1 GiB of ordinary memory, 4 GiB of 2M hugepages.
+        let n = with_hugepages("a", 1024, 2048, 0);
+        let mut r = req(1, 2048);
+        r.hugepages = true;
+        let mut placed = Vec::new();
+        for _ in 0..2 {
+            let c = schedule(&r, &[(n.clone(), loads_of(&placed))], &cfg()).unwrap();
+            assert_eq!(c.page_kib, 2048);
+            placed.push(Placed {
+                node: "a".into(),
+                vcpus: 1,
+                mem_mib: 2048,
+                page_kib: c.page_kib,
+                name: "vm".into(),
+                devices: Vec::new(),
+            });
+        }
+        // The pool is full; ordinary memory is untouched.
+        let load = loads_of(&placed);
+        assert_eq!(load.mem_mib, 0);
+        let err = schedule(&r, &[(n.clone(), load.clone())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "not enough 2M hugepages (4096 of 4096 MiB taken)");
+        // A VM in ordinary memory still fits.
+        assert_eq!(
+            schedule(&req(1, 1024), &[(n.clone(), load)], &cfg())
+                .unwrap()
+                .page_kib,
+            SMALL_PAGE_KIB
+        );
+        // A size the node doesn't have, or memory that isn't whole pages.
+        r.hugepage_kib = Some(1_048_576);
+        let err = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "no 1G hugepages");
+        let g = with_hugepages("g", 1024, 0, 4);
+        r.mem_mib = 1536;
+        let err = schedule(&r, &[(g.clone(), Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "1536 MiB is not a whole number of 1G pages");
+        r.mem_mib = 2048;
+        let fit = &evaluate(&r, &[(g, Load::default())], &cfg())[0];
+        assert_eq!(
+            (
+                fit.page_kib,
+                fit.hugepages_mib_taken,
+                fit.hugepages_mib_capacity
+            ),
+            (1_048_576, 0, 4096)
+        );
+    }
+
+    #[test]
+    fn vhost_user_vms_get_2m_pages_while_they_last_then_ordinary_memory() {
+        // 2 GiB of 2M pages: a 1 GiB guest needs 1 GiB + 256 MiB spare.
+        let n = with_hugepages("a", 8192, 1024, 0);
+        let mut r = req(1, 1024);
+        r.vhost_user = true;
+        let first = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(first.page_kib, 2048);
+        let load = loads_of(&[Placed {
+            node: "a".into(),
+            vcpus: 1,
+            mem_mib: 1024,
+            page_kib: 2048,
+            name: "vm".into(),
+            devices: Vec::new(),
+        }]);
+        let second = schedule(&r, &[(n.clone(), load)], &cfg()).unwrap();
+        assert_eq!(
+            second.page_kib, SMALL_PAGE_KIB,
+            "1 GiB left: no room to spare"
+        );
+        // Without hugepages on the node, ordinary memory.
+        assert_eq!(
+            schedule(&r, &[(node("b", 8, 8192), Load::default())], &cfg())
+                .unwrap()
+                .page_kib,
+            SMALL_PAGE_KIB
+        );
+    }
+
+    #[test]
+    fn the_hugepage_share_counts_in_the_score() {
+        let mut r = req(1, 1024);
+        r.hugepages = true;
+        let busy = loads_of(&[Placed {
+            node: "a".into(),
+            vcpus: 1,
+            mem_mib: 3072,
+            page_kib: 2048,
+            name: "vm".into(),
+            devices: Vec::new(),
+        }]);
+        let nodes = vec![
+            (with_hugepages("a", 8192, 2048, 0), busy),
+            (with_hugepages("b", 8192, 2048, 0), Load::default()),
+        ];
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "b");
+    }
+
+    fn loads_of(placed: &[Placed]) -> Load {
+        loads(placed.iter().map(|p| Placed {
+            node: p.node.clone(),
+            vcpus: p.vcpus,
+            mem_mib: p.mem_mib,
+            page_kib: p.page_kib,
+            name: p.name.clone(),
+            devices: p.devices.clone(),
+        }))
+        .remove("a")
+        .unwrap_or_default()
     }
 
     #[test]
@@ -601,7 +836,7 @@ mod tests {
 
         // The VM names a sysfs path; the node reports addresses.
         let free = vec![(gpu("a"), Load::default())];
-        assert_eq!(schedule(&r, &free, &cfg()).unwrap(), "a");
+        assert_eq!(schedule(&r, &free, &cfg()).unwrap().node, "a");
 
         // Two nodes with a device at the same address hold one VM each.
         let held = loads([Placed {
@@ -610,12 +845,13 @@ mod tests {
             mem_mib: 512,
             name: "first".into(),
             devices: vec![path.into()],
+            page_kib: SMALL_PAGE_KIB,
         }]);
         let nodes = vec![
             (gpu("a"), held.get("a").cloned().unwrap()),
             (gpu("b"), Load::default()),
         ];
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "b");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "b");
         let fits = evaluate(&r, &nodes, &cfg());
         assert_eq!(
             fits.iter()
@@ -640,7 +876,7 @@ mod tests {
         let mut old = gpu("a");
         old.status.pci_groups.clear();
         let nodes = vec![(old, held.get("a").cloned().unwrap())];
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "a");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "a");
     }
 
     #[test]
@@ -654,7 +890,7 @@ mod tests {
         let nodes = vec![(plain, Load::default()), (lan, Load::default())];
         let mut r = req(1, 512);
         r.physnets = vec!["lan".into()];
-        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "lan");
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "lan");
         r.physnets = vec!["dmz".into()];
         let err = schedule(&r, &nodes, &cfg()).unwrap_err();
         assert!(
@@ -676,7 +912,7 @@ mod tests {
         ];
         let mut placed = Vec::new();
         for _ in 0..10 {
-            let id = schedule(&req(2, 1024), &nodes, &cfg()).unwrap();
+            let id = schedule(&req(2, 1024), &nodes, &cfg()).unwrap().node;
             placed.push(id.clone());
             let l = &mut nodes.iter_mut().find(|(n, _)| n.meta.id == id).unwrap().1;
             l.vcpus += 2;

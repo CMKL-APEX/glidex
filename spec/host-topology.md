@@ -1,6 +1,7 @@
 # Host topology and device placement
 
-Status: **design**. Nothing here is implemented. Extends
+Status: **design**; HT0 (per-node VFIO claims) and HT1b (hugepage
+accounting) are implemented, the rest is not (§15). Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
 [data-model.md](data-model.md) (`VmConfig`) and

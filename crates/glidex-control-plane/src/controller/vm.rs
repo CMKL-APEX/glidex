@@ -967,11 +967,38 @@ impl VmManager {
 
         // 5.2 the ports: record each in status before attaching it (D16).
         config.nic_bindings = self.attach_ports(vm, st).await.map_err(before_intent)?;
-        // vhost-user over 4 KiB guest pages makes OVS's PMDs take TLB
-        // misses on every packet; back the guest with hugepages when the
-        // host has them to spare.
-        if !config.hugepages && crate::hypervisor::needs_shared_memory(&config) {
-            config.hugepages = crate::hypervisor::hugepages_available_for(config.mem_size_mib);
+        // Guest RAM in the pages the scheduler counted (spec/host-topology.md
+        // §8a.3), checked against what is free now.
+        match vm.status.placement.as_ref().and_then(|p| p.page_kib) {
+            Some(kib) => {
+                config.hugepages = kib != crate::models::SMALL_PAGE_KIB;
+                if config.hugepages {
+                    config.hugepage_size = Some(crate::models::hugepage_size_name(kib));
+                    let need = config.mem_size_mib as u64;
+                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib))
+                        .await
+                        .map_err(before_intent)?;
+                    if spare < need {
+                        return Err(before_intent(
+                            crate::hypervisor::HypervisorError::Unsupported(format!(
+                                "not enough free {} hugepages: {} MiB free, the VM needs {} MiB",
+                                crate::models::hugepage_size_name(kib),
+                                spare,
+                                need
+                            )),
+                        ));
+                    }
+                }
+            }
+            // Placed before the scheduler counted pages: vhost-user over 4 KiB
+            // guest pages makes OVS's PMDs take TLB misses on every packet;
+            // back the guest with hugepages when the host has them to spare.
+            None => {
+                if !config.hugepages && crate::hypervisor::needs_shared_memory(&config) {
+                    config.hugepages =
+                        crate::hypervisor::hugepages_available_for(config.mem_size_mib);
+                }
+            }
         }
 
         // 5.3 launch.json

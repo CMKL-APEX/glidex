@@ -36,10 +36,12 @@ impl VmManager {
             }
             let req = self.sched_request_pub(&vm, &disks);
             match self.pick_node(&vms, &req) {
-                Ok(node) => {
+                Ok(choice) => {
+                    let node = choice.node;
                     vm.status.placement = Some(crate::models::Placement {
                         node: node.clone(),
                         at: crate::tenancy::now(),
+                        page_kib: Some(choice.page_kib),
                     });
                     crate::controller::vm::set_cond(
                         &mut vm.status.conditions,

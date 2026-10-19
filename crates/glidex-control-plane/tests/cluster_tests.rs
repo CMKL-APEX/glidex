@@ -2324,6 +2324,141 @@ async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
     );
 }
 
+/// Three nodes with 2 GiB of 2M hugepages each (spec/host-topology.md §8a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn hugepages_are_counted_per_node_and_fill_up() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let mut agents = Vec::new();
+    for i in 1..=2 {
+        let a = new_cp();
+        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+            .await
+            .unwrap();
+        manage::join(
+            &a.manager,
+            &cfg,
+            JoinOptions {
+                server: server.addr,
+                token,
+                role: NodeRole::Agent,
+                advertise: Some(a.addr),
+                tunnel_ip: None,
+                name: Some(format!("agent{i}")),
+                listen: Some(a.addr),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            a.manager
+                .node_link()
+                .unwrap()
+                .wait_ready(Duration::from_secs(20))
+                .await
+        );
+        a.manager.initialize().await.unwrap();
+        agents.push(a);
+    }
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let nodes = store.list().unwrap();
+    assert_eq!(nodes.len(), 3);
+    for mut n in nodes {
+        n.status.allocatable.hugepages = [("2048".to_string(), 1024)].into();
+        n.status.features.hugepage_kib = 2048;
+        store.put(&n).unwrap();
+    }
+    let huge = |name: &str, mem: u64| {
+        let mut b = vm_unpinned(name);
+        b["mem_size_mib"] = json!(mem);
+        b["hugepages"] = json!(true);
+        b["power"] = json!("POWER_STATE_STOPPED");
+        b
+    };
+
+    // Two 1 GiB guests fill each node's pool.
+    let mut per_node = std::collections::HashMap::<String, Vec<String>>::new();
+    for i in 0..6 {
+        let (s, vm) = call(
+            &server,
+            "POST",
+            "/vms",
+            Some(huge(&format!("h{i}"), 1024)),
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{vm}");
+        let vm = vm_of(&vm);
+        assert_eq!(vm["page_kib"], "2048", "{vm}");
+        per_node
+            .entry(vm["node"].as_str().expect("placed").to_string())
+            .or_default()
+            .push(vm["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(per_node.len(), 3, "{per_node:?}");
+    assert!(per_node.values().all(|v| v.len() == 2), "{per_node:?}");
+
+    // The next waits, and says why.
+    let (s, vm) = call(&server, "POST", "/vms", Some(huge("h6", 1024)), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
+    assert!(vm["node"].is_null(), "{vm}");
+    let waiting = vm["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "Scheduled")
+        .cloned()
+        .unwrap();
+    assert!(
+        waiting["message"]
+            .as_str()
+            .unwrap()
+            .contains("not enough 2M hugepages (2048 of 2048 MiB taken)"),
+        "{waiting}"
+    );
+
+    // Ordinary memory is not the pool's.
+    let mut plain = vm_unpinned("plain");
+    plain["power"] = json!("POWER_STATE_STOPPED");
+    let (s, vm) = call(&server, "POST", "/vms", Some(plain), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert!(vm_of(&vm)["node"].is_string(), "{vm}");
+    assert_eq!(vm_of(&vm)["page_kib"], "4", "{vm}");
+
+    // Growing a placed guest past its node's pool is refused.
+    let id = per_node.values().next().unwrap()[0].clone();
+    let (s, e) = call(
+        &server,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({"change": {"mem_size_mib": 2048}, "update_mask": "mem_size_mib"})),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(
+        e.to_string()
+            .contains("not enough 2M hugepages (1024 of 2048 MiB taken)"),
+        "{e}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_do() {
     use glidex_control_plane::cluster::config::EdgeConfig;

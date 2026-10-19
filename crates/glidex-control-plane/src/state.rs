@@ -245,6 +245,9 @@ pub struct ConfigPatch {
     pub credential: Option<serde_json::Value>,
     #[serde(default)]
     pub hugepages: Option<bool>,
+    /// `2M`, `1G`, or `null` for the node's default size.
+    #[serde(default)]
+    pub hugepage_size: Option<serde_json::Value>,
     #[serde(default)]
     pub vfio_devices: Option<Vec<String>>,
     /// Disk ids or names, replacing the list.
@@ -598,8 +601,85 @@ impl VmManager {
         &self,
         vms: &HashMap<String, Vm>,
         req: &crate::scheduler::Request,
-    ) -> Result<String, Vec<(String, String)>> {
+    ) -> Result<crate::scheduler::Choice, Vec<(String, String)>> {
         crate::scheduler::schedule(req, &self.node_loads(vms), &self.sched.load())
+    }
+
+    /// The page size `vm`'s RAM is counted in on its node: what the
+    /// scheduler recorded, else (placed before it counted) hugepages of the
+    /// asked-for or default size when asked for, ordinary memory otherwise.
+    fn counted_page_kib(vm: &Vm) -> u64 {
+        if let Some(k) = vm.status.placement.as_ref().and_then(|p| p.page_kib) {
+            return k;
+        }
+        let c = vm.config();
+        if c.hugepages {
+            c.hugepage_size
+                .as_deref()
+                .and_then(crate::models::hugepage_size_kib)
+                .unwrap_or(2048)
+        } else {
+            crate::models::SMALL_PAGE_KIB
+        }
+    }
+
+    /// The page size to record for a VM of `config` on a standalone host,
+    /// which runs no scheduler: asked-for hugepages in their size (the
+    /// start check enforces that they are there); otherwise `None`, so the
+    /// node decides vhost-user hugepages at start from what is free.
+    fn standalone_page_kib(&self, config: &VmConfig) -> Option<u64> {
+        if !config.hugepages {
+            return None;
+        }
+        config
+            .hugepage_size
+            .as_deref()
+            .and_then(crate::models::hugepage_size_kib)
+            .or_else(|| {
+                self.nodes
+                    .get(&self.local_node_id())
+                    .ok()
+                    .flatten()
+                    .map(|n| n.status.features.hugepage_kib)
+                    .filter(|k| *k > 0)
+            })
+            .or(Some(2048))
+    }
+
+    /// Count `vm`'s RAM again on its node after a change to its memory,
+    /// hugepages or networks (spec/host-topology.md §8a.3). In a cluster,
+    /// asked-for hugepages that no longer fit there are refused.
+    fn recount_pages(
+        &self,
+        vms: &HashMap<String, Vm>,
+        vm: &mut Vm,
+        disks: &[Disk],
+    ) -> Result<(), VmManagerError> {
+        let Some(node) = vm.status.placement.as_ref().map(|p| p.node.clone()) else {
+            return Ok(());
+        };
+        let page = if self.cluster().is_none() {
+            self.standalone_page_kib(vm.config())
+        } else {
+            let Some((n, load)) = self
+                .node_loads_except(vms, Some(&vm.id))
+                .into_iter()
+                .find(|(n, _)| n.meta.id == node)
+            else {
+                return Ok(());
+            };
+            let req = self.sched_request(vm, disks);
+            Some(crate::scheduler::page_kib(&n, &load, &req).map_err(|why| {
+                VmManagerError::Network(NetError::Conflict(format!(
+                    "node {}: {}",
+                    n.spec.name, why
+                )))
+            })?)
+        };
+        if let Some(p) = vm.status.placement.as_mut() {
+            p.page_kib = page;
+        }
+        Ok(())
     }
 
     /// Every node that may take VMs, with what is placed on it.
@@ -607,8 +687,18 @@ impl VmManager {
         &self,
         vms: &HashMap<String, Vm>,
     ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
+        self.node_loads_except(vms, None)
+    }
+
+    /// [`Self::node_loads`] without what VM `except` takes.
+    fn node_loads_except(
+        &self,
+        vms: &HashMap<String, Vm>,
+        except: Option<&str>,
+    ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
-        let mut loads = crate::scheduler::loads(vms.values().filter_map(|v| {
+        let others = vms.values().filter(|v| Some(v.id.as_str()) != except);
+        let mut loads = crate::scheduler::loads(others.filter_map(|v| {
             v.status
                 .placement
                 .as_ref()
@@ -618,6 +708,7 @@ impl VmManager {
                     mem_mib: v.config().mem_size_mib as u64,
                     name: v.name.clone(),
                     devices: Self::devices_held(v).cloned().collect(),
+                    page_kib: Self::counted_page_kib(v),
                 })
         }));
         nodes
@@ -677,6 +768,15 @@ impl VmManager {
             mem_mib: c.mem_size_mib as u64,
             hypervisor: c.hypervisor.to_string(),
             hugepages: c.hugepages,
+            hugepage_kib: c
+                .hugepage_size
+                .as_deref()
+                .and_then(crate::models::hugepage_size_kib),
+            vhost_user: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.id == a.network))
+                .any(|n| n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
             pin,
             disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
             net_nodes: c
@@ -811,6 +911,21 @@ impl VmManager {
                 .get("dpdk_initialized")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // OVS-DPDK's hugepages are not the VMs' (spec/host-topology.md
+            // §8a.2): DPDK takes them in the default page size.
+            if let (true, Some(mem)) = (
+                probe.features.dpdk,
+                caps.get("dpdk_socket_mem").and_then(|v| v.as_str()),
+            ) {
+                let kib = match probe.features.hugepage_kib {
+                    0 => 2048,
+                    k => k,
+                };
+                let taken = crate::node::dpdk_pages(mem, kib);
+                if let Some(n) = probe.allocatable.hugepages.get_mut(&kib.to_string()) {
+                    *n = n.saturating_sub(taken);
+                }
+            }
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -1386,6 +1501,26 @@ impl VmManager {
         Ok(())
     }
 
+    /// `hugepage_size` is `2M` or `1G`, goes with `hugepages`, and divides
+    /// the VM's memory.
+    fn check_hugepages(config: &VmConfig) -> Result<(), VmManagerError> {
+        let Some(size) = &config.hugepage_size else {
+            return Ok(());
+        };
+        let kib = crate::models::hugepage_size_kib(size)
+            .ok_or_else(|| invalid(format!("hugepage_size {size}: use 2M or 1G")))?;
+        if !config.hugepages {
+            return Err(invalid("hugepage_size needs hugepages"));
+        }
+        if !(config.mem_size_mib as u64).is_multiple_of(kib / 1024) {
+            return Err(invalid(format!(
+                "mem_size_mib must be a multiple of {} MiB for {size} hugepages",
+                kib / 1024
+            )));
+        }
+        Ok(())
+    }
+
     fn check_options(opts: &VmOptions) -> Result<(), VmManagerError> {
         if opts
             .stop_grace_secs
@@ -1560,6 +1695,7 @@ impl VmManager {
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
         }
+        Self::check_hugepages(&config)?;
         if firmware.is_none()
             && config.firmware_path.is_none()
             && config.kernel_image_path.is_empty()
@@ -1734,14 +1870,16 @@ impl VmManager {
             vm.status.placement = Some(crate::models::Placement {
                 node,
                 at: crate::tenancy::now(),
+                page_kib: self.standalone_page_kib(vm.config()),
             });
         } else {
             let req = self.sched_request(&vm, &disks);
             match self.pick_node(&vms, &req) {
-                Ok(node) => {
+                Ok(choice) => {
                     vm.status.placement = Some(crate::models::Placement {
-                        node,
+                        node: choice.node,
                         at: crate::tenancy::now(),
+                        page_kib: Some(choice.page_kib),
                     });
                     crate::controller::vm::set_cond(
                         &mut vm.status.conditions,
@@ -2178,6 +2316,12 @@ impl VmManager {
             if let Some(h) = c.hugepages {
                 config.hugepages = h;
             }
+            match c.hugepage_size {
+                None => {}
+                Some(serde_json::Value::Null) => config.hugepage_size = None,
+                Some(serde_json::Value::String(s)) => config.hugepage_size = Some(s),
+                Some(_) => return Err(invalid("hugepage_size must be 2M, 1G or null")),
+            }
             if let Some(cred) = c.credential {
                 config.credential = match cred {
                     serde_json::Value::Null => None,
@@ -2248,6 +2392,13 @@ impl VmManager {
             }
             self.check_paths(&vm.spec.config)?;
             self.check_credential(&project, &vm.spec.config)?;
+            Self::check_hugepages(&vm.spec.config)?;
+            let (a, b) = (cur.config(), vm.config());
+            if (a.mem_size_mib, a.hugepages, &a.hugepage_size, &a.networks)
+                != (b.mem_size_mib, b.hugepages, &b.hugepage_size, &b.networks)
+            {
+                self.recount_pages(&vms, &mut vm, &[])?;
+            }
         }
         if vm.spec == cur.spec {
             return Ok((cur, Vec::new()));

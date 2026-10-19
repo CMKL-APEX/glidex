@@ -212,7 +212,11 @@ impl LaunchSpec<'_> {
                 format!(
                     "memory-backend-memfd,id=mem,size={}M,share=on{}",
                     config.mem_size_mib,
-                    if config.hugepages { ",hugetlb=on" } else { "" }
+                    match (config.hugepages, &config.hugepage_size) {
+                        (true, Some(size)) => format!(",hugetlb=on,hugetlbsize={size}"),
+                        (true, None) => ",hugetlb=on".into(),
+                        (false, _) => String::new(),
+                    }
                 ),
             );
         }
@@ -754,6 +758,15 @@ mod tests {
             values(&args, "-object")
                 .contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on")
         );
+    }
+
+    #[test]
+    fn hugepages_of_a_given_size() {
+        let config = config(serde_json::json!({"hugepages": true, "hugepage_size": "1G"}));
+        let args = spec(&config).args();
+        assert!(values(&args, "-object").contains(
+            &"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on,hugetlbsize=1G"
+        ));
     }
 
     #[test]

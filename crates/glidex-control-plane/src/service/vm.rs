@@ -165,6 +165,9 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         firmware: config.firmware_image.clone(),
         root_disk: config.root_disk.clone(),
         data_disks: config.data_disks.clone(),
+        hugepages: config.hugepages.then_some(true),
+        hugepage_size: config.hugepage_size.clone(),
+        page_kib: vm.status.placement.as_ref().and_then(|p| p.page_kib),
         ..Default::default()
     }
 }
@@ -339,6 +342,7 @@ pub async fn preview_placement(
         "rootfs_path": "", "kernel_args": "", "hugepages": req.hugepages.unwrap_or(false),
         "networks": req.networks.iter().map(attachment_of).collect::<Vec<_>>(),
         "vfio_devices": req.vfio_devices,
+        "hugepage_size": req.hugepage_size,
     });
     if let Some(h) = hypervisor {
         cfg["hypervisor"] = serde_json::json!(h);
@@ -373,6 +377,9 @@ pub async fn preview_placement(
                 mem_mib_taken: f.mem_mib_taken,
                 mem_mib_capacity: f.mem_mib_capacity,
                 vms: f.vms,
+                page_kib: f.page_kib,
+                hugepages_mib_taken: f.hugepages_mib_taken,
+                hugepages_mib_capacity: f.hugepages_mib_capacity,
                 ..Default::default()
             })
             .collect(),
@@ -470,6 +477,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         vfio_devices: req.vfio_devices,
         networks: req.networks.iter().map(attachment_of).collect(),
         hugepages: req.hugepages.unwrap_or(false),
+        hugepage_size: req.hugepage_size,
         firmware_image: None,
         nic_bindings: Vec::new(),
         root_disk: None,
@@ -567,6 +575,7 @@ pub const UPDATABLE: &[&str] = &[
     "kernel_args",
     "credential",
     "hugepages",
+    "hugepage_size",
     "vfio_devices",
     "data_disks",
     "networks",
@@ -603,6 +612,12 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                         })
                     }
                     "hugepages" => c.hugepages = Some(change.hugepages),
+                    "hugepage_size" => {
+                        c.hugepage_size = Some(match change.hugepage_size.as_str() {
+                            "" => serde_json::Value::Null,
+                            s => serde_json::Value::String(s.into()),
+                        })
+                    }
                     "vfio_devices" => c.vfio_devices = Some(change.vfio_devices.clone()),
                     "data_disks" => c.data_disks = Some(change.data_disks.clone()),
                     "networks" => {
@@ -676,7 +691,11 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 .kernel_args
                 .as_ref()
                 .is_some_and(|v| *v != cur.kernel_args)
-            || cp.hugepages.is_some_and(|v| v != cur.hugepages);
+            || cp.hugepages.is_some_and(|v| v != cur.hugepages)
+            || cp
+                .hugepage_size
+                .as_ref()
+                .is_some_and(|v| v.as_str() != cur.hugepage_size.as_deref());
         if let Some(cred) = &cp.credential {
             update = true;
             if let Some(username) = cred.as_str() {

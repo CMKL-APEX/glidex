@@ -123,6 +123,7 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 | Initial power | `power` | `stopped` (default), `running` or `paused`. |
 | Node | `node` | Clusters: pin the VM to a node (name or id). Fixed. |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
+| Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
 
 ### Boot disk
 
@@ -384,6 +385,15 @@ created. It considers only nodes that are active, ready and not
 draining, that have the hypervisor, enough vCPUs and memory left, the
 PCI devices, hugepages and physical networks the VM needs, and that hold
 its disks and node networks. Of those, it prefers the least loaded.
+
+Hugepages are counted on their own: a VM with `hugepages` takes its
+memory from the node's hugepages of its size, not from ordinary memory,
+and needs that much left of them (`not enough 2M hugepages (… of … MiB
+taken)`). They are never overcommitted, and stopped VMs hold theirs
+too. A VM with a vhost-user NIC gets 2M hugepages without asking when
+the node has them to spare (its memory plus a quarter, at least
+256 MiB), and ordinary memory otherwise. The VM's `page_kib` says which:
+4 for ordinary memory, else the hugepage size in KiB.
 
 A VM stays on its node for its whole life: Glidex doesn't move it, and
 doesn't restart it elsewhere if the node fails. If no node can take the

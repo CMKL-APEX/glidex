@@ -161,9 +161,17 @@ fn sample_vm(
             round.max(&s, "cpu.cores_peak", usec_per_s / 1000, now);
         }
     }
-    // Hugepage-backed guest RAM is not in memory.current (§5.1).
+    // Hugepage-backed guest RAM is not in memory.current (§5.1). Whether
+    // it is hugepages: what the scheduler counted (spec/host-topology.md
+    // §8a.3), else what the VM asked for.
+    let in_hugepages = vm
+        .status
+        .placement
+        .as_ref()
+        .and_then(|p| p.page_kib)
+        .map_or(c.hugepages, |k| k != crate::models::SMALL_PAGE_KIB);
     let used_mib = u.memory_bytes / MIB
-        + if c.hugepages {
+        + if in_hugepages {
             c.mem_size_mib as u64
         } else {
             0

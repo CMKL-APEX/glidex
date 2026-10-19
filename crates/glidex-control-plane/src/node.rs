@@ -135,10 +135,46 @@ impl NodePhase {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resources {
     pub cpus: u32,
+    /// In `allocatable`, without the hugepage pool: a hugepage is counted
+    /// once, as a hugepage (spec/host-topology.md §8a.2).
     pub memory_mib: u64,
-    /// Free-standing hugepages by page size in KiB.
+    /// Hugepages by page size in KiB: the pool in `capacity`; in
+    /// `allocatable`, less what OVS-DPDK takes.
     #[serde(default)]
     pub hugepages: BTreeMap<String, u64>,
+}
+
+impl Resources {
+    /// Pages of `page_kib` hugepages.
+    pub fn pages(&self, page_kib: u64) -> u64 {
+        self.hugepages
+            .get(&page_kib.to_string())
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// MiB held in hugepages of every size (`page KiB → pages`).
+pub fn hugepage_pool_mib(hugepages: &BTreeMap<String, u64>) -> u64 {
+    hugepages
+        .iter()
+        .filter_map(|(kib, n)| kib.parse::<u64>().ok().map(|k| k * n / 1024))
+        .sum()
+}
+
+/// Pages of `page_kib` OVS-DPDK takes for `dpdk-socket-mem` (MiB per NUMA
+/// node, `1024` or `1024,1024`), rounded up per node.
+pub fn dpdk_pages(socket_mem: &str, page_kib: u64) -> u64 {
+    let page_mib = (page_kib / 1024).max(1);
+    socket_mem
+        .split(',')
+        .filter_map(|m| m.trim().parse::<u64>().ok())
+        .map(|mib| mib.div_ceil(page_mib))
+        .sum()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +188,10 @@ pub struct NodeFeatures {
     pub dpdk: bool,
     #[serde(default)]
     pub iommu: bool,
+    /// The host's default hugepage size in KiB (`Hugepagesize`), which
+    /// OVS-DPDK and a VM asking for no size use; 0 from an older node.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hugepage_kib: u64,
     /// Provider networks this node maps: physnet → bridge (§11.3).
     #[serde(default)]
     pub physnets: BTreeMap<String, String>,
@@ -563,6 +603,7 @@ impl SelfProbe {
                 }
             }
         }
+        let pool_mib = hugepage_pool_mib(&hugepages);
         let capacity = Resources {
             cpus,
             memory_mib,
@@ -570,9 +611,19 @@ impl SelfProbe {
         };
         let allocatable = Resources {
             cpus: cpus.saturating_sub(reserved.cpus).max(1),
-            memory_mib: memory_mib.saturating_sub(reserved.memory_mib),
+            memory_mib: memory_mib
+                .saturating_sub(pool_mib)
+                .saturating_sub(reserved.memory_mib),
             hugepages,
         };
+        let hugepage_kib = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|m| {
+                m.lines()
+                    .find_map(|l| l.strip_prefix("Hugepagesize:"))
+                    .and_then(|r| r.split_whitespace().next()?.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
         let hypervisors = [
             crate::hypervisor::HypervisorType::CloudHypervisor,
             crate::hypervisor::HypervisorType::Qemu,
@@ -587,6 +638,7 @@ impl SelfProbe {
             iommu: std::fs::read_dir("/sys/kernel/iommu_groups")
                 .map(|mut d| d.next().is_some())
                 .unwrap_or(false),
+            hugepage_kib,
             ovn_central: program_version("ovn-northd").is_some(),
             arch: crate::images::catalog::Arch::host()
                 .map(|a| a.as_str().to_string())
@@ -605,5 +657,20 @@ impl SelfProbe {
             pci_groups,
             ovn_version: program_version("ovn-controller"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dpdk_takes_whole_pages_per_numa_node_and_the_pool_is_counted_once() {
+        assert_eq!(super::dpdk_pages("1024", 2048), 512);
+        assert_eq!(super::dpdk_pages("1024,1024", 2048), 1024);
+        assert_eq!(super::dpdk_pages("1025", 2048), 513);
+        assert_eq!(super::dpdk_pages("1024", 1_048_576), 1);
+        assert_eq!(super::dpdk_pages("", 2048), 0);
+        let pool: std::collections::BTreeMap<String, u64> =
+            [("2048".to_string(), 1024), ("1048576".to_string(), 2)].into();
+        assert_eq!(super::hugepage_pool_mib(&pool), 2048 + 2048);
     }
 }
