@@ -109,7 +109,8 @@ name (ids when `/projects` isn't readable).
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
 | `log <name\|id>` | `GET /vms/{id}/console/log` (last 1 MiB) |
 | `delete <name\|id> [--keep-disk] [--no-wait]` | Confirmation prompt → `DELETE /vms/{id}?wait=60[&keep_disk=true]` |
-| `pci` / `pci-devices` | `GET /pci-devices` + table |
+| `pci` / `pci-devices` | `GET /pci-devices` + table (NUMA node, ready) |
+| `node topology <node> [--devices]` | `GetNodeTopology`: NUMA nodes with their devices, or the devices with their tree place |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
 | `credentials` / `creds` | `GET /credentials` + table (no hashes) |

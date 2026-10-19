@@ -242,7 +242,7 @@ namespace Glidex {
 
   // ---- host --------------------------------------------------------------
   // readSystemStatus: GET /system/reconcile (spec/reconciliation.md §12.5).
-  action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read", "host-scoped"]
+  action readOvsStatus, listBridges, listUplinks, listPciDevices, readHostTopology, readSystemStatus in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };

@@ -3492,6 +3492,74 @@ impl VmManager {
 
     /// A NIC bound to vfio-pci for a DPDK uplink must not also be passed
     /// through to a VM (spec §8.3). Without netd there are no uplinks.
+    /// This host's full topology (spec/host-topology.md §3.2): its node
+    /// record's summary (OVS-DPDK's share and the reserved CPUs applied)
+    /// and the PCIe tree read now.
+    pub fn local_topology(&self) -> crate::topology::TopologyTree {
+        let summary = self
+            .nodes
+            .get(&self.local_node_id())
+            .ok()
+            .flatten()
+            .and_then(|n| n.status.topology)
+            .or_else(crate::topology::read)
+            .unwrap_or_default();
+        let uplinks = self
+            .netd
+            .call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|u| match u.record.spec.kind {
+                glidex_ovs::uplink::UplinkKind::Dpdk { pci, .. } => Some(pci.to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect();
+        crate::topology::read_tree(summary, uplinks)
+    }
+
+    /// Node `id`'s full topology: this host's, or read on that node over
+    /// the cluster's node API (`/cluster/v1/topology`).
+    pub async fn node_topology(
+        &self,
+        id: &str,
+    ) -> Result<crate::topology::TopologyTree, VmManagerError> {
+        if id == self.local_node_id() {
+            return Ok(self.local_topology());
+        }
+        let unavailable = |m: String| VmManagerError::Network(NetError::Unavailable(m));
+        let cluster = self
+            .cluster()
+            .ok_or_else(|| unavailable("this host is not part of a cluster".into()))?;
+        let node = self
+            .nodes
+            .get(id)
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+            .ok_or_else(|| VmManagerError::Network(NetError::NotFound(format!("node {id}"))))?;
+        let addr = node
+            .status
+            .advertise
+            .ok_or_else(|| unavailable(format!("node {} has no address", node.spec.name)))?;
+        let r = cluster
+            .client
+            .request_timeout(
+                &addr.to_string(),
+                hyper::Method::GET,
+                "/cluster/v1/topology",
+                &[],
+                bytes::Bytes::new(),
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .map_err(|e| unavailable(format!("node {}: {e}", node.spec.name)))?;
+        if !r.status.is_success() {
+            return Err(unavailable(format!(
+                "node {} answered {}",
+                node.spec.name, r.status
+            )));
+        }
+        serde_json::from_slice(&r.body).map_err(|e| unavailable(e.to_string()))
+    }
+
     fn refuse_dpdk_uplink_devices(&self, devices: &[String]) -> Result<(), VmManagerError> {
         if devices.is_empty() {
             return Ok(());
@@ -4591,6 +4659,11 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
             let m = self.0.upgrade().ok_or("shutting down")?;
             m.local_ovn_status().await
         })
+    }
+
+    fn topology(&self) -> Option<serde_json::Value> {
+        let m = self.0.upgrade()?;
+        serde_json::to_value(m.local_topology()).ok()
     }
 
     fn left_ovn<'a>(

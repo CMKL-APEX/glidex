@@ -258,6 +258,394 @@ pub fn read() -> Option<TopologySummary> {
     ))
 }
 
+// ---- the full tree (spec/host-topology.md §3.2, §5) -------------------------
+
+/// What a PCI function is in the PCIe tree. Told from the bridges' places
+/// (sysfs paths), not the PCIe capability, which needs root to read: a
+/// bridge right under a root complex is a root port, one under a root
+/// port or a downstream port a switch's upstream port, one under an
+/// upstream port a downstream port.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PciKind {
+    #[default]
+    Endpoint,
+    RootPort,
+    SwitchUpstream,
+    SwitchDownstream,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcieLink {
+    pub current_speed: String,
+    pub current_width: u32,
+    pub max_speed: String,
+    pub max_width: u32,
+}
+
+impl PcieLink {
+    /// Slower or narrower than it can be.
+    pub fn degraded(&self) -> bool {
+        let gts = |s: &str| {
+            s.split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        self.current_width < self.max_width || gts(&self.current_speed) < gts(&self.max_speed)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sriov {
+    /// A physical function: VFs it can have, and has.
+    pub total_vfs: u32,
+    pub enabled_vfs: u32,
+}
+
+/// One PCI function in the tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PciFunction {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iommu_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numa_node: Option<u32>,
+    /// The bridge above it, or its root complex (`pci0000:80`).
+    pub parent: String,
+    pub kind: PciKind,
+    /// Its root port, and the upstream port of the nearest switch above it:
+    /// devices under one switch can talk peer to peer without the root
+    /// complex (§3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_port: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<PcieLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sriov: Option<Sriov>,
+    /// A virtual function's physical function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physfn: Option<String>,
+    /// A device a VM could be given (§3.3).
+    pub assignable: bool,
+    /// For an assignable device: ready for passthrough (§5.1), else why not.
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_ready: Vec<String>,
+}
+
+/// A gap the node reports, never acts on (§5.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyWarning {
+    /// `iommu_off`, `numa_unknown`, `group_shared`, `link_degraded`,
+    /// `hugepages_unbalanced`.
+    pub kind: String,
+    pub detail: String,
+}
+
+/// A host's full topology (`GET /host/topology`): the summary, every PCI
+/// function, and the warnings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyTree {
+    pub summary: TopologySummary,
+    pub devices: Vec<PciFunction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<TopologyWarning>,
+}
+
+/// What sysfs says about one PCI function.
+#[derive(Debug, Clone, Default)]
+pub struct RawPci {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+    pub driver: Option<String>,
+    pub iommu_group: Option<String>,
+    pub numa_node: Option<u32>,
+    /// Its sysfs path under `/sys/devices`, as components: the root
+    /// complex, the bridges, itself (`pci0000:80`, `0000:80:01.1`, …).
+    pub path: Vec<String>,
+    pub link: Option<PcieLink>,
+    pub sriov: Option<Sriov>,
+    pub physfn: Option<String>,
+}
+
+/// What readiness depends on besides the device.
+#[derive(Debug, Clone, Default)]
+pub struct ReadyContext {
+    /// The host has an IOMMU.
+    pub iommu: bool,
+    /// IOMMU groups whose `/dev/vfio/<group>` this user can't open.
+    pub closed_groups: BTreeSet<String>,
+    /// Addresses that are OVS-DPDK uplinks of glidex bridges.
+    pub dpdk_uplinks: BTreeSet<String>,
+}
+
+fn is_bridge(class: &str) -> bool {
+    class
+        .trim_start_matches("0x")
+        .to_ascii_lowercase()
+        .starts_with("0604")
+}
+
+/// Host, PCI and other bridges (class `0x06…`): they stay with the host
+/// when the rest of their IOMMU group is passed through.
+fn is_bridge_class(class: &str) -> bool {
+    class.trim_start_matches("0x").starts_with("06")
+}
+
+fn is_gpu(class: &str) -> bool {
+    class.trim_start_matches("0x").starts_with("03")
+}
+
+/// The tree from raw sysfs entries (pure, for tests): kinds, root ports,
+/// switches, which devices are assignable and ready, and the warnings.
+pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) -> TopologyTree {
+    let by_addr: BTreeMap<&str, &RawPci> = raw.iter().map(|r| (r.address.as_str(), r)).collect();
+    // Kinds, by depth: a bridge's kind follows from its parent's.
+    let mut kinds: BTreeMap<String, PciKind> = BTreeMap::new();
+    let mut sorted: Vec<&RawPci> = raw.iter().collect();
+    sorted.sort_by_key(|r| r.path.len());
+    for r in &sorted {
+        let parent = r.path.iter().rev().nth(1);
+        let parent_kind = parent.and_then(|p| kinds.get(p)).copied();
+        let kind = if !is_bridge(&r.class_id) {
+            PciKind::Endpoint
+        } else {
+            match parent_kind {
+                None => PciKind::RootPort,
+                Some(PciKind::RootPort | PciKind::SwitchDownstream) => PciKind::SwitchUpstream,
+                Some(PciKind::SwitchUpstream) => PciKind::SwitchDownstream,
+                Some(PciKind::Endpoint) => PciKind::SwitchUpstream,
+            }
+        };
+        kinds.insert(r.address.clone(), kind);
+    }
+    let mut groups: BTreeMap<&str, Vec<&RawPci>> = BTreeMap::new();
+    for r in raw {
+        if let Some(g) = &r.iommu_group {
+            groups.entry(g.as_str()).or_default().push(r);
+        }
+    }
+    let multi_numa = summary.numa_nodes.len() > 1;
+    let mut warnings = Vec::new();
+    if !ctx.iommu {
+        warnings.push(TopologyWarning {
+            kind: "iommu_off".into(),
+            detail: "no IOMMU groups: turn on VT-d / AMD-Vi and intel_iommu=on or amd_iommu=on"
+                .into(),
+        });
+    }
+    let mut devices = Vec::new();
+    for r in raw {
+        let kind = kinds.get(&r.address).copied().unwrap_or_default();
+        let above: Vec<&str> = r
+            .path
+            .iter()
+            .take(r.path.len().saturating_sub(1))
+            .map(String::as_str)
+            .filter(|p| by_addr.contains_key(p))
+            .collect();
+        let root_port = above
+            .iter()
+            .find(|a| kinds.get(**a) == Some(&PciKind::RootPort))
+            .map(|a| a.to_string());
+        let switch = above
+            .iter()
+            .rev()
+            .find(|a| kinds.get(**a) == Some(&PciKind::SwitchUpstream))
+            .map(|a| a.to_string());
+        let assignable = kind == PciKind::Endpoint
+            && (assignable_class(&r.class_id) || r.driver.as_deref() == Some("vfio-pci"));
+        let mut not_ready = Vec::new();
+        if assignable {
+            match &r.iommu_group {
+                None => not_ready.push("no IOMMU group (the IOMMU is off)".to_string()),
+                Some(g) => {
+                    if r.driver.as_deref() != Some("vfio-pci") {
+                        not_ready.push(format!(
+                            "not bound to vfio-pci (driver: {})",
+                            r.driver.as_deref().unwrap_or("none")
+                        ));
+                    }
+                    for peer in groups.get(g.as_str()).into_iter().flatten() {
+                        if peer.address == r.address || is_bridge_class(&peer.class_id) {
+                            continue;
+                        }
+                        if let Some(d) = peer.driver.as_deref().filter(|d| *d != "vfio-pci") {
+                            not_ready.push(format!(
+                                "IOMMU group {g} also holds {} on {d}",
+                                peer.address
+                            ));
+                        }
+                        let class4 = |c: &str| {
+                            c.trim_start_matches("0x")
+                                .chars()
+                                .take(4)
+                                .collect::<String>()
+                        };
+                        if class4(&peer.class_id) != class4(&r.class_id) {
+                            warnings.push(TopologyWarning {
+                                kind: "group_shared".into(),
+                                detail: format!(
+                                    "{} shares IOMMU group {g} with {} of another class",
+                                    r.address, peer.address
+                                ),
+                            });
+                        }
+                    }
+                    if r.driver.as_deref() == Some("vfio-pci") && ctx.closed_groups.contains(g) {
+                        not_ready.push(format!("/dev/vfio/{g} can't be opened by this user"));
+                    }
+                }
+            }
+            if ctx.dpdk_uplinks.contains(&r.address) {
+                not_ready.push("it is an OVS-DPDK uplink".to_string());
+            }
+            if r.numa_node.is_none() && multi_numa {
+                warnings.push(TopologyWarning {
+                    kind: "numa_unknown".into(),
+                    detail: format!("{} has no NUMA node (firmware reports -1)", r.address),
+                });
+            }
+            if let Some(l) = &r.link
+                && l.degraded()
+                && !is_gpu(&r.class_id)
+            {
+                warnings.push(TopologyWarning {
+                    kind: "link_degraded".into(),
+                    detail: format!(
+                        "{} runs at {} x{} of {} x{}",
+                        r.address, l.current_speed, l.current_width, l.max_speed, l.max_width
+                    ),
+                });
+            }
+            if let Some(n) = r.numa_node
+                && summary.numa_nodes.iter().any(|k| !k.hugepages.is_empty())
+                && summary.node(n).is_some_and(|k| k.hugepages.is_empty())
+            {
+                warnings.push(TopologyWarning {
+                    kind: "hugepages_unbalanced".into(),
+                    detail: format!("{} is on NUMA node {n}, which has no hugepages", r.address),
+                });
+            }
+        }
+        devices.push(PciFunction {
+            address: r.address.clone(),
+            vendor_id: r.vendor_id.clone(),
+            device_id: r.device_id.clone(),
+            class_id: r.class_id.clone(),
+            driver: r.driver.clone(),
+            iommu_group: r.iommu_group.clone(),
+            numa_node: r.numa_node,
+            parent: r.path.iter().rev().nth(1).cloned().unwrap_or_default(),
+            kind,
+            root_port,
+            switch,
+            link: r.link.clone(),
+            sriov: r.sriov.clone(),
+            physfn: r.physfn.clone(),
+            assignable,
+            ready: assignable && not_ready.is_empty(),
+            not_ready,
+        });
+    }
+    devices.sort_by(|a, b| a.address.cmp(&b.address));
+    warnings.dedup();
+    TopologyTree {
+        summary,
+        devices,
+        warnings,
+    }
+}
+
+/// Read this host's tree from sysfs. `dpdk_uplinks`: addresses netd has as
+/// DPDK uplinks.
+pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> TopologyTree {
+    let base = std::path::Path::new("/sys/bus/pci/devices");
+    let attr = |dir: &std::path::Path, f: &str| {
+        std::fs::read_to_string(dir.join(f))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let link_name = |dir: &std::path::Path, f: &str| {
+        std::fs::read_link(dir.join(f))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    };
+    let mut raw = Vec::new();
+    for e in std::fs::read_dir(base).into_iter().flatten().flatten() {
+        let dir = e.path();
+        let address = e.file_name().to_string_lossy().into_owned();
+        let real = std::fs::canonicalize(&dir).unwrap_or_default();
+        let path: Vec<String> = real
+            .strip_prefix("/sys/devices")
+            .map(|p| {
+                p.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let num = |f: &str| attr(&dir, f).and_then(|s| s.parse::<u32>().ok());
+        let link = match (
+            attr(&dir, "current_link_speed"),
+            num("current_link_width"),
+            attr(&dir, "max_link_speed"),
+            num("max_link_width"),
+        ) {
+            (Some(cs), Some(cw), Some(ms), Some(mw)) => Some(PcieLink {
+                current_speed: cs,
+                current_width: cw,
+                max_speed: ms,
+                max_width: mw,
+            }),
+            _ => None,
+        };
+        raw.push(RawPci {
+            vendor_id: attr(&dir, "vendor").unwrap_or_default(),
+            device_id: attr(&dir, "device").unwrap_or_default(),
+            class_id: attr(&dir, "class").unwrap_or_default(),
+            driver: link_name(&dir, "driver"),
+            iommu_group: link_name(&dir, "iommu_group"),
+            numa_node: attr(&dir, "numa_node").and_then(|n| n.parse().ok()),
+            path,
+            link,
+            sriov: num("sriov_totalvfs").filter(|t| *t > 0).map(|t| Sriov {
+                total_vfs: t,
+                enabled_vfs: num("sriov_numvfs").unwrap_or(0),
+            }),
+            physfn: link_name(&dir, "physfn"),
+            address,
+        });
+    }
+    let groups: BTreeSet<String> = raw.iter().filter_map(|r| r.iommu_group.clone()).collect();
+    let closed_groups = groups
+        .into_iter()
+        .filter(|g| {
+            nix::unistd::access(
+                format!("/dev/vfio/{g}").as_str(),
+                nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK,
+            )
+            .is_err()
+        })
+        .collect();
+    let ctx = ReadyContext {
+        iommu: std::path::Path::new("/sys/kernel/iommu_groups/0").exists(),
+        closed_groups,
+        dpdk_uplinks,
+    };
+    build_tree(summary, &raw, &ctx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +783,202 @@ mod tests {
         }
         println!("isolated {:?}; devices {:?}", t.isolated, t.device_numa);
         assert!(!t.numa_nodes.is_empty());
+        let tree = read_tree(t, Default::default());
+        for d in tree.devices.iter().filter(|d| d.assignable) {
+            println!(
+                "{} {} numa {:?} switch {:?} ready {} {:?}",
+                d.address, d.class_id, d.numa_node, d.switch, d.ready, d.not_ready
+            );
+        }
+        for w in &tree.warnings {
+            println!("warning {}: {}", w.kind, w.detail);
+        }
+    }
+
+    fn raw(
+        path: &str,
+        class: &str,
+        driver: Option<&str>,
+        group: Option<&str>,
+        numa: Option<u32>,
+    ) -> RawPci {
+        let path: Vec<String> = path.split('/').map(String::from).collect();
+        RawPci {
+            address: path.last().cloned().unwrap(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: class.into(),
+            driver: driver.map(Into::into),
+            iommu_group: group.map(Into::into),
+            numa_node: numa,
+            path,
+            ..Default::default()
+        }
+    }
+
+    /// A root port, a switch with a GPU and a NIC under it, a GPU on its
+    /// own root port, and a GPU sharing its group with an audio function.
+    fn tree() -> TopologyTree {
+        let summary = TopologySummary {
+            numa_nodes: (0..2)
+                .map(|id| NumaNode {
+                    id,
+                    hugepages: if id == 0 {
+                        [("2048".to_string(), 512)].into()
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut nic = raw(
+            "pci0000:80/0000:80:01.1/0000:81:00.0/0000:82:00.0/0000:88:00.0",
+            "0x020700",
+            Some("mlx5_core"),
+            Some("21"),
+            Some(1),
+        );
+        nic.link = Some(PcieLink {
+            current_speed: "8.0 GT/s PCIe".into(),
+            current_width: 8,
+            max_speed: "16.0 GT/s PCIe".into(),
+            max_width: 16,
+        });
+        nic.sriov = Some(Sriov {
+            total_vfs: 16,
+            enabled_vfs: 0,
+        });
+        let raw = vec![
+            raw(
+                "pci0000:80/0000:80:01.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("1"),
+                Some(1),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0",
+                "0x060400",
+                Some("pcieport"),
+                Some("2"),
+                Some(1),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0/0000:82:00.0",
+                "0x060400",
+                Some("pcieport"),
+                Some("3"),
+                Some(1),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0/0000:82:00.0/0000:87:00.0",
+                "0x030200",
+                Some("vfio-pci"),
+                Some("20"),
+                Some(1),
+            ),
+            nic,
+            raw(
+                "pci0000:00/0000:00:03.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("4"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:00/0000:00:03.1/0000:07:00.0",
+                "0x030200",
+                Some("nvidia"),
+                Some("30"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:00/0000:00:03.1/0000:07:00.1",
+                "0x040300",
+                Some("snd_hda_intel"),
+                Some("30"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:00/0000:00:05.1/0000:09:00.0",
+                "0x030200",
+                Some("vfio-pci"),
+                Some("31"),
+                None,
+            ),
+        ];
+        let ctx = ReadyContext {
+            iommu: true,
+            closed_groups: ["31".to_string()].into(),
+            dpdk_uplinks: Default::default(),
+        };
+        build_tree(summary, &raw, &ctx)
+    }
+
+    fn func<'a>(t: &'a TopologyTree, a: &str) -> &'a PciFunction {
+        t.devices.iter().find(|d| d.address == a).unwrap()
+    }
+
+    #[test]
+    fn the_tree_knows_root_ports_switches_and_peers() {
+        let t = tree();
+        assert_eq!(func(&t, "0000:80:01.1").kind, PciKind::RootPort);
+        assert_eq!(func(&t, "0000:81:00.0").kind, PciKind::SwitchUpstream);
+        assert_eq!(func(&t, "0000:82:00.0").kind, PciKind::SwitchDownstream);
+        let gpu = func(&t, "0000:87:00.0");
+        let nic = func(&t, "0000:88:00.0");
+        assert_eq!(gpu.kind, PciKind::Endpoint);
+        assert_eq!(gpu.parent, "0000:82:00.0");
+        assert_eq!(
+            (gpu.root_port.as_deref(), gpu.switch.as_deref()),
+            (Some("0000:80:01.1"), Some("0000:81:00.0"))
+        );
+        assert_eq!(nic.switch, gpu.switch, "peer-close: one switch");
+        assert_eq!(func(&t, "0000:07:00.0").switch, None);
+        assert!(!func(&t, "0000:81:00.0").assignable, "bridges aren't");
+    }
+
+    #[test]
+    fn readiness_says_why_not() {
+        let t = tree();
+        assert!(func(&t, "0000:87:00.0").ready);
+        assert_eq!(
+            func(&t, "0000:07:00.0").not_ready,
+            vec![
+                "not bound to vfio-pci (driver: nvidia)".to_string(),
+                "IOMMU group 30 also holds 0000:07:00.1 on snd_hda_intel".to_string(),
+            ]
+        );
+        assert_eq!(
+            func(&t, "0000:09:00.0").not_ready,
+            vec!["/dev/vfio/31 can't be opened by this user".to_string()]
+        );
+        assert!(!func(&t, "0000:88:00.0").ready, "the NIC is on mlx5_core");
+    }
+
+    #[test]
+    fn warnings_are_reported() {
+        let t = tree();
+        let kinds: Vec<&str> = t.warnings.iter().map(|w| w.kind.as_str()).collect();
+        for k in [
+            "group_shared",
+            "numa_unknown",
+            "link_degraded",
+            "hugepages_unbalanced",
+        ] {
+            assert!(kinds.contains(&k), "{k} in {:?}", t.warnings);
+        }
+        assert!(!kinds.contains(&"iommu_off"));
+        // A GPU idling at a slower link is not a warning.
+        assert!(
+            t.warnings
+                .iter()
+                .filter(|w| w.kind == "link_degraded")
+                .all(|w| w.detail.starts_with("0000:88:00.0")),
+            "{:?}",
+            t.warnings
+        );
     }
 }

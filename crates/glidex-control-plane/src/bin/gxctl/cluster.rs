@@ -626,7 +626,126 @@ async fn run_member_op(client: &ApiClient, op: MemberOp) {
     println!("{} {}", "OK".green(), out);
 }
 
-/// `nodes`, `node <id>`, `node drain|undrain|remove|forget|purge|rejoin-token|detach|import …`
+/// A PCI class code's word (spec/host-topology.md §3.3).
+fn class_word(class: &str) -> &'static str {
+    let c = class.trim_start_matches("0x");
+    if c.starts_with("03") {
+        "gpu"
+    } else if c.starts_with("0108") {
+        "nvme"
+    } else if c.starts_with("02") {
+        "nic"
+    } else if c.starts_with("12") || c.starts_with("0b40") {
+        "accel"
+    } else {
+        "other"
+    }
+}
+
+/// `node topology`: each NUMA node (CPUs, memory, hugepages) with the
+/// devices a VM could be given on it, then the warnings; `--devices`: the
+/// devices only, with where they sit in the PCIe tree.
+pub(crate) fn topology_lines(
+    t: &glidex_api::proto::glidex::host::v1::Topology,
+    devices_only: bool,
+) -> Vec<String> {
+    use glidex_api::proto::glidex::host::v1::PciFunction;
+    let dev = |d: &PciFunction| {
+        let ready = if d.ready {
+            "ready".green().to_string()
+        } else {
+            format!("{} ({})", "not ready".yellow(), d.not_ready.join("; "))
+        };
+        let mut l = format!(
+            "{}  {:<5} {}:{}  {}",
+            d.address,
+            class_word(&d.class_id),
+            d.vendor_id.trim_start_matches("0x"),
+            d.device_id.trim_start_matches("0x"),
+            d.driver.as_deref().unwrap_or("-")
+        );
+        if let Some(g) = &d.iommu_group {
+            l.push_str(&format!("  group {g}"));
+        }
+        if devices_only {
+            if let Some(n) = d.numa_node {
+                l.push_str(&format!("  numa {n}"));
+            }
+            if let Some(r) = &d.root_port {
+                l.push_str(&format!("  root {r}"));
+            }
+            if let Some(s) = &d.switch {
+                l.push_str(&format!("  switch {s}"));
+            }
+            if let Some(link) = d.link.as_option() {
+                l.push_str(&format!("  {} x{}", link.current_speed, link.current_width));
+            }
+            if let Some(v) = d.sriov.as_option() {
+                l.push_str(&format!("  vfs {}/{}", v.enabled_vfs, v.total_vfs));
+            }
+        }
+        format!("{l}  {ready}")
+    };
+    let assignable: Vec<&PciFunction> = t.devices.iter().filter(|d| d.assignable).collect();
+    let mut out = Vec::new();
+    if devices_only {
+        out.extend(assignable.iter().map(|d| dev(d)));
+    } else {
+        let s = t.summary.as_option().cloned().unwrap_or_default();
+        for n in &s.numa_nodes {
+            let cpus: Vec<u32> = n
+                .cores
+                .iter()
+                .flat_map(|c| c.threads.iter().copied())
+                .collect();
+            let mut hp: Vec<String> = n
+                .hugepages
+                .iter()
+                .map(|(kib, pages)| format!("{pages}×{kib}kB"))
+                .collect();
+            hp.sort();
+            out.push(format!(
+                "{} {}  {} cores, cpus {}  {} MiB{}",
+                "numa".bold(),
+                n.id,
+                n.cores.len(),
+                glidex_control_plane::topology::cpu_list(&cpus),
+                n.memory_mib,
+                if hp.is_empty() {
+                    String::new()
+                } else {
+                    format!("  hugepages {}", hp.join(" "))
+                }
+            ));
+            for d in assignable.iter().filter(|d| d.numa_node == Some(n.id)) {
+                out.push(format!("  {}", dev(d)));
+            }
+        }
+        let loose: Vec<&&PciFunction> = assignable
+            .iter()
+            .filter(|d| d.numa_node.is_none())
+            .collect();
+        if !loose.is_empty() {
+            out.push(format!("{} (no NUMA node)", "numa".bold()));
+            out.extend(loose.iter().map(|d| format!("  {}", dev(d))));
+        }
+        let mut reserved: Vec<(u32, String)> = s.reserved_cpus.clone().into_iter().collect();
+        reserved.sort();
+        if !reserved.is_empty() {
+            let cpus: Vec<u32> = reserved.iter().map(|(c, _)| *c).collect();
+            out.push(format!(
+                "reserved cpus {}",
+                glidex_control_plane::topology::cpu_list(&cpus)
+            ));
+        }
+    }
+    for w in &t.warnings {
+        out.push(format!("{} {}: {}", "warning".yellow(), w.kind, w.detail));
+    }
+    out
+}
+
+/// `nodes`, `node <id>`, `node drain|undrain|remove|forget|purge|rejoin-token|detach|import|topology …`
 pub async fn node(client: &ApiClient, args: &[&str]) {
     match args.first().copied() {
         Some(op @ ("drain" | "undrain")) => {
@@ -660,6 +779,20 @@ pub async fn node(client: &ApiClient, args: &[&str]) {
             }
         }
         Some("import") => imports(client, &args[1..]).await,
+        Some("topology") => {
+            let Some(key) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                return usage("Usage: node topology <node> [--devices]");
+            };
+            let s = svc!(node_rpc(client));
+            let v = answer!(s.get_node_topology(GetNodeTopologyRequest {
+                id: key.to_string(),
+                ..Default::default()
+            }));
+            let t = v.topology.as_option().cloned().unwrap_or_default();
+            for l in topology_lines(&t, has_flag(args, "--devices")) {
+                println!("{}", l);
+            }
+        }
         Some(op @ ("remove" | "forget" | "purge" | "rejoin-token" | "detach")) => {
             let Some(id) = args.get(1).filter(|a| !a.starts_with("--")) else {
                 return usage(&format!(
@@ -859,6 +992,76 @@ async fn imports(client: &ApiClient, rest: &[&str]) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn topology_lists_numa_nodes_their_devices_and_warnings() {
+        use glidex_api::proto::glidex::host::v1 as h;
+        colored::control::set_override(false);
+        let gpu = |a: &str, numa: Option<u32>, ready: bool| h::PciFunction {
+            address: a.into(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: "0x030200".into(),
+            driver: Some("vfio-pci".into()),
+            iommu_group: Some("226".into()),
+            numa_node: numa,
+            switch: Some("0000:85:00.0".into()),
+            assignable: true,
+            ready,
+            not_ready: if ready {
+                vec![]
+            } else {
+                vec!["not bound to vfio-pci (driver: nvidia)".into()]
+            },
+            ..Default::default()
+        };
+        let t = h::Topology {
+            summary: h::TopologySummary {
+                numa_nodes: vec![h::NumaNode {
+                    id: 7,
+                    cores: vec![h::CpuCore {
+                        threads: vec![112, 240],
+                        ..Default::default()
+                    }],
+                    memory_mib: 129000,
+                    hugepages: [("2048".to_string(), 512)].into_iter().collect(),
+                    ..Default::default()
+                }],
+                reserved_cpus: [(112, "config".to_string())].into_iter().collect(),
+                ..Default::default()
+            }
+            .into(),
+            devices: vec![
+                gpu("0000:87:00.0", Some(7), true),
+                gpu("0000:09:00.0", None, false),
+            ],
+            warnings: vec![h::TopologyWarning {
+                kind: "numa_unknown".into(),
+                detail: "0000:09:00.0 has no NUMA node (firmware reports -1)".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let l = topology_lines(&t, false);
+        assert_eq!(
+            l[0],
+            "numa 7  1 cores, cpus 112,240  129000 MiB  hugepages 512×2048kB"
+        );
+        assert_eq!(
+            l[1],
+            "  0000:87:00.0  gpu   10de:20b0  vfio-pci  group 226  ready"
+        );
+        assert_eq!(l[2], "numa (no NUMA node)");
+        assert!(
+            l[3].contains("not ready (not bound to vfio-pci (driver: nvidia))"),
+            "{l:?}"
+        );
+        assert_eq!(l[4], "reserved cpus 112");
+        assert!(l[5].starts_with("warning numa_unknown:"), "{l:?}");
+        let d = topology_lines(&t, true);
+        assert!(d[0].contains("numa 7  switch 0000:85:00.0"), "{d:?}");
+    }
+
     use super::*;
     use glidex_api::proto::glidex::common::v1::ConditionStatus;
 

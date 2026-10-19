@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1b and HT2 implemented** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b and HT2 implemented** (§15). §17 records
 where the implementation differs from the design. Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
@@ -864,7 +864,7 @@ HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
 and HT4 are the user-visible parts.
 
-Done: **HT0** (#63), **HT0b**, **HT1b** (#67), **HT2** (#71), with the part of HT1 it
+Done: **HT0** (#63), **HT0b** (#76), **HT1**, **HT1b** (#67), **HT2** (#71), with the part of HT1 it
 needs: the topology summary in node status (§3.1, in the reduced shape
 of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
@@ -926,4 +926,20 @@ Where HT2 differs from the design above, and why:
   on the answering node, as before. A changed device list checks every
   device again, so a VM whose grant was revoked can't take a new device
   until the grant is back.
+- **HT1**: the reader is `crate::topology` in the control plane, built on
+  `glidex_ovs::tuning::read_topology` for CPUs, rather than a crate of
+  its own; `glidex_ovs::tuning` still reads for itself. Port kinds are
+  told from where bridges sit in sysfs paths (a bridge under a root
+  complex is a root port, then upstream and downstream ports alternate),
+  not from the PCIe capability, which needs root to read. The tree is
+  served as `GET /host/topology` (`TopologyService`, a host path the
+  agent UI relay runs on the agent) and `GET /nodes/{id}/topology`
+  (`NodeService.GetNodeTopology`, in the cluster family so the relay
+  doesn't treat it as host-local), both under the new `readHostTopology`
+  action in `host.read`; a server reads another node's over
+  `/cluster/v1/topology` (servers only). Warnings are in the tree, not
+  the replicated summary. The summary keeps the reduced shape of HT2.
+  Not done from §4: refreshing on udev events and `gxctl node topology
+  refresh` (H14): the summary is refreshed with the rest of node status,
+  and the tree is read fresh on each request.
 

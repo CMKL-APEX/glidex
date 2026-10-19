@@ -9,6 +9,7 @@ package glidex.cluster.v1;
 
 import "glidex/api/v1/options.proto";
 import "glidex/common/v1/common.proto";
+import "glidex/host/v1/host.proto";
 import "google/protobuf/timestamp.proto";
 
 // ---- the cluster ------------------------------------------------------------------
@@ -600,6 +601,15 @@ service NodeService {
       rest: "GET /nodes/{id}"
     };
   }
+  // A node's NUMA and PCIe topology, read on that node
+  // (spec/host-topology.md §3.2).
+  rpc GetNodeTopology(GetNodeTopologyRequest) returns (GetNodeTopologyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readHostTopology"
+      kind: KIND_READ
+      rest: "GET /nodes/{id}/topology"
+    };
+  }
   rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse) {
     option (glidex.api.v1.op) = {
       action: "drainNode"
@@ -798,6 +808,14 @@ message GetNodeRequest {
 }
 message GetNodeResponse {
   Node node = 1;
+}
+
+message GetNodeTopologyRequest {
+  // Node id or name.
+  string id = 1;
+}
+message GetNodeTopologyResponse {
+  glidex.host.v1.Topology topology = 1;
 }
 
 // What still keeps a node from being removed.

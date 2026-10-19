@@ -324,6 +324,7 @@ them to the node being managed).
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
 | `GET` | `/pci-devices` | List the host's PCI devices |
+| `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
 ### Usage and metrics
 
@@ -443,6 +444,7 @@ Administrator operations; see [Clusters](../operator-guide/clusters.md).
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |
 | `GET` | `/nodes` | List nodes |
 | `GET` | `/nodes/{id}` | Get a node |
+| `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
 | `POST` | `/nodes/{id}/drain` | Stop placing VMs on a node |
 | `POST` | `/nodes/{id}/undrain` | Place VMs on it again |
 | `POST` | `/nodes/{id}/remove` | Remove an empty node |

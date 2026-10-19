@@ -372,6 +372,13 @@ pub async fn delete_uplink(
     Ok(proto_no_content())
 }
 
+pub async fn host_topology(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Proto(
+        StatusCode::OK,
+        host::get_host_topology(&c, Default::default())?,
+    ))
+}
+
 pub async fn list_pci_devices(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(
         StatusCode::OK,

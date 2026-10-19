@@ -8,6 +8,7 @@ use glidex_api::proto::glidex::host::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = HostNetworkServiceExt::register(Svc::new(app), router);
+    let router = TopologyServiceExt::register(Svc::new(app), router);
     PciServiceExt::register(Svc::new(app), router)
 }
 
@@ -134,5 +135,17 @@ impl PciService for Svc {
         req: ServiceRequest<'_, ListPciDevicesRequest>,
     ) -> ServiceResult<ListPciDevicesResponse> {
         op!(self, ctx, req, svc::list_pci_devices)
+    }
+}
+
+// The generated traits return `impl Encodable<_>`; the concrete message is fine.
+#[allow(refining_impl_trait)]
+impl TopologyService for Svc {
+    async fn get_host_topology(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetHostTopologyRequest>,
+    ) -> ServiceResult<GetHostTopologyResponse> {
+        op!(self, ctx, req, svc::get_host_topology)
     }
 }

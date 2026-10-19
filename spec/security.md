@@ -683,7 +683,7 @@ Rules for the schema:
 | `project.members` | project | Role links and service-account tokens in the project |
 | `network.manage` | project | Create and delete the project's own NAT and isolated networks |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
-| `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /system/reconcile` (`readSystemStatus`) |
+| `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /host/topology` and `GET /nodes/{id}/topology` (`readHostTopology`), `GET /system/reconcile` (`readSystemStatus`) |
 | `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
