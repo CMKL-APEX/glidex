@@ -118,6 +118,11 @@ pub enum Ent {
 }
 
 impl Ent {
+    /// Node `node`'s PCI device `bdf`.
+    pub fn pci_device(node: &str, bdf: &str) -> Ent {
+        Ent::PciDevice(format!("{node}/{bdf}"))
+    }
+
     /// The `Host` entity of node `id`.
     pub fn host_of(id: &str) -> Ent {
         if id == node_id() {
@@ -482,12 +487,17 @@ impl EntitySet {
         self.add(Ent::Network(name.into()), attrs, vec![parent])
     }
 
+    /// PCI device `bdf` of node `node`: `PciDevice::"<node>/<bdf>"` in that
+    /// node's `Host`, so a role on the host covers its devices
+    /// (spec/host-topology.md §8.5).
     pub fn pci_device(
         &mut self,
+        node: &str,
         bdf: &str,
         grants: &[String],
         tenant_grants: &[String],
     ) -> &mut Self {
+        self.host(node);
         for p in grants {
             self.project(p);
         }
@@ -498,9 +508,9 @@ impl EntitySet {
                 .collect(),
         );
         self.add(
-            Ent::PciDevice(bdf.into()),
+            Ent::pci_device(node, bdf),
             json!({ "grants": set, "tenant_grants": tenant_set(tenant_grants) }),
-            vec![Ent::Host],
+            vec![Ent::host_of(node)],
         )
     }
 
@@ -1244,6 +1254,26 @@ mod tests {
             e.check(&q("clusteradm", "installOvs", Ent::Node("n2".into())))
                 .allowed
         );
+        // A host's devices are the host's (spec/host-topology.md §8.5): the
+        // same address on another node is another device.
+        let mut dev_es = es.clone();
+        dev_es
+            .project("p")
+            .pci_device("n2", "0000:41:00.0", &[], &[])
+            .pci_device(LOCAL_ID, "0000:41:00.0", &[], &[]);
+        let use_dev = |who: &str, node: &str| {
+            tq(
+                Ent::User(who.into()),
+                "usePciDevice",
+                Ent::pci_device(node, "0000:41:00.0"),
+                auth(0),
+                dev_es.clone(),
+            )
+            .with("project", Ent::Project("p".into()))
+        };
+        assert!(e.check(&use_dev("hostadm", "n2")).allowed);
+        assert!(!e.check(&use_dev("hostadm", LOCAL_ID)).allowed);
+        assert!(e.check(&use_dev("clusteradm", LOCAL_ID)).allowed);
         // Cluster-wide actions need a cluster grant: a host grant isn't one.
         assert!(!e.check(&q("aud", "listNodes", Ent::Cluster)).allowed);
         assert!(
@@ -1426,7 +1456,7 @@ mod tests {
         es.user("o", false, &[]);
         es.network("acmenet", None, false, &[], &[], &["acme".into()]);
         es.network("pnet", Some("pa"), false, &[], &[], &[]);
-        es.pci_device("0000:01:00.0", &[], &["acme".into()]);
+        es.pci_device(LOCAL_ID, "0000:01:00.0", &[], &["acme".into()]);
         let q = |a: &str, r: Ent, proj: &str| {
             tq(Ent::User("o".into()), a, r, auth(0), es.clone())
                 .with("project", Ent::Project(proj.into()))
@@ -1437,7 +1467,7 @@ mod tests {
             e.check(&q("useNetwork", net(), "pa"))
                 .denied_by("base.network-grant")
         );
-        let dev = || Ent::PciDevice("0000:01:00.0".into());
+        let dev = || Ent::pci_device(LOCAL_ID, "0000:01:00.0");
         assert!(e.check(&q("usePciDevice", dev(), "pc")).allowed);
         assert!(!e.check(&q("usePciDevice", dev(), "pa")).allowed);
         let pnet = || Ent::Network("pnet".into());

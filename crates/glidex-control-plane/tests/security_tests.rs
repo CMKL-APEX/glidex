@@ -2246,3 +2246,48 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
+
+/// spec/host-topology.md §8.5: a `pci.allow` grant names the device on one
+/// node (by id or name), or the address on every node; the device is
+/// `PciDevice::"<node>/<address>"` in that node's host.
+#[tokio::test]
+async fn pci_grants_name_the_node() {
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    let grant = |bdf: &str, node: Option<&str>| glidex_control_plane::config::PciGrant {
+        bdf: bdf.into(),
+        projects: vec!["pa".into()],
+        tenants: vec![],
+        node: node.map(Into::into),
+    };
+    let h = harness_with(|c| {
+        c.pci.allow = vec![
+            grant("0000:41:00.0", Some("local")),
+            grant("0000:42:00.0", Some(&host)),
+            grant("0000:43:00.0", Some("elsewhere")),
+            grant("0000:44:00.0", None),
+        ];
+    });
+    h.app.manager.report_self().unwrap();
+    let pa = h.project("pa");
+    let alice = h.user("alice");
+    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    let a = As::Bearer(h.token(&alice));
+    for (i, (bdf, want)) in [
+        ("0000:41:00.0", StatusCode::CREATED),
+        ("0000:42:00.0", StatusCode::CREATED),
+        ("0000:43:00.0", StatusCode::FORBIDDEN),
+        ("0000:44:00.0", StatusCode::CREATED),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut body = vm_body(&format!("v{i}"), "pa");
+        body["vfio_devices"] = json!([format!("/sys/bus/pci/devices/{bdf}")]);
+        let (s, v, _) = h.call("POST", "/vms", Some(body), &a).await;
+        assert_eq!(s, want, "{bdf}: {v}");
+    }
+}

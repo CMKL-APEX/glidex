@@ -299,6 +299,10 @@ pub struct PciGrant {
     /// (spec/tenancy.md D25).
     #[serde(default)]
     pub tenants: Vec<String>,
+    /// The node (id or name) whose device this is; absent: the device at
+    /// that address on every node (spec/host-topology.md §8.5).
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

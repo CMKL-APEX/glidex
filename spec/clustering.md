@@ -1832,8 +1832,8 @@ only tests do).
   own record).
 - `gxctl node drain|undrain <node>` (`POST /nodes/{id}/drain|undrain`, action
   `node.drain` under `role.system-admin`) lists what is still on the node.
-- Not yet: `pci.allow[].node` (VFIO grants per node), the `br_int_datapath`
-  filter (C5) and provider-network physnet filter (C6).
+- Not yet: the `br_int_datapath` filter (C5) and provider-network physnet
+  filter (C6). `pci.allow[].node` came with host-topology.md HT0b.
 
 ### C5 OVN foundation
 
@@ -1925,7 +1925,7 @@ Deviations and not done:
 - A server cannot remove itself: run the removal on another server (openraft 0.9 has no leadership transfer, and the request would die with the leader).
 - OVN CA files and netd certificates are not rotated by this step: a node's own certificate still doubles as its OVN certificate (C5), and netd is not told when the bundle changes. OVN's window therefore stays open until a node re-runs `ensure_ovn_chassis`.
 - `cluster/leave` by the departing server itself is not used; the leader kicks it.
-- Not done: the scale run and figures for §4.1, `pci.allow[].node`, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
+- Not done: the scale run and figures for §4.1, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
 
 ### C8: detach and import
 

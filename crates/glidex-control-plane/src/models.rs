@@ -239,6 +239,11 @@ pub struct VmSpec {
     /// Pin the VM to this node (id), spec/clustering.md §9.1. Immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The nodes where the project may use every one of its VFIO devices,
+    /// worked out when they were last set (spec/host-topology.md §8.5);
+    /// the scheduler places it on one of them. `None`: no constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_nodes: Option<Vec<String>>,
 }
 
 /// Where a VM runs (spec/clustering.md §9.1): set once, by the scheduler,
@@ -475,6 +480,7 @@ impl Vm {
                 on_host_boot: HostBootPolicy::Resume,
                 stop_grace_secs: 0,
                 node: None,
+                device_nodes: None,
             },
             status: VmStatus {
                 never_started: true,

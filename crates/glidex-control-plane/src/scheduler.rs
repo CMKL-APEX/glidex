@@ -32,6 +32,8 @@ pub struct Request {
     pub net_nodes: Vec<String>,
     /// VFIO devices, as the VM names them (sysfs paths or addresses).
     pub vfio: Vec<String>,
+    /// The nodes where the project may use them; `None`: any.
+    pub device_nodes: Option<Vec<String>>,
     /// Physical networks (provider networks) the VM's NICs sit on.
     pub physnets: Vec<String>,
     /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
@@ -540,6 +542,13 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
         if let Some(why) = device_taken(&n.status.pci_groups, &load.devices, d) {
             return Err(why);
         }
+    }
+    if req
+        .device_nodes
+        .as_ref()
+        .is_some_and(|ns| !ns.contains(&n.meta.id))
+    {
+        return Err("its PCI devices are not granted to the project on this node".into());
     }
     for dn in req.disk_nodes.iter().flatten() {
         if dn != &n.meta.id {
@@ -1406,6 +1415,28 @@ mod tests {
         old.status.pci_groups.clear();
         let nodes = vec![(old, held.get("a").cloned().unwrap())];
         assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "a");
+    }
+
+    #[test]
+    fn a_vm_goes_where_its_devices_are_granted() {
+        let gpu = |id: &str| {
+            let mut n = node(id, 8, 8192);
+            n.status.pci_devices = vec!["0000:41:00.0".into()];
+            n
+        };
+        let nodes = vec![(gpu("a"), Load::default()), (gpu("b"), Load::default())];
+        let mut r = req(1, 512);
+        r.vfio = vec!["0000:41:00.0".into()];
+        r.device_nodes = Some(vec!["b".into()]);
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "b");
+        r.device_nodes = Some(vec![]);
+        let err = schedule(&r, &nodes, &cfg()).unwrap_err();
+        assert!(
+            err.iter().all(
+                |(_, why)| why == "its PCI devices are not granted to the project on this node"
+            ),
+            "{err:?}"
+        );
     }
 
     #[test]

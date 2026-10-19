@@ -94,7 +94,8 @@ path: it is what Glidex stores and compares.
 Passing a device through needs the `usePciDevice` permission on it. By
 default:
 
-- `net-admin` and `system-admin` may use any device.
+- `net-admin` and `system-admin` may use any device. Given on one host
+  (a per-host role), they cover that host's devices only.
 - A project may use the devices granted to it in
   `/etc/glidex/control-plane.json`, by project or by tenant:
 
@@ -103,13 +104,23 @@ default:
   "pci": {
     "allow": [
       { "bdf": "0000:41:00.0", "projects": ["ml-team"] },
-      { "bdf": "0000:42:00.0", "tenants": ["research"] }
+      { "bdf": "0000:42:00.0", "tenants": ["research"] },
+      { "bdf": "0000:87:00.0", "projects": ["vision"], "node": "gpu-02" }
     ]
   }
 }
 ```
 
 `projects` takes project ids or names, `tenants` tenant ids or slugs.
+In a cluster, the same address on two hosts is two devices: `node` (a
+node id or name) grants the one on that node; without it, the grant
+covers the device at that address on every node. A VM is then placed
+only on a node where the project may use all its devices (otherwise:
+`its PCI devices are not granted to the project on this node`); which
+nodes those are is worked out when its devices are set, so a later
+change to `pci.allow` applies to a waiting VM once its devices are set
+again. In Cedar a device is `PciDevice::"<node>/<address>"`, in that
+node's `Host`.
 Restart the control plane after changing the file. Site policies can
 widen or narrow this; see [Access control](access-control.md).
 

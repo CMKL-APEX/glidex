@@ -1801,7 +1801,11 @@ pub async fn resource_entities(call: &Call, e: &Ent) -> Option<EntitySet> {
             es.image(id);
             es
         }
-        Ent::PciDevice(bdf) => crate::api::vms::pci_entities(call, bdf).1,
+        Ent::PciDevice(id) => {
+            let local = call.manager().local_node_id();
+            let (node, bdf) = id.split_once('/').unwrap_or((local.as_str(), id.as_str()));
+            crate::api::vms::pci_entities(call, node, bdf).1
+        }
         // Tenants and the directory are filled in by AuthService.
         Ent::Tenant(id) => {
             call.auth().tenants.get(id).ok().flatten()?;
