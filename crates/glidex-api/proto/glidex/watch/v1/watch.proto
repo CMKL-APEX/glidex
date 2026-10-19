@@ -47,6 +47,8 @@ enum WatchKind {
   WATCH_KIND_CLUSTER = 7;
   // A marker that changes when the policies do (rights may have changed).
   WATCH_KIND_POLICY = 8;
+  // Datastores, with what each node finds at them (spec/storage.md §13).
+  WATCH_KIND_DATASTORE = 9;
 }
 
 enum WatchEventType {
@@ -88,6 +90,7 @@ message WatchResponse {
     glidex.cluster.v1.ImportPlan import_plan = 9 [json_name = "import_plan"];
     glidex.cluster.v1.GetClusterStatusResponse cluster = 10;
     PolicyMarker policy = 11;
+    glidex.storage.v1.Datastore datastore = 12;
   }
 }
 

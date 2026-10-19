@@ -602,6 +602,8 @@ export interface DiskInfo {
   partition_table?: PartitionTable;
   extend_root?: "EXTEND_OUTCOME_GROWN" | "EXTEND_OUTCOME_ALREADY_FULL" | "EXTEND_OUTCOME_ON_BOOT" | "EXTEND_OUTCOME_SKIPPED";
   warnings?: string[];
+  /** The datastore holding it: an id, `local` for the built-in one (spec/storage.md §4.2). */
+  datastore?: string;
 }
 
 /** A disk's phase without its prefix: `ready`, `creating`, … (`""` when unset). */
@@ -684,6 +686,52 @@ export interface CreateDiskRequest {
   format?: DiskFormat;
   extend_root?: boolean;
   node?: string;
+  /** Datastore id or name; default: the default for disks. */
+  datastore?: string;
+}
+
+/** What one node found at its path to a datastore (spec/storage.md §4.1). */
+export interface DatastoreNode {
+  node: string;
+  node_name?: string;
+  reachable?: boolean;
+  /** Why not: `OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`. */
+  reason?: string;
+  message?: string;
+  path?: string;
+  total_bytes?: U64;
+  free_bytes?: U64;
+  checked_at?: string;
+}
+
+/** Where disks live (spec/storage.md §13); `local` is built in. */
+export interface Datastore {
+  id: string;
+  name: string;
+  driver?: "DATASTORE_DRIVER_DIR";
+  /** The directory on nodes without their own (`node_paths`). */
+  path?: string;
+  /** Node id → that node's directory. */
+  node_paths?: Record<string, string>;
+  /** The nodes it is on; empty: every node. */
+  nodes?: string[];
+  /** New disks go here unless they name a datastore. */
+  default_for_disks?: boolean;
+  overcommit?: boolean;
+  builtin?: boolean;
+  created_at?: string;
+  node_status?: DatastoreNode[];
+  disks?: number;
+}
+
+/** `POST /datastores`; `PATCH` takes the same fields but `name` and `path`. */
+export interface DatastoreInput {
+  name?: string;
+  path?: string;
+  node_paths?: Record<string, string>;
+  nodes?: string[];
+  default_for_disks?: boolean;
+  overcommit?: boolean;
 }
 
 /** A byte count for display; takes a 64-bit proto field (a string) too. */

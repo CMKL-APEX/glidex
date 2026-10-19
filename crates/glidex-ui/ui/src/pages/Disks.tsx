@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
-import type { CloneMode, DiskFormat, DiskInfo, ImageInfo, VmResponse } from "../types";
+import type { CloneMode, Datastore, DiskFormat, DiskInfo, ImageInfo, VmResponse } from "../types";
 import { cloneLabel, diskActivity, diskPhase, diskWaiting, formatBytes, formatLabel, imageState, isFirmware, notReady, num, enumLabel } from "../types";
 import { Spinner } from "../components/Activity";
 import { useLiveRefresh } from "../live";
@@ -57,10 +57,12 @@ function DiskStatus({ d }: { d: DiskInfo }) {
 
 function CreateDiskForm({
   images,
+  datastores,
   onDone,
   onCancel,
 }: {
   images: ImageInfo[];
+  datastores: Datastore[];
   onDone: (d: DiskInfo | undefined) => void;
   onCancel: () => void;
 }) {
@@ -72,6 +74,7 @@ function CreateDiskForm({
   const [size, setSize] = useState("");
   const [clone, setClone] = useState<"linked" | "full">("linked");
   const [format, setFormat] = useState<"qcow2" | "raw">("qcow2");
+  const [datastore, setDatastore] = useState(datastores.find((d) => d.default_for_disks)?.id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -87,6 +90,7 @@ function CreateDiskForm({
         size_gib: size ? Number(size) : undefined,
         clone: image ? CLONE_MODE[clone] : undefined,
         format: DISK_FORMAT[format],
+        datastore: datastore || undefined,
       });
       onDone(d.disk);
     } catch (err) {
@@ -142,6 +146,19 @@ function CreateDiskForm({
           </select>
         </div>
       </div>
+      {datastores.length > 1 && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Datastore</label>
+          <select className={`${inputClass} bg-white`} value={datastore} onChange={(e) => setDatastore(e.target.value)}>
+            {datastores.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.default_for_disks ? " (default)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {image && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Clone</label>
@@ -221,6 +238,7 @@ export default function Disks() {
   const [canCreate] = useCan(project ? [{ action: "createDisk", resource: { type: "Project", id: project } }] : []) ?? [];
   const [disks, setDisks] = useState<DiskInfo[] | null>(null);
   const [images, setImages] = useState<ImageInfo[]>([]);
+  const [datastores, setDatastores] = useState<Datastore[]>([]);
   const [vms, setVms] = useState<VmResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
@@ -231,6 +249,7 @@ export default function Disks() {
   const refresh = useCallback(() => {
     api.listDisks(project).then(setDisks).catch((e) => setError(errorText(e)));
     api.listImages().then(setImages).catch(() => setImages([]));
+    api.listDatastores().then(setDatastores).catch(() => setDatastores([]));
     api.listVms(project).then(setVms).catch(() => setVms([]));
   }, [project]);
 
@@ -258,6 +277,9 @@ export default function Disks() {
 
   const vmName = (id?: string | null) => (id ? vms.find((v) => v.id === id)?.name ?? id : null);
   const imageName = (id: string) => images.find((i) => i.id === id)?.name ?? id.slice(0, 8);
+  // Only worth a column once there is more than `local`.
+  const manyStores = datastores.length > 1;
+  const storeName = (id?: string) => datastores.find((d) => d.id === id)?.name ?? id ?? "local";
 
   const act = async (f: () => Promise<DiskInfo | void>) => {
     setError(null);
@@ -313,6 +335,7 @@ export default function Disks() {
                 <th className="px-4 py-3 font-medium">Format</th>
                 <th className="px-4 py-3 font-medium">Origin</th>
                 <th className="px-4 py-3 font-medium">Attached to</th>
+                {manyStores && <th className="px-4 py-3 font-medium">Datastore</th>}
                 {nodes.clustered && <th className="px-4 py-3 font-medium">Node</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3" />
@@ -332,6 +355,7 @@ export default function Disks() {
                     {d.origin?.image ? `${imageName(d.origin.image.image_id)} (${cloneLabel(d.origin.image.mode)})` : "blank"}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{vmName(d.attached_to) ?? "—"}</td>
+                  {manyStores && <td className="px-4 py-3 text-xs font-mono">{storeName(d.datastore)}</td>}
                   {nodes.clustered && (
                     <td className="px-4 py-3 text-xs">
                       {d.node ? <NodeName id={d.node} name={d.node_name} /> : <span className="text-gray-400" title="Bound to a node by its first VM">unbound</span>}
@@ -375,7 +399,7 @@ export default function Disks() {
 
       {creating && (
         <Modal title="Create Disk" onClose={() => setCreating(false)}>
-          <CreateDiskForm images={images} onCancel={() => setCreating(false)} onDone={done} />
+          <CreateDiskForm images={images} datastores={datastores} onCancel={() => setCreating(false)} onDone={done} />
         </Modal>
       )}
       {resizing && (
@@ -387,6 +411,7 @@ export default function Disks() {
         <Modal title={detail.name} onClose={() => setDetail(null)}>
           <div className="text-sm space-y-2">
             <div className="font-mono text-xs break-all text-gray-600">{detail.path}</div>
+            {manyStores && <div className="text-gray-600">Datastore: {storeName(detail.datastore)}</div>}
             {detail.partition_table ? (
               <table className="w-full text-xs">
                 <thead className="text-gray-500 text-left">

@@ -51,6 +51,7 @@ pub enum Kind {
     Import,
     Cluster,
     Policy,
+    Datastore,
 }
 
 impl Kind {
@@ -64,6 +65,7 @@ impl Kind {
             Kind::Import => "import",
             Kind::Cluster => "cluster",
             Kind::Policy => "policy",
+            Kind::Datastore => "datastore",
         }
     }
 }
@@ -84,12 +86,13 @@ pub fn parse_kinds(s: Option<&str>) -> Result<Vec<Kind>, ApiErr> {
             "import" | "imports" => Kind::Import,
             "cluster" => Kind::Cluster,
             "policy" => Kind::Policy,
+            "datastore" | "datastores" => Kind::Datastore,
             other => {
                 return Err(err(
                     StatusCode::BAD_REQUEST,
                     "invalid",
                     format!(
-                        "unknown kind '{}' (vms, disks, images, networks, nodes, imports, cluster, policy)",
+                        "unknown kind '{}' (vms, disks, images, networks, nodes, imports, cluster, policy, datastores)",
                         other
                     ),
                 ));
@@ -152,6 +155,20 @@ async fn snapshot(
                         view.insert(
                             (Kind::Image, img.id.clone()),
                             serde_json::to_value(crate::service::storage::image_pb(&img))
+                                .unwrap_or_default(),
+                        );
+                    }
+                }
+            }
+            Kind::Datastore => {
+                if c.allowed("readDatastore", Ent::Cluster, EntitySet::new()) {
+                    for d in m
+                        .list_datastores()
+                        .map_err(|e| ServiceError::from(crate::api::error_to_response(e)))?
+                    {
+                        view.insert(
+                            (Kind::Datastore, d.datastore.id.clone()),
+                            serde_json::to_value(crate::service::storage::datastore_pb(&d))
                                 .unwrap_or_default(),
                         );
                     }
@@ -562,6 +579,7 @@ pub fn kinds_of(req: &pb::WatchRequest) -> Vec<Kind> {
             Some(pb::WatchKind::WATCH_KIND_IMPORT) => Kind::Import,
             Some(pb::WatchKind::WATCH_KIND_CLUSTER) => Kind::Cluster,
             Some(pb::WatchKind::WATCH_KIND_POLICY) => Kind::Policy,
+            Some(pb::WatchKind::WATCH_KIND_DATASTORE) => Kind::Datastore,
             _ => continue,
         };
         if !out.contains(&kind) {
@@ -597,6 +615,7 @@ pub fn event_pb(e: &Event) -> pb::WatchResponse {
         Some(Kind::Import) => pb::WatchKind::WATCH_KIND_IMPORT,
         Some(Kind::Cluster) => pb::WatchKind::WATCH_KIND_CLUSTER,
         Some(Kind::Policy) => pb::WatchKind::WATCH_KIND_POLICY,
+        Some(Kind::Datastore) => pb::WatchKind::WATCH_KIND_DATASTORE,
         None => pb::WatchKind::WATCH_KIND_UNSPECIFIED,
     };
     let object = e.object.as_ref().zip(e.kind).map(|(v, k)| match k {
@@ -607,6 +626,7 @@ pub fn event_pb(e: &Event) -> pb::WatchResponse {
         Kind::Node => Object::Node(Box::new(decode(v))),
         Kind::Import => Object::ImportPlan(Box::new(decode(v))),
         Kind::Cluster => Object::Cluster(Box::new(decode(v))),
+        Kind::Datastore => Object::Datastore(Box::new(decode(v))),
         Kind::Policy => Object::Policy(Box::new(pb::PolicyMarker {
             generation: v["generation"].as_u64().unwrap_or_default(),
             ..Default::default()

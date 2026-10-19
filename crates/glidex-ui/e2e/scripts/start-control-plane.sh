@@ -69,6 +69,9 @@ EOF
 export HOME=$e2e_home
 export GLIDEX_CONFIG=$e2e_home/control-plane.json
 export GLIDEX_RUN_DIR=$e2e_home/run
+# Registered datastores live under this, not /srv/glidex (spec/storage.md S11).
+export GLIDEX_DATASTORE_ROOT=$e2e_home/datastores
+mkdir -p "$GLIDEX_DATASTORE_ROOT"
 unset RUNTIME_DIRECTORY CREDENTIALS_DIRECTORY
 export GLIDEX_LISTEN=127.0.0.1:$port
 exec "$binary"

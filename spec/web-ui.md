@@ -166,6 +166,7 @@ ui/src/
 | `/credentials` | `Credentials` |
 | `/images` | `Images` |
 | `/disks` | `Disks` |
+| `/datastores` | `Datastores` (shown with `readDatastore`) |
 | `/projects` | `Projects` |
 | `/projects/:id` | `ProjectDetail` |
 | `/access` | `Access` (shown with `listUsers`, `listTeams` or `readSystemBindings`) |
@@ -415,6 +416,24 @@ names the catalog entry to pull and the form won't submit. It sends
 `firmware` (the image id), never a host `firmware_path`. `VmDetail`
 shows the VM's firmware image by name (`GET /images/{id}`), and the
 Disks page's create form never offers a firmware image as contents.
+`pages/Datastores.tsx` (spec/storage.md §13) lists the datastores:
+- `local` is marked built in; the default for disks is marked as such;
+- for each, how many nodes reach it, the most free space on one, and
+  its disks;
+- clicking a name shows its paths and each node's row (reachable with
+  free/total, else its reason and message).
+
+With `manageDatastore` the page also offers:
+- **Add Datastore:** name, path (default `/srv/glidex/<name>`), the
+  nodes it is on and per-node paths in a cluster, the default flag, and
+  overcommit;
+- **Make default** (on `local`: clear the other's flag);
+- overcommit on or off;
+- **Delete**, disabled while disks are on it.
+
+It follows the `datastore` watch kind. Once there is more than `local`,
+the Disks page shows a Datastore column, and its create form a Datastore
+select with the default chosen.
 
 ## Footer
 

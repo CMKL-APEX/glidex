@@ -11,15 +11,15 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toJson } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
-import type { ClusterStatus, DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
+import type { ClusterStatus, Datastore, DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
 import { clusterStatusOf } from "./types";
 import { useSession } from "./session";
 import { transport } from "./api";
 import { WatchKind, WatchResponseSchema, WatchService, type WatchResponseJson } from "./gen/glidex/watch/v1/watch_pb";
 
-export type LiveKind = "vm" | "disk" | "image" | "network" | "node" | "import" | "cluster" | "policy";
+export type LiveKind = "vm" | "disk" | "image" | "network" | "node" | "import" | "cluster" | "policy" | "datastore";
 
-const KINDS: LiveKind[] = ["vm", "disk", "image", "network", "node", "import", "cluster", "policy"];
+const KINDS: LiveKind[] = ["vm", "disk", "image", "network", "node", "import", "cluster", "policy", "datastore"];
 const WATCH_KINDS = [
   WatchKind.VM,
   WatchKind.DISK,
@@ -29,6 +29,7 @@ const WATCH_KINDS = [
   WatchKind.IMPORT,
   WatchKind.CLUSTER,
   WatchKind.POLICY,
+  WatchKind.DATASTORE,
 ];
 
 /** Wait before opening the stream again after it ended or failed (what
@@ -43,7 +44,7 @@ function eventOf(r: WatchResponseJson): { type: EventType; kind: LiveKind; id: s
     type: (r.type ?? "").replace("WATCH_EVENT_TYPE_", "").toLowerCase() as EventType,
     kind: (r.kind ?? "").replace("WATCH_KIND_", "").toLowerCase() as LiveKind,
     id: r.id ?? "",
-    object: r.vm ?? r.disk ?? r.image ?? r.network ?? r.node ?? r.import_plan ?? r.cluster ?? r.policy,
+    object: r.vm ?? r.disk ?? r.image ?? r.network ?? r.node ?? r.import_plan ?? r.cluster ?? r.policy ?? r.datastore,
   };
 }
 
@@ -62,6 +63,8 @@ export interface LiveState {
   clusters: Map<string, ClusterStatus>;
   /** Changes whenever policies or role links change. */
   policies: Map<string, { generation: number }>;
+  /** Datastores, with each node's view of them. */
+  datastores: Map<string, Datastore>;
   /** Call `cb` (debounced) whenever an object of one of `kinds` changes. */
   subscribe: (kinds: LiveKind[], cb: () => void) => () => void;
 }
@@ -75,6 +78,7 @@ const empty = (): Omit<LiveState, "live" | "subscribe"> => ({
   imports: new Map(),
   clusters: new Map(),
   policies: new Map(),
+  datastores: new Map(),
 });
 
 /** The map that holds objects of `kind`, by its field name. */
@@ -87,6 +91,7 @@ const FIELD: Record<LiveKind, keyof ReturnType<typeof empty>> = {
   import: "imports",
   cluster: "clusters",
   policy: "policies",
+  datastore: "datastores",
 };
 
 const LiveContext = createContext<LiveState | null>(null);

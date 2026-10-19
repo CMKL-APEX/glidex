@@ -446,9 +446,10 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
             "import" | "imports" => w::WatchKind::WATCH_KIND_IMPORT,
             "cluster" => w::WatchKind::WATCH_KIND_CLUSTER,
             "policy" => w::WatchKind::WATCH_KIND_POLICY,
+            "datastore" | "datastores" => w::WatchKind::WATCH_KIND_DATASTORE,
             other => {
                 println!(
-                    "{} unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy)",
+                    "{} unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy, datastores)",
                     "Error:".red()
                 );
                 return;
@@ -548,6 +549,7 @@ fn watch_event(
         Some(K::WATCH_KIND_IMPORT) => "import",
         Some(K::WATCH_KIND_CLUSTER) => "cluster",
         Some(K::WATCH_KIND_POLICY) => "policy",
+        Some(K::WATCH_KIND_DATASTORE) => "datastore",
         _ => "",
     };
     let json = |r: Result<serde_json::Value, serde_json::Error>| r.unwrap_or_default();
@@ -560,6 +562,7 @@ fn watch_event(
         Some(Object::ImportPlan(v)) => json(serde_json::to_value(v.as_ref())),
         Some(Object::Cluster(v)) => json(serde_json::to_value(v.as_ref())),
         Some(Object::Policy(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Datastore(v)) => json(serde_json::to_value(v.as_ref())),
         None => serde_json::Value::Null,
     };
     (kind.to_string(), e.id.clone(), object)
@@ -696,6 +699,28 @@ fn print_help() {
         "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan()
     );
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
+    println!(
+        "  {}    - Datastores, and what each node finds",
+        "datastore list".cyan()
+    );
+    println!(
+        "  {} - A datastore and each node's view",
+        "datastore show <name|id>".cyan()
+    );
+    println!(
+        "  {} - Register a directory under /srv/glidex",
+        "datastore create <name> --path P [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+            .cyan()
+    );
+    println!(
+        "  {} - Change paths, nodes, the default, overcommit",
+        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit]"
+            .cyan()
+    );
+    println!(
+        "  {}  - Delete a datastore no disk is on",
+        "datastore rm <name|id>".cyan()
+    );
     println!("  {}         - List disks", "disk list".cyan());
     println!(
         "  {}  - Disk details and partitions",
@@ -703,7 +728,7 @@ fn print_help() {
     );
     println!(
         "  {} - Create a disk",
-        "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]".cyan()
+        "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]".cyan()
     );
     println!(
         "  {} - Grow or shrink a disk",
@@ -1006,6 +1031,8 @@ const COMMANDS: &[&str] = &[
     "images",
     "disk",
     "disks",
+    "datastore",
+    "datastores",
     "whoami",
     "login",
     "logout",
@@ -1043,6 +1070,7 @@ const COMMANDS: &[&str] = &[
 /// Subcommands offered by Tab after these commands.
 const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
+    ("datastore", &["list", "show", "create", "set", "rm"]),
     (
         "tenant",
         &[
@@ -1150,6 +1178,7 @@ fn subcommands(cmd: &str) -> &'static [&'static str] {
     let cmd = match cmd {
         "images" => "image",
         "disks" => "disk",
+        "datastores" => "datastore",
         "tokens" => "token",
         "projects" => "project",
         "bindings" => "binding",
@@ -1466,6 +1495,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "image" | "images" => storage::image(client, &parts[1..]).await,
 
         "disk" | "disks" => storage::disk(client, &parts[1..]).await,
+
+        "datastore" | "datastores" => storage::datastore(client, &parts[1..]).await,
 
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),
@@ -2040,6 +2071,15 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            // The built-in datastore is there from the start.
+            let ds = DatastoreServiceClient::new(t.clone(), t.config())
+                .list_datastores(ListDatastoresRequest::default())
+                .await
+                .unwrap()
+                .into_owned()
+                .datastores;
+            assert_eq!(ds.len(), 1);
+            assert!(ds[0].builtin && ds[0].default_for_disks);
             let disks = DiskServiceClient::new(t.clone(), t.config());
             let list = disks
                 .list_disks(ListDisksRequest::default())

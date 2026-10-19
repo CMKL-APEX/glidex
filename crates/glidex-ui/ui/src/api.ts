@@ -81,7 +81,11 @@ import type {
   Tenant,
   TenantBinding,
   TenantMember,
-  TenantQuotas, HostTopology } from "./types";
+  TenantQuotas,
+  HostTopology,
+  Datastore,
+  DatastoreInput,
+} from "./types";
 
 import { fromJson, toJson, type DescMethodUnary, type JsonValue, type MessageJsonType } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, createContextKey, createContextValues, type Interceptor } from "@connectrpc/connect";
@@ -102,7 +106,7 @@ import {
   type CreateProjectRequestJson,
   type UpdateProjectRequestJson,
 } from "./gen/glidex/access/v1/access_pb";
-import { CredentialService, DiskService, ImageService } from "./gen/glidex/storage/v1/storage_pb";
+import { CredentialService, DatastoreService, DiskService, ImageService } from "./gen/glidex/storage/v1/storage_pb";
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
@@ -768,6 +772,15 @@ export const retryImage = (id: string) => rpc(ImageService.method.retryImage, { 
 export const imageEvents = (id: string) =>
   rpc(ImageService.method.listImageEvents, { id }).then((r) => (r.events ?? []) as StorageEvent[]);
 
+export const listDatastores = () =>
+  rpc(DatastoreService.method.listDatastores).then((r) => (r.datastores ?? []) as Datastore[]);
+export const getDatastore = (id: string) => rpc(DatastoreService.method.getDatastore, { id }).then((r) => r.datastore as Datastore);
+export const createDatastore = (req: DatastoreInput) =>
+  rpc(DatastoreService.method.createDatastore, { ...req, driver: "DATASTORE_DRIVER_DIR" }).then((r) => r.datastore as Datastore);
+/** Changes the fields `req` has. */
+export const updateDatastore = (id: string, req: DatastoreInput) =>
+  rpc(DatastoreService.method.updateDatastore, { id, ...req, update_mask: maskOf(req) }).then((r) => r.datastore as Datastore);
+export const deleteDatastore = (id: string) => rpc(DatastoreService.method.deleteDatastore, { id }).then(() => undefined);
 export const listDisks = (project?: string | null) =>
   rpc(DiskService.method.listDisks, { project: project || undefined }).then((r) => (r.disks ?? []) as DiskInfo[]);
 /** By id, or by name (unique per tenant; a name two of the caller's tenants share answers 409 `ambiguous`). */
