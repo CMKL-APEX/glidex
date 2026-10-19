@@ -370,10 +370,18 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
     }
 }
 
-/// A PCI device entity with the projects and tenants granted it in the
-/// config.
-pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
+/// Node `node`'s PCI device `bdf` as an entity, with the projects and
+/// tenants granted it in the config: grants for that address on every
+/// node, or on this one by id or name (spec/host-topology.md §8.5).
+pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
+    let name = c
+        .manager()
+        .nodes()
+        .get(node)
+        .ok()
+        .flatten()
+        .map(|n| n.spec.name);
     let allow: Vec<_> = c
         .auth()
         .config
@@ -381,6 +389,11 @@ pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
         .allow
         .iter()
         .filter(|g| g.bdf.eq_ignore_ascii_case(bdf))
+        .filter(|g| {
+            g.node
+                .as_deref()
+                .is_none_or(|n| n == node || Some(n) == name.as_deref())
+        })
         .collect();
     let grants: Vec<String> = allow
         .iter()
@@ -393,8 +406,8 @@ pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
         .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
         .collect();
     let mut es = EntitySet::new();
-    es.pci_device(bdf, &grants, &tenants);
-    (Ent::PciDevice(bdf.to_string()), es)
+    es.pci_device(node, bdf, &grants, &tenants);
+    (Ent::pci_device(node, bdf), es)
 }
 
 /// `GET /system/reconcile` (§12.5).

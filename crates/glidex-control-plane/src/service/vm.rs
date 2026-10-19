@@ -476,12 +476,16 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
             }
         }
     }
-    for dev in &req.vfio_devices {
-        let bdf = device_bdf(dev)?;
-        let (e, mut es) = pci_entities(call, &bdf);
-        es.project(&project);
-        call.require_action("usePciDevice", e, es, with_project)?;
-    }
+    let pin = req.node.as_deref().map(|n| {
+        call.manager()
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|x| !x.status.phase.is_tombstone() && (x.meta.id == n || x.spec.name == n))
+            .map_or_else(|| n.to_string(), |x| x.meta.id)
+    });
+    let device_nodes = device_nodes(call, &project, &req.vfio_devices, pin)?;
     if names_host_path(&req) {
         call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
     }
@@ -508,6 +512,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         on_host_boot: boot_of(req.on_host_boot.as_known().unwrap_or_default()),
         stop_grace_secs: req.stop_grace_secs,
         node: req.node.clone(),
+        device_nodes,
     };
     let config = VmConfig {
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
@@ -717,8 +722,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
         .map(|m| m.paths.clone())
         .unwrap_or_default();
     let change = req.change.as_option().cloned().unwrap_or_default();
-    let patch = patch_of(&change, &mask)?;
+    let mut patch = patch_of(&change, &mask)?;
     let vm = call.manager().get_vm(&req.id).await.map_err(manager_err)?;
+    let mut new_device_nodes = None;
     call.set_project(&vm.project);
     call.set_target(format!("vm:{}", vm.id));
     let (e, es) = vm_entities(&vm);
@@ -772,13 +778,10 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             }
         }
         if let Some(devs) = &cp.vfio_devices {
-            for d in devs.iter().filter(|d| !cur.vfio_devices.contains(d)) {
+            if devs.iter().any(|d| !cur.vfio_devices.contains(d)) {
                 call.require_action("attachDevice", e.clone(), es.clone(), &[])?;
-                let bdf = device_bdf(d)?;
-                let (pe, mut pes) = pci_entities(call, &bdf);
-                pes.project(&project);
-                call.require_action("usePciDevice", pe, pes, with_project)?;
             }
+            new_device_nodes = Some(device_nodes(call, &project, devs, vm_node(&vm))?);
             if cur.vfio_devices.iter().any(|d| !devs.contains(d)) {
                 call.require_action("detachDevice", e.clone(), es.clone(), &[])?;
             }
@@ -834,6 +837,7 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
     if update {
         call.require_action("updateVm", e.clone(), es.clone(), &[])?;
     }
+    patch.device_nodes = new_device_nodes;
     let quota = call.quota_mode(&project);
     let (vm, over) = call
         .manager()
@@ -981,20 +985,105 @@ pub async fn console_log(
 
 // ---- devices and disks ----------------------------------------------------
 
+/// The node a VM is on, else the one it is pinned to.
+fn vm_node(vm: &Vm) -> Option<String> {
+    vm.status
+        .placement
+        .as_ref()
+        .map(|p| p.node.clone())
+        .or_else(|| vm.spec.node.clone())
+}
+
+/// Where the project may use every one of `devices` (spec/host-topology.md
+/// §8.5): of the nodes that report them all (`fixed`: the node the VM is
+/// on or pinned to; a standalone host: itself), those where `usePciDevice`
+/// allows each. `None` when that is all of them, so the scheduler needs no
+/// constraint; refused when none. A device no node reports is checked on
+/// this node, as before: the scheduler then finds no node for it.
+fn device_nodes(
+    call: &Call,
+    project: &str,
+    devices: &[String],
+    fixed: Option<String>,
+) -> ServiceResult<Option<Vec<String>>> {
+    if devices.is_empty() {
+        return Ok(None);
+    }
+    let bdfs = devices
+        .iter()
+        .map(|d| device_bdf(d))
+        .collect::<Result<Vec<_>, _>>()?;
+    let m = call.manager();
+    let local = m.local_node_id();
+    let candidates = match fixed {
+        Some(n) => vec![n],
+        None if m.cluster().is_none() => vec![local.clone()],
+        None => {
+            let found: Vec<String> = m
+                .nodes()
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| !n.status.phase.is_tombstone())
+                .filter(|n| {
+                    bdfs.iter().all(|b| {
+                        n.status
+                            .pci_devices
+                            .iter()
+                            .any(|p| p.eq_ignore_ascii_case(b))
+                    })
+                })
+                .map(|n| n.meta.id)
+                .collect();
+            if found.is_empty() { vec![local] } else { found }
+        }
+    };
+    let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.to_string()))];
+    let allows = |node: &str, bdf: &str| {
+        let (e, mut es) = pci_entities(call, node, bdf);
+        es.project(project);
+        call.allowed_action("usePciDevice", e, es, with_project)
+    };
+    match granted_nodes(&candidates, &bdfs, allows) {
+        Ok(nodes) => Ok(nodes),
+        Err(first) => {
+            // The first node's refusal, for its message.
+            for b in &bdfs {
+                let (e, mut es) = pci_entities(call, &first, b);
+                es.project(project);
+                call.require_action("usePciDevice", e, es, with_project)?;
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Of `candidates`, the nodes where `allows` every device: `None` when
+/// that is all of them; `Err` with the first candidate when it is none.
+fn granted_nodes(
+    candidates: &[String],
+    bdfs: &[String],
+    allows: impl Fn(&str, &str) -> bool,
+) -> Result<Option<Vec<String>>, String> {
+    let allowed: Vec<String> = candidates
+        .iter()
+        .filter(|n| bdfs.iter().all(|b| allows(n, b)))
+        .cloned()
+        .collect();
+    if allowed.is_empty() {
+        return Err(candidates.first().cloned().unwrap_or_default());
+    }
+    Ok((allowed.len() < candidates.len()).then_some(allowed))
+}
+
 pub async fn attach_device(call: &Call, req: pb::AttachDeviceRequest) -> ServiceResult<VmReply> {
     let (vm, _, _) = visible_vm(call, &req.id).await?;
-    let bdf = device_bdf(&req.device_path)?;
-    let (e, mut es) = pci_entities(call, &bdf);
-    es.project(&vm.project);
-    call.require_action(
-        "usePciDevice",
-        e,
-        es,
-        &[("project", Ent::Project(vm.project.clone()))],
-    )?;
+    let mut devs = vm.config().vfio_devices.clone();
+    devs.push(req.device_path.clone());
+    let nodes = device_nodes(call, &vm.project, &devs, vm_node(&vm))?;
     let vm = call
         .manager()
-        .attach_device(&req.id, req.device_path)
+        .attach_device(&req.id, req.device_path, nodes)
         .await
         .map_err(manager_err)?;
     respond(call, vm, req.wait_secs, Vec::new()).await
@@ -1107,5 +1196,26 @@ pub async fn console_connect(
                 .map(|s| Box::new(s) as Box<dyn ConsoleIo>)
                 .map_err(|e| format!("the VM's node can't be reached: {e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod device_node_tests {
+    use super::granted_nodes;
+
+    #[test]
+    fn a_grant_on_some_nodes_constrains_the_vm_to_them() {
+        let nodes: Vec<String> = ["n1", "n2", "n3"].map(String::from).to_vec();
+        let gpus: Vec<String> = ["0000:41:00.0", "0000:42:00.0"].map(String::from).to_vec();
+        // Granted everywhere: no constraint.
+        assert_eq!(granted_nodes(&nodes, &gpus, |_, _| true), Ok(None));
+        // Both devices on n2, one of them on n3: n2 only.
+        let on = |n: &str, b: &str| n == "n2" || (n == "n3" && b == "0000:41:00.0");
+        assert_eq!(
+            granted_nodes(&nodes, &gpus, on),
+            Ok(Some(vec!["n2".into()]))
+        );
+        // Nowhere: refused, with the first node's reason.
+        assert_eq!(granted_nodes(&nodes, &gpus, |_, _| false), Err("n1".into()));
     }
 }

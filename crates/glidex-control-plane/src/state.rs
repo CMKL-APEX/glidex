@@ -211,6 +211,8 @@ pub struct VmOptions {
     pub stop_grace_secs: Option<u32>,
     /// Pin the VM to a node (id or name).
     pub node: Option<String>,
+    /// `VmSpec::device_nodes`, from the caller's grants.
+    pub device_nodes: Option<Vec<String>>,
 }
 
 /// `PATCH /vms/{id}`: a JSON merge patch of `spec` (§12.1). Immutable
@@ -229,6 +231,10 @@ pub struct VmPatch {
     pub stop_grace_secs: Option<u32>,
     #[serde(default)]
     pub config: Option<ConfigPatch>,
+    /// `VmSpec::device_nodes` again, set by the service with new
+    /// `vfio_devices`; never from the request body.
+    #[serde(skip)]
+    pub device_nodes: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -862,7 +868,9 @@ impl VmManager {
     }
 
     fn sched_request(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
-        self.sched_request_for(vm.config(), vm.spec.node.clone(), disks)
+        let mut r = self.sched_request_for(vm.config(), vm.spec.node.clone(), disks);
+        r.device_nodes = vm.spec.device_nodes.clone();
+        r
     }
 
     fn sched_request_for(
@@ -898,6 +906,7 @@ impl VmManager {
                 .filter_map(|n| n.node.clone())
                 .collect(),
             vfio: c.vfio_devices.clone(),
+            device_nodes: None,
             physnets: c
                 .networks
                 .iter()
@@ -1897,6 +1906,7 @@ impl VmManager {
             self.refuse_claimed_devices(&vms, &node, &vm.spec.config.vfio_devices, None)?;
         }
         vm.spec.power = power;
+        vm.spec.device_nodes = opts.device_nodes.clone();
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
         vm.spec.stop_grace_secs = opts.stop_grace_secs.unwrap_or(0);
@@ -2432,6 +2442,9 @@ impl VmManager {
         if let Some(g) = patch.stop_grace_secs {
             vm.spec.stop_grace_secs = g;
         }
+        if let Some(dn) = patch.device_nodes {
+            vm.spec.device_nodes = dn;
+        }
         if let Some(c) = patch.config {
             let config = &mut vm.spec.config;
             if let Some(v) = c.vcpu_count {
@@ -2603,10 +2616,13 @@ impl VmManager {
         }
     }
 
+    /// Add a VFIO device; `device_nodes` is where the project may use all
+    /// of the VM's devices then (spec/host-topology.md §8.5).
     pub async fn attach_device(
         &self,
         vm_id: &str,
         device_path: String,
+        device_nodes: Option<Vec<String>>,
     ) -> Result<Vm, VmManagerError> {
         let vm = self.get_vm(vm_id).await?;
         if vm.config().vfio_devices.contains(&device_path) {
@@ -2622,6 +2638,7 @@ impl VmManager {
                 vfio_devices: Some(devs),
                 ..Default::default()
             }),
+            device_nodes: Some(device_nodes),
             ..Default::default()
         };
         self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)

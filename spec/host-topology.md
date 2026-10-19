@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT1b and HT2 implemented** (§15). §17 records
+Status: **design; HT0, HT0b, HT1b and HT2 implemented** (§15). §17 records
 where the implementation differs from the design. Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
@@ -546,9 +546,8 @@ This is a correctness fix independent of the rest and can ship first
 
 ### 8.5 Grants per node
 
-clustering.md §9.1 already plans "each BDF is granted for that node
-(`pci.allow[].node`)", and it is not implemented (clustering.md C4).
-`pci.allow` entries gain `node` (an id or name, optional: every node)
+clustering.md §9.1 plans "each BDF is granted for that node
+(`pci.allow[].node`)"; HT0b implements it. `pci.allow` entries gain `node` (an id or name, optional: every node)
 and `pool` (§9). The `usePciDevice` check then takes the node as well
 as the address. Cedar's `PciDevice` entity becomes
 `PciDevice::"<node>/<address>"`, with parent `Host::"<node>"`, so a
@@ -865,7 +864,7 @@ HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
 and HT4 are the user-visible parts.
 
-Done: **HT0** (#63), **HT1b** (#67), **HT2**, with the part of HT1 it
+Done: **HT0** (#63), **HT0b**, **HT1b** (#67), **HT2** (#71), with the part of HT1 it
 needs: the topology summary in node status (§3.1, in the reduced shape
 of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
@@ -919,3 +918,12 @@ Where HT2 differs from the design above, and why:
 - **Found on the way**: QEMU refused glidex's VFIO device ids
   (`_vfio_…`, which don't start with a letter), so VFIO passthrough never
   launched on QEMU. They are now `vfio_…` (hypervisors.md).
+- **HT0b** (§8.5): `spec.device_nodes` is worked out by the service
+  layer when the VM's devices are set (create, update, attach), from the
+  nodes that report every device (the VM's own node once it has one, or
+  its pin; on a standalone host, itself), keeping those where
+  `usePciDevice` allows each device. A device no node reports is checked
+  on the answering node, as before. A changed device list checks every
+  device again, so a VM whose grant was revoked can't take a new device
+  until the grant is back.
+

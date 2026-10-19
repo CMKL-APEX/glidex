@@ -1794,6 +1794,17 @@ impl Caller {
             .allowed
     }
 
+    /// Whether [`Self::require_action`] would allow it.
+    pub fn allowed_action(
+        &self,
+        action: &str,
+        resource: Ent,
+        es: EntitySet,
+        extra: &[(&'static str, Ent)],
+    ) -> bool {
+        self.decide(action, resource, es, extra).allowed
+    }
+
     pub fn require_action(
         &self,
         action: &str,
