@@ -2,8 +2,9 @@
 
 Status: **draft**; K0 implemented (§12). The open questions of the first
 draft are settled (§9): kernels come from the cloud image itself (K3,
-K9), a catalog pull brings its kernel, and a VM's kernel may change at
-the next restart. Extends [images.md](images.md),
+K9, K13), a catalog pull brings its kernel (K10), a VM's kernel may
+change at the next restart (K6), and a VM may opt in to following the
+kernels its guest installs, each version kept while used (K11, K12). Extends [images.md](images.md),
 [storage.md](storage.md), [hypervisors.md](hypervisors.md),
 [console.md](console.md) and [credentials.md](credentials.md). §13 lists
 the changes the other documents need once this is accepted.
@@ -65,6 +66,9 @@ same disk handling.
 | K8 | Formats | Kernel: x86_64 bzImage (`HdrS` at 0x202) or ELF `vmlinux`; aarch64 `Image` (`ARM\x64` at 0x38) or EFI-stub `Image`. Anything else is refused at verify. An initramfs is not parsed; only its size is checked. |
 | K9 | Extraction | A disk image's filesystems are read **inside a VM**, never on the host: glidex boots a pinned extractor kernel and initramfs with the image attached read-only and no network, and the extractor writes the boot files to a second, raw disk in a simple stream format the host parses with strict limits (§10). No new host packages, no root, no loop devices, and the host never parses an untrusted filesystem. |
 | K10 | Catalog pulls | **Settled: yes.** `POST /images {"catalog": …}` also extracts the image's kernel once it is `Ready` (`with_kernel`, default `true` for catalog pulls and `false` for URL pulls). The kernel is a separate image record (`<image name>-kernel`). A failed extraction fails only that record; the disk image stays `Ready` and firmware boot is unaffected. |
+| K11 | Guest kernel updates | **Opt-in** per VM (`kernel_from_disk`, §10.5): before each launch glidex extracts the kernel from the VM's own root disk, so kernels the guest installs boot like they would under a bootloader. Off by default: the VM boots the kernel image it names. |
+| K12 | Kernel versions | Kernel images are **never replaced in place**. A newer build, or a kernel a guest installed, is a new record; every VM keeps the version it names until it is changed (K6). Identical files are stored once: extraction reuses a kernel image with the same kernel and initrd digests. Kernels extracted for one VM (`owner`) keep its current and previous version, and are deleted when no VM uses them (§10.5). |
+| K13 | Extractor source | A Debian kernel (`linux-image-<version>-amd64`, `-arm64`) and `busybox-static` from `snapshot.debian.org`, sha256-pinned, with the initramfs written by glidex (§10.1). |
 
 ## 3. Verified facts
 
@@ -123,6 +127,18 @@ the pinned version; QEMU from the host's packages):
   The initrd's own `cpio` can only extract and its busybox has no `dd`,
   so the prototype's output is one sequential stream written with
   `cat`; §10.3 keeps that format.
+- **F-K8.** Ubuntu 26.04 (`resolute`, build `20260927`, kernel
+  `7.0.0-34-generic`) keeps `/boot` on its own ext4 partition, **p13**
+  (24.04 uses p16), with `root=LABEL=cloudimg-rootfs ro console=tty1
+  console=ttyS0` in `grub.cfg`. The extractor prototype read it in 3 s,
+  and the files match the build's published `unpacked/` ones byte for
+  byte. Through glidex (K0's `kernel_boot_with_initrd` and
+  `qemu_kernel_boot_with_initrd`, image as `rootfs_path`) it boots to
+  systemd on both backends with both console devices, and to `login:`
+  under Cloud Hypervisor. 26.04 also publishes an `amd64v3` (x86-64-v3)
+  kernel next to the generic one; extraction takes whichever kernel the
+  image itself has, which is the generic one in the catalog's `amd64`
+  image.
 
 ## 4. Kernel images
 
@@ -143,7 +159,10 @@ the pinned version; QEMU from the host's packages):
     header (bzImage `kernel_version` offset; ELF/`Image` don't carry one,
     so `None`);
   - `for_image: Option<String>`, the disk image (id) this kernel was
-    extracted from (K3).
+    extracted from (K3);
+  - `owner: Option<String>`, the VM a kernel extracted from its own disk
+    belongs to (K12, §10.5). Owned kernels are listed with the VM's
+    project and cleaned up with their last user.
 
 `ImageSource` gains `Extracted { image_id, image_sha256, path }`: the
 disk image, the digest of the copy that was read, and the kernel's path
@@ -266,8 +285,9 @@ sees it through a shell, and neither parses commas in it.
 | `initrd_path` | Host path (`useHostPath`). Only with `kernel_image_path`. |
 | `generate_seed` | Optional bool, overriding the §6.3 rule. `true` with `cloud_init_path` is `400`. |
 
-`VmConfig` gains `kernel_image: Option<String>` (id), `initrd_path`, and
-`generate_seed: Option<bool>`. A kernel image fills `kernel_image_path`
+`VmConfig` gains `kernel_image: Option<String>` (id), `initrd_path`,
+`generate_seed: Option<bool>`, `kernel_from_disk: bool` (K11) and
+`previous_kernel: Option<String>` (K12, written by the VM controller). A kernel image fills `kernel_image_path`
 and `initrd_path` with its files, so backends see one set of fields
 either way, as `firmware_image` fills `firmware_path`. `VmResponse`
 gains `kernel` (the image id) and `boot` (`"firmware"` or `"kernel"`).
@@ -288,6 +308,7 @@ Admission, in addition to today's checks:
 | Field | Takes effect |
 |---|---|
 | `kernel` | next launch, `RestartRequired=True` meanwhile. Must stay a kernel image, so the VM keeps kernel boot. |
+| `kernel_from_disk` | next launch (K11) |
 | `kernel_args` | next launch (unchanged) |
 | `kernel_image_path`, `initrd_path`, `firmware`, `firmware_path`, `generate_seed` | never (`400`, "immutable field") |
 
@@ -379,13 +400,8 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
 | May a VM's kernel change after create? | Yes (K6): at the next launch, `RestartRequired` meanwhile. Firmware ↔ kernel boot stays immutable. |
 | Which distros? Can we take the kernel out of the cloud image? | Yes, all of the catalog (F-K6, F-K7), with the extractor VM (K9, §10). Rejected: host tools per filesystem (`debugfs` for ext4, `btrfs restore`; nothing for XFS) parse untrusted filesystems on the host; libguestfs does it in a VM too, but adds a large host dependency whose appliance needs a readable host kernel; downloading distro kernel packages gives no initrd. |
 | Kernel boot as the default for image VMs? | No (K2). Revisit once boot-time numbers exist. |
-
-Still open:
-
-| Question | Leaning |
-|---|---|
-| Should a VM be able to follow the kernels its guest installs, by extracting from its own root disk before every launch (`kernel_from_disk: true`, §10.5)? It behaves like a bootloader, at 3–5 s per start. | Offer it as opt-in in K3, after the one-shot extraction. |
-| Where does the extractor's own kernel and initramfs come from (§10.1)? | A glidex-built initramfs on a pinned Debian kernel from snapshot.debian.org, like `ovmf-debian`. Confirm the module set in K3. |
+| Should a VM follow the kernels its guest installs? | Opt-in (K11), with every version kept while a VM uses it (K12). |
+| Where does the extractor's own kernel come from? | Debian, pinned from snapshot.debian.org (K13). The exact module set is confirmed in K3. |
 
 ## 10. The extractor
 
@@ -396,7 +412,7 @@ a firmware image and stored as an image of kind `kernel` with `role:
 extractor`. It is auto-imported from the network at first use and never
 offered to VMs.
 
-- **Source (leaning, §9):** Debian's `linux-image-<version>-amd64` and
+- **Source (K13):** Debian's `linux-image-<version>-amd64` and
   `busybox-static` from `snapshot.debian.org`, both sha256-pinned, parsed
   with `firmware::extract_deb`. glidex writes the initramfs itself (a
   `newc` cpio): busybox, the modules for `virtio_blk`, `ext4`, `xfs`,
@@ -459,13 +475,41 @@ path: files are kept in memory or written under the image's id.
 
 ### 10.5 From a VM's own disk
 
-`POST /vms/{id}/extract-kernel` (stopped VM, `updateVm`) runs the
-extractor on the VM's root disk instead of an image, records a kernel
-image `for_image` none and `ImageSource::Extracted` naming the disk, and
-returns it. The caller then PATCHes `kernel`. This picks up a kernel the
-guest installed (`apt upgrade`). The disk is claimed for the run, so the
-VM can't start meanwhile. The open question in §9 is whether to do this
-automatically before every launch.
+**On demand.** `POST /vms/{id}/extract-kernel` (stopped VM, `updateVm`)
+runs the extractor on the VM's root disk instead of an image and
+answers with the kernel image (K12: an existing one with the same
+digests, else a new one owned by the VM). The caller then PATCHes
+`kernel`. The disk is claimed for the run, so the VM can't start
+meanwhile.
+
+**Every launch (K11, opt-in).** `VmConfig.kernel_from_disk: bool`
+(default `false`; changeable, next launch). When set, the VM must use
+kernel boot with a managed root disk, and the VM controller adds a step
+before 5.1 (the seed):
+
+1. If the root disk's file hasn't changed since the last extraction for
+   this VM (size and modification time, recorded with the result), keep
+   the current kernel. A VM that was only stopped and started pays
+   nothing.
+2. Otherwise run the extractor on the disk (3–5 s, F-K7). A result with
+   the same digests as the current kernel changes nothing. A new one
+   becomes the VM's `kernel`, the old one its `previous_kernel`, and the
+   event `KernelUpdated` names both releases.
+3. If the extraction fails, or finds no kernel, boot the current kernel
+   anyway: condition `KernelExtracted=False` with the reason, event
+   `KernelExtractFailed`. A broken guest `/boot` never stops a VM that
+   has a working kernel. A VM without one (first boot) fails to launch
+   with that reason.
+
+**Versions (K12).** A kernel image owned by a VM (`owner`) is used by
+that VM's `kernel` and `previous_kernel`, and by any other VM that names
+it. When nothing names it, the image controller deletes it. Kernel
+images without an owner (pulled or extracted from an image) are deleted
+only by a user, as today, and `409` while in use. So different guests
+can run different versions side by side, each kept as long as one VM
+needs it, and one VM can go back a version with a PATCH of `kernel` to
+its `previous_kernel` (which also turns `kernel_from_disk` off, else the
+next launch would extract again).
 
 ## 11. Testing
 
@@ -523,7 +567,8 @@ automatically before every launch.
 | **K0** backends *(done)* | `initrd_path` (host path), `ConsoleDevice` (K5) and the shared `console=ttyS0` default, `kernel_args` limits (K7), K2 conflict check | §11 backend unit tests; host boot of F-K3 through glidex with host paths. |
 | **K1** kernel images | `ImageKind::Kernel`, storage (datastore copies), URL pull and host import, verify (K8), lifecycle, image cache | §11 image unit and API tests. |
 | **K2** VM integration | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch | §11 VM API tests; the functional test with a URL-pulled kernel. |
-| **K3** extraction | The extractor appliance (§10.1), runs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10), `POST /vms/{id}/extract-kernel` (§10.5) | Stream and choice unit tests; the functional test on all four catalog distros. |
+| **K3** extraction | The extractor appliance (§10.1, K13), runs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10), `POST /vms/{id}/extract-kernel` (§10.5) | Stream and choice unit tests; the functional test on the five catalog distros (Ubuntu 22.04, 24.04 and 26.04, Debian 13, Fedora, Alma 9). |
+| **K3b** following the guest | `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | A functional test that installs a second kernel in the guest, restarts, sees `uname -r` change, and goes back with a PATCH. |
 | **K4** clients and docs | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |
 
 ## 13. Changes to other specs (to apply on acceptance)
