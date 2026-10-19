@@ -1,4 +1,4 @@
-# Real-IdP checks (spec/tenancy.md §17, T2)
+# Real-IdP checks (spec/tenancy.md §17, T2 and T3)
 
 The connector presets are tested in CI against a mock IdP
 (`tests/connector_tests.rs`). What a mock can't show — how the real
@@ -53,6 +53,37 @@ and build, never with account names or tokens.
    `email_verified: false` for real users, note it here: invitations and
    `allowed_emails` would then refuse them.
 5. Whether the device grant is offered (`connector test`).
+
+## JumpCloud SCIM (`provisioning: scim`, T3)
+
+The endpoint must be reachable from JumpCloud: a reverse proxy, or a
+Tailscale Funnel of the SCIM path alone (Funnel publishes only ports
+443, 8443 and 10000; see the operator guide's "Making the endpoint
+reachable"). The token is made in the web UI or by `gxctl connector
+scim-token create` and pasted into JumpCloud only, never into a file or
+a chat. Turn the Funnel off after the checks.
+
+1. **Test connection** in JumpCloud's Identity Management succeeds;
+   without the token, or with a wrong one, it fails.
+2. **Activate**: the bound users appear on the Directory page as
+   *managed by* the connector, and its bound groups as teams (`auto`)
+   or in the mapped teams.
+3. A provisioned user's **first login** lands on that user (matched by
+   email: JumpCloud sends no `externalId`), and no second user is made.
+   A JumpCloud user who isn't bound to the application is refused.
+4. **Changing** a user's name or email in JumpCloud shows in glidex.
+5. **Suspending** the user in JumpCloud (or `active: false`) ends their
+   glidex session at once: the next page load signs them out, and their
+   tokens stop working.
+6. **Restoring** them enables the user; an administrator's disable in
+   glidex holds even then.
+7. **Unbinding** them from the application disables the glidex user and
+   detaches it; its role links stay.
+8. **Group** changes (members added and removed, a rename) show in the
+   teams.
+9. The audit log has the writes as `system:scim:<id>`, with no token.
+10. Note what JumpCloud sends that glidex ignores (attributes), and any
+    request that failed (status and `scimType` from the audit log).
 
 ## Results
 
