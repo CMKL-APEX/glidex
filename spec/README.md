@@ -18,7 +18,7 @@ fresh reader cannot infer just by reading the source.
 | [reconciliation.md](reconciliation.md) | Desired state, the VM controller, detached VM instances (`glidex-vm-shim`, `glidex-vm@` units), adoption |
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor driver contract and per-backend command lines |
-| [kernel-boot.md](kernel-boot.md) | Direct kernel boot on par with firmware boot (draft): kernel images (kernel + initramfs + cmdline) from a catalog matched to cloud image builds, URL or host import; initramfs for both backends; console device chosen by `console=`; generated seeds and credentials on kernel boot; milestones K0–K4 |
+| [kernel-boot.md](kernel-boot.md) | Direct kernel boot on par with firmware boot (draft): kernel images (kernel + initramfs + cmdline) extracted from the cloud image by a short-lived extractor VM, from a URL or the host; initramfs for both backends; console device chosen by `console=`; generated seeds and credentials on kernel boot; milestones K0–K4 |
 | [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
