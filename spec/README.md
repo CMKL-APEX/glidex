@@ -24,6 +24,7 @@ fresh reader cannot infer just by reading the source.
 | [console.md](console.md) | Console proxy in the shim, listener invariant, log append/rotation, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
+| [storage.md](storage.md) | Datastores (design): cluster-wide storage records with node-local (`dir`, today's directories as `local`) and shared (`shared-dir`, vendor-mounted NFS/CephFS) drivers behind a CSI-shaped driver trait, placement by datastore topology, a worker node per volume, image copies per datastore with relative backing paths, re-placing stopped or lost VMs, disk move, block drivers and a CSI adapter as later gated milestones, S0 fixes, milestones S0–S7 |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
 | [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
 | [cluster-runbook.md](cluster-runbook.md) | Operating a cluster: removing, forgetting and rejoining nodes, rotating the CA, rolling upgrades, recovering a lost quorum |

@@ -12,6 +12,7 @@
 - [Reconciliation](reconciliation.md)
 - [Hypervisors](hypervisors.md)
 - [Images and disks](images.md)
+- [Datastores](storage.md)
 - [Credentials](credentials.md)
 - [Console](console.md)
 - [Metering](metering.md)
