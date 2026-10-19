@@ -1441,7 +1441,9 @@ impl AuthService {
     /// signed in (spec/tenancy.md §6.2): beside the ones it has, never in
     /// place of them. The connector's rules apply as at a login; a sign-in
     /// that already reaches another user is refused, one that reaches this
-    /// user is a no-op. Returns whether it was added.
+    /// user is a no-op. A provisioned connector's sign-ins are its managed
+    /// users' only (D41), so none is added through it. Returns whether it
+    /// was added.
     pub fn link_external(
         &self,
         c: &crate::directory::Connector,
@@ -1450,6 +1452,11 @@ impl AuthService {
     ) -> Result<bool, AuthError> {
         if !c.enabled {
             return Err(AuthError::NotAllowed("this connector is disabled".into()));
+        }
+        if c.provisioning == crate::directory::Provisioning::Scim {
+            return Err(AuthError::NotAllowed(
+                "this connector's users are provisioned by its IdP: a sign-in can't be added through it".into(),
+            ));
         }
         if !c.required_groups.is_empty() && !id.groups.iter().any(|g| c.required_groups.contains(g))
         {
