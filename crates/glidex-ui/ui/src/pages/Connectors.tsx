@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
-import type { Connector, ConnectorInput, ConnectorTestStep, Tenant } from "../types";
+import type { Connector, ConnectorInput, ConnectorTestStep, ScimToken, Tenant } from "../types";
 import { formatTimestamp } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -79,6 +79,8 @@ interface FormState {
   group_teams: string;
   default_tenant: string;
   token_max_days: string;
+  provisioning: "none" | "scim";
+  group_mode: "mapped" | "auto";
   allowed_groups: string;
   issuer: string;
   client_id: string;
@@ -107,6 +109,8 @@ function formState(c?: Connector): FormState {
     group_teams: showGroupTeams(c?.group_teams),
     default_tenant: c?.default_tenant ?? "",
     token_max_days: c?.token_max_days ? String(c.token_max_days) : "",
+    provisioning: c?.provisioning === "scim" ? "scim" : "none",
+    group_mode: c?.group_mode === "auto" ? "auto" : "mapped",
     allowed_groups: (c?.pam?.allowed_groups ?? []).join(", "),
     issuer: c?.oidc?.issuer ?? "",
     client_id: c?.oidc?.client_id ?? c?.google?.client_id ?? c?.jumpcloud?.client_id ?? "",
@@ -135,6 +139,12 @@ function toInput(f: FormState): ConnectorInput {
     default_tenant: f.default_tenant.trim() || null,
     token_max_days: f.token_max_days.trim() ? Number(f.token_max_days) : null,
   };
+  if (f.kind === "oidc" || f.kind === "jumpcloud") {
+    c.provisioning = f.provisioning;
+    c.group_mode = f.provisioning === "scim" ? f.group_mode : "mapped";
+    // A SCIM connector creates users by provisioning only (D41).
+    if (f.provisioning === "scim") c.jit = false;
+  }
   if (f.require_mfa) c.require_mfa = f.require_mfa === "on";
   if (f.kind === "pam") {
     c.pam = { allowed_groups: words(f.allowed_groups) };
@@ -295,10 +305,49 @@ function ConnectorForm({
           Enabled
         </label>
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={f.jit} onChange={(e) => set("jit", e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={f.jit && f.provisioning !== "scim"}
+            disabled={f.provisioning === "scim"}
+            onChange={(e) => set("jit", e.target.checked)}
+          />
           Create users at their first login
         </label>
       </div>
+      {(f.kind === "oidc" || f.kind === "jumpcloud") && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Provisioning" htmlFor="connector-provisioning">
+            <select
+              id="connector-provisioning"
+              className={selectClass}
+              value={f.provisioning}
+              onChange={(e) => set("provisioning", e.target.value as FormState["provisioning"])}
+            >
+              <option value="none">None: logins and invitations add people</option>
+              <option value="scim">SCIM: the IdP adds and removes them</option>
+            </select>
+          </Field>
+          {f.provisioning === "scim" && (
+            <Field label="Groups" htmlFor="connector-group-mode">
+              <select
+                id="connector-group-mode"
+                className={selectClass}
+                value={f.group_mode}
+                onChange={(e) => set("group_mode", e.target.value as FormState["group_mode"])}
+              >
+                <option value="mapped">Mapped to teams below</option>
+                <option value="auto">A team per IdP group</option>
+              </select>
+            </Field>
+          )}
+        </div>
+      )}
+      {f.provisioning === "scim" && (
+        <p className="text-sm text-gray-500">
+          Only people the IdP provisions can log in. After saving, make a SCIM token from the connector's <em>SCIM</em> button and give
+          it to the IdP with the endpoint URL.
+        </p>
+      )}
       <Field label="Require MFA" htmlFor="connector-mfa">
         <select id="connector-mfa" className={selectClass} value={f.require_mfa} onChange={(e) => set("require_mfa", e.target.value as FormState["require_mfa"])}>
           {!editing && <option value="">Server default</option>}
@@ -506,6 +555,129 @@ function SecretForm({ connector, field, onDone, onCancel }: { connector: Connect
   );
 }
 
+/** A provisioned connector's SCIM endpoint and tokens (spec/tenancy.md §8.1). */
+function ScimTokens({ connector, manage }: { connector: Connector; manage: boolean }) {
+  const [tokens, setTokens] = useState<ScimToken[] | null>(null);
+  const [path, setPath] = useState(`/scim/v2/c/${connector.id}`);
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [days, setDays] = useState("");
+  const [made, setMade] = useState<{ name: string; secret: string } | null>(null);
+  const load = useCallback(() => {
+    api
+      .listScimTokens(connector.id)
+      .then((r) => {
+        setTokens(r.tokens);
+        setPath(r.path);
+      })
+      .catch((e) => setError(errorMessage(e)));
+  }, [connector.id]);
+  useEffect(() => load(), [load]);
+  const url = `${window.location.origin}/api${path}`;
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const r = await api.createScimToken(connector.id, name.trim(), days.trim() ? Number(days) : undefined);
+      setMade({ name: r.token.name, secret: r.secret });
+      setName("");
+      setDays("");
+      load();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <div className="space-y-4 text-sm">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <div>
+        <div className="font-medium text-gray-700">Endpoint (the IdP's “base URL”)</div>
+        <code className="block mt-1 p-2 bg-gray-50 rounded font-mono break-all" data-testid="scim-url">
+          {url}
+        </code>
+        <p className="mt-1 text-gray-500">
+          The IdP calls it from its own network: this address has to be reachable from there (a public name, a reverse proxy or a tunnel).
+        </p>
+      </div>
+      {made && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="font-medium text-amber-900">Token “{made.name}”: shown once</div>
+          <code className="block mt-1 font-mono break-all" data-testid="scim-secret">
+            {made.secret}
+          </code>
+          <p className="mt-1 text-amber-800">Give it to the IdP as its bearer token now; it can't be shown again.</p>
+          <button className="mt-2 text-sky-700 hover:underline" onClick={() => setMade(null)}>
+            Done
+          </button>
+        </div>
+      )}
+      {tokens === null ? (
+        <Loading />
+      ) : tokens.length === 0 ? (
+        <p className="text-gray-500">No tokens: the IdP can't call it yet.</p>
+      ) : (
+        <table className="w-full">
+          <thead>
+            <tr className="text-left text-gray-500">
+              <th className="py-1 font-medium">Name</th>
+              <th className="font-medium">Expires</th>
+              <th className="font-medium">By</th>
+              {manage && <th />}
+            </tr>
+          </thead>
+          <tbody>
+            {tokens.map((t) => (
+              <tr key={t.id} className="border-t border-gray-100">
+                <td className="py-1.5">{t.name}</td>
+                <td>{formatTimestamp(t.expires_at)}</td>
+                <td className="text-gray-500">{t.created_by}</td>
+                {manage && (
+                  <td className="text-right">
+                    <button
+                      className={dangerLink}
+                      onClick={() =>
+                        confirm(`Revoke ${t.name}? The IdP can't provision with it any more.`) &&
+                        api
+                          .revokeScimToken(connector.id, t.id)
+                          .then(load)
+                          .catch((e) => setError(errorMessage(e)))
+                      }
+                    >
+                      Revoke
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {manage && (
+        <form onSubmit={create} className="flex flex-wrap items-end gap-3">
+          <Field label="Name" htmlFor="scim-name">
+            <input id="scim-name" className={inputClass} placeholder="scim" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Days" htmlFor="scim-days">
+            <input
+              id="scim-days"
+              className={inputClass}
+              type="number"
+              min={1}
+              max={365}
+              placeholder="180"
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+            />
+          </Field>
+          <button type="submit" className={primaryButton}>
+            Create token
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function TestResult({ connector }: { connector: Connector }) {
   const [steps, setSteps] = useState<ConnectorTestStep[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -542,6 +714,7 @@ type Dialog =
   | { kind: "edit"; connector: Connector }
   | { kind: "secret"; connector: Connector; field: string }
   | { kind: "test"; connector: Connector }
+  | { kind: "scim"; connector: Connector }
   | { kind: "delete"; connector: Connector };
 
 export default function Connectors() {
@@ -666,12 +839,18 @@ export default function Connectors() {
                             : `Workspace: ${(c.google.domains ?? []).join(", ")}`}
                         </div>
                       )}
+                      {c.provisioning === "scim" && <div>SCIM-provisioned{c.group_mode === "auto" ? ", a team per group" : ""}</div>}
                       {c.jit && <div>JIT{c.default_tenant ? ` into ${tenantSlug(c.default_tenant)}` : ""}</div>}
                       {c.require_mfa && <div>MFA required</div>}
                       {(c.required_groups?.length ?? 0) > 0 && <div>groups: {c.required_groups!.join(", ")}</div>}
                       {c.updated_at && <div className="text-gray-400">updated {formatTimestamp(c.updated_at)}</div>}
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap space-x-3">
+                      {c.provisioning === "scim" && host.readScimTokens && (
+                        <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "scim", connector: c })}>
+                          SCIM
+                        </button>
+                      )}
                       {host.testConnector && (
                         <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "test", connector: c })}>
                           Test
@@ -727,6 +906,11 @@ export default function Connectors() {
       {dialog?.kind === "secret" && (
         <Modal title={`Set secret of ${dialog.connector.id}`} onClose={close}>
           <SecretForm connector={dialog.connector} field={dialog.field} onCancel={close} onDone={done} />
+        </Modal>
+      )}
+      {dialog?.kind === "scim" && (
+        <Modal title={`SCIM for ${dialog.connector.display_name || dialog.connector.id}`} onClose={close}>
+          <ScimTokens connector={dialog.connector} manage={host.manageScimTokens} />
         </Modal>
       )}
       {dialog?.kind === "test" && (

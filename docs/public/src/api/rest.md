@@ -413,6 +413,9 @@ them to the node being managed).
 | `DELETE` | `/connectors/{id}` | Delete a connector; `?users=detach` keeps the users it provisions enabled (the default disables them) |
 | `PUT` | `/connectors/{id}/secrets/{field}` | Set a connector secret (write-only) |
 | `POST` | `/connectors/{id}/test` | Test a connector step by step |
+| `GET` | `/connectors/{id}/scim-tokens` | A SCIM connector's tokens (never the tokens) and its endpoint path |
+| `POST` | `/connectors/{id}/scim-tokens` | Make a SCIM token; it is shown once |
+| `DELETE` | `/connectors/{id}/scim-tokens/{token}` | Revoke a SCIM token |
 
 ### Cluster and nodes
 

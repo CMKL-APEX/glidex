@@ -1,4 +1,5 @@
 import type {
+  ScimToken,
   ApiToken,
   AuditEntry,
   AuthMethods,
@@ -1112,6 +1113,16 @@ export const updateConnector = (id: string, connector: Partial<ConnectorInput>) 
   rpc(ConnectorService.method.updateConnector, { id, connector: connector as ConnectorJson, update_mask: maskOf(connector) }).then(
     (r) => r.connector as Connector,
   );
+export const listScimTokens = (id: string) =>
+  rpc(ConnectorService.method.listScimTokens, { id }).then((r) => ({ tokens: (r.tokens ?? []) as ScimToken[], path: r.path ?? "" }));
+/** The token is in `secret`, once. */
+export const createScimToken = (id: string, name: string, days?: number) =>
+  rpc(ConnectorService.method.createScimToken, days ? { id, name, days } : { id, name }).then((r) => ({
+    token: r.token as ScimToken,
+    secret: r.secret ?? "",
+    path: r.path ?? "",
+  }));
+export const revokeScimToken = (id: string, token: string) => rpc(ConnectorService.method.revokeScimToken, { id, token }).then(none);
 /** With `users: "detach"`, the users and teams it provisions stay, as the directory's (§8.3). */
 export const deleteConnector = (id: string, users?: "disable" | "detach") =>
   rpc(ConnectorService.method.deleteConnector, users ? { id, users } : { id }).then((r) => ({ users: r.users ?? 0, teams: r.teams ?? 0 }));

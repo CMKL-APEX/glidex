@@ -260,6 +260,108 @@ pub fn get_connector(
     })
 }
 
+fn scim_token_err(e: dir::scim_tokens::ScimTokenError) -> ServiceError {
+    use dir::scim_tokens::ScimTokenError as E;
+    match e {
+        E::NotFound => ServiceError::new(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+        E::Invalid(m) => ServiceError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid", m),
+        E::Storage(m) => ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+fn scim_token_pb(t: &dir::scim_tokens::ScimToken) -> pb::ScimToken {
+    pb::ScimToken {
+        id: t.id.clone(),
+        name: t.name.clone(),
+        created_by: t.created_by.clone(),
+        created_at: ts(t.created_at).into(),
+        expires_at: ts(t.expires_at).into(),
+        ..Default::default()
+    }
+}
+
+/// Where a connector's SCIM endpoints are on this server (§8.1).
+pub fn scim_path(connector: &str) -> String {
+    format!("/scim/v2/c/{connector}")
+}
+
+pub fn list_scim_tokens(
+    call: &Call,
+    req: pb::ListScimTokensRequest,
+) -> ServiceResult<pb::ListScimTokensResponse> {
+    call.require(directory_ent(), EntitySet::new())?;
+    let c = get_visible(call, &req.id)?;
+    let tokens = call
+        .auth()
+        .scim_tokens
+        .list(&c.id)
+        .map_err(scim_token_err)?;
+    Ok(pb::ListScimTokensResponse {
+        tokens: tokens.iter().map(scim_token_pb).collect(),
+        path: scim_path(&c.id),
+        ..Default::default()
+    })
+}
+
+pub fn create_scim_token(
+    call: &Call,
+    req: pb::CreateScimTokenRequest,
+) -> ServiceResult<pb::CreateScimTokenResponse> {
+    call.require(directory_ent(), EntitySet::new())?;
+    let c = get_visible(call, &req.id)?;
+    if c.provisioning != dir::Provisioning::Scim {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "not_provisioned",
+            format!(
+                "connector {} isn't provisioned by SCIM: set provisioning to scim first",
+                c.id
+            ),
+        ));
+    }
+    call.set_target(format!("connector:{}", c.id));
+    let (t, secret) = call
+        .auth()
+        .scim_tokens
+        .create(
+            &c.id,
+            &req.name,
+            call.p.user_id().unwrap_or("-"),
+            req.days.map(u64::from),
+        )
+        .map_err(scim_token_err)?;
+    // Its id and lifetime are audited, never the token.
+    call.detail(
+        "scim_token",
+        serde_json::json!({ "id": t.id, "name": t.name, "expires_at": t.expires_at }),
+    );
+    Ok(pb::CreateScimTokenResponse {
+        token: scim_token_pb(&t).into(),
+        secret,
+        path: scim_path(&c.id),
+        ..Default::default()
+    })
+}
+
+pub fn revoke_scim_token(
+    call: &Call,
+    req: pb::RevokeScimTokenRequest,
+) -> ServiceResult<pb::RevokeScimTokenResponse> {
+    call.require(directory_ent(), EntitySet::new())?;
+    let c = get_visible(call, &req.id)?;
+    call.set_target(format!("connector:{}", c.id));
+    let t = call
+        .auth()
+        .scim_tokens
+        .revoke(&c.id, &req.token)
+        .map_err(scim_token_err)?;
+    call.detail(
+        "scim_token",
+        serde_json::json!({ "id": t.id, "name": t.name }),
+    );
+    Ok(pb::RevokeScimTokenResponse::default())
+}
+
 fn provisioning_of(s: Option<&str>) -> ServiceResult<crate::directory::Provisioning> {
     crate::directory::Provisioning::parse(s.unwrap_or("")).ok_or_else(|| {
         ServiceError::new(
@@ -428,6 +530,10 @@ pub fn delete_connector(
         }
     };
     call.auth().connectors.delete(&c.id).map_err(err_of)?;
+    call.auth()
+        .scim_tokens
+        .remove_for(&c.id)
+        .map_err(scim_token_err)?;
     let (users, teams) = call
         .auth()
         .store

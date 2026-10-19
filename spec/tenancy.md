@@ -1538,3 +1538,12 @@ Tasks 4 and 5, and the follow-ups:
 | UI | the Access page: "managed by <connector>", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
 | Tests | `connector_tests.rs::managed_users_and_teams_belong_to_their_connector` |
 
+Task 3, SCIM tokens:
+
+| Spec | Code |
+|---|---|
+| `gxs_` tokens (§8.1, D21) | `directory/scim_tokens.rs` (`ScimTokenStore`: keyed by the token's SHA-256, 1–365 days (180), five live per connector, `verify` for one connector); table `scim_tokens` (directory scope) |
+| API on both transports | `ConnectorService.{List,Create,Revoke}ScimToken`, actions `readScimTokens` (`directory.read`) and `manageScimTokens` (`directory.connectors`, step-up); `409 not_provisioned`; the token is audited by id, never itself; deleting a connector removes its tokens |
+| gxctl and UI | `gxctl connector scim-token list|create|revoke`; the connector form's Provisioning and Groups, the SCIM dialog (the endpoint URL, tokens, the new one shown once) |
+| Tests | `scim_tokens.rs` unit tests; `connector_tests.rs::scim_tokens_are_minted_for_a_provisioned_connector`; UI e2e `connectors.spec.ts` |
+

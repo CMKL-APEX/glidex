@@ -19,7 +19,8 @@ const USAGE: &str = "Usage: connector list | show <id> \
     | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
     | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
     | update <id> [--name TEXT] [--enable|--disable] [COMMON] \
-    | secret set <id> [field] [--from-file PATH] | test <id> | remove <id> [--detach-users]\n\
+    | secret set <id> [field] [--from-file PATH] | test <id> | remove <id> [--detach-users] \
+    | scim-token list <id> | scim-token create <id> [--name TEXT] [--days N] | scim-token revoke <id> <token-id>\n\
     COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N] [--provisioning none|scim] [--group-mode mapped|auto]";
 
 fn kind(c: &Connector) -> &'static str {
@@ -374,6 +375,96 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
             match svc.update_connector(req).await.map(|r| r.into_owned()) {
                 Ok(r) => show(&r.connector.as_option().cloned().unwrap_or_default()),
                 Err(e) => err(rpc_err(e)),
+            }
+        }
+        "scim-token" | "scim-tokens" => {
+            let ts = |t: Option<&buffa_types::google::protobuf::Timestamp>| {
+                t.map(|t| crate::format_unix_time(t.seconds.max(0) as u64))
+                    .unwrap_or_else(|| "-".into())
+            };
+            match (args.get(1).copied(), id(2)) {
+                (Some("list" | "ls"), Some(cid)) => match svc
+                    .list_scim_tokens(ListScimTokensRequest {
+                        id: cid,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| r.into_owned())
+                {
+                    Ok(r) => {
+                        println!(
+                            "  SCIM endpoint: {} (the web UI also serves it under /api)",
+                            r.path
+                        );
+                        if r.tokens.is_empty() {
+                            println!("  No SCIM tokens.");
+                        }
+                        for t in &r.tokens {
+                            println!(
+                                "  {}  {:<20} expires {}  by {}",
+                                t.id.cyan(),
+                                t.name,
+                                ts(t.expires_at.as_option()),
+                                t.created_by
+                            );
+                        }
+                    }
+                    Err(e) => err(rpc_err(e)),
+                },
+                (Some("create" | "add"), Some(cid)) => {
+                    let days = match flag_value(args, "--days").map(str::parse::<u32>) {
+                        Some(Ok(d)) => Some(d),
+                        Some(Err(_)) => return err("--days takes a number".to_string()),
+                        None => None,
+                    };
+                    match svc
+                        .create_scim_token(CreateScimTokenRequest {
+                            id: cid,
+                            name: flag_value(args, "--name").unwrap_or("").into(),
+                            days,
+                            ..Default::default()
+                        })
+                        .await
+                        .map(|r| r.into_owned())
+                    {
+                        Ok(r) => {
+                            let t = r.token.as_option().cloned().unwrap_or_default();
+                            println!(
+                                "{} {} ({}), expires {}",
+                                "SCIM token created:".green(),
+                                t.id,
+                                t.name,
+                                ts(t.expires_at.as_option())
+                            );
+                            println!(
+                                "  Endpoint: {} (the web UI also serves it under /api)",
+                                r.path
+                            );
+                            println!(
+                                "  Token (shown once; give it to the IdP as its bearer token): {}",
+                                Zeroizing::new(r.secret).as_str()
+                            );
+                        }
+                        Err(e) => err(rpc_err(e)),
+                    }
+                }
+                (Some("revoke" | "rm" | "remove"), Some(cid)) => {
+                    let Some(tid) = id(3) else {
+                        return usage(USAGE);
+                    };
+                    match svc
+                        .revoke_scim_token(RevokeScimTokenRequest {
+                            id: cid,
+                            token: tid.clone(),
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        Ok(_) => println!("{} {}", "SCIM token revoked:".green(), tid),
+                        Err(e) => err(rpc_err(e)),
+                    }
+                }
+                _ => usage(USAGE),
             }
         }
         "secret" | "secrets" => {

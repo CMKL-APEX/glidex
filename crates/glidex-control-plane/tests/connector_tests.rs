@@ -2553,3 +2553,148 @@ async fn managed_users_and_teams_belong_to_their_connector() {
     assert!(d.disabled && d.managed.is_none());
     assert_eq!(d.disabled_reason, Some(DisabledReason::ConnectorDeleted));
 }
+
+/// spec/tenancy.md §8.1: SCIM tokens are a provisioned connector's, shown
+/// once, step-up to make, and go with the connector.
+#[tokio::test]
+async fn scim_tokens_are_minted_for_a_provisioned_connector() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("ada");
+    let s = h.session(&admin);
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(json!({"connector": {"id": "plain", "oidc": {"issuer": mock.base, "client_id": "g"}}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let (st, v) = h
+        .rest("POST", "/connectors/plain/scim-tokens", Some(json!({})), &s)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("not_provisioned")),
+        "{v}"
+    );
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            "/connectors/plain",
+            Some(json!({"connector": {"provisioning": "scim"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // Minting is a step-up action: an old login (a token) can't.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors/plain/scim-tokens",
+            Some(json!({})),
+            &h.token(&admin),
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("reauth_required")),
+        "{v}"
+    );
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors/plain/scim-tokens",
+            Some(json!({"name": "jumpcloud", "days": 400})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors/plain/scim-tokens",
+            Some(json!({"name": "jumpcloud", "days": 30})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let secret = v["secret"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("gxs_"));
+    assert_eq!(v["path"], "/scim/v2/c/plain");
+    let id = v["token"]["id"].as_str().unwrap().to_string();
+    assert!(
+        h.app
+            .auth
+            .scim_tokens
+            .verify("plain", &secret)
+            .unwrap()
+            .is_some()
+    );
+
+    // Listed without the token; the audit names it, never the token.
+    let (st, v) = h
+        .rest("GET", "/connectors/plain/scim-tokens", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["tokens"][0]["id"], id);
+    assert_eq!(v["tokens"][0]["name"], "jumpcloud");
+    assert!(!v.to_string().contains(&secret));
+    let (_, a) = h.rest("GET", "/audit?limit=50", None, &s).await;
+    assert!(
+        !a.to_string().contains(&secret[4..]),
+        "the audit holds no token"
+    );
+    // Only directory administrators see them.
+    let bob = h.user("bob");
+    let (st, _) = h
+        .rest("GET", "/connectors/plain/scim-tokens", None, &h.token(&bob))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, _) = h
+        .rest(
+            "DELETE",
+            &format!("/connectors/plain/scim-tokens/{id}"),
+            None,
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert!(
+        h.app
+            .auth
+            .scim_tokens
+            .verify("plain", &secret)
+            .unwrap()
+            .is_none()
+    );
+    let (st, _) = h
+        .rest(
+            "DELETE",
+            &format!("/connectors/plain/scim-tokens/{id}"),
+            None,
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // They go with their connector.
+    let (_, v) = h
+        .rest("POST", "/connectors/plain/scim-tokens", Some(json!({})), &s)
+        .await;
+    let again = v["secret"].as_str().unwrap().to_string();
+    let (st, _) = h.rest("DELETE", "/connectors/plain", None, &s).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        h.app
+            .auth
+            .scim_tokens
+            .verify("plain", &again)
+            .unwrap()
+            .is_none()
+    );
+    assert!(h.app.auth.scim_tokens.list("plain").unwrap().is_empty());
+}

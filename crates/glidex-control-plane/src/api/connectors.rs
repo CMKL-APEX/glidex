@@ -115,3 +115,41 @@ pub async fn test(
         .await?,
     ))
 }
+
+pub async fn list_scim_tokens(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<pb::ListScimTokensResponse>, ApiErr> {
+    Ok(Json(svc::list_scim_tokens(
+        &c,
+        pb::ListScimTokensRequest {
+            id,
+            ..Default::default()
+        },
+    )?))
+}
+
+pub async fn create_scim_token(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let mut req: pb::CreateScimTokenRequest = super::proto_body(v)?;
+    req.id = id;
+    Ok((StatusCode::CREATED, Json(svc::create_scim_token(&c, req)?)))
+}
+
+pub async fn revoke_scim_token(
+    c: Caller,
+    Path((id, token)): Path<(String, String)>,
+) -> Result<StatusCode, ApiErr> {
+    svc::revoke_scim_token(
+        &c,
+        pb::RevokeScimTokenRequest {
+            id,
+            token,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
