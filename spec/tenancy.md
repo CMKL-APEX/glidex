@@ -1648,3 +1648,12 @@ Task 5, docs and the UI e2e:
 | Status and API | `connector_sync` (directory scope, `SyncStatusStore`); `ConnectorService.SyncConnector` (`syncConnector`), `POST /connectors/{id}/sync`; audited as `system:sync:<id>`; gxctl `connector sync <id> [--confirm]`, `connector show` |
 | Tests | `sync.rs` unit tests; `connector_tests.rs::a_pull_follows_the_directory_and_stops_before_removing_many` (a fake source: `AuthService::set_sync_source`) |
 
+Task 3, Google's source:
+
+| Spec | Code |
+|---|---|
+| D47 | `directory/google_directory.rs`: the sealed secret `service_account_key` (a google connector's, listed only when it pulls: `Connector::secrets_in_use`); an RS256 assertion (`iss` the service account, `sub` `sync.admin_email`, the two read-only scopes) exchanged at Google's token endpoint (RFC 7523); the access token cached in memory until a minute before it expires |
+| Reads (§8.2) | `groups/{email}` (id, name), `groups/{email}/members?includeDerivedMembership=true` (users only, every page), `users/{id}` (`projection=custom` with the SSH key field's schema, else `basic`); suspended or archived is inactive; `429` and `5xx` retried four times with backoff; any other answer fails the run with Google's message (D46) |
+| Connector test | the steps `service_account_key`, `token` and one `group` per named group |
+| Tests | `google_directory.rs` unit tests; `connector_tests.rs::a_google_pull_reads_the_directory_api` against a mock of Google's token and Directory endpoints (the connector's loopback `issuer`) |
+

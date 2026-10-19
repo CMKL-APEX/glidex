@@ -548,8 +548,14 @@ pub fn source_for(auth: &AuthService, c: &Connector) -> Option<Arc<dyn Source>> 
     if let Some(s) = auth.sync_source_override() {
         return Some(s);
     }
-    let _ = c;
-    None
+    static GOOGLE: std::sync::OnceLock<Arc<crate::directory::google_directory::GoogleDirectory>> =
+        std::sync::OnceLock::new();
+    match c.kind {
+        crate::directory::Kind::Google => {
+            Some(GOOGLE.get_or_init(|| Arc::new(Default::default())).clone() as Arc<dyn Source>)
+        }
+        _ => None,
+    }
 }
 
 /// Whether `c` is due for a run at `now`.
