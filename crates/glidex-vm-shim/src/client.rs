@@ -110,4 +110,16 @@ impl ShimClient {
     pub fn release(&mut self) -> Result<(), ShimError> {
         self.call(Op::Release).map(|_| ())
     }
+
+    /// Rebind the running hypervisor's threads to `cpus`; returns how many
+    /// threads were bound. An older shim answers `Remote` with code
+    /// `protocol_error` (unknown op).
+    pub fn set_affinity(&mut self, cpus: &[u32]) -> Result<u64, ShimError> {
+        let v = self.call(Op::SetAffinity {
+            cpus: cpus.to_vec(),
+        })?;
+        v.get("threads")
+            .and_then(|n| n.as_u64())
+            .ok_or_else(|| ShimError::Protocol(format!("set_affinity reply {}", v)))
+    }
 }

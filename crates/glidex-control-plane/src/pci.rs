@@ -13,6 +13,9 @@ pub struct PciDeviceInfo {
     pub class_id: String,
     pub driver: Option<String>,
     pub iommu_group: Option<String>,
+    /// `None` when the firmware gives none (`-1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numa_node: Option<u32>,
     pub sysfs_path: String,
 }
 
@@ -81,6 +84,7 @@ pub fn scan_pci_devices() -> Vec<PciDeviceInfo> {
         let class_id = read_sysfs_attr(&device_path, "class").unwrap_or_default();
         let driver = get_driver(&device_path);
         let iommu_group = get_iommu_group(&device_path);
+        let numa_node = read_sysfs_attr(&device_path, "numa_node").and_then(|n| n.parse().ok());
 
         devices.push(PciDeviceInfo {
             address: address.clone(),
@@ -89,6 +93,7 @@ pub fn scan_pci_devices() -> Vec<PciDeviceInfo> {
             class_id,
             driver,
             iommu_group,
+            numa_node,
             sysfs_path: format!("{}/{}", PCI_DEVICES_PATH, address),
         });
     }

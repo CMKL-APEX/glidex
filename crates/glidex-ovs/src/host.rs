@@ -49,6 +49,13 @@ pub struct HostCapabilities {
     /// hugepages DPDK takes per NUMA node (`1024` or `1024,1024`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpdk_socket_mem: Option<String>,
+    /// `pmd-cpu-mask` and `dpdk-lcore-mask` once DPDK is initialized: the
+    /// CPUs OVS-DPDK polls on and keeps its other threads on, which VMs
+    /// don't get.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_pmd_cpu_mask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_lcore_mask: Option<String>,
     pub hugepages: Vec<Hugepages>,
     pub iommu: bool,
     /// `None` when the Cloud Hypervisor binary wasn't found.
@@ -172,11 +179,14 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
             caps.datapath_types = row.set("datapath_types");
             caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
         }
-        if caps.dpdk_initialized {
-            caps.dpdk_socket_mem = vsctl::list(exec, "Open_vSwitch", &["other_config"])
+        if caps.dpdk_initialized
+            && let Some(m) = vsctl::list(exec, "Open_vSwitch", &["other_config"])
                 .ok()
                 .and_then(|rows| rows.first().map(|r| r.map("other_config")))
-                .and_then(|m| m.get("dpdk-socket-mem").cloned());
+        {
+            caps.dpdk_socket_mem = m.get("dpdk-socket-mem").cloned();
+            caps.dpdk_pmd_cpu_mask = m.get("pmd-cpu-mask").cloned();
+            caps.dpdk_lcore_mask = m.get("dpdk-lcore-mask").cloned();
         }
     }
 
@@ -394,10 +404,12 @@ mod tests {
         );
         exec.on(
             "ovs-vsctl --format=json --columns=other_config list Open_vSwitch",
-            Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024,1024"]]]]],"headings":["other_config"]}"#),
+            Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-lcore-mask","0x1"],["dpdk-socket-mem","1024,1024"],["pmd-cpu-mask","0x6"]]]]],"headings":["other_config"]}"#),
         );
         let caps = probe(&exec, &ProbeOptions::default());
         assert!(caps.dpdk_initialized);
         assert_eq!(caps.dpdk_socket_mem.as_deref(), Some("1024,1024"));
+        assert_eq!(caps.dpdk_pmd_cpu_mask.as_deref(), Some("0x6"));
+        assert_eq!(caps.dpdk_lcore_mask.as_deref(), Some("0x1"));
     }
 }

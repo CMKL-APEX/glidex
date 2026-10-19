@@ -1029,6 +1029,8 @@ impl VmManager {
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
             meter_poll_secs: settings.meter_poll_secs,
+            cpu_affinity: Vec::new(),
+            vcpu_pins: Vec::new(),
         };
         launch
             .write(&paths.launch)

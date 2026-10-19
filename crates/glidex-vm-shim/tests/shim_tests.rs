@@ -38,6 +38,8 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         host_shutdown_grace_secs: 1,
         spec: serde_json::Value::Null,
         meter_poll_secs: 0,
+        cpu_affinity: vec![],
+        vcpu_pins: vec![],
     }
 }
 
@@ -92,6 +94,7 @@ fn start_shim(dir: &Path, launch: &LaunchFile) -> Shim {
     let child = Command::new(env!("CARGO_BIN_EXE_glidex-vm-shim"))
         .args(["--dir", dir.to_str().unwrap(), "--vm", &launch.vm_id])
         .env_remove("INVOCATION_ID")
+        .env("GLIDEX_VM_SHIM_ALLOW", PYTHON)
         .env_remove("NOTIFY_SOCKET")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -292,4 +295,220 @@ fn a_failed_launch_reports_the_hypervisors_output() {
             .unwrap()
             .contains("bogus")
     );
+}
+
+/// A fake QEMU: `vcpus` idle threads standing in for vCPUs and a QMP
+/// monitor that answers `query-cpus-fast` with their thread ids. Runs
+/// without KVM, so the placement tests run everywhere.
+const FAKE_QEMU: &str = r#"
+import json, os, socket, sys, threading, time
+path, n = sys.argv[1], int(sys.argv[2])
+ids, hold = [], threading.Event()
+def vcpu():
+    ids.append(threading.get_native_id())
+    hold.wait()
+for _ in range(n):
+    threading.Thread(target=vcpu, daemon=True).start()
+while len(ids) < n:
+    time.sleep(0.01)
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(4)
+while True:
+    c, _ = s.accept()
+    f = c.makefile("rwb", buffering=0)
+    f.write(b'{"QMP": {"version": {}}}\r\n')
+    for line in f:
+        cmd = json.loads(line).get("execute")
+        if cmd == "quit":
+            os._exit(0)
+        r = [{"cpu-index": i, "thread-id": t} for i, t in enumerate(ids)] if cmd == "query-cpus-fast" else {}
+        f.write((json.dumps({"return": r}) + "\r\n").encode())
+    c.close()
+"#;
+
+const PYTHON: &str = "/usr/bin/python3";
+
+fn fake_qemu_launch(dir: &Path, vcpus: u32) -> Option<LaunchFile> {
+    if !Path::new(PYTHON).exists() {
+        return None;
+    }
+    let api = dir.join("api.sock");
+    let mut l = launch_file(
+        dir,
+        vec![
+            PYTHON.into(),
+            "-c".into(),
+            FAKE_QEMU.into(),
+            api.to_string_lossy().into_owned(),
+            vcpus.to_string(),
+        ],
+    );
+    l.hypervisor = HypervisorKind::Qemu;
+    Some(l)
+}
+
+/// `Cpus_allowed_list` of every thread of `pid`, by thread id.
+fn allowed_lists(pid: u32) -> Vec<(i32, String)> {
+    std::fs::read_dir(format!("/proc/{}/task", pid))
+        .unwrap()
+        .filter_map(|t| {
+            let t = t.unwrap();
+            let status = std::fs::read_to_string(t.path().join("status")).ok()?;
+            let list = status
+                .lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))?
+                .trim()
+                .to_string();
+            Some((t.file_name().to_str()?.parse().ok()?, list))
+        })
+        .collect()
+}
+
+/// Two CPUs this test may use (the same one twice on a 1-CPU host).
+fn two_cpus() -> (u32, u32) {
+    let mine = glidex_vm_shim::util::own_affinity().unwrap();
+    (mine[0], *mine.last().unwrap())
+}
+
+#[test]
+fn the_hypervisor_runs_on_its_cpus_and_can_be_rebound() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut launch) = fake_qemu_launch(dir.path(), 2) else {
+        return;
+    };
+    let (first, last) = two_cpus();
+    launch.cpu_affinity = vec![first];
+    let mut shim = start_shim(dir.path(), &launch);
+    let hv = wait_running(dir.path()).hypervisor_pid.unwrap();
+    let lists = allowed_lists(hv);
+    assert!(lists.len() >= 3, "{lists:?}");
+    assert!(
+        lists.iter().all(|(_, l)| *l == first.to_string()),
+        "{lists:?}"
+    );
+    // The shim itself stays unbound.
+    let mine = glidex_vm_shim::util::cpu_list(&glidex_vm_shim::util::own_affinity().unwrap());
+    assert_eq!(allowed_lists(shim.id())[0].1, mine);
+
+    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let n = c.set_affinity(&[last]).unwrap();
+    let lists = allowed_lists(hv);
+    assert_eq!(n as usize, lists.len());
+    assert!(
+        lists.iter().all(|(_, l)| *l == last.to_string()),
+        "{lists:?}"
+    );
+    assert!(matches!(
+        c.set_affinity(&[]),
+        Err(glidex_vm_shim::client::ShimError::Remote { code, .. }) if code == "invalid_argument"
+    ));
+
+    c.kill().unwrap();
+    wait_exited(dir.path());
+    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    assert!(matches!(
+        c.set_affinity(&[last]),
+        Err(glidex_vm_shim::client::ShimError::Remote { code, .. }) if code == "not_running"
+    ));
+    c.release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+}
+
+#[test]
+fn qemu_vcpus_are_pinned_once_qmp_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut launch) = fake_qemu_launch(dir.path(), 2) else {
+        return;
+    };
+    let (first, last) = two_cpus();
+    launch.cpu_affinity = vec![first, last];
+    launch.vcpu_pins = vec![last, first];
+    let mut shim = start_shim(dir.path(), &launch);
+    let hv = wait_running(dir.path()).hypervisor_pid.unwrap();
+    let lists = allowed_lists(hv);
+    let on = |cpu: u32| lists.iter().filter(|(_, l)| *l == cpu.to_string()).count();
+    if first != last {
+        assert_eq!((on(first), on(last)), (1, 1), "{lists:?}");
+        let both = glidex_vm_shim::util::cpu_list(&[first, last]);
+        assert_eq!(
+            lists.iter().filter(|(_, l)| *l == both).count(),
+            lists.len() - 2
+        );
+    }
+    let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+    assert!(log.contains("pinned 2 vCPUs to CPUs"), "{log}");
+
+    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    // Dedicated VMs are not rebound wholesale.
+    assert!(matches!(
+        c.set_affinity(&[first]),
+        Err(glidex_vm_shim::client::ShimError::Remote { code, .. }) if code == "invalid_argument"
+    ));
+    c.kill().unwrap();
+    wait_exited(dir.path());
+    c.release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+}
+
+#[test]
+fn a_vcpu_pinning_mismatch_fails_the_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut launch) = fake_qemu_launch(dir.path(), 2) else {
+        return;
+    };
+    let (first, _) = two_cpus();
+    launch.vcpu_pins = vec![first; 3];
+    let mut shim = start_shim(dir.path(), &launch);
+    let inst = wait_exited(dir.path());
+    let exit = inst.exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::LaunchFailed);
+    assert!(
+        exit.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("QEMU has 2 vCPUs"),
+        "{:?}",
+        exit.message
+    );
+    assert!(!alive(inst.hypervisor_pid.unwrap()));
+    ShimClient::connect(&dir.path().join("shim.sock"))
+        .unwrap()
+        .release()
+        .unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+}
+
+#[test]
+fn an_unbindable_affinity_fails_the_spawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut launch) = fake_qemu_launch(dir.path(), 1) else {
+        return;
+    };
+    // Valid for a cpu_set_t, but no such CPU here: EINVAL before exec.
+    launch.cpu_affinity = vec![1023];
+    if glidex_vm_shim::util::own_affinity()
+        .unwrap()
+        .contains(&1023)
+    {
+        return;
+    }
+    let mut shim = start_shim(dir.path(), &launch);
+    let inst = wait_exited(dir.path());
+    let exit = inst.exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::LaunchFailed);
+    assert!(
+        exit.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("cannot start"),
+        "{:?}",
+        exit.message
+    );
+    assert!(inst.hypervisor_pid.is_none());
+    ShimClient::connect(&dir.path().join("shim.sock"))
+        .unwrap()
+        .release()
+        .unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
 }

@@ -26,6 +26,13 @@ pub enum Op {
     Kill,
     /// Shut the console down and exit; only once the hypervisor is gone.
     Release,
+    /// Rebind every thread of the running hypervisor to `cpus` (a shared
+    /// VM moved between NUMA nodes' CPUs). Replies `{"threads": n}`.
+    /// Refused for VMs with pinned vCPUs. A shim from before this op
+    /// answers `protocol_error`: the caller treats that as unsupported.
+    SetAffinity {
+        cpus: Vec<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +88,8 @@ pub struct HelloResult {
 pub const E_PROTOCOL: &str = "protocol_error";
 pub const E_INVALID: &str = "invalid_argument";
 pub const E_NOT_EXITED: &str = "not_exited";
+/// No hypervisor is running (it never started, or it has exited).
+pub const E_NOT_RUNNING: &str = "not_running";
 pub const E_INTERNAL: &str = "internal";
 
 #[cfg(test)]
@@ -99,6 +108,14 @@ mod tests {
         );
         let r: Request = serde_json::from_str(r#"{"id": 1, "op": "status"}"#).unwrap();
         assert_eq!(r.op, Op::Status);
+        let r: Request =
+            serde_json::from_str(r#"{"id": 4, "op": "set_affinity", "args": {"cpus": [64, 65]}}"#)
+                .unwrap();
+        assert_eq!(r.op, Op::SetAffinity { cpus: vec![64, 65] });
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({"id": 4, "op": "set_affinity", "args": {"cpus": [64, 65]}})
+        );
         assert_eq!(
             serde_json::to_value(Response::err(2, E_NOT_EXITED, "running")).unwrap(),
             serde_json::json!({"id": 2, "error": {"code": "not_exited", "message": "running"}})

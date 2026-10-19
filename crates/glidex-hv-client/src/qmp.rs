@@ -115,6 +115,13 @@ impl QmpClient {
         Ok(crate::stats::parse_qmp_blockstats(&v))
     }
 
+    /// Each vCPU's `cpu-index` and host thread id (`query-cpus-fast`), for
+    /// pinning vCPUs, which QEMU has no option for.
+    pub fn query_cpus_fast(&self) -> Result<Vec<(u32, i32)>, HvError> {
+        let v = self.execute(&serde_json::json!({ "execute": "query-cpus-fast" }))?;
+        parse_cpus_fast(&v)
+    }
+
     fn run(&self, name: &str) -> Result<(), HvError> {
         self.execute(&serde_json::json!({ "execute": name }))
             .map(|_| ())
@@ -167,6 +174,25 @@ impl QmpClient {
         }))?;
         Ok(parse_observed(&status, &peripherals))
     }
+}
+
+fn parse_cpus_fast(v: &Value) -> Result<Vec<(u32, i32)>, HvError> {
+    let bad = || HvError::Api(format!("unexpected query-cpus-fast reply: {}", v));
+    v.as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|c| {
+            let index = c.get("cpu-index").and_then(|i| i.as_u64());
+            let thread = c.get("thread-id").and_then(|t| t.as_i64());
+            match (index, thread) {
+                (Some(i), Some(t)) => Ok((
+                    u32::try_from(i).map_err(|_| bad())?,
+                    i32::try_from(t).map_err(|_| bad())?,
+                )),
+                _ => Err(bad()),
+            }
+        })
+        .collect()
 }
 
 fn parse_observed(status: &Value, peripherals: &Value) -> Observed {
@@ -226,6 +252,17 @@ mod tests {
             parse_observed(&serde_json::json!({"status": "shutdown"}), &Value::Null).guest,
             GuestState::Shutdown
         );
+    }
+
+    #[test]
+    fn cpus_fast() {
+        let v = serde_json::json!([
+            {"cpu-index": 0, "thread-id": 4101, "qom-path": "/machine/unattached/device[0]", "target": "x86_64"},
+            {"cpu-index": 1, "thread-id": 4102, "qom-path": "/machine/unattached/device[1]", "target": "x86_64"}
+        ]);
+        assert_eq!(parse_cpus_fast(&v).unwrap(), [(0, 4101), (1, 4102)]);
+        assert!(parse_cpus_fast(&serde_json::json!([{"cpu-index": 0}])).is_err());
+        assert!(parse_cpus_fast(&serde_json::json!({})).is_err());
     }
 
     #[test]

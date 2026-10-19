@@ -925,7 +925,25 @@ impl VmManager {
                 if let Some(n) = probe.allocatable.hugepages.get_mut(&kib.to_string()) {
                     *n = n.saturating_sub(taken);
                 }
+                if let Some(t) = probe.topology.as_mut() {
+                    t.deduct_dpdk(mem, kib);
+                }
             }
+            // OVS-DPDK's polling and housekeeping CPUs are not the VMs'.
+            if let Some(t) = probe.topology.as_mut() {
+                for (key, why) in [
+                    ("dpdk_pmd_cpu_mask", "pmd"),
+                    ("dpdk_lcore_mask", "dpdk_lcore"),
+                ] {
+                    if let Some(mask) = caps.get(key).and_then(|v| v.as_str()) {
+                        t.reserve(crate::topology::cpus_of_mask(mask), why);
+                    }
+                }
+            }
+        }
+        if let (Some(t), Some(list)) = (probe.topology.as_mut(), &self.reserved.load().cpu_list) {
+            t.reserve(glidex_ovs::tuning::parse_cpu_list(list), "config");
+            t.reserved_by_config = true;
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
