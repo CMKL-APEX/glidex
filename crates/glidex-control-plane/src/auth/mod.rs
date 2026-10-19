@@ -130,6 +130,9 @@ impl Principal {
                 disabled: false,
                 default_project: None,
                 created_at: 0,
+                managed: None,
+                email: None,
+                disabled_reason: None,
             }),
             token: None,
             token_narrowed: false,
@@ -2097,6 +2100,7 @@ mod tests {
                 name: "lab".into(),
                 members: vec![],
                 created_at: 0,
+                managed: None,
             })
             .unwrap();
         let u = s

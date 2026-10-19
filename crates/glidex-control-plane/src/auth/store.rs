@@ -82,6 +82,50 @@ pub struct User {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
     pub created_at: u64,
+    /// The connector that provisions it (spec/tenancy.md §8.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<Managed>,
+    /// Its provisioned email (a managed user's; logins keep theirs on the identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Why it is disabled, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<DisabledReason>,
+}
+
+/// A user or team a connector provisions (spec/tenancy.md §8): its
+/// fields are the connector's (§8.3). Its SCIM `id` is its glidex id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Managed {
+    pub connector: String,
+    /// The IdP's own id (SCIM `externalId`), when it sends one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    /// SCIM `userName` (users only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+}
+
+/// Why a user is disabled (D20, D42, §8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisabledReason {
+    /// An administrator: only an administrator enables it again.
+    Admin,
+    /// Its IdP, over SCIM (`active: false` or `DELETE`).
+    Scim,
+    /// Its connector was deleted.
+    ConnectorDeleted,
+}
+
+impl DisabledReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DisabledReason::Admin => "admin",
+            DisabledReason::Scim => "scim",
+            DisabledReason::ConnectorDeleted => "connector_deleted",
+        }
+    }
 }
 
 /// A login identity linked to a user (spec §6.1).
@@ -142,6 +186,9 @@ pub struct Team {
     #[serde(default)]
     pub members: Vec<TeamMember>,
     pub created_at: u64,
+    /// The connector whose group it is (`group_mode: auto`, D43).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<Managed>,
 }
 
 /// A stored role link (an [`authz::Link`](crate::authz::Link) plus who made it).
@@ -151,6 +198,14 @@ pub struct LinkRecord {
     pub link: Link,
     pub created_by: String,
     pub created_at: u64,
+}
+
+/// What deprovisioning a user took away (D20, counts).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Deprovisioned {
+    pub sessions: usize,
+    pub tokens: usize,
+    pub teams: usize,
 }
 
 /// What deleting a user took with it (counts).
@@ -462,6 +517,185 @@ impl IdentityStore {
             Ok(n)
         })
     }
+    /// §8.3: connector `c` goes; its users and teams stop being managed,
+    /// in one write. With `disable`, its users are disabled as
+    /// [`deprovision`](Self::deprovision) does and its memberships go;
+    /// otherwise they stay and its memberships become manual. Returns how
+    /// many users and teams it managed.
+    pub fn release_connector(&self, c: &str, disable: bool) -> Result<(usize, usize), StoreError> {
+        let source = MemberSource::Connector(c.to_string());
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            let mut ids = Vec::new();
+            {
+                let mut t = tx.open_table(USERS)?;
+                let mut changed = Vec::new();
+                for r in t.iter()? {
+                    let (k, v) = r?;
+                    if let Ok(mut u) = serde_json::from_slice::<User>(v.value())
+                        && u.managed.as_ref().is_some_and(|m| m.connector == c)
+                    {
+                        u.managed = None;
+                        if disable {
+                            if !(u.disabled && u.disabled_reason == Some(DisabledReason::Admin)) {
+                                u.disabled_reason = Some(DisabledReason::ConnectorDeleted);
+                            }
+                            u.disabled = true;
+                        }
+                        ids.push(u.id.clone());
+                        changed.push((k.value().to_string(), u));
+                    }
+                }
+                for (k, u) in changed {
+                    t.insert(k.as_str(), serde_json::to_vec(&u)?.as_slice())?;
+                }
+            }
+            if disable && !ids.is_empty() {
+                for (table, is_mine) in [
+                    (
+                        SESSIONS,
+                        &(|v: &[u8]| {
+                            serde_json::from_slice::<Session>(v)
+                                .is_ok_and(|s| ids.contains(&s.user_id))
+                        }) as &dyn Fn(&[u8]) -> bool,
+                    ),
+                    (TOKENS, &|v: &[u8]| {
+                        serde_json::from_slice::<Token>(v).is_ok_and(|k| {
+                            matches!(&k.kind, TokenKind::Personal { owner } if ids.contains(owner))
+                        })
+                    }),
+                ] {
+                    let mut t = tx.open_table(table)?;
+                    let gone: Vec<String> = t
+                        .iter()?
+                        .filter_map(|r| r.ok())
+                        .filter(|(_, v)| is_mine(v.value()))
+                        .map(|(k, _)| k.value().to_string())
+                        .collect();
+                    for k in gone {
+                        t.remove(k.as_str())?;
+                    }
+                }
+            }
+            let mut teams = 0;
+            {
+                let mut t = tx.open_table(TEAMS)?;
+                let mut changed = Vec::new();
+                for r in t.iter()? {
+                    let (k, v) = r?;
+                    let Ok(mut team) = serde_json::from_slice::<Team>(v.value()) else {
+                        continue;
+                    };
+                    let mut dirty = false;
+                    if team.managed.as_ref().is_some_and(|m| m.connector == c) {
+                        team.managed = None;
+                        teams += 1;
+                        dirty = true;
+                    }
+                    if disable {
+                        let before = team.members.len();
+                        team.members.retain(|m| m.source != source);
+                        dirty |= team.members.len() != before;
+                    } else {
+                        for m in team.members.iter_mut().filter(|m| m.source == source) {
+                            m.source = MemberSource::Manual;
+                            dirty = true;
+                        }
+                        // A manual and a converted membership are one.
+                        let mut seen = std::collections::HashSet::new();
+                        team.members.retain(|m| {
+                            seen.insert(m.user_id.clone()) || m.source != MemberSource::Manual
+                        });
+                    }
+                    if dirty {
+                        changed.push((k.value().to_string(), team));
+                    }
+                }
+                for (k, team) in changed {
+                    t.insert(k.as_str(), serde_json::to_vec(&team)?.as_slice())?;
+                }
+            }
+            Ok((ids.len(), teams))
+        })
+    }
+
+    /// D20: disable user `id` for `reason` in one write: its sessions end,
+    /// its personal tokens are revoked, and the memberships its connector
+    /// gave it (`connector:<id>`) go. An administrator's disabling stays
+    /// the reason when there is one. `None` when there is no such user.
+    pub fn deprovision(
+        &self,
+        id: &str,
+        reason: DisabledReason,
+    ) -> Result<Option<(User, Deprovisioned)>, StoreError> {
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            let mut out = Deprovisioned::default();
+            let user = {
+                let mut users = tx.open_table(USERS)?;
+                let Some(mut u): Option<User> = users
+                    .get(id)?
+                    .map(|v| serde_json::from_slice(v.value()))
+                    .transpose()?
+                else {
+                    return Ok(None);
+                };
+                if !(u.disabled && u.disabled_reason == Some(DisabledReason::Admin)) {
+                    u.disabled_reason = Some(reason);
+                }
+                u.disabled = true;
+                users.insert(id, serde_json::to_vec(&u)?.as_slice())?;
+                u
+            };
+            let drop_rows = |t: &mut crate::store::RecTable<'_>,
+                             drop: &dyn Fn(&[u8]) -> bool|
+             -> Result<usize, StoreError> {
+                let gone: Vec<String> = t
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter(|(_, v)| drop(v.value()))
+                    .map(|(k, _)| k.value().to_string())
+                    .collect();
+                for k in &gone {
+                    t.remove(k.as_str())?;
+                }
+                Ok(gone.len())
+            };
+            {
+                let mut t = tx.open_table(SESSIONS)?;
+                out.sessions = drop_rows(&mut t, &|v| {
+                    serde_json::from_slice::<Session>(v).is_ok_and(|s| s.user_id == id)
+                })?;
+            }
+            {
+                let mut t = tx.open_table(TOKENS)?;
+                out.tokens = drop_rows(&mut t, &|v| {
+                    serde_json::from_slice::<Token>(v).is_ok_and(
+                        |k| matches!(&k.kind, TokenKind::Personal { owner } if owner == id),
+                    )
+                })?;
+            }
+            if let Some(m) = &user.managed {
+                let source = MemberSource::Connector(m.connector.clone());
+                let mut t = tx.open_table(TEAMS)?;
+                let mut changed = Vec::new();
+                for r in t.iter()? {
+                    let (k, v) = r?;
+                    if let Ok(mut team) = serde_json::from_slice::<Team>(v.value()) {
+                        let before = team.members.len();
+                        team.members
+                            .retain(|x| !(x.user_id == id && x.source == source));
+                        if team.members.len() != before {
+                            changed.push((k.value().to_string(), team));
+                        }
+                    }
+                }
+                out.teams = changed.len();
+                for (k, team) in changed {
+                    t.insert(k.as_str(), serde_json::to_vec(&team)?.as_slice())?;
+                }
+            }
+            Ok(Some((user, out)))
+        })
+    }
 
     /// Delete user `id` and what is its alone, in one write (spec/tenancy.md
     /// §6.3): its identities, sessions, personal tokens, team memberships,
@@ -596,6 +830,9 @@ impl IdentityStore {
                     disabled: false,
                     default_project: None,
                     created_at: now(),
+                    managed: None,
+                    email: None,
+                    disabled_reason: None,
                 };
                 self.put_user(&u)?;
                 u
@@ -1043,6 +1280,7 @@ mod tests {
                 name: name.into(),
                 members: vec![],
                 created_at: 0,
+                managed: None,
             })
             .unwrap();
         }

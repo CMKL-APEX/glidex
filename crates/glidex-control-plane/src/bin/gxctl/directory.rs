@@ -19,8 +19,8 @@ const USAGE: &str = "Usage: connector list | show <id> \
     | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
     | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
     | update <id> [--name TEXT] [--enable|--disable] [COMMON] \
-    | secret set <id> [field] [--from-file PATH] | test <id> | remove <id>\n\
-    COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N]";
+    | secret set <id> [field] [--from-file PATH] | test <id> | remove <id> [--detach-users]\n\
+    COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N] [--provisioning none|scim] [--group-mode mapped|auto]";
 
 fn kind(c: &Connector) -> &'static str {
     match c.settings {
@@ -51,6 +51,13 @@ fn show(c: &Connector) {
     }
     if let Some(d) = c.token_max_days {
         println!("  Token max days: {d}");
+    }
+    if c.provisioning.as_deref().is_some_and(|p| p != "none") {
+        println!(
+            "  Provisioning:   {} (groups {})",
+            c.provisioning.as_deref().unwrap_or_default(),
+            c.group_mode.as_deref().unwrap_or("mapped")
+        );
     }
     let mut teams: Vec<_> = c.group_teams.iter().collect();
     teams.sort();
@@ -167,6 +174,14 @@ fn common(args: &[&str], c: &mut Connector) -> Result<Vec<&'static str>, String>
                 .map_err(|_| format!("--token-max-days takes a number, not {d}"))?,
         );
         paths.push("token_max_days");
+    }
+    if let Some(p) = flag_value(args, "--provisioning") {
+        c.provisioning = Some(p.into());
+        paths.push("provisioning");
+    }
+    if let Some(m) = flag_value(args, "--group-mode") {
+        c.group_mode = Some(m.into());
+        paths.push("group_mode");
     }
     Ok(paths)
 }
@@ -418,11 +433,26 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
             match svc
                 .delete_connector(DeleteConnectorRequest {
                     id: id.clone(),
+                    users: has_flag(args, "--detach-users").then(|| "detach".into()),
                     ..Default::default()
                 })
                 .await
             {
-                Ok(_) => println!("{} {}", "Connector removed:".green(), id),
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!("{} {}", "Connector removed:".green(), id);
+                    if r.users > 0 || r.teams > 0 {
+                        let what = if has_flag(args, "--detach-users") {
+                            "detached, still enabled"
+                        } else {
+                            "disabled"
+                        };
+                        println!(
+                            "  {} provisioned users {what}; {} teams detached",
+                            r.users, r.teams
+                        );
+                    }
+                }
                 Err(e) => err(rpc_err(e)),
             }
         }

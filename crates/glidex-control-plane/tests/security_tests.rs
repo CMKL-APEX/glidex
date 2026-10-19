@@ -1303,6 +1303,7 @@ async fn pam_login_provisions_on_first_login() {
             name: "lab".into(),
             members: vec![],
             created_at: 0,
+            managed: None,
         })
         .unwrap();
     let login = |u: &str, p: &str| json!({"method": "pam", "username": u, "password": p});
@@ -1771,6 +1772,7 @@ async fn oidc_code_flow_with_pkce() {
             name: "lab".into(),
             members: vec![],
             created_at: 0,
+            managed: None,
         })
         .unwrap();
     let (s, v, _) = h.call("GET", "/auth/methods", None, &As::Nobody).await;

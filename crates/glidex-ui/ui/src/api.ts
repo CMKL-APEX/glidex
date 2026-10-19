@@ -1112,7 +1112,9 @@ export const updateConnector = (id: string, connector: Partial<ConnectorInput>) 
   rpc(ConnectorService.method.updateConnector, { id, connector: connector as ConnectorJson, update_mask: maskOf(connector) }).then(
     (r) => r.connector as Connector,
   );
-export const deleteConnector = (id: string) => rpc(ConnectorService.method.deleteConnector, { id }).then(none);
+/** With `users: "detach"`, the users and teams it provisions stay, as the directory's (§8.3). */
+export const deleteConnector = (id: string, users?: "disable" | "detach") =>
+  rpc(ConnectorService.method.deleteConnector, users ? { id, users } : { id }).then((r) => ({ users: r.users ?? 0, teams: r.teams ?? 0 }));
 /** Write-only: the value is sealed server-side and never comes back. */
 export const setConnectorSecret = (id: string, field: string, value: string) =>
   rpc(ConnectorService.method.setSecret, { id, field, value }).then((r) => r.connector as Connector);

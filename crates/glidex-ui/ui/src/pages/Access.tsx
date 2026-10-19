@@ -23,11 +23,13 @@ function TeamCard({
   team,
   manage,
   users,
+  connectors,
   onChange,
   onError,
 }: {
   team: Team;
   manage: boolean;
+  connectors: Record<string, string>;
   users: { id: string; display_name: string }[];
   onChange: () => void;
   onError: (e: string) => void;
@@ -50,8 +52,13 @@ function TeamCard({
         <div>
           <span className="font-medium text-gray-900">{team.name}</span>{" "}
           <code className="text-xs text-gray-400 font-mono">{team.id}</code>
+          {team.managed_by && (
+            <span className="ml-2" title="Its name and its connector memberships come from the IdP">
+              <Badge kind="muted">from {connectors[team.managed_by] ?? team.managed_by}</Badge>
+            </span>
+          )}
         </div>
-        {manage && (
+        {manage && !team.managed_by && (
           <button className={dangerLink} onClick={() => confirm(`Delete team ${team.name}?`) && run(() => api.deleteTeam(team.id))}>
             Delete
           </button>
@@ -103,6 +110,19 @@ function TeamCard({
       )}
     </div>
   );
+}
+
+function disabledWhy(r: string | undefined): string {
+  switch (r) {
+    case "scim":
+      return "Its IdP deactivated or removed it; it is enabled again there";
+    case "connector_deleted":
+      return "Its connector was deleted";
+    case "admin":
+      return "An administrator disabled it";
+    default:
+      return "";
+  }
 }
 
 export default function Access() {
@@ -219,8 +239,20 @@ export default function Access() {
                     </td>
                     <td className="py-2 text-gray-500">{formatTimestamp(u.created_at)}</td>
                     <td className="py-2">
-                      {u.disabled ? <Badge kind="denied">disabled</Badge> : <Badge kind="ok">active</Badge>}
-                      {host.manageUsers && (
+                      {u.disabled ? (
+                        <span title={disabledWhy(u.disabled_reason)}>
+                          <Badge kind="denied">{u.disabled_reason === "scim" ? "disabled by its IdP" : "disabled"}</Badge>
+                        </span>
+                      ) : (
+                        <Badge kind="ok">active</Badge>
+                      )}
+                      {u.managed_by && (
+                        <span className="ml-2" title="Its name, email and whether it is enabled come from the IdP">
+                          <Badge kind="muted">managed by {connectors[u.managed_by] ?? u.managed_by}</Badge>
+                        </span>
+                      )}
+                      {/* An administrator may stop a managed user, and undo only that (§8.3). */}
+                      {host.manageUsers && !(u.managed_by && u.disabled && u.disabled_reason !== "admin") && (
                         <button
                           className="ml-2 text-sm text-sky-700 hover:underline"
                           onClick={() =>
@@ -231,7 +263,7 @@ export default function Access() {
                           {u.disabled ? "Enable" : "Disable"}
                         </button>
                       )}
-                      {host.manageUsers && u.id !== me.user?.id && (
+                      {host.manageUsers && u.id !== me.user?.id && !(u.managed_by && !u.disabled) && (
                         <button className={`ml-2 ${dangerLink}`} onClick={() => setDeleting({ id: u.id, name: u.display_name })}>
                           Delete
                         </button>
@@ -253,7 +285,15 @@ export default function Access() {
             <p className="text-sm text-gray-500">No teams.</p>
           ) : (
             dir.teams.map((t) => (
-              <TeamCard key={t.id} team={t} manage={host.manageTeams} users={dir.users} onChange={reloadDir} onError={setError} />
+              <TeamCard
+                key={t.id}
+                team={t}
+                manage={host.manageTeams}
+                users={dir.users}
+                connectors={connectors}
+                onChange={reloadDir}
+                onError={setError}
+              />
             ))
           )}
           {host.manageTeams && (

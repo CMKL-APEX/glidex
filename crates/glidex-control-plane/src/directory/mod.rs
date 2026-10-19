@@ -191,6 +191,12 @@ pub struct Connector {
     /// Longest personal token a login through it mints (D20).
     #[serde(default)]
     pub token_max_days: Option<u64>,
+    /// Whether the IdP provisions this connector's users (§8).
+    #[serde(default, skip_serializing_if = "Provisioning::is_none")]
+    pub provisioning: Provisioning,
+    /// How provisioned groups become teams (D18, D43).
+    #[serde(default, skip_serializing_if = "GroupMode::is_mapped")]
+    pub group_mode: GroupMode,
     /// Kind-specific, see [`PamSettings`] and [`OidcSettings`].
     #[serde(default)]
     pub settings: serde_json::Value,
@@ -202,6 +208,68 @@ pub struct Connector {
 
 fn yes() -> bool {
     true
+}
+
+/// spec/tenancy.md §8: who creates and removes a connector's users.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provisioning {
+    /// Logins create them (JIT), or invitations and administrators do.
+    #[default]
+    None,
+    /// The IdP pushes them over SCIM 2.0 (§8.1); only they log in (D41).
+    Scim,
+}
+
+impl Provisioning {
+    pub fn is_none(&self) -> bool {
+        *self == Provisioning::None
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Provisioning::None => "none",
+            Provisioning::Scim => "scim",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Provisioning> {
+        match s {
+            "" | "none" => Some(Provisioning::None),
+            "scim" => Some(Provisioning::Scim),
+            _ => None,
+        }
+    }
+}
+
+/// D18, D43: provisioned groups map to named teams, or each is a team.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupMode {
+    #[default]
+    Mapped,
+    Auto,
+}
+
+impl GroupMode {
+    pub fn is_mapped(&self) -> bool {
+        *self == GroupMode::Mapped
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GroupMode::Mapped => "mapped",
+            GroupMode::Auto => "auto",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<GroupMode> {
+        match s {
+            "" | "mapped" => Some(GroupMode::Mapped),
+            "auto" => Some(GroupMode::Auto),
+            _ => None,
+        }
+    }
 }
 
 impl Connector {
@@ -397,6 +465,25 @@ impl Connector {
         {
             return Err(ConnectorError::Invalid("token_max_days is 1-365".into()));
         }
+        if self.provisioning == Provisioning::Scim {
+            if !matches!(self.kind, Kind::Oidc | Kind::Jumpcloud) {
+                return Err(ConnectorError::Invalid(format!(
+                    "a {} connector isn't provisioned by SCIM: oidc and jumpcloud are",
+                    self.kind.as_str()
+                )));
+            }
+            // D41: the IdP decides who has an account.
+            if self.jit {
+                return Err(ConnectorError::Invalid(
+                    "a SCIM connector creates users by provisioning only: turn jit off".into(),
+                ));
+            }
+        }
+        if self.group_mode == GroupMode::Auto && self.provisioning != Provisioning::Scim {
+            return Err(ConnectorError::Invalid(
+                "group_mode auto is for a provisioned connector (D43)".into(),
+            ));
+        }
         // D22: who lands in the owner's or an operator's tenant is
         // decided by the IdP; admit nobody by default.
         if guarded && self.jit && self.required_groups.is_empty() {
@@ -451,6 +538,8 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
                 .collect(),
             default_tenant: None,
             token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
             settings: serde_json::json!({ "allowed_groups": pam.allowed_groups }),
             source: Source::File,
             created_at: 0,
@@ -471,6 +560,8 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
             group_teams: o.group_teams.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             default_tenant: None,
             token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
             settings: serde_json::json!({
                 "issuer": o.issuer, "client_id": o.client_id, "scopes": o.scopes, "groups_claim": o.groups_claim,
                 "allowed_domains": o.allowed_domains, "redirect_uri": o.redirect_uri,
@@ -786,6 +877,8 @@ mod tests {
             group_teams: BTreeMap::new(),
             default_tenant: None,
             token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
             settings: serde_json::json!({ "issuer": "https://idp.example", "client_id": "glidex" }),
             source: Source::Api,
             created_at: 0,

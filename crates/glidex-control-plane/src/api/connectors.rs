@@ -66,15 +66,25 @@ pub async fn update(
     Ok(Json(svc::update_connector(&c, req)?))
 }
 
-pub async fn delete(c: Caller, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
-    svc::delete_connector(
+#[derive(serde::Deserialize)]
+pub struct DeleteQuery {
+    users: Option<String>,
+}
+
+/// `DELETE /connectors/{id}[?users=disable|detach]`.
+pub async fn delete(
+    c: Caller,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<DeleteQuery>,
+) -> Result<Json<pb::DeleteConnectorResponse>, ApiErr> {
+    Ok(Json(svc::delete_connector(
         &c,
         pb::DeleteConnectorRequest {
             id,
+            users: q.users,
             ..Default::default()
         },
-    )?;
-    Ok(StatusCode::NO_CONTENT)
+    )?))
 }
 
 pub async fn set_secret(

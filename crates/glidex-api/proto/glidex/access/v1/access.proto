@@ -272,6 +272,16 @@ message User {
   google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
   // Lists only.
   repeated Identity identities = 6;
+  // The connector that provisions it: its display name, email, external
+  // id and disabled state are the connector's (spec/tenancy.md §8.3).
+  // Output only.
+  optional string managed_by = 7 [json_name = "managed_by"];
+  // The IdP's id for it (SCIM `externalId`). Output only.
+  optional string external_id = 8 [json_name = "external_id"];
+  // A managed user's email, from its connector. Output only.
+  optional string email = 9;
+  // Why it is disabled: `admin`, `scim` or `connector_deleted`. Output only.
+  optional string disabled_reason = 10 [json_name = "disabled_reason"];
 }
 
 message ListUsersRequest {}
@@ -414,6 +424,11 @@ message Team {
   string name = 2;
   repeated TeamMember members = 3;
   google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  // The connector whose group it is (`group_mode: auto`): its name and
+  // its connector memberships are the connector's. Output only.
+  optional string managed_by = 5 [json_name = "managed_by"];
+  // The IdP's id for the group. Output only.
+  optional string external_id = 6 [json_name = "external_id"];
 }
 
 message ListTeamsRequest {}

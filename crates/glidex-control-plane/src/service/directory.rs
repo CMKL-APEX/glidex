@@ -109,6 +109,8 @@ pub fn to_pb(call: &Call, c: &Connector) -> ServiceResult<pb::Connector> {
             .collect(),
         default_tenant: c.default_tenant.clone(),
         token_max_days: c.token_max_days.map(|d| d as u32),
+        provisioning: Some(c.provisioning.as_str().into()),
+        group_mode: Some(c.group_mode.as_str().into()),
         settings: Some(settings),
         secrets: secrets
             .into_iter()
@@ -258,6 +260,26 @@ pub fn get_connector(
     })
 }
 
+fn provisioning_of(s: Option<&str>) -> ServiceResult<crate::directory::Provisioning> {
+    crate::directory::Provisioning::parse(s.unwrap_or("")).ok_or_else(|| {
+        ServiceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_connector",
+            "provisioning is none or scim",
+        )
+    })
+}
+
+fn group_mode_of(s: Option<&str>) -> ServiceResult<crate::directory::GroupMode> {
+    crate::directory::GroupMode::parse(s.unwrap_or("")).ok_or_else(|| {
+        ServiceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_connector",
+            "group_mode is mapped or auto",
+        )
+    })
+}
+
 pub fn create_connector(
     call: &Call,
     req: pb::CreateConnectorRequest,
@@ -291,6 +313,8 @@ pub fn create_connector(
             .collect(),
         default_tenant: p.default_tenant.clone(),
         token_max_days: p.token_max_days.map(u64::from),
+        provisioning: provisioning_of(p.provisioning.as_deref())?,
+        group_mode: group_mode_of(p.group_mode.as_deref())?,
         settings,
         source: Source::Api,
         created_at: now,
@@ -346,6 +370,8 @@ pub fn update_connector(
             }
             "default_tenant" => c.default_tenant = p.default_tenant.clone(),
             "token_max_days" => c.token_max_days = p.token_max_days.map(u64::from),
+            "provisioning" => c.provisioning = provisioning_of(p.provisioning.as_deref())?,
+            "group_mode" => c.group_mode = group_mode_of(p.group_mode.as_deref())?,
             "pam" | "oidc" | "google" | "jumpcloud" => {
                 let s = p.settings.as_ref().ok_or_else(|| {
                     ServiceError::new(
@@ -390,8 +416,32 @@ pub fn delete_connector(
 ) -> ServiceResult<pb::DeleteConnectorResponse> {
     call.require(directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
+    let disable = match req.users.as_deref() {
+        None | Some("disable") => true,
+        Some("detach") => false,
+        Some(_) => {
+            return Err(ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                "users is disable or detach",
+            ));
+        }
+    };
     call.auth().connectors.delete(&c.id).map_err(err_of)?;
-    Ok(pb::DeleteConnectorResponse::default())
+    let (users, teams) = call
+        .auth()
+        .store
+        .release_connector(&c.id, disable)
+        .map_err(|e| ServiceError::from(auth_error(crate::auth::AuthError::Store(e))))?;
+    call.detail(
+        "users",
+        serde_json::json!({ "count": users, "disabled": disable }),
+    );
+    Ok(pb::DeleteConnectorResponse {
+        users: users as u32,
+        teams: teams as u32,
+        ..Default::default()
+    })
 }
 
 pub fn set_secret(call: &Call, req: pb::SetSecretRequest) -> ServiceResult<pb::SetSecretResponse> {

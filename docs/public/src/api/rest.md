@@ -410,7 +410,7 @@ them to the node being managed).
 | `POST` | `/connectors` | Create a connector (OIDC or PAM) |
 | `GET` | `/connectors/{id}` | Get a connector (secrets show only whether they are set) |
 | `PATCH` | `/connectors/{id}` | Change a connector |
-| `DELETE` | `/connectors/{id}` | Delete a connector |
+| `DELETE` | `/connectors/{id}` | Delete a connector; `?users=detach` keeps the users it provisions enabled (the default disables them) |
 | `PUT` | `/connectors/{id}/secrets/{field}` | Set a connector secret (write-only) |
 | `POST` | `/connectors/{id}/test` | Test a connector step by step |
 

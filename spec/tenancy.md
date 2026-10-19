@@ -1526,3 +1526,15 @@ Tasks 4 and 5, and the follow-ups:
 | Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
 | Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 
+**T3** (SCIM) is in progress. Task 2, managed users and teams:
+
+| Spec | Code |
+|---|---|
+| Managed records (§4, §8.3) | `auth::store::{Managed, DisabledReason}`: `User.{managed, email, disabled_reason}`, `Team.managed`; proto `User.{managed_by, external_id, email, disabled_reason}`, `Team.{managed_by, external_id}` |
+| `provisioning` and `group_mode` (§8.1, D43) | `directory::{Provisioning, GroupMode}`, `Connector::validate` (`scim` for `oidc` and `jumpcloud`, with `jit` off; `auto` only when provisioned); proto `Connector.{provisioning, group_mode}`; gxctl `--provisioning`, `--group-mode` |
+| D20 in one write | `IdentityStore::deprovision`: disabled, sessions, personal tokens, the connector's memberships; an administrator's stop stays the reason |
+| Field ownership (§8.3) | `service/access.rs`: `409 managed_by_connector` for a managed user's name, enabling one its IdP disabled, deleting an enabled one, a managed team's name or deletion, and a provisioned connector's memberships; an administrator may disable a managed user |
+| Deleting a connector (§8.3) | `IdentityStore::release_connector` (one write); `DeleteConnectorRequest.users` (`disable` / `detach`), `DeleteConnectorResponse.{users, teams}`; gxctl `connector remove --detach-users`; the Connectors page asks for a SCIM connector |
+| UI | the Access page: "managed by <connector>", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
+| Tests | `connector_tests.rs::managed_users_and_teams_belong_to_their_connector` |
+
