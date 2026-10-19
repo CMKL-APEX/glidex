@@ -235,3 +235,40 @@ test("users and groups the IdP provisions show as its own", async ({ page }) => 
     for (const t of teams.filter((t) => t.name === "e2e-navy")) await del(`/teams/${t.id}`);
   }
 });
+
+test("a Google Workspace connector pulls its groups, and says why a sync failed", async ({ page }) => {
+  const ID = "e2e-gpull";
+  try {
+    await page.goto("/connectors");
+    await page.getByRole("button", { name: "+ Add Connector" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.locator("#connector-kind").selectOption("google");
+    await dialog.locator("#connector-id").fill(ID);
+    await dialog.locator("#connector-client_id").fill("web-client");
+    await dialog.locator("#connector-domains").fill("corp.example");
+    await dialog.getByLabel("Create users at their first login").check();
+    await dialog.locator("#connector-provisioning").selectOption("pull");
+    // A pull creates users by itself (D44).
+    await expect(dialog.getByLabel("Create users at their first login")).toBeDisabled();
+    await dialog.locator("#connector-sync_admin").fill("admin@corp.example");
+    await dialog.locator("#connector-sync_groups").fill("glidex-users@corp.example, lab@corp.example");
+    await dialog.locator("#connector-group-mode").selectOption("auto");
+    await dialog.getByRole("button", { name: "Create Connector" }).click();
+    await expect(dialog).toBeHidden();
+    const made = (await api(`/connectors/${ID}`)).connector;
+    expect(made).toMatchObject({ provisioning: "pull", group_mode: "auto", jit: false });
+    expect(made.sync).toMatchObject({ admin_email: "admin@corp.example", groups: ["glidex-users@corp.example", "lab@corp.example"] });
+
+    const row = page.getByRole("row", { name: new RegExp(ID) });
+    await expect(row).toContainText("Pulls glidex-users@corp.example, lab@corp.example every 15 min, a team per group");
+    await expect(row).toContainText("not run yet");
+    await expect(row.getByRole("button", { name: "Set service account key" })).toBeVisible();
+    // No key yet: the run fails, says why, and changes nothing.
+    await row.getByRole("button", { name: "Sync now" }).click();
+    await expect(row.getByTestId("sync-status")).toContainText("failed");
+    await expect(row.getByTestId("sync-status")).toContainText("service_account_key");
+    await expect(page.getByText(/The sync of e2e-gpull failed/)).toBeVisible();
+  } finally {
+    await del(`/connectors/${ID}`);
+  }
+});

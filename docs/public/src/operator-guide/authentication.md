@@ -249,6 +249,63 @@ gxctl connector test gws
 - Google sends no groups, so `--require-group` and `--team` don't apply;
   give people roles in Glidex instead.
 
+#### Directory sync from Google Workspace
+
+A Workspace `google` connector can **pull** its users from Google: the
+members of the Google groups you name, nested groups included, get
+glidex users, and nobody else logs in through it. Suspending someone in
+Google, archiving them, or taking them out of the groups disables their
+glidex user at the next run (their sessions and tokens end); bringing
+them back enables it again. Runs come every 15 minutes, and on demand.
+
+glidex reads the directory as a Google Cloud **service account** with
+**domain-wide delegation**, read-only:
+
+1. In the Google Cloud console, in a project of your organization:
+   enable the **Admin SDK API**, create a service account (it needs no
+   roles in the project), and create a **JSON key** for it. Keep the
+   key file safe; it goes only into glidex's secret, below.
+2. In the Google Admin console, **Security → Access and data control →
+   API controls → Domain-wide delegation → Add new**: the service
+   account's **client ID** (the number on its page, not its email), and
+   exactly these two scopes:
+
+   ```text
+   https://www.googleapis.com/auth/admin.directory.user.readonly
+   https://www.googleapis.com/auth/admin.directory.group.readonly
+   ```
+3. Pick the **administrator** it acts as: a super administrator, or a
+   delegated administrator who may read users and groups.
+4. Switch the connector to the pull, and set the key:
+
+   ```bash
+   gxctl connector update gw --no-jit --provisioning pull --group-mode auto \
+     --sync-admin admin@example.com --sync-group glidex-users@example.com
+   gxctl connector secret set gw service_account_key --from-file key.json
+   gxctl connector test gw      # token, and each group
+   gxctl connector sync gw
+   ```
+
+   In the web UI: the connector's form, **Provisioning: Directory
+   sync**, then **Set service account key** (choose the JSON file).
+   Remove the key file afterwards; glidex keeps it sealed and never
+   shows it.
+
+- `--sync-group` (repeat it) names who gets in; with `--group-mode auto`
+  each group is also a glidex team, otherwise `--team GROUP=TEAM` puts
+  a group's members in an existing team (by the group's email or name).
+- `--sync-interval` (minutes, at least 5) and `--sync-max-disable` (a
+  percentage, default 10).
+- People who logged in before the pull keep their users: the pull
+  adopts them.
+- **Safety stop.** A run that would disable more than that share of
+  the users (always allowing 5) changes nothing and shows as
+  **blocked**, listing who it would disable. If that is right, apply it
+  with `gxctl connector sync gw --confirm` or **Review blocked sync** in
+  the web UI; if a group was renamed or emptied by mistake, fix it in
+  Google instead. An error from Google changes nothing either: the
+  connector shows the run as **failed**, with Google's message.
+
 ### JumpCloud
 
 A `jumpcloud` connector logs in JumpCloud users. In JumpCloud, add an

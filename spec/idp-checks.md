@@ -39,6 +39,32 @@ and build, never with account names or tokens.
    address lets it in once; a second use of the link is refused; the
    invitation of another address doesn't take it.
 
+## Google Workspace directory sync (`provisioning: pull`, T4)
+
+The service account's JSON key goes in only through `gxctl connector
+secret set <id> service_account_key --from-file` or the web UI's file
+field, and the file is deleted afterwards. Use a test group with a few
+test accounts, never the whole organization.
+
+1. `connector test` passes `token` and `group` for each named group;
+   with a scope missing from the domain-wide delegation, `token` fails
+   with Google's message.
+2. A sync creates the groups' members (nested groups included) as
+   *managed by* the connector, with their names and emails, and the
+   groups as teams (`auto`).
+3. A member's first Google login lands on that user; somebody in the
+   domain but in no named group is refused.
+4. **Suspending** a member in the Admin console disables the glidex
+   user at the next run, and ends their session; restoring them enables
+   it.
+5. **Removing** a member from the group disables them; adding them back
+   enables them.
+6. A user who logged in before the pull is adopted, not made twice.
+7. Emptying the test group (or naming a group that doesn't exist)
+   blocks or fails the run, and changes nothing; `--confirm` applies a
+   blocked one.
+8. The audit log has the runs as `system:sync:<id>`, without tokens.
+
 ## JumpCloud (`jumpcloud`)
 
 1. An SSO application with OIDC: the redirect URI, the Login URL

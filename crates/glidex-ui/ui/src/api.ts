@@ -1,4 +1,5 @@
 import type {
+  SyncStatus,
   ScimToken,
   ApiToken,
   AuditEntry,
@@ -1121,6 +1122,9 @@ export const updateConnector = (id: string, connector: Partial<ConnectorInput>) 
   rpc(ConnectorService.method.updateConnector, { id, connector: connector as ConnectorJson, update_mask: maskOf(connector) }).then(
     (r) => r.connector as Connector,
   );
+/** A pulled connector's run now (spec/tenancy.md §8.2); `confirm` applies one the safety stop blocked. */
+export const syncConnector = (id: string, confirm = false) =>
+  rpc(ConnectorService.method.syncConnector, confirm ? { id, confirm } : { id }).then((r) => (r.status ?? {}) as SyncStatus);
 export const listScimTokens = (id: string) =>
   rpc(ConnectorService.method.listScimTokens, { id }).then((r) => ({ tokens: (r.tokens ?? []) as ScimToken[], path: r.path ?? "" }));
 /** The token is in `secret`, once. */
