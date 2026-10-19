@@ -1386,8 +1386,7 @@ impl VmManager {
         let have: Vec<String> = observed
             .device_ids
             .iter()
-            .filter(|i| i.starts_with("_vfio_"))
-            .cloned()
+            .filter_map(|i| crate::hypervisor::observed_vfio_id(i))
             .collect();
         let mut held: Vec<String> = st
             .instance

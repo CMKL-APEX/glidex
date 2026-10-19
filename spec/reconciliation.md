@@ -543,7 +543,7 @@ Built by `cloud_hypervisor.rs` from the same inputs as today's
 | `payload.kernel`, `payload.cmdline` | `--kernel <path> --cmdline <args>` (a separate argv element; not split) |
 | `disks[]` (`[root, data…, seed]`) | one `--disk path=<q>[,readonly=on][,image_type=<t>][,backing_files=on]` each |
 | `net[]` | one `--net id=net<i>,mac=<mac>,num_queues=<2·qp>[,mtu=<m>]` plus `tap=<if>` or `vhost_user=on,socket=<q>,vhost_mode=server` |
-| `devices[]` (VFIO) | one `--device path=<q>,id=_vfio_…` each |
+| `devices[]` (VFIO) | one `--device path=<q>,id=vfio_…` each |
 | `console`, `serial` (boot-mode table, hypervisors.md) | `--console tty --serial off` (kernel boot) or `--console off --serial tty` (firmware boot) |
 
 `<q>` is a path written as `"<path>"` when it contains `,` (F2).

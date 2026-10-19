@@ -241,7 +241,11 @@ impl HypervisorDriver for CloudHypervisorDriver {
     }
 
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
-        Ok(ChClient::new(api_socket).remove_device(&vfio_device_id(device_path))?)
+        let ch = ChClient::new(api_socket);
+        // A guest launched before ids started with a letter has the old one.
+        ch.remove_device(&vfio_device_id(device_path))
+            .or_else(|_| ch.remove_device(&super::legacy_vfio_device_id(device_path)))?;
+        Ok(())
     }
 }
 
@@ -426,7 +430,7 @@ mod tests {
         );
         assert_eq!(
             values(&a, "--device"),
-            ["path=/sys/bus/pci/devices/0000:41:00.0,id=_vfio_0000_41_00_0"]
+            ["path=/sys/bus/pci/devices/0000:41:00.0,id=vfio_0000_41_00_0"]
         );
     }
 

@@ -258,10 +258,24 @@ pub(crate) fn vfio_bdf(path: &str) -> String {
 }
 
 /// Derive a deterministic hypervisor device id from a sysfs path.
-/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "_vfio_0000_41_00_0"
+/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "vfio_0000_41_00_0". QEMU
+/// takes only ids starting with a letter.
 pub fn vfio_device_id(path: &str) -> String {
     let bdf = vfio_bdf(path);
-    format!("_vfio_{}", bdf.replace([':', '.'], "_"))
+    format!("vfio_{}", bdf.replace([':', '.'], "_"))
+}
+
+/// The id a Cloud Hypervisor guest launched before ids started with a
+/// letter has for the device (`_vfio_…`).
+pub fn legacy_vfio_device_id(path: &str) -> String {
+    format!("_{}", vfio_device_id(path))
+}
+
+/// A device id a guest reports, as [`vfio_device_id`] makes it; `None` for
+/// anything but a VFIO device.
+pub fn observed_vfio_id(id: &str) -> Option<String> {
+    let id = id.strip_prefix('_').unwrap_or(id);
+    id.starts_with("vfio_").then(|| id.to_string())
 }
 
 /// Characters a path must not contain to reach a hypervisor command line
@@ -297,9 +311,15 @@ mod tests {
         );
         assert_eq!(
             vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"),
-            "_vfio_0000_41_00_0"
+            "vfio_0000_41_00_0"
         );
-        assert_eq!(vfio_device_id("0000:41:00.0"), "_vfio_0000_41_00_0");
+        assert_eq!(vfio_device_id("0000:41:00.0"), "vfio_0000_41_00_0");
+        assert_eq!(
+            observed_vfio_id("_vfio_0000_41_00_0").as_deref(),
+            Some("vfio_0000_41_00_0"),
+            "a device of a guest launched before"
+        );
+        assert_eq!(observed_vfio_id("vd0"), None);
     }
 
     #[test]

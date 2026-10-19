@@ -160,7 +160,7 @@ Runtime operations (`glidex-hv-client/src/ch.rs`): `observe` is `GET
 /vm.info`, `pause` / `resume` are `/vm.pause` / `/vm.resume`,
 `add_device` / `remove_device` use `/vm.add-device` and
 `/vm.remove-device` with a deterministic device id derived from the
-sysfs BDF (`_vfio_0000_41_00_0`). The shim uses `GET /vmm.ping` (launch
+sysfs BDF (`vfio_0000_41_00_0`). The shim uses `GET /vmm.ping` (launch
 health check), `/vm.power-button`, and `PUT /vmm.shutdown` to stop CH
 without the guest: it closes the disks first, where a bare SIGKILL can
 leave a qcow2 disk CH refuses to reopen (F8).
@@ -201,7 +201,7 @@ qemu-system-x86_64
   -blockdev <JSON> -device virtio-blk-pci,drive=disk<i>,id=vd<i>[,bootindex=1]
   # per NIC, see networking.md §3a:
   [-netdev … -device virtio-net-pci,…]
-  [-device vfio-pci,host=<bdf>,id=<_vfio_xxx> …]
+  [-device vfio-pci,host=<bdf>,id=<vfio_xxx> …]
   -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0
   -qmp unix:<socket_path>,server=on,wait=off
   -serial stdio -display none
@@ -312,8 +312,8 @@ rootfs for kernel boot, or use firmware boot with a distro cloud image.
 
 Both backends derive a stable *id* for a
 device from the sysfs path. Given
-`/sys/bus/pci/devices/0000:41:00.0` the id is `_vfio_0000_41_00_0`
-(colons/dots replaced with underscores, `_vfio_` prefix). This id is:
+`/sys/bus/pci/devices/0000:41:00.0` the id is `vfio_0000_41_00_0`
+(colons/dots replaced with underscores, `vfio_` prefix; QEMU takes only ids starting with a letter, so the `_vfio_` prefix of earlier releases never launched on QEMU. Cloud Hypervisor guests launched with `_vfio_` ids are still recognised, and their devices removed by the old id). This id is:
 
 - Given to the device on the launch command line (CH `--device
   …,id=`, QEMU `-device vfio-pci,…,id=`) and in hot-plug calls, so

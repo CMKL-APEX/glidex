@@ -861,7 +861,7 @@ mod tests {
             config(serde_json::json!({"vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}));
         assert!(
             values(&spec(&config).args(), "-device")
-                .contains(&"vfio-pci,host=0000:41:00.0,id=_vfio_0000_41_00_0")
+                .contains(&"vfio-pci,host=0000:41:00.0,id=vfio_0000_41_00_0")
         );
     }
 
