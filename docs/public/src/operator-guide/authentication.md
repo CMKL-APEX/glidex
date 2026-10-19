@@ -298,6 +298,11 @@ glidex reads the directory as a Google Cloud **service account** with
   percentage, default 10).
 - People who logged in before the pull keep their users: the pull
   adopts them.
+- **SSH keys.** With `--ssh-keys-field <schema>.<field>`, a Workspace
+  custom schema field (multi-valued, one public key per value) gives
+  each user's SSH public keys. Anything that isn't a public key is
+  dropped. When the host has no local account for the user, the VM
+  credential form fills in these keys.
 - **Safety stop.** A run that would disable more than that share of
   the users (always allowing 5) changes nothing and shows as
   **blocked**, listing who it would disable. If that is right, apply it

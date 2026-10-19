@@ -2441,6 +2441,7 @@ async fn managed_users_and_teams_belong_to_their_connector() {
             user_name: Some(format!("{u}@corp.example")),
             given_name: None,
             family_name: None,
+            ssh_keys: vec![],
         });
         x.email = Some(format!("{u}@corp.example"));
         store.put_user(&x).unwrap();
@@ -2471,6 +2472,7 @@ async fn managed_users_and_teams_belong_to_their_connector() {
                     user_name: None,
                     given_name: None,
                     family_name: None,
+                    ssh_keys: vec![],
                 }),
             })
             .unwrap();
@@ -3802,6 +3804,18 @@ async fn a_google_pull_reads_the_directory_api() {
             .iter()
             .any(|p| p == "users/u-ada")
     );
+    // T4 task 5: Ada's public keys from the directory are hers, and "my
+    // SSH keys" offers them (she has no local account here).
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxidGVzdGtleQ ada@laptop";
+    mock.directory.lock().unwrap()["users"]["u-ada"]["customSchemas"] = json!({"glidex": {"ssh_keys": [
+        {"value": key}, {"value": "-----BEGIN OPENSSH PRIVATE KEY-----"}]}});
+    let (_, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
+    assert_eq!(v["status"]["changes"]["updated"].as_u64(), Some(1), "{v}");
+    let (_, k) = h
+        .rest("GET", "/users/me/ssh-keys", None, &h.token(&ada.id))
+        .await;
+    assert_eq!(k["keys"], json!([key]), "{k}");
+    assert_eq!(k["source"], "connector:gpull");
 
     // Google refusing changes nothing, and says what Google said.
     *mock.directory_fail.lock().unwrap() = Some((403, 100));

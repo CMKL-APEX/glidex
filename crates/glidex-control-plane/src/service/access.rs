@@ -1035,6 +1035,19 @@ pub async fn my_ssh_keys(
             .find(|i| i.provider == *p)
             .map(|i| i.subject.clone())
     }) else {
+        // Keys its directory holds (a pull's SSH key field, spec/tenancy.md §8.2).
+        let stored = call.auth().store.user(&user.id).map_err(store_err)?;
+        if let Some(m) = stored
+            .and_then(|u| u.managed)
+            .filter(|m| !m.ssh_keys.is_empty())
+        {
+            return Ok(pb::GetMySshKeysResponse {
+                available: Some(true),
+                keys: m.ssh_keys,
+                source: Some(format!("connector:{}", m.connector)),
+                ..Default::default()
+            });
+        }
         return Ok(unavailable(
             "your account has no local login on this host; paste your public key",
         ));
@@ -1051,6 +1064,7 @@ pub async fn my_ssh_keys(
             available: Some(true),
             username: Some(login),
             keys,
+            source: Some("local".into()),
             ..Default::default()
         },
         Err(glidex_authd::client::AuthdError::Denied) => {

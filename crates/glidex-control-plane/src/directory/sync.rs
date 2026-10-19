@@ -284,6 +284,7 @@ pub fn plan(
                     &next.given_name,
                     &next.family_name,
                 ) || u.display_name != next.display()
+                    || u.managed.as_ref().map(|m| &m.ssh_keys) != Some(&su.ssh_keys)
                 {
                     ops.push(Op::Update(u.id.clone(), su.clone()));
                 }
@@ -343,6 +344,13 @@ pub fn plan(
     Plan { ops, groups }
 }
 
+/// The SSH keys the directory holds for `su` (T4 task 5).
+fn set_keys(u: &mut User, su: &SourceUser) {
+    if let Some(m) = u.managed.as_mut() {
+        m.ssh_keys = su.ssh_keys.clone();
+    }
+}
+
 fn apply_op(tx: &ScimTx<'_>, c: &Connector, op: &Op) -> Result<(), SyncError> {
     match op {
         Op::Create(id, su) => {
@@ -357,6 +365,7 @@ fn apply_op(tx: &ScimTx<'_>, c: &Connector, op: &Op) -> Result<(), SyncError> {
                 disabled_reason: None,
             };
             attrs(su).apply(&mut u, &c.id);
+            set_keys(&mut u, su);
             tx.put_user(&u)?;
             if let Some(t) = &c.default_tenant {
                 tx.join_tenant(t, id)?;
@@ -365,6 +374,7 @@ fn apply_op(tx: &ScimTx<'_>, c: &Connector, op: &Op) -> Result<(), SyncError> {
         Op::Adopt(id, su) | Op::Update(id, su) => {
             if let Some(mut u) = tx.user(id)? {
                 attrs(su).apply(&mut u, &c.id);
+                set_keys(&mut u, su);
                 tx.put_user(&u)?;
                 if matches!(op, Op::Adopt(..))
                     && let Some(t) = &c.default_tenant
@@ -629,6 +639,7 @@ mod tests {
                 user_name: Some(format!("{ext}@corp.example")),
                 given_name: None,
                 family_name: None,
+                ssh_keys: vec![],
             }),
             email: Some(format!("{ext}@corp.example")),
             disabled_reason: disabled,

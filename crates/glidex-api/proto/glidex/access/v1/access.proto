@@ -362,6 +362,10 @@ message GetMySshKeysResponse {
   // The local account read.
   optional string username = 3;
   repeated string keys = 4;
+  // Where they came from: `local` (the local account's authorized keys)
+  // or `connector:<id>` (its directory's SSH key field, when there is no
+  // local account here).
+  optional string source = 5;
 }
 
 // ---- teams ------------------------------------------------------------------
