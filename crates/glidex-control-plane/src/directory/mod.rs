@@ -11,6 +11,7 @@
 //! Every login, whichever connector, ends in one [`ExternalIdentity`],
 //! which `AuthService::external_login` turns into a user (§6).
 
+pub mod google_directory;
 pub mod invitations;
 pub mod oidc;
 pub mod presets;
@@ -115,7 +116,11 @@ impl Kind {
         match self {
             Kind::Pam => &[],
             Kind::Oidc => &["client_secret"],
-            Kind::Google => &["client_secret", "device_client_secret"],
+            Kind::Google => &[
+                "client_secret",
+                "device_client_secret",
+                "service_account_key",
+            ],
             Kind::Jumpcloud => &["client_secret"],
         }
     }
@@ -441,6 +446,21 @@ impl Connector {
     }
 
     /// Whether gxctl's device grant goes through it.
+    /// The secrets this connector uses: the client's, a device client's
+    /// when it has one, a pull's key when it pulls (D47).
+    pub fn secrets_in_use(&self) -> Vec<&'static str> {
+        self.kind
+            .secret_fields()
+            .iter()
+            .copied()
+            .filter(|f| match *f {
+                "device_client_secret" => self.has_device_client(),
+                "service_account_key" => self.provisioning == Provisioning::Pull,
+                _ => true,
+            })
+            .collect()
+    }
+
     pub fn has_device_client(&self) -> bool {
         match self.kind {
             // Whether the IdP offers the grant, its discovery says.
@@ -910,7 +930,7 @@ impl ConnectorStore {
         c: &Connector,
     ) -> Result<BTreeMap<String, Option<u64>>, ConnectorError> {
         let mut out = BTreeMap::new();
-        for f in c.kind.secret_fields() {
+        for f in c.secrets_in_use() {
             let s = self.get_raw::<secrets::Sealed>(SECRETS, &format!("{}/{f}", c.id))?;
             out.insert(f.to_string(), s.map(|s| s.updated_at));
         }

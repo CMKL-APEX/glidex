@@ -482,6 +482,12 @@ mod idp {
         pub id_token: Mutex<Option<String>>,
         pub device_polls: Mutex<u32>,
         pub token_requests: Mutex<Vec<String>>,
+        /// Google's Directory API (T4): `{"groups": {email: {id, name,
+        /// members: [[page], …]}}, "users": {id: user}}`; `fail` answers
+        /// that status to the next requests it counts down.
+        pub directory: Mutex<serde_json::Value>,
+        pub directory_fail: Mutex<Option<(u16, u32)>>,
+        pub directory_requests: Mutex<Vec<String>>,
     }
 
     pub fn sign(claims: serde_json::Value, kid: &str) -> String {
@@ -525,6 +531,9 @@ mod idp {
                 post(|State(m): State<Arc<Mock>>, headers: axum::http::HeaderMap, body: String| async move {
                     let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
                     m.token_requests.lock().unwrap().push(format!("{} {}", auth, body));
+                    if body.contains("jwt-bearer") {
+                        return (axum::http::StatusCode::OK, Json(serde_json::json!({"access_token": "ya29.mock", "expires_in": 3600, "token_type": "Bearer"})));
+                    }
                     if body.contains("device_code") {
                         let mut n = m.device_polls.lock().unwrap();
                         *n += 1;
@@ -542,9 +551,76 @@ mod idp {
                     Json(serde_json::json!({"device_code": "dev-1", "user_code": "ABCD-EFGH", "verification_uri": format!("{}/activate", m.base), "interval": 1, "expires_in": 600}))
                 }),
             )
+            .route("/admin/directory/v1/{*path}", get(directory))
             .with_state(mock.clone());
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
         mock
+    }
+
+    async fn directory(
+        State(m): State<Arc<Mock>>,
+        axum::extract::Path(path): axum::extract::Path<String>,
+        axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+        headers: axum::http::HeaderMap,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        use axum::http::StatusCode;
+        m.directory_requests.lock().unwrap().push(path.clone());
+        if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer ya29.mock") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": {"message": "no token"}})),
+            );
+        }
+        {
+            let mut f = m.directory_fail.lock().unwrap();
+            if let Some((status, n)) = *f {
+                *f = (n > 1).then_some((status, n - 1));
+                return (
+                    StatusCode::from_u16(status).unwrap(),
+                    Json(serde_json::json!({"error": {"code": status, "message": "mock failure"}})),
+                );
+            }
+        }
+        let d = m.directory.lock().unwrap().clone();
+        let parts: Vec<&str> = path.split('/').collect();
+        let missing = || {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": {"code": 404, "message": "Resource Not Found"}})),
+            )
+        };
+        match parts.as_slice() {
+            ["groups", key] => match d.pointer(&format!("/groups/{key}")) {
+                Some(g) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"id": g["id"], "email": key, "name": g["name"]})),
+                ),
+                None => missing(),
+            },
+            ["groups", key, "members"] => {
+                assert_eq!(
+                    q.get("includeDerivedMembership").map(String::as_str),
+                    Some("true")
+                );
+                let Some(pages) = d
+                    .pointer(&format!("/groups/{key}/members"))
+                    .and_then(|p| p.as_array())
+                else {
+                    return missing();
+                };
+                let i: usize = q.get("pageToken").and_then(|t| t.parse().ok()).unwrap_or(0);
+                let mut out = serde_json::json!({"members": pages.get(i).cloned().unwrap_or(serde_json::json!([]))});
+                if i + 1 < pages.len() {
+                    out["nextPageToken"] = serde_json::json!((i + 1).to_string());
+                }
+                (StatusCode::OK, Json(out))
+            }
+            ["users", id] => match d.pointer(&format!("/users/{id}")) {
+                Some(u) => (StatusCode::OK, Json(u.clone())),
+                None => missing(),
+            },
+            _ => missing(),
+        }
     }
 }
 
@@ -3609,4 +3685,136 @@ async fn a_pull_follows_the_directory_and_stops_before_removing_many() {
         (StatusCode::CONFLICT, Some("not_pulled"))
     );
     h.app.auth.set_sync_source(None);
+}
+
+/// spec/tenancy.md §8.2, D47, against a mock of Google: the service
+/// account's token (RS256, acting as the administrator, the two scopes),
+/// derived group membership across pages, users read one by one, retries
+/// on 503, and an error that changes nothing.
+#[tokio::test]
+async fn a_google_pull_reads_the_directory_api() {
+    let mock = idp::start().await;
+    let h = harness();
+    let workspace = json!({"accounts": "GOOGLE_ACCOUNTS_WORKSPACE", "domains": ["corp.example"]});
+    let (st, v) = h
+        .google_connector(&mock, "gpull", workspace, json!({"jit": false, "provisioning": "pull", "group_mode": "auto",
+            "sync": {"admin_email": "admin@corp.example", "groups": ["eng@corp.example"], "ssh_keys_field": "glidex.ssh_keys"}}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let s = h.session(&h.admin("admin-gpull"));
+    // The key is a secret of a pulled connector.
+    let (_, c) = h.rest("GET", "/connectors/gpull", None, &s).await;
+    assert!(c.to_string().contains("service_account_key"), "{c}");
+    let (st, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED");
+    assert!(
+        v["status"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("service_account_key"),
+        "{v}"
+    );
+    let key = json!({"type": "service_account", "client_email": "glidex-sync@proj.iam.gserviceaccount.com",
+        "private_key": idp::key().pem, "token_uri": "https://oauth2.googleapis.com/token"});
+    let (st, v) = h
+        .rest(
+            "PUT",
+            "/connectors/gpull/secrets/service_account_key",
+            Some(json!({"value": key.to_string()})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    *mock.directory.lock().unwrap() = json!({
+        "groups": {"eng@corp.example": {"id": "g-eng", "name": "Engineering", "members": [
+            [{"id": "u-ada", "type": "USER"}, {"id": "g-nested", "type": "GROUP"}],
+            [{"id": "u-bob", "type": "USER"}, {"id": "u-cara", "type": "USER"}],
+        ]}},
+        "users": {
+            "u-ada": {"id": "u-ada", "primaryEmail": "ada@corp.example", "name": {"fullName": "Ada Lovelace"},
+                      "customSchemas": {"glidex": {"ssh_keys": [{"value": "ssh-ed25519 AAAAC3 ada"}]}}},
+            "u-bob": {"id": "u-bob", "primaryEmail": "bob@corp.example", "suspended": true},
+            "u-cara": {"id": "u-cara", "primaryEmail": "cara@corp.example", "name": {"fullName": "Cara"}},
+        },
+    });
+    // The connector test reaches the token and the group.
+    let (_, t) = h.rest("POST", "/connectors/gpull/test", None, &s).await;
+    let steps = t["steps"].as_array().unwrap();
+    let ok = |n: &str| steps.iter().any(|x| x["name"] == n && x["ok"] == true);
+    assert!(
+        ok("service_account_key") && ok("token") && ok("group"),
+        "{t}"
+    );
+
+    // A 503 is retried within the run.
+    *mock.directory_fail.lock().unwrap() = Some((503, 1));
+    let (st, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["status"]["state"], "SYNC_STATE_OK", "{v}");
+    assert_eq!(
+        v["status"]["changes"]["created"].as_u64(),
+        Some(2),
+        "ada and cara; bob is suspended: {v}"
+    );
+    let users = h.app.auth.store.users().unwrap();
+    let ada = users
+        .iter()
+        .find(|u| u.email.as_deref() == Some("ada@corp.example"))
+        .unwrap();
+    assert_eq!(ada.display_name, "Ada Lovelace");
+    assert_eq!(
+        ada.managed.as_ref().unwrap().external_id.as_deref(),
+        Some("u-ada")
+    );
+    let team = h.app.auth.store.team("g-eng").unwrap().unwrap();
+    assert_eq!(team.name, "Engineering");
+    assert_eq!(team.members.len(), 2);
+    // The assertion: the service account, acting as the administrator, with the two scopes.
+    let reqs = mock.token_requests.lock().unwrap().clone();
+    let body = reqs.iter().find(|r| r.contains("jwt-bearer")).unwrap();
+    let assertion = body
+        .split("assertion=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap();
+    let mut val = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    val.set_audience(&[format!("{}/token", mock.base)]);
+    let pubkey =
+        jsonwebtoken::DecodingKey::from_rsa_components(&idp::key().n, &idp::key().e).unwrap();
+    let claims = jsonwebtoken::decode::<Value>(assertion, &pubkey, &val)
+        .unwrap()
+        .claims;
+    assert_eq!(claims["iss"], "glidex-sync@proj.iam.gserviceaccount.com");
+    assert_eq!(claims["sub"], "admin@corp.example");
+    assert_eq!(
+        claims["scope"],
+        "https://www.googleapis.com/auth/admin.directory.user.readonly https://www.googleapis.com/auth/admin.directory.group.readonly"
+    );
+    // Users were read with the SSH key field's schema.
+    assert!(
+        mock.directory_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p == "users/u-ada")
+    );
+
+    // Google refusing changes nothing, and says what Google said.
+    *mock.directory_fail.lock().unwrap() = Some((403, 100));
+    let (_, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
+    assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED");
+    let err = v["status"]["error"].as_str().unwrap();
+    assert!(err.contains("403") && err.contains("mock failure"), "{err}");
+    assert!(!err.contains("ya29"), "no token in the error");
+    assert!(!h.app.auth.store.user(&ada.id).unwrap().unwrap().disabled);
+    *mock.directory_fail.lock().unwrap() = None;
+    // A group Google doesn't have is an error, never "nobody".
+    mock.directory.lock().unwrap()["groups"] = json!({});
+    let (_, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
+    assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED", "{v}");
+    assert!(!h.app.auth.store.user(&ada.id).unwrap().unwrap().disabled);
 }

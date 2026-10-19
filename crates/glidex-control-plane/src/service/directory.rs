@@ -680,6 +680,36 @@ fn step(name: &str, ok: bool, message: impl Into<String>) -> pb::TestStep {
     }
 }
 
+async fn pull_steps(call: &Call, c: &Connector, steps: &mut Vec<pb::TestStep>) {
+    use dir::google_directory::GoogleDirectory;
+    let g = GoogleDirectory::default();
+    match g.token(call.auth(), c).await {
+        Ok(token) => {
+            steps.push(step(
+                "token",
+                true,
+                "the service account acts as its administrator",
+            ));
+            let base = match c.google().ok().and_then(|s| s.issuer) {
+                Some(mock) => format!("{mock}/admin/directory/v1"),
+                None => "https://admin.googleapis.com/admin/directory/v1".into(),
+            };
+            for email in c
+                .sync
+                .as_ref()
+                .map(|s| s.groups.clone())
+                .unwrap_or_default()
+            {
+                match g.group(&token, &base, &email).await {
+                    Ok((_, name)) => steps.push(step("group", true, format!("{email} ({name})"))),
+                    Err(e) => steps.push(step("group", false, format!("{email}: {e}"))),
+                }
+            }
+        }
+        Err(e) => steps.push(step("token", false, e.to_string())),
+    }
+}
+
 pub async fn test_connector(
     call: &Call,
     req: pb::TestConnectorRequest,
@@ -704,12 +734,7 @@ pub async fn test_connector(
         Kind::Oidc | Kind::Google | Kind::Jumpcloud => {
             if c.source == Source::Api {
                 // The device client's secret only where there is one.
-                let fields: &[&str] = if c.kind == Kind::Google && c.has_device_client() {
-                    &["client_secret", "device_client_secret"]
-                } else {
-                    &["client_secret"]
-                };
-                for field in fields {
+                for field in &c.secrets_in_use() {
                     let set = call
                         .auth()
                         .connectors
@@ -745,6 +770,10 @@ pub async fn test_connector(
                     Err(e) => steps.push(step("discovery", false, e.to_string())),
                 },
                 Err(e) => steps.push(step("connector", false, e.to_string())),
+            }
+            // A pull's token, and each group it reads (§8.2).
+            if c.provisioning == dir::Provisioning::Pull {
+                pull_steps(call, &c, &mut steps).await;
             }
         }
     }
