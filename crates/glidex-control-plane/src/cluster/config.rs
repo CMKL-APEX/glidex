@@ -49,6 +49,9 @@ pub struct RaftConfig {
 pub struct SchedulerConfig {
     pub cpu_overcommit: f64,
     pub memory_overcommit: f64,
+    /// Dedicated vCPUs take whole SMT cores, so no other VM shares a core
+    /// with them (spec/host-topology.md H16).
+    pub dedicated_whole_cores: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +59,10 @@ pub struct SchedulerConfig {
 pub struct NodeReserved {
     pub cpus: u32,
     pub memory_mib: u64,
+    /// CPUs no VM gets, as a list (`0-1,128-129`). Set, it replaces the
+    /// default host core per NUMA node that dedicated VMs leave free;
+    /// empty reserves none (spec/host-topology.md H7).
+    pub cpu_list: Option<String>,
 }
 
 /// OVN settings (milestone C5); parsed now so one file serves every build.
@@ -122,6 +129,7 @@ impl Default for SchedulerConfig {
         SchedulerConfig {
             cpu_overcommit: 4.0,
             memory_overcommit: 1.0,
+            dedicated_whole_cores: true,
         }
     }
 }
@@ -131,6 +139,7 @@ impl Default for NodeReserved {
         NodeReserved {
             cpus: 1,
             memory_mib: 2048,
+            cpu_list: None,
         }
     }
 }

@@ -124,6 +124,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 | Node | `node` | Clusters: pin the VM to a node (name or id). Fixed. |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
+| NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
+| CPU policy | `cpu_policy` | `CPU_POLICY_SHARED` (default) or `CPU_POLICY_DEDICATED`: each vCPU on a host CPU of its own. Changeable; applies at the next start. |
 
 ### Boot disk
 
@@ -377,6 +379,37 @@ change:
 gxctl> watch                  # Ctrl-C stops
 gxctl> watch vms
 ```
+
+## NUMA and dedicated CPUs
+
+On a host with several NUMA nodes (sockets, or parts of one), a VM runs
+faster when its memory, its vCPUs and its PCI devices (a GPU, a NIC) are
+on the same node. Two settings ask for that:
+
+- `numa_policy`:
+  - `NUMA_POLICY_PREFERRED` puts the VM's memory on one NUMA node: the
+    one with its PCI devices, else the one with the most room. When no
+    node has room, the VM goes anywhere on the host, and its
+    `NumaAligned` condition is `False`.
+  - `NUMA_POLICY_STRICT` refuses a host where that isn't possible: PCI
+    devices on two NUMA nodes, a device whose firmware gives no NUMA
+    node, or no node with the memory (and CPUs) left. On a cluster the
+    VM waits for a node; on a single host the create is refused (`409`).
+- `cpu_policy: CPU_POLICY_DEDICATED` gives each vCPU a host CPU of its
+  own, which no other VM uses. It implies `NUMA_POLICY_PREFERRED`. By
+  default a dedicated VM takes whole cores: both hyperthreads of a core,
+  so vCPUs 0 and 1 share a core and an odd count leaves a thread idle.
+  The first core of each NUMA node stays with the host, and so do
+  OVS-DPDK's CPUs. Shared VMs then run only on the CPUs dedicated VMs
+  leave free, and running ones are moved when that changes.
+
+A VM with shared vCPUs and a NUMA policy has its memory on the node but
+its vCPUs anywhere on the host, so no node's CPUs sit idle.
+
+The VM shows where it went: `numa_node`, and for dedicated vCPUs `cpus`
+(vCPU *i* on `cpus[i]`). A change to its vCPUs, memory, policies,
+devices or networks picks again on the same host, and applies when it
+next starts.
 
 ## Placement on a cluster
 

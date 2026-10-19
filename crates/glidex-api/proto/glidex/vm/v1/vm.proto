@@ -187,6 +187,26 @@ enum RestartPolicy {
   RESTART_POLICY_NEVER = 2;
 }
 
+// Keep a VM's memory, CPUs and devices on one host NUMA node
+// (spec/host-topology.md H5).
+enum NumaPolicy {
+  NUMA_POLICY_UNSPECIFIED = 0;
+  NUMA_POLICY_NONE = 1;
+  // On one NUMA node when one fits, else anywhere on the host.
+  NUMA_POLICY_PREFERRED = 2;
+  // On one NUMA node, or not on that host.
+  NUMA_POLICY_STRICT = 3;
+}
+
+// How a VM's vCPUs use host CPUs (spec/host-topology.md H6).
+enum CpuPolicy {
+  CPU_POLICY_UNSPECIFIED = 0;
+  // Floating over the host's shareable CPUs, overcommitted.
+  CPU_POLICY_SHARED = 1;
+  // Each vCPU on a host CPU of its own; implies NUMA_POLICY_PREFERRED.
+  CPU_POLICY_DEDICATED = 2;
+}
+
 // What to do with a VM that should be running after a host reboot.
 enum HostBootPolicy {
   HOST_BOOT_POLICY_UNSPECIFIED = 0;
@@ -279,6 +299,12 @@ message Vm {
   // The page size in KiB the scheduler counted guest RAM in: 4 for
   // ordinary memory, else a hugepage size (spec/host-topology.md §8a.3).
   optional uint64 page_kib = 30 [json_name = "page_kib"];
+  NumaPolicy numa_policy = 31 [json_name = "numa_policy"];
+  CpuPolicy cpu_policy = 32 [json_name = "cpu_policy"];
+  // The host NUMA node its memory is bound to, and the host CPUs it holds
+  // (dedicated; vCPU i on cpus[i]).
+  optional uint32 numa_node = 33 [json_name = "numa_node"];
+  repeated uint32 cpus = 34;
 }
 
 message ListVmsRequest {
@@ -318,6 +344,8 @@ message CreateVmRequest {
   optional bool hugepages = 19;
   // `2M` or `1G`, with `hugepages`; absent: the node's default size.
   optional string hugepage_size = 26 [json_name = "hugepage_size"];
+  NumaPolicy numa_policy = 27 [json_name = "numa_policy"];
+  CpuPolicy cpu_policy = 28 [json_name = "cpu_policy"];
   // Default: stopped (create, then start).
   PowerState power = 20;
   RestartPolicy restart_policy = 21 [json_name = "restart_policy"];
@@ -352,6 +380,8 @@ message PreviewPlacementRequest {
   // The image the root disk would come from: its architecture counts.
   optional string image = 10;
   optional string hugepage_size = 11 [json_name = "hugepage_size"];
+  NumaPolicy numa_policy = 12 [json_name = "numa_policy"];
+  CpuPolicy cpu_policy = 13 [json_name = "cpu_policy"];
 }
 message NodeFit {
   string id = 1;
@@ -369,6 +399,11 @@ message NodeFit {
   uint64 page_kib = 9 [json_name = "page_kib"];
   uint64 hugepages_mib_taken = 10 [json_name = "hugepages_mib_taken"];
   uint64 hugepages_mib_capacity = 11 [json_name = "hugepages_mib_capacity"];
+  // Under a NUMA or CPU policy: the NUMA node and dedicated CPUs it would
+  // get, and whether one NUMA node could take it.
+  optional uint32 numa_node = 12 [json_name = "numa_node"];
+  repeated uint32 cpus = 13;
+  optional bool numa_aligned = 14 [json_name = "numa_aligned"];
 }
 message PreviewPlacementResponse {
   // The scheduler's choice, when anything fits.
@@ -401,6 +436,8 @@ message VmChange {
   repeated NetworkAttachment networks = 12;
   // `2M` or `1G`; empty: the node's default size.
   string hugepage_size = 13 [json_name = "hugepage_size"];
+  NumaPolicy numa_policy = 14 [json_name = "numa_policy"];
+  CpuPolicy cpu_policy = 15 [json_name = "cpu_policy"];
 }
 
 message UpdateVmRequest {

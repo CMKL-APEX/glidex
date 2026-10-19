@@ -465,6 +465,7 @@ impl VmManager {
             launched_at: f.launched_at,
             growpart_disk: None,
             growpart_seq: None,
+            cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
         }
     }
 
@@ -975,14 +976,17 @@ impl VmManager {
                 if config.hugepages {
                     config.hugepage_size = Some(crate::models::hugepage_size_name(kib));
                     let need = config.mem_size_mib as u64;
-                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib))
+                    let numa = vm.status.placement.as_ref().and_then(|p| p.numa_node);
+                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
                         .await
                         .map_err(before_intent)?;
                     if spare < need {
                         return Err(before_intent(
                             crate::hypervisor::HypervisorError::Unsupported(format!(
-                                "not enough free {} hugepages: {} MiB free, the VM needs {} MiB",
+                                "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
                                 crate::models::hugepage_size_name(kib),
+                                numa.map(|n| format!(" on NUMA node {n}"))
+                                    .unwrap_or_default(),
                                 spare,
                                 need
                             )),
@@ -1000,6 +1004,44 @@ impl VmManager {
                 }
             }
         }
+
+        // Where it runs (spec/host-topology.md §7): its RAM bound to its
+        // NUMA node; dedicated vCPUs each on a CPU it holds, every thread
+        // on those; a shared VM on what dedicated VMs leave, once any are
+        // here. A placement that no longer holds fails the start.
+        let (numa, held) = vm
+            .status
+            .placement
+            .as_ref()
+            .map(|p| (p.numa_node, p.cpus.clone()))
+            .unwrap_or_default();
+        config.host_numa_node = numa;
+        let (cpu_affinity, launch_pins) = if held.is_empty() {
+            (self.local_shared_pool().await, Vec::new())
+        } else {
+            let n = config.vcpu_count as usize;
+            let online = crate::hypervisor::online_cpus();
+            if held.len() < n {
+                return Err(before_intent(HypervisorError::Unsupported(format!(
+                    "the placement holds {} CPUs for {} dedicated vCPUs",
+                    held.len(),
+                    n
+                ))));
+            }
+            if let Some(c) = held.iter().find(|c| !online.contains(c)) {
+                return Err(before_intent(HypervisorError::Unsupported(format!(
+                    "CPU {c} of the placement is offline"
+                ))));
+            }
+            let pins = held[..n].to_vec();
+            match vm.hypervisor() {
+                crate::hypervisor::HypervisorType::CloudHypervisor => {
+                    config.vcpu_pins = pins;
+                    (held, Vec::new())
+                }
+                crate::hypervisor::HypervisorType::Qemu => (held, pins),
+            }
+        };
 
         // 5.3 launch.json
         let instance_id = uuid::Uuid::new_v4().to_string();
@@ -1029,6 +1071,8 @@ impl VmManager {
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
             meter_poll_secs: settings.meter_poll_secs,
+            cpu_affinity: cpu_affinity.clone(),
+            vcpu_pins: launch_pins,
         };
         launch
             .write(&paths.launch)
@@ -1058,6 +1102,7 @@ impl VmManager {
             launched_at: crate::tenancy::now(),
             growpart_disk,
             growpart_seq,
+            cpu_affinity,
         });
         st.never_started = false;
         let ev = Event::new(
@@ -1309,6 +1354,7 @@ impl VmManager {
         if !st.nics.is_empty() {
             self.port_drift(vm, &mut st, &mut events).await?;
         }
+        self.cpu_drift(vm, &mut st, &mut events).await;
         let mut guest = observed.guest;
         let d = driver(vm.hypervisor());
         if vm.spec.power == PowerState::Paused && guest == GuestState::Running {
@@ -1340,8 +1386,7 @@ impl VmManager {
         let have: Vec<String> = observed
             .device_ids
             .iter()
-            .filter(|i| i.starts_with("_vfio_"))
-            .cloned()
+            .filter_map(|i| crate::hypervisor::observed_vfio_id(i))
             .collect();
         let mut held: Vec<String> = st
             .instance
@@ -1479,6 +1524,50 @@ impl VmManager {
         } else {
             Some(Duration::from_secs(2))
         })
+    }
+
+    /// A running shared VM follows the CPUs dedicated VMs leave free on its
+    /// node (spec/host-topology.md §8.1): the shim moves its threads when
+    /// that set changes, back to every online CPU once no dedicated VM is
+    /// left. Dedicated VMs keep the CPUs they launched on.
+    async fn cpu_drift(&self, vm: &Vm, st: &mut VmStatus, events: &mut Vec<Event>) {
+        if vm
+            .status
+            .placement
+            .as_ref()
+            .is_some_and(|p| !p.cpus.is_empty())
+        {
+            return;
+        }
+        let Some(inst) = st.instance.as_ref() else {
+            return;
+        };
+        let want = self.local_shared_pool().await;
+        if want == inst.cpu_affinity {
+            return;
+        }
+        let cpus = if want.is_empty() {
+            crate::hypervisor::online_cpus()
+        } else {
+            want.clone()
+        };
+        match shim_call(vm.paths().shim_socket.clone(), move |c| {
+            c.set_affinity(&cpus)
+        })
+        .await
+        {
+            Ok(_) => {
+                if let Some(i) = st.instance.as_mut() {
+                    i.cpu_affinity = want;
+                }
+            }
+            Err(e) => events.push(Event::new(
+                "controller",
+                EventKind::Warning,
+                "CpuAffinityFailed",
+                format!("moving its threads off dedicated CPUs: {e}"),
+            )),
+        }
     }
 
     /// §10.3: a live instance's ports, against what OVS has. An OVS port

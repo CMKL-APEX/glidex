@@ -71,6 +71,38 @@ fn restart_of(r: pb::RestartPolicy) -> Option<m::RestartPolicy> {
     }
 }
 
+fn numa_pb(p: m::NumaPolicy) -> pb::NumaPolicy {
+    match p {
+        m::NumaPolicy::None => pb::NumaPolicy::NUMA_POLICY_NONE,
+        m::NumaPolicy::Preferred => pb::NumaPolicy::NUMA_POLICY_PREFERRED,
+        m::NumaPolicy::Strict => pb::NumaPolicy::NUMA_POLICY_STRICT,
+    }
+}
+
+fn numa_of(p: pb::NumaPolicy) -> Option<m::NumaPolicy> {
+    match p {
+        pb::NumaPolicy::NUMA_POLICY_NONE => Some(m::NumaPolicy::None),
+        pb::NumaPolicy::NUMA_POLICY_PREFERRED => Some(m::NumaPolicy::Preferred),
+        pb::NumaPolicy::NUMA_POLICY_STRICT => Some(m::NumaPolicy::Strict),
+        pb::NumaPolicy::NUMA_POLICY_UNSPECIFIED => None,
+    }
+}
+
+fn cpu_pb(p: m::CpuPolicy) -> pb::CpuPolicy {
+    match p {
+        m::CpuPolicy::Shared => pb::CpuPolicy::CPU_POLICY_SHARED,
+        m::CpuPolicy::Dedicated => pb::CpuPolicy::CPU_POLICY_DEDICATED,
+    }
+}
+
+fn cpu_of(p: pb::CpuPolicy) -> Option<m::CpuPolicy> {
+    match p {
+        pb::CpuPolicy::CPU_POLICY_SHARED => Some(m::CpuPolicy::Shared),
+        pb::CpuPolicy::CPU_POLICY_DEDICATED => Some(m::CpuPolicy::Dedicated),
+        pb::CpuPolicy::CPU_POLICY_UNSPECIFIED => None,
+    }
+}
+
 fn boot_pb(h: m::HostBootPolicy) -> pb::HostBootPolicy {
     match h {
         m::HostBootPolicy::Resume => pb::HostBootPolicy::HOST_BOOT_POLICY_RESUME,
@@ -168,6 +200,15 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         hugepages: config.hugepages.then_some(true),
         hugepage_size: config.hugepage_size.clone(),
         page_kib: vm.status.placement.as_ref().and_then(|p| p.page_kib),
+        numa_policy: numa_pb(config.numa_policy).into(),
+        cpu_policy: cpu_pb(config.cpu_policy).into(),
+        numa_node: vm.status.placement.as_ref().and_then(|p| p.numa_node),
+        cpus: vm
+            .status
+            .placement
+            .as_ref()
+            .map(|p| p.cpus.clone())
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -343,6 +384,8 @@ pub async fn preview_placement(
         "networks": req.networks.iter().map(attachment_of).collect::<Vec<_>>(),
         "vfio_devices": req.vfio_devices,
         "hugepage_size": req.hugepage_size,
+        "numa_policy": numa_of(req.numa_policy.as_known().unwrap_or_default()).unwrap_or_default(),
+        "cpu_policy": cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
     });
     if let Some(h) = hypervisor {
         cfg["hypervisor"] = serde_json::json!(h);
@@ -380,6 +423,10 @@ pub async fn preview_placement(
                 page_kib: f.page_kib,
                 hugepages_mib_taken: f.hugepages_mib_taken,
                 hugepages_mib_capacity: f.hugepages_mib_capacity,
+                numa_aligned: (f.numa_node.is_some() || !f.cpus.is_empty() || !f.numa_aligned)
+                    .then_some(f.numa_aligned),
+                numa_node: f.numa_node,
+                cpus: f.cpus,
                 ..Default::default()
             })
             .collect(),
@@ -478,6 +525,10 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         networks: req.networks.iter().map(attachment_of).collect(),
         hugepages: req.hugepages.unwrap_or(false),
         hugepage_size: req.hugepage_size,
+        numa_policy: numa_of(req.numa_policy.as_known().unwrap_or_default()).unwrap_or_default(),
+        cpu_policy: cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
+        host_numa_node: None,
+        vcpu_pins: Vec::new(),
         firmware_image: None,
         nic_bindings: Vec::new(),
         root_disk: None,
@@ -576,6 +627,8 @@ pub const UPDATABLE: &[&str] = &[
     "credential",
     "hugepages",
     "hugepage_size",
+    "numa_policy",
+    "cpu_policy",
     "vfio_devices",
     "data_disks",
     "networks",
@@ -612,6 +665,18 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                         })
                     }
                     "hugepages" => c.hugepages = Some(change.hugepages),
+                    "numa_policy" => {
+                        c.numa_policy = Some(
+                            numa_of(change.numa_policy.as_known().unwrap_or_default())
+                                .unwrap_or_default(),
+                        )
+                    }
+                    "cpu_policy" => {
+                        c.cpu_policy = Some(
+                            cpu_of(change.cpu_policy.as_known().unwrap_or_default())
+                                .unwrap_or_default(),
+                        )
+                    }
                     "hugepage_size" => {
                         c.hugepage_size = Some(match change.hugepage_size.as_str() {
                             "" => serde_json::Value::Null,
@@ -695,7 +760,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             || cp
                 .hugepage_size
                 .as_ref()
-                .is_some_and(|v| v.as_str() != cur.hugepage_size.as_deref());
+                .is_some_and(|v| v.as_str() != cur.hugepage_size.as_deref())
+            || cp.numa_policy.is_some_and(|v| v != cur.numa_policy)
+            || cp.cpu_policy.is_some_and(|v| v != cur.cpu_policy);
         if let Some(cred) = &cp.credential {
             update = true;
             if let Some(username) = cred.as_str() {

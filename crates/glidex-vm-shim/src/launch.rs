@@ -50,6 +50,17 @@ pub struct LaunchFile {
     /// snapshot (spec/metering.md D12); 0 = never.
     #[serde(default)]
     pub meter_poll_secs: u64,
+    /// Host CPUs the hypervisor and all its threads may run on (NUMA
+    /// placement, host-topology §7). Set by the shim before exec, since
+    /// the unprivileged control plane cannot write unit drop-ins. Empty:
+    /// leave the affinity alone.
+    #[serde(default)]
+    pub cpu_affinity: Vec<u32>,
+    /// QEMU only: vCPU `i` (QMP `cpu-index`) runs on host CPU
+    /// `vcpu_pins[i]`, set once QMP answers. QEMU has no option for it;
+    /// Cloud Hypervisor takes `--cpus affinity=` instead. Empty: none.
+    #[serde(default)]
+    pub vcpu_pins: Vec<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,6 +132,23 @@ impl LaunchFile {
                 return Err(LaunchError::Invalid("fallback argv is empty".into()));
             }
             check_allowed(&fb.argv[0], allowed)?;
+        }
+        if let Some(c) = self
+            .cpu_affinity
+            .iter()
+            .chain(&self.vcpu_pins)
+            .find(|&&c| c >= crate::util::CPU_SETSIZE)
+        {
+            return Err(LaunchError::Invalid(format!(
+                "CPU {} is out of range (at most {})",
+                c,
+                crate::util::CPU_SETSIZE - 1
+            )));
+        }
+        if !self.vcpu_pins.is_empty() && self.hypervisor == HypervisorKind::CloudHypervisor {
+            return Err(LaunchError::Invalid(
+                "vcpu_pins is for QEMU; Cloud Hypervisor pins vCPUs with --cpus affinity=".into(),
+            ));
         }
         Ok(())
     }
@@ -219,6 +247,8 @@ mod tests {
             host_shutdown_grace_secs: 0,
             spec: serde_json::Value::Null,
             meter_poll_secs: 0,
+            cpu_affinity: vec![],
+            vcpu_pins: vec![],
         }
     }
 
@@ -237,6 +267,53 @@ mod tests {
             LaunchFile::read(&path),
             Err(LaunchError::Version(2))
         ));
+    }
+
+    #[test]
+    fn placement_fields_round_trip_and_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), "/bin/true");
+        f.hypervisor = HypervisorKind::Qemu;
+        f.cpu_affinity = vec![64, 65, 66, 67];
+        f.vcpu_pins = vec![64, 65];
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap(), f);
+
+        // A launch file from before NUMA placement: no fields, no binding.
+        let mut v = serde_json::to_value(sample(dir.path(), "/bin/true")).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("cpu_affinity");
+        o.remove("vcpu_pins");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let old = LaunchFile::read(&path).unwrap();
+        assert!(old.cpu_affinity.is_empty() && old.vcpu_pins.is_empty());
+    }
+
+    #[test]
+    fn placement_fields_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hv");
+        std::fs::write(&bin, "").unwrap();
+        let allowed = vec![std::fs::canonicalize(&bin).unwrap()];
+        let mut f = sample(dir.path(), bin.to_str().unwrap());
+        f.cpu_affinity = vec![0, 1023];
+        f.validate(None, &allowed).unwrap();
+        f.cpu_affinity = vec![1024];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("1024"))
+        );
+        f.cpu_affinity = vec![];
+        f.vcpu_pins = vec![3];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("vcpu_pins"))
+        );
+        f.hypervisor = HypervisorKind::Qemu;
+        f.validate(None, &allowed).unwrap();
+        f.vcpu_pins = vec![3, 4096];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("4096"))
+        );
     }
 
     #[test]

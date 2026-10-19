@@ -552,6 +552,7 @@ The fields: `power`, `restart_policy`, `on_host_boot`,
 `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`,
 `credential` (in the mask but absent: removed), `hugepages`,
 `hugepage_size` (`2M`, `1G`, or empty for the node's default),
+`numa_policy`, `cpu_policy` (host-topology.md §6),
 `vfio_devices`, `data_disks` (ids or names; replaces the list),
 `networks`. Without `update_mask` the fields present in `change` are
 the ones changed. Another path is `400 invalid_config`.

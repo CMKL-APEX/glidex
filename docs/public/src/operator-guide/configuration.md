@@ -134,6 +134,8 @@ See [Clusters](clusters.md).
 | `cluster.scheduler.memory_overcommit` | number, ≥ 1.0 | `1.0` | Guest memory placed per MiB of host memory. |
 | `cluster.node_reserved.cpus` | integer | `1` | CPUs per node kept for the host. |
 | `cluster.node_reserved.memory_mib` | integer | `2048` | Memory per node kept for the host. |
+| `cluster.node_reserved.cpu_list` | CPU list (`0-1,128-129`) | unset | CPUs no VM's dedicated vCPUs get, and shared VMs keep off once a node has dedicated VMs. Unset: the first core of each NUMA node, once a node has a dedicated VM. `""` reserves none. OVS-DPDK's PMD and lcore CPUs are always reserved. |
+| `cluster.scheduler.dedicated_whole_cores` | boolean | `true` | Dedicated vCPUs take whole SMT cores (a sibling no other VM shares). `false`: single threads. |
 | `cluster.detach_freeze_secs` | integer | `600` | How long a node's detach (with its VMs) may take before it is called off. |
 | `cluster.import_plan_ttl_secs` | integer | `86400` | How long an import plan waits for approval. |
 | `cluster.ca_rotation_grace_secs` | integer | `604800` | How long the old cluster CA stays trusted after a rotation. |

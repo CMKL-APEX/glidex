@@ -1,7 +1,7 @@
 # Host topology and device placement
 
-Status: **design**; HT0 (per-node VFIO claims) and HT1b (hugepage
-accounting) are implemented, the rest is not (§15). Extends
+Status: **design; HT0, HT1b and HT2 implemented** (§15). §17 records
+where the implementation differs from the design. Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
 [data-model.md](data-model.md) (`VmConfig`) and
@@ -48,9 +48,9 @@ and pools for GPUs, DPUs and NICs.
 | H4 | Unknown NUMA | A device whose `numa_node` reads `-1` (one-node hosts, some firmware) is reported as `numa_node: null`. On a host with one NUMA node it counts as node 0. On a multi-node host it fits any NUMA policy except `strict`, and the node shows a `topology_warnings` entry. Glidex never guesses from the bus number. |
 | H5 | VM NUMA policy | `numa: none \| preferred \| strict` (default `none`, today's behaviour). `preferred` aligns vCPUs, memory and devices on one host NUMA node when one fits and falls back otherwise. `strict` refuses a node where they can't all be on one NUMA node. One host NUMA node per VM in this design; spanning nodes with a guest NUMA topology is §13. |
 | H6 | CPU policy | `cpu: shared \| dedicated` (default `shared`). `shared` vCPUs float over the NUMA node's (or host's) shareable CPUs and count against `cpu_overcommit`. `dedicated` pins each vCPU to its own host CPU, exclusively, never overcommitted. |
-| H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (networking.md §3), and CPUs kept for the host. By default, once a node holds any `dedicated` VM, the first physical core of each NUMA node is reserved for the host (the OVS-DPDK OS core counts as node 0's). `node.reserved_cpus` in the control-plane config overrides that default, including with an empty list. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
+| H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (networking.md §3), and CPUs kept for the host. By default, once a node holds any `dedicated` VM, the first physical core of each NUMA node is reserved for the host (the OVS-DPDK OS core counts as node 0's). `cluster.node_reserved.cpu_list` in the control-plane config overrides that default, including with an empty list. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
 | H8 | Who allocates CPUs | The **scheduler** picks the node and NUMA node and writes the exact CPU set into `status.placement`. The node never chooses CPUs itself. The leader is the one writer, so two VMs can't take the same CPU. A standalone host runs the same code locally. |
-| H9 | Mechanism | Process-level binding through the VM's systemd unit (`CPUAffinity=`, `NUMAPolicy=bind`, `NUMAMask=`) for every VM with a policy. Per-vCPU pinning on top: Cloud Hypervisor's `--cpus affinity=`, and for QEMU the shim pinning vCPU threads it reads from QMP `query-cpus-fast`. Memory comes from the hypervisor's own NUMA-bound memory (§7). |
+| H9 | Mechanism | Process-level CPU binding by the shim: it binds the hypervisor (every thread) before exec, and moves a running VM's threads on request (§7.1). Per-vCPU pinning on top: Cloud Hypervisor's `--cpus affinity=`, and for QEMU the shim pinning vCPU threads it reads from QMP `query-cpus-fast`. Memory comes from the hypervisor's own NUMA-bound memory (§7). (The design had systemd drop-ins; the control plane runs unprivileged and can't write them, §17.) |
 | H10 | Device classes | Requests by class (`gpu`, `nic`, `nvme`, `dpu`, `accelerator`) are matched against **pools** the operator defines, not raw PCI class codes. A pool names devices by vendor and device id, address or label, per node or cluster-wide (§9). Raw addresses keep working. |
 | H11 | Grants | Pools are what tenants and projects are granted (`pci.allow` gains `pool`). Today's address grants stay (tenancy.md D25). |
 | H12 | Preparation | Glidex reports whether each device is ready (§5) and can bind a device to `vfio-pci` through netd, reusing `glidex_ovs::nic::bind_driver`, on request by `net-admin` or for a pool with `prepare: true`. It never changes the kernel command line or firmware. |
@@ -375,16 +375,25 @@ checkbox, and device rows (pool, count, same switch).
 The VM controller turns `status.placement` into launch arguments. The
 shim and the unit do the binding.
 
-### 7.1 Unit
+### 7.1 CPU binding
 
-`glidex-vm@<id>.service` reads `CPUAffinity=` and `NUMAPolicy=` /
-`NUMAMask=` from a per-instance drop-in the controller writes before
-start (`/run/systemd/system/glidex-vm@<id>.service.d/placement.conf`).
-For `numa: none` and `cpu: shared` there is no drop-in, so behaviour is
-as today. For `cpu: shared` with a NUMA policy, the drop-in has
-`NUMAPolicy=`/`NUMAMask=` only (H15). For `dedicated`, `CPUAffinity=` is
-the VM's CPUs. The hypervisor's own threads (I/O, vhost) stay inside
-that set.
+`launch.json` carries `cpu_affinity`, the CPUs the hypervisor and all its
+threads run on, which the shim sets in the child before exec; a failure
+fails the launch. The shim itself stays unbound.
+
+- `dedicated`: the CPUs the VM holds (with whole cores, the idle siblings
+  too). The hypervisor's own threads (I/O, vhost) stay inside that set.
+- `shared`, once the node holds any dedicated VM: the shared pool, every
+  online CPU less the reserved and the dedicated (§8.1). The controller
+  compares a running shared VM's binding (`status.instance.cpu_affinity`)
+  with the pool on each round, and asks the shim to move its threads
+  (`set_affinity` on `shim.sock`) when they differ; back to every online
+  CPU once no dedicated VM is left.
+- Otherwise empty: today's behaviour.
+
+Memory binding is the hypervisor's (§7.2, §7.3), not the process's: a
+`shared` VM with a NUMA policy has its memory bound and its vCPUs
+unbound (H15).
 
 ### 7.2 Cloud Hypervisor
 
@@ -856,13 +865,20 @@ HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
 and HT4 are the user-visible parts.
 
+Done: **HT0** (#63), **HT1b** (#67), **HT2**, with the part of HT1 it
+needs: the topology summary in node status (§3.1, in the reduced shape
+of §17). HT2's acceptance test (`numa_placement_e2e`,
+`qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
+nodes and A100 GPUs, for both hypervisors.
+
 ## 16. Open questions
 
 Settled (see the decisions): shared vCPUs under a NUMA policy bind
 memory only (H15); whole cores is a per-cluster switch (H16); pools at
 the cluster and per tenant (H17); one host core per NUMA node reserved
 by default once a node holds a `dedicated` VM, overridden by
-`node.reserved_cpus` (H7); device errors reported, not acted on (H18).
+`cluster.node_reserved.cpu_list` (H7); device errors reported, not acted
+on (H18).
 
 Still open:
 
@@ -873,3 +889,33 @@ Still open:
   "at most 2 on any one node", for spreading a team's GPUs?
 - **Cordon scope:** cordon a device per node (as written) or by model
   across the cluster (a firmware recall)?
+
+## 17. Implementation notes
+
+Where HT2 differs from the design above, and why:
+
+- **Binding by the shim, not systemd** (H9, §7.1). The control plane runs
+  as an unprivileged user and can't write unit drop-ins or call
+  `SetUnitProperties` on `glidex-vm@` units. The shim runs inside the
+  unit as the same user, so it binds the hypervisor itself.
+- **Reserved CPUs key** (H7): `cluster.node_reserved.cpu_list`, next to
+  the existing `cpus` and `memory_mib` reservations, instead of
+  `node.reserved_cpus`.
+- **Topology summary** (§3.1): `status.topology` has the NUMA nodes
+  (cores, memory less the hugepage pool, hugepages less OVS-DPDK's
+  share), `isolated`, `reserved_cpus` (OVS-DPDK's `pmd-cpu-mask` and
+  `dpdk-lcore-mask`, now in netd's probe, and the config list),
+  `reserved_by_config`, and `device_numa` (address → NUMA node) in
+  place of `devices`, `distance` and `warnings`. The rest of §3–§5 is
+  HT1 and HT3.
+- **Score**: the node is still chosen by its node-wide shares; within it,
+  the NUMA node by most devices, then least memory share, then id.
+- **Changes to a placed VM** (§6): its CPUs and NUMA node are picked again
+  at once, against what the other VMs on the node hold; a running VM
+  keeps its old binding until its next start.
+- **Standalone hosts** (H8) run the same fit against their own node
+  record; a `strict` VM that fits nowhere is refused with `409`. Their
+  `page_kib` stays unset for ordinary or implicit pages (HT1b).
+- **Found on the way**: QEMU refused glidex's VFIO device ids
+  (`_vfio_…`, which don't start with a letter), so VFIO passthrough never
+  launched on QEMU. They are now `vfio_…` (hypervisors.md).

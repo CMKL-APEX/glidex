@@ -40,7 +40,7 @@ pub enum GuestState {
 }
 
 /// The guest's state and the ids of the devices it has (VFIO ids are
-/// `_vfio_…`, spec hypervisors.md).
+/// `vfio_…`, `_vfio_…` from guests launched before; spec hypervisors.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
     pub guest: GuestState,

@@ -10,7 +10,10 @@ use crate::launch::{HypervisorKind, LaunchFile, allowed_binaries};
 use crate::proto::{self, HelloResult, MAX_LINE, Op, Request, Response};
 use crate::proxy::{LogWriter, Proxy};
 use crate::state::{ExitCause, ExitInfo, INSTANCE_VERSION, InstanceFile, Phase, StopInfo};
-use crate::util::{boot_id, now, now_ms, proc_starttime};
+use crate::util::{
+    boot_id, cpu_list, cpu_set, now, now_ms, proc_starttime, set_process_affinity,
+    set_thread_affinity,
+};
 use glidex_hv_client::{GuestState, ch::ChClient, qmp::QmpClient};
 use nix::pty::{OpenptyResult, openpty};
 use nix::sys::signal::{SigHandler, Signal, kill, signal};
@@ -339,6 +342,13 @@ impl Supervisor {
                     return;
                 }
                 if self.ready() {
+                    if let Err(message) = self.pin_vcpus() {
+                        self.hard_kill();
+                        let status = self.child.as_mut().and_then(|c| c.wait().ok());
+                        self.child = None;
+                        self.record_exit(ExitCause::LaunchFailed, status, Some(message));
+                        return;
+                    }
                     self.instance.phase = Phase::Running;
                     self.save();
                     self.start_disk_poller();
@@ -365,6 +375,39 @@ impl Supervisor {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+
+    /// QEMU: pin vCPU `i` to `vcpu_pins[i]` (host-topology §7.3). A
+    /// dedicated VM never runs with its vCPUs unpinned, so any failure
+    /// fails the launch.
+    fn pin_vcpus(&self) -> Result<(), String> {
+        let pins = &self.launch.vcpu_pins;
+        if pins.is_empty() {
+            return Ok(());
+        }
+        let cpus = QmpClient::new(&self.launch.api_socket)
+            .query_cpus_fast()
+            .map_err(|e| format!("pinning vCPUs: {}", e))?;
+        if cpus.len() != pins.len() {
+            return Err(format!(
+                "pinning vCPUs: QEMU has {} vCPUs, launch.json pins {}",
+                cpus.len(),
+                pins.len()
+            ));
+        }
+        for (index, thread) in cpus {
+            let cpu = *pins
+                .get(index as usize)
+                .ok_or_else(|| format!("pinning vCPUs: no pin for vCPU {} (cpu-index)", index))?;
+            set_thread_affinity(thread, &cpu_set(&[cpu]))
+                .map_err(|e| format!("pinning vCPU {} to CPU {}: {}", index, cpu, e))?;
+        }
+        self.note(format!(
+            "\r\n--- glidex: pinned {} vCPUs to CPUs {} ---\r\n",
+            pins.len(),
+            cpu_list(pins)
+        ));
+        Ok(())
     }
 
     /// Poll the hypervisor's block counters every `meter_poll_secs` on a
@@ -468,6 +511,9 @@ impl Supervisor {
             nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).map_err(std::io::Error::from)?;
 
         let parent = std::process::id() as libc::pid_t;
+        // Built here: pre_exec runs after fork and must not allocate.
+        let affinity =
+            (!self.launch.cpu_affinity.is_empty()).then(|| cpu_set(&self.launch.cpu_affinity));
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .env_clear()
@@ -501,6 +547,12 @@ impl Supervisor {
                 // The shim may have died between fork and prctl.
                 if libc::getppid() != parent {
                     libc::_exit(1);
+                }
+                // Placement (host-topology §7): the hypervisor and every
+                // thread it starts inherit this; the shim stays unbound.
+                // Failing here fails the spawn: never start a VM unbound.
+                if let Some(set) = &affinity {
+                    set_thread_affinity(0, set)?;
                 }
                 Ok(())
             });
@@ -606,6 +658,7 @@ impl Supervisor {
                 }
                 (Response::ok(id, serde_json::Value::Null), false)
             }
+            Op::SetAffinity { cpus } => (self.set_affinity(id, cpus), false),
             Op::Release => {
                 if self.instance.phase == Phase::Exited {
                     (Response::ok(id, serde_json::Value::Null), true)
@@ -620,6 +673,42 @@ impl Supervisor {
                     )
                 }
             }
+        }
+    }
+
+    /// Rebind the running hypervisor's threads (`set_affinity`).
+    fn set_affinity(&mut self, id: u64, cpus: Vec<u32>) -> Response {
+        if !self.launch.vcpu_pins.is_empty() {
+            return Response::err(
+                id,
+                proto::E_INVALID,
+                "this VM's vCPUs are pinned; it is not rebound",
+            );
+        }
+        if cpus.is_empty() {
+            return Response::err(id, proto::E_INVALID, "cpus is empty");
+        }
+        if let Some(c) = cpus.iter().find(|&&c| c >= crate::util::CPU_SETSIZE) {
+            return Response::err(id, proto::E_INVALID, format!("CPU {} is out of range", c));
+        }
+        let Some(pid) = self.child.as_ref().map(|c| c.id()) else {
+            return Response::err(id, proto::E_NOT_RUNNING, "no hypervisor is running");
+        };
+        // Kept for the record; the shim never relaunches once running.
+        self.launch.cpu_affinity = cpus.clone();
+        match set_process_affinity(pid, &cpus) {
+            Ok(n) => {
+                self.note(format!(
+                    "\r\n--- glidex: hypervisor rebound to CPUs {} ---\r\n",
+                    cpu_list(&cpus)
+                ));
+                Response::ok(id, serde_json::json!({ "threads": n }))
+            }
+            Err(e) => Response::err(
+                id,
+                proto::E_INTERNAL,
+                format!("binding to CPUs {}: {}", cpu_list(&cpus), e),
+            ),
         }
     }
 

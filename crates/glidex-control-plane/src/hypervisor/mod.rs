@@ -207,19 +207,29 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
         .collect()
 }
 
-/// MiB of `page_kib` hugepages free and not promised to a process now;
-/// 0 when they can't be read.
-pub(crate) fn hugepages_spare_mib(page_kib: u64) -> u64 {
+/// MiB of `page_kib` hugepages free and not promised to a process now,
+/// on the host or on one NUMA node (which has no reserved count); 0 when
+/// they can't be read.
+pub(crate) fn hugepages_spare_mib(page_kib: u64, numa_node: Option<u32>) -> u64 {
+    let dir = match numa_node {
+        Some(n) => format!("/sys/devices/system/node/node{n}/hugepages/hugepages-{page_kib}kB"),
+        None => format!("/sys/kernel/mm/hugepages/hugepages-{page_kib}kB"),
+    };
     let read = |f: &str| {
-        std::fs::read_to_string(format!(
-            "/sys/kernel/mm/hugepages/hugepages-{page_kib}kB/{f}"
-        ))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+        std::fs::read_to_string(format!("{dir}/{f}"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
     };
     let free = read("free_hugepages").unwrap_or(0);
     let resv = read("resv_hugepages").unwrap_or(0);
     free.saturating_sub(resv) * page_kib / 1024
+}
+
+/// The host's online CPUs.
+pub(crate) fn online_cpus() -> Vec<u32> {
+    std::fs::read_to_string("/sys/devices/system/cpu/online")
+        .map(|s| glidex_ovs::tuning::parse_cpu_list(&s))
+        .unwrap_or_default()
 }
 
 /// Whether the host has enough unreserved 2 MiB hugepages to back a guest
@@ -228,7 +238,7 @@ pub(crate) fn hugepages_spare_mib(page_kib: u64) -> u64 {
 /// counted pages (spec/host-topology.md §8a.3).
 pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     let mem = mem_mib as u64;
-    mem.is_multiple_of(2) && hugepages_spare_mib(2048) >= mem + (mem / 4).max(256)
+    mem.is_multiple_of(2) && hugepages_spare_mib(2048, None) >= mem + (mem / 4).max(256)
 }
 
 /// vhost-user: OVS maps guest RAM, so it must be shared.
@@ -248,10 +258,24 @@ pub(crate) fn vfio_bdf(path: &str) -> String {
 }
 
 /// Derive a deterministic hypervisor device id from a sysfs path.
-/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "_vfio_0000_41_00_0"
+/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "vfio_0000_41_00_0". QEMU
+/// takes only ids starting with a letter.
 pub fn vfio_device_id(path: &str) -> String {
     let bdf = vfio_bdf(path);
-    format!("_vfio_{}", bdf.replace([':', '.'], "_"))
+    format!("vfio_{}", bdf.replace([':', '.'], "_"))
+}
+
+/// The id a Cloud Hypervisor guest launched before ids started with a
+/// letter has for the device (`_vfio_…`).
+pub fn legacy_vfio_device_id(path: &str) -> String {
+    format!("_{}", vfio_device_id(path))
+}
+
+/// A device id a guest reports, as [`vfio_device_id`] makes it; `None` for
+/// anything but a VFIO device.
+pub fn observed_vfio_id(id: &str) -> Option<String> {
+    let id = id.strip_prefix('_').unwrap_or(id);
+    id.starts_with("vfio_").then(|| id.to_string())
 }
 
 /// Characters a path must not contain to reach a hypervisor command line
@@ -287,9 +311,15 @@ mod tests {
         );
         assert_eq!(
             vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"),
-            "_vfio_0000_41_00_0"
+            "vfio_0000_41_00_0"
         );
-        assert_eq!(vfio_device_id("0000:41:00.0"), "_vfio_0000_41_00_0");
+        assert_eq!(vfio_device_id("0000:41:00.0"), "vfio_0000_41_00_0");
+        assert_eq!(
+            observed_vfio_id("_vfio_0000_41_00_0").as_deref(),
+            Some("vfio_0000_41_00_0"),
+            "a device of a guest launched before"
+        );
+        assert_eq!(observed_vfio_id("vd0"), None);
     }
 
     #[test]

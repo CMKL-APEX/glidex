@@ -2007,3 +2007,281 @@ async fn catalog_image_e2e(hypervisor: &str) {
     let (status, _) = request(&app, "DELETE", &format!("/images/{image_id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots two real VMs with GPUs; needs KVM, cloud-hypervisor, GLIDEX_TEST_IMAGE and GLIDEX_TEST_GPUS"]
+async fn numa_placement_e2e() {
+    numa_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots two real VMs with GPUs; needs KVM, QEMU, OVMF, GLIDEX_TEST_IMAGE and GLIDEX_TEST_GPUS"]
+async fn qemu_numa_placement_e2e() {
+    numa_e2e("qemu").await;
+}
+
+/// The CPUs a thread may run on (`Cpus_allowed_list`).
+fn allowed_cpus(pid: u32, tid: &str) -> Vec<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/status")).unwrap();
+    let list = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+        .unwrap()
+        .trim()
+        .to_string();
+    glidex_ovs::tuning::parse_cpu_list(&list)
+}
+
+/// A hypervisor's threads: (tid, name).
+fn threads(pid: u32) -> Vec<(String, String)> {
+    std::fs::read_dir(format!("/proc/{pid}/task"))
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let tid = e.file_name().to_string_lossy().into_owned();
+            let comm = std::fs::read_to_string(e.path().join("comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            (tid, comm)
+        })
+        .collect()
+}
+
+/// Pages of a process per NUMA node, from `/proc/<pid>/numa_maps`.
+fn pages_per_node(pid: u32) -> std::collections::BTreeMap<u32, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in std::fs::read_to_string(format!("/proc/{pid}/numa_maps"))
+        .unwrap()
+        .lines()
+    {
+        for f in line.split_whitespace() {
+            if let Some((n, pages)) = f.strip_prefix('N').and_then(|r| r.split_once('='))
+                && let (Ok(n), Ok(p)) = (n.parse::<u32>(), pages.parse::<u64>())
+            {
+                *out.entry(n).or_default() += p;
+            }
+        }
+    }
+    out
+}
+
+/// spec/host-topology.md HT2 acceptance: a `strict`, dedicated VM with a
+/// GPU runs on the GPU's NUMA node, each vCPU on its own CPU and every
+/// thread on the CPUs it holds, its memory on that node; a shared VM with
+/// the second GPU keeps off those CPUs; a control-plane restart changes
+/// none of it. `GLIDEX_TEST_GPUS`: two PCI addresses bound to vfio-pci, on
+/// one NUMA node (e.g. `0000:87:00.0,0000:90:00.0`).
+async fn numa_e2e(hypervisor: &str) {
+    let gpus: Vec<String> = std::env::var("GLIDEX_TEST_GPUS")
+        .expect("GLIDEX_TEST_GPUS: two vfio-pci GPUs")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    assert_eq!(gpus.len(), 2, "GLIDEX_TEST_GPUS needs two addresses");
+    let numa_of = |a: &str| -> u32 {
+        std::fs::read_to_string(format!("/sys/bus/pci/devices/{a}/numa_node"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    let gpu_node = numa_of(&gpus[0]);
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+
+    let tmp = TempDir::new().unwrap();
+    let db = tmp.path().join("test.db");
+    let manager = VmManager::with_db_path(db.clone()).unwrap();
+    manager.initialize().await.unwrap();
+    manager.start_controllers();
+    let guard = ShutdownGuard(Some(manager.clone()));
+    let app = create_router(manager.clone());
+    let firmware = pull_firmware_image(&app, hypervisor).await;
+    let (username, password) = ("gxtester", uuid::Uuid::new_v4().simple().to_string());
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let rootfs = |name: &str| {
+        let p = tmp.path().join(format!("{name}.raw"));
+        run_ok(
+            Command::new("qemu-img")
+                .args(["convert", "-O", "raw"])
+                .arg(&source_image)
+                .arg(&p),
+        );
+        p
+    };
+
+    // ---- a strict, dedicated VM with the first GPU ------------------------
+    let hostname = "gx-numa";
+    let (status, vm) = request(&app, "POST", "/vms?wait=180", Some(json!({
+        "name": hostname, "vcpu_count": 4, "mem_size_mib": 4096, "hypervisor": hypervisor_pb(hypervisor),
+        "firmware": firmware, "rootfs_path": rootfs("a"), "credential": username,
+        "numa_policy": "NUMA_POLICY_STRICT", "cpu_policy": "CPU_POLICY_DEDICATED",
+        "vfio_devices": [format!("/sys/bus/pci/devices/{}", gpus[0])],
+        "power": "POWER_STATE_RUNNING",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(state(&vm), "running", "{vm}");
+    let id = vm_id(&vm);
+    let a = manager.get_vm(&id).await.unwrap();
+    let placement = a.status.placement.clone().unwrap();
+    assert_eq!(placement.numa_node, Some(gpu_node), "{placement:?}");
+    let held = placement.cpus.clone();
+    assert_eq!(held.len(), 4, "two whole cores: {held:?}");
+    let topology = glidex_control_plane::topology::read().unwrap();
+    assert!(
+        held.iter()
+            .all(|c| topology.node_of_cpu(*c) == Some(gpu_node)),
+        "{held:?} not all on node {gpu_node}"
+    );
+    let inst = a.status.instance.clone().unwrap();
+    let pid = inst.hypervisor_pid.unwrap();
+
+    // Every thread on the held CPUs; vCPU i alone on held[i]. Cloud
+    // Hypervisor names its vCPU threads; QEMU's come from QMP.
+    let api = glidex_control_plane::paths::vm_paths(&id).api_socket;
+    let vcpu_tids: std::collections::BTreeMap<String, usize> = if hypervisor == "qemu" {
+        glidex_hv_client::qmp::QmpClient::new(&api)
+            .query_cpus_fast()
+            .unwrap()
+            .into_iter()
+            .map(|(i, tid)| (tid.to_string(), i as usize))
+            .collect()
+    } else {
+        threads(pid)
+            .into_iter()
+            .filter_map(|(tid, name)| {
+                name.strip_prefix("vcpu")
+                    .and_then(|i| i.parse().ok())
+                    .map(|i| (tid, i))
+            })
+            .collect()
+    };
+    let vcpu_index = |tid: &str| vcpu_tids.get(tid).copied();
+    let mut vcpus_seen = 0;
+    for (tid, name) in threads(pid) {
+        let allowed = allowed_cpus(pid, &tid);
+        match vcpu_index(&tid) {
+            Some(i) => {
+                assert_eq!(allowed, vec![held[i]], "vCPU {i} ({name})");
+                vcpus_seen += 1;
+            }
+            None => assert!(
+                allowed.iter().all(|c| held.contains(c)),
+                "thread {name} on {allowed:?}, outside {held:?}"
+            ),
+        }
+    }
+    assert_eq!(vcpus_seen, 4, "vCPU threads of {pid}");
+
+    // The guest sees its GPU and four CPUs.
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    {
+        let (p, inst_id, u, pw) = (
+            console_path.clone(),
+            inst.instance_id.clone(),
+            username.to_string(),
+            password.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let mut c = console_login(&p, &inst_id, hostname, &u, &pw);
+            c.send("echo GX_NV_$(grep -l 0x10de /sys/bus/pci/devices/*/vendor | wc -l)_CPUS_$(nproc)\r");
+            c.expect("GX_NV_1_CPUS_4", Duration::from_secs(30));
+            // Touch guest memory so the host allocates it.
+            c.send("head -c 1G /dev/zero | tail -c 1 >/dev/null; echo GX_TOUCHED\r");
+            c.expect("GX_TOUCHED", Duration::from_secs(120));
+        })
+        .await
+        .unwrap();
+    }
+    let pages = pages_per_node(pid);
+    let total: u64 = pages.values().sum();
+    let here = pages.get(&gpu_node).copied().unwrap_or(0);
+    assert!(
+        here * 10 >= total * 9,
+        "only {here} of {total} pages on node {gpu_node}: {pages:?}"
+    );
+
+    // ---- a shared, strict VM with the second GPU keeps off those CPUs -----
+    let (status, vm) = request(&app, "POST", "/vms?wait=180", Some(json!({
+        "name": "gx-numa-shared", "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor_pb(hypervisor),
+        "firmware": firmware, "rootfs_path": rootfs("b"), "credential": username,
+        "numa_policy": "NUMA_POLICY_STRICT",
+        "vfio_devices": [format!("/sys/bus/pci/devices/{}", gpus[1])],
+        "power": "POWER_STATE_RUNNING",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(state(&vm), "running", "{vm}");
+    let b_id = vm_id(&vm);
+    let b = manager.get_vm(&b_id).await.unwrap();
+    let bp = b.status.placement.clone().unwrap();
+    assert_eq!(
+        (bp.numa_node, bp.cpus.is_empty()),
+        (Some(numa_of(&gpus[1])), true)
+    );
+    let b_pid = b.status.instance.clone().unwrap().hypervisor_pid.unwrap();
+    for (tid, name) in threads(b_pid) {
+        let allowed = allowed_cpus(b_pid, &tid);
+        assert!(
+            allowed.iter().all(|c| !held.contains(c)),
+            "shared thread {name} may run on dedicated CPUs: {allowed:?}"
+        );
+    }
+
+    // ---- the control plane restarts; the binding stays --------------------
+    manager.stop_controllers().await;
+    guard.disarm();
+    drop(app);
+    drop(manager);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let manager = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match VmManager::with_db_path(db.clone()) {
+                Ok(m) => break m,
+                Err(e) if Instant::now() < deadline => {
+                    eprintln!("database still open: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    manager.initialize().await.unwrap();
+    manager.start_controllers();
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let vm = wait_vm(&manager, &id, "adoption", Duration::from_secs(30), |v| {
+        v.is_converged()
+    })
+    .await;
+    assert_eq!(vm.status.instance.unwrap().hypervisor_pid, Some(pid));
+    for (tid, _) in threads(pid) {
+        if let Some(i) = vcpu_index(&tid) {
+            assert_eq!(
+                allowed_cpus(pid, &tid),
+                vec![held[i]],
+                "after restart: vCPU {i}"
+            );
+        }
+    }
+    let app = create_router(manager.clone());
+    for vm in [&b_id, &id] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            &format!("/vms/{vm}/stop?graceful_timeout_secs=60&wait=120"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, _) = request(&app, "DELETE", &format!("/vms/{vm}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+}

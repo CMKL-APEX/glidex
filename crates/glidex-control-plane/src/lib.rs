@@ -28,3 +28,4 @@ pub mod state;
 pub mod store;
 pub mod tenancy;
 pub mod tenants;
+pub mod topology;

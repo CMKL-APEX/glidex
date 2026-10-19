@@ -108,9 +108,152 @@ pub fn socket_accepts(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// CPU ids a `cpu_set_t` can hold; `launch.json` rejects larger ones.
+pub const CPU_SETSIZE: u32 = libc::CPU_SETSIZE as u32;
+
+/// A `cpu_set_t` holding `cpus`. Ids of `CPU_SETSIZE` or more are left
+/// out (validation has already refused them).
+pub fn cpu_set(cpus: &[u32]) -> libc::cpu_set_t {
+    // SAFETY: cpu_set_t is a plain bit array; all zeroes is the empty set.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    for &c in cpus.iter().filter(|&&c| c < CPU_SETSIZE) {
+        // SAFETY: `c` is below CPU_SETSIZE, so the bit is in the array.
+        unsafe { libc::CPU_SET(c as usize, &mut set) };
+    }
+    set
+}
+
+/// `64-71,192-199`: the kernel's cpu list format, for notes and errors.
+pub fn cpu_list(cpus: &[u32]) -> String {
+    let mut sorted = cpus.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < sorted.len() {
+        let start = sorted[i];
+        while i + 1 < sorted.len() && sorted[i + 1] == sorted[i] + 1 {
+            i += 1;
+        }
+        out.push(if sorted[i] == start {
+            start.to_string()
+        } else {
+            format!("{}-{}", start, sorted[i])
+        });
+        i += 1;
+    }
+    out.join(",")
+}
+
+/// `sched_setaffinity` on one thread (`tid` 0: the caller).
+pub fn set_thread_affinity(tid: libc::pid_t, set: &libc::cpu_set_t) -> std::io::Result<()> {
+    // SAFETY: `set` is a valid cpu_set_t of the size passed.
+    if unsafe { libc::sched_setaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), set) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Bind every thread of `pid` to `cpus`; returns how many were bound.
+/// A thread that exits meanwhile is skipped. Threads started while we
+/// walk the list may have copied the old mask, so walk until no new ones
+/// turn up.
+pub fn set_process_affinity(pid: u32, cpus: &[u32]) -> std::io::Result<u64> {
+    let set = cpu_set(cpus);
+    let mut done = std::collections::BTreeSet::new();
+    for _ in 0..10 {
+        let mut fresh = false;
+        for entry in std::fs::read_dir(format!("/proc/{}/task", pid))? {
+            let Some(tid) = entry?
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<libc::pid_t>().ok())
+            else {
+                continue;
+            };
+            if done.contains(&tid) {
+                continue;
+            }
+            match set_thread_affinity(tid, &set) {
+                Ok(()) => {
+                    done.insert(tid);
+                    fresh = true;
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if !fresh {
+            break;
+        }
+    }
+    Ok(done.len() as u64)
+}
+
+/// The CPUs the calling thread may run on.
+pub fn own_affinity() -> std::io::Result<Vec<u32>> {
+    // SAFETY: as in `cpu_set`; the kernel fills it in.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    if unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((0..CPU_SETSIZE)
+        // SAFETY: `c` is below CPU_SETSIZE.
+        .filter(|&c| unsafe { libc::CPU_ISSET(c as usize, &set) })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_sets_and_lists() {
+        let set = cpu_set(&[0, 3, 70, 1023, 1024, 5000]);
+        let has = |c: usize| unsafe { libc::CPU_ISSET(c, &set) };
+        assert!(has(0) && has(3) && has(70) && has(1023));
+        assert!(!has(1) && !has(69));
+        assert_eq!(unsafe { libc::CPU_COUNT(&set) }, 4);
+        assert_eq!(
+            cpu_list(&[71, 64, 65, 66, 67, 68, 69, 70, 192, 194, 193, 5]),
+            "5,64-71,192-194"
+        );
+        assert_eq!(cpu_list(&[3, 3]), "3");
+        assert_eq!(cpu_list(&[]), "");
+    }
+
+    /// `Cpus_allowed_list` of every thread of `pid`.
+    fn allowed_lists(pid: u32) -> Vec<String> {
+        std::fs::read_dir(format!("/proc/{}/task", pid))
+            .unwrap()
+            .map(|t| {
+                let status = std::fs::read_to_string(t.unwrap().path().join("status")).unwrap();
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                    .unwrap()
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_running_process_is_rebound() {
+        let cpu = *own_affinity().unwrap().last().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let r = set_process_affinity(child.id(), &[cpu]);
+        let lists = allowed_lists(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(r.unwrap(), 1);
+        assert_eq!(lists, [cpu.to_string()]);
+        assert!(set_process_affinity(u32::MAX - 1, &[cpu]).is_err());
+    }
 
     #[test]
     fn starttime_survives_odd_command_names() {

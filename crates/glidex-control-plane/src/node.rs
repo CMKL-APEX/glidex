@@ -282,6 +282,11 @@ pub struct NodeStatus {
     /// node of an older version, or a host without an IOMMU.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pci_groups: BTreeMap<String, String>,
+    /// NUMA nodes, cores, memory and hugepages per node, reserved CPUs and
+    /// devices' NUMA nodes (spec/host-topology.md §3.1); `None` from a node
+    /// of an older version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<crate::topology::TopologySummary>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
@@ -327,6 +332,7 @@ impl Node {
                 features: NodeFeatures::default(),
                 pci_devices: Vec::new(),
                 pci_groups: BTreeMap::new(),
+                topology: None,
                 heartbeat: None,
             },
         }
@@ -517,6 +523,7 @@ impl NodeStore {
         }
         node.status.pci_devices = probe.pci_devices;
         node.status.pci_groups = probe.pci_groups;
+        node.status.topology = probe.topology;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
         if node != before || self.get(id)?.is_none() {
@@ -536,6 +543,7 @@ pub struct SelfProbe {
     pub features: NodeFeatures,
     pub pci_devices: Vec<String>,
     pub pci_groups: BTreeMap<String, String>,
+    pub topology: Option<crate::topology::TopologySummary>,
     /// `ovn-controller`'s version, when OVN is installed.
     pub ovn_version: Option<String>,
 }
@@ -655,6 +663,7 @@ impl SelfProbe {
             features,
             pci_devices,
             pci_groups,
+            topology: crate::topology::read(),
             ovn_version: program_version("ovn-controller"),
         }
     }
