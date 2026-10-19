@@ -1,7 +1,7 @@
 # Tenants, directories and operators (design)
 
-Status: **design**; T0, T1 and T2 are implemented on one directory and
-one cluster (§23). Builds on
+Status: **design**; T0–T3 are implemented on one directory and one
+cluster (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
 It lifts the "federation and SCIM provisioning" item of
@@ -1355,8 +1355,7 @@ T4–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0, T1 and T2 are implemented; T3 is in progress (its tasks in §18);
-T2b and T4–T7 are not started. What
+T0, T1, T2 and T3 are implemented; T2b and T4–T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1529,7 +1528,9 @@ Tasks 4 and 5, and the follow-ups:
 | Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
 | Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 
-**T3** (SCIM) is in progress. Task 2, managed users and teams:
+**T3** (SCIM) is implemented: tasks 1–5 of §18. The JumpCloud checks of
+[idp-checks.md](idp-checks.md) are the operator's to run. Task 2, managed
+users and teams:
 
 | Spec | Code |
 |---|---|
@@ -1561,4 +1562,12 @@ Task 4, the SCIM server:
 | D42 | `active` off disables (D20), on enables only what SCIM disabled; `DELETE /Users/{id}` disables and ends the link (`managed` cleared, the user leaves its groups) |
 | D43 | `scim_groups` (directory scope); `ScimTx::sync_teams`: `auto` teams by group id (renamed with it, detached when it goes), `mapped` through `group_teams` |
 | Tests | `scim.rs` unit tests; `connector_tests.rs::scim_provisions_users_and_groups_as_jumpcloud_does`, `scim_adopts_jit_users_and_maps_groups_to_teams` |
+
+Task 5, docs and the UI e2e:
+
+| Spec | Code |
+|---|---|
+| Operator guide | `operator-guide/authentication.md`, "Provisioning with SCIM": the connector, tokens, JumpCloud's Identity Management, what deactivating and removing do; "Making the endpoint reachable": a reverse proxy, or a Tailscale Funnel of the SCIM path alone (Funnel publishes only ports 443, 8443 and 10000, so it fronts the web UI's 5173) |
+| Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
+| UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
 

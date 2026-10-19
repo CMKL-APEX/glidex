@@ -2,7 +2,7 @@
 // gated consumer accounts, the device client) and JumpCloud, each with the
 // redirect URI to register. Nothing here logs in through them: the
 // connector tests do that against a mock IdP.
-import { api, del, expect, test } from "../fixtures";
+import { API_SOCKET, api, del, expect, rawRequest, test } from "../fixtures";
 
 const GOOGLE = "e2e-google";
 const JUMPCLOUD = "e2e-jumpcloud";
@@ -182,5 +182,56 @@ test("a SCIM connector gets its endpoint and a token shown once", async ({ page 
     await expect(scim.getByText("No tokens")).toBeVisible();
   } finally {
     await del(`/connectors/${ID}`);
+  }
+});
+
+test("users and groups the IdP provisions show as its own", async ({ page }) => {
+  const ID = "e2e-scim-users";
+  const scim = async (method: string, path: string, token: string, body?: unknown) => {
+    const r = await rawRequest({ socketPath: API_SOCKET }, method, `/scim/v2/c/${ID}${path}`, {
+      body,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return { status: r.status, body: r.body ? JSON.parse(r.body) : null };
+  };
+  try {
+    await api("/connectors", {
+      method: "POST",
+      body: { connector: { id: ID, display_name: "E2E JumpCloud", provisioning: "scim", group_mode: "auto", jumpcloud: { client_id: "jc" } } },
+    });
+    const { secret } = await api(`/connectors/${ID}/scim-tokens`, { method: "POST", body: { name: "e2e" } });
+    expect(secret).toMatch(/^gxs_/);
+    expect((await scim("GET", "/Users", "gxs_wrong")).status).toBe(401);
+    const made = await scim("POST", "/Users", secret, {
+      userName: "grace@e2e.example",
+      name: { givenName: "Grace", familyName: "Hopper" },
+      emails: [{ value: "grace@e2e.example", primary: true }],
+      active: true,
+    });
+    expect(made.status).toBe(201);
+    const grace = made.body.id;
+    expect((await scim("POST", "/Groups", secret, { displayName: "e2e-navy", members: [{ value: grace }] })).status).toBe(201);
+
+    await page.goto("/directory/access");
+    const row = page.getByRole("row", { name: /Grace Hopper/ });
+    await expect(row).toContainText("managed by E2E JumpCloud");
+    // Its delete is the IdP's while it is enabled; a disable isn't.
+    await expect(row.getByRole("button", { name: "Delete" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Disable" })).toBeVisible();
+    await expect(page.getByText("from E2E JumpCloud")).toBeVisible();
+
+    // The IdP deactivates it: disabled by its IdP, and only the IdP enables it.
+    const off = await scim("PATCH", `/Users/${grace}`, secret, { Operations: [{ op: "replace", path: "active", value: false }] });
+    expect(off.status).toBe(200);
+    await page.reload();
+    await expect(row).toContainText("disabled by its IdP");
+    await expect(row.getByRole("button", { name: "Enable" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Delete" })).toBeVisible();
+  } finally {
+    await del(`/connectors/${ID}`);
+    const users = (await api<{ users?: any[] }>("/users")).users ?? [];
+    for (const u of users.filter((u) => u.display_name === "Grace Hopper")) await del(`/users/${u.id}`);
+    const teams = (await api<{ teams?: any[] }>("/teams")).teams ?? [];
+    for (const t of teams.filter((t) => t.name === "e2e-navy")) await del(`/teams/${t.id}`);
   }
 });

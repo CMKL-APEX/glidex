@@ -274,6 +274,98 @@ gxctl connector secret set jc
   (`memberOf` by default); `--require-group` and `--team` read it.
 - `--allow-email` limits which addresses get a new account with `--jit`.
 
+### Provisioning with SCIM
+
+A JumpCloud or OIDC connector can be **provisioned**: the IdP creates,
+updates and removes its users and groups in glidex over SCIM 2.0, ahead
+of their logins. Then only people the IdP provisions can log in, and
+deactivating someone in the IdP takes their access away at once.
+
+1. Switch the connector to SCIM. It stops creating users at login:
+
+   ```bash
+   gxctl connector update jc --no-jit --provisioning scim --group-mode auto
+   ```
+
+   `--group-mode auto` makes a glidex team per IdP group. The default,
+   `mapped`, fills existing teams named by `--team GROUP=TEAM`. In the
+   web UI, these are **Provisioning** and **Groups** in the connector's
+   form.
+2. Make a token for the IdP. It is shown once:
+
+   ```bash
+   gxctl connector scim-token create jc --name jumpcloud
+   ```
+
+   Or use the connector's **SCIM** button on the **Connectors** tab,
+   which also shows the endpoint URL. A token lasts 180 days by default
+   (`--days`, at most 365). A connector can have five at once, so make
+   the next one before the old one expires, then revoke the old one.
+3. Make the endpoint reachable from the IdP (see below).
+4. In JumpCloud, open the application's **Identity Management**, choose
+   **SCIM 2.0**, and enter:
+   - **Base URL:** the endpoint, for example
+     `https://<name>.<tailnet>.ts.net/api/scim/v2/c/jc`;
+   - **Token key:** the `gxs_…` token.
+
+   **Test connection**, then **Activate**. Users bound to the
+   application are pushed, and so are its user groups, as glidex groups.
+
+What happens then:
+
+- **First login.** It is matched to the provisioned user by the IdP's
+  id or, as for JumpCloud (which sends none), by the verified email
+  address. Somebody the IdP didn't provision is refused.
+- **Deactivating** someone in the IdP disables the glidex user: their
+  sessions end, their tokens are revoked, and they leave the teams the
+  IdP put them in.
+- **Removing** someone from the application disables the user and
+  detaches it from the IdP. Its records and role links stay; delete the
+  user from the **Directory** page if it should go.
+- **What the IdP owns.** A provisioned user's name, email and whether
+  it is enabled are the IdP's: the web UI says *managed by JumpCloud*,
+  and glidex refuses edits to them. An administrator can still
+  **disable** one at once, without waiting for the IdP; the IdP can't
+  undo that.
+- **Users who logged in before SCIM** (with JIT) are adopted when the
+  IdP pushes them by the same email address: they aren't made twice.
+- Deleting the connector disables its users, unless `gxctl connector
+  remove jc --detach-users` (or the choice in the web UI) keeps them as
+  the directory's own.
+
+#### Making the endpoint reachable
+
+The IdP calls glidex from its own servers, so the endpoint has to be
+reachable from the internet; glidex doesn't open anything itself. It
+lives on the API (`/scim/v2/c/<id>`) and on the web UI under `/api`.
+Use a reverse proxy, or a tunnel that publishes only that path.
+
+With **Tailscale Funnel**: Funnel listens on ports **443, 8443 and
+10000 only**, and the web UI is on 5173. So publish 443 and forward it
+to the web UI, and publish the SCIM path alone, so the rest of the web
+UI stays on the tailnet:
+
+```bash
+sudo tailscale funnel --bg --set-path=/api/scim/v2/ \
+  https://<name>.<tailnet>.ts.net:5173/api/scim/v2/
+tailscale funnel status
+```
+
+- The IdP's URL then has no port:
+  `https://<name>.<tailnet>.ts.net/api/scim/v2/c/<id>`.
+- Funnel needs HTTPS certificates and the `funnel` node attribute in
+  the tailnet's policy, and isn't part of every Tailscale plan (not
+  Starter). Without it, use a reverse proxy, or another tunnel that can
+  publish one path (Cloudflare Tunnel's ingress rules can).
+- If the web UI doesn't use the Tailscale certificate (`installation.md`,
+  `--tailscale-cert`), forward to
+  `https+insecure://127.0.0.1:5173/api/scim/v2/` instead.
+- Turn it off with `sudo tailscale funnel --https=443
+  --set-path=/api/scim/v2/ off`.
+
+Only the SCIM token opens the endpoint: any other request gets `401`.
+It answers at most 20 requests a second per connector.
+
 ## Invitations
 
 An invitation lets one person into a tenant, with a role, through one
