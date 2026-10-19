@@ -2,9 +2,10 @@
 //! after that the VM stays (D6).
 
 use crate::cluster::config::SchedulerConfig;
-use crate::models::{SMALL_PAGE_KIB, Tristate, hugepage_size_name};
+use crate::models::{CpuPolicy, NumaPolicy, SMALL_PAGE_KIB, Tristate, hugepage_size_name};
 use crate::node::{Node, NodePhase};
-use std::collections::{BTreeMap, HashMap};
+use crate::topology::TopologySummary;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What a VM asks of a node.
 #[derive(Debug, Clone, Default)]
@@ -20,6 +21,9 @@ pub struct Request {
     /// A vhost-user NIC: hugepages without asking, when the node has them
     /// to spare.
     pub vhost_user: bool,
+    /// spec/host-topology.md H5 and H6.
+    pub numa: NumaPolicy,
+    pub cpu: CpuPolicy,
     /// `spec.node`: an id or a name.
     pub pin: Option<String>,
     /// The node of each disk the VM uses, `None` for one not bound yet.
@@ -52,6 +56,14 @@ pub struct Load {
     pub devices: BTreeMap<String, String>,
     /// Guest RAM in hugepages: page size in KiB → MiB.
     pub hugepage_mib: BTreeMap<u64, u64>,
+    /// vCPUs of dedicated VMs: not shared capacity's.
+    pub dedicated_vcpus: u64,
+    /// Host CPUs dedicated VMs hold.
+    pub dedicated: BTreeSet<u32>,
+    /// Guest RAM bound to each NUMA node: in ordinary memory, and in
+    /// hugepages by page size (spec/host-topology.md §8.1).
+    pub numa_mem_mib: BTreeMap<u32, u64>,
+    pub numa_hugepage_mib: BTreeMap<u32, BTreeMap<u64, u64>>,
 }
 
 impl Load {
@@ -71,6 +83,10 @@ pub struct Placed {
     /// The page size its RAM is counted in ([`SMALL_PAGE_KIB`]: ordinary
     /// memory).
     pub page_kib: u64,
+    /// The NUMA node its RAM is bound to, and the CPUs it holds
+    /// (dedicated).
+    pub numa_node: Option<u32>,
+    pub cpus: Vec<u32>,
 }
 
 /// A device's PCI address, from a sysfs path or an address: what nodes
@@ -148,8 +164,301 @@ pub fn page_kib(n: &Node, load: &Load, req: &Request) -> Result<u64, String> {
     Ok(SMALL_PAGE_KIB)
 }
 
+/// Where on a node a VM goes (spec/host-topology.md §8.2–8.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fit {
+    /// The page size its RAM is counted in.
+    pub page_kib: u64,
+    /// The NUMA node its RAM is bound to.
+    pub numa_node: Option<u32>,
+    /// Dedicated: the host CPUs it holds, vCPU `i` on `cpus[i]`.
+    pub cpus: Vec<u32>,
+    /// `false`: a `preferred` VM that no single NUMA node could take.
+    pub numa_aligned: bool,
+}
+
+/// The NUMA policy that applies: dedicated CPUs imply `preferred`.
+fn effective_numa(req: &Request) -> NumaPolicy {
+    match (req.numa, req.cpu) {
+        (NumaPolicy::None, CpuPolicy::Dedicated) => NumaPolicy::Preferred,
+        (p, _) => p,
+    }
+}
+
+/// CPUs no VM's dedicated vCPUs get on a node: what the node reserves,
+/// and, unless the operator listed its own, the first core of each NUMA
+/// node for the host (H7).
+fn reserved_cpus(t: &TopologySummary) -> BTreeSet<u32> {
+    let mut r: BTreeSet<u32> = t.reserved_cpus.keys().copied().collect();
+    if !t.reserved_by_config {
+        for n in &t.numa_nodes {
+            if let Some(core) = n.cores.first() {
+                r.extend(core.iter().copied());
+            }
+        }
+    }
+    r
+}
+
+/// The CPUs a shared VM runs on when a node holds dedicated ones: all but
+/// the reserved and the dedicated. Empty: no restriction.
+pub fn shared_pool(n: &Node, held: &BTreeSet<u32>) -> Vec<u32> {
+    let Some(t) = &n.status.topology else {
+        return Vec::new();
+    };
+    if held.is_empty() {
+        return Vec::new();
+    }
+    let reserved = reserved_cpus(t);
+    t.numa_nodes
+        .iter()
+        .flat_map(|k| k.cpus())
+        .filter(|c| !reserved.contains(c) && !held.contains(c))
+        .collect()
+}
+
+/// Pick `vcpus` dedicated CPUs from `cores` (each its threads): isolated
+/// cores first, then by id. With whole cores, every thread of a picked
+/// core is held, core by core, so vCPUs `2i` and `2i+1` share a core and
+/// an odd count leaves the last sibling idle. `None`: not enough.
+fn pick_cpus(
+    cores: &[&Vec<u32>],
+    vcpus: usize,
+    taken: &BTreeSet<u32>,
+    isolated: &BTreeSet<u32>,
+    whole_cores: bool,
+) -> Option<Vec<u32>> {
+    let mut cores: Vec<&Vec<u32>> = cores.to_vec();
+    cores.sort_by_key(|c| (!c.iter().all(|t| isolated.contains(t)), c.first().copied()));
+    if whole_cores {
+        let mut held = Vec::new();
+        for c in cores
+            .iter()
+            .filter(|c| c.iter().all(|t| !taken.contains(t)))
+        {
+            if held.len() >= vcpus {
+                break;
+            }
+            held.extend(c.iter().copied());
+        }
+        (held.len() >= vcpus).then_some(held)
+    } else {
+        let free: Vec<u32> = cores
+            .iter()
+            .flat_map(|c| c.iter().copied())
+            .filter(|t| !taken.contains(t))
+            .take(vcpus)
+            .collect();
+        (free.len() == vcpus).then_some(free)
+    }
+}
+
+/// How `req` fits on NUMA node `k` of `n`: the page size (implicit
+/// hugepages fall back to ordinary memory when the node lacks them) and the
+/// dedicated CPUs, or why not.
+fn fit_on_numa(
+    t: &TopologySummary,
+    k: u32,
+    load: &Load,
+    req: &Request,
+    cfg: &SchedulerConfig,
+    page: u64,
+    taken: &BTreeSet<u32>,
+) -> Result<(u64, Vec<u32>, f64), String> {
+    let node = t.node(k).ok_or_else(|| format!("no NUMA node {k}"))?;
+    let total_mem: u64 = t
+        .numa_nodes
+        .iter()
+        .map(|x| x.memory_mib)
+        .sum::<u64>()
+        .max(1);
+    let share = node.memory_mib as f64 / total_mem as f64;
+    let bound_mem: u64 = load.numa_mem_mib.values().sum();
+    let mem_taken = load.numa_mem_mib.get(&k).copied().unwrap_or(0) as f64
+        + load.mem_mib.saturating_sub(bound_mem) as f64 * share;
+    let mem_cap = node.memory_mib as f64 * cfg.memory_overcommit;
+    let small_fits = mem_taken + req.mem_mib as f64 <= mem_cap;
+    let mut page = page;
+    let mut used = (mem_taken + req.mem_mib as f64) / mem_cap.max(1.0);
+    if page == SMALL_PAGE_KIB {
+        if !small_fits {
+            return Err(format!(
+                "NUMA node {k}: not enough memory ({mem_taken:.0} of {mem_cap:.0} MiB taken)"
+            ));
+        }
+    } else {
+        let cap = (node.pages(page) * page / 1024) as f64;
+        let total_pages: u64 = t
+            .numa_nodes
+            .iter()
+            .map(|x| x.pages(page))
+            .sum::<u64>()
+            .max(1);
+        let bound: u64 = load
+            .numa_hugepage_mib
+            .values()
+            .filter_map(|m| m.get(&page))
+            .sum();
+        let taken_hp = load
+            .numa_hugepage_mib
+            .get(&k)
+            .and_then(|m| m.get(&page))
+            .copied()
+            .unwrap_or(0) as f64
+            + load.hugepages_taken(page).saturating_sub(bound) as f64 * node.pages(page) as f64
+                / total_pages as f64;
+        let spare = cap - taken_hp;
+        let fits = if req.hugepages {
+            spare >= req.mem_mib as f64
+        } else {
+            spare >= (req.mem_mib + (req.mem_mib / 4).max(256)) as f64
+        };
+        if fits {
+            used = (taken_hp + req.mem_mib as f64) / cap.max(1.0);
+        } else if !req.hugepages && small_fits {
+            page = SMALL_PAGE_KIB;
+        } else {
+            return Err(format!(
+                "NUMA node {k}: not enough {} hugepages ({taken_hp:.0} of {cap:.0} MiB taken)",
+                hugepage_size_name(page)
+            ));
+        }
+    }
+    let cpus = if req.cpu == CpuPolicy::Dedicated {
+        let cores: Vec<&Vec<u32>> = node.cores.iter().collect();
+        let isolated: BTreeSet<u32> = t.isolated.iter().copied().collect();
+        pick_cpus(
+            &cores,
+            req.vcpus as usize,
+            taken,
+            &isolated,
+            cfg.dedicated_whole_cores,
+        )
+        .ok_or_else(|| {
+            let free = node.cpus().filter(|c| !taken.contains(c)).count();
+            format!(
+                "NUMA node {k}: not enough free CPUs ({} dedicated vCPUs, {free} CPUs free)",
+                req.vcpus
+            )
+        })?
+    } else {
+        Vec::new()
+    };
+    Ok((page, cpus, used))
+}
+
+/// Where on `n` a VM of `req` goes under its NUMA and CPU policies
+/// (spec/host-topology.md §8.2): the NUMA node holding its devices and
+/// enough memory and CPUs, the most devices then the least allocated
+/// first; `strict` refuses when none can, `preferred` falls back to the
+/// whole node.
+pub fn numa_fit(
+    n: &Node,
+    load: &Load,
+    req: &Request,
+    cfg: &SchedulerConfig,
+    page: u64,
+) -> Result<Fit, String> {
+    let policy = effective_numa(req);
+    if policy == NumaPolicy::None && req.cpu == CpuPolicy::Shared {
+        return Ok(Fit {
+            page_kib: page,
+            numa_aligned: true,
+            ..Default::default()
+        });
+    }
+    let t = n
+        .status
+        .topology
+        .as_ref()
+        .ok_or_else(|| "it reports no topology".to_string())?;
+    let multi = t.numa_nodes.len() > 1;
+    let mut device_nodes: BTreeMap<u32, usize> = BTreeMap::new();
+    for d in &req.vfio {
+        let addr = pci_address(d);
+        match t.device_numa.get(&addr) {
+            Some(k) => *device_nodes.entry(*k).or_default() += 1,
+            None if multi && policy == NumaPolicy::Strict => {
+                return Err(format!("PCI device {addr} has no NUMA node"));
+            }
+            None => {}
+        }
+    }
+    if policy == NumaPolicy::Strict && device_nodes.len() > 1 {
+        let ks: Vec<String> = device_nodes.keys().map(|k| k.to_string()).collect();
+        return Err(format!(
+            "its PCI devices are on NUMA nodes {}",
+            ks.join(" and ")
+        ));
+    }
+    let mut taken = reserved_cpus(t);
+    taken.extend(load.dedicated.iter().copied());
+    let mut candidates: Vec<u32> = t
+        .numa_nodes
+        .iter()
+        .map(|x| x.id)
+        .filter(|k| {
+            policy != NumaPolicy::Strict || device_nodes.is_empty() || device_nodes.contains_key(k)
+        })
+        .collect();
+    candidates.sort_by_key(|k| std::cmp::Reverse(device_nodes.get(k).copied().unwrap_or(0)));
+    let mut best: Option<(usize, f64, u32, u64, Vec<u32>)> = None;
+    let mut first_err = None;
+    for k in candidates {
+        match fit_on_numa(t, k, load, req, cfg, page, &taken) {
+            Ok((p, cpus, used)) => {
+                let devs = device_nodes.get(&k).copied().unwrap_or(0);
+                let better = match &best {
+                    None => true,
+                    Some((bd, bu, bk, ..)) => {
+                        (std::cmp::Reverse(devs), used, k) < (std::cmp::Reverse(*bd), *bu, *bk)
+                    }
+                };
+                if better {
+                    best = Some((devs, used, k, p, cpus));
+                }
+            }
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    if let Some((_, _, k, p, cpus)) = best {
+        return Ok(Fit {
+            page_kib: p,
+            numa_node: Some(k),
+            cpus,
+            numa_aligned: true,
+        });
+    }
+    if policy == NumaPolicy::Strict {
+        return Err(first_err.unwrap_or_else(|| "no NUMA node fits".into()));
+    }
+    // `preferred` that no NUMA node takes: anywhere on the node.
+    let cpus = if req.cpu == CpuPolicy::Dedicated {
+        let cores: Vec<&Vec<u32>> = t.numa_nodes.iter().flat_map(|x| x.cores.iter()).collect();
+        let isolated: BTreeSet<u32> = t.isolated.iter().copied().collect();
+        pick_cpus(
+            &cores,
+            req.vcpus as usize,
+            &taken,
+            &isolated,
+            cfg.dedicated_whole_cores,
+        )
+        .ok_or_else(|| format!("not enough free CPUs for {} dedicated vCPUs", req.vcpus))?
+    } else {
+        Vec::new()
+    };
+    Ok(Fit {
+        page_kib: page,
+        numa_node: None,
+        cpus,
+        numa_aligned: false,
+    })
+}
+
 /// The page size `req` gets on `n`, or why it can't go there.
-fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Result<u64, String> {
+fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Result<Fit, String> {
     if let Some(pin) = &req.pin
         && &n.meta.id != pin
         && &n.spec.name != pin
@@ -167,14 +476,20 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
     if n.status.ready != Tristate::True {
         return Err("not ready".into());
     }
-    let (cpu_cap, mem_cap) = (
-        n.status.allocatable.cpus as f64 * cfg.cpu_overcommit,
-        n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit,
-    );
-    if (load.vcpus + req.vcpus as u64) as f64 > cpu_cap {
+    // Shared vCPUs go on what dedicated ones leave (spec/host-topology.md
+    // §8.1).
+    let shared_vcpus = load.vcpus.saturating_sub(load.dedicated_vcpus);
+    let shared_cap = |held: usize| {
+        n.status.allocatable.cpus.saturating_sub(held as u32) as f64 * cfg.cpu_overcommit
+    };
+    let mem_cap = n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit;
+    if req.cpu == CpuPolicy::Shared
+        && (shared_vcpus + req.vcpus as u64) as f64 > shared_cap(load.dedicated.len())
+    {
         return Err(format!(
             "not enough CPU ({} of {:.0} vCPUs taken)",
-            load.vcpus, cpu_cap
+            shared_vcpus,
+            shared_cap(load.dedicated.len())
         ));
     }
     let page = page_kib(n, load, req)?;
@@ -211,6 +526,7 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
         return Err("br-int is not on the userspace (netdev) datapath".into());
     }
     for d in &req.vfio {
+        // The VM names a sysfs path; nodes report addresses.
         let addr = pci_address(d);
         if !n
             .status
@@ -234,7 +550,29 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
             return Err("a network exists on another node".into());
         }
     }
-    Ok(page)
+    let fit = numa_fit(n, load, req, cfg, page)?;
+    // Implicit hugepages the NUMA node lacked: ordinary memory after all.
+    if fit.page_kib == SMALL_PAGE_KIB
+        && page != SMALL_PAGE_KIB
+        && (load.mem_mib + req.mem_mib) as f64 > mem_cap
+    {
+        return Err(format!(
+            "not enough memory ({} of {:.0} MiB taken)",
+            load.mem_mib, mem_cap
+        ));
+    }
+    if !fit.cpus.is_empty() {
+        let held = load.dedicated.len() + fit.cpus.len();
+        if shared_vcpus as f64 > shared_cap(held) {
+            return Err(format!(
+                "{} dedicated CPUs would leave too few for the shared vCPUs ({} of {:.0})",
+                fit.cpus.len(),
+                shared_vcpus,
+                shared_cap(held)
+            ));
+        }
+    }
+    Ok(fit)
 }
 
 /// One node's answer to a request (`POST /scheduler/preview`,
@@ -258,6 +596,11 @@ pub struct NodeFit {
     pub page_kib: u64,
     pub hugepages_mib_taken: u64,
     pub hugepages_mib_capacity: u64,
+    /// The NUMA node, dedicated CPUs and alignment it would get
+    /// (spec/host-topology.md §8.3).
+    pub numa_node: Option<u32>,
+    pub cpus: Vec<u32>,
+    pub numa_aligned: bool,
     /// `max(cpu share, memory share, hugepage share)` after placing: lower
     /// is preferred.
     #[serde(skip)]
@@ -271,10 +614,18 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
     let mut out: Vec<NodeFit> = nodes
         .iter()
         .map(|(n, load)| {
-            let (refused, page) = match failing(n, load, req, cfg) {
-                Ok(p) => (None, p),
-                Err(why) => (Some(why), page_kib(n, load, req).unwrap_or(SMALL_PAGE_KIB)),
+            let (refused, fit) = match failing(n, load, req, cfg) {
+                Ok(f) => (None, f),
+                Err(why) => (
+                    Some(why),
+                    Fit {
+                        page_kib: page_kib(n, load, req).unwrap_or(SMALL_PAGE_KIB),
+                        numa_aligned: true,
+                        ..Default::default()
+                    },
+                ),
             };
+            let page = fit.page_kib;
             let small = page == SMALL_PAGE_KIB;
             let cpu =
                 (load.vcpus + req.vcpus as u64) as f64 / (n.status.allocatable.cpus.max(1) as f64);
@@ -295,6 +646,9 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
                 name: n.spec.name.clone(),
                 refused,
                 vcpus_taken: load.vcpus,
+                numa_node: fit.numa_node,
+                cpus: fit.cpus,
+                numa_aligned: fit.numa_aligned,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
                 mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit)
@@ -329,6 +683,9 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
 pub struct Choice {
     pub node: String,
     pub page_kib: u64,
+    pub numa_node: Option<u32>,
+    pub cpus: Vec<u32>,
+    pub numa_aligned: bool,
 }
 
 /// The node a VM goes to, or why each node refused it (the first of
@@ -343,6 +700,9 @@ pub fn schedule(
         Some(f) if f.refused.is_none() => Ok(Choice {
             node: f.id.clone(),
             page_kib: f.page_kib,
+            numa_node: f.numa_node,
+            cpus: f.cpus.clone(),
+            numa_aligned: f.numa_aligned,
         }),
         _ => {
             let mut refused: Vec<(String, String)> = all
@@ -382,6 +742,21 @@ pub fn loads(placed: impl IntoIterator<Item = Placed>) -> HashMap<String, Load> 
             l.mem_mib += p.mem_mib;
         } else {
             *l.hugepage_mib.entry(p.page_kib).or_default() += p.mem_mib;
+        }
+        if let Some(k) = p.numa_node {
+            if p.page_kib == SMALL_PAGE_KIB {
+                *l.numa_mem_mib.entry(k).or_default() += p.mem_mib;
+            } else {
+                *l.numa_hugepage_mib
+                    .entry(k)
+                    .or_default()
+                    .entry(p.page_kib)
+                    .or_default() += p.mem_mib;
+            }
+        }
+        if !p.cpus.is_empty() {
+            l.dedicated_vcpus += p.vcpus;
+            l.dedicated.extend(p.cpus.iter().copied());
         }
         l.vms += 1;
         for d in &p.devices {
@@ -431,6 +806,7 @@ mod tests {
         SchedulerConfig {
             cpu_overcommit: 4.0,
             memory_overcommit: 1.0,
+            dedicated_whole_cores: true,
         }
     }
 
@@ -817,6 +1193,152 @@ mod tests {
         }))
         .remove("a")
         .unwrap_or_default()
+    }
+
+    /// Two NUMA nodes of four cores with two threads (node 0: CPUs 0-3 and
+    /// siblings 8-11; node 1: 4-7 and 12-15), 8 GiB each; a GPU on each.
+    fn numa_node() -> Node {
+        let mut n = node("numa", 16, 16384);
+        n.status.pci_devices = vec!["0000:81:00.0".into(), "0000:41:00.0".into()];
+        n.status.topology = Some(TopologySummary {
+            numa_nodes: (0..2u32)
+                .map(|k| crate::topology::NumaNode {
+                    id: k,
+                    cores: (0..4).map(|i| vec![k * 4 + i, k * 4 + i + 8]).collect(),
+                    memory_mib: 8192,
+                    hugepages: Default::default(),
+                })
+                .collect(),
+            device_numa: [
+                ("0000:81:00.0".to_string(), 0),
+                ("0000:41:00.0".to_string(), 1),
+            ]
+            .into(),
+            ..Default::default()
+        });
+        n
+    }
+
+    fn numa_req(vcpus: u32, mem: u64, numa: NumaPolicy, cpu: CpuPolicy) -> Request {
+        let mut r = req(vcpus, mem);
+        r.numa = numa;
+        r.cpu = cpu;
+        r
+    }
+
+    fn place(c: &Choice, r: &Request) -> Placed {
+        Placed {
+            node: c.node.clone(),
+            vcpus: r.vcpus as u64,
+            mem_mib: r.mem_mib,
+            page_kib: c.page_kib,
+            numa_node: c.numa_node,
+            cpus: c.cpus.clone(),
+        }
+    }
+
+    #[test]
+    fn a_strict_vm_goes_to_its_devices_numa_node_and_counts_there() {
+        let n = numa_node();
+        let mut r = numa_req(2, 6144, NumaPolicy::Strict, CpuPolicy::Shared);
+        r.vfio = vec!["/sys/bus/pci/devices/0000:41:00.0".into()];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(
+            (c.numa_node, c.cpus.is_empty(), c.numa_aligned),
+            (Some(1), true, true)
+        );
+        // Its 6 GiB are node 1's now: another 4 GiB strict VM there doesn't fit.
+        let load = loads([place(&c, &r)]).remove("numa").unwrap();
+        let err = schedule(&r, &[(n.clone(), load.clone())], &cfg()).unwrap_err();
+        assert_eq!(
+            err[0].1,
+            "NUMA node 1: not enough memory (6144 of 8192 MiB taken)"
+        );
+        // Without the device it takes node 0.
+        let r2 = numa_req(2, 6144, NumaPolicy::Strict, CpuPolicy::Shared);
+        assert_eq!(
+            schedule(&r2, &[(n.clone(), load.clone())], &cfg())
+                .unwrap()
+                .numa_node,
+            Some(0)
+        );
+        // Devices on two NUMA nodes can't be one node's.
+        r.vfio.push("0000:81:00.0".into());
+        let err = schedule(&r, &[(n, Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "its PCI devices are on NUMA nodes 0 and 1");
+    }
+
+    #[test]
+    fn preferred_falls_back_to_the_whole_host_and_says_so() {
+        let n = numa_node();
+        let r = numa_req(2, 12288, NumaPolicy::Preferred, CpuPolicy::Shared);
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!((c.numa_node, c.numa_aligned), (None, false));
+        let strict = numa_req(2, 12288, NumaPolicy::Strict, CpuPolicy::Shared);
+        assert!(schedule(&strict, &[(n, Load::default())], &cfg()).is_err());
+    }
+
+    #[test]
+    fn dedicated_vcpus_take_whole_free_cores_and_leave_the_host_core() {
+        let n = numa_node();
+        let r = numa_req(3, 1024, NumaPolicy::None, CpuPolicy::Dedicated);
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        // Implied `preferred`: on one node; node 0's first core (0, 8) is the
+        // host's; two whole cores, vCPUs on 1, 9, 2 and 10 left idle.
+        assert_eq!(c.numa_node, Some(0));
+        assert_eq!(c.cpus, vec![1, 9, 2, 10]);
+        let load = loads([place(&c, &r)]).remove("numa").unwrap();
+        assert_eq!(load.dedicated.len(), 4);
+        // Node 0 has one free core left: the next one goes to node 1.
+        let c2 = schedule(&r, &[(n.clone(), load.clone())], &cfg()).unwrap();
+        assert_eq!(
+            (c2.numa_node, c2.cpus.clone()),
+            (Some(1), vec![5, 13, 6, 14])
+        );
+        // Shared VMs run on what is neither reserved nor dedicated.
+        let pool = shared_pool(&n, &load.dedicated);
+        for c in [0, 8, 4, 12, 1, 9, 2, 10] {
+            assert!(!pool.contains(&c), "{c} in {pool:?}");
+        }
+        assert!(pool.contains(&3) && pool.contains(&15));
+        // Single threads when whole cores are off.
+        let mut threads = cfg();
+        threads.dedicated_whole_cores = false;
+        let c = schedule(&r, &[(n, Load::default())], &threads).unwrap();
+        assert_eq!(c.cpus, vec![1, 9, 2]);
+    }
+
+    #[test]
+    fn dedicated_cpus_shrink_what_shared_vcpus_may_take() {
+        let n = numa_node();
+        // 16 CPUs × 4.0 = 64 shared vCPUs; 60 are placed.
+        let shared = Placed {
+            node: "numa".into(),
+            vcpus: 60,
+            mem_mib: 1024,
+            page_kib: SMALL_PAGE_KIB,
+            ..Default::default()
+        };
+        let load = loads([shared]).remove("numa").unwrap();
+        let r = numa_req(2, 1024, NumaPolicy::None, CpuPolicy::Dedicated);
+        let err = schedule(&r, &[(n.clone(), load)], &cfg()).unwrap_err();
+        assert_eq!(
+            err[0].1,
+            "2 dedicated CPUs would leave too few for the shared vCPUs (60 of 56)"
+        );
+        // A node that reports no topology takes no policy.
+        let plain = node("plain", 16, 16384);
+        let err = schedule(&r, &[(plain, Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "it reports no topology");
+    }
+
+    #[test]
+    fn shared_vcpus_under_a_numa_policy_bind_memory_only() {
+        let n = numa_node();
+        let r = numa_req(8, 2048, NumaPolicy::Strict, CpuPolicy::Shared);
+        let c = schedule(&r, &[(n, Load::default())], &cfg()).unwrap();
+        assert_eq!(c.numa_node, Some(0));
+        assert!(c.cpus.is_empty(), "no CPUs held (H15)");
     }
 
     #[test]

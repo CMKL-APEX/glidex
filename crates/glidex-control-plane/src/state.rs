@@ -249,6 +249,10 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub hugepage_size: Option<serde_json::Value>,
     #[serde(default)]
+    pub numa_policy: Option<crate::models::NumaPolicy>,
+    #[serde(default)]
+    pub cpu_policy: Option<crate::models::CpuPolicy>,
+    #[serde(default)]
     pub vfio_devices: Option<Vec<String>>,
     /// Disk ids or names, replacing the list.
     #[serde(default)]
@@ -646,10 +650,112 @@ impl VmManager {
             .or(Some(2048))
     }
 
-    /// Count `vm`'s RAM again on its node after a change to its memory,
-    /// hugepages or networks (spec/host-topology.md §8a.3). In a cluster,
-    /// asked-for hugepages that no longer fit there are refused.
-    fn recount_pages(
+    /// The CPUs shared VMs on this node run on: all but the reserved and
+    /// those the dedicated VMs placed here hold; empty while none are
+    /// (spec/host-topology.md §8.1).
+    pub(crate) async fn local_shared_pool(&self) -> Vec<u32> {
+        let local = self.local_node_id();
+        let Ok(Some(n)) = self.nodes.get(&local) else {
+            return Vec::new();
+        };
+        let held: std::collections::BTreeSet<u32> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .filter_map(|v| v.status.placement.as_ref())
+            .filter(|p| p.node == local)
+            .flat_map(|p| p.cpus.iter().copied())
+            .collect();
+        crate::scheduler::shared_pool(&n, &held)
+    }
+
+    /// Where on this standalone host a VM goes (spec/host-topology.md H8):
+    /// asked-for hugepages in their size and, under a NUMA or CPU policy,
+    /// the NUMA node and CPUs the scheduler's fit picks against what the
+    /// other VMs here hold. A `strict` VM that fits no NUMA node is refused.
+    fn standalone_fit(
+        &self,
+        vms: &HashMap<String, Vm>,
+        vm: &Vm,
+        disks: &[Disk],
+    ) -> Result<crate::scheduler::Fit, VmManagerError> {
+        let page = self.standalone_page_kib(vm.config());
+        let c = vm.config();
+        let fit = crate::scheduler::Fit {
+            page_kib: page.unwrap_or(crate::models::SMALL_PAGE_KIB),
+            numa_aligned: true,
+            ..Default::default()
+        };
+        if c.numa_policy.is_none() && c.cpu_policy.is_shared() {
+            return Ok(fit);
+        }
+        let local = self.local_node_id();
+        let Some((n, load)) = self
+            .node_loads_except(vms, Some(&vm.id))
+            .into_iter()
+            .find(|(n, _)| n.meta.id == local)
+        else {
+            return Err(VmManagerError::Network(NetError::Conflict(
+                "this host has no node record to place the VM by".into(),
+            )));
+        };
+        let req = self.sched_request(vm, disks);
+        crate::scheduler::numa_fit(&n, &load, &req, &self.sched.load(), fit.page_kib)
+            .map_err(|why| VmManagerError::Network(NetError::Conflict(why)))
+    }
+
+    /// Record `fit` in `vm`'s placement. `page_kib` stays unset on a
+    /// standalone host for ordinary or implicit pages (the node decides
+    /// vhost-user hugepages at start).
+    fn apply_fit(&self, vm: &mut Vm, fit: crate::scheduler::Fit) {
+        let standalone = self.cluster().is_none();
+        let page = if standalone {
+            self.standalone_page_kib(vm.config())
+        } else {
+            Some(fit.page_kib)
+        };
+        let policy = !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
+        if let Some(p) = vm.status.placement.as_mut() {
+            p.page_kib = page;
+            p.numa_node = fit.numa_node;
+            p.cpus = fit.cpus;
+        }
+        Self::note_numa_alignment(vm, policy, fit.numa_aligned);
+    }
+
+    /// `NumaAligned` for a VM with a NUMA or CPU policy: `False` when no
+    /// single NUMA node could take a `preferred` VM.
+    pub(crate) fn note_numa_alignment(vm: &mut Vm, policy: bool, aligned: bool) {
+        if !policy {
+            vm.status.conditions.retain(|c| c.kind != "NumaAligned");
+            return;
+        }
+        let (status, reason, msg) = if aligned {
+            (crate::models::Tristate::True, "Aligned", String::new())
+        } else {
+            (
+                crate::models::Tristate::False,
+                "NoNumaNodeFits",
+                "no single NUMA node has its devices, memory and CPUs together; it spans the host"
+                    .to_string(),
+            )
+        };
+        crate::controller::vm::set_cond(
+            &mut vm.status.conditions,
+            "NumaAligned",
+            status,
+            reason,
+            msg,
+        );
+    }
+
+    /// Fit `vm` again on its node after a change to its memory, hugepages,
+    /// CPUs, policies, devices or networks (spec/host-topology.md §6,
+    /// §8a.3): its pages, NUMA node and dedicated CPUs. What no longer fits
+    /// there is refused with 409. A running VM keeps its old binding until
+    /// its next start.
+    fn refit_placement(
         &self,
         vms: &HashMap<String, Vm>,
         vm: &mut Vm,
@@ -658,8 +764,8 @@ impl VmManager {
         let Some(node) = vm.status.placement.as_ref().map(|p| p.node.clone()) else {
             return Ok(());
         };
-        let page = if self.cluster().is_none() {
-            self.standalone_page_kib(vm.config())
+        let fit = if self.cluster().is_none() {
+            self.standalone_fit(vms, vm, disks)?
         } else {
             let Some((n, load)) = self
                 .node_loads_except(vms, Some(&vm.id))
@@ -669,16 +775,17 @@ impl VmManager {
                 return Ok(());
             };
             let req = self.sched_request(vm, disks);
-            Some(crate::scheduler::page_kib(&n, &load, &req).map_err(|why| {
+            let conflict = |why: String| {
                 VmManagerError::Network(NetError::Conflict(format!(
                     "node {}: {}",
                     n.spec.name, why
                 )))
-            })?)
+            };
+            let page = crate::scheduler::page_kib(&n, &load, &req).map_err(conflict)?;
+            crate::scheduler::numa_fit(&n, &load, &req, &self.sched.load(), page)
+                .map_err(conflict)?
         };
-        if let Some(p) = vm.status.placement.as_mut() {
-            p.page_kib = page;
-        }
+        self.apply_fit(vm, fit);
         Ok(())
     }
 
@@ -709,6 +816,8 @@ impl VmManager {
                     name: v.name.clone(),
                     devices: Self::devices_held(v).cloned().collect(),
                     page_kib: Self::counted_page_kib(v),
+                    numa_node: p.numa_node,
+                    cpus: p.cpus.clone(),
                 })
         }));
         nodes
@@ -777,6 +886,8 @@ impl VmManager {
                 .iter()
                 .filter_map(|a| nets.iter().find(|n| n.id == a.network))
                 .any(|n| n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
+            numa: c.numa_policy,
+            cpu: c.cpu_policy,
             pin,
             disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
             net_nodes: c
@@ -1888,8 +1999,12 @@ impl VmManager {
             vm.status.placement = Some(crate::models::Placement {
                 node,
                 at: crate::tenancy::now(),
-                page_kib: self.standalone_page_kib(vm.config()),
+                page_kib: None,
+                numa_node: None,
+                cpus: Vec::new(),
             });
+            let fit = self.standalone_fit(&vms, &vm, &disks)?;
+            self.apply_fit(&mut vm, fit);
         } else {
             let req = self.sched_request(&vm, &disks);
             match self.pick_node(&vms, &req) {
@@ -1898,7 +2013,12 @@ impl VmManager {
                         node: choice.node,
                         at: crate::tenancy::now(),
                         page_kib: Some(choice.page_kib),
+                        numa_node: choice.numa_node,
+                        cpus: choice.cpus,
                     });
+                    let policy =
+                        !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
+                    Self::note_numa_alignment(&mut vm, policy, choice.numa_aligned);
                     crate::controller::vm::set_cond(
                         &mut vm.status.conditions,
                         "Scheduled",
@@ -2334,6 +2454,12 @@ impl VmManager {
             if let Some(h) = c.hugepages {
                 config.hugepages = h;
             }
+            if let Some(p) = c.numa_policy {
+                config.numa_policy = p;
+            }
+            if let Some(p) = c.cpu_policy {
+                config.cpu_policy = p;
+            }
             match c.hugepage_size {
                 None => {}
                 Some(serde_json::Value::Null) => config.hugepage_size = None,
@@ -2412,10 +2538,20 @@ impl VmManager {
             self.check_credential(&project, &vm.spec.config)?;
             Self::check_hugepages(&vm.spec.config)?;
             let (a, b) = (cur.config(), vm.config());
-            if (a.mem_size_mib, a.hugepages, &a.hugepage_size, &a.networks)
-                != (b.mem_size_mib, b.hugepages, &b.hugepage_size, &b.networks)
-            {
-                self.recount_pages(&vms, &mut vm, &[])?;
+            let fitted = |c: &VmConfig| {
+                (
+                    c.vcpu_count,
+                    c.mem_size_mib,
+                    c.hugepages,
+                    c.hugepage_size.clone(),
+                    c.networks.clone(),
+                    c.vfio_devices.clone(),
+                    c.numa_policy,
+                    c.cpu_policy,
+                )
+            };
+            if fitted(a) != fitted(b) {
+                self.refit_placement(&vms, &mut vm, &[])?;
             }
         }
         if vm.spec == cur.spec {

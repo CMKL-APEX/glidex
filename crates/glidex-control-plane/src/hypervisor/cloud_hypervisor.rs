@@ -107,8 +107,19 @@ fn net_args(config: &VmConfig) -> Vec<String> {
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
     a.push("--cpus".into());
-    a.push(format!("boot={0},max={0}", config.vcpu_count));
-    let mut mem = format!("size={}M", config.mem_size_mib);
+    let mut cpus = format!("boot={0},max={0}", config.vcpu_count);
+    // Dedicated vCPUs (spec/host-topology.md §7.2): vCPU i on its host CPU.
+    if !config.vcpu_pins.is_empty() {
+        let pins: Vec<String> = config
+            .vcpu_pins
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{i}@[{c}]"))
+            .collect();
+        cpus.push_str(&format!(",affinity=[{}]", pins.join(",")));
+    }
+    a.push(cpus);
+    let mut mem = String::new();
     if needs_shared_memory(config) {
         mem.push_str(",shared=on");
     }
@@ -118,8 +129,28 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
             mem.push_str(&format!(",hugepage_size={size}"));
         }
     }
-    a.push("--memory".into());
-    a.push(mem);
+    match config.host_numa_node {
+        // Guest RAM in one zone bound to the host NUMA node, seen by the
+        // guest as its one NUMA node.
+        Some(node) => {
+            a.push("--memory".into());
+            a.push("size=0".into());
+            a.push("--memory-zone".into());
+            a.push(format!(
+                "id=mem0,size={}M{mem},host_numa_node={node}",
+                config.mem_size_mib
+            ));
+            a.push("--numa".into());
+            a.push(format!(
+                "guest_numa_id=0,cpus=[0-{}],memory_zones=mem0",
+                config.vcpu_count.saturating_sub(1)
+            ));
+        }
+        None => {
+            a.push("--memory".into());
+            a.push(format!("size={}M{mem}", config.mem_size_mib));
+        }
+    }
 
     // Firmware boot hands off to the disk's own bootloader; distro cloud
     // images put their console on ttyS0, so the serial port is the console
@@ -320,6 +351,28 @@ mod tests {
             ]
             .map(image_type_name),
             ["raw", "qcow2", "vhdx", "vhd"]
+        );
+    }
+
+    #[test]
+    fn numa_bound_memory_and_pinned_vcpus() {
+        let mut c =
+            config(serde_json::json!({"vcpu_count": 2, "hugepages": true, "hugepage_size": "2M"}));
+        c.host_numa_node = Some(3);
+        c.vcpu_pins = vec![49, 177];
+        let a = args(&c, "/s");
+        assert_eq!(
+            values(&a, "--cpus"),
+            ["boot=2,max=2,affinity=[0@[49],1@[177]]"]
+        );
+        assert_eq!(values(&a, "--memory"), ["size=0"]);
+        assert_eq!(
+            values(&a, "--memory-zone"),
+            ["id=mem0,size=1024M,hugepages=on,hugepage_size=2M,host_numa_node=3"]
+        );
+        assert_eq!(
+            values(&a, "--numa"),
+            ["guest_numa_id=0,cpus=[0-1],memory_zones=mem0"]
         );
     }
 

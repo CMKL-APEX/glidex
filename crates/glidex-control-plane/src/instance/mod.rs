@@ -132,6 +132,7 @@ mod tests {
             launched_at: 0,
             growpart_disk: None,
             growpart_seq: None,
+            cpu_affinity: vec![],
         }
     }
 

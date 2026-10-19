@@ -49,6 +49,9 @@ pub struct RaftConfig {
 pub struct SchedulerConfig {
     pub cpu_overcommit: f64,
     pub memory_overcommit: f64,
+    /// Dedicated vCPUs take whole SMT cores, so no other VM shares a core
+    /// with them (spec/host-topology.md H16).
+    pub dedicated_whole_cores: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,6 +129,7 @@ impl Default for SchedulerConfig {
         SchedulerConfig {
             cpu_overcommit: 4.0,
             memory_overcommit: 1.0,
+            dedicated_whole_cores: true,
         }
     }
 }

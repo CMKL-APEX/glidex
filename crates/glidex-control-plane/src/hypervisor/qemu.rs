@@ -184,6 +184,10 @@ impl LaunchSpec<'_> {
         };
 
         let shared = needs_shared_memory(config) || config.hugepages;
+        // Bound to a host NUMA node (spec/host-topology.md §7.3), guest RAM
+        // is the memdev of the guest's one NUMA node instead of the
+        // machine's memory backend.
+        let numa = config.host_numa_node;
         let secure_boot = matches!(
             self.firmware,
             Some(Firmware::Pflash {
@@ -192,7 +196,7 @@ impl LaunchSpec<'_> {
             })
         );
         let mut machine = "q35".to_string();
-        if shared {
+        if shared && numa.is_none() {
             machine.push_str(",memory-backend=mem");
         }
         if secure_boot {
@@ -204,19 +208,41 @@ impl LaunchSpec<'_> {
         }
         push(&mut args, "-m", format!("{}M", config.mem_size_mib));
         push(&mut args, "-smp", config.vcpu_count.to_string());
+        let bind = numa
+            .map(|n| format!(",host-nodes={n},policy=bind"))
+            .unwrap_or_default();
         if shared {
             // vhost-user: OVS maps guest RAM, so it must be shared.
             push(
                 &mut args,
                 "-object",
                 format!(
-                    "memory-backend-memfd,id=mem,size={}M,share=on{}",
+                    "memory-backend-memfd,id=mem,size={}M,share=on{}{bind}",
                     config.mem_size_mib,
                     match (config.hugepages, &config.hugepage_size) {
                         (true, Some(size)) => format!(",hugetlb=on,hugetlbsize={size}"),
                         (true, None) => ",hugetlb=on".into(),
                         (false, _) => String::new(),
                     }
+                ),
+            );
+        } else if numa.is_some() {
+            push(
+                &mut args,
+                "-object",
+                format!(
+                    "memory-backend-ram,id=mem,size={}M{bind}",
+                    config.mem_size_mib
+                ),
+            );
+        }
+        if numa.is_some() {
+            push(
+                &mut args,
+                "-numa",
+                format!(
+                    "node,nodeid=0,cpus=0-{},memdev=mem",
+                    config.vcpu_count.saturating_sub(1)
                 ),
             );
         }
@@ -758,6 +784,29 @@ mod tests {
             values(&args, "-object")
                 .contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on")
         );
+    }
+
+    #[test]
+    fn numa_bound_memory_is_the_guest_nodes_memdev() {
+        let mut config = config(serde_json::json!({"vcpu_count": 4}));
+        config.host_numa_node = Some(5);
+        let args = spec(&config).args();
+        assert_eq!(values(&args, "-machine"), ["q35"]);
+        assert!(
+            values(&args, "-object")
+                .contains(&"memory-backend-ram,id=mem,size=1024M,host-nodes=5,policy=bind")
+        );
+        assert_eq!(
+            values(&args, "-numa"),
+            ["node,nodeid=0,cpus=0-3,memdev=mem"]
+        );
+        // Shared (hugepages) memory is bound the same way.
+        config.hugepages = true;
+        let args = spec(&config).args();
+        assert_eq!(values(&args, "-machine"), ["q35"]);
+        assert!(values(&args, "-object").contains(
+            &"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on,host-nodes=5,policy=bind"
+        ));
     }
 
     #[test]

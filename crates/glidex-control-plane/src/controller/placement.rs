@@ -42,7 +42,12 @@ impl VmManager {
                         node: node.clone(),
                         at: crate::tenancy::now(),
                         page_kib: Some(choice.page_kib),
+                        numa_node: choice.numa_node,
+                        cpus: choice.cpus,
                     });
+                    let policy =
+                        !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
+                    VmManager::note_numa_alignment(&mut vm, policy, choice.numa_aligned);
                     crate::controller::vm::set_cond(
                         &mut vm.status.conditions,
                         "Scheduled",

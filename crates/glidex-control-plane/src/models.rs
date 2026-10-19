@@ -147,6 +147,19 @@ pub struct VmConfig {
     /// scheduler counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hugepage_size: Option<String>,
+    /// Keep the VM's memory, CPUs and devices on one host NUMA node
+    /// (spec/host-topology.md H5).
+    #[serde(default, skip_serializing_if = "NumaPolicy::is_none")]
+    pub numa_policy: NumaPolicy,
+    /// Dedicated: each vCPU on a host CPU of its own (H6).
+    #[serde(default, skip_serializing_if = "CpuPolicy::is_shared")]
+    pub cpu_policy: CpuPolicy,
+    /// At launch: the host NUMA node guest RAM is bound to, and the host
+    /// CPU of each vCPU (dedicated), from the placement. Never persisted.
+    #[serde(skip)]
+    pub host_numa_node: Option<u32>,
+    #[serde(skip)]
+    pub vcpu_pins: Vec<u32>,
     /// Host-side NIC bindings from glidex-netd, filled in by `start_vm`
     /// for the hypervisor; never persisted.
     #[serde(skip)]
@@ -239,10 +252,51 @@ pub struct Placement {
     /// Absent: placed before it was counted; the node decides at start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_kib: Option<u64>,
+    /// The host NUMA node guest RAM is bound to (spec/host-topology.md
+    /// §6), under a NUMA policy that fitted one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numa_node: Option<u32>,
+    /// Dedicated: the host CPUs the VM holds, vCPU `i` on `cpus[i]`; with
+    /// whole cores, the idle siblings follow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpus: Vec<u32>,
 }
 
 /// KiB of ordinary memory pages.
 pub const SMALL_PAGE_KIB: u64 = 4;
+
+/// spec/host-topology.md H5: `preferred` keeps memory (and CPUs and
+/// devices) on one host NUMA node when one fits, `strict` refuses a node
+/// where they can't be.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NumaPolicy {
+    #[default]
+    None,
+    Preferred,
+    Strict,
+}
+
+impl NumaPolicy {
+    pub fn is_none(&self) -> bool {
+        *self == NumaPolicy::None
+    }
+}
+
+/// spec/host-topology.md H6.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuPolicy {
+    #[default]
+    Shared,
+    Dedicated,
+}
+
+impl CpuPolicy {
+    pub fn is_shared(&self) -> bool {
+        *self == CpuPolicy::Shared
+    }
+}
 
 /// `2M` / `1G` → KiB; `None` for anything else.
 pub fn hugepage_size_kib(size: &str) -> Option<u64> {
@@ -359,6 +413,10 @@ pub struct InstanceRef {
     /// That disk's `applied_extend_root_seq` when the seed was made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub growpart_seq: Option<u64>,
+    /// The host CPUs its threads are bound to; empty: unbound
+    /// (spec/host-topology.md §7.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cpu_affinity: Vec<u32>,
 }
 
 pub use glidex_vm_shim::state::ExitCause;

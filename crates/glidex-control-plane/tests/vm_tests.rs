@@ -538,3 +538,136 @@ async fn hugepage_sizes_are_checked_and_recorded_with_the_placement() {
     assert!(v["vm"].get("page_kib").is_none(), "{v}");
     assert!(v["vm"].get("hugepages").is_none(), "{v}");
 }
+
+/// NUMA and CPU policies on a standalone host (spec/host-topology.md H8):
+/// placed by the same fit as in a cluster, against the host's topology.
+#[tokio::test(flavor = "multi_thread")]
+async fn numa_and_cpu_policies_are_placed_on_a_standalone_host() {
+    use glidex_control_plane::topology::{NumaNode, TopologySummary};
+    let h = harness();
+    let t = h.token(&h.admin("ada"));
+    let p = h
+        .app
+        .manager
+        .projects()
+        .create("p", String::new(), None)
+        .unwrap()
+        .id;
+    // Two NUMA nodes of four 2-thread cores and 8 GiB; a GPU on node 1.
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes
+        .get(&h.app.manager.local_node_id())
+        .unwrap()
+        .expect("the local node");
+    n.status.allocatable.cpus = 16;
+    n.status.allocatable.memory_mib = 16384;
+    n.status.pci_devices = vec!["0000:41:00.0".into()];
+    n.status.topology = Some(TopologySummary {
+        numa_nodes: (0..2u32)
+            .map(|k| NumaNode {
+                id: k,
+                cores: (0..4).map(|i| vec![k * 4 + i, k * 4 + i + 8]).collect(),
+                memory_mib: 8192,
+                hugepages: Default::default(),
+            })
+            .collect(),
+        device_numa: [("0000:41:00.0".to_string(), 1)].into(),
+        ..Default::default()
+    });
+    nodes.put(&n).unwrap();
+    let body = |name: &str, extra: Value| {
+        let mut b = vm_body(name, &p);
+        b["hypervisor"] = json!("HYPERVISOR_CLOUD_HYPERVISOR");
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+
+    // A dedicated GPU VM: on the GPU's node, on whole cores past the host's.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(body(
+                "gpu",
+                json!({"vcpu_count": 2, "cpu_policy": "CPU_POLICY_DEDICATED",
+                       "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}),
+            )),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let vm = &v["vm"];
+    assert_eq!(vm["cpu_policy"], "CPU_POLICY_DEDICATED", "{v}");
+    assert_eq!(
+        (&vm["numa_node"], &vm["cpus"]),
+        (&json!(1), &json!([5, 13])),
+        "{v}"
+    );
+    let id = vm["id"].as_str().unwrap().to_string();
+
+    // Strict and too big for any NUMA node: refused.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(body(
+                "big",
+                json!({"mem_size_mib": 12288, "numa_policy": "NUMA_POLICY_STRICT"}),
+            )),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("not enough memory"), "{v}");
+    // Preferred: placed across the host, and it says so.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(body(
+                "wide",
+                json!({"mem_size_mib": 12288, "numa_policy": "NUMA_POLICY_PREFERRED"}),
+            )),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert!(v["vm"].get("numa_node").is_none(), "{v}");
+    let cond = v["vm"]["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "NumaAligned")
+        .cloned()
+        .unwrap();
+    assert_eq!(cond["reason"], "NoNumaNodeFits", "{cond}");
+
+    // More dedicated vCPUs: picked again, still off the host's core.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{id}"),
+            Some(json!({"change": {"vcpu_count": 4}, "update_mask": "vcpu_count"})),
+            &t,
+        )
+        .await;
+    assert!(st.is_success(), "{st} {v}");
+    assert_eq!(v["vm"]["cpus"], json!([5, 13, 6, 14]), "{v}");
+    // Back to shared: nothing held.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{id}"),
+            Some(
+                json!({"change": {"cpu_policy": "CPU_POLICY_SHARED"}, "update_mask": "cpu_policy"}),
+            ),
+            &t,
+        )
+        .await;
+    assert!(st.is_success(), "{st} {v}");
+    assert!(v["vm"].get("cpus").is_none(), "{v}");
+    assert!(v["vm"].get("numa_node").is_none(), "{v}");
+}
