@@ -2736,6 +2736,37 @@ fn jc_claims(mock: &idp::Mock, sub: &str, email: &str) -> Value {
            "email": email, "name": sub})
 }
 
+/// D41: a provisioned connector's sign-ins are its managed users' only, so
+/// a signed-in user can't add one through it: no identity is linked and no
+/// team membership comes from its groups.
+#[tokio::test]
+async fn no_sign_in_is_added_through_a_provisioned_connector() {
+    let mock = idp::start().await;
+    let h = harness();
+    let ada = h.admin("ada");
+    let s = h.session(&ada);
+    scim_connector(&h, &mock, &s, "jc", json!({})).await;
+    let mut claims = jc_claims(&mock, "j-ada", "ada@corp.example");
+    claims["email_verified"] = json!(true);
+    let (st, to) = link_through(&h, &mock, "jc", &s, claims).await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (
+            StatusCode::SEE_OTHER,
+            Some("/account?link_error=not_allowed")
+        )
+    );
+    assert!(
+        h.app
+            .auth
+            .store
+            .identities_of(&ada)
+            .unwrap()
+            .iter()
+            .all(|i| i.subject != "j-ada")
+    );
+}
+
 /// spec/tenancy.md §8.1, D41–D43, as JumpCloud sends it: users and groups
 /// pushed, the first login lands on the provisioned user, deactivation
 /// revokes at once, removal keeps the records.
