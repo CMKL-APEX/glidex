@@ -151,6 +151,10 @@ What happens:
 - One device belongs to one VM. A second VM asking for it is refused
   (`PCI device … is used by VM …`), and the claim lasts until the
   instance that holds it is gone, not just until the spec drops it.
+- A device takes its IOMMU group with it: another VM can't have a
+  device of the same group (`PCI device … shares IOMMU group … with …,
+  used by VM …`). The VM that holds the group may add the group's other
+  devices.
 - A NIC that is a DPDK uplink of a glidex bridge can't be passed
   through.
 
@@ -161,10 +165,14 @@ there as on bare metal.
 
 Devices are per host. The scheduler places a VM with `vfio_devices`
 only on a node that reports every one of those devices (otherwise:
-`no PCI device …`). If several nodes have a device at the same address,
-pin the VM to the one you prepared: **Placement** in the VM form, or
-`node` (a node name or id) in the API request. Prepare each host (IOMMU, `vfio-pci`, the udev rule)
-the same way.
+`no PCI device …`) and where no other VM holds them. Identical hosts
+with a GPU at the same address each take a VM with it. When every such
+node's device is taken, a new VM waits as **Unschedulable** with the VM
+holding each one in its reason, and is placed once one is free. To
+choose the host, pin the VM: **Placement** in the VM form, or `node` (a
+node name or id) in the API request. A pinned VM asking for a device
+already taken on that node is refused. Prepare each host (IOMMU,
+`vfio-pci`, the udev rule) the same way.
 
 `gxctl pci` lists the devices of the host it is connected to. A cluster
 agent has no local API for `gxctl`; to list an agent's devices, use the

@@ -1799,7 +1799,8 @@ only tests do).
 - `scheduler::schedule` is a pure function over node records and loads
   (§9.1 filters: pin, phase and drain, `Ready`, CPU and memory with
   `cluster.scheduler` overcommit, hugepages, hypervisor, VFIO device present on
-  the node, disks bound to one node, node networks on one node; score: least
+  the node and not claimed there by another VM, directly or through its IOMMU
+  group (host-topology.md §8.4, HT0), disks bound to one node, node networks on one node; score: least
   allocated by `max(cpu, memory)`, fewest VMs, name). Unit tests over node
   fixtures.
 - It runs at admission (`create_vm_with`, under the VM write lock) and, for a

@@ -1915,6 +1915,161 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     .await;
 }
 
+/// Three identical hosts with a GPU at the same address, a second function
+/// in its IOMMU group (spec/host-topology.md §8.4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let mut agents = Vec::new();
+    for i in 1..=2 {
+        let a = new_cp();
+        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+            .await
+            .unwrap();
+        manage::join(
+            &a.manager,
+            &cfg,
+            JoinOptions {
+                server: server.addr,
+                token,
+                role: NodeRole::Agent,
+                advertise: Some(a.addr),
+                tunnel_ip: None,
+                name: Some(format!("agent{i}")),
+                listen: Some(a.addr),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            a.manager
+                .node_link()
+                .unwrap()
+                .wait_ready(Duration::from_secs(20))
+                .await
+        );
+        a.manager.initialize().await.unwrap();
+        agents.push(a);
+    }
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let nodes = store.list().unwrap();
+    assert_eq!(nodes.len(), 3);
+    for mut n in nodes {
+        n.status.pci_devices = vec!["0000:41:00.0".into(), "0000:41:00.1".into()];
+        n.status.pci_groups = [("0000:41:00.0", "31"), ("0000:41:00.1", "31")]
+            .into_iter()
+            .map(|(a, g)| (a.to_string(), g.to_string()))
+            .collect();
+        store.put(&n).unwrap();
+    }
+    let gpu = "/sys/bus/pci/devices/0000:41:00.0";
+    let with = |name: &str, dev: &str| {
+        let mut b = vm_unpinned(name);
+        b["vfio_devices"] = json!([dev]);
+        b["power"] = json!("POWER_STATE_STOPPED");
+        b
+    };
+
+    // One VM with the GPU on each node.
+    let mut placed = std::collections::BTreeSet::new();
+    let mut by_node = std::collections::HashMap::new();
+    for i in 0..3 {
+        let (s, vm) = call(
+            &server,
+            "POST",
+            "/vms",
+            Some(with(&format!("gpu{i}"), gpu)),
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{vm}");
+        let vm = vm_of(&vm);
+        let node = vm["node"].as_str().expect("placed").to_string();
+        by_node.insert(node.clone(), vm["id"].as_str().unwrap().to_string());
+        placed.insert(node);
+    }
+    assert_eq!(placed.len(), 3, "{placed:?}");
+
+    // A fourth waits, and says why.
+    let (s, vm) = call(&server, "POST", "/vms", Some(with("gpu3", gpu)), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
+    assert!(vm["node"].is_null(), "{vm}");
+    let waiting = vm["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "Scheduled")
+        .cloned()
+        .unwrap();
+    assert_eq!(waiting["reason"], "Unschedulable");
+    assert!(
+        waiting["message"]
+            .as_str()
+            .unwrap()
+            .contains("PCI device 0000:41:00.0 is used by VM gpu"),
+        "{waiting}"
+    );
+
+    // Pinned to a node: the group's other function is refused there.
+    let agent1 = agents[0].manager.local_node_id();
+    let mut b = with("audio", "/sys/bus/pci/devices/0000:41:00.1");
+    b["node"] = json!("agent1");
+    let (s, e) = call(&server, "POST", "/vms", Some(b), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(
+        e.to_string()
+            .contains("shares IOMMU group 31 with 0000:41:00.0"),
+        "{e}"
+    );
+
+    // The VM holding the group may take the rest of it, and so may a VM on
+    // another node.
+    let holder = by_node[&agent1].clone();
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{holder}/devices"),
+        Some(json!({ "device_path": "/sys/bus/pci/devices/0000:41:00.1" })),
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    let other = by_node
+        .iter()
+        .find(|(n, _)| **n != agent1)
+        .map(|(_, id)| id.clone())
+        .unwrap();
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{other}/devices"),
+        Some(json!({ "device_path": "/sys/bus/pci/devices/0000:41:00.1" })),
+        &[],
+    )
+    .await;
+    assert!(
+        s.is_success(),
+        "a device at that address on another node: {s} {v}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_do() {
     use glidex_control_plane::cluster::config::EdgeConfig;

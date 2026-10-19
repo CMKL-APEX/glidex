@@ -36,7 +36,7 @@ use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::nat::NatSpec;
 use glidex_ovs::vm_port::VmPortKind;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -608,20 +608,23 @@ impl VmManager {
         vms: &HashMap<String, Vm>,
     ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
-        let loads = crate::scheduler::loads(vms.values().filter_map(|v| {
-            v.status.placement.as_ref().map(|p| {
-                (
-                    p.node.clone(),
-                    v.config().vcpu_count as u64,
-                    v.config().mem_size_mib as u64,
-                )
-            })
+        let mut loads = crate::scheduler::loads(vms.values().filter_map(|v| {
+            v.status
+                .placement
+                .as_ref()
+                .map(|p| crate::scheduler::Placed {
+                    node: p.node.clone(),
+                    vcpus: v.config().vcpu_count as u64,
+                    mem_mib: v.config().mem_size_mib as u64,
+                    name: v.name.clone(),
+                    devices: Self::devices_held(v).cloned().collect(),
+                })
         }));
         nodes
             .into_iter()
             .filter(|n| !n.status.phase.is_tombstone())
             .map(|n| {
-                let l = loads.get(&n.meta.id).copied().unwrap_or_default();
+                let l = loads.remove(&n.meta.id).unwrap_or_default();
                 (n, l)
             })
             .collect()
@@ -1582,14 +1585,6 @@ impl VmManager {
         {
             return Err(VmManagerError::VmAlreadyExists(name));
         }
-        for d in &config.vfio_devices {
-            if let Some(other) = Self::device_claimed_by(&vms, d, None) {
-                return Err(
-                    ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into(),
-                );
-            }
-        }
-
         let power = opts.power.unwrap_or_default();
         // Quotas, checked under the write lock so concurrent creates can't
         // both pass. Disk use is checked again once the root disk's real
@@ -1621,6 +1616,17 @@ impl VmManager {
                 })
                 .ok_or_else(|| invalid(format!("no node {want}")))?;
             vm.spec.node = Some(n.meta.id.clone());
+        }
+        // A device another VM on the node claims (spec/host-topology.md
+        // §8.4). Unpinned in a cluster, the node isn't known yet: the
+        // scheduler skips nodes where it is taken.
+        let claims_node = if self.cluster().is_none() {
+            Some(self.local_node_id())
+        } else {
+            vm.spec.node.clone()
+        };
+        if let Some(node) = claims_node {
+            self.refuse_claimed_devices(&vms, &node, &vm.spec.config.vfio_devices, None)?;
         }
         vm.spec.power = power;
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
@@ -1863,26 +1869,54 @@ impl VmManager {
             .map(|vm| vm.name.clone())
     }
 
-    fn device_claimed_by(
+    /// The VFIO devices `vm` claims: its spec's, and those its instance
+    /// still holds (a claim lasts until the instance is gone).
+    fn devices_held(vm: &Vm) -> impl Iterator<Item = &String> {
+        vm.config().vfio_devices.iter().chain(
+            vm.status
+                .instance
+                .iter()
+                .flat_map(|i| i.vfio_devices.iter()),
+        )
+    }
+
+    /// Refuse `devices` that a VM other than `except` claims on `node`,
+    /// directly or through a shared IOMMU group (spec/host-topology.md
+    /// §8.4). On a standalone host every VM is the node's.
+    fn refuse_claimed_devices(
+        &self,
         vms: &HashMap<String, Vm>,
-        device: &str,
+        node: &str,
+        devices: &[String],
         except: Option<&str>,
-    ) -> Option<String> {
-        let bdf = crate::hypervisor::vfio_device_id(device);
-        vms.values()
-            .filter(|vm| Some(vm.id.as_str()) != except)
-            .find(|vm| {
-                vm.config()
-                    .vfio_devices
-                    .iter()
-                    .any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
-                    || vm.status.instance.as_ref().is_some_and(|i| {
-                        i.vfio_devices
-                            .iter()
-                            .any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
-                    })
-            })
-            .map(|vm| vm.name.clone())
+    ) -> Result<(), VmManagerError> {
+        if devices.is_empty() {
+            return Ok(());
+        }
+        let standalone = self.cluster().is_none();
+        let mut claimed = BTreeMap::new();
+        for vm in vms.values().filter(|v| Some(v.id.as_str()) != except) {
+            let here = standalone || vm.status.placement.as_ref().is_some_and(|p| p.node == node);
+            if here {
+                for d in Self::devices_held(vm) {
+                    claimed.insert(crate::scheduler::pci_address(d), vm.name.clone());
+                }
+            }
+        }
+        // A node that reports no groups: claims are by address only.
+        let groups = self
+            .nodes
+            .get(node)
+            .ok()
+            .flatten()
+            .map(|n| n.status.pci_groups)
+            .unwrap_or_default();
+        for d in devices {
+            if let Some(why) = crate::scheduler::device_taken(&groups, &claimed, d) {
+                return Err(ImageError::InUse(why).into());
+            }
+        }
+        Ok(())
     }
 
     /// A disk a VM of `project` may claim: exists, in that project,
@@ -2143,14 +2177,15 @@ impl VmManager {
             }
             if let Some(devs) = c.vfio_devices {
                 self.refuse_dpdk_uplink_devices(&devs)?;
-                for d in &devs {
-                    if let Some(other) = Self::device_claimed_by(&vms, d, Some(vm_id)) {
-                        return Err(ImageError::InUse(format!(
-                            "PCI device {} is used by VM {}",
-                            d, other
-                        ))
-                        .into());
-                    }
+                // Against the VM's node; an unplaced VM's are checked when
+                // the scheduler places it.
+                let node = if self.cluster().is_none() {
+                    Some(self.local_node_id())
+                } else {
+                    cur.status.placement.as_ref().map(|p| p.node.clone())
+                };
+                if let Some(node) = node {
+                    self.refuse_claimed_devices(&vms, &node, &devs, Some(vm_id))?;
                 }
                 config.vfio_devices = devs;
             }

@@ -237,6 +237,11 @@ pub struct NodeStatus {
     /// scheduler places a VM with VFIO devices where they exist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pci_devices: Vec<String>,
+    /// The IOMMU group of each PCI function that is not a bridge: a VFIO
+    /// device claims its group (spec/host-topology.md §8.4). Empty from a
+    /// node of an older version, or a host without an IOMMU.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pci_groups: BTreeMap<String, String>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
@@ -281,6 +286,7 @@ impl Node {
                 allocatable: Resources::default(),
                 features: NodeFeatures::default(),
                 pci_devices: Vec::new(),
+                pci_groups: BTreeMap::new(),
                 heartbeat: None,
             },
         }
@@ -470,6 +476,7 @@ impl NodeStore {
             node.status.features.physnets.insert(p.clone(), b.clone());
         }
         node.status.pci_devices = probe.pci_devices;
+        node.status.pci_groups = probe.pci_groups;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
         if node != before || self.get(id)?.is_none() {
@@ -488,6 +495,7 @@ pub struct SelfProbe {
     pub allocatable: Resources,
     pub features: NodeFeatures,
     pub pci_devices: Vec<String>,
+    pub pci_groups: BTreeMap<String, String>,
     /// `ovn-controller`'s version, when OVN is installed.
     pub ovn_version: Option<String>,
 }
@@ -585,16 +593,16 @@ impl SelfProbe {
                 .unwrap_or_default(),
             ..Default::default()
         };
-        let pci_devices = crate::pci::scan_pci_devices()
-            .into_iter()
-            .map(|d| d.address)
-            .collect();
+        let pci = crate::pci::scan_pci_devices();
+        let pci_groups = crate::pci::iommu_groups(&pci);
+        let pci_devices = pci.into_iter().map(|d| d.address).collect();
         SelfProbe {
             name,
             capacity,
             allocatable,
             features,
             pci_devices,
+            pci_groups,
             ovn_version: program_version("ovn-controller"),
         }
     }

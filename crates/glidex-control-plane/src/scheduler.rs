@@ -4,7 +4,7 @@
 use crate::cluster::config::SchedulerConfig;
 use crate::models::Tristate;
 use crate::node::{Node, NodePhase};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// What a VM asks of a node.
 #[derive(Debug, Clone, Default)]
@@ -20,7 +20,7 @@ pub struct Request {
     pub disk_nodes: Vec<Option<String>>,
     /// The node of each `scope: node` network it attaches to.
     pub net_nodes: Vec<String>,
-    /// PCI addresses of VFIO devices.
+    /// VFIO devices, as the VM names them (sysfs paths or addresses).
     pub vfio: Vec<String>,
     /// Physical networks (provider networks) the VM's NICs sit on.
     pub physnets: Vec<String>,
@@ -35,14 +35,54 @@ pub struct Request {
 }
 
 /// What a node already carries: every VM placed on it, running or not.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Load {
     pub vcpus: u64,
     pub mem_mib: u64,
     pub vms: u64,
+    /// PCI devices its VMs claim (spec/host-topology.md §8.4): address →
+    /// the VM's name.
+    pub devices: BTreeMap<String, String>,
 }
 
-fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option<String> {
+/// One VM placed on a node, for [`loads`].
+pub struct Placed {
+    pub node: String,
+    pub vcpus: u64,
+    pub mem_mib: u64,
+    pub name: String,
+    /// Its spec's VFIO devices and those its instance still holds.
+    pub devices: Vec<String>,
+}
+
+/// A device's PCI address, from a sysfs path or an address: what nodes
+/// report and claims compare (`0000:41:00.0`).
+pub fn pci_address(device: &str) -> String {
+    crate::hypervisor::vfio_bdf(device).to_ascii_lowercase()
+}
+
+/// Why `device` can't be given to another VM on a node whose VMs claim
+/// `claimed` (address → VM name) and whose IOMMU groups are `groups`
+/// (address → group): it is claimed, or it shares its group with a claimed
+/// device (spec/host-topology.md §8.4). `None`: free.
+pub fn device_taken(
+    groups: &BTreeMap<String, String>,
+    claimed: &BTreeMap<String, String>,
+    device: &str,
+) -> Option<String> {
+    let addr = pci_address(device);
+    if let Some(vm) = claimed.get(&addr) {
+        return Some(format!("PCI device {addr} is used by VM {vm}"));
+    }
+    let group = groups.get(&addr)?;
+    claimed.iter().find_map(|(other, vm)| {
+        (groups.get(other) == Some(group)).then(|| {
+            format!("PCI device {addr} shares IOMMU group {group} with {other}, used by VM {vm}")
+        })
+    })
+}
+
+fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Option<String> {
     if let Some(pin) = &req.pin
         && &n.meta.id != pin
         && &n.spec.name != pin
@@ -102,13 +142,17 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
         return Some("br-int is not on the userspace (netdev) datapath".into());
     }
     for d in &req.vfio {
+        let addr = pci_address(d);
         if !n
             .status
             .pci_devices
             .iter()
-            .any(|p| p.eq_ignore_ascii_case(d))
+            .any(|p| p.eq_ignore_ascii_case(&addr))
         {
-            return Some(format!("no PCI device {d}"));
+            return Some(format!("no PCI device {addr}"));
+        }
+        if let Some(why) = device_taken(&n.status.pci_groups, &load.devices, d) {
+            return Some(why);
         }
     }
     for dn in req.disk_nodes.iter().flatten() {
@@ -158,7 +202,7 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
             NodeFit {
                 id: n.meta.id.clone(),
                 name: n.spec.name.clone(),
-                refused: failing(n, *load, req, cfg),
+                refused: failing(n, load, req, cfg),
                 vcpus_taken: load.vcpus,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
@@ -224,14 +268,17 @@ pub fn explain(refused: &[(String, String)]) -> String {
     }
 }
 
-/// Load per node from `(node id, vcpus, mem MiB)` of every placed VM.
-pub fn loads(placed: impl IntoIterator<Item = (String, u64, u64)>) -> HashMap<String, Load> {
+/// Load per node from every placed VM.
+pub fn loads(placed: impl IntoIterator<Item = Placed>) -> HashMap<String, Load> {
     let mut m: HashMap<String, Load> = HashMap::new();
-    for (node, cpu, mem) in placed {
-        let l = m.entry(node).or_default();
-        l.vcpus += cpu;
-        l.mem_mib += mem;
+    for p in placed {
+        let l = m.entry(p.node).or_default();
+        l.vcpus += p.vcpus;
+        l.mem_mib += p.mem_mib;
         l.vms += 1;
+        for d in &p.devices {
+            l.devices.insert(pci_address(d), p.name.clone());
+        }
     }
     m
 }
@@ -373,6 +420,7 @@ mod tests {
                     vcpus: 4,
                     mem_mib: 4096,
                     vms: 2,
+                    ..Default::default()
                 },
             ),
             (
@@ -381,6 +429,7 @@ mod tests {
                     vcpus: 4,
                     mem_mib: 4096,
                     vms: 2,
+                    ..Default::default()
                 },
             ),
             (
@@ -389,6 +438,7 @@ mod tests {
                     vcpus: 8,
                     mem_mib: 8192,
                     vms: 3,
+                    ..Default::default()
                 },
             ),
         ];
@@ -404,6 +454,7 @@ mod tests {
                     vcpus: 4,
                     mem_mib: 4096,
                     vms: 5,
+                    ..Default::default()
                 },
             ),
             (
@@ -412,6 +463,7 @@ mod tests {
                     vcpus: 4,
                     mem_mib: 4096,
                     vms: 2,
+                    ..Default::default()
                 },
             ),
         ];
@@ -434,6 +486,7 @@ mod tests {
                     vcpus: 8,
                     mem_mib: 8192,
                     vms: 4,
+                    ..Default::default()
                 },
             ),
             (node("idle", 8, 16384), Load::default()),
@@ -469,6 +522,7 @@ mod tests {
                     vcpus: 0,
                     mem_mib: 3000,
                     vms: 1,
+                    ..Default::default()
                 },
             )],
             &cfg(),
@@ -531,6 +585,65 @@ mod tests {
     }
 
     #[test]
+    fn devices_are_claimed_per_node_and_by_iommu_group() {
+        let gpu = |id: &str| {
+            let mut n = node(id, 8, 8192);
+            n.status.pci_devices = vec!["0000:41:00.0".into(), "0000:41:00.1".into()];
+            n.status.pci_groups = [("0000:41:00.0", "31"), ("0000:41:00.1", "31")]
+                .into_iter()
+                .map(|(a, g)| (a.to_string(), g.to_string()))
+                .collect();
+            n
+        };
+        let path = "/sys/bus/pci/devices/0000:41:00.0";
+        let mut r = req(1, 512);
+        r.vfio = vec![path.into()];
+
+        // The VM names a sysfs path; the node reports addresses.
+        let free = vec![(gpu("a"), Load::default())];
+        assert_eq!(schedule(&r, &free, &cfg()).unwrap(), "a");
+
+        // Two nodes with a device at the same address hold one VM each.
+        let held = loads([Placed {
+            node: "a".into(),
+            vcpus: 1,
+            mem_mib: 512,
+            name: "first".into(),
+            devices: vec![path.into()],
+        }]);
+        let nodes = vec![
+            (gpu("a"), held.get("a").cloned().unwrap()),
+            (gpu("b"), Load::default()),
+        ];
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "b");
+        let fits = evaluate(&r, &nodes, &cfg());
+        assert_eq!(
+            fits.iter()
+                .find(|f| f.id == "a")
+                .unwrap()
+                .refused
+                .as_deref(),
+            Some("PCI device 0000:41:00.0 is used by VM first")
+        );
+
+        // Another function of the same IOMMU group is taken too.
+        r.vfio = vec!["0000:41:00.1".into()];
+        r.pin = Some("a".into());
+        let err = schedule(&r, &nodes, &cfg()).unwrap_err();
+        assert!(
+            err.iter().any(|(n, why)| n == "a"
+                && why
+                    == "PCI device 0000:41:00.1 shares IOMMU group 31 with 0000:41:00.0, used by VM first"),
+            "{err:?}"
+        );
+        // A node that reports no groups: claims by address only.
+        let mut old = gpu("a");
+        old.status.pci_groups.clear();
+        let nodes = vec![(old, held.get("a").cloned().unwrap())];
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "a");
+    }
+
+    #[test]
     fn provider_networks_need_a_node_that_reaches_the_physnet() {
         let mut lan = node("lan", 8, 8192);
         lan.status
@@ -579,6 +692,7 @@ mod tests {
                 vcpus: 16,
                 mem_mib: 1024,
                 vms: 8,
+                ..Default::default()
             },
         )];
         assert!(schedule(&req(2, 1024), &full, &cfg()).is_err());
