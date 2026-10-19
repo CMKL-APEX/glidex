@@ -1,8 +1,9 @@
 # Datastores
 
 Status: **design (draft)**. Only S0's fixes 1–4 (§15) are implemented;
-the rest is design. The milestones are S0–S7 (§16). Decisions S13–S15 settle three of the
-first draft's questions; the rest are in §17. The edits this
+the rest is design. The milestones are S0–S7 (§16). Decisions S13–S16
+and the host checks in §19 settle most of the first draft's questions;
+the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
 yet**.
 
@@ -66,6 +67,7 @@ later milestones (§11, §12).
 | S13 | **New disks default to `local`, even once a shared datastore exists.** The operator moves the default with `default_for` (`gxctl datastore set <name> --default disks`). When the installer registers a shared datastore, it asks whether that datastore should become the default; the suggested answer is no. | `local` is what every existing install uses, and it is the fastest store. Choosing shared storage (VMs can move, at network-storage speed) is the operator's call, made once, not something glidex decides for them. |
 | S14 | **A datastore has one path, which each node may override** (`node_paths: {node: path}`). A node without an override uses `path`. Every path, default or override, is under the S11 root. | Most sites mount the same export at the same place everywhere, so one path covers them. Some nodes can't (an existing mount, a different vendor agent layout). Overrides cost little: backing paths are relative (S8), and the marker plus `fs_id` (§4.1) prove that every node's path reaches the same filesystem. |
 | S15 | **Per-datastore quotas are queued, not built now.** Project `disk_gib` stays cluster-wide across all datastores. | No site has a scarce fast datastore yet. When one does, the quota follows tenancy.md's per-cluster model (T6): `disk_gib` per project per datastore, checked where `disk_gib` is checked today. |
+| S16 | **glidex locks shared volumes itself** (§10): an OFD lock on `<root>/.locks/<disk-id>.lock`, taken by the shim before the hypervisor starts and by the worker around disk operations. | Placement and claims can't stop a node that was partitioned and kept running (D8). Cloud Hypervisor's own lock comes too late for qcow2, because it repairs a dirty image before locking it (§19, H2). A separate lock file works the same for both hypervisors and for `qemu-img`. |
 
 ## 3. What changes, at a glance
 
@@ -212,7 +214,7 @@ linked disk in that datastore uses it. This extends images.md §3's
 
 Why `O_EXCL`: two clusters, or two datastores, claiming one export at
 the same moment must not both succeed. Over NFSv4, `O_EXCL` create is
-atomic **(verify on a host for the NFS versions we support)**.
+atomic: checked on a host across two NFSv4.2 clients (§19, H3).
 
 ### 5.2 Scheduler
 
@@ -333,9 +335,12 @@ unchanged.
   so a half-done operation on the old worker leaves only a temporary. A
   new worker deletes temporaries older than the reassignment.
 - A worker that comes back after losing the role must not finish its
-  rename. It re-reads `worker` before the rename and abandons the
-  operation if it changed. **Open:** this leaves a tiny window
-  (check-then-rename); see §17, open question 1.
+  rename:
+  - every operation runs under the volume lock (S16), so a new worker
+    can't start until the old one's lock is gone: released, or dropped
+    by the kernel or the NFS server when the process or its lease dies;
+  - before the rename, the old worker re-reads `worker` under that
+    lock, and abandons the operation if it changed.
 
 ### 8.2 API side
 
@@ -381,23 +386,49 @@ for node-local disks: moving from `local` on node A to `local` on node B.
 
 The invariants of images.md §3 and reconciliation.md D11 (one VM per
 disk, claims) don't change. On shared storage they are what stops two
-nodes from writing one disk, and two backstops are added:
+nodes from writing one disk. Three more layers back them up:
 
 1. **Placement is the lock.** A node launches a VM only if `placement`
    is itself. It acts on a disk only if it is the `worker`. Both are
    Raft writes. A partitioned node doesn't launch (clustering.md §8.2),
    but it can keep a VM that is already running (D8). That's why S10
    needs `--fenced` before a `Lost` VM is re-placed.
-2. **Hypervisor file locks.**
-   - QEMU takes OFD locks on its image files by default
-     (`locking=auto`). On NFSv4, and on CephFS with locking, these are
-     cluster-wide. glidex sets `locking=on` for shared datastores, so a
-     second QEMU fails to open the disk instead of corrupting it.
-   - Cloud Hypervisor: whether it locks disk files, and how, is
-     **(verify)**. If it doesn't, the shim takes an `fcntl` OFD write
-     lock on each shared disk file before starting the hypervisor and
-     holds it while the VM runs.
-3. **Leases are later.** Protection that doesn't depend on locks
+2. **glidex's own volume lock (S16).**
+   - Each volume on a shared datastore has a lock file,
+     `<root>/.locks/<disk-id>.lock`.
+   - The shim takes an `fcntl` OFD write lock on it **before** it starts
+     the hypervisor, and holds it until the hypervisor exits.
+   - The worker takes the same lock around every disk operation
+     (create, resize, shrink, extend-root, move, delete).
+   - If the lock is taken, the launch fails with `Ready=False/DiskLocked`
+     and the operation waits. Nothing opens the disk file.
+   - The lock is on a separate file, not the disk itself. The hypervisor
+     takes its own OFD lock on the disk file, and a lock held by the shim
+     on that same file would refuse it.
+   - OFD locks over NFSv4 are cluster-wide (§19, H2). On a node-local
+     datastore, glidex keeps today's protection (placement and claims)
+     and takes no lock file.
+3. **Hypervisor file locks, the last layer.**
+   - QEMU takes an OFD lock on its image files before it reads or writes
+     them (`locking=auto`, which is on for local files and NFS). glidex
+     sets `locking=on` for shared datastores. A second QEMU, even on
+     another NFS client, fails with `Failed to get "write" lock` and
+     writes nothing (H2).
+   - Cloud Hypervisor (v53) also takes an OFD write lock on every disk
+     file (`lock_granularity=byte-range` by default), and a second
+     instance fails with `AlreadyLocked` (H2). It is **not a safe
+     backstop for qcow2**, though:
+     - it opens and parses the image before it locks;
+     - an image another instance has open is marked dirty, so it
+       rebuilds and **writes** the refcount tables and header first;
+     - it writes the header again on its way out.
+
+     That is metadata written under a running VM (H2). Raw images have
+     no metadata, so the lock alone is enough for them. This is why
+     layer 2 exists: the shim's lock keeps a second Cloud Hypervisor from
+     ever opening the file. We should report it upstream (lock before
+     the qcow2 parser runs).
+4. **Leases are later.** Protection that doesn't depend on locks
    (sanlock-style leases, RBD exclusive locks) comes with fencing
    (clustering.md §18).
 
@@ -590,7 +621,7 @@ described below; fix 5 is part of S2.
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver` and `local` created by migration. `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. | S0 |
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
-| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, the CH lock **(verify)**, and the installer's register-and-ask step (S13) | S2 |
+| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13) | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |
@@ -604,29 +635,18 @@ Settled:
   and the operator changes it; the installer asks (S13).
 - **Per-node mount paths:** one path with per-node overrides (S14).
 - **Per-datastore quotas:** queued for later (S15).
+- **Mounts made after the units start** work (§19, H1).
+
+- **Worker hand-over window** (§8.1): closed by the volume lock (S16).
 
 Open:
 
-1. **Worker hand-over window** (§8.1).
-   - A paused old worker can still rename after re-checking.
-   - Options:
-     - do the rename under an OFD lock on a per-disk lock file in the
-       datastore;
-     - or accept the window, since reassignment needs the old worker
-       `Unknown` for the full grace period.
-2. **NFS client options.**
+1. **NFS client options.**
    - glidex doesn't mount, but QEMU `cache.direct` on NFS needs `O_DIRECT`
      support.
    - qcow2 on NFS wants `hard` mounts.
    - Should the node probe warn on `soft` mounts, and on `actimeo` large
      enough to hide another node's writes to the marker?
-3. **Mounts made after the units start.**
-   - `ProtectSystem=strict` builds each unit's mount namespace at start.
-   - A datastore mounted under `/srv/glidex` later has to propagate in,
-     and be writable there.
-   - **(verify on a host)** before relying on S11. If it doesn't
-     propagate, `datastore_nodes` reports `SandboxDenied` until the
-     service restarts.
 
 ## 18. Edits to other documents (not applied)
 
@@ -648,7 +668,9 @@ Open:
 - **reconciliation.md §10.1:** worker rule; `Moving` phase.
 - **security.md:**
   - §7: `Datastore` entity and actions;
-  - §10: `ReadWritePaths=-/srv/glidex` in both units.
+  - §10: `ReadWritePaths=-/srv/glidex` in both units, and the H1
+    hardening note: a mount made after a unit starts is writable inside
+    it, whatever `ReadWritePaths` says.
 - **rest-api.md / grpc.md / cli.md / web-ui.md:** §13 surfaces.
 - **metering.md:** per-worker sampling and `group_by=datastore`.
 - **installer.md:** create `/srv/glidex` (`0755 root`). Explain that
@@ -657,3 +679,62 @@ Open:
   mounted shared datastore and asks whether it becomes the default for new
   disks (S13; suggested answer no; `--datastore-default` when
   non-interactive).
+
+## 19. Host findings
+
+Checked on the dev host on 2026-10-19:
+- Ubuntu, kernel 7.0.0, systemd 259;
+- Cloud Hypervisor v53, QEMU 10.2.1;
+- nfs-kernel-server 2.8.5, NFSv4.2.
+
+The "two clients" were the host and a network namespace with its own NFS
+client identifier, connected by a veth pair. The NFS server saw them as
+two separate clients. Everything was removed afterwards.
+
+**H1. Mounts made after a unit starts (S11, §17).**
+- Setup: a unit with the control plane's sandbox (`ProtectSystem=strict`,
+  `ProtectHome`, `PrivateTmp`, `ReadWritePaths=-/srv/glidex-probe`), plus
+  tmpfs mounts made after it started.
+- A mount made later under the listed root is visible inside the unit
+  and writable. It still works after an unmount and remount.
+- A unit started after the mount sees it writable too.
+- So S11 works, and nothing needs a restart.
+- **Hardening note:**
+  - a mount made after start is writable inside the unit **even when it
+    is not under any `ReadWritePaths` entry**. `ProtectSystem=strict`
+    only makes read-only what was mounted when the unit started;
+  - checked with an unlisted `/srv/gx-unlisted`: writable when mounted
+    after start, read-only for a unit started after it;
+  - normal file permissions still apply. The sandbox just isn't the
+    boundary for late mounts, which security.md §10 should say.
+
+**H2. Disk locks.**
+- **Cloud Hypervisor, same host:**
+  - it holds `F_OFD_SETLK` `F_WRLCK` over the whole disk file
+    (`/proc/locks`: `OFDLCK ADVISORY WRITE`);
+  - a second instance on the same qcow2 or raw file fails:
+    `LockDiskImage { error: AlreadyLocked }`.
+- **Across two NFS clients:** the same result for Cloud Hypervisor
+  (qcow2 and raw) and for QEMU (`Failed to get "write" lock`).
+- **The Cloud Hypervisor problem, from `strace` of the refused second
+  instance on a qcow2 the first had open:**
+  - it logged `QCOW2 image not cleanly closed, rebuilding refcounts`;
+  - it then wrote the header (offset 0), the refcount table and blocks
+    (65536, 131072…) and the header again, **before** its
+    `F_OFD_SETLK`, which returned `EAGAIN`;
+  - it wrote the header's feature bits (offset 72) once more while
+    exiting;
+  - on a local file the image's contents changed;
+  - across NFS clients it made 7 such writes before trying the lock.
+    The hash matched afterwards, but the writes still happened.
+- **QEMU's refused instance** wrote nothing (`pwrite64`: 0), and the
+  image was unchanged.
+- **Raw images:** no metadata, so nothing like this happens.
+- **Conclusion:** S16.
+
+**H3. `O_EXCL` across NFS clients (§5.1).**
+- Two processes, one per client, released at the same instant, each
+  tried to create the same 2000 names with
+  `O_CREAT | O_EXCL`.
+- Every name had exactly one winner (1000 each, none created twice and
+  none lost), and every file held its winner's mark.
