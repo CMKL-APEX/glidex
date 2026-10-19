@@ -39,6 +39,54 @@ pub async fn topology(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     ))
 }
 
+pub async fn prepare_device(
+    c: Caller,
+    Path((id, address)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::PrepareDeviceRequest {
+        id,
+        address,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::prepare_device(&c, req).await?))
+}
+
+pub async fn release_device(
+    c: Caller,
+    Path((id, address)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ReleaseDeviceRequest {
+        id,
+        address,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::release_device(&c, req).await?))
+}
+
+pub async fn cordon_device(
+    c: Caller,
+    Path((id, address)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::CordonDeviceRequest {
+        id,
+        address,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::cordon_device(&c, req)?))
+}
+
+pub async fn uncordon_device(
+    c: Caller,
+    Path((id, address)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::UncordonDeviceRequest {
+        id,
+        address,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::uncordon_device(&c, req)?))
+}
+
 pub async fn drain(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::DrainNodeRequest {
         id,

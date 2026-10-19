@@ -705,6 +705,15 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                 assignable: d.assignable,
                 ready: d.ready,
                 not_ready: d.not_ready.clone(),
+                aer: d
+                    .aer
+                    .map(|a| pb::AerCounts {
+                        correctable: a.correctable,
+                        nonfatal: a.nonfatal,
+                        fatal: a.fatal,
+                        ..Default::default()
+                    })
+                    .into(),
                 ..Default::default()
             })
             .collect(),

@@ -2316,3 +2316,66 @@ async fn host_topology_needs_a_host_role() {
     let (s, _, _) = h.call("GET", "/nodes/local/topology", None, &a).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// spec/host-topology.md §5.3–5.4: preparing, releasing and cordoning a
+/// device take a host role (net-admin); a cordoned device is refused to a
+/// new VM until it is uncordoned.
+#[tokio::test]
+async fn devices_are_cordoned_and_prepared_by_net_admins() {
+    let h = harness();
+    h.app.manager.report_self().unwrap();
+    let pa = h.project("pa");
+    let (owner, net) = (h.user("owner"), h.user("net"));
+    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    h.link("role.net-admin", Ent::User(net.clone()), Ent::Cluster);
+    let (o, n) = (As::Bearer(h.token(&owner)), As::Bearer(h.token(&net)));
+    let dev = "0000:41:00.0";
+    for op in ["prepare", "release", "cordon", "uncordon"] {
+        let (s, v, _) = h
+            .call(
+                "POST",
+                &format!("/nodes/local/devices/{dev}/{op}"),
+                None,
+                &o,
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{op}: {v}");
+    }
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/nodes/local/devices/{dev}/cordon"),
+            None,
+            &n,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["cordoned"], json!([dev]), "{v}");
+    let mut body = vm_body("v", "pa");
+    body["vfio_devices"] = json!([format!("/sys/bus/pci/devices/{dev}")]);
+    h.link("role.net-admin", Ent::User(owner.clone()), Ent::Cluster);
+    let (s, v, _) = h.call("POST", "/vms", Some(body.clone()), &o).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("is cordoned"), "{v}");
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/nodes/local/devices/{dev}/uncordon"),
+            None,
+            &n,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        v.get("cordoned").is_none(),
+        "nothing cordoned (an empty list is left out): {v}"
+    );
+    let (s, v, _) = h.call("POST", "/vms", Some(body), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    // A bad address is refused before netd is asked.
+    let (s, _, _) = h
+        .call("POST", "/nodes/local/devices/not-a-bdf/prepare", None, &n)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}

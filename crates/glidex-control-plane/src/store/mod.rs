@@ -380,6 +380,7 @@ impl VmStore {
                         br_int_datapath: Default::default(),
                         bridge_mappings: Default::default(),
                         drop_spare_files_before: None,
+                        cordoned_devices: Default::default(),
                     },
                 );
                 n.status.capacity = probe.capacity;

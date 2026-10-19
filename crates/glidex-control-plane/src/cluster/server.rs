@@ -56,6 +56,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/auth", post(auth_call))
         .route("/cluster/v1/ovn-status", get(ovn_status))
         .route("/cluster/v1/topology", get(topology))
+        .route("/cluster/v1/devices/{address}/{op}", post(device_op))
         .route("/cluster/v1/ui", axum::routing::any(ui_relayed))
         .route("/cluster/v1/ui/{*rest}", axum::routing::any(ui_relayed))
         .route(
@@ -615,7 +616,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         if existing.iter().any(|n| n.status.raft_id == Some(rec.raft_id)) {
             return Err("that Raft id is taken".to_string());
         }
-        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
+        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None, cordoned_devices: Default::default() });
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);
@@ -1058,6 +1059,36 @@ async fn topology(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
             "unavailable",
             "no topology",
         ),
+    }
+}
+
+/// `POST /cluster/v1/devices/{address}/{prepare|release}`: prepare or
+/// release this node's PCI device, for a server that authorized the
+/// caller (spec/host-topology.md §5.3). Servers only.
+async fn device_op(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    axum::extract::Path((address, op)): axum::extract::Path<(String, String)>,
+) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    let Some(h) = c.handlers.get() else {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "not up yet");
+    };
+    let h = h.clone();
+    match tokio::task::spawn_blocking(move || h.device_op(&address, &op)).await {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err((code, msg))) => {
+            let status = match code.as_str() {
+                "not_found" => StatusCode::NOT_FOUND,
+                "conflict" => StatusCode::CONFLICT,
+                "invalid" | "invalid_argument" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            fail(status, &code, msg)
+        }
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 

@@ -422,6 +422,10 @@ pub struct InstanceRef {
     /// (spec/host-topology.md §7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_affinity: Vec<u32>,
+    /// Uncorrectable AER errors each of its VFIO devices had at launch
+    /// (address → count, spec/host-topology.md §5.4).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub device_errors: std::collections::BTreeMap<String, u64>,
 }
 
 pub use glidex_vm_shim::state::ExitCause;

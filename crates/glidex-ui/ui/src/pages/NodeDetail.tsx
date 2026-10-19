@@ -64,7 +64,7 @@ export default function NodeDetail() {
   const [brIntOpen, setBrIntOpen] = useState(false);
   const [mapsOpen, setMapsOpen] = useState(false);
   const nodeHost = hostOf(id, dir.self);
-  const canConf = useAllowed(["configureNode", "readHostTopology"], [nodeHost]);
+  const canConf = useAllowed(["configureNode", "readHostTopology", "prepareDevice"], [nodeHost]);
   const canConfigure = !!canConf?.(nodeHost, "configureNode");
   const canTopology = !!canConf?.(nodeHost, "readHostTopology");
 
@@ -231,7 +231,9 @@ export default function NodeDetail() {
         </Card>
       </div>
 
-      {canTopology && !isTombstone(node.status.phase) && ready === "True" && <TopologyCard node={id} />}
+      {canTopology && !isTombstone(node.status.phase) && ready === "True" && (
+        <TopologyCard node={id} cordoned={node.spec.cordoned_devices ?? []} manage={!!canConf?.(nodeHost, "prepareDevice")} onChanged={load} />
+      )}
 
       {host.readCluster && <NodeOvnCard node={id} />}
 

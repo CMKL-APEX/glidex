@@ -1345,6 +1345,8 @@ export interface NodeRecord {
     /** physnet → bridge set through the API (the host's file may add more). */
     bridge_mappings?: Record<string, string>;
     drop_spare_files_before?: string;
+    /** PCI devices no new VM gets (spec/host-topology.md §5.4). */
+    cordoned_devices?: string[];
   };
   status: {
     phase?: NodePhase;
@@ -2036,6 +2038,7 @@ export interface PciFunction {
   assignable?: boolean;
   ready?: boolean;
   not_ready?: string[];
+  aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };
 }
 
 export interface HostTopology {

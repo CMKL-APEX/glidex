@@ -133,6 +133,7 @@ mod tests {
             growpart_disk: None,
             growpart_seq: None,
             cpu_affinity: vec![],
+            device_errors: Default::default(),
         }
     }
 

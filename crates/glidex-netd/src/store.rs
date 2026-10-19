@@ -11,6 +11,8 @@ pub const NAT: TableDefinition<&str, &[u8]> = TableDefinition::new("nat");
 pub const VM_PORTS: TableDefinition<&str, &[u8]> = TableDefinition::new("vm_ports");
 pub const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 pub const UPLINKS: TableDefinition<&str, &[u8]> = TableDefinition::new("uplinks");
+/// Devices prepared for passthrough, by IOMMU group.
+pub const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
 
 pub struct Store {
     db: Database,
@@ -31,7 +33,7 @@ impl Store {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(err)?;
         }
         let txn = db.begin_write().map_err(err)?;
-        for t in [BRIDGES, NAT, VM_PORTS, META, UPLINKS] {
+        for t in [BRIDGES, NAT, VM_PORTS, META, UPLINKS, DEVICES] {
             txn.open_table(t).map_err(err)?;
         }
         txn.commit().map_err(err)?;

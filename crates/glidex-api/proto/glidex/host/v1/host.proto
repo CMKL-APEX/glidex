@@ -507,6 +507,14 @@ message PciFunction {
   bool assignable = 15;
   bool ready = 16;
   repeated string not_ready = 17 [json_name = "not_ready"];
+  // AER error counts since boot (spec/host-topology.md §5.4).
+  AerCounts aer = 18;
+}
+
+message AerCounts {
+  uint64 correctable = 1;
+  uint64 nonfatal = 2;
+  uint64 fatal = 3;
 }
 
 message TopologyWarning {

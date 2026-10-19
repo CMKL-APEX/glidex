@@ -668,7 +668,7 @@ impl Cluster {
                     return Ok(None);
                 }
                 let live = rewrite(rows, &res, &mappings, &p.node_id);
-                let mut node = Node::new(&p.node_id, NodeSpec { name: p.name.clone(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
+                let mut node = Node::new(&p.node_id, NodeSpec { name: p.name.clone(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None, cordoned_devices: Default::default() });
                 node.status.advertise = Some(p.advertise);
                 node.status.tunnel_ip = p.tunnel_ip.or(Some(p.advertise.ip()));
                 // Draining until the node confirms (§5.9 step 5): its own report makes it Active.

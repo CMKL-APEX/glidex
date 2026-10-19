@@ -32,8 +32,24 @@ IOMMU group (except PCI bridges). `gxctl pci` shows each device's group.
 
 ### Bind the device to `vfio-pci`
 
-Load the module, and bind the device to it instead of its usual driver.
-For a device at `0000:41:00.0`:
+Glidex can do this and the next step for you, per device, on any node:
+
+```bash
+gxctl node prepare-device <node> 0000:41:00.0   # its whole IOMMU group to vfio-pci; /dev/vfio/<group> to glidex
+gxctl node release-device <node> 0000:41:00.0   # back on the drivers it had
+```
+
+Preparing binds every function of the device's IOMMU group (bridges
+aside) to `vfio-pci`, remembers the drivers they had, and writes
+`/etc/udev/rules.d/90-glidex-vfio-<group>.rules` giving the group device
+to `glidex` (`0660`). It refuses a group with a NIC the host uses (one
+with addresses or routes) or an OVS-DPDK uplink. It needs `net-admin`
+or `system-admin` on that host (`POST /nodes/{id}/devices/{address}/prepare`
+and `.../release`; the web UI's node page has the buttons). Like the
+manual way below, it doesn't survive a reboot.
+
+To do it by hand, load the module, and bind the device to it instead of
+its usual driver. For a device at `0000:41:00.0`:
 
 ```bash
 sudo modprobe vfio-pci
@@ -215,6 +231,25 @@ firmware reports `-1`, are refused. Each node reports its NUMA nodes,
 cores and devices' NUMA nodes in its record (`GET /nodes/{id}`,
 `status.topology`).
 
+## Device health and cordoning
+
+Each node reads its devices' PCIe error counters (AER), shown in
+`gxctl node topology <node> --devices` (`aer correctable/nonfatal/fatal`)
+and on the node page. A running VM's devices are watched: if one falls
+off the bus or has uncorrectable errors after the VM started, the VM's
+`DeviceHealthy` condition turns `False` with the reason, and a
+`DeviceError` event is recorded (`gxctl events <vm>`). Glidex doesn't
+stop the VM or move the device; errors inside the guest (an NVIDIA Xid,
+say) only the guest sees.
+
+A device you no longer trust can be cordoned: no new VM gets it, and the
+VM that has it keeps it.
+
+```bash
+gxctl node cordon-device <node> 0000:41:00.0     # refused: PCI device 0000:41:00.0 is cordoned
+gxctl node uncordon-device <node> 0000:41:00.0
+```
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -224,6 +259,8 @@ cores and devices' NUMA nodes in its record (`GET /nodes/{id}`,
 | The VM fails to start: permission denied on `/dev/vfio/<n>` | The udev rule above; `ls -l /dev/vfio/`. |
 | No IOMMU group in `gxctl pci` | The IOMMU is off: firmware setting and kernel command line. |
 | `forbidden` | The project has no grant for the device in `pci.allow`, and you are not `net-admin`. |
+| `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
+| The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |
 
 The hypervisor's own error is in the VM's events (`gxctl events <vm>`)
 and in `journalctl -u glidex-vm@<id>`. See also

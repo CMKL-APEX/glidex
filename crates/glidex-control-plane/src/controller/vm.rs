@@ -175,6 +175,98 @@ struct LaunchFailure {
     intent: bool,
 }
 
+/// Each VFIO device's uncorrectable AER errors now (address → count);
+/// devices without AER are left out.
+fn device_errors_now(devices: &[String]) -> std::collections::BTreeMap<String, u64> {
+    devices
+        .iter()
+        .filter_map(|d| {
+            let a = crate::scheduler::pci_address(d);
+            crate::topology::read_aer(&a).map(|c| (a, c.uncorrectable()))
+        })
+        .collect()
+}
+
+/// What is wrong with a running VM's VFIO devices (spec/host-topology.md
+/// §5.4): gone from the bus, or uncorrectable AER errors since its launch.
+/// `exists` and `errors` read the host (sysfs), as parameters for tests.
+fn device_problems(
+    devices: &[String],
+    baseline: &std::collections::BTreeMap<String, u64>,
+    exists: impl Fn(&str) -> bool,
+    errors: impl Fn(&str) -> Option<u64>,
+) -> Vec<String> {
+    devices
+        .iter()
+        .filter_map(|d| {
+            let a = crate::scheduler::pci_address(d);
+            if !exists(&a) {
+                return Some(format!("{a} is gone from the PCI bus"));
+            }
+            let now = errors(&a)?;
+            let then = baseline.get(&a).copied().unwrap_or(0);
+            (now > then).then(|| {
+                format!(
+                    "{a} had {} uncorrectable PCIe errors since the VM started",
+                    now - then
+                )
+            })
+        })
+        .collect()
+}
+
+/// `DeviceHealthy` for a VM with VFIO devices, and a `DeviceError` event
+/// when it turns false. Reported only; nothing is stopped (H18).
+fn device_health(st: &mut VmStatus, events: &mut Vec<Event>) {
+    let Some(inst) = st.instance.as_ref() else {
+        return;
+    };
+    if inst.vfio_devices.is_empty() {
+        clear_cond(&mut st.conditions, "DeviceHealthy");
+        return;
+    }
+    let problems = device_problems(
+        &inst.vfio_devices,
+        &inst.device_errors,
+        |a| {
+            std::path::Path::new("/sys/bus/pci/devices")
+                .join(a)
+                .exists()
+        },
+        |a| crate::topology::read_aer(a).map(|c| c.uncorrectable()),
+    );
+    let was_bad = st
+        .conditions
+        .iter()
+        .any(|c| c.kind == "DeviceHealthy" && c.status == Tristate::False);
+    if problems.is_empty() {
+        set_cond(
+            &mut st.conditions,
+            "DeviceHealthy",
+            Tristate::True,
+            "Healthy",
+            "",
+        );
+    } else {
+        let msg = problems.join("; ");
+        if !was_bad {
+            events.push(Event::new(
+                "controller",
+                EventKind::Warning,
+                "DeviceError",
+                msg.clone(),
+            ));
+        }
+        set_cond(
+            &mut st.conditions,
+            "DeviceHealthy",
+            Tristate::False,
+            "DeviceError",
+            msg,
+        );
+    }
+}
+
 fn before_intent(e: impl Into<VmManagerError>) -> LaunchFailure {
     LaunchFailure {
         error: Box::new(e.into()),
@@ -466,6 +558,7 @@ impl VmManager {
             growpart_disk: None,
             growpart_seq: None,
             cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
+            device_errors: device_errors_now(&c.vfio_devices),
         }
     }
 
@@ -1103,6 +1196,7 @@ impl VmManager {
             growpart_disk,
             growpart_seq,
             cpu_affinity,
+            device_errors: device_errors_now(&c.vfio_devices),
         });
         st.never_started = false;
         let ev = Event::new(
@@ -1355,6 +1449,7 @@ impl VmManager {
             self.port_drift(vm, &mut st, &mut events).await?;
         }
         self.cpu_drift(vm, &mut st, &mut events).await;
+        device_health(&mut st, &mut events);
         let mut guest = observed.guest;
         let d = driver(vm.hypervisor());
         if vm.spec.power == PowerState::Paused && guest == GuestState::Running {
@@ -1785,6 +1880,25 @@ impl VmManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_problems_are_errors_since_launch_or_a_device_gone() {
+        let base: std::collections::BTreeMap<String, u64> =
+            [("0000:87:00.0".to_string(), 2)].into();
+        let devs = vec![
+            "/sys/bus/pci/devices/0000:87:00.0".to_string(),
+            "0000:90:00.0".to_string(),
+        ];
+        // Errors from before the launch don't count.
+        let p = device_problems(&devs, &base, |_| true, |_| Some(2));
+        assert_eq!(
+            p,
+            vec!["0000:90:00.0 had 2 uncorrectable PCIe errors since the VM started"]
+        );
+        let p = device_problems(&devs, &base, |a| a != "0000:87:00.0", |_| Some(0));
+        assert_eq!(p, vec!["0000:87:00.0 is gone from the PCI bus"]);
+        assert!(device_problems(&devs, &base, |_| true, |_| None).is_empty());
+    }
 
     #[test]
     fn conditions_track_transitions() {

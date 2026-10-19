@@ -683,6 +683,14 @@ pub(crate) fn topology_lines(
             if let Some(v) = d.sriov.as_option() {
                 l.push_str(&format!("  vfs {}/{}", v.enabled_vfs, v.total_vfs));
             }
+            if let Some(a) = d.aer.as_option()
+                && (a.correctable + a.nonfatal + a.fatal) > 0
+            {
+                l.push_str(&format!(
+                    "  aer {}/{}/{}",
+                    a.correctable, a.nonfatal, a.fatal
+                ));
+            }
         }
         format!("{l}  {ready}")
     };
@@ -779,6 +787,67 @@ pub async fn node(client: &ApiClient, args: &[&str]) {
             }
         }
         Some("import") => imports(client, &args[1..]).await,
+        Some(op @ ("prepare-device" | "release-device" | "cordon-device" | "uncordon-device")) => {
+            let (Some(node), Some(address)) = (args.get(1), args.get(2)) else {
+                return usage(&format!("Usage: node {op} <node> <pci-address>"));
+            };
+            let (id, address) = (node.to_string(), address.to_string());
+            let s = svc!(node_rpc(client));
+            match op {
+                "prepare-device" => {
+                    let v = answer!(s.prepare_device(PrepareDeviceRequest {
+                        id,
+                        address,
+                        ..Default::default()
+                    }));
+                    println!(
+                        "{} IOMMU group {} on vfio-pci: {}",
+                        "OK".green(),
+                        v.iommu_group,
+                        v.members
+                            .iter()
+                            .map(|m| match &m.previous_driver {
+                                Some(d) => format!("{} (was {d})", m.address),
+                                None => m.address.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                "release-device" => {
+                    answer!(s.release_device(ReleaseDeviceRequest {
+                        id,
+                        address,
+                        ..Default::default()
+                    }));
+                    println!("{} back on its drivers", "OK".green());
+                }
+                "cordon-device" => {
+                    let v = answer!(s.cordon_device(CordonDeviceRequest {
+                        id,
+                        address,
+                        ..Default::default()
+                    }));
+                    println!("{} cordoned: {}", "OK".green(), v.cordoned.join(", "));
+                }
+                _ => {
+                    let v = answer!(s.uncordon_device(UncordonDeviceRequest {
+                        id,
+                        address,
+                        ..Default::default()
+                    }));
+                    println!(
+                        "{} cordoned: {}",
+                        "OK".green(),
+                        if v.cordoned.is_empty() {
+                            "none".into()
+                        } else {
+                            v.cordoned.join(", ")
+                        }
+                    );
+                }
+            }
+        }
         Some("topology") => {
             let Some(key) = args.get(1).filter(|a| !a.starts_with("--")) else {
                 return usage("Usage: node topology <node> [--devices]");

@@ -166,11 +166,10 @@ pub fn pci_driver(exec: &dyn Exec, bdf: &str) -> Result<Option<String>, OvsError
         .map(str::to_string))
 }
 
-/// Kernel interfaces backed by the PCI device (its NIC names).
+/// Kernel interfaces backed by the PCI device (its NIC names): the
+/// entries of its `net/` directory.
 pub fn pci_netdevs(exec: &dyn Exec, bdf: &str) -> Vec<String> {
-    exec.read_file(&pci_dir(bdf).join("net_names"))
-        .map(|s| s.split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default()
+    exec.list_dir(&pci_dir(bdf).join("net"))
 }
 
 /// Rebind a PCI device to `driver` (e.g. `vfio-pci`), the way

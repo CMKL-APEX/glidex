@@ -539,6 +539,9 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
         {
             return Err(format!("no PCI device {addr}"));
         }
+        if n.spec.cordoned_devices.contains(&addr) {
+            return Err(format!("PCI device {addr} is cordoned"));
+        }
         if let Some(why) = device_taken(&n.status.pci_groups, &load.devices, d) {
             return Err(why);
         }
@@ -792,6 +795,7 @@ mod tests {
                 br_int_datapath: Default::default(),
                 bridge_mappings: Default::default(),
                 drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
             },
         );
         n.status.allocatable = Resources {
@@ -1437,6 +1441,17 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_cordoned_device_is_refused() {
+        let mut n = node("a", 8, 8192);
+        n.status.pci_devices = vec!["0000:41:00.0".into()];
+        n.spec.cordoned_devices = ["0000:41:00.0".to_string()].into();
+        let mut r = req(1, 512);
+        r.vfio = vec!["/sys/bus/pci/devices/0000:41:00.0".into()];
+        let err = schedule(&r, &[(n, Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "PCI device 0000:41:00.0 is cordoned");
     }
 
     #[test]

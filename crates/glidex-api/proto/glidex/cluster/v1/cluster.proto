@@ -610,6 +610,38 @@ service NodeService {
       rest: "GET /nodes/{id}/topology"
     };
   }
+  // Bind a device's IOMMU group to vfio-pci on its node, and give its
+  // group device to the VMs (spec/host-topology.md §5.3).
+  rpc PrepareDevice(PrepareDeviceRequest) returns (PrepareDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "prepareDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/prepare"
+    };
+  }
+  // Put a prepared device's group back on its drivers.
+  rpc ReleaseDevice(ReleaseDeviceRequest) returns (ReleaseDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "releaseDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/release"
+    };
+  }
+  // No new VM gets the device; the VM holding it keeps it (§5.4).
+  rpc CordonDevice(CordonDeviceRequest) returns (CordonDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "cordonDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/cordon"
+    };
+  }
+  rpc UncordonDevice(UncordonDeviceRequest) returns (UncordonDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "cordonDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/uncordon"
+    };
+  }
   rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse) {
     option (glidex.api.v1.op) = {
       action: "drainNode"
@@ -728,6 +760,8 @@ message NodeSpec {
   map<string, string> bridge_mappings = 6 [json_name = "bridge_mappings"];
   // The node deletes its spare image files older than this.
   google.protobuf.Timestamp drop_spare_files_before = 7 [json_name = "drop_spare_files_before"];
+  // PCI devices no new VM gets (spec/host-topology.md §5.4).
+  repeated string cordoned_devices = 8 [json_name = "cordoned_devices"];
 }
 
 message Versions {
@@ -808,6 +842,44 @@ message GetNodeRequest {
 }
 message GetNodeResponse {
   Node node = 1;
+}
+
+message PrepareDeviceRequest {
+  // Node id or name.
+  string id = 1;
+  // PCI address, 0000:41:00.0.
+  string address = 2;
+}
+message PreparedMember {
+  string address = 1;
+  // The driver it had, put back on release.
+  optional string previous_driver = 2 [json_name = "previous_driver"];
+}
+message PrepareDeviceResponse {
+  string address = 1;
+  string iommu_group = 2 [json_name = "iommu_group"];
+  // Every function of the group that was bound.
+  repeated PreparedMember members = 3;
+}
+message ReleaseDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message ReleaseDeviceResponse {}
+message CordonDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message CordonDeviceResponse {
+  // The node's cordoned devices now.
+  repeated string cordoned = 1;
+}
+message UncordonDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message UncordonDeviceResponse {
+  repeated string cordoned = 1;
 }
 
 message GetNodeTopologyRequest {

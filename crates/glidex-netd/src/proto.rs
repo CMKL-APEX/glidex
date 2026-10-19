@@ -123,6 +123,16 @@ pub enum Op {
     /// Take a departed member out of OVN (kick it from the NB/SB clusters,
     /// delete its chassis). Run on a remaining server.
     ForgetOvnMember(ForgetOvnMemberArgs),
+    /// Bind a PCI device's IOMMU group to vfio-pci for VMs
+    /// (spec/host-topology.md §5.3).
+    PrepareDevice {
+        address: String,
+    },
+    /// Put a prepared device's group back on its drivers.
+    ReleaseDevice {
+        address: String,
+    },
+    ListPreparedDevices,
 }
 
 impl Op {
@@ -144,6 +154,7 @@ impl Op {
                 | Op::NatCounters
                 | Op::CtExternalCounters
                 | Op::OvnStatus
+                | Op::ListPreparedDevices
         )
     }
 
@@ -178,6 +189,9 @@ impl Op {
             Op::LeaveOvn { .. } => "leave_ovn",
             Op::EnsureOvnCentral(_) => "ensure_ovn_central",
             Op::ForgetOvnMember(_) => "forget_ovn_member",
+            Op::PrepareDevice { .. } => "prepare_device",
+            Op::ReleaseDevice { .. } => "release_device",
+            Op::ListPreparedDevices => "list_prepared_devices",
         }
     }
 }
