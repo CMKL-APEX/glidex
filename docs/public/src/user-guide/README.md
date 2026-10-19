@@ -40,8 +40,9 @@ API example where it helps. The full command list is in the
 
 ## Pages
 
-- [Logging in](logging-in.md): the web UI, `gxctl` on the host and from
-  another machine, login profiles, API tokens, `whoami`.
+- [Logging in](logging-in.md): the web UI, invitations, your sign-in
+  methods, `gxctl` on the host and from another machine, login profiles,
+  API tokens, `whoami`.
 - [Projects](projects.md): what a project holds, members and roles,
   teams, quotas, choosing the project you work in.
 - [Images and disks](images-and-disks.md): the image catalog, pulling

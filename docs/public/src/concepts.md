@@ -57,6 +57,10 @@ has an operator tenant `admin`, which runs the host, and a tenant
 `default`, which holds the `default` project. Most single-site installs
 don't need more than that.
 
+The **directory** is where users, teams, login connectors and tenants
+are kept; a control plane hosts one, shared by every server of a
+cluster. The web UI's **Directory** page shows it.
+
 ## Virtual machines
 
 A **VM** has a name, a project, a hypervisor, vCPUs and memory, a boot
@@ -192,9 +196,16 @@ logged to disk, so you can read what happened before you connected. See
 ## Users, teams and roles
 
 A **user** is a person known to Glidex. Users log in through a **login
-connector**: local accounts (PAM) or OIDC single sign-on. On the host
-itself, `gxctl` identifies you by your Unix account. A **team** is a
-group of users; teams can mirror Unix or identity-provider groups.
+connector**: local accounts (PAM), or single sign-on through an OIDC
+provider, Google or JumpCloud. On the host itself, `gxctl` identifies
+you by your Unix account. A user can have several **sign-in methods**
+(a local password and a Google account, say), each giving the same
+roles. A **team** is a group of users; teams can mirror Unix or
+identity-provider groups.
+
+An **invitation** is a one-time link that lets one email address into a
+tenant, with a role, through one connector, even when that connector
+doesn't create users by itself. It expires, after 7 days by default.
 
 A **role binding** gives a user, team or token a **role** on a
 resource. Project roles, each including the one before it:
@@ -208,8 +219,10 @@ resource. Project roles, each including the one before it:
 
 Host roles cover the host or cluster itself: `auditor` (read-only,
 including the audit log), `image-admin` (images), `net-admin` (host
-networks and PCI devices), and `system-admin` (everything). See
-[Access control](operator-guide/access-control.md).
+networks and PCI devices), and `system-admin` (everything). In a
+cluster, `auditor` and `net-admin` can also be given on one host only.
+Tenant roles (`tenant-admin`, `tenant-auditor`) cover one tenant and its
+projects. See [Access control](operator-guide/access-control.md).
 
 ## Tokens
 

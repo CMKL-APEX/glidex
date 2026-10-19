@@ -107,7 +107,8 @@ Over the API: `GET`/`POST /projects/{id}/bindings` and
 
 A team is a named group of users; binding a team to a project gives every
 member of it that role. Administrators create teams and manage their
-members (**Access** in the web UI, `gxctl team …`):
+members (the **Directory** page's **Users & roles** tab in the web UI,
+`gxctl team …`):
 
 ```bash
 gxctl team list

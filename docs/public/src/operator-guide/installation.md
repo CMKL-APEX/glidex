@@ -90,9 +90,10 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-qemu` | Skip QEMU and OVMF (Cloud Hypervisor only). |
 | `--no-networking` | Skip Open vSwitch, `glidex-netd` and the host network settings. VMs then have no NICs. |
 | `--no-services` | Don't install the systemd units, users and groups. You run `glidex-control-plane` and `glidex-ui` yourself. |
-| `--ovs-profile kernel\|dpdk` | Open vSwitch datapath. `kernel` (default) needs nothing special; `dpdk` reserves hugepages and PMD cores. |
+| `--ovs-profile kernel\|dpdk` | Open vSwitch datapath. `kernel` (default) needs nothing special, and turns off DPDK an earlier `dpdk` profile left on; `dpdk` reserves hugepages and PMD cores. See [Back to the kernel profile](host-networking.md#back-to-the-kernel-profile). |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask, in hex. `auto` clears it. |
-| `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic). Not saved. |
+| `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic), also to turn DPDK off under the kernel profile. Not saved. |
+| `--release-hugepages` | Kernel profile only: give back the hugepages an earlier `dpdk` profile reserved, once DPDK is off. Kept by default. Not saved. |
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
 | `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
 | `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
@@ -124,7 +125,7 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 | `/etc/glidex/policies/` | Site policy files (`root:glidex`, mode 0750), empty. |
 | `/etc/glidex/install.conf` | The installer's saved choices. |
 | `/etc/pam.d/glidex` | The PAM service for web logins with local passwords. |
-| `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages`. The previous values are recorded for the uninstaller. |
+| `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages` (kept after going back to the kernel profile unless `--release-hugepages`). The previous values are recorded for the uninstaller. |
 | `/etc/modules-load.d/glidex.conf` | Loads `vfio-pci` at boot, with `--ovs-profile dpdk`. |
 | `/var/lib/glidex-control-plane/` | The `glidex` user's home. Its `.glidex/` holds the database, images, disks, firmware and the self-signed certificate. |
 
@@ -169,6 +170,12 @@ whose binary or unit changed. Running VMs keep running across a control
 plane restart: each runs in its own `glidex-vm@<id>` unit. A running VM
 keeps the Cloud Hypervisor binary it started with until it is restarted.
 Reload web UI tabs that were open before the update to get the new UI.
+
+With the kernel profile saved, the installer also turns off DPDK it
+finds on in `ovs-vswitchd`, for example after `gxctl ovs dpdk-init` or
+a profile switch in the web UI, which don't change the saved profile.
+With bridges it only says so unless you pass `--allow-ovs-restart`. To
+keep DPDK, save the profile once with `--ovs-profile dpdk`.
 
 If something else listens on port 8841 or 5173 (a control plane or UI you
 started by hand), the installer leaves the service stopped and tells you

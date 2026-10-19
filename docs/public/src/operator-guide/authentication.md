@@ -183,9 +183,19 @@ valid for one day.
 
 Each way to log in is a *login connector*. `auth.pam` and `auth.oidc`
 above appear as the connectors `file-pam` and `file-oidc`; they can only
-be changed in the file. Directory administrators can add more PAM and
-OIDC connectors, for example a second identity provider, from the web
-UI's **Connectors** page or with `gxctl connector`:
+be changed in the file. Directory administrators can add more, from the
+web UI (**Directory** page, **Connectors** tab, **+ Add Connector**) or
+with `gxctl connector`:
+
+| Kind | For |
+|---|---|
+| `pam` | Local accounts of the host. |
+| `oidc` | Any OpenID Connect provider. |
+| `google` | Google Workspace, or personal Google accounts (see [Google](#google)). |
+| `jumpcloud` | JumpCloud SSO (see [JumpCloud](#jumpcloud)). |
+
+`google` and `jumpcloud` are OIDC with the provider's endpoints and
+rules built in: you give a client id and secret, not an issuer.
 
 ```bash
 gxctl connector add oidc corp --issuer https://login.example.com \
@@ -197,10 +207,13 @@ gxctl connector test corp
 gxctl connector list
 ```
 
-- Each OIDC connector gets its own button on the login page, and its own
-  redirect URI: `https://<ui-host>:5173/api/auth/c/<id>/callback`.
+- Each `oidc`, `google` and `jumpcloud` connector gets its own **Sign
+  in with &lt;name&gt;** button on the login page, and its own redirect URI:
+  `https://<ui-host>:5173/api/auth/c/<id>/callback`. The web UI's
+  connector form shows it, on the address you opened the UI with.
 - Secrets are read from a hidden prompt, standard input or a file, never
-  the command line, and are never shown again. They are stored encrypted
+  the command line, and are never shown again. In the web UI, each
+  secret field has its own **Set secret** button. They are stored encrypted
   with the host's secrets key (`secrets.kek` beside the database, or the
   `secrets-kek` credential); back that key up with the database.
 - `--mfa` admits only logins the provider reports as multi-factor (`amr`
@@ -229,24 +242,37 @@ device logins through that type.
 # Google Workspace: accounts of these domains.
 gxctl connector add google gws --client-id <web-client-id> --domain example.org \
   --device-client-id <tv-client-id> --name "Example (Google)"
-gxctl connector secret set gws client_secret
+gxctl connector secret set gws client_secret            # hidden prompt
 gxctl connector secret set gws device_client_secret
 gxctl connector test gws
 ```
+
+In the web UI, choose **Kind** *Google*, then **Google accounts**:
+*Google Workspace (by domain)* or *Any Google account (invited or listed
+people)*. The web client and the device client each have their own
+**Set secret** button.
 
 - **Workspace** (the default) allows the accounts of the `--domain`
   domains. It checks the Workspace the account belongs to, never the
   email address: anyone can open a personal Google account under any
   address. Set the OAuth consent screen's user type to *Internal* as
-  well, so only the Workspace's accounts can use the client.
+  well, so only the Workspace's accounts can use the client. Public mail
+  domains (`gmail.com`, `googlemail.com`) can't be Workspace domains.
+- Logins must come with a verified email address.
 - Google doesn't report whether a login used a second factor. If the
   Workspace enforces 2-step verification, `--trust-2sv` makes its logins
   count as multi-factor. The `admin` tenant and operator tenants only
   take a Workspace connector with `--trust-2sv`.
 - **`--consumer`** allows personal Google accounts too, but only for
-  people you already know: with `--jit` it needs `--allow-email` for each
-  address; without it, people get in through an [invitation](#invitations).
+  people you already know: an [invitation](#invitations), an address in
+  `--allow-email`, or a Google account already linked to a Glidex user.
+  With `--jit` (create users at their first login) it must also have
+  `--allow-email`; without `--jit`, the default for connectors made with
+  `gxctl`, new people get in by invitation only.
   A personal account can't join the `admin` tenant or an operator tenant.
+- Without a device client, `gxctl auth login --oidc` through the
+  connector fails with `device_flow_unsupported`. `connector test`
+  reports whether device logins are set up.
 - Google sends no groups, so `--require-group` and `--team` don't apply;
   give people roles in Glidex instead.
 
@@ -336,6 +362,12 @@ gxctl connector secret set jc
 - `--groups-claim` is the name set under *Include group attribute*
   (`memberOf` by default); `--require-group` and `--team` read it.
 - `--allow-email` limits which addresses get a new account with `--jit`.
+- JumpCloud's addresses are set by your organization's administrators,
+  so an address the login doesn't mark as unverified counts as verified
+  (for `--allow-email` and invitations).
+
+In the web UI, choose **Kind** *JumpCloud*; the form shows the redirect
+URI and the Login URL to enter in JumpCloud.
 
 ### Provisioning with SCIM
 
@@ -436,21 +468,50 @@ connector, even when the connector doesn't create users (`--no-jit`):
 the usual way to let in people with personal Google accounts.
 
 ```bash
-gxctl invite create web bob@gmail.com --connector google-personal --role member
+gxctl invite create web bob@example.org --connector google-personal --role member
 gxctl invite list web
 gxctl invite revoke <id>
 ```
 
-- `create` prints a link, once. Send it to the person; it lets in the
-  first login through that connector with that verified email address,
-  once, within 7 days (`--days`, at most 30). Another account can't use
-  it.
+- **Who invites.** Tenant administrators, to their own tenant; directory
+  administrators, to any tenant. Giving a tenant role with it needs the
+  right to give that role.
+- **The link.** `create` prints a link, once:
+  `https://<ui-host>:5173/invite/<id>#<secret>`. It can't be shown again;
+  if it is lost, revoke the invitation and make another. Send it the way
+  you would send a password, to the invited person only.
+- **Who can take it.** The first login through that connector, with that
+  verified email address, that brings the link. It is taken once; another
+  account, or the same address without the link, can't use it. The
+  connector's own rules still apply: through a Workspace `google`
+  connector, the account must still be in one of its domains.
+- **Lifetime.** 7 days, or `--days N` (1 to 30). `invite list` shows each
+  invitation as `open`, `taken` or `expired`; taken and expired ones stay
+  listed for 30 days. `revoke` deletes an invitation.
 - `--role` is `member` (the default: membership only),
   `role.tenant-admin` or `role.tenant-auditor`.
-- Tenant administrators invite to their tenant from its page in the web
-  UI too (**Invitations**), where the link is likewise shown once.
-- Invitations into the `admin` tenant or an operator tenant go only
-  through a connector that requires MFA.
+- `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector.
+  Invitations into the `admin` tenant or an operator tenant go only
+  through a connector that requires MFA and is allowed there.
+
+In the web UI, a tenant's page has an **Invitations** card: the list,
+**Invite** (email, role, connector), and the link shown once with
+**Copy**. A tenant's first administrator can be invited when the tenant
+is created (see [Tenants and
+admissions](access-control.md#tenants-and-admissions)).
+
+### Accepting an invitation
+
+The invited person opens the link. The page says which tenant and role
+it is for, and which address and connector to sign in with; **Sign in
+with &lt;connector&gt;** takes them to the provider. When they come back
+signed in with that address, they are a member of the tenant with the
+role. If they already have a Glidex user with that sign-in, the
+invitation adds to it.
+
+A link that was used, revoked or has expired says so: ask for a new one.
+A login that can't take the invitation is refused like any other login
+(`login_not_allowed`).
 
 ## Access tokens
 
@@ -475,7 +536,8 @@ gxctl token revoke <id>
 - Clients send it as `Authorization: Bearer <token>`; `gxctl` reads it
   from `GLIDEX_TOKEN` or the file `gxctl login --token` saved
   (`~/.config/glidex/token`, mode 0600).
-- A disabled user's personal tokens stop working.
+- A disabled user's personal tokens stop working; a deleted user's are
+  deleted (see [Removing people](access-control.md#removing-people)).
 
 Store tokens in a secret manager or a mode 0600 file, not in shell
 history or scripts. Revoke a token you no longer need, and any token

@@ -65,6 +65,42 @@ OVS 3.0 or newer is required. Restarting OVS interrupts traffic on its
 bridges, so both the UI and `gxctl` ask for confirmation first (`--force`
 in `gxctl`).
 
+### Back to the kernel profile
+
+A host that ran the `dpdk` profile goes back with the installer:
+
+```bash
+cargo run -p glidex-install -- --ovs-profile kernel --allow-ovs-restart
+cargo run -p glidex-install -- --ovs-profile kernel --allow-ovs-restart --release-hugepages
+```
+
+The kernel profile runs no DPDK. When the installer finds DPDK on in
+`ovs-vswitchd`, it removes the settings the `dpdk` profile set
+(`dpdk-init`, `dpdk-socket-mem`, `dpdk-lcore-mask`, `pmd-cpu-mask`,
+`pmd-auto-lb`, `userspace-tso-enable`) and restarts `ovs-vswitchd`,
+since DPDK can't be stopped in a running one. That gives back DPDK's
+PMD cores and socket memory.
+
+- With bridges, the restart interrupts their traffic, so it needs
+  `--allow-ovs-restart`. Without it, the installer says what the restart
+  would interrupt, leaves DPDK on and finishes the rest of the install.
+- It is refused while a DPDK port exists (a DPDK uplink or a vhost-user
+  VM NIC), naming it: those would stop working. Remove DPDK uplinks and
+  stop or move VMs with vhost-user NICs first.
+- The OVS packages stay installed.
+- Hugepages stay reserved unless you pass `--release-hugepages`, which
+  puts `vm.nr_hugepages` back to its value before Glidex (else 0) and
+  removes it from `/etc/sysctl.d/90-glidex.conf`. It goes only with the
+  kernel profile, only once DPDK is off, and isn't saved. Hugepages a
+  running guest uses go back once freed, or after a reboot.
+
+With DPDK off, a cluster node's `br-int` on **Automatic** goes back to
+the kernel datapath within about a minute, but only once no VM port is
+on `br-int` (see [The `br-int` datapath](#the-br-int-datapath)).
+
+Switching the profile with `gxctl ovs install` or the web UI doesn't
+turn DPDK off; use the installer.
+
 ## Datapaths and NIC types
 
 OVS forwards packets either in the kernel (`system` datapath) or in
@@ -294,7 +330,9 @@ networks. On the node's page, **br-int datapath** → **Change…**:
 | Userspace (netdev, DPDK) | For vhost-user NICs on cluster networks. Needs DPDK; can't carry a gateway. |
 
 The node switches within half a minute, but only while no VM port is on
-`br-int`: stop or move the node's VMs on cluster networks first. A VM
+`br-int`: stop or move the node's VMs on cluster networks first. After
+going [back to the kernel profile](#back-to-the-kernel-profile),
+**Automatic** switches to the kernel datapath the same way. A VM
 with a vhost-user NIC on a cluster network is placed only on nodes whose
 `br-int` is userspace.
 

@@ -21,6 +21,21 @@ The pieces:
 [Concepts](../concepts.md) explains projects and tenants for users; [Projects](../user-guide/projects.md)
 covers working inside one.
 
+In the web UI, the **Directory** page (in the header) gathers these, one
+tab each, shown to those allowed to see it:
+
+| Tab | Holds |
+|---|---|
+| **Overview** | The directory, the tenant that owns it, counts of tenants, users, teams and connectors, and what belongs to the directory versus this cluster. |
+| **Tenants** | Tenants, and creating one; each tenant has its own page. |
+| **Users & roles** | Users and their sign-in methods, teams, and system roles. |
+| **Connectors** | Login connectors (see [Login connectors](authentication.md#login-connectors)). |
+| **Policies** | Base and site policies (see [Site policies](#site-policies)). |
+
+The directory holds users, teams, connectors, tenants, projects, tenant
+and project roles, and tokens; every server of a cluster has the same
+copy. System roles, site policies and admissions belong to the cluster.
+
 ## Safe defaults
 
 Out of the box:
@@ -76,8 +91,9 @@ Given on one project. Each includes the one above it.
 
 ### Host roles
 
-Given on the host (on a cluster, on every host of it). Only members of
-the `admin` tenant can have them.
+Given on the host (on a cluster, on every host of it; some can be given
+on [one host](#on-one-host-of-a-cluster) instead). Only members of the
+`admin` tenant can have them.
 
 | Role | May |
 |---|---|
@@ -119,6 +135,8 @@ gxctl system-binding list
 gxctl system-binding remove <binding-id>
 ```
 
+### On one host of a cluster
+
 In a cluster, a system role covers every host. `auditor`, `net-admin`
 and the host-paths grant can instead be given on one host, by node name
 or id:
@@ -128,11 +146,23 @@ gxctl system-binding add net-admin user:3f0c… --node hv2
 gxctl system-binding list --node hv2
 ```
 
-Someone with `net-admin` on `hv2` manages `hv2`'s Open vSwitch, uplinks
-and devices only; an `auditor` there reads that node and nothing
-cluster-wide. `system-admin` and `image-admin` are about the whole
-cluster and can't be given on one host. A binding on a host that later
-leaves the cluster does nothing; remove it with `system-binding remove`.
+| | Whole cluster | One host |
+|---|---|---|
+| `auditor` | Reads everything, cluster-wide | Reads that node only, not the node list or other hosts |
+| `net-admin` | Every host's networking and devices | That host's Open vSwitch, uplinks and devices only |
+| `grant.host-paths` | Host paths on every host | Host paths on that host |
+| `system-admin`, `image-admin` | As above | Not possible: `400` (they act on cluster-wide things) |
+
+- `system-binding list` without `--node` shows the cluster's bindings
+  and every host's; a per-host one shows `on host:<node-id>`.
+- The person must still be a member of the `admin` tenant.
+- An unknown node is `404`; a node that has left is `409 node_departed`.
+- A binding on a host that later leaves the cluster does nothing (node
+  ids aren't reused); remove it with `system-binding remove`.
+- In the web UI: the **System roles** card of **Users & roles** has a
+  **Scope** column and, for a new binding, a **Scope** choice (the whole
+  cluster or one host); a node's page has a **Roles on this host** card.
+  A standalone host has no scope to choose.
 
 On a tenant:
 
@@ -175,7 +205,55 @@ gxctl admission list
 gxctl tenant list
 ```
 
-The web UI has **Tenants** and **Admissions** pages for the same.
+The web UI has the **Directory** page's **Tenants** tab, and an
+**Admissions** page, for the same.
+
+#### A new tenant's first administrator
+
+When creating a tenant in the web UI, you can fill in **First
+administrator's email** and **Signs in through** (a connector). Glidex
+then creates an [invitation](authentication.md#invitations) for that
+address as the tenant's `tenant-admin`, and shows its link once: send it
+to them. If the invitation can't be made (a bad address, an unusable
+connector), the tenant isn't created either. Over the API,
+`POST /tenants` takes `first_admin: {email, connector, days}` and
+answers the link in `invitation_link`, once. `gxctl tenant create` has
+no option for it; create the tenant, then `gxctl invite create <tenant>
+<email> --connector <c> --role role.tenant-admin`.
+
+## Removing people
+
+From the **Users & roles** tab (needs `directory-admin`):
+
+- **Disable** a user: their sessions end and their tokens stop working,
+  but the user, their roles and their history stay. **Enable** undoes it.
+- **Remove** one of a user's sign-in methods (a user can have several:
+  a local account, a Google account, a JumpCloud one). A user's last
+  sign-in method can only be removed once the user is disabled. Their
+  sessions and tokens belong to the user, not to the sign-in method, so
+  they keep working until they expire or are revoked; over the API,
+  `DELETE /users/{id}/identities/{key}?end_sessions=true` ends the
+  sessions too.
+- **Delete** a user, after typing their name to confirm. One change
+  removes the user with their sign-in methods, sessions, personal
+  tokens, team memberships, role bindings and tenant memberships; the
+  page then says how many of each went.
+
+Deleting keeps the service-account tokens the user made (they belong to
+their project), the audit log entries, and invitations they took. It
+can't be undone. It is refused:
+
+- for yourself: `409 cannot_delete_self` (another administrator can);
+- for the last holder of `system-admin` or `directory-admin` on its
+  resource (a team that holds it counts): `409 last_admin`. Give the role
+  to someone else first.
+
+A deleted person who can still sign in (a local account in
+`glidex-users`, a connector that creates users) gets a new, empty user
+at their next login. To keep someone out, disable them, or remove their
+access at the source. `gxctl` has no command for deleting a user; the
+API has `DELETE /users/{id}`.
+<!-- TODO(verify): directory-admin can't be given through the API, so the last directory-admin from the first start can't be deleted; confirm whether that is intended. -->
 
 ## Quotas
 
@@ -238,15 +316,15 @@ What a policy can look at:
 - `context.project`, `context.tenant` where the action has one.
 
 Every policy is validated against the schema before it is accepted;
-the validation errors name what is wrong. The **Policies** page in the
-web UI lists the base policies, role definitions and site policies with
+the validation errors name what is wrong. The **Directory** page's
+**Policies** tab in the web UI lists the base policies, role definitions and site policies with
 their full text, as a reference.
 <!-- TODO(verify): no public list of Cedar action names yet; link to the API reference once it lists them. -->
 
 ### Applying it
 
 Site policies need `system-admin` and a recent login. From the web UI's
-**Policies** page: **+ New site policy**, write it, **Validate**, then
+**Policies** tab (**Directory** page): **+ New site policy**, write it, **Validate**, then
 **Simulate** to compare decisions for sample requests under the current
 policies and with your draft, then **Save**. With `gxctl`:
 

@@ -90,6 +90,7 @@ Branch on `error`, never on `message`. Common codes:
 | Status | `error` | Meaning |
 |---|---|---|
 | 400 | `bad_request`, `invalid_request`, `invalid_config`, `invalid_disk`, `invalid_image`, `invalid_network`, `invalid_credential`, `invalid_project`, `invalid_state`, `project_required`, `range_too_large` | The request is malformed or not valid here |
+| 400 | `device_flow_unsupported` | A device login through a `google` connector that has no device client |
 | 401 | `unauthenticated` | No credential, or an invalid or expired token |
 | 401 | `login_failed` | Wrong username or password |
 | 401 | `reauth_required` | The operation needs a recent login; log in again |
@@ -100,6 +101,8 @@ Branch on `error`, never on `message`. Common codes:
 | 404 | `not_found` | No such resource, or one you can't read |
 | 409 | `conflict` | A name already taken, a resource in use or being deleted, a concurrent change |
 | 409 | `ambiguous` | A name matches several resources; use the id |
+| 409 | `cannot_delete_self`, `last_admin`, `last_identity` | Deleting yourself, the last holder of `system-admin` or `directory-admin`, or a user's last sign-in method |
+| 409 | `node_departed` | A per-host role on a node that has left the cluster |
 | 409 | `would_lock_out`, `confirmation_required`, `host_interface_in_use`, `not_clustered`, `ovn_not_installed`, `dpdk_not_running`, … | A precondition isn't met; the message says which |
 | 412 | `precondition_failed` | `If-Match` didn't match; `details.resource_version` has the current one |
 | 413 | `too_large` | The body is too large |
@@ -269,7 +272,10 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/auth/oidc/start`, `/auth/oidc/callback` | OIDC browser login (redirects) |
 | `POST` | `/auth/oidc/device`, `/auth/oidc/device/poll` | OIDC device flow for CLIs: start, then poll: `202 {pending: true}` until the user is done, then `200 {issued: …}` |
 | `GET` | `/auth/c/{id}/start`, `/auth/c/{id}/callback` | Browser login through connector `{id}` |
-| `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way |
+| `POST` | `/auth/c/{id}/start` | Browser login that takes an invitation: `{invitation}` in the body, answers `{redirect}`; `404` for an invitation that isn't open or is for another connector; no credential |
+| `POST` | `/auth/invitation` | What an invitation is for (tenant, connector, address, role, expiry): `{invitation: "<id>.<secret>"}`, from the link; `404` unless it is open; no credential |
+| `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}` |
+| `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way; `400 device_flow_unsupported` for a `google` connector without a device client |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |
 | `POST` | `/authz/check` | Would these actions be allowed? One answer per check |
@@ -281,7 +287,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
 | `POST` | `/vms` | Create a VM (`?wait=`) |
-| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node |
+| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there |
 | `GET` | `/vms/{id}` | Get a VM |
 | `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`) |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
@@ -411,8 +417,8 @@ them to the node being managed).
 | `GET` | `/projects/{id}/bindings` | A project's role bindings |
 | `POST` | `/projects/{id}/bindings` | Grant a role on the project to a user, team or token |
 | `DELETE` | `/projects/{id}/bindings/{link}` | Remove a binding |
-| `GET` | `/system/bindings` | Host-wide role bindings |
-| `POST` | `/system/bindings` | Grant a host role |
+| `GET` | `/system/bindings` | Host role bindings: the cluster's and every host's (`node`: one node's host only) |
+| `POST` | `/system/bindings` | Grant a host role, cluster-wide or, with `node` (id or name), on one node's host (`role.auditor`, `role.net-admin`, `grant.host-paths`) |
 | `DELETE` | `/system/bindings/{link}` | Remove a host role binding |
 | `GET` | `/tokens` | Your API tokens (all, for administrators) |
 | `POST` | `/tokens` | Create a token, personal or for a service account; the secret is returned once |
@@ -420,8 +426,9 @@ them to the node being managed).
 | `GET` | `/users` | List users and their identities |
 | `POST` | `/users` | Create a user |
 | `PATCH` | `/users/{id}` | Change a user |
+| `DELETE` | `/users/{id}` | Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went |
 | `POST` | `/users/{id}/identities` | Link a login identity to a user |
-| `DELETE` | `/users/{id}/identities/{key}` | Unlink an identity |
+| `DELETE` | `/users/{id}/identities/{key}` | Remove a sign-in method, yours or (as an administrator) anyone's, never the last unless the user is disabled (`end_sessions`) |
 | `GET` | `/users/me` | Same as `GET /auth/whoami` |
 | `PATCH` | `/users/me` | Change your own profile (e.g. `default_project`) |
 | `GET` | `/users/me/ssh-keys` | Your local account's SSH public keys, to prefill a guest credential |
@@ -446,7 +453,7 @@ them to the node being managed).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/tenants` | Tenants you can see (`page_size`, `page_token`) |
-| `POST` | `/tenants` | Create a tenant |
+| `POST` | `/tenants` | Create a tenant; with `first_admin: {email, connector, days}`, also invite its first `tenant-admin` (the link in `invitation_link`, once) |
 | `GET` | `/tenants/{id}` | Get a tenant |
 | `PATCH` | `/tenants/{id}` | Change a tenant |
 | `DELETE` | `/tenants/{id}` | Delete a tenant (`409 tenant_in_use` while it has projects) |
@@ -463,11 +470,14 @@ them to the node being managed).
 | `DELETE` | `/tenants/{id}/bindings/{link}` | Remove a tenant role binding |
 | `GET` | `/tenants/{id}/device-pools` | The tenant's pools on this cluster, with what they hold |
 | `PUT` | `/tenants/{id}/device-pools` | Replace the tenant's pools: `{pools: [{name, from, max, projects}]}` |
+| `GET` | `/tenants/{id}/invitations` | A tenant's invitations, never their secrets |
+| `POST` | `/tenants/{id}/invitations` | Invite an email address (`{email, role, connector, days}`); the link is returned once |
+| `DELETE` | `/invitations/{id}` | Revoke an invitation |
 | `GET` | `/admissions` | Tenants admitted on this site, with their caps |
 | `PUT` | `/admissions/{tenant}` | Admit a tenant or change its cap |
 | `DELETE` | `/admissions/{tenant}` | Remove an admission |
 | `GET` | `/connectors` | List login connectors |
-| `POST` | `/connectors` | Create a connector (OIDC or PAM) |
+| `POST` | `/connectors` | Create a connector (`pam`, `oidc`, `google` or `jumpcloud` settings) |
 | `GET` | `/connectors/{id}` | Get a connector (secrets show only whether they are set) |
 | `PATCH` | `/connectors/{id}` | Change a connector |
 | `DELETE` | `/connectors/{id}` | Delete a connector; `?users=detach` keeps the users it provisions enabled (the default disables them) |

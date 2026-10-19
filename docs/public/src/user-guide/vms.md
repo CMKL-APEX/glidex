@@ -260,9 +260,19 @@ On a running VM the change applies at the next start. See
 
 `vfio_devices` passes host PCI devices (a GPU, a NIC) through to the
 guest. Give each as `/sys/bus/pci/devices/0000:41:00.0` or the bare
-address `0000:41:00.0`. A device is used by one VM at a time, and using
-one needs a grant from an administrator. See
-[PCI passthrough](../operator-guide/pci-passthrough.md).
+address `0000:41:00.0`. Using one needs a grant from an administrator.
+See [PCI passthrough](../operator-guide/pci-passthrough.md).
+
+A device is used by one VM at a time on its host, and it takes its
+IOMMU group with it (devices that the host can only pass through
+together). Asking for a device another VM on the host holds is refused
+with `409 conflict`:
+
+- `PCI device 0000:41:00.0 is used by VM other-vm`: that VM has it, or
+  its running instance still does.
+- `PCI device 0000:41:00.1 shares IOMMU group 31 with 0000:41:00.0, used
+  by VM other-vm`: another device of the group is that VM's. A VM that
+  already holds a device of the group may add the others.
 
 ```
 gxctl> pci                                          # host PCI devices
@@ -477,6 +487,12 @@ too. A VM with a vhost-user NIC gets 2M hugepages without asking when
 the node has them to spare (its memory plus a quarter, at least
 256 MiB), and ordinary memory otherwise. The VM's `page_kib` says which:
 4 for ordinary memory, else the hugepage size in KiB.
+
+PCI devices are claimed per node: nodes with a device at the same
+address each take one VM with it. A node where another VM holds the
+device, or a device of its IOMMU group, is skipped. If every such node's
+device is taken, the VM waits, and the reason names the VM holding it.
+A VM pinned to a node where its device is taken is refused instead.
 
 A VM stays on its node: Glidex doesn't move it, and doesn't restart it
 elsewhere if the node fails. If no node can take the VM, it is still

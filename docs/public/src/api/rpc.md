@@ -242,6 +242,7 @@ same ids and names.
 |  | `StartDevice` | `POST /auth/c/{id}/device` |
 |  | `PollDevice` | `POST /auth/c/{id}/device/poll` |
 |  | `PasswordToken` | `POST /auth/token` |
+|  | `InspectInvitation` | `POST /auth/invitation` |
 
 ### `glidex.vm.v1`
 
@@ -368,6 +369,7 @@ same ids and names.
 | `UserService` | `ListUsers` | `GET /users` |
 |  | `CreateUser` | `POST /users` |
 |  | `UpdateUser` | `PATCH /users/{id}` |
+|  | `DeleteUser` | `DELETE /users/{id}` |
 |  | `LinkIdentity` | `POST /users/{id}/identities` |
 |  | `UnlinkIdentity` | `DELETE /users/{id}/identities/{key}` |
 |  | `UpdateMe` | `PATCH /users/me` |
@@ -439,6 +441,9 @@ same ids and names.
 |  | `CreateFederation` | `POST /tenants/{id}/federations` |
 |  | `UpdateFederation` | `PATCH /tenants/{id}/federations/{federation}` |
 |  | `DeleteFederation` | `DELETE /tenants/{id}/federations/{federation}` |
+| `InvitationService` | `ListInvitations` | `GET /tenants/{id}/invitations` |
+|  | `CreateInvitation` | `POST /tenants/{id}/invitations` |
+|  | `RevokeInvitation` | `DELETE /invitations/{id}` |
 
 ### `glidex.cluster.v1`
 

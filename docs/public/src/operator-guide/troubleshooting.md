@@ -75,11 +75,15 @@ details:
 | `reauth_required` | The action needs a recent login (cluster changes, installing OVS, uplink and bridge changes, policies). | Log in again and retry. |
 | `forbidden` | Your roles or the site policies don't allow it. | Check `gxctl whoami`; ask for a role. See [Access control](access-control.md). |
 | `not_found` | No such VM, network, image… in the project you're using. | Check `--project` / your default project (`gxctl project use`). |
-| `conflict` | A name is taken, or the resource is in use or busy (a disk claimed by a VM, a PCI device used by another VM, a DPDK NIC). | Read the message: it names what holds it. |
+| `conflict` | A name is taken, or the resource is in use or busy (a disk claimed by a VM, a PCI device used by another VM on the same host or sharing its IOMMU group, a DPDK NIC). | Read the message: it names what holds it. |
 | `ambiguous` | A name matches more than one thing. | Use the id. |
 | `invalid_state` | The VM can't do that now (start a running VM, attach what's already attached). | Check its state with `gxctl get <vm>`. |
 | `invalid_config`, `invalid`, `invalid_network`, `invalid_image`, `invalid_disk` | A bad request: wrong path, out-of-range value, unknown network. | The message says which field. |
 | `quota_exceeded`, `tenant_quota_exceeded` | The project or tenant would go over a quota. | Raise it (`gxctl project quota`) or free resources. |
+| `device_flow_unsupported` | `gxctl auth login --oidc` through a `google` connector that has no device client. | Add a *TVs and Limited Input devices* client to the connector (`--device-client-id`, then `connector secret set <id> device_client_secret`); see [Google](authentication.md#google). |
+| `cannot_delete_self`, `last_admin` | Deleting yourself, or the last holder of `system-admin` or `directory-admin`. | Have another administrator do it; give the role to someone else first. See [Removing people](access-control.md#removing-people). |
+| `last_identity` | Removing a user's last sign-in method. | Disable the user first, or add another sign-in method. |
+| `node_departed` | Giving a role on one host whose node has left the cluster. | Pick a current node (`gxctl nodes`). |
 | `precondition_failed` | Someone changed the resource since you read it. | Read it again and retry. |
 | `hypervisor_unavailable` | The VM's hypervisor isn't installed on this host. | Re-run the installer (without `--no-qemu` for QEMU). |
 | `hypervisor_error` | The hypervisor refused or failed. | `journalctl -u glidex-vm@<vm-id>`, `gxctl events <vm>`. |
@@ -172,6 +176,19 @@ lsmod | grep kvm
   `id glidex`. The installer adds it when the group exists; re-run it,
   then restart the control plane.
 
+## PCI devices
+
+- **`PCI device … is used by VM …` or `… shares IOMMU group … with …`.**
+  Another VM on that host holds the device or a device of its IOMMU
+  group. Claims are per host: in a cluster, an unpinned VM goes to a node
+  where the device is free.
+- **A VM with PCI devices waits for a node.** Its page lists each
+  node's reason: `no PCI device …` (the node doesn't report it), or the
+  VM holding it on every node that has it.
+
+See [PCI passthrough](pci-passthrough.md#troubleshooting) for host setup
+problems (IOMMU, `vfio-pci`, `/dev/vfio` permissions).
+
 ## Networking
 
 Start with what the host can do:
@@ -192,6 +209,9 @@ sudo ovs-vsctl show
 | A bridged VM gets no address | The bridge has an uplink (`gxctl uplinks <bridge>`), the link is up, and the LAN has a DHCP server (Glidex doesn't run one there). |
 | An uplink is held off the bridge after a reboot | The gateway didn't answer at boot. Fix it, then `gxctl uplink-reapply <bridge> <uplink>`. |
 | vhost-user NICs fail | The host needs the `dpdk` profile, DPDK initialized and hugepages: `gxctl ovs status`. |
+| The installer says `OVS still runs DPDK from an earlier dpdk profile` | The kernel profile turns DPDK off by restarting `ovs-vswitchd`. Re-run with `--allow-ovs-restart`, or with `--ovs-profile dpdk` to keep DPDK. See [Back to the kernel profile](host-networking.md#back-to-the-kernel-profile). |
+| The installer says `OVS-DPDK stays on: DPDK ports need DPDK: …` | A DPDK uplink or vhost-user VM NIC is still on OVS. Remove the uplink and stop or move those VMs, then re-run. |
+| `br-int` stays userspace (netdev) after going back to the kernel profile | It switches only while no VM port is on `br-int`: stop or move the node's VMs on cluster networks. |
 | Cluster VMs on different nodes can't reach each other | UDP 6081 (Geneve) between the nodes' tunnel addresses; the **OVN** card on the Cluster page shows the tunnels. |
 | `gxctl cluster status` lists ports that don't answer | Open them; see [Ports between nodes](host-networking.md#ports-between-nodes). |
 

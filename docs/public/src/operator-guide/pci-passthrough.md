@@ -117,8 +117,9 @@ have them (`hugepages_unbalanced`).
 
 Glidex names a device by its sysfs path,
 `/sys/bus/pci/devices/0000:41:00.0`. The API also accepts the bare
-address `0000:41:00.0` where it checks permissions, but use the full
-path: it is what Glidex stores and compares.
+address `0000:41:00.0`, but use the full path: it is what Glidex stores
+and hands to the hypervisor. Claims and placement compare PCI
+addresses, so the path and the bare address are the same device.
 
 ## Who may use a device
 
@@ -191,13 +192,16 @@ What happens:
   `GuestPaused`) and is applied once it runs. If the hypervisor refuses,
   the VM shows `DevicesPending` with reason `HotplugFailed` and the
   error; stop and start the VM to apply the change at boot.
-- One device belongs to one VM. A second VM asking for it is refused
-  (`PCI device … is used by VM …`), and the claim lasts until the
-  instance that holds it is gone, not just until the spec drops it.
+- One device belongs to one VM on its host. A second VM on the same
+  host asking for it is refused (`PCI device … is used by VM …`), and
+  the claim lasts until the instance that holds it is gone, not just
+  until the spec drops it.
 - A device takes its IOMMU group with it: another VM can't have a
   device of the same group (`PCI device … shares IOMMU group … with …,
   used by VM …`). The VM that holds the group may add the group's other
-  devices.
+  devices. PCI bridges in the group don't count.
+- Both refusals are `409 conflict`, at creation and when a device is
+  added (`attach-device`, or a `PATCH` of `vfio_devices`).
 - A NIC that is a DPDK uplink of a glidex bridge can't be passed
   through.
 
@@ -210,12 +214,19 @@ Devices are per host. The scheduler places a VM with `vfio_devices`
 only on a node that reports every one of those devices (otherwise:
 `no PCI device …`) and where no other VM holds them. Identical hosts
 with a GPU at the same address each take a VM with it. When every such
-node's device is taken, a new VM waits as **Unschedulable** with the VM
-holding each one in its reason, and is placed once one is free. To
-choose the host, pin the VM: **Placement** in the VM form, or `node` (a
-node name or id) in the API request. A pinned VM asking for a device
-already taken on that node is refused. Prepare each host (IOMMU,
-`vfio-pci`, the udev rule) the same way.
+node's device is taken, a new VM waits as **Unschedulable** (its page
+says **Waiting for a node**) with the VM holding each one in its
+reason, and is placed once one is free. To choose the host, pin the VM:
+**Placement** in the VM form, or `node` (a node name or id) in the API
+request. A pinned VM asking for a device already taken on that node is
+refused. Prepare each host (IOMMU, `vfio-pci`, the udev rule) the same
+way.
+
+Claims are per node: a VM on one node doesn't hold the device at the
+same address on another. Adding a device to a placed VM is checked
+against its node's VMs; a VM still waiting for a node is checked when
+the scheduler places it. A node running an older Glidex version reports
+no IOMMU groups, so until it is updated its claims are by address only.
 
 `gxctl pci` lists the devices of the host it is connected to. For an
 agent's, use `gxctl node topology <agent>`: the server asks the agent.
@@ -359,6 +370,9 @@ gxctl node uncordon-device <node> 0000:41:00.0
 | `forbidden` | The project has no grant for the device in `pci.allow`, and you are not `net-admin`. |
 | `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
 | The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |
+| `conflict`: `PCI device … is used by VM …` | Another VM on that host holds the device, or its instance still does. Detach it from that VM. If the hot-unplug failed (`DevicesPending`), the device stays held until that VM stops. In a cluster, leave the VM unpinned so the scheduler can pick a node where the device is free. |
+| `conflict`: `PCI device … shares IOMMU group … with …` | Another VM holds a device in the same IOMMU group. Give the whole group to one VM, or move the card to a slot with its own group. |
+| A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |
 
 The hypervisor's own error is in the VM's events (`gxctl events <vm>`)
 and in `journalctl -u glidex-vm@<id>`. See also

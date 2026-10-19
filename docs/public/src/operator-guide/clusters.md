@@ -494,11 +494,15 @@ The web UI's **Cluster** page (in the side menu) shows, on a cluster:
   detaches in progress;
 - **Nodes**: role, phase, readiness, address, version and VM count;
   click a node for its page (capacity, versions, KVM / IOMMU / DPDK,
-  `br-int` datapath, physical networks, its VMs and disks, and the
+  `br-int` datapath, physical networks, its VMs and disks, the
+  **Roles on this host** card (see [On one host of a
+  cluster](access-control.md#on-one-host-of-a-cluster)), and the
   **Operations…** menu);
 - **Pending imports** and **Detaches**;
 - **Raft**: state, term, leader, voters and learners;
 - **OVN**: on/off, tunnels, settings;
 - **Certificate authority**, and the **Danger zone**.
 
-On a standalone host it offers **Make this host a cluster**.
+On a standalone host it shows **This host** (name, phase, readiness,
+CPUs, memory and VM count, with a link to the host's own node page) and
+offers **Make this host a cluster**.

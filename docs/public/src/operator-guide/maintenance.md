@@ -17,6 +17,12 @@ is outdated, and restarts only the services whose binary or unit
 changed. Running VMs keep running. Details are in
 [Installation](installation.md#updating).
 
+With the kernel OVS profile saved (the default), a re-run turns off
+DPDK it finds on in Open vSwitch, which restarts `ovs-vswitchd`; with
+bridges it waits for `--allow-ovs-restart`. If you turned DPDK on with
+`gxctl` or the web UI and want to keep it, pass `--ovs-profile dpdk`
+once. See [Back to the kernel profile](host-networking.md#back-to-the-kernel-profile).
+
 Browsers check for a new web UI every time they load a page, so a
 reload is enough to get it. A tab left open from before the update
 keeps the old UI, and may fail to open pages it hadn't loaded yet:

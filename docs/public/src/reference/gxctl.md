@@ -207,11 +207,11 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `binding list <p>` | A project's role bindings |
 | `binding add <p> <role> user:<id>\|team:<id>\|token:<id>` | Grant a role on a project |
 | `binding remove <p> <binding-id>` | Remove a binding |
-| `system-binding list [--node N] \| add <role> <principal> [--node N] \| remove <binding-id>` | System role bindings, cluster-wide or on one node's host |
+| `system-binding list [--node N] \| add <role> <principal> [--node N] \| remove <binding-id>` | System role bindings, cluster-wide or on one node's host (`auditor`, `net-admin`, `grant.host-paths` only); per-host ones list as `on host:<id>` |
 | `token list`, `tokens` | Your API tokens |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | Create a token; the secret is printed once |
 | `token revoke <id>` | Revoke a token |
-| `user list`, `users` | Users and their identities |
+| `user list`, `users` | Users and their identities. Deleting a user is in the web UI or the API only |
 | `team list \| create <name> \| delete <team>` | Teams |
 | `team add-member <team> <user-id>`, `remove-member <team> <user-id>` | Team membership |
 | `policy list \| show <id>` | Site Cedar policies |
@@ -244,14 +244,20 @@ and [Access control](../operator-guide/access-control.md).
 | `connector list \| show <id>` | Login connectors (secrets show only whether they are set) |
 | `connector add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]… [common]` | Add an OIDC connector |
 | `connector add pam <id> [--name TEXT] [--allow-group G]… [common]` | Add a PAM connector |
+| `connector add google <id> --client-id ID [--name TEXT] (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID] [common]` | Add a Google connector: Workspace accounts of the `--domain` domains, or (`--consumer`) any Google account of people invited or listed. `--device-client-id`: the *TVs and Limited Input devices* client for `auth login --oidc` |
+| `connector add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]… [common]` | Add a JumpCloud connector; `--groups-claim` defaults to `memberOf` |
 | `connector update <id> [--name TEXT] [--enable \| --disable] [common]` | Change a connector |
-| `connector secret set <id> [field] [--from-file PATH]` | Set a secret (default `client_secret`), from a hidden prompt, stdin or a file |
+| `connector secret set <id> [field] [--from-file PATH]` | Set a secret (default `client_secret`; a Google device client's is `device_client_secret`), from a hidden prompt, stdin or a file |
 | `connector test <id>` | Test it step by step |
 | `connector remove <id>` | Delete it |
+| `invite list <tenant>` | A tenant's invitations: open, taken or expired |
+| `invite create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` | Invite an email address into a tenant; prints the link once. `--role` defaults to `member`, `--days` to 7 (at most 30) |
+| `invite revoke <id>` | Delete an invitation |
 
 Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 `--mfa` / `--no-mfa`, `--team GROUP=TEAM`…, `--default-tenant T`,
-`--token-max-days N`. See [Authentication](../operator-guide/authentication.md).
+`--token-max-days N`. See [Authentication](../operator-guide/authentication.md)
+and [Invitations](../operator-guide/authentication.md#invitations).
 
 ## Cluster and nodes
 
