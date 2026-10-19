@@ -166,6 +166,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action manageScimTokens in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // A pull now (spec/tenancy.md §8.2); confirming one the safety stop
+  // blocked (D46) disables many users at once.
+  action syncConnector in ["directory.connectors", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action confirmConnectorSync in ["directory.connectors", "step-up", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action listAdmissions in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageAdmissions in ["cluster.admissions", "step-up", "host-scoped"]

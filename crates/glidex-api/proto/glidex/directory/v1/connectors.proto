@@ -51,6 +51,16 @@ service ConnectorService {
       rest: "PUT /connectors/{id}/secrets/{field}"
     };
   }
+  // Run a pulled connector's sync now (spec/tenancy.md §8.2), and answer
+  // how it went. `confirm` applies a run the safety stop blocked (D46),
+  // which takes `confirmConnectorSync` too.
+  rpc SyncConnector(SyncConnectorRequest) returns (SyncConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "syncConnector"
+      kind: KIND_WRITE
+      rest: "POST /connectors/{id}/sync"
+    };
+  }
   // A provisioned connector's SCIM bearer tokens (spec/tenancy.md §8.1):
   // names and lifetimes, never the tokens.
   rpc ListScimTokens(ListScimTokensRequest) returns (ListScimTokensResponse) {
@@ -114,6 +124,11 @@ message Connector {
   // `mapped` (the default: `group_teams`) or `auto` (a team per
   // provisioned group, spec/tenancy.md D43).
   optional string group_mode = 21 [json_name = "group_mode"];
+  // With `provisioning: pull` (a Google Workspace connector): what the
+  // pull reads and how often (spec/tenancy.md §8.2).
+  SyncSettings sync = 22;
+  // The last pull's outcome. Output only.
+  SyncStatus sync_status = 23 [json_name = "sync_status"];
   oneof settings {
     PamSettings pam = 12;
     OidcSettings oidc = 13;
@@ -311,3 +326,61 @@ message RevokeScimTokenRequest {
 }
 
 message RevokeScimTokenResponse {}
+
+// A pull's settings (spec/tenancy.md §8.2, D44–D47).
+message SyncSettings {
+  // Default 15, at least 5.
+  optional uint32 interval_minutes = 1 [json_name = "interval_minutes"];
+  // The most a run may disable, as a percentage of the managed users
+  // (default 10); up to 5 are always allowed.
+  optional uint32 max_disable = 2 [json_name = "max_disable"];
+  // Google: the Workspace administrator the service account acts as.
+  string admin_email = 3 [json_name = "admin_email"];
+  // Google: group emails; their members, nested ones too, are the
+  // connector's users.
+  repeated string groups = 4;
+  // Google: `<schema>.<field>`, a custom schema field holding SSH keys.
+  optional string ssh_keys_field = 5 [json_name = "ssh_keys_field"];
+}
+
+enum SyncState {
+  SYNC_STATE_UNSPECIFIED = 0;
+  SYNC_STATE_OK = 1;
+  // Google answered with an error, or something glidex couldn't read:
+  // nothing changed (D46).
+  SYNC_STATE_FAILED = 2;
+  // It would disable more than `max_disable`: nothing changed until a
+  // directory administrator confirms (D46).
+  SYNC_STATE_BLOCKED = 3;
+}
+
+message SyncChanges {
+  uint32 created = 1;
+  // Users from before the pull, with the same subject (D44).
+  uint32 adopted = 2;
+  uint32 updated = 3;
+  uint32 disabled = 4;
+  uint32 enabled = 5;
+}
+
+message SyncStatus {
+  SyncState state = 1;
+  google.protobuf.Timestamp started_at = 2 [json_name = "started_at"];
+  google.protobuf.Timestamp finished_at = 3 [json_name = "finished_at"];
+  SyncChanges changes = 4;
+  // What failed, without secrets.
+  optional string error = 5;
+  // Blocked: the users it would disable.
+  repeated string would_disable = 6 [json_name = "would_disable"];
+  // When the last run that applied finished.
+  google.protobuf.Timestamp last_applied_at = 7 [json_name = "last_applied_at"];
+}
+
+message SyncConnectorRequest {
+  string id = 1;
+  optional bool confirm = 2;
+}
+
+message SyncConnectorResponse {
+  SyncStatus status = 1;
+}

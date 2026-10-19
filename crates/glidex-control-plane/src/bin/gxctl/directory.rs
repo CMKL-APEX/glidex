@@ -20,8 +20,10 @@ const USAGE: &str = "Usage: connector list | show <id> \
     | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
     | update <id> [--name TEXT] [--enable|--disable] [COMMON] \
     | secret set <id> [field] [--from-file PATH] | test <id> | remove <id> [--detach-users] \
-    | scim-token list <id> | scim-token create <id> [--name TEXT] [--days N] | scim-token revoke <id> <token-id>\n\
-    COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N] [--provisioning none|scim] [--group-mode mapped|auto]";
+    | scim-token list <id> | scim-token create <id> [--name TEXT] [--days N] | scim-token revoke <id> <token-id> \
+    | sync <id> [--confirm]\n\
+    COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N] [--provisioning none|scim|pull] [--group-mode mapped|auto] \
+    [--sync-admin EMAIL --sync-group GROUP... [--sync-interval MIN] [--sync-max-disable PCT] [--ssh-keys-field SCHEMA.FIELD]]";
 
 fn kind(c: &Connector) -> &'static str {
     match c.settings {
@@ -30,6 +32,39 @@ fn kind(c: &Connector) -> &'static str {
         Some(Settings::Google(_)) => "google",
         Some(Settings::Jumpcloud(_)) => "jumpcloud",
         None => "?",
+    }
+}
+
+fn print_sync(st: &SyncStatus) {
+    let ts = |t: Option<&buffa_types::google::protobuf::Timestamp>| {
+        t.map(|t| crate::format_unix_time(t.seconds.max(0) as u64))
+            .unwrap_or_else(|| "-".into())
+    };
+    let state = match st.state.as_known() {
+        Some(SyncState::SYNC_STATE_OK) => "ok".green(),
+        Some(SyncState::SYNC_STATE_FAILED) => "FAILED".red(),
+        Some(SyncState::SYNC_STATE_BLOCKED) => "BLOCKED".red(),
+        _ => "?".normal(),
+    };
+    println!(
+        "  Last pull:      {state} at {}",
+        ts(st.finished_at.as_option())
+    );
+    if let Some(ch) = st.changes.as_option() {
+        println!(
+            "  Changes:        {} created, {} adopted, {} updated, {} disabled, {} enabled",
+            ch.created, ch.adopted, ch.updated, ch.disabled, ch.enabled
+        );
+    }
+    if let Some(e) = &st.error {
+        println!("  Error:          {e}");
+    }
+    if !st.would_disable.is_empty() {
+        println!(
+            "  It would disable {} users: {}; apply it with `connector sync <id> --confirm`",
+            st.would_disable.len(),
+            st.would_disable.join(", ")
+        );
     }
 }
 
@@ -52,6 +87,17 @@ fn show(c: &Connector) {
     }
     if let Some(d) = c.token_max_days {
         println!("  Token max days: {d}");
+    }
+    if let Some(sy) = c.sync.as_option() {
+        println!(
+            "  Pull:           {} as {}, every {} min",
+            sy.groups.join(", "),
+            sy.admin_email,
+            sy.interval_minutes.unwrap_or(15)
+        );
+    }
+    if let Some(st) = c.sync_status.as_option() {
+        print_sync(st);
     }
     if c.provisioning.as_deref().is_some_and(|p| p != "none") {
         println!(
@@ -183,6 +229,34 @@ fn common(args: &[&str], c: &mut Connector) -> Result<Vec<&'static str>, String>
     if let Some(m) = flag_value(args, "--group-mode") {
         c.group_mode = Some(m.into());
         paths.push("group_mode");
+    }
+    // A pull's settings (spec/tenancy.md §8.2): any of them sets them all.
+    let sync_flags = [
+        "--sync-admin",
+        "--sync-group",
+        "--sync-interval",
+        "--sync-max-disable",
+        "--ssh-keys-field",
+    ];
+    if sync_flags.iter().any(|f| has_flag(args, f)) {
+        let num = |f: &str| -> Result<Option<u32>, String> {
+            flag_value(args, f)
+                .map(|v| {
+                    v.parse()
+                        .map_err(|_| format!("{f} takes a number, not {v}"))
+                })
+                .transpose()
+        };
+        c.sync = SyncSettings {
+            interval_minutes: num("--sync-interval")?,
+            max_disable: num("--sync-max-disable")?,
+            admin_email: flag_value(args, "--sync-admin").unwrap_or("").into(),
+            groups: strings(args, "--sync-group"),
+            ssh_keys_field: flag_value(args, "--ssh-keys-field").map(String::from),
+            ..Default::default()
+        }
+        .into();
+        paths.push("sync");
     }
     Ok(paths)
 }
@@ -374,6 +448,23 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
             };
             match svc.update_connector(req).await.map(|r| r.into_owned()) {
                 Ok(r) => show(&r.connector.as_option().cloned().unwrap_or_default()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "sync" => {
+            let Some(cid) = id(1) else {
+                return usage(USAGE);
+            };
+            match svc
+                .sync_connector(SyncConnectorRequest {
+                    id: cid,
+                    confirm: has_flag(args, "--confirm").then_some(true),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => print_sync(&r.status.as_option().cloned().unwrap_or_default()),
                 Err(e) => err(rpc_err(e)),
             }
         }

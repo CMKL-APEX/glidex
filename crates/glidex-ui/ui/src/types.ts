@@ -908,7 +908,7 @@ export interface User {
   /** A managed user's email, from its connector. */
   email?: string;
   /** Why it is disabled. */
-  disabled_reason?: "admin" | "scim" | "connector_deleted";
+  disabled_reason?: "admin" | "scim" | "connector_deleted" | "sync";
 }
 
 export type UserView = User;
@@ -1847,7 +1847,7 @@ export interface Connector {
   default_tenant?: string | null;
   token_max_days?: number | null;
   /** `scim`: the IdP provisions its users and groups (spec/tenancy.md §8.1). */
-  provisioning?: "none" | "scim";
+  provisioning?: "none" | "scim" | "pull";
   group_mode?: "mapped" | "auto";
   pam?: PamSettings;
   oidc?: OidcSettings;

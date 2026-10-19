@@ -250,6 +250,10 @@ pub struct AuthService {
     pub invitations: crate::directory::invitations::InvitationStore,
     /// SCIM bearer tokens (spec/tenancy.md §8.1).
     pub scim_tokens: crate::directory::scim_tokens::ScimTokenStore,
+    /// Each pulled connector's last run (spec/tenancy.md §8.2).
+    pub sync_status: crate::directory::sync::SyncStatusStore,
+    /// Tests: the source every pull reads instead of its IdP.
+    sync_source: Mutex<Option<Arc<dyn crate::directory::sync::Source>>>,
     /// One OIDC client per connector, rebuilt when its record changes.
     oidc: Mutex<
         HashMap<
@@ -372,6 +376,8 @@ impl AuthService {
                 .map_err(connector_err)?,
             invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
             scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
+            sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
+            sync_source: Mutex::new(None),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
@@ -406,6 +412,8 @@ impl AuthService {
                 .map_err(connector_err)?,
             invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
             scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
+            sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
+            sync_source: Mutex::new(None),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,
@@ -1321,21 +1329,26 @@ impl AuthService {
             ));
         }
         let provider = c.identity_provider();
-        // D41: a provisioned connector lets in its managed users only; the
-        // IdP has given them their tenant and teams already (D43).
-        if c.provisioning == crate::directory::Provisioning::Scim {
+        // D41, D44: a provisioned connector lets in its managed users only;
+        // the IdP has given them their tenant and teams already (D43).
+        if !c.provisioning.is_none() {
             if invite.is_some() {
                 return Err(AuthError::NotAllowed(
                     "this connector's users are provisioned by its IdP: an invitation can't be taken through it".into(),
                 ));
             }
             let email = id.email.as_deref().filter(|_| id.email_verified);
-            let user = self
-                .store
-                .scim_login(&c.id, &provider, &id.subject, email)?
-                .ok_or_else(|| {
-                    AuthError::NotAllowed("no glidex account for this identity".into())
-                })?;
+            let found = match c.provisioning {
+                crate::directory::Provisioning::Pull => {
+                    self.store.pull_login(&c.id, &provider, &id.subject)?
+                }
+                _ => self
+                    .store
+                    .scim_login(&c.id, &provider, &id.subject, email)?,
+            };
+            let user = found.ok_or_else(|| {
+                AuthError::NotAllowed("no glidex account for this identity".into())
+            })?;
             if user.disabled {
                 return Err(AuthError::NotAllowed("this account is disabled".into()));
             }
@@ -1815,6 +1828,15 @@ impl AuthService {
             Some(t) => t.expires > now && t.vm_id == vm_id && t.principal == p.cedar(),
             None => false,
         }
+    }
+
+    /// Tests: make every pull read `source` (`None`: their IdPs again).
+    pub fn set_sync_source(&self, source: Option<Arc<dyn crate::directory::sync::Source>>) {
+        *self.sync_source.lock().unwrap() = source;
+    }
+
+    pub(crate) fn sync_source_override(&self) -> Option<Arc<dyn crate::directory::sync::Source>> {
+        self.sync_source.lock().unwrap().clone()
     }
 
     // ---- audit ----------------------------------------------------------

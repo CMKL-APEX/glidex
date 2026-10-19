@@ -405,6 +405,8 @@ async fn main() {
         println!("OK (follower: setup is the leader's)");
     }
     auth.watch_policies();
+    // Pulled connectors' runs, where writes go (spec/tenancy.md §8.2).
+    glidex_control_plane::directory::sync::spawn(auth.clone());
 
     vm_manager.set_secrets_key(auth.clone());
     let router = api::router(Arc::new(api::App {

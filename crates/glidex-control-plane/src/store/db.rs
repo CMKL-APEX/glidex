@@ -117,6 +117,8 @@ tables! {
     ScimTokens = 46 => "scim_tokens",
     // Groups an IdP pushed over SCIM (spec/tenancy.md D43).
     ScimGroups = 47 => "scim_groups",
+    // Each pulled connector's last run (spec/tenancy.md §8.2).
+    ConnectorSync = 48 => "connector_sync",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -136,7 +138,7 @@ impl TableId {
         match self {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
-            | Invitations | ScimTokens | ScimGroups => Scope::Directory,
+            | Invitations | ScimTokens | ScimGroups | ConnectorSync => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

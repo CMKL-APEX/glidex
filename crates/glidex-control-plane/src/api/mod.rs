@@ -1031,6 +1031,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(connectors::test),
     )
     .add(
+        "POST",
+        "/connectors/{id}/sync",
+        "syncConnector",
+        post(connectors::sync),
+    )
+    .add(
         "GET",
         "/connectors/{id}/scim-tokens",
         "readScimTokens",

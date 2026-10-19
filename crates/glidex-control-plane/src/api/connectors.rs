@@ -153,3 +153,17 @@ pub async fn revoke_scim_token(
     )?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// `POST /connectors/{id}/sync {confirm?}`.
+pub async fn sync(
+    c: Caller,
+    Path(id): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<pb::SyncConnectorResponse>, ApiErr> {
+    let mut req: pb::SyncConnectorRequest = match body {
+        Some(Json(v)) => super::proto_body(v)?,
+        None => Default::default(),
+    };
+    req.id = id;
+    Ok(Json(svc::sync_connector(&c, req).await?))
+}
