@@ -1849,6 +1849,10 @@ export interface Connector {
   /** `scim`: the IdP provisions its users and groups (spec/tenancy.md §8.1). */
   provisioning?: "none" | "scim" | "pull";
   group_mode?: "mapped" | "auto";
+  /** `pull`: what it reads and how often. */
+  sync?: SyncSettings | null;
+  /** The last pull. Output only. */
+  sync_status?: SyncStatus | null;
   pam?: PamSettings;
   oidc?: OidcSettings;
   google?: GoogleSettings;
@@ -1858,6 +1862,26 @@ export interface Connector {
   source?: "api" | "file";
   created_at?: string;
   updated_at?: string;
+}
+
+/** A pull's settings (glidex.directory.v1.SyncSettings). */
+export interface SyncSettings {
+  interval_minutes?: number;
+  max_disable?: number;
+  admin_email: string;
+  groups: string[];
+  ssh_keys_field?: string;
+}
+
+/** A pull's last run (glidex.directory.v1.SyncStatus). */
+export interface SyncStatus {
+  state?: "SYNC_STATE_OK" | "SYNC_STATE_FAILED" | "SYNC_STATE_BLOCKED";
+  started_at?: string;
+  finished_at?: string;
+  changes?: { created?: number; adopted?: number; updated?: number; disabled?: number; enabled?: number };
+  error?: string;
+  would_disable?: string[];
+  last_applied_at?: string;
 }
 
 /** A SCIM bearer token's record (glidex.directory.v1.ScimToken); never the token. */

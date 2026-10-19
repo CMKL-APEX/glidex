@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
-import type { Connector, ConnectorInput, ConnectorTestStep, ScimToken, Tenant } from "../types";
+import type { Connector, ConnectorInput, ConnectorTestStep, ScimToken, SyncStatus, Tenant } from "../types";
 import { formatTimestamp } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -17,6 +17,7 @@ import {
   selectClass,
 } from "../components/ui";
 import { useSession } from "../session";
+import { useDirectory } from "../hooks";
 
 /** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`). */
 const SECRET_FIELD: Record<Connector["kind"], string | null> = {
@@ -31,6 +32,8 @@ const secretFields = (c: Connector): string[] => {
   const main = SECRET_FIELD[c.kind];
   const out = main ? [main] : [];
   if (c.kind === "google" && c.google?.device_client_id) out.push("device_client_secret");
+  // A pull's service account (spec/tenancy.md D47).
+  if (c.provisioning === "pull") out.push("service_account_key");
   return out;
 };
 
@@ -79,8 +82,13 @@ interface FormState {
   group_teams: string;
   default_tenant: string;
   token_max_days: string;
-  provisioning: "none" | "scim";
+  provisioning: "none" | "scim" | "pull";
   group_mode: "mapped" | "auto";
+  sync_admin: string;
+  sync_groups: string;
+  sync_interval: string;
+  sync_max_disable: string;
+  ssh_keys_field: string;
   allowed_groups: string;
   issuer: string;
   client_id: string;
@@ -109,8 +117,13 @@ function formState(c?: Connector): FormState {
     group_teams: showGroupTeams(c?.group_teams),
     default_tenant: c?.default_tenant ?? "",
     token_max_days: c?.token_max_days ? String(c.token_max_days) : "",
-    provisioning: c?.provisioning === "scim" ? "scim" : "none",
+    provisioning: c?.provisioning === "scim" || c?.provisioning === "pull" ? c.provisioning : "none",
     group_mode: c?.group_mode === "auto" ? "auto" : "mapped",
+    sync_admin: c?.sync?.admin_email ?? "",
+    sync_groups: (c?.sync?.groups ?? []).join(", "),
+    sync_interval: c?.sync?.interval_minutes ? String(c.sync.interval_minutes) : "",
+    sync_max_disable: c?.sync?.max_disable ? String(c.sync.max_disable) : "",
+    ssh_keys_field: c?.sync?.ssh_keys_field ?? "",
     allowed_groups: (c?.pam?.allowed_groups ?? []).join(", "),
     issuer: c?.oidc?.issuer ?? "",
     client_id: c?.oidc?.client_id ?? c?.google?.client_id ?? c?.jumpcloud?.client_id ?? "",
@@ -127,6 +140,14 @@ function formState(c?: Connector): FormState {
   };
 }
 
+/** How a kind can be provisioned: SCIM for OIDC and JumpCloud, a pull for
+ * Google Workspace (spec/tenancy.md §8). */
+function provisioningChoices(f: FormState): FormState["provisioning"][] {
+  if (f.kind === "oidc" || f.kind === "jumpcloud") return ["none", "scim"];
+  if (f.kind === "google" && f.google_accounts === "workspace") return ["none", "pull"];
+  return ["none"];
+}
+
 /** The connector a form describes, as POST /connectors takes it. */
 function toInput(f: FormState): ConnectorInput {
   const c: ConnectorInput = {
@@ -139,11 +160,23 @@ function toInput(f: FormState): ConnectorInput {
     default_tenant: f.default_tenant.trim() || null,
     token_max_days: f.token_max_days.trim() ? Number(f.token_max_days) : null,
   };
-  if (f.kind === "oidc" || f.kind === "jumpcloud") {
-    c.provisioning = f.provisioning;
-    c.group_mode = f.provisioning === "scim" ? f.group_mode : "mapped";
-    // A SCIM connector creates users by provisioning only (D41).
-    if (f.provisioning === "scim") c.jit = false;
+  if (f.kind === "oidc" || f.kind === "jumpcloud" || f.kind === "google") {
+    const allowed = provisioningChoices(f);
+    const p = allowed.includes(f.provisioning) ? f.provisioning : "none";
+    c.provisioning = p;
+    c.group_mode = p !== "none" ? f.group_mode : "mapped";
+    // A provisioned connector creates users by provisioning only (D41, D44).
+    if (p !== "none") c.jit = false;
+    c.sync =
+      p === "pull"
+        ? {
+            admin_email: f.sync_admin.trim(),
+            groups: words(f.sync_groups),
+            interval_minutes: f.sync_interval.trim() ? Number(f.sync_interval) : undefined,
+            max_disable: f.sync_max_disable.trim() ? Number(f.sync_max_disable) : undefined,
+            ssh_keys_field: f.ssh_keys_field.trim() || undefined,
+          }
+        : null;
   }
   if (f.require_mfa) c.require_mfa = f.require_mfa === "on";
   if (f.kind === "pam") {
@@ -307,27 +340,28 @@ function ConnectorForm({
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
-            checked={f.jit && f.provisioning !== "scim"}
-            disabled={f.provisioning === "scim"}
+            checked={f.jit && f.provisioning === "none"}
+            disabled={f.provisioning !== "none"}
             onChange={(e) => set("jit", e.target.checked)}
           />
           Create users at their first login
         </label>
       </div>
-      {(f.kind === "oidc" || f.kind === "jumpcloud") && (
+      {provisioningChoices(f).length > 1 && (
         <div className="grid grid-cols-2 gap-3">
           <Field label="Provisioning" htmlFor="connector-provisioning">
             <select
               id="connector-provisioning"
               className={selectClass}
-              value={f.provisioning}
+              value={provisioningChoices(f).includes(f.provisioning) ? f.provisioning : "none"}
               onChange={(e) => set("provisioning", e.target.value as FormState["provisioning"])}
             >
               <option value="none">None: logins and invitations add people</option>
-              <option value="scim">SCIM: the IdP adds and removes them</option>
+              {provisioningChoices(f).includes("scim") && <option value="scim">SCIM: the IdP adds and removes them</option>}
+              {provisioningChoices(f).includes("pull") && <option value="pull">Directory sync: glidex reads Google's groups</option>}
             </select>
           </Field>
-          {f.provisioning === "scim" && (
+          {f.provisioning !== "none" && provisioningChoices(f).includes(f.provisioning) && (
             <Field label="Groups" htmlFor="connector-group-mode">
               <select
                 id="connector-group-mode"
@@ -340,6 +374,25 @@ function ConnectorForm({
               </select>
             </Field>
           )}
+        </div>
+      )}
+      {f.provisioning === "pull" && provisioningChoices(f).includes("pull") && (
+        <div className="space-y-3 p-3 border border-gray-200 rounded-lg">
+          <p className="text-sm text-gray-500">
+            Members of these Google groups, nested groups included, get accounts; nobody else logs in. Suspending or removing someone
+            in Google disables them here. Set the service account's key with <em>Set service account key</em> after saving.
+          </p>
+          {text("sync_admin", "Administrator to act as", {
+            required: true,
+            placeholder: "admin@example.com",
+            hint: "A Workspace administrator; the service account reads the directory as them, read-only.",
+          })}
+          {text("sync_groups", "Groups", { required: true, placeholder: "glidex-users@example.com", hint: "Group emails, comma-separated." })}
+          <div className="grid grid-cols-3 gap-3">
+            {text("sync_interval", "Every (minutes)", { placeholder: "15" })}
+            {text("sync_max_disable", "Stop above (%)", { placeholder: "10", hint: "Of the users, at least 5." })}
+            {text("ssh_keys_field", "SSH key field", { placeholder: "glidex.ssh_keys" })}
+          </div>
         </div>
       )}
       {f.provisioning === "scim" && (
@@ -530,15 +583,43 @@ function SecretForm({ connector, field, onDone, onCancel }: { connector: Connect
     <form onSubmit={submit} className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
       <Field label={field.replace(/_/g, " ")} htmlFor="connector-secret-value">
-        <input
-          id="connector-secret-value"
-          type="password"
-          autoComplete="new-password"
-          className={inputClass}
-          required
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
+        {field === "service_account_key" ? (
+          <>
+            <input
+              id="connector-secret-file"
+              type="file"
+              accept="application/json,.json"
+              className="block text-sm"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) setValue(await f.text());
+                e.target.value = "";
+              }}
+            />
+            <textarea
+              id="connector-secret-value"
+              className={`${inputClass} mt-2 font-mono text-xs`}
+              rows={4}
+              placeholder="or paste the service account's JSON key"
+              autoComplete="off"
+              spellCheck={false}
+              required
+              value={value ? "(the key is loaded: it isn't shown)" : ""}
+              onChange={(e) => setValue(e.target.value)}
+              readOnly={!!value}
+            />
+          </>
+        ) : (
+          <input
+            id="connector-secret-value"
+            type="password"
+            autoComplete="new-password"
+            className={inputClass}
+            required
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        )}
         <p className="mt-1 text-xs text-gray-500">
           Replaces the current value. It is sealed on the server and never shown again.
         </p>
@@ -553,6 +634,35 @@ function SecretForm({ connector, field, onDone, onCancel }: { connector: Connect
       </div>
     </form>
   );
+}
+
+/** A pulled connector's last run (spec/tenancy.md §8.2). */
+function SyncLine({ status }: { status?: SyncStatus | null }) {
+  if (!status) return <div className="text-gray-400">not run yet</div>;
+  const ch = status.changes ?? {};
+  const n = (ch.created ?? 0) + (ch.adopted ?? 0) + (ch.updated ?? 0) + (ch.disabled ?? 0) + (ch.enabled ?? 0);
+  const when = formatTimestamp(status.finished_at);
+  switch (status.state) {
+    case "SYNC_STATE_OK":
+      return (
+        <div className="text-gray-500" data-testid="sync-status">
+          synced {when}
+          {n > 0 ? `: ${ch.created ?? 0} new, ${ch.updated ?? 0} updated, ${ch.disabled ?? 0} disabled, ${ch.enabled ?? 0} enabled` : ", no changes"}
+        </div>
+      );
+    case "SYNC_STATE_BLOCKED":
+      return (
+        <div className="text-amber-700" data-testid="sync-status">
+          blocked {when}: it would disable {status.would_disable?.length ?? 0} users
+        </div>
+      );
+    default:
+      return (
+        <div className="text-red-600" data-testid="sync-status" title={status.error ?? ""}>
+          failed {when}: {status.error}
+        </div>
+      );
+  }
 }
 
 /** A provisioned connector's SCIM endpoint and tokens (spec/tenancy.md §8.1). */
@@ -715,6 +825,7 @@ type Dialog =
   | { kind: "secret"; connector: Connector; field: string }
   | { kind: "test"; connector: Connector }
   | { kind: "scim"; connector: Connector }
+  | { kind: "blocked"; connector: Connector }
   | { kind: "delete"; connector: Connector };
 
 export default function Connectors() {
@@ -725,6 +836,7 @@ export default function Connectors() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   // Deleting a SCIM connector: keep its users (detach) instead of disabling them.
   const [detach, setDetach] = useState(false);
+  const [people] = useDirectory();
 
   const refresh = useCallback(() => {
     api
@@ -762,6 +874,13 @@ export default function Connectors() {
     }
   };
   const tenantSlug = (id: string) => tenants.find((t) => t.id === id)?.slug ?? id;
+  const userName = (id: string) => people?.users.find((u) => u.id === id)?.display_name ?? id;
+  // A pull now; with `confirm`, the one the safety stop blocked (D46).
+  const runSync = (c: Connector, confirm: boolean) =>
+    run(async () => {
+      const s = await api.syncConnector(c.id, confirm);
+      if (s.state === "SYNC_STATE_FAILED") setError(`The sync of ${c.id} failed: ${s.error ?? "unknown error"}`);
+    });
   const close = () => setDialog(null);
   const done = () => {
     setDialog(null);
@@ -840,12 +959,29 @@ export default function Connectors() {
                         </div>
                       )}
                       {c.provisioning === "scim" && <div>SCIM-provisioned{c.group_mode === "auto" ? ", a team per group" : ""}</div>}
+                      {c.provisioning === "pull" && (
+                        <div>
+                          Pulls {(c.sync?.groups ?? []).join(", ")} every {c.sync?.interval_minutes ?? 15} min
+                          {c.group_mode === "auto" ? ", a team per group" : ""}
+                          <SyncLine status={c.sync_status} />
+                        </div>
+                      )}
                       {c.jit && <div>JIT{c.default_tenant ? ` into ${tenantSlug(c.default_tenant)}` : ""}</div>}
                       {c.require_mfa && <div>MFA required</div>}
                       {(c.required_groups?.length ?? 0) > 0 && <div>groups: {c.required_groups!.join(", ")}</div>}
                       {c.updated_at && <div className="text-gray-400">updated {formatTimestamp(c.updated_at)}</div>}
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap space-x-3">
+                      {c.provisioning === "pull" && host.syncConnector && (
+                        <button className="text-sm text-sky-700 hover:underline" onClick={() => runSync(c, false)}>
+                          Sync now
+                        </button>
+                      )}
+                      {c.sync_status?.state === "SYNC_STATE_BLOCKED" && host.confirmConnectorSync && (
+                        <button className="text-sm text-amber-700 hover:underline" onClick={() => setDialog({ kind: "blocked", connector: c })}>
+                          Review blocked sync
+                        </button>
+                      )}
                       {c.provisioning === "scim" && host.readScimTokens && (
                         <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "scim", connector: c })}>
                           SCIM
@@ -877,7 +1013,7 @@ export default function Connectors() {
                             className="text-sm text-sky-700 hover:underline"
                             onClick={() => setDialog({ kind: "secret", connector: c, field })}
                           >
-                            {field === "device_client_secret" ? "Set device secret" : "Set secret"}
+                            {field === "device_client_secret" ? "Set device secret" : field === "service_account_key" ? "Set service account key" : "Set secret"}
                           </button>
                         ))}
                       {!readOnly && host.deleteConnector && (
@@ -907,6 +1043,33 @@ export default function Connectors() {
         <Modal title={`Set secret of ${dialog.connector.id}`} onClose={close}>
           <SecretForm connector={dialog.connector} field={dialog.field} onCancel={close} onDone={done} />
         </Modal>
+      )}
+      {dialog?.kind === "blocked" && (
+        <ConfirmDialog
+          title="Apply a blocked sync"
+          consequence={
+            <>
+              <p>
+                The last pull of <span className="font-semibold">{dialog.connector.display_name || dialog.connector.id}</span> would disable{" "}
+                {dialog.connector.sync_status?.would_disable?.length ?? 0} users, more than its limit, so it changed nothing.
+              </p>
+              <p className="mt-2">
+                Applying reads Google again and disables whoever is still out: their sessions and tokens end. If a group was renamed or
+                emptied by mistake, fix it in Google instead.
+              </p>
+              <ul className="mt-2 max-h-40 overflow-auto text-sm list-disc pl-5" data-testid="would-disable">
+                {(dialog.connector.sync_status?.would_disable ?? []).map((id) => (
+                  <li key={id}>{userName(id)}</li>
+                ))}
+              </ul>
+            </>
+          }
+          actionLabel="Apply"
+          onConfirm={async () => {
+            await runSync(dialog.connector, true);
+          }}
+          onClose={close}
+        />
       )}
       {dialog?.kind === "scim" && (
         <Modal title={`SCIM for ${dialog.connector.display_name || dialog.connector.id}`} onClose={close}>

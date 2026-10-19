@@ -1657,3 +1657,12 @@ Task 3, Google's source:
 | Connector test | the steps `service_account_key`, `token` and one `group` per named group |
 | Tests | `google_directory.rs` unit tests; `connector_tests.rs::a_google_pull_reads_the_directory_api` against a mock of Google's token and Directory endpoints (the connector's loopback `issuer`) |
 
+Task 4, UI and docs:
+
+| Spec | Code |
+|---|---|
+| UI | `pages/Connectors.tsx`: Provisioning per kind (SCIM for `oidc` and `jumpcloud`, Directory sync for a Workspace `google`), the pull's settings, **Set service account key** (a JSON file, never shown), each pulled connector's last run (`SyncLine`), **Sync now**, and **Review blocked sync** (who it would disable, then a confirmed run) |
+| Operator guide | `operator-guide/authentication.md`, "Directory sync from Google Workspace": the Admin SDK, a service account and its JSON key, domain-wide delegation with the two scopes, the administrator it acts as, gxctl and the web UI, the safety stop |
+| Real-IdP checks | [idp-checks.md](idp-checks.md) "Google Workspace directory sync" |
+| UI e2e | `connectors.spec.ts`: a pulled connector from the form, and a run that fails without its key, saying why |
+
