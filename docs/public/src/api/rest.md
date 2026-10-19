@@ -277,7 +277,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/auth/c/{id}/start`, `/auth/c/{id}/callback` | Browser login through connector `{id}` |
 | `POST` | `/auth/c/{id}/start` | Browser login that takes an invitation: `{invitation}` in the body, answers `{redirect}`; `404` for an invitation that isn't open or is for another connector; no credential |
 | `POST` | `/auth/invitation` | What an invitation is for (tenant, connector, address, role, expiry): `{invitation: "<id>.<secret>"}`, from the link; `404` unless it is open; no credential |
-| `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}` |
+| `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}`. The callback returns to `return_to` with `?linked=<id>` or `?link_error=taken\|not_allowed\|not_signed_in`; a SCIM-provisioned connector is always `not_allowed` |
 | `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way; `400 device_flow_unsupported` for a `google` connector without a device client |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |

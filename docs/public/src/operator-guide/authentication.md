@@ -428,8 +428,8 @@ What happens then:
   id or, as for JumpCloud (which sends none), by the verified email
   address. Somebody the IdP didn't provision is refused. The
   connector's `--require-group` and `--mfa` still apply; invitations
-  can't be taken through it, and teams aren't synced at login: the IdP
-  pushes them.
+  can't be taken through it, nobody can add it to their account as a
+  sign-in method, and teams aren't synced at login: the IdP pushes them.
 - **Deactivating** someone in the IdP disables the glidex user: their
   sessions end, their tokens are revoked, and they leave the teams the
   IdP put them in.
