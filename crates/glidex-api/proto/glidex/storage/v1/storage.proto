@@ -620,6 +620,10 @@ message Disk {
   // The datastore holding it: an id, `local` for the built-in one
   // (spec/storage.md §4.2).
   string datastore = 24;
+  // On a shared datastore, where `node` is unset: the node that acts on
+  // the disk's file, its VM's when placed (spec/storage.md S6).
+  optional string worker = 25;
+  optional string worker_name = 26 [json_name = "worker_name"];
 }
 
 message ListDisksRequest {
@@ -750,12 +754,18 @@ enum DatastoreDriver {
   DATASTORE_DRIVER_UNSPECIFIED = 0;
   // A directory on each node, each node's own.
   DATASTORE_DRIVER_DIR = 1;
+  // One filesystem every node mounts (NFS, CephFS, a vendor's), the same
+  // files from each; claimed with a marker file (spec/storage.md S5).
+  DATASTORE_DRIVER_SHARED_DIR = 2;
 }
 
 enum DatastoreTopology {
   DATASTORE_TOPOLOGY_UNSPECIFIED = 0;
   // Each node has its own; a disk on it is bound to one node.
   DATASTORE_TOPOLOGY_NODE_LOCAL = 1;
+  // Every node that reaches it sees the same files; a disk on it is
+  // bound to none, and its VM can run on any node that reaches it.
+  DATASTORE_TOPOLOGY_SHARED = 2;
 }
 
 // What one node found at its path to a datastore, when it last looked.
@@ -763,7 +773,8 @@ message DatastoreNode {
   string node = 1;
   optional string node_name = 2 [json_name = "node_name"];
   bool reachable = 3;
-  // Why not: `OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`.
+  // Why not: `OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`; for a
+  // shared one `NotEmpty` (no marker, files in it) or `ForeignMarker`.
   string reason = 4;
   string message = 5;
   string path = 6;

@@ -60,6 +60,41 @@ pub enum DriverSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,
     },
+    /// One filesystem every node mounts (NFS, CephFS, a vendor's): the same
+    /// files from each node (spec/storage.md §5). glidex never mounts it.
+    SharedDir {
+        path: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        node_paths: BTreeMap<String, String>,
+    },
+}
+
+/// Where a datastore's volumes can be reached from (S4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Topology {
+    /// Each node has its own; a volume is bound to one node.
+    NodeLocal,
+    /// Every node that reaches it sees the same files.
+    Shared,
+}
+
+impl DriverSpec {
+    /// The datastore's path, and each node's own (S14).
+    pub fn paths(&self) -> (&String, &BTreeMap<String, String>) {
+        match self {
+            DriverSpec::Dir { path, node_paths } | DriverSpec::SharedDir { path, node_paths } => {
+                (path, node_paths)
+            }
+        }
+    }
+
+    pub fn node_paths_mut(&mut self) -> &mut BTreeMap<String, String> {
+        match self {
+            DriverSpec::Dir { node_paths, .. } | DriverSpec::SharedDir { node_paths, .. } => {
+                node_paths
+            }
+        }
+    }
 }
 
 impl Datastore {
@@ -90,9 +125,19 @@ impl Datastore {
 
     /// `node`'s path to it: its override, else the datastore's path.
     pub fn path_for(&self, node: &str) -> &str {
-        match &self.driver {
-            DriverSpec::Dir { path, node_paths } => node_paths.get(node).unwrap_or(path),
+        let (path, node_paths) = self.driver.paths();
+        node_paths.get(node).unwrap_or(path)
+    }
+
+    pub fn topology(&self) -> Topology {
+        match self.driver {
+            DriverSpec::Dir { .. } => Topology::NodeLocal,
+            DriverSpec::SharedDir { .. } => Topology::Shared,
         }
+    }
+
+    pub fn is_shared(&self) -> bool {
+        self.topology() == Topology::Shared
     }
 }
 
@@ -102,7 +147,8 @@ impl Datastore {
 pub struct NodeRow {
     pub reachable: bool,
     /// Why not, when it isn't: `OutsideRoot`, `Missing`, `NotADirectory`,
-    /// `ReadOnly` or `Unsupported`.
+    /// `ReadOnly`; for a shared one also `NotEmpty` (no marker, files in
+    /// it) and `ForeignMarker` (another datastore's or cluster's, S5).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -202,13 +248,10 @@ fn validate(ds: &Datastore, others: &[Datastore], root: &Path) -> Result<(), Dat
             ds.name
         )));
     }
-    match &ds.driver {
-        DriverSpec::Dir { path, node_paths } => {
-            check_path(path, root)?;
-            for p in node_paths.values() {
-                check_path(p, root)?;
-            }
-        }
+    let (path, node_paths) = ds.driver.paths();
+    check_path(path, root)?;
+    for p in node_paths.values() {
+        check_path(p, root)?;
     }
     Ok(())
 }

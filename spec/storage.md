@@ -4,9 +4,11 @@ Status: **design (draft)**. Implemented so far:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
-  with its API, gxctl, UI and watch kind (§13).
+  with its API, gxctl, UI and watch kind (§13);
+- S3a, shared datastores (`shared-dir`) with workers and volume locks
+  (§4.4).
 
-S3 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
+S3b and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -248,6 +250,95 @@ datastore is deleted. The leader should prune them as it does image
 copies (`prune_departed_copies`).
 - Until it does, a stale row can make the scheduler try a node that is
   gone. That node is refused there anyway, as not ready.
+
+### 4.4 As built (S3a): shared datastores
+
+**Driver** `shared-dir` (`DriverSpec::SharedDir { path, node_paths }`,
+topology `Shared`):
+- proto `DATASTORE_DRIVER_SHARED_DIR` and `DATASTORE_TOPOLOGY_SHARED`;
+- gxctl `datastore create --shared`;
+- the UI form's "Shared" box.
+
+**Marker and claim** (`probe::claim`, S5):
+- `.glidex-datastore` holds `{datastore, cluster, created_at}`.
+- **Who claims:** one node only, the first by id among the datastore's
+  ready nodes, and only while no node reaches it.
+- **How:** it writes the marker into an empty directory (`lost+found`
+  aside) with `O_EXCL`.
+- **What other nodes find:**
+  - the marker of this datastore and cluster: reachable;
+  - no marker: `NoMarker`, "is it mounted on this node?";
+  - another datastore's or cluster's marker: `ForeignMarker`;
+  - files but no marker, even for the claimer: `NotEmpty`. It is never
+    claimed; `adopt` is not built.
+- **Why only one claimer:** an unmounted mount point is an empty local
+  directory. If every node could claim, a node whose mount is missing
+  would put disks only it sees. With one claimer, if the claimer's own
+  mount is missing it reaches the datastore alone ("1 of N" in the UI),
+  which is visible and fixable.
+- **Re-probing:** a node probes again when another node's row changes,
+  so the rest find the marker at once rather than a minute later.
+- The probe also makes `.locks/`.
+
+**Disks** (S6):
+- A disk on a shared datastore has no `node` (pinning one is `400`) and
+  a `worker`.
+- **Setting the worker:**
+  - at create: this node if it reaches the datastore, else the first by
+    id that does;
+  - at placement, VM create or attach: the VM's node (`Disk::bind_to`);
+  - otherwise the leader moves it in its disk round (`pick_worker`): to
+    the VM's node while placed; it keeps the worker while that node is
+    ready and reaches the datastore; else to this node, then the first
+    that reaches it.
+- `is_local_disk` means worker == this node.
+- **Node sync** (`disk_is_nodes`):
+  - a worker may write its disk's status, as a bound node may;
+  - shared disk records go to every node, so a former worker hears it
+    no longer is.
+- The proto `Disk` gains `worker` and `worker_name`; the UI's Node
+  column shows "shared · <worker>".
+- **Scheduler:** the existing `disk_reach` (§4.3) covers shared disks,
+  since they are always unbound: a VM goes to a node whose row
+  reaches the datastore.
+- **No linked clones yet:** a disk from an image on a shared datastore
+  is made `Full` (the image would have to be in the datastore, S8). The
+  shared image store is S3b.
+
+**Volume lock** (S16, §10):
+- `VolumeBinding::File` carries `lock: Option<String>`,
+  `<path>/.locks/<disk-id>.lock` on a shared datastore.
+- `StorageDriver::lock` takes an OFD write lock without waiting
+  (`glidex_vm_shim::util::try_lock_file`), and returns `Busy` when it
+  is held.
+- **Disk operations hold it:** create (`materialize`), resize, shrink,
+  extend-root and delete.
+- **The shim holds it:** `LaunchFile.volume_locks` lists the VM's shared
+  disks' locks. The shim takes each after validating the launch and
+  before the hypervisor starts, holds them until it exits, and refuses
+  the launch (`LaunchFailed`, "... is locked") if one is held.
+- QEMU opens shared disks with `locking: on`.
+- **Found while testing:** a child forked by another thread holds a
+  copy of the lock's descriptor until it execs (close-on-exec acts only
+  then), so a just-released lock can read as held for a moment. A disk
+  operation then gets `Busy` and its controller retries.
+
+**Tests:**
+- unit: `a_shared_directory_is_claimed_once_and_found_by_its_marker`,
+  `a_shared_volume_is_locked_once`, the QEMU `locking` assertion, and
+  the shim's `a_file_lock_is_held_once`;
+- shim: `a_locked_disk_stops_the_launch`;
+- API: `a_shared_datastore_is_claimed_and_its_disks_are_bound_to_no_node`;
+- cluster: `a_shared_datastore_serves_every_node_and_its_disks_follow_their_vm`.
+  Both nodes reach one directory, claimed once. The disk is made by the
+  leader as its first worker. Its worker becomes the agent when a VM on
+  the agent takes it, and the agent's launch file carries its lock.
+
+**Not built in S3a:**
+- the leader comparing nodes' `fs_id` (`Diverged`);
+- `adopt` for a non-empty directory;
+- re-placing a VM (S4) and moving a disk (S5);
+- the installer's register-and-ask step (S3b).
 
 ### 4.2 Changes to `Disk` and `Image`
 
@@ -794,7 +885,7 @@ described below; fix 5 is part of S2.
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **Implemented** (§4.3, §13 as built), as S2a (resource, API) and S2b (gxctl, UI, watch). | S1 |
-| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13) | S2 |
+| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **S3a implemented** (§4.4): all but the shared image store with linked clones and the installer step, which are **S3b**. | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |

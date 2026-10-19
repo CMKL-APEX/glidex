@@ -135,6 +135,9 @@ impl QemuDisk {
             file["cache"] = serde_json::json!({"direct": true});
             file["aio"] = "native".into();
         }
+        if self.disk.shared {
+            file["locking"] = "on".into();
+        }
         // A disk we couldn't probe is opened raw; never left to QEMU's own
         // probing, which would let a guest that writes a qcow2 header into
         // a raw disk change how it is opened next boot.
@@ -756,17 +759,21 @@ mod tests {
             path: "/disks/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,
+            lock: None,
         });
         config.data_disk_bindings = vec![
             VolumeBinding::File {
                 path: "/disks/data.qcow2".into(),
                 format: DiskFormat::Qcow2,
                 backing_files: false,
+                lock: None,
             },
+            // On a shared datastore (spec/storage.md §10).
             VolumeBinding::File {
                 path: "/disks/data.raw".into(),
                 format: DiskFormat::Raw,
                 backing_files: false,
+                lock: Some("/srv/glidex/nfs/.locks/data.lock".into()),
             },
         ];
         let args = spec(&config).args();
@@ -787,6 +794,9 @@ mod tests {
         assert!(blockdevs[1].as_object().unwrap().contains_key("backing"));
         assert!(!blockdevs[2].as_object().unwrap().contains_key("backing"));
         assert_eq!(blockdevs[2]["driver"], "raw");
+        // Image locking on for the shared disk only.
+        assert_eq!(blockdevs[2]["file"]["locking"], "on");
+        assert!(blockdevs[1]["file"].get("locking").is_none());
         assert_eq!(blockdevs[3]["file"]["filename"], "/tmp/seed,1.img");
         assert_eq!(blockdevs[3]["read-only"], true);
         let devices: Vec<&str> = values(&args, "-device")

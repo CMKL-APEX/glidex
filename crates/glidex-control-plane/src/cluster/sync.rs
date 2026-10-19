@@ -160,6 +160,12 @@ const SHARED: [TableId; 8] = [
 /// names a table it doesn't know (spec/clustering.md §6.6).
 const SHARED_DATASTORES: [TableId; 2] = [TableId::Datastores, TableId::DatastoreNodes];
 
+/// Whether `node` acts on disk `d`: bound to it, or (a shared disk, bound
+/// to none) its worker (spec/storage.md S6).
+fn disk_is_nodes(d: &Value, node: &str) -> bool {
+    d["node"] == node || (d["node"].is_null() && d["worker"] == node)
+}
+
 /// The feature level `node` reports (1 when it says nothing).
 fn node_level(db: &Db, node: &str) -> u32 {
     get_json(db, TableId::Nodes, node)
@@ -190,8 +196,12 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
                     .map(|v| placed_on(&v, node))
                     .unwrap_or(false),
                 (TableId::Vms, Op::Delete { .. }) => true,
+                // A shared disk goes to every node: when the leader moves its
+                // worker, the old one must hear it is no longer (S6).
                 (TableId::Disks, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value)
-                    .map(|v| v["node"] == node)
+                    .map(|v| {
+                        disk_is_nodes(&v, node) || (v["node"].is_null() && !v["worker"].is_null())
+                    })
                     .unwrap_or(false),
                 (TableId::Disks, Op::Delete { .. }) => true,
                 (TableId::Events, Op::Delete { .. }) => true,
@@ -215,9 +225,8 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
                     let ids: HashSet<String> = local_put.collect();
                     match key.split_once('/') {
                         Some(("vm", id)) => m.contains(id) || ids.contains(id),
-                        Some(("disk", id)) => {
-                            get_json(db, TableId::Disks, id).is_some_and(|d| d["node"] == node)
-                        }
+                        Some(("disk", id)) => get_json(db, TableId::Disks, id)
+                            .is_some_and(|d| disk_is_nodes(&d, node)),
                         _ => false,
                     }
                 }
@@ -413,7 +422,7 @@ pub fn check_status_write(
             (TableId::Disks, op) => {
                 let cur = get(TableId::Disks, key)?
                     .ok_or_else(|| format!("disk {key} does not exist"))?;
-                if cur["node"] != node {
+                if !disk_is_nodes(&cur, node) {
                     return Err(format!("disk {key} is not bound to this node"));
                 }
                 if let Op::Put { value, .. } = op {

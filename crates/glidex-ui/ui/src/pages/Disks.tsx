@@ -358,7 +358,17 @@ export default function Disks() {
                   {manyStores && <td className="px-4 py-3 text-xs font-mono">{storeName(d.datastore)}</td>}
                   {nodes.clustered && (
                     <td className="px-4 py-3 text-xs">
-                      {d.node ? <NodeName id={d.node} name={d.node_name} /> : <span className="text-gray-400" title="Bound to a node by its first VM">unbound</span>}
+                      {d.node ? (
+                        <NodeName id={d.node} name={d.node_name} />
+                      ) : d.worker ? (
+                        <span title="On a shared datastore: any node reaching it can run its VM">
+                          shared · <NodeName id={d.worker} name={d.worker_name} />
+                        </span>
+                      ) : (
+                        <span className="text-gray-400" title="Bound to a node by its first VM">
+                          unbound
+                        </span>
+                      )}
                     </td>
                   )}
                   <td className="px-4 py-3 text-xs">

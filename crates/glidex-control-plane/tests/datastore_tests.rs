@@ -393,3 +393,77 @@ async fn only_administrators_manage_datastores() {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
 }
+
+/// A shared datastore (spec/storage.md S3): claimed with its marker, disks
+/// on it bound to no node and locked while they are worked on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_datastore_is_claimed_and_its_disks_are_bound_to_no_node() {
+    let h = harness();
+    let t = h.admin("root");
+    let dir = place("nfs");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "nfs", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["datastore"]["topology"], "DATASTORE_TOPOLOGY_SHARED",
+        "{v}"
+    );
+    let id = v["datastore"]["id"].as_str().unwrap().to_string();
+    let nfs = h.probed("nfs", &t).await;
+    assert!(flag(&nfs["node_status"][0]["reachable"]), "{nfs}");
+    // This host claimed it.
+    let marker: Value =
+        serde_json::from_slice(&std::fs::read(dir.join(".glidex-datastore")).unwrap()).unwrap();
+    assert_eq!(marker["datastore"], id.as_str());
+
+    // Bound to no node, so a node can't be named.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "pinned", "size_gib": 1, "datastore": "nfs", "node": "local"})),
+            &t,
+        )
+        .await;
+    assert!(s.is_client_error(), "{s} {v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "sd", "size_gib": 1, "datastore": "nfs"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let sd = h.ready_disk("sd", &t).await;
+    assert!(sd["node"].is_null(), "{sd}");
+    let file = PathBuf::from(sd["path"].as_str().unwrap());
+    assert_eq!(file.parent().unwrap(), dir.join("disks"), "{sd}");
+    // Its lock file was made (and held) while the disk was made (S16).
+    let lock = dir
+        .join(".locks")
+        .join(format!("{}.lock", sd["id"].as_str().unwrap()));
+    assert!(lock.exists(), "{}", lock.display());
+
+    // A directory with files and no marker is never claimed.
+    let busy = place("busy");
+    std::fs::write(busy.join("someone-elses"), b"x").unwrap();
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "busy", "path": busy, "driver": "DATASTORE_DRIVER_SHARED_DIR"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let b = h.probed("busy", &t).await;
+    assert_eq!(b["node_status"][0]["reason"], "NotEmpty", "{b}");
+    assert!(!busy.join(".glidex-datastore").exists());
+}

@@ -194,6 +194,34 @@ impl ImageManager {
             )));
         }
         disk.datastore = ds.id.clone();
+        if ds.is_shared() {
+            // Bound to no node: its VM may run on any node that reaches it.
+            if disk.node.is_some() {
+                return Err(ImageError::invalid_disk(format!(
+                    "datastore {} is shared: a disk on it is bound to no node",
+                    ds.name
+                )));
+            }
+            // Its image would have to be in the datastore too: S3b.
+            if let DiskOrigin::Image { mode, .. } = &mut disk.origin {
+                *mode = CloneMode::Full;
+            }
+            // Made by this node if it reaches the datastore, else by one that
+            // does; the leader moves it later as needed (S6).
+            let rows = record::rows(&self.db, &ds.id).map_err(io)?;
+            let me = self.node_id.load();
+            let mut ok: Vec<&String> = rows
+                .iter()
+                .filter(|(n, r)| r.reachable && ds.on_node(n))
+                .map(|(n, _)| n)
+                .collect();
+            ok.sort();
+            disk.worker = if ok.iter().any(|n| **n == **me) {
+                Some(me.to_string())
+            } else {
+                ok.first().map(|n| n.to_string())
+            };
+        }
         if ds.overcommit {
             return Ok(());
         }
@@ -263,6 +291,8 @@ impl ImageManager {
         });
         let mut disk = disk.clone();
         let driver = self.driver(&disk)?;
+        // Held while it is made: no other node touches it (S16).
+        let _lock = driver.lock(&disk)?;
         if driver.exists(&disk) {
             let made = driver.binding(&disk);
             let info = qemu_img::info(made.path(), Some(disk.format))?;
@@ -346,7 +376,11 @@ impl ImageManager {
     /// Remove a disk's file after its record is gone. Failures are logged:
     /// the file stays as an orphan (spec §6.5).
     pub fn remove_disk_file(&self, disk: &Disk) {
-        if let Err(e) = self.driver(disk).and_then(|d| d.delete_volume(disk)) {
+        let gone = self.driver(disk).and_then(|d| {
+            let _lock = d.lock(disk)?;
+            d.delete_volume(disk)
+        });
+        if let Err(e) = gone {
             tracing::warn!(disk = %disk.name, "could not remove disk file: {}", e);
         }
     }
@@ -379,7 +413,9 @@ impl ImageManager {
         extend_root: Option<bool>,
     ) -> Result<(Disk, Option<ExtendOutcome>, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.driver(&disk)?.stage(&disk)?.path().to_path_buf();
+        let driver = self.driver(&disk)?;
+        let _lock = driver.lock(&disk)?;
+        let path = driver.stage(&disk)?.path().to_path_buf();
         let new_size = round_up(new_size, MIB);
         if new_size == disk.size_bytes {
             return Ok((disk, None, vec!["size unchanged".into()]));
@@ -512,7 +548,9 @@ impl ImageManager {
         mode: ExtendMode,
     ) -> Result<(Disk, ExtendOutcome, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.driver(&disk)?.stage(&disk)?.path().to_path_buf();
+        let driver = self.driver(&disk)?;
+        let _lock = driver.lock(&disk)?;
+        let path = driver.stage(&disk)?.path().to_path_buf();
         let (outcome, warnings) = self.extend_root_at(&path, &mut disk, mode)?;
         self.put_disk(&disk)?;
         Ok((disk, outcome, warnings))

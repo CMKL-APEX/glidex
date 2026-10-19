@@ -212,6 +212,7 @@ impl VmManager {
             cpu_affinity: Vec::new(),
             vcpu_pins: Vec::new(),
             job: true,
+            volume_locks: Vec::new(),
         }
         .write(&paths.launch)
         .map_err(|e| e.to_string())?;

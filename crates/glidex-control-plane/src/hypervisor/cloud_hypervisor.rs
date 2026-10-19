@@ -389,11 +389,13 @@ mod tests {
             path: "/disks/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,
+            lock: None,
         });
         c.data_disk_bindings = vec![VolumeBinding::File {
             path: "/disks/data.raw".into(),
             format: DiskFormat::Raw,
             backing_files: false,
+            lock: None,
         }];
         assert_eq!(
             values(&args(&c, "/s"), "--disk"),
@@ -553,6 +555,7 @@ mod tests {
             path: "/nonexistent/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,
+            lock: None,
         });
         c.nic_bindings = vec![NicBinding {
             id: "net0".into(),

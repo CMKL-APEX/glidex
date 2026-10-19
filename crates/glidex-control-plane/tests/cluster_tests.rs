@@ -2045,6 +2045,89 @@ async fn a_disk_on_a_datastore_goes_where_the_datastore_is() {
     .await;
 }
 
+/// A shared datastore (spec/storage.md S3): claimed by one node and found
+/// by the other through its marker; a disk on it is bound to no node, made
+/// by its worker, and its worker follows the VM that uses it (S6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_shared_datastore_serves_every_node_and_its_disks_follow_their_vm() {
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let agent_id = agent.manager.local_node_id();
+    let server_id = server.manager.local_node_id();
+    let dir = root.join(format!("nfs-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).unwrap();
+
+    let body = json!({ "name": "nfs", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR" });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+        if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        break;
+    }
+    wait_for("both nodes reaching it", || async {
+        let (_, v) = call(&server, "GET", "/datastores/nfs", None, &[]).await;
+        v["datastore"]["node_status"]
+            .as_array()
+            .is_some_and(|r| r.len() == 2 && r.iter().all(|r| r["reachable"] == true))
+    })
+    .await;
+    assert!(dir.join(".glidex-datastore").exists());
+
+    // Made by its first worker, bound to no node.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "sd", "project": project, "size_gib": 1, "datastore": "nfs" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let id = d["disk"]["id"].as_str().unwrap().to_string();
+    assert!(d["disk"]["node"].is_null(), "{d}");
+    assert_eq!(
+        d["disk"]["worker"],
+        server_id.as_str(),
+        "the leader reaches it: {d}"
+    );
+    let file = dir.join("disks").join(format!("{id}.qcow2"));
+    wait_for("the disk's file", || async { file.exists() }).await;
+
+    // A VM on the agent takes it: its worker becomes the agent; the disk
+    // stays bound to no node.
+    let mut vm = vm_body("on-nfs", "agent1");
+    vm["data_disks"] = json!(["sd"]);
+    let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let disk = server.manager.images().get_disk(&id).unwrap();
+    assert_eq!(disk.worker.as_deref(), Some(agent_id.as_str()), "{disk:?}");
+    assert!(disk.node.is_none());
+    // The agent knows it is now its own, and the server that it isn't.
+    wait_for("the agent's copy naming it the worker", || async {
+        agent
+            .manager
+            .images()
+            .get_disk(&id)
+            .is_ok_and(|d| d.worker.as_deref() == Some(agent_id.as_str()))
+    })
+    .await;
+
+    // Started, the VM's shim holds the disk's lock (S16).
+    let vm_id = vm_of(&v)["id"].as_str().unwrap().to_string();
+    let (s, r) = call(&server, "POST", &format!("/vms/{vm_id}/start"), None, &[]).await;
+    assert!(s.is_success(), "{s} {r}");
+    let launch = wait_for_launch_file(&agent, &vm_id).await;
+    let lock = dir.join(".locks").join(format!("{id}.lock"));
+    assert_eq!(launch["volume_locks"], json!([lock]), "{launch}");
+}
+
 /// The datastore root of this test process (spec/storage.md S11), set once.
 fn datastore_root() -> &'static std::path::Path {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();

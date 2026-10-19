@@ -1100,15 +1100,40 @@ impl VmManager {
         let Ok(all) = record::list(&db) else { return };
         let root = record::root();
         let now = crate::tenancy::now();
+        let cluster = self
+            .cluster()
+            .map(|c| c.identity.cluster_id.clone())
+            .unwrap_or_default();
+        let ready: Vec<String> = match self.cluster() {
+            None => vec![me.clone()],
+            Some(_) => self
+                .nodes()
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| {
+                    !n.status.phase.is_tombstone()
+                        && n.status.ready == crate::models::Tristate::True
+                })
+                .map(|n| n.meta.id)
+                .collect(),
+        };
         for ds in all {
-            let old = record::rows(&db, &ds.id)
-                .ok()
-                .and_then(|mut r| r.remove(&me));
+            let rows = record::rows(&db, &ds.id).unwrap_or_default();
+            let old = rows.get(&me).cloned();
+            // One node claims a new shared directory: the first of its ready
+            // nodes, and only while none reaches it (probe::claim).
+            let may_claim = !rows.values().any(|r| r.reachable)
+                && ready
+                    .iter()
+                    .filter(|n| ds.on_node(n))
+                    .min()
+                    .is_some_and(|n| *n == me);
             let new = if ds.is_builtin() {
                 // `local` is the disk directory, wherever it is.
                 probe::probe_dir(&self.images.settings.disk_dir, now)
             } else if ds.on_node(&me) {
-                probe::probe(&ds, &me, &root, now)
+                probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {
                 if old.is_some() {
                     let _ = record::put_row(&db, &ds.id, &me, None);
@@ -1286,6 +1311,13 @@ impl VmManager {
 
     /// Whether this node owns `disk`'s file: bound here, or (standalone) unbound.
     pub(crate) fn is_local_disk(&self, disk: &Disk) -> bool {
+        // A shared disk is bound to no node: its worker acts on it (S6).
+        if disk.node.is_none() && self.images.is_shared(disk) {
+            return match &disk.worker {
+                Some(w) => *w == self.local_node_id(),
+                None => self.cluster().is_none(),
+            };
+        }
         match &disk.node {
             Some(n) => *n == self.local_node_id(),
             None => self.cluster().is_none(),
@@ -1449,7 +1481,15 @@ impl VmManager {
                     }
                     // A datastore added or changed: look at it now rather
                     // than at the next minute.
-                    if a.tables.contains(&crate::store::TableId::Datastores) {
+                    // Or another node's view changed (it claimed a shared
+                    // one, say): look again too. Rows are written only when
+                    // they change, so this settles.
+                    let me = self.local_node_id();
+                    let others_rows = a.keys.iter().any(|(t, k)| {
+                        *t == crate::store::TableId::DatastoreNodes
+                            && !String::from_utf8_lossy(k).ends_with(&format!("/{me}"))
+                    });
+                    if a.tables.contains(&crate::store::TableId::Datastores) || others_rows {
                         let m = self.clone();
                         tokio::task::spawn_blocking(move || m.probe_datastores());
                     }
@@ -2284,10 +2324,12 @@ impl VmManager {
         }
         if let Some(p) = &vm.status.placement {
             for d in &mut disks {
-                d.node.get_or_insert_with(|| p.node.clone());
+                let shared = self.images.is_shared(d);
+                d.bind_to(&p.node, shared);
             }
             if let Some(c) = created.as_mut() {
-                c.node.get_or_insert_with(|| p.node.clone());
+                let shared = self.images.is_shared(c);
+                c.bind_to(&p.node, shared);
             }
         }
 
@@ -2869,12 +2911,18 @@ impl VmManager {
                             d.name
                         )));
                     }
-                    let needs_bind = d.node.is_none() && vm_node.is_some();
+                    let shared = self.images.is_shared(&d);
+                    let needs_bind = vm_node.is_some()
+                        && if shared {
+                            d.worker != vm_node
+                        } else {
+                            d.node.is_none()
+                        };
                     if d.attached_to.as_deref() != Some(vm_id) || needs_bind {
                         let mut d = d;
                         d.attached_to = Some(vm_id.to_string());
-                        if needs_bind {
-                            d.node = vm_node;
+                        if let (true, Some(n)) = (needs_bind, &vm_node) {
+                            d.bind_to(n, shared);
                         }
                         disk_writes.push(d);
                     }
