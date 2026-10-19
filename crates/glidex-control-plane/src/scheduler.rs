@@ -1234,6 +1234,7 @@ mod tests {
             page_kib: c.page_kib,
             numa_node: c.numa_node,
             cpus: c.cpus.clone(),
+            ..Default::default()
         }
     }
 
@@ -1368,6 +1369,7 @@ mod tests {
             name: "first".into(),
             devices: vec![path.into()],
             page_kib: SMALL_PAGE_KIB,
+            ..Default::default()
         }]);
         let nodes = vec![
             (gpu("a"), held.get("a").cloned().unwrap()),

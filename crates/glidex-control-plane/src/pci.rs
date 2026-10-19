@@ -114,6 +114,7 @@ mod tests {
             class_id: class.into(),
             driver: None,
             iommu_group: group.map(Into::into),
+            numa_node: None,
             sysfs_path: format!("{PCI_DEVICES_PATH}/{address}"),
         }
     }
