@@ -1,7 +1,7 @@
 # Datastores
 
-Status: **design (draft)**. Nothing here is implemented. The milestones
-are S0–S7 (§16), and the open questions are in §17. The edits this
+Status: **design (draft)**. Only S0's fixes 1–4 (§15) are implemented;
+the rest is design. The milestones are S0–S7 (§16), and the open questions are in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
 yet**.
 
@@ -514,31 +514,48 @@ Per-datastore quotas are §17 Q4.
 
 These were found while writing this document. Each one assumes every
 node looks like the server that answered the request, and datastores
-would make each of them worse.
+would make each of them worse. Fixes 1–4 are **implemented**, as
+described below; fix 5 is part of S2.
 
 1. **The firmware path is the server's.**
    - `state.rs:1565` stores `firmware_path` as an absolute path under the
      creating server's `image_dir`.
    - `controller/vm.rs:910-923` uses it as is on the placed node.
    - Launch doesn't wait for that node's firmware copy.
-   - Fix: store only `firmware_image`, resolve the path on the node at
-     launch, and wait on the image copy as disks wait on `DisksReady`.
+   - Fix, as built: the stored `firmware_path` is kept (the API shows
+     it), but launch replaces it with the placed node's copy
+     (`firmware_binding`, `state.rs`). Until that copy exists, the VM
+     waits with `DisksReady=False`, like a disk that isn't ready.
+   - Test: `cluster_tests.rs::a_vm_boots_through_its_nodes_copy_of_the_firmware`.
 2. **Shrink and extend-root read a remote file.**
    - `state.rs:2998` (`shrink_minimum`) and `state.rs:3052`
      (`partition::read_table`) read the disk file on the answering
      server.
    - Disk APIs are not relayed to the disk's node, so they fail for a
      disk bound elsewhere.
-   - Fix: §8.2.
+   - Fix, as built: the early check runs only where the file is
+     (`is_local_disk`). Elsewhere the request is recorded, and the disk's
+     node reports `ResizeInvalid` or the `ExtendRootFailed` event, which
+     it already did. The worker rule of §8.1 comes with S3.
+   - Test: `cluster_tests.rs::disk_edits_are_checked_on_the_disks_node`.
 3. **`CreateDiskRequest.node` isn't resolved.**
    - It is documented as id or name, but stored raw
      (`images/disk.rs:190`).
    - A name never matches `local_node_id()`, so the disk is never made.
-   - Fix: resolve and validate it like `VmSpec.node`.
+   - Fix, as built: resolved like `VmSpec.node` (`resolve_node`), and an
+     unknown node is `400`.
+   - Test: in `cluster_tests.rs::the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself`.
 4. **Linked overlays use absolute backing paths.**
    - `qemu_img::create` is passed `image_path` (`images/disk.rs:265`).
    - Correct only while `GLIDEX_IMAGE_DIR` is the same on every node.
-   - Fix: a relative backing path for new overlays (S8).
+   - Fix, as built: new overlays name the image relative to the disk
+     directory (`paths::relative_to`), and existing overlays are left as
+     they are.
+   - Checked on a host: Cloud Hypervisor v53 and QEMU resolve the path
+     from the overlay's directory, not their working directory. The
+     ignored boot tests `catalog_image_boots_and_root_grows` (both
+     hypervisors) pass through it.
+   - Test: `image_tests.rs::download_verify_then_linked_and_full_disks`.
 5. **No storage capacity anywhere.** Nodes report no free space and the
    scheduler doesn't look at it. §5.2 adds it.
 
@@ -546,7 +563,7 @@ would make each of them worse.
 
 | # | Content | Depends on |
 |---|---|---|
-| S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name) | — |
+| S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver` and `local` created by migration. `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. | S0 |
 | S2 | The `Datastore` resource, `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, and the CH lock **(verify)** | S2 |
