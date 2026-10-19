@@ -500,9 +500,18 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(d["origin"]["image"]["image_id"], img["id"], "{d}");
     let (_, detail) = request(&app, "GET", "/disks/web-root", None).await;
     let detail = disk_of(&detail);
+    // The overlay names its image relative to itself (spec/storage.md S8).
+    let backing = detail["info"]["backing_filename"].as_str().unwrap();
+    assert!(backing.starts_with("../"), "{detail}");
+    let linked_dir = PathBuf::from(d["path"].as_str().unwrap());
     assert_eq!(
-        detail["info"]["backing_filename"],
-        img_path.to_str().unwrap(),
+        linked_dir
+            .parent()
+            .unwrap()
+            .join(backing)
+            .canonicalize()
+            .unwrap(),
+        img_path.canonicalize().unwrap(),
         "{detail}"
     );
     let parts = detail["partition_table"]["partitions"].as_array().unwrap();
