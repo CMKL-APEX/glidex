@@ -19,6 +19,7 @@ pub(crate) mod nodes;
 mod rates;
 pub mod relay;
 mod rpc;
+mod scim;
 mod storage;
 mod tenants;
 pub(crate) use rates::live_vm_stats;
@@ -122,6 +123,8 @@ struct AuditSlot(Arc<Mutex<AuditInfo>>);
 
 /// Route actions that aren't Cedar actions.
 pub const PUBLIC: &str = "public";
+/// Largest SCIM body (spec/tenancy.md §8.1).
+const SCIM_BODY: usize = 1 << 20;
 /// Any authenticated principal; the handler scopes the result itself.
 pub const AUTHENTICATED: &str = "authenticated";
 
@@ -1009,6 +1012,83 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageScimTokens",
         delete(connectors::revoke_scim_token),
     )
+    // SCIM 2.0 (spec/tenancy.md §8.1): its own bearer tokens, checked by
+    // the handlers; bodies up to 1 MiB.
+    .add(
+        "GET",
+        "/scim/v2/c/{id}/ServiceProviderConfig",
+        PUBLIC,
+        get(scim::service_provider_config),
+    )
+    .add("GET", "/scim/v2/c/{id}/Schemas", PUBLIC, get(scim::schemas))
+    .add(
+        "GET",
+        "/scim/v2/c/{id}/ResourceTypes",
+        PUBLIC,
+        get(scim::resource_types),
+    )
+    .add("GET", "/scim/v2/c/{id}/Users", PUBLIC, get(scim::users))
+    .add(
+        "POST",
+        "/scim/v2/c/{id}/Users",
+        PUBLIC,
+        post(scim::users).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "GET",
+        "/scim/v2/c/{id}/Users/{uid}",
+        PUBLIC,
+        get(scim::user),
+    )
+    .add(
+        "PUT",
+        "/scim/v2/c/{id}/Users/{uid}",
+        PUBLIC,
+        put(scim::user).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "PATCH",
+        "/scim/v2/c/{id}/Users/{uid}",
+        PUBLIC,
+        axum::routing::patch(scim::user).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "DELETE",
+        "/scim/v2/c/{id}/Users/{uid}",
+        PUBLIC,
+        delete(scim::user),
+    )
+    .add("GET", "/scim/v2/c/{id}/Groups", PUBLIC, get(scim::groups))
+    .add(
+        "POST",
+        "/scim/v2/c/{id}/Groups",
+        PUBLIC,
+        post(scim::groups).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "GET",
+        "/scim/v2/c/{id}/Groups/{gid}",
+        PUBLIC,
+        get(scim::group),
+    )
+    .add(
+        "PUT",
+        "/scim/v2/c/{id}/Groups/{gid}",
+        PUBLIC,
+        put(scim::group).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "PATCH",
+        "/scim/v2/c/{id}/Groups/{gid}",
+        PUBLIC,
+        axum::routing::patch(scim::group).layer(axum::extract::DefaultBodyLimit::max(SCIM_BODY)),
+    )
+    .add(
+        "DELETE",
+        "/scim/v2/c/{id}/Groups/{gid}",
+        PUBLIC,
+        delete(scim::group),
+    )
     .add(
         "GET",
         "/admissions",
@@ -1341,8 +1421,13 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         }
     }
 
+    // SCIM (spec/tenancy.md §8.1): the IdP's `gxs_` token is the SCIM
+    // handlers' to check; it is no principal of the API.
+    let scim = req.uri().path().starts_with("/scim/v2/");
     let principal = if app.auth.is_disabled() {
         Some(Principal::system())
+    } else if scim {
+        None
     } else {
         let resolved = match listener {
             Listener::Api => match req.extensions().get::<PeerUid>() {
@@ -2078,6 +2163,21 @@ mod tests {
                 "/auth/c/{id}/callback",
                 "/auth/c/{id}/device",
                 "/auth/c/{id}/device/poll",
+                "/scim/v2/c/{id}/ServiceProviderConfig",
+                "/scim/v2/c/{id}/Schemas",
+                "/scim/v2/c/{id}/ResourceTypes",
+                "/scim/v2/c/{id}/Users",
+                "/scim/v2/c/{id}/Users",
+                "/scim/v2/c/{id}/Users/{uid}",
+                "/scim/v2/c/{id}/Users/{uid}",
+                "/scim/v2/c/{id}/Users/{uid}",
+                "/scim/v2/c/{id}/Users/{uid}",
+                "/scim/v2/c/{id}/Groups",
+                "/scim/v2/c/{id}/Groups",
+                "/scim/v2/c/{id}/Groups/{gid}",
+                "/scim/v2/c/{id}/Groups/{gid}",
+                "/scim/v2/c/{id}/Groups/{gid}",
+                "/scim/v2/c/{id}/Groups/{gid}",
             ]
         );
 

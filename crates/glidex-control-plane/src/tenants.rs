@@ -128,6 +128,32 @@ pub struct Member {
     pub at: u64,
 }
 
+/// [`TenantStore::add_member`] inside another store's write (a SCIM
+/// request, spec/tenancy.md §8.1). A tenant that isn't there is skipped.
+pub(crate) fn add_member_in(
+    tx: &crate::store::Tx<'_>,
+    tenant: &str,
+    principal: Ent,
+    by: &str,
+) -> Result<(), crate::auth::store::StoreError> {
+    if tx.open_table(TENANTS)?.get(tenant)?.is_none() {
+        tracing::warn!("connector tenant {tenant} is gone: its new user joins no tenant");
+        return Ok(());
+    }
+    let mut t = tx.open_table(MEMBERS)?;
+    let key = member_key(tenant, &principal);
+    if t.get(key.as_str())?.is_none() {
+        let m = Member {
+            tenant_id: tenant.into(),
+            principal,
+            by: by.into(),
+            at: now(),
+        };
+        t.insert(key.as_str(), serde_json::to_vec(&m)?.as_slice())?;
+    }
+    Ok(())
+}
+
 fn member_key(tenant: &str, principal: &Ent) -> String {
     format!("{}/{}:{}", tenant, principal.type_name(), principal.id())
 }
