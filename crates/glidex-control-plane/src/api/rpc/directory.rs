@@ -96,6 +96,18 @@ impl ConnectorService for Svc {
         op!(self, ctx, req, directory::revoke_scim_token)
     }
 
+    async fn sync_connector(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SyncConnectorRequest>,
+    ) -> ServiceResult<SyncConnectorResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            directory::sync_connector(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
     async fn test_connector(
         &self,
         ctx: RequestContext,

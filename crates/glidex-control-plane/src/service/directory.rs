@@ -111,6 +111,12 @@ pub fn to_pb(call: &Call, c: &Connector) -> ServiceResult<pb::Connector> {
         token_max_days: c.token_max_days.map(|d| d as u32),
         provisioning: Some(c.provisioning.as_str().into()),
         group_mode: Some(c.group_mode.as_str().into()),
+        sync: c.sync.as_ref().map(sync_settings_pb).into(),
+        sync_status: (!c.provisioning.is_none() || c.sync.is_some())
+            .then(|| call.auth().sync_status.get(&c.id).ok().flatten())
+            .flatten()
+            .map(|s| sync_status_pb(&s))
+            .into(),
         settings: Some(settings),
         secrets: secrets
             .into_iter()
@@ -256,6 +262,103 @@ pub fn get_connector(
     let c = get_visible(call, &req.id)?;
     Ok(pb::GetConnectorResponse {
         connector: to_pb(call, &c)?.into(),
+        ..Default::default()
+    })
+}
+
+fn sync_settings_pb(s: &dir::SyncSettings) -> pb::SyncSettings {
+    pb::SyncSettings {
+        interval_minutes: s.interval_minutes,
+        max_disable: s.max_disable,
+        admin_email: s.admin_email.clone(),
+        groups: s.groups.clone(),
+        ssh_keys_field: s.ssh_keys_field.clone(),
+        ..Default::default()
+    }
+}
+
+fn sync_settings_of(p: &pb::SyncSettings) -> dir::SyncSettings {
+    dir::SyncSettings {
+        interval_minutes: p.interval_minutes,
+        max_disable: p.max_disable,
+        admin_email: p.admin_email.trim().to_ascii_lowercase(),
+        groups: p
+            .groups
+            .iter()
+            .map(|g| g.trim().to_ascii_lowercase())
+            .filter(|g| !g.is_empty())
+            .collect(),
+        ssh_keys_field: p.ssh_keys_field.clone().filter(|f| !f.trim().is_empty()),
+    }
+}
+
+fn sync_status_pb(s: &dir::sync::SyncStatus) -> pb::SyncStatus {
+    use dir::sync::SyncState as S;
+    pb::SyncStatus {
+        state: match s.state {
+            S::Ok => pb::SyncState::SYNC_STATE_OK,
+            S::Failed => pb::SyncState::SYNC_STATE_FAILED,
+            S::Blocked => pb::SyncState::SYNC_STATE_BLOCKED,
+        }
+        .into(),
+        started_at: ts(s.started_at).into(),
+        finished_at: ts(s.finished_at).into(),
+        changes: pb::SyncChanges {
+            created: s.changes.created as u32,
+            adopted: s.changes.adopted as u32,
+            updated: s.changes.updated as u32,
+            disabled: s.changes.disabled as u32,
+            enabled: s.changes.enabled as u32,
+            ..Default::default()
+        }
+        .into(),
+        error: s.error.clone(),
+        would_disable: s.would_disable.clone(),
+        last_applied_at: s.last_applied_at.map(ts).into(),
+        ..Default::default()
+    }
+}
+
+/// A pull now (§8.2); `confirm` applies one the safety stop blocked (D46),
+/// which takes `confirmConnectorSync` as well.
+pub async fn sync_connector(
+    call: &Call,
+    req: pb::SyncConnectorRequest,
+) -> ServiceResult<pb::SyncConnectorResponse> {
+    call.require(directory_ent(), EntitySet::new())?;
+    let c = get_visible(call, &req.id)?;
+    let confirm = req.confirm == Some(true);
+    if confirm {
+        call.with_action("confirmConnectorSync")
+            .require(directory_ent(), EntitySet::new())?;
+    }
+    if c.provisioning != dir::Provisioning::Pull {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "not_pulled",
+            format!("connector {} isn't provisioned by a pull", c.id),
+        ));
+    }
+    let source = dir::sync::source_for(call.auth(), &c).ok_or_else(|| {
+        ServiceError::new(
+            StatusCode::CONFLICT,
+            "no_source",
+            format!("connector {} has nothing to pull from yet", c.id),
+        )
+    })?;
+    call.set_target(format!("connector:{}", c.id));
+    let status = dir::sync::run(call.auth(), &c, source.as_ref(), confirm, &call.request_id)
+        .await
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::CONFLICT,
+                "sync_running",
+                "a run of this connector is going already",
+            )
+        })?;
+    call.detail("state", serde_json::json!(status.state));
+    Ok(pb::SyncConnectorResponse {
+        status: sync_status_pb(&status).into(),
         ..Default::default()
     })
 }
@@ -417,6 +520,7 @@ pub fn create_connector(
         token_max_days: p.token_max_days.map(u64::from),
         provisioning: provisioning_of(p.provisioning.as_deref())?,
         group_mode: group_mode_of(p.group_mode.as_deref())?,
+        sync: p.sync.as_option().map(sync_settings_of),
         settings,
         source: Source::Api,
         created_at: now,
@@ -474,6 +578,7 @@ pub fn update_connector(
             "token_max_days" => c.token_max_days = p.token_max_days.map(u64::from),
             "provisioning" => c.provisioning = provisioning_of(p.provisioning.as_deref())?,
             "group_mode" => c.group_mode = group_mode_of(p.group_mode.as_deref())?,
+            "sync" => c.sync = p.sync.as_option().map(sync_settings_of),
             "pam" | "oidc" | "google" | "jumpcloud" => {
                 let s = p.settings.as_ref().ok_or_else(|| {
                     ServiceError::new(
@@ -534,6 +639,7 @@ pub fn delete_connector(
         .scim_tokens
         .remove_for(&c.id)
         .map_err(scim_token_err)?;
+    let _ = call.auth().sync_status.remove(&c.id);
     let (users, teams) = call
         .auth()
         .store

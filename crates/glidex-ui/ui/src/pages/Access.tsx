@@ -116,6 +116,8 @@ function disabledWhy(r: string | undefined): string {
   switch (r) {
     case "scim":
       return "Its IdP deactivated or removed it; it is enabled again there";
+    case "sync":
+      return "Its directory pull found it suspended, archived, gone, or out of the connector's groups; it comes back with them";
     case "connector_deleted":
       return "Its connector was deleted";
     case "admin":
@@ -241,7 +243,7 @@ export default function Access() {
                     <td className="py-2">
                       {u.disabled ? (
                         <span title={disabledWhy(u.disabled_reason)}>
-                          <Badge kind="denied">{u.disabled_reason === "scim" ? "disabled by its IdP" : "disabled"}</Badge>
+                          <Badge kind="denied">{u.disabled_reason === "scim" || u.disabled_reason === "sync" ? "disabled by its IdP" : "disabled"}</Badge>
                         </span>
                       ) : (
                         <Badge kind="ok">active</Badge>

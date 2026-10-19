@@ -17,6 +17,7 @@ pub mod presets;
 pub mod scim;
 pub mod scim_tokens;
 pub mod secrets;
+pub mod sync;
 
 pub use presets::google::GoogleSettings;
 pub use presets::jumpcloud::JumpcloudSettings;
@@ -199,6 +200,9 @@ pub struct Connector {
     /// How provisioned groups become teams (D18, D43).
     #[serde(default, skip_serializing_if = "GroupMode::is_mapped")]
     pub group_mode: GroupMode,
+    /// What and how often a pull reads (`provisioning: pull`, §8.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncSettings>,
     /// Kind-specific, see [`PamSettings`] and [`OidcSettings`].
     #[serde(default)]
     pub settings: serde_json::Value,
@@ -221,6 +225,9 @@ pub enum Provisioning {
     None,
     /// The IdP pushes them over SCIM 2.0 (§8.1); only they log in (D41).
     Scim,
+    /// glidex reads them from the IdP's directory (§8.2); only they log
+    /// in (D44).
+    Pull,
 }
 
 impl Provisioning {
@@ -232,6 +239,7 @@ impl Provisioning {
         match self {
             Provisioning::None => "none",
             Provisioning::Scim => "scim",
+            Provisioning::Pull => "pull",
         }
     }
 
@@ -239,8 +247,87 @@ impl Provisioning {
         match s {
             "" | "none" => Some(Provisioning::None),
             "scim" => Some(Provisioning::Scim),
+            "pull" => Some(Provisioning::Pull),
             _ => None,
         }
+    }
+}
+
+/// A pull's settings (spec/tenancy.md §8.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncSettings {
+    /// Minutes between runs (default 15, at least 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_minutes: Option<u32>,
+    /// The most a run may disable, as a percentage of the managed users
+    /// (default 10); up to [`SYNC_DISABLE_FLOOR`] are always allowed (D46).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_disable: Option<u32>,
+    /// Google: the administrator the service account acts as (D47).
+    #[serde(default)]
+    pub admin_email: String,
+    /// Google: the groups whose members are the managed users (D44).
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// Google: `<schema>.<field>`, a custom schema field with SSH keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_keys_field: Option<String>,
+}
+
+pub const SYNC_DEFAULT_MINUTES: u32 = 15;
+pub const SYNC_MIN_MINUTES: u32 = 5;
+pub const SYNC_DEFAULT_MAX_DISABLE: u32 = 10;
+/// A run may always disable this many (D46).
+pub const SYNC_DISABLE_FLOOR: usize = 5;
+pub const SYNC_MAX_GROUPS: usize = 50;
+
+impl SyncSettings {
+    pub fn interval_minutes(&self) -> u32 {
+        self.interval_minutes.unwrap_or(SYNC_DEFAULT_MINUTES)
+    }
+
+    /// How many of `managed` users a run may disable (D46).
+    pub fn disable_limit(&self, managed: usize) -> usize {
+        let pct = self.max_disable.unwrap_or(SYNC_DEFAULT_MAX_DISABLE) as usize;
+        (managed * pct / 100).max(SYNC_DISABLE_FLOOR)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.interval_minutes() < SYNC_MIN_MINUTES {
+            return Err(format!(
+                "sync.interval_minutes is at least {SYNC_MIN_MINUTES}"
+            ));
+        }
+        if self.max_disable.is_some_and(|m| m == 0 || m > 100) {
+            return Err("sync.max_disable is a percentage, 1-100".into());
+        }
+        let email = |e: &str| {
+            e.split_once('@')
+                .is_some_and(|(l, d)| !l.is_empty() && d.contains('.'))
+                && !e.contains(char::is_whitespace)
+        };
+        if !email(&self.admin_email) {
+            return Err(
+                "sync.admin_email is the Workspace administrator the service account acts as"
+                    .into(),
+            );
+        }
+        if self.groups.is_empty() || self.groups.len() > SYNC_MAX_GROUPS {
+            return Err(format!(
+                "sync.groups names 1-{SYNC_MAX_GROUPS} Google groups (by email): their members are who the pull brings in"
+            ));
+        }
+        if let Some(g) = self.groups.iter().find(|g| !email(g)) {
+            return Err(format!("sync.groups: {g:?} isn't a group email"));
+        }
+        if let Some(f) = &self.ssh_keys_field
+            && !f
+                .split_once('.')
+                .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && !b.contains('.'))
+        {
+            return Err("sync.ssh_keys_field is <schema>.<field>".into());
+        }
+        Ok(())
     }
 }
 
@@ -481,7 +568,33 @@ impl Connector {
                 ));
             }
         }
-        if self.group_mode == GroupMode::Auto && self.provisioning != Provisioning::Scim {
+        if self.provisioning == Provisioning::Pull {
+            // T4 pulls from Google Workspace only (§8.2).
+            let workspace = self.kind == Kind::Google
+                && self
+                    .google()
+                    .is_ok_and(|g| g.accounts == presets::google::Accounts::Workspace);
+            if !workspace {
+                return Err(ConnectorError::Invalid(
+                    "a pull reads a Google Workspace directory: a google connector with accounts workspace".into(),
+                ));
+            }
+            if self.jit {
+                return Err(ConnectorError::Invalid(
+                    "a pulled connector creates users by its pull only: turn jit off".into(),
+                ));
+            }
+            self.sync
+                .as_ref()
+                .ok_or_else(|| ConnectorError::Invalid("a pull needs sync settings".into()))?
+                .validate()
+                .map_err(ConnectorError::Invalid)?;
+        } else if self.sync.is_some() {
+            return Err(ConnectorError::Invalid(
+                "sync settings are for provisioning pull".into(),
+            ));
+        }
+        if self.group_mode == GroupMode::Auto && self.provisioning.is_none() {
             return Err(ConnectorError::Invalid(
                 "group_mode auto is for a provisioned connector (D43)".into(),
             ));
@@ -542,6 +655,7 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
             token_max_days: None,
             provisioning: Default::default(),
             group_mode: Default::default(),
+            sync: None,
             settings: serde_json::json!({ "allowed_groups": pam.allowed_groups }),
             source: Source::File,
             created_at: 0,
@@ -564,6 +678,7 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
             token_max_days: None,
             provisioning: Default::default(),
             group_mode: Default::default(),
+            sync: None,
             settings: serde_json::json!({
                 "issuer": o.issuer, "client_id": o.client_id, "scopes": o.scopes, "groups_claim": o.groups_claim,
                 "allowed_domains": o.allowed_domains, "redirect_uri": o.redirect_uri,
@@ -881,6 +996,7 @@ mod tests {
             token_max_days: None,
             provisioning: Default::default(),
             group_mode: Default::default(),
+            sync: None,
             settings: serde_json::json!({ "issuer": "https://idp.example", "client_id": "glidex" }),
             source: Source::Api,
             created_at: 0,

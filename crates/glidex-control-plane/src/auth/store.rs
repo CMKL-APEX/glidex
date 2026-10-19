@@ -140,6 +140,8 @@ pub enum DisabledReason {
     Scim,
     /// Its connector was deleted.
     ConnectorDeleted,
+    /// A pull found it gone, out of the groups, suspended or archived (D45).
+    Sync,
 }
 
 impl DisabledReason {
@@ -148,6 +150,7 @@ impl DisabledReason {
             DisabledReason::Admin => "admin",
             DisabledReason::Scim => "scim",
             DisabledReason::ConnectorDeleted => "connector_deleted",
+            DisabledReason::Sync => "sync",
         }
     }
 }
@@ -478,6 +481,15 @@ impl IdentityStore {
             .collect())
     }
 
+    /// Every identity of `provider` (a connector's logins).
+    pub fn identities_of_provider(&self, provider: &str) -> Result<Vec<Identity>, StoreError> {
+        Ok(list::<Identity>(&self.db, IDENTITIES)?
+            .into_iter()
+            .map(|(_, i)| i)
+            .filter(|i| i.provider == provider)
+            .collect())
+    }
+
     pub fn put_identity(&self, i: &Identity) -> Result<(), StoreError> {
         put(
             &self.db,
@@ -683,6 +695,28 @@ impl IdentityStore {
         subject: &str,
         verified_email: Option<&str>,
     ) -> Result<Option<User>, StoreError> {
+        self.managed_login(connector, provider, subject, verified_email, true)
+    }
+
+    /// D44: as [`scim_login`](Self::scim_login), by the subject only (a
+    /// pull keys its users by the IdP's id, which logins carry).
+    pub fn pull_login(
+        &self,
+        connector: &str,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<User>, StoreError> {
+        self.managed_login(connector, provider, subject, None, false)
+    }
+
+    fn managed_login(
+        &self,
+        connector: &str,
+        provider: &str,
+        subject: &str,
+        verified_email: Option<&str>,
+        by_email: bool,
+    ) -> Result<Option<User>, StoreError> {
         self.scim(connector, |tx| {
             let ours = |u: &User| u.managed.as_ref().is_some_and(|m| m.connector == connector);
             let key = Identity::key(provider, subject);
@@ -714,6 +748,9 @@ impl IdentityStore {
                 })
                 .collect());
             let by_email = || {
+                if !by_email {
+                    return None;
+                }
                 let e = verified_email?;
                 one(free
                     .iter()

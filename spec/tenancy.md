@@ -120,7 +120,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D43 | SCIM groups | Every SCIM group is kept (`scim_groups`: id, `displayName`, members), so the IdP's view round-trips. With `group_mode: auto` each group is a managed team (`managed_by`, `external_id` = the group's id, named after `displayName`); with `mapped`, members of a group named in `group_teams` (by `displayName` or id) are members of that team. Those memberships have `source: connector:<id>`, for enabled managed users only, and never replace a manual one. A group that is deleted leaves its `auto` team in place, unmanaged and without the connector's members, so the team's role links give nobody anything until an administrator decides. A SCIM connector doesn't sync groups at login (§6 step 2): SCIM is their source. | One source per membership; an unmapped group isn't an error, since IdPs push whatever is assigned. |
 | D44 | Who a pull brings in | A pulled connector names **Google groups**. Their members, nested groups' members included, are its **managed users**. They are keyed by the Directory API user `id`, which is the subject Google's ID tokens carry, so `external_id == sub` and a login is matched exactly, with no email match. Logins through it reach managed users only (as D41): no JIT, no invitations. A user who logged in before the pull, with that subject, is adopted. Nobody outside the groups gets an account. | Pulling a whole Workspace domain would give every employee a user; the groups the administrator names are who is meant to use glidex. |
 | D45 | Leaving, in a pull | A managed user no longer in the groups, or **suspended** or **archived** in Google, or deleted there, is disabled (D20, `disabled_reason: sync`) and stays managed. One back in the groups and active is enabled again, unless an administrator disabled it. | A pull sees only the current state, so leaving and a group change look alike; staying managed lets the person come back without an administrator, while D20 closes the access at once. |
-| D46 | A pull that fails or would remove many | An error from Google (or one it can't read) changes nothing: the run is recorded as failed and the next one tries again. A run that would disable more than `sync.max_disable` of the managed users (default 10 %, at least 5) applies nothing else either and sets the connector `blocked` until a directory administrator confirms that run (`POST /connectors/{id}/sync {confirm: true}`). | An outage, a renamed group or an expired key must never read as "everyone left". |
+| D46 | A pull that fails or would remove many | An error from Google (or one it can't read) changes nothing: the run is recorded as failed and the next one tries again. A run that would disable more than `sync.max_disable` of the managed users (default 10 %, at least 5) applies nothing else either and sets the connector `blocked` until a directory administrator confirms (`POST /connectors/{id}/sync {confirm: true}`, a step-up action): that runs once more, reading the directory again, without the stop. | An outage, a renamed group or an expired key must never read as "everyone left". |
 | D47 | Google credentials | A **service account** with **domain-wide delegation**, granted only the read-only scopes `admin.directory.user.readonly` and `admin.directory.group.readonly`, impersonating `sync.admin_email` (a Workspace administrator, or a delegated admin with directory read). Its JSON key is the connector's write-only secret `service_account_key`, sealed like the client secret (§13); access tokens are kept in memory only. | The Directory API is read only through an administrator's delegated identity. Keyless workload identity federation needs glidex to be an issuer Google trusts (T5, T6). |
 
 ## 3. Threat model additions
@@ -522,7 +522,7 @@ workspace`). LDAP, Microsoft Graph and GitHub sources are later (T4b,
   error (Google's message, never a token), and for `blocked` the users
   it would disable. `GET /connectors/{id}` carries it; `POST
   /connectors/{id}/sync` answers the run's status (`{confirm: true}`
-  applies a blocked run). Every applied change is audited as
+  runs once without the stop, D46). Every applied change is audited as
   `system:sync:<connector_id>`.
 - **Google's API.** A JWT signed with the key (RS256: `iss` the service
   account, `sub` `sync.admin_email`, the two scopes) is exchanged at
@@ -1418,7 +1418,8 @@ T5–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0, T1, T2 and T3 are implemented; T4 is in progress (its tasks in §18);
+T0, T1, T2 and T3 are implemented; T4 is in progress (its tasks in §18,
+the status below);
 T2b, T4b and T5–T7 are not started. What
 follows is per milestone.
 
@@ -1634,4 +1635,16 @@ Task 5, docs and the UI e2e:
 | Operator guide | `operator-guide/authentication.md`, "Provisioning with SCIM": the connector, tokens, JumpCloud's Identity Management, what deactivating and removing do; "Making the endpoint reachable": a reverse proxy, or a Tailscale Funnel of the SCIM path alone (Funnel publishes only ports 443, 8443 and 10000, so it fronts the web UI's 5173) |
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
 | UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
+
+**T4** (pull sync from Google Workspace) is in progress. Task 2, the runs:
+
+| Spec | Code |
+|---|---|
+| Settings (§8.2) | `directory::{Provisioning::Pull, SyncSettings}` (`interval_minutes` ≥ 5, `max_disable`, `admin_email`, `groups` 1–50, `ssh_keys_field`); `Connector::validate`: a Workspace `google` connector, `jit` off; proto `Connector.{sync, sync_status}`, `SyncSettings`, `SyncStatus`; gxctl `--provisioning pull --sync-admin … --sync-group …` |
+| Runs | `directory/sync.rs`: a `Source` reads a `Snapshot` (users, groups with members); `plan` (who is in, `Op`s, the groups by glidex id); `apply` through `ScimTx` in writes of ≤ 500, then the groups and D43's teams; `spawn`: due connectors every 30 s where writes go (`can_write`); one run per connector at a time |
+| D44 | `IdentityStore::pull_login` (subject only); `Op::Adopt` for a user who logged in before; a suspended person without an account gets none |
+| D45 | `DisabledReason::Sync`; `Op::Disable` (D20) and `Op::Enable` (only what the pull disabled) |
+| D46 | the source's errors record `failed` and change nothing; more than `disable_limit` (10 %, at least 5) records `blocked` with `would_disable`; `SyncConnector {confirm}` (`confirmConnectorSync`, step-up) runs once without the stop |
+| Status and API | `connector_sync` (directory scope, `SyncStatusStore`); `ConnectorService.SyncConnector` (`syncConnector`), `POST /connectors/{id}/sync`; audited as `system:sync:<id>`; gxctl `connector sync <id> [--confirm]`, `connector show` |
+| Tests | `sync.rs` unit tests; `connector_tests.rs::a_pull_follows_the_directory_and_stops_before_removing_many` (a fake source: `AuthService::set_sync_source`) |
 

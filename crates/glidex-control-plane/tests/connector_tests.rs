@@ -3324,3 +3324,289 @@ async fn scim_adopts_jit_users_and_maps_groups_to_teams() {
     }
     assert!(limited, "the rate limit holds");
 }
+
+/// A pull source for tests: whatever the test sets, or an error.
+struct FakeSource(
+    std::sync::Mutex<Result<glidex_control_plane::directory::sync::Snapshot, String>>,
+);
+
+#[async_trait::async_trait]
+impl glidex_control_plane::directory::sync::Source for FakeSource {
+    async fn read(
+        &self,
+        _: &AuthService,
+        _: &glidex_control_plane::directory::Connector,
+    ) -> Result<
+        glidex_control_plane::directory::sync::Snapshot,
+        glidex_control_plane::directory::sync::SyncError,
+    > {
+        self.0
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(glidex_control_plane::directory::sync::SyncError::Source)
+    }
+}
+
+fn gsu(id: &str, active: bool) -> glidex_control_plane::directory::sync::SourceUser {
+    glidex_control_plane::directory::sync::SourceUser {
+        id: id.into(),
+        email: format!("{id}@corp.example"),
+        display_name: Some(format!("User {id}")),
+        given_name: None,
+        family_name: None,
+        active,
+        ssh_keys: vec![],
+    }
+}
+
+fn ggroup(id: &str, members: &[&str]) -> glidex_control_plane::directory::sync::SourceGroup {
+    glidex_control_plane::directory::sync::SourceGroup {
+        id: format!("gid-{id}"),
+        email: format!("{id}@corp.example"),
+        name: id.into(),
+        members: members.iter().map(|m| m.to_string()).collect(),
+    }
+}
+
+/// spec/tenancy.md §8.2, D44–D46, with a fake directory: a pull brings in
+/// the groups' members, logins reach them by subject, leaving disables,
+/// a run that would disable many waits for a confirmation, and a failing
+/// source changes nothing.
+#[tokio::test]
+async fn a_pull_follows_the_directory_and_stops_before_removing_many() {
+    use glidex_control_plane::directory::sync::Snapshot;
+    let mock = idp::start().await;
+    let h = harness();
+    let workspace = json!({"accounts": "GOOGLE_ACCOUNTS_WORKSPACE", "domains": ["corp.example"]});
+    // Logins first, with JIT: one person has a user before the pull.
+    let (st, v) = h
+        .google_connector(&mock, "gw", workspace.clone(), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "gw",
+            google_claims(&mock, "legacy", "legacy@corp.example", Some("corp.example"))
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    let legacy = h
+        .app
+        .auth
+        .store
+        .identity("conn:gw", "legacy")
+        .unwrap()
+        .unwrap()
+        .user_id;
+    let admin = h.admin("pull-admin");
+    let s = h.session(&admin);
+    let hr = &h;
+    let sr = s.clone();
+    let set = |extra: Value| {
+        let sr = sr.clone();
+        async move {
+            hr.rest(
+                "PATCH",
+                "/connectors/gw",
+                Some(json!({"connector": extra})),
+                &sr,
+            )
+            .await
+        }
+    };
+    let sync = json!({"admin_email": "admin@corp.example", "groups": ["eng@corp.example", "ops@corp.example"]});
+    // A pull is a Workspace google connector's, with JIT off and its settings.
+    let (st, v) = set(json!({"provisioning": "pull", "sync": sync})).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "jit still on: {v}");
+    let (st, v) = set(json!({"provisioning": "pull", "jit": false})).await;
+    assert_eq!(
+        st,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "no sync settings: {v}"
+    );
+    let (st, v) = set(json!({"provisioning": "pull", "jit": false, "group_mode": "auto",
+        "sync": {"admin_email": "admin@corp.example", "groups": ["eng@corp.example"], "interval_minutes": 2}})).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "too often: {v}");
+    let (st, v) =
+        set(json!({"provisioning": "pull", "jit": false, "group_mode": "auto", "sync": sync}))
+            .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["connector"]["sync"]["groups"][1], "ops@corp.example");
+
+    let src = Arc::new(FakeSource(std::sync::Mutex::new(Err("not set".into()))));
+    h.app.auth.set_sync_source(Some(src.clone()));
+    let snap = |users: Vec<_>, groups: Vec<_>| Ok(Snapshot { users, groups });
+    *src.0.lock().unwrap() = snap(
+        vec![
+            gsu("ada", true),
+            gsu("bob", true),
+            gsu("legacy", true),
+            gsu("outsider", true),
+        ],
+        vec![
+            ggroup("eng", &["ada", "bob"]),
+            ggroup("ops", &["legacy", "ada"]),
+        ],
+    );
+    let run = |confirm: bool, who: String| async move {
+        hr.rest(
+            "POST",
+            "/connectors/gw/sync",
+            Some(json!({"confirm": confirm})),
+            &who,
+        )
+        .await
+    };
+    let (st, v) = run(false, s.clone()).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["status"]["state"], "SYNC_STATE_OK", "{v}");
+    assert_eq!(
+        (
+            v["status"]["changes"]["created"].as_u64(),
+            v["status"]["changes"]["adopted"].as_u64()
+        ),
+        (Some(2), Some(1)),
+        "{v}"
+    );
+    let store = &h.app.auth.store;
+    let by_ext = |ext: &str| {
+        store
+            .users()
+            .unwrap()
+            .into_iter()
+            .find(|u| u.managed.as_ref().and_then(|m| m.external_id.as_deref()) == Some(ext))
+    };
+    let ada = by_ext("ada").unwrap();
+    assert_eq!(
+        (ada.display_name.as_str(), ada.email.as_deref()),
+        ("User ada", Some("ada@corp.example"))
+    );
+    assert_eq!(
+        by_ext("legacy").unwrap().id,
+        legacy,
+        "adopted, not made twice"
+    );
+    assert!(by_ext("outsider").is_none(), "in no named group");
+    // `auto`: a team per group, with its members.
+    let eng = store.team("gid-eng").unwrap().unwrap();
+    assert_eq!(eng.name, "eng");
+    assert_eq!(eng.members.len(), 2);
+
+    // D44: logins reach the pulled users, by subject; nobody else.
+    let claims = |sub: &str| {
+        google_claims(
+            &mock,
+            sub,
+            &format!("{sub}@corp.example"),
+            Some("corp.example"),
+        )
+    };
+    assert_eq!(
+        h.login_with(&mock, "gw", claims("ada")).await,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        store.identity("conn:gw", "ada").unwrap().unwrap().user_id,
+        ada.id
+    );
+    assert_eq!(
+        h.login_with(&mock, "gw", claims("outsider")).await,
+        StatusCode::FORBIDDEN
+    );
+
+    // D45: suspended in Google, and out of the groups: disabled, at once.
+    let bob = by_ext("bob").unwrap();
+    let bob_token = h.token(&bob.id);
+    *src.0.lock().unwrap() = snap(
+        vec![gsu("ada", true), gsu("bob", false), gsu("legacy", true)],
+        vec![ggroup("eng", &["ada", "bob"]), ggroup("ops", &["ada"])],
+    );
+    let (_, v) = run(false, s.clone()).await;
+    assert_eq!(v["status"]["changes"]["disabled"].as_u64(), Some(2), "{v}");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let l = store.user(&legacy).unwrap().unwrap();
+    assert!(
+        l.disabled && l.managed.is_some(),
+        "disabled, still the pull's"
+    );
+    assert_eq!(l.disabled_reason, Some(auth::store::DisabledReason::Sync));
+    // Back: enabled again.
+    *src.0.lock().unwrap() = snap(
+        vec![gsu("ada", true), gsu("bob", true), gsu("legacy", true)],
+        vec![ggroup("eng", &["ada", "bob"]), ggroup("ops", &["legacy"])],
+    );
+    let (_, v) = run(false, s.clone()).await;
+    assert_eq!(v["status"]["changes"]["enabled"].as_u64(), Some(2), "{v}");
+    assert!(!store.user(&legacy).unwrap().unwrap().disabled);
+
+    // D46: a run that would disable more than allowed waits.
+    let many: Vec<_> = (0..10).map(|i| gsu(&format!("m{i}"), true)).collect();
+    let names: Vec<String> = (0..10).map(|i| format!("m{i}")).collect();
+    let refs: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .chain(["ada", "bob", "legacy"])
+        .collect();
+    let mut users = many.clone();
+    users.extend([gsu("ada", true), gsu("bob", true), gsu("legacy", true)]);
+    *src.0.lock().unwrap() = snap(users.clone(), vec![ggroup("eng", &refs)]);
+    let (_, v) = run(false, s.clone()).await;
+    assert_eq!(v["status"]["changes"]["created"].as_u64(), Some(10), "{v}");
+    // An empty group (a renamed one, say) must not read as "everyone left".
+    *src.0.lock().unwrap() = snap(users.clone(), vec![ggroup("eng", &[])]);
+    let (_, v) = run(false, s.clone()).await;
+    assert_eq!(v["status"]["state"], "SYNC_STATE_BLOCKED", "{v}");
+    assert_eq!(v["status"]["would_disable"].as_array().unwrap().len(), 13);
+    assert!(
+        !store.user(&ada.id).unwrap().unwrap().disabled,
+        "nothing applied"
+    );
+    let (_, c) = h.rest("GET", "/connectors/gw", None, &s).await;
+    assert_eq!(c["connector"]["sync_status"]["state"], "SYNC_STATE_BLOCKED");
+    // Confirming is a step-up action.
+    let (st, v) = run(true, h.token(&admin)).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("reauth_required")),
+        "{v}"
+    );
+    let (_, v) = run(true, s.clone()).await;
+    assert_eq!(
+        (
+            v["status"]["state"].as_str(),
+            v["status"]["changes"]["disabled"].as_u64()
+        ),
+        (Some("SYNC_STATE_OK"), Some(13)),
+        "{v}"
+    );
+    assert!(store.user(&ada.id).unwrap().unwrap().disabled);
+
+    // A failing source changes nothing, and says why.
+    *src.0.lock().unwrap() = Err("Google said 403: not authorized".into());
+    let (_, v) = run(false, s.clone()).await;
+    assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED");
+    assert!(v["status"]["error"].as_str().unwrap().contains("403"));
+    assert!(
+        v["status"]["last_applied_at"].is_string(),
+        "the last good run is kept: {v}"
+    );
+
+    // Audited as the pull.
+    let (_, a) = h.rest("GET", "/audit?limit=200", None, &s).await;
+    assert!(a.to_string().contains("system:sync:gw"));
+    // Only pulled connectors sync.
+    let (st, _) = h
+        .rest("POST", "/connectors", Some(json!({"connector": {"id": "plainoidc", "oidc": {"issuer": mock.base, "client_id": "x"}}})), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (st, v) = h.rest("POST", "/connectors/plainoidc/sync", None, &s).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("not_pulled"))
+    );
+    h.app.auth.set_sync_source(None);
+}

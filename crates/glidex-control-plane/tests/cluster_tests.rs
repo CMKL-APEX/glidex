@@ -4823,6 +4823,7 @@ async fn the_secrets_key_rotates_on_every_server() {
         token_max_days: None,
         provisioning: Default::default(),
         group_mode: Default::default(),
+        sync: None,
         settings: json!({"issuer": "https://idp.example", "client_id": "glidex"}),
         source: Source::Api,
         created_at: 0,

@@ -16,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/directory/v1/connectors.proto.
  */
 export const file_glidex_directory_v1_connectors: GenFile = /*@__PURE__*/
-  fileDesc("CiRnbGlkZXgvZGlyZWN0b3J5L3YxL2Nvbm5lY3RvcnMucHJvdG8SE2dsaWRleC5kaXJlY3RvcnkudjEijwgKCUNvbm5lY3RvchIKCgJpZBgBIAEoCRIiCgxkaXJlY3RvcnlfaWQYAiABKAlSDGRpcmVjdG9yeV9pZBIMCgRraW5kGAMgASgJEiIKDGRpc3BsYXlfbmFtZRgEIAEoCVIMZGlzcGxheV9uYW1lEhQKB2VuYWJsZWQYBSABKAhIAYgBARIQCgNqaXQYBiABKAhIAogBARIoCg9yZXF1aXJlZF9ncm91cHMYByADKAlSD3JlcXVpcmVkX2dyb3VwcxIlCgtyZXF1aXJlX21mYRgIIAEoCEgDUgtyZXF1aXJlX21mYYgBARJQCgtncm91cF90ZWFtcxgJIAMoCzIuLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yLkdyb3VwVGVhbXNFbnRyeVILZ3JvdXBfdGVhbXMSKwoOZGVmYXVsdF90ZW5hbnQYCiABKAlIBFIOZGVmYXVsdF90ZW5hbnSIAQESKwoOdG9rZW5fbWF4X2RheXMYCyABKA1IBVIOdG9rZW5fbWF4X2RheXOIAQESGQoMcHJvdmlzaW9uaW5nGBQgASgJSAaIAQESIwoKZ3JvdXBfbW9kZRgVIAEoCUgHUgpncm91cF9tb2RliAEBEi8KA3BhbRgMIAEoCzIgLmdsaWRleC5kaXJlY3RvcnkudjEuUGFtU2V0dGluZ3NIABIxCgRvaWRjGA0gASgLMiEuZ2xpZGV4LmRpcmVjdG9yeS52MS5PaWRjU2V0dGluZ3NIABI1CgZnb29nbGUYEiABKAsyIy5nbGlkZXguZGlyZWN0b3J5LnYxLkdvb2dsZVNldHRpbmdzSAASOwoJanVtcGNsb3VkGBMgASgLMiYuZ2xpZGV4LmRpcmVjdG9yeS52MS5KdW1wY2xvdWRTZXR0aW5nc0gAEjIKB3NlY3JldHMYDiADKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLlNlY3JldFN0YXR1cxIOCgZzb3VyY2UYDyABKAkSOgoKY3JlYXRlZF9hdBgQIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCmNyZWF0ZWRfYXQSOgoKdXBkYXRlZF9hdBgRIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCnVwZGF0ZWRfYXQaMQoPR3JvdXBUZWFtc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAFCCgoIc2V0dGluZ3NCCgoIX2VuYWJsZWRCBgoEX2ppdEIOCgxfcmVxdWlyZV9tZmFCEQoPX2RlZmF1bHRfdGVuYW50QhEKD190b2tlbl9tYXhfZGF5c0IPCg1fcHJvdmlzaW9uaW5nQg0KC19ncm91cF9tb2RlIjUKC1BhbVNldHRpbmdzEiYKDmFsbG93ZWRfZ3JvdXBzGAEgAygJUg5hbGxvd2VkX2dyb3VwcyL8AQoMT2lkY1NldHRpbmdzEg4KBmlzc3VlchgBIAEoCRIcCgljbGllbnRfaWQYAiABKAlSCWNsaWVudF9pZBIOCgZzY29wZXMYAyADKAkSIgoMZ3JvdXBzX2NsYWltGAQgASgJUgxncm91cHNfY2xhaW0SKAoPYWxsb3dlZF9kb21haW5zGAUgAygJUg9hbGxvd2VkX2RvbWFpbnMSJwoMcmVkaXJlY3RfdXJpGAYgASgJSABSDHJlZGlyZWN0X3VyaYgBARImCg5tZmFfYWNyX3ZhbHVlcxgHIAMoCVIObWZhX2Fjcl92YWx1ZXNCDwoNX3JlZGlyZWN0X3VyaSLvAgoOR29vZ2xlU2V0dGluZ3MSNQoIYWNjb3VudHMYASABKA4yIy5nbGlkZXguZGlyZWN0b3J5LnYxLkdvb2dsZUFjY291bnRzEhwKCWNsaWVudF9pZBgCIAEoCVIJY2xpZW50X2lkEg8KB2RvbWFpbnMYAyADKAkSJgoOYWxsb3dlZF9lbWFpbHMYBCADKAlSDmFsbG93ZWRfZW1haWxzEi8KEGRldmljZV9jbGllbnRfaWQYBSABKAlIAFIQZGV2aWNlX2NsaWVudF9pZIgBARIhCgl0cnVzdF8yc3YYBiABKAhIAVIJdHJ1c3RfMnN2iAEBEicKDHJlZGlyZWN0X3VyaRgHIAEoCUgCUgxyZWRpcmVjdF91cmmIAQESEwoGaXNzdWVyGAggASgJSAOIAQFCEwoRX2RldmljZV9jbGllbnRfaWRCDAoKX3RydXN0XzJzdkIPCg1fcmVkaXJlY3RfdXJpQgkKB19pc3N1ZXIi7QEKEUp1bXBjbG91ZFNldHRpbmdzEhwKCWNsaWVudF9pZBgBIAEoCVIJY2xpZW50X2lkEicKDGdyb3Vwc19jbGFpbRgCIAEoCUgAUgxncm91cHNfY2xhaW2IAQESJgoOYWxsb3dlZF9lbWFpbHMYAyADKAlSDmFsbG93ZWRfZW1haWxzEicKDHJlZGlyZWN0X3VyaRgEIAEoCUgBUgxyZWRpcmVjdF91cmmIAQESEwoGaXNzdWVyGAUgASgJSAKIAQFCDwoNX2dyb3Vwc19jbGFpbUIPCg1fcmVkaXJlY3RfdXJpQgkKB19pc3N1ZXIicwoMU2VjcmV0U3RhdHVzEg0KBWZpZWxkGAEgASgJEhAKA3NldBgCIAEoCEgAiAEBEjoKCnVwZGF0ZWRfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgp1cGRhdGVkX2F0QgYKBF9zZXQiFwoVTGlzdENvbm5lY3RvcnNSZXF1ZXN0IkwKFkxpc3RDb25uZWN0b3JzUmVzcG9uc2USMgoKY29ubmVjdG9ycxgBIAMoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIiEKE0dldENvbm5lY3RvclJlcXVlc3QSCgoCaWQYASABKAkiSQoUR2V0Q29ubmVjdG9yUmVzcG9uc2USMQoJY29ubmVjdG9yGAEgASgLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiSwoWQ3JlYXRlQ29ubmVjdG9yUmVxdWVzdBIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciJMChdDcmVhdGVDb25uZWN0b3JSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciKVAQoWVXBkYXRlQ29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCRIxCgljb25uZWN0b3IYAiABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvchI8Cgt1cGRhdGVfbWFzaxgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE1hc2tSC3VwZGF0ZV9tYXNrIkwKF1VwZGF0ZUNvbm5lY3RvclJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIkIKFkRlbGV0ZUNvbm5lY3RvclJlcXVlc3QSCgoCaWQYASABKAkSEgoFdXNlcnMYAiABKAlIAIgBAUIICgZfdXNlcnMiNwoXRGVsZXRlQ29ubmVjdG9yUmVzcG9uc2USDQoFdXNlcnMYASABKA0SDQoFdGVhbXMYAiABKA0iQgoQU2V0U2VjcmV0UmVxdWVzdBIKCgJpZBgBIAEoCRINCgVmaWVsZBgCIAEoCRITCgV2YWx1ZRgDIAEoCUIE0OkYASJGChFTZXRTZWNyZXRSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciIiChRUZXN0Q29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCSJFChVUZXN0Q29ubmVjdG9yUmVzcG9uc2USLAoFc3RlcHMYASADKAsyHS5nbGlkZXguZGlyZWN0b3J5LnYxLlRlc3RTdGVwIkEKCFRlc3RTdGVwEgwKBG5hbWUYASABKAkSDwoCb2sYAiABKAhIAIgBARIPCgdtZXNzYWdlGAMgASgJQgUKA19vayK9AQoJU2NpbVRva2VuEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSHgoKY3JlYXRlZF9ieRgDIAEoCVIKY3JlYXRlZF9ieRI6CgpjcmVhdGVkX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBI6CgpleHBpcmVzX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKZXhwaXJlc19hdCIjChVMaXN0U2NpbVRva2Vuc1JlcXVlc3QSCgoCaWQYASABKAkiVgoWTGlzdFNjaW1Ub2tlbnNSZXNwb25zZRIuCgZ0b2tlbnMYASADKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLlNjaW1Ub2tlbhIMCgRwYXRoGAIgASgJIk4KFkNyZWF0ZVNjaW1Ub2tlblJlcXVlc3QSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIRCgRkYXlzGAMgASgNSACIAQFCBwoFX2RheXMiZgoXQ3JlYXRlU2NpbVRva2VuUmVzcG9uc2USLQoFdG9rZW4YASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLlNjaW1Ub2tlbhIOCgZzZWNyZXQYAiABKAkSDAoEcGF0aBgDIAEoCSIzChZSZXZva2VTY2ltVG9rZW5SZXF1ZXN0EgoKAmlkGAEgASgJEg0KBXRva2VuGAIgASgJIhkKF1Jldm9rZVNjaW1Ub2tlblJlc3BvbnNlKmkKDkdvb2dsZUFjY291bnRzEh8KG0dPT0dMRV9BQ0NPVU5UU19VTlNQRUNJRklFRBAAEh0KGUdPT0dMRV9BQ0NPVU5UU19XT1JLU1BBQ0UQARIXChNHT09HTEVfQUNDT1VOVFNfQU5ZEAIy2AwKEENvbm5lY3RvclNlcnZpY2USkgEKDkxpc3RDb25uZWN0b3JzEiouZ2xpZGV4LmRpcmVjdG9yeS52MS5MaXN0Q29ubmVjdG9yc1JlcXVlc3QaKy5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RDb25uZWN0b3JzUmVzcG9uc2UiJ8rpGCMKDmxpc3RDb25uZWN0b3JzEAEaD0dFVCAvY29ubmVjdG9ycxKQAQoMR2V0Q29ubmVjdG9yEiguZ2xpZGV4LmRpcmVjdG9yeS52MS5HZXRDb25uZWN0b3JSZXF1ZXN0GikuZ2xpZGV4LmRpcmVjdG9yeS52MS5HZXRDb25uZWN0b3JSZXNwb25zZSIryukYJwoNcmVhZENvbm5lY3RvchABGhRHRVQgL2Nvbm5lY3RvcnMve2lkfRKXAQoPQ3JlYXRlQ29ubmVjdG9yEisuZ2xpZGV4LmRpcmVjdG9yeS52MS5DcmVhdGVDb25uZWN0b3JSZXF1ZXN0GiwuZ2xpZGV4LmRpcmVjdG9yeS52MS5DcmVhdGVDb25uZWN0b3JSZXNwb25zZSIpyukYJQoPY3JlYXRlQ29ubmVjdG9yEAIaEFBPU1QgL2Nvbm5lY3RvcnMSnQEKD1VwZGF0ZUNvbm5lY3RvchIrLmdsaWRleC5kaXJlY3RvcnkudjEuVXBkYXRlQ29ubmVjdG9yUmVxdWVzdBosLmdsaWRleC5kaXJlY3RvcnkudjEuVXBkYXRlQ29ubmVjdG9yUmVzcG9uc2UiL8rpGCsKD3VwZGF0ZUNvbm5lY3RvchACGhZQQVRDSCAvY29ubmVjdG9ycy97aWR9Ep4BCg9EZWxldGVDb25uZWN0b3ISKy5nbGlkZXguZGlyZWN0b3J5LnYxLkRlbGV0ZUNvbm5lY3RvclJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLkRlbGV0ZUNvbm5lY3RvclJlc3BvbnNlIjDK6RgsCg9kZWxldGVDb25uZWN0b3IQAhoXREVMRVRFIC9jb25uZWN0b3JzL3tpZH0SnAEKCVNldFNlY3JldBIlLmdsaWRleC5kaXJlY3RvcnkudjEuU2V0U2VjcmV0UmVxdWVzdBomLmdsaWRleC5kaXJlY3RvcnkudjEuU2V0U2VjcmV0UmVzcG9uc2UiQMrpGDwKEnNldENvbm5lY3RvclNlY3JldBACGiRQVVQgL2Nvbm5lY3RvcnMve2lkfS9zZWNyZXRzL3tmaWVsZH0SowEKDkxpc3RTY2ltVG9rZW5zEiouZ2xpZGV4LmRpcmVjdG9yeS52MS5MaXN0U2NpbVRva2Vuc1JlcXVlc3QaKy5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RTY2ltVG9rZW5zUmVzcG9uc2UiOMrpGDQKDnJlYWRTY2ltVG9rZW5zEAEaIEdFVCAvY29ubmVjdG9ycy97aWR9L3NjaW0tdG9rZW5zEqkBCg9DcmVhdGVTY2ltVG9rZW4SKy5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZVNjaW1Ub2tlblJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZVNjaW1Ub2tlblJlc3BvbnNlIjvK6Rg3ChBtYW5hZ2VTY2ltVG9rZW5zEAIaIVBPU1QgL2Nvbm5lY3RvcnMve2lkfS9zY2ltLXRva2VucxKzAQoPUmV2b2tlU2NpbVRva2VuEisuZ2xpZGV4LmRpcmVjdG9yeS52MS5SZXZva2VTY2ltVG9rZW5SZXF1ZXN0GiwuZ2xpZGV4LmRpcmVjdG9yeS52MS5SZXZva2VTY2ltVG9rZW5SZXNwb25zZSJFyukYQQoQbWFuYWdlU2NpbVRva2VucxACGitERUxFVEUgL2Nvbm5lY3RvcnMve2lkfS9zY2ltLXRva2Vucy97dG9rZW59EpkBCg1UZXN0Q29ubmVjdG9yEikuZ2xpZGV4LmRpcmVjdG9yeS52MS5UZXN0Q29ubmVjdG9yUmVxdWVzdBoqLmdsaWRleC5kaXJlY3RvcnkudjEuVGVzdENvbm5lY3RvclJlc3BvbnNlIjHK6RgtCg10ZXN0Q29ubmVjdG9yEAEaGlBPU1QgL2Nvbm5lY3RvcnMve2lkfS90ZXN0YgZwcm90bzM", [file_glidex_api_v1_options, file_google_protobuf_field_mask, file_google_protobuf_timestamp]);
+  fileDesc("CiRnbGlkZXgvZGlyZWN0b3J5L3YxL2Nvbm5lY3RvcnMucHJvdG8SE2dsaWRleC5kaXJlY3RvcnkudjEigwkKCUNvbm5lY3RvchIKCgJpZBgBIAEoCRIiCgxkaXJlY3RvcnlfaWQYAiABKAlSDGRpcmVjdG9yeV9pZBIMCgRraW5kGAMgASgJEiIKDGRpc3BsYXlfbmFtZRgEIAEoCVIMZGlzcGxheV9uYW1lEhQKB2VuYWJsZWQYBSABKAhIAYgBARIQCgNqaXQYBiABKAhIAogBARIoCg9yZXF1aXJlZF9ncm91cHMYByADKAlSD3JlcXVpcmVkX2dyb3VwcxIlCgtyZXF1aXJlX21mYRgIIAEoCEgDUgtyZXF1aXJlX21mYYgBARJQCgtncm91cF90ZWFtcxgJIAMoCzIuLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yLkdyb3VwVGVhbXNFbnRyeVILZ3JvdXBfdGVhbXMSKwoOZGVmYXVsdF90ZW5hbnQYCiABKAlIBFIOZGVmYXVsdF90ZW5hbnSIAQESKwoOdG9rZW5fbWF4X2RheXMYCyABKA1IBVIOdG9rZW5fbWF4X2RheXOIAQESGQoMcHJvdmlzaW9uaW5nGBQgASgJSAaIAQESIwoKZ3JvdXBfbW9kZRgVIAEoCUgHUgpncm91cF9tb2RliAEBEi8KBHN5bmMYFiABKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLlN5bmNTZXR0aW5ncxJBCgtzeW5jX3N0YXR1cxgXIAEoCzIfLmdsaWRleC5kaXJlY3RvcnkudjEuU3luY1N0YXR1c1ILc3luY19zdGF0dXMSLwoDcGFtGAwgASgLMiAuZ2xpZGV4LmRpcmVjdG9yeS52MS5QYW1TZXR0aW5nc0gAEjEKBG9pZGMYDSABKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLk9pZGNTZXR0aW5nc0gAEjUKBmdvb2dsZRgSIAEoCzIjLmdsaWRleC5kaXJlY3RvcnkudjEuR29vZ2xlU2V0dGluZ3NIABI7CglqdW1wY2xvdWQYEyABKAsyJi5nbGlkZXguZGlyZWN0b3J5LnYxLkp1bXBjbG91ZFNldHRpbmdzSAASMgoHc2VjcmV0cxgOIAMoCzIhLmdsaWRleC5kaXJlY3RvcnkudjEuU2VjcmV0U3RhdHVzEg4KBnNvdXJjZRgPIAEoCRI6CgpjcmVhdGVkX2F0GBAgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBI6Cgp1cGRhdGVkX2F0GBEgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKdXBkYXRlZF9hdBoxCg9Hcm91cFRlYW1zRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4AUIKCghzZXR0aW5nc0IKCghfZW5hYmxlZEIGCgRfaml0Qg4KDF9yZXF1aXJlX21mYUIRCg9fZGVmYXVsdF90ZW5hbnRCEQoPX3Rva2VuX21heF9kYXlzQg8KDV9wcm92aXNpb25pbmdCDQoLX2dyb3VwX21vZGUiNQoLUGFtU2V0dGluZ3MSJgoOYWxsb3dlZF9ncm91cHMYASADKAlSDmFsbG93ZWRfZ3JvdXBzIvwBCgxPaWRjU2V0dGluZ3MSDgoGaXNzdWVyGAEgASgJEhwKCWNsaWVudF9pZBgCIAEoCVIJY2xpZW50X2lkEg4KBnNjb3BlcxgDIAMoCRIiCgxncm91cHNfY2xhaW0YBCABKAlSDGdyb3Vwc19jbGFpbRIoCg9hbGxvd2VkX2RvbWFpbnMYBSADKAlSD2FsbG93ZWRfZG9tYWlucxInCgxyZWRpcmVjdF91cmkYBiABKAlIAFIMcmVkaXJlY3RfdXJpiAEBEiYKDm1mYV9hY3JfdmFsdWVzGAcgAygJUg5tZmFfYWNyX3ZhbHVlc0IPCg1fcmVkaXJlY3RfdXJpIu8CCg5Hb29nbGVTZXR0aW5ncxI1CghhY2NvdW50cxgBIAEoDjIjLmdsaWRleC5kaXJlY3RvcnkudjEuR29vZ2xlQWNjb3VudHMSHAoJY2xpZW50X2lkGAIgASgJUgljbGllbnRfaWQSDwoHZG9tYWlucxgDIAMoCRImCg5hbGxvd2VkX2VtYWlscxgEIAMoCVIOYWxsb3dlZF9lbWFpbHMSLwoQZGV2aWNlX2NsaWVudF9pZBgFIAEoCUgAUhBkZXZpY2VfY2xpZW50X2lkiAEBEiEKCXRydXN0XzJzdhgGIAEoCEgBUgl0cnVzdF8yc3aIAQESJwoMcmVkaXJlY3RfdXJpGAcgASgJSAJSDHJlZGlyZWN0X3VyaYgBARITCgZpc3N1ZXIYCCABKAlIA4gBAUITChFfZGV2aWNlX2NsaWVudF9pZEIMCgpfdHJ1c3RfMnN2Qg8KDV9yZWRpcmVjdF91cmlCCQoHX2lzc3VlciLtAQoRSnVtcGNsb3VkU2V0dGluZ3MSHAoJY2xpZW50X2lkGAEgASgJUgljbGllbnRfaWQSJwoMZ3JvdXBzX2NsYWltGAIgASgJSABSDGdyb3Vwc19jbGFpbYgBARImCg5hbGxvd2VkX2VtYWlscxgDIAMoCVIOYWxsb3dlZF9lbWFpbHMSJwoMcmVkaXJlY3RfdXJpGAQgASgJSAFSDHJlZGlyZWN0X3VyaYgBARITCgZpc3N1ZXIYBSABKAlIAogBAUIPCg1fZ3JvdXBzX2NsYWltQg8KDV9yZWRpcmVjdF91cmlCCQoHX2lzc3VlciJzCgxTZWNyZXRTdGF0dXMSDQoFZmllbGQYASABKAkSEAoDc2V0GAIgASgISACIAQESOgoKdXBkYXRlZF9hdBgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCnVwZGF0ZWRfYXRCBgoEX3NldCIXChVMaXN0Q29ubmVjdG9yc1JlcXVlc3QiTAoWTGlzdENvbm5lY3RvcnNSZXNwb25zZRIyCgpjb25uZWN0b3JzGAEgAygLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiIQoTR2V0Q29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCSJJChRHZXRDb25uZWN0b3JSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciJLChZDcmVhdGVDb25uZWN0b3JSZXF1ZXN0EjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIkwKF0NyZWF0ZUNvbm5lY3RvclJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIpUBChZVcGRhdGVDb25uZWN0b3JSZXF1ZXN0EgoKAmlkGAEgASgJEjEKCWNvbm5lY3RvchgCIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yEjwKC3VwZGF0ZV9tYXNrGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLkZpZWxkTWFza1ILdXBkYXRlX21hc2siTAoXVXBkYXRlQ29ubmVjdG9yUmVzcG9uc2USMQoJY29ubmVjdG9yGAEgASgLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiQgoWRGVsZXRlQ29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCRISCgV1c2VycxgCIAEoCUgAiAEBQggKBl91c2VycyI3ChdEZWxldGVDb25uZWN0b3JSZXNwb25zZRINCgV1c2VycxgBIAEoDRINCgV0ZWFtcxgCIAEoDSJCChBTZXRTZWNyZXRSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWZpZWxkGAIgASgJEhMKBXZhbHVlGAMgASgJQgTQ6RgBIkYKEVNldFNlY3JldFJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIiIKFFRlc3RDb25uZWN0b3JSZXF1ZXN0EgoKAmlkGAEgASgJIkUKFVRlc3RDb25uZWN0b3JSZXNwb25zZRIsCgVzdGVwcxgBIAMoCzIdLmdsaWRleC5kaXJlY3RvcnkudjEuVGVzdFN0ZXAiQQoIVGVzdFN0ZXASDAoEbmFtZRgBIAEoCRIPCgJvaxgCIAEoCEgAiAEBEg8KB21lc3NhZ2UYAyABKAlCBQoDX29rIr0BCglTY2ltVG9rZW4SCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIeCgpjcmVhdGVkX2J5GAMgASgJUgpjcmVhdGVkX2J5EjoKCmNyZWF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0EjoKCmV4cGlyZXNfYXQYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmVzX2F0IiMKFUxpc3RTY2ltVG9rZW5zUmVxdWVzdBIKCgJpZBgBIAEoCSJWChZMaXN0U2NpbVRva2Vuc1Jlc3BvbnNlEi4KBnRva2VucxgBIAMoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuU2NpbVRva2VuEgwKBHBhdGgYAiABKAkiTgoWQ3JlYXRlU2NpbVRva2VuUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhEKBGRheXMYAyABKA1IAIgBAUIHCgVfZGF5cyJmChdDcmVhdGVTY2ltVG9rZW5SZXNwb25zZRItCgV0b2tlbhgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuU2NpbVRva2VuEg4KBnNlY3JldBgCIAEoCRIMCgRwYXRoGAMgASgJIjMKFlJldm9rZVNjaW1Ub2tlblJlcXVlc3QSCgoCaWQYASABKAkSDQoFdG9rZW4YAiABKAkiGQoXUmV2b2tlU2NpbVRva2VuUmVzcG9uc2Ui/QEKDFN5bmNTZXR0aW5ncxIvChBpbnRlcnZhbF9taW51dGVzGAEgASgNSABSEGludGVydmFsX21pbnV0ZXOIAQESJQoLbWF4X2Rpc2FibGUYAiABKA1IAVILbWF4X2Rpc2FibGWIAQESIAoLYWRtaW5fZW1haWwYAyABKAlSC2FkbWluX2VtYWlsEg4KBmdyb3VwcxgEIAMoCRIrCg5zc2hfa2V5c19maWVsZBgFIAEoCUgCUg5zc2hfa2V5c19maWVsZIgBAUITChFfaW50ZXJ2YWxfbWludXRlc0IOCgxfbWF4X2Rpc2FibGVCEQoPX3NzaF9rZXlzX2ZpZWxkImMKC1N5bmNDaGFuZ2VzEg8KB2NyZWF0ZWQYASABKA0SDwoHYWRvcHRlZBgCIAEoDRIPCgd1cGRhdGVkGAMgASgNEhAKCGRpc2FibGVkGAQgASgNEg8KB2VuYWJsZWQYBSABKA0i8gIKClN5bmNTdGF0dXMSLQoFc3RhdGUYASABKA4yHi5nbGlkZXguZGlyZWN0b3J5LnYxLlN5bmNTdGF0ZRI6CgpzdGFydGVkX2F0GAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKc3RhcnRlZF9hdBI8CgtmaW5pc2hlZF9hdBgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSC2ZpbmlzaGVkX2F0EjEKB2NoYW5nZXMYBCABKAsyIC5nbGlkZXguZGlyZWN0b3J5LnYxLlN5bmNDaGFuZ2VzEhIKBWVycm9yGAUgASgJSACIAQESJAoNd291bGRfZGlzYWJsZRgGIAMoCVINd291bGRfZGlzYWJsZRJECg9sYXN0X2FwcGxpZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUg9sYXN0X2FwcGxpZWRfYXRCCAoGX2Vycm9yIkQKFFN5bmNDb25uZWN0b3JSZXF1ZXN0EgoKAmlkGAEgASgJEhQKB2NvbmZpcm0YAiABKAhIAIgBAUIKCghfY29uZmlybSJIChVTeW5jQ29ubmVjdG9yUmVzcG9uc2USLwoGc3RhdHVzGAEgASgLMh8uZ2xpZGV4LmRpcmVjdG9yeS52MS5TeW5jU3RhdHVzKmkKDkdvb2dsZUFjY291bnRzEh8KG0dPT0dMRV9BQ0NPVU5UU19VTlNQRUNJRklFRBAAEh0KGUdPT0dMRV9BQ0NPVU5UU19XT1JLU1BBQ0UQARIXChNHT09HTEVfQUNDT1VOVFNfQU5ZEAIqaQoJU3luY1N0YXRlEhoKFlNZTkNfU1RBVEVfVU5TUEVDSUZJRUQQABIRCg1TWU5DX1NUQVRFX09LEAESFQoRU1lOQ19TVEFURV9GQUlMRUQQAhIWChJTWU5DX1NUQVRFX0JMT0NLRUQQAzL0DQoQQ29ubmVjdG9yU2VydmljZRKSAQoOTGlzdENvbm5lY3RvcnMSKi5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RDb25uZWN0b3JzUmVxdWVzdBorLmdsaWRleC5kaXJlY3RvcnkudjEuTGlzdENvbm5lY3RvcnNSZXNwb25zZSInyukYIwoObGlzdENvbm5lY3RvcnMQARoPR0VUIC9jb25uZWN0b3JzEpABCgxHZXRDb25uZWN0b3ISKC5nbGlkZXguZGlyZWN0b3J5LnYxLkdldENvbm5lY3RvclJlcXVlc3QaKS5nbGlkZXguZGlyZWN0b3J5LnYxLkdldENvbm5lY3RvclJlc3BvbnNlIivK6RgnCg1yZWFkQ29ubmVjdG9yEAEaFEdFVCAvY29ubmVjdG9ycy97aWR9EpcBCg9DcmVhdGVDb25uZWN0b3ISKy5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZUNvbm5lY3RvclJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZUNvbm5lY3RvclJlc3BvbnNlIinK6RglCg9jcmVhdGVDb25uZWN0b3IQAhoQUE9TVCAvY29ubmVjdG9ycxKdAQoPVXBkYXRlQ29ubmVjdG9yEisuZ2xpZGV4LmRpcmVjdG9yeS52MS5VcGRhdGVDb25uZWN0b3JSZXF1ZXN0GiwuZ2xpZGV4LmRpcmVjdG9yeS52MS5VcGRhdGVDb25uZWN0b3JSZXNwb25zZSIvyukYKwoPdXBkYXRlQ29ubmVjdG9yEAIaFlBBVENIIC9jb25uZWN0b3JzL3tpZH0SngEKD0RlbGV0ZUNvbm5lY3RvchIrLmdsaWRleC5kaXJlY3RvcnkudjEuRGVsZXRlQ29ubmVjdG9yUmVxdWVzdBosLmdsaWRleC5kaXJlY3RvcnkudjEuRGVsZXRlQ29ubmVjdG9yUmVzcG9uc2UiMMrpGCwKD2RlbGV0ZUNvbm5lY3RvchACGhdERUxFVEUgL2Nvbm5lY3RvcnMve2lkfRKcAQoJU2V0U2VjcmV0EiUuZ2xpZGV4LmRpcmVjdG9yeS52MS5TZXRTZWNyZXRSZXF1ZXN0GiYuZ2xpZGV4LmRpcmVjdG9yeS52MS5TZXRTZWNyZXRSZXNwb25zZSJAyukYPAoSc2V0Q29ubmVjdG9yU2VjcmV0EAIaJFBVVCAvY29ubmVjdG9ycy97aWR9L3NlY3JldHMve2ZpZWxkfRKZAQoNU3luY0Nvbm5lY3RvchIpLmdsaWRleC5kaXJlY3RvcnkudjEuU3luY0Nvbm5lY3RvclJlcXVlc3QaKi5nbGlkZXguZGlyZWN0b3J5LnYxLlN5bmNDb25uZWN0b3JSZXNwb25zZSIxyukYLQoNc3luY0Nvbm5lY3RvchACGhpQT1NUIC9jb25uZWN0b3JzL3tpZH0vc3luYxKjAQoOTGlzdFNjaW1Ub2tlbnMSKi5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RTY2ltVG9rZW5zUmVxdWVzdBorLmdsaWRleC5kaXJlY3RvcnkudjEuTGlzdFNjaW1Ub2tlbnNSZXNwb25zZSI4yukYNAoOcmVhZFNjaW1Ub2tlbnMQARogR0VUIC9jb25uZWN0b3JzL3tpZH0vc2NpbS10b2tlbnMSqQEKD0NyZWF0ZVNjaW1Ub2tlbhIrLmdsaWRleC5kaXJlY3RvcnkudjEuQ3JlYXRlU2NpbVRva2VuUmVxdWVzdBosLmdsaWRleC5kaXJlY3RvcnkudjEuQ3JlYXRlU2NpbVRva2VuUmVzcG9uc2UiO8rpGDcKEG1hbmFnZVNjaW1Ub2tlbnMQAhohUE9TVCAvY29ubmVjdG9ycy97aWR9L3NjaW0tdG9rZW5zErMBCg9SZXZva2VTY2ltVG9rZW4SKy5nbGlkZXguZGlyZWN0b3J5LnYxLlJldm9rZVNjaW1Ub2tlblJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLlJldm9rZVNjaW1Ub2tlblJlc3BvbnNlIkXK6RhBChBtYW5hZ2VTY2ltVG9rZW5zEAIaK0RFTEVURSAvY29ubmVjdG9ycy97aWR9L3NjaW0tdG9rZW5zL3t0b2tlbn0SmQEKDVRlc3RDb25uZWN0b3ISKS5nbGlkZXguZGlyZWN0b3J5LnYxLlRlc3RDb25uZWN0b3JSZXF1ZXN0GiouZ2xpZGV4LmRpcmVjdG9yeS52MS5UZXN0Q29ubmVjdG9yUmVzcG9uc2UiMcrpGC0KDXRlc3RDb25uZWN0b3IQARoaUE9TVCAvY29ubmVjdG9ycy97aWR9L3Rlc3RiBnByb3RvMw", [file_glidex_api_v1_options, file_google_protobuf_field_mask, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.directory.v1.Connector
@@ -106,6 +106,21 @@ export type Connector = Message<"glidex.directory.v1.Connector"> & {
    * @generated from field: optional string group_mode = 21 [json_name = "group_mode"];
    */
   groupMode?: string | undefined;
+
+  /**
+   * With `provisioning: pull` (a Google Workspace connector): what the
+   * pull reads and how often (spec/tenancy.md §8.2).
+   *
+   * @generated from field: glidex.directory.v1.SyncSettings sync = 22;
+   */
+  sync?: SyncSettings | undefined;
+
+  /**
+   * The last pull's outcome. Output only.
+   *
+   * @generated from field: glidex.directory.v1.SyncStatus sync_status = 23 [json_name = "sync_status"];
+   */
+  syncStatus?: SyncStatus | undefined;
 
   /**
    * @generated from oneof glidex.directory.v1.Connector.settings
@@ -253,6 +268,21 @@ export type ConnectorJson = {
    * @generated from field: optional string group_mode = 21 [json_name = "group_mode"];
    */
   group_mode?: string;
+
+  /**
+   * With `provisioning: pull` (a Google Workspace connector): what the
+   * pull reads and how often (spec/tenancy.md §8.2).
+   *
+   * @generated from field: glidex.directory.v1.SyncSettings sync = 22;
+   */
+  sync?: SyncSettingsJson;
+
+  /**
+   * The last pull's outcome. Output only.
+   *
+   * @generated from field: glidex.directory.v1.SyncStatus sync_status = 23 [json_name = "sync_status"];
+   */
+  sync_status?: SyncStatusJson;
 
   /**
    * @generated from field: glidex.directory.v1.PamSettings pam = 12;
@@ -1494,6 +1524,335 @@ export const RevokeScimTokenResponseSchema: GenMessage<RevokeScimTokenResponse, 
   messageDesc(file_glidex_directory_v1_connectors, 27);
 
 /**
+ * A pull's settings (spec/tenancy.md §8.2, D44–D47).
+ *
+ * @generated from message glidex.directory.v1.SyncSettings
+ */
+export type SyncSettings = Message<"glidex.directory.v1.SyncSettings"> & {
+  /**
+   * Default 15, at least 5.
+   *
+   * @generated from field: optional uint32 interval_minutes = 1 [json_name = "interval_minutes"];
+   */
+  intervalMinutes?: number | undefined;
+
+  /**
+   * The most a run may disable, as a percentage of the managed users
+   * (default 10); up to 5 are always allowed.
+   *
+   * @generated from field: optional uint32 max_disable = 2 [json_name = "max_disable"];
+   */
+  maxDisable?: number | undefined;
+
+  /**
+   * Google: the Workspace administrator the service account acts as.
+   *
+   * @generated from field: string admin_email = 3 [json_name = "admin_email"];
+   */
+  adminEmail: string;
+
+  /**
+   * Google: group emails; their members, nested ones too, are the
+   * connector's users.
+   *
+   * @generated from field: repeated string groups = 4;
+   */
+  groups: string[];
+
+  /**
+   * Google: `<schema>.<field>`, a custom schema field holding SSH keys.
+   *
+   * @generated from field: optional string ssh_keys_field = 5 [json_name = "ssh_keys_field"];
+   */
+  sshKeysField?: string | undefined;
+};
+
+/**
+ * A pull's settings (spec/tenancy.md §8.2, D44–D47).
+ *
+ * @generated from message glidex.directory.v1.SyncSettings
+ */
+export type SyncSettingsJson = {
+  /**
+   * Default 15, at least 5.
+   *
+   * @generated from field: optional uint32 interval_minutes = 1 [json_name = "interval_minutes"];
+   */
+  interval_minutes?: number;
+
+  /**
+   * The most a run may disable, as a percentage of the managed users
+   * (default 10); up to 5 are always allowed.
+   *
+   * @generated from field: optional uint32 max_disable = 2 [json_name = "max_disable"];
+   */
+  max_disable?: number;
+
+  /**
+   * Google: the Workspace administrator the service account acts as.
+   *
+   * @generated from field: string admin_email = 3 [json_name = "admin_email"];
+   */
+  admin_email?: string;
+
+  /**
+   * Google: group emails; their members, nested ones too, are the
+   * connector's users.
+   *
+   * @generated from field: repeated string groups = 4;
+   */
+  groups?: string[];
+
+  /**
+   * Google: `<schema>.<field>`, a custom schema field holding SSH keys.
+   *
+   * @generated from field: optional string ssh_keys_field = 5 [json_name = "ssh_keys_field"];
+   */
+  ssh_keys_field?: string;
+};
+
+/**
+ * Describes the message glidex.directory.v1.SyncSettings.
+ * Use `create(SyncSettingsSchema)` to create a new message.
+ */
+export const SyncSettingsSchema: GenMessage<SyncSettings, {jsonType: SyncSettingsJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 28);
+
+/**
+ * @generated from message glidex.directory.v1.SyncChanges
+ */
+export type SyncChanges = Message<"glidex.directory.v1.SyncChanges"> & {
+  /**
+   * @generated from field: uint32 created = 1;
+   */
+  created: number;
+
+  /**
+   * Users from before the pull, with the same subject (D44).
+   *
+   * @generated from field: uint32 adopted = 2;
+   */
+  adopted: number;
+
+  /**
+   * @generated from field: uint32 updated = 3;
+   */
+  updated: number;
+
+  /**
+   * @generated from field: uint32 disabled = 4;
+   */
+  disabled: number;
+
+  /**
+   * @generated from field: uint32 enabled = 5;
+   */
+  enabled: number;
+};
+
+/**
+ * @generated from message glidex.directory.v1.SyncChanges
+ */
+export type SyncChangesJson = {
+  /**
+   * @generated from field: uint32 created = 1;
+   */
+  created?: number;
+
+  /**
+   * Users from before the pull, with the same subject (D44).
+   *
+   * @generated from field: uint32 adopted = 2;
+   */
+  adopted?: number;
+
+  /**
+   * @generated from field: uint32 updated = 3;
+   */
+  updated?: number;
+
+  /**
+   * @generated from field: uint32 disabled = 4;
+   */
+  disabled?: number;
+
+  /**
+   * @generated from field: uint32 enabled = 5;
+   */
+  enabled?: number;
+};
+
+/**
+ * Describes the message glidex.directory.v1.SyncChanges.
+ * Use `create(SyncChangesSchema)` to create a new message.
+ */
+export const SyncChangesSchema: GenMessage<SyncChanges, {jsonType: SyncChangesJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 29);
+
+/**
+ * @generated from message glidex.directory.v1.SyncStatus
+ */
+export type SyncStatus = Message<"glidex.directory.v1.SyncStatus"> & {
+  /**
+   * @generated from field: glidex.directory.v1.SyncState state = 1;
+   */
+  state: SyncState;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp started_at = 2 [json_name = "started_at"];
+   */
+  startedAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp finished_at = 3 [json_name = "finished_at"];
+   */
+  finishedAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: glidex.directory.v1.SyncChanges changes = 4;
+   */
+  changes?: SyncChanges | undefined;
+
+  /**
+   * What failed, without secrets.
+   *
+   * @generated from field: optional string error = 5;
+   */
+  error?: string | undefined;
+
+  /**
+   * Blocked: the users it would disable.
+   *
+   * @generated from field: repeated string would_disable = 6 [json_name = "would_disable"];
+   */
+  wouldDisable: string[];
+
+  /**
+   * When the last run that applied finished.
+   *
+   * @generated from field: google.protobuf.Timestamp last_applied_at = 7 [json_name = "last_applied_at"];
+   */
+  lastAppliedAt?: Timestamp | undefined;
+};
+
+/**
+ * @generated from message glidex.directory.v1.SyncStatus
+ */
+export type SyncStatusJson = {
+  /**
+   * @generated from field: glidex.directory.v1.SyncState state = 1;
+   */
+  state?: SyncStateJson;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp started_at = 2 [json_name = "started_at"];
+   */
+  started_at?: TimestampJson;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp finished_at = 3 [json_name = "finished_at"];
+   */
+  finished_at?: TimestampJson;
+
+  /**
+   * @generated from field: glidex.directory.v1.SyncChanges changes = 4;
+   */
+  changes?: SyncChangesJson;
+
+  /**
+   * What failed, without secrets.
+   *
+   * @generated from field: optional string error = 5;
+   */
+  error?: string;
+
+  /**
+   * Blocked: the users it would disable.
+   *
+   * @generated from field: repeated string would_disable = 6 [json_name = "would_disable"];
+   */
+  would_disable?: string[];
+
+  /**
+   * When the last run that applied finished.
+   *
+   * @generated from field: google.protobuf.Timestamp last_applied_at = 7 [json_name = "last_applied_at"];
+   */
+  last_applied_at?: TimestampJson;
+};
+
+/**
+ * Describes the message glidex.directory.v1.SyncStatus.
+ * Use `create(SyncStatusSchema)` to create a new message.
+ */
+export const SyncStatusSchema: GenMessage<SyncStatus, {jsonType: SyncStatusJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 30);
+
+/**
+ * @generated from message glidex.directory.v1.SyncConnectorRequest
+ */
+export type SyncConnectorRequest = Message<"glidex.directory.v1.SyncConnectorRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: optional bool confirm = 2;
+   */
+  confirm?: boolean | undefined;
+};
+
+/**
+ * @generated from message glidex.directory.v1.SyncConnectorRequest
+ */
+export type SyncConnectorRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * @generated from field: optional bool confirm = 2;
+   */
+  confirm?: boolean;
+};
+
+/**
+ * Describes the message glidex.directory.v1.SyncConnectorRequest.
+ * Use `create(SyncConnectorRequestSchema)` to create a new message.
+ */
+export const SyncConnectorRequestSchema: GenMessage<SyncConnectorRequest, {jsonType: SyncConnectorRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 31);
+
+/**
+ * @generated from message glidex.directory.v1.SyncConnectorResponse
+ */
+export type SyncConnectorResponse = Message<"glidex.directory.v1.SyncConnectorResponse"> & {
+  /**
+   * @generated from field: glidex.directory.v1.SyncStatus status = 1;
+   */
+  status?: SyncStatus | undefined;
+};
+
+/**
+ * @generated from message glidex.directory.v1.SyncConnectorResponse
+ */
+export type SyncConnectorResponseJson = {
+  /**
+   * @generated from field: glidex.directory.v1.SyncStatus status = 1;
+   */
+  status?: SyncStatusJson;
+};
+
+/**
+ * Describes the message glidex.directory.v1.SyncConnectorResponse.
+ * Use `create(SyncConnectorResponseSchema)` to create a new message.
+ */
+export const SyncConnectorResponseSchema: GenMessage<SyncConnectorResponse, {jsonType: SyncConnectorResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 32);
+
+/**
  * Which Google accounts a `google` connector serves (spec/tenancy.md D39).
  *
  * @generated from enum glidex.directory.v1.GoogleAccounts
@@ -1534,6 +1893,48 @@ export type GoogleAccountsJson = "GOOGLE_ACCOUNTS_UNSPECIFIED" | "GOOGLE_ACCOUNT
  */
 export const GoogleAccountsSchema: GenEnum<GoogleAccounts, GoogleAccountsJson> = /*@__PURE__*/
   enumDesc(file_glidex_directory_v1_connectors, 0);
+
+/**
+ * @generated from enum glidex.directory.v1.SyncState
+ */
+export enum SyncState {
+  /**
+   * @generated from enum value: SYNC_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SYNC_STATE_OK = 1;
+   */
+  OK = 1,
+
+  /**
+   * Google answered with an error, or something glidex couldn't read:
+   * nothing changed (D46).
+   *
+   * @generated from enum value: SYNC_STATE_FAILED = 2;
+   */
+  FAILED = 2,
+
+  /**
+   * It would disable more than `max_disable`: nothing changed until a
+   * directory administrator confirms (D46).
+   *
+   * @generated from enum value: SYNC_STATE_BLOCKED = 3;
+   */
+  BLOCKED = 3,
+}
+
+/**
+ * @generated from enum glidex.directory.v1.SyncState
+ */
+export type SyncStateJson = "SYNC_STATE_UNSPECIFIED" | "SYNC_STATE_OK" | "SYNC_STATE_FAILED" | "SYNC_STATE_BLOCKED";
+
+/**
+ * Describes the enum glidex.directory.v1.SyncState.
+ */
+export const SyncStateSchema: GenEnum<SyncState, SyncStateJson> = /*@__PURE__*/
+  enumDesc(file_glidex_directory_v1_connectors, 1);
 
 /**
  * @generated from service glidex.directory.v1.ConnectorService
@@ -1586,6 +1987,18 @@ export const ConnectorService: GenService<{
     methodKind: "unary";
     input: typeof SetSecretRequestSchema;
     output: typeof SetSecretResponseSchema;
+  },
+  /**
+   * Run a pulled connector's sync now (spec/tenancy.md §8.2), and answer
+   * how it went. `confirm` applies a run the safety stop blocked (D46),
+   * which takes `confirmConnectorSync` too.
+   *
+   * @generated from rpc glidex.directory.v1.ConnectorService.SyncConnector
+   */
+  syncConnector: {
+    methodKind: "unary";
+    input: typeof SyncConnectorRequestSchema;
+    output: typeof SyncConnectorResponseSchema;
   },
   /**
    * A provisioned connector's SCIM bearer tokens (spec/tenancy.md §8.1):
