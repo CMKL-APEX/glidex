@@ -58,8 +58,8 @@ and build, never with account names or tokens.
 
 The endpoint must be reachable from JumpCloud: a reverse proxy, or a
 Tailscale Funnel of the SCIM path alone (Funnel publishes only ports
-443, 8443 and 10000; see the operator guide's "Making the endpoint
-reachable"). The token is made in the web UI or by `gxctl connector
+443, 8443 and 10000, and isn't on every Tailscale plan; see the
+operator guide's "Making the endpoint reachable"). The token is made in the web UI or by `gxctl connector
 scim-token create` and pasted into JumpCloud only, never into a file or
 a chat. Turn the Funnel off after the checks.
 

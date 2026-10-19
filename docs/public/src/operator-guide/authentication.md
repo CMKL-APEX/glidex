@@ -354,7 +354,9 @@ tailscale funnel status
 - The IdP's URL then has no port:
   `https://<name>.<tailnet>.ts.net/api/scim/v2/c/<id>`.
 - Funnel needs HTTPS certificates and the `funnel` node attribute in
-  the tailnet's policy.
+  the tailnet's policy, and isn't part of every Tailscale plan (not
+  Starter). Without it, use a reverse proxy, or another tunnel that can
+  publish one path (Cloudflare Tunnel's ingress rules can).
 - If the web UI doesn't use the Tailscale certificate (`installation.md`,
   `--tailscale-cert`), forward to
   `https+insecure://127.0.0.1:5173/api/scim/v2/` instead.
