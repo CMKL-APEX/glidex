@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -37,6 +38,21 @@ fn get_iommu_group(device_path: &Path) -> Option<String> {
     fs::read_link(&iommu_link)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+}
+
+/// The IOMMU group of each device that is not a PCI bridge (class
+/// `0x0604xx`): bridges stay with the host when the rest of a group is
+/// passed through.
+pub fn iommu_groups(devices: &[PciDeviceInfo]) -> BTreeMap<String, String> {
+    devices
+        .iter()
+        .filter(|d| !d.class_id.to_ascii_lowercase().starts_with("0x0604"))
+        .filter_map(|d| {
+            d.iommu_group
+                .as_ref()
+                .map(|g| (d.address.to_ascii_lowercase(), g.clone()))
+        })
+        .collect()
 }
 
 /// Scan all PCI devices from sysfs and return their information.
@@ -79,4 +95,38 @@ pub fn scan_pci_devices() -> Vec<PciDeviceInfo> {
 
     devices.sort_by(|a, b| a.address.cmp(&b.address));
     devices
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev(address: &str, class: &str, group: Option<&str>) -> PciDeviceInfo {
+        PciDeviceInfo {
+            address: address.into(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x2330".into(),
+            class_id: class.into(),
+            driver: None,
+            iommu_group: group.map(Into::into),
+            sysfs_path: format!("{PCI_DEVICES_PATH}/{address}"),
+        }
+    }
+
+    #[test]
+    fn groups_leave_out_bridges_and_devices_without_one() {
+        let groups = iommu_groups(&[
+            dev("0000:40:01.1", "0x060400", Some("31")),
+            dev("0000:41:00.0", "0x030200", Some("31")),
+            dev("0000:41:00.1", "0x040300", Some("31")),
+            dev("0000:42:00.0", "0x020000", None),
+        ]);
+        assert_eq!(
+            groups.into_iter().collect::<Vec<_>>(),
+            [
+                ("0000:41:00.0".to_string(), "31".to_string()),
+                ("0000:41:00.1".to_string(), "31".to_string()),
+            ]
+        );
+    }
 }
