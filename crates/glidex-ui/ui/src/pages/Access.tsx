@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import * as api from "../api";
-import type { Binding, Team } from "../types";
-import { HOST_ROLES, formatTimestamp } from "../types";
+import type { Team } from "../types";
+import { formatTimestamp } from "../types";
 import { Loading } from "../components/Loading";
 import ConfirmDialog from "../components/ConfirmDialog";
-import AddBindingForm from "../components/AddBindingForm";
+import SystemRoles from "../components/SystemRoles";
 import {
   Badge,
-  BindingTable,
   Card,
   ErrorBanner,
   PageHeader,
@@ -111,7 +110,6 @@ export default function Access() {
   const [dir, reloadDir] = useDirectory();
   const connectors = useConnectorNames();
   const nodes = useNodeNames();
-  const [system, setSystem] = useState<Binding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // An administrator taking one of a user's sign-in methods away.
   const [unlinking, setUnlinking] = useState<{ user: string; name: string; key: string; label: string } | null>(null);
@@ -119,18 +117,6 @@ export default function Access() {
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
-
-  const refreshSystem = useCallback(() => {
-    if (!host.readSystemBindings) return;
-    api
-      .listSystemBindings()
-      .then(setSystem)
-      .catch((e) => setError(errorMessage(e)));
-  }, [host.readSystemBindings]);
-
-  useEffect(() => {
-    refreshSystem();
-  }, [refreshSystem]);
 
   const run = async (f: () => Promise<unknown>, after: () => void) => {
     setError(null);
@@ -150,8 +136,6 @@ export default function Access() {
       </div>
     );
   }
-
-  const directory = dir ?? { users: [], teams: [] };
 
   return (
     <div>
@@ -302,38 +286,7 @@ export default function Access() {
         </Card>
       )}
 
-      {host.readSystemBindings && (
-        <Card title="System roles">
-          <p className="mb-3 text-sm text-gray-500">
-            Host-wide roles: auditor (read everything), image-admin, net-admin, system-admin, and the host-paths grant.
-          </p>
-          {system === null ? (
-            <Loading />
-          ) : (
-            <BindingTable
-              bindings={system}
-              dir={directory}
-              onRemove={
-                host.manageSystemBindings
-                  ? (b) =>
-                      confirm(`Remove ${b.role} from this principal?`) &&
-                      run(() => api.removeSystemBinding(b.id), refreshSystem)
-                  : undefined
-              }
-            />
-          )}
-          {host.manageSystemBindings && (
-            <AddBindingForm
-              roles={HOST_ROLES}
-              dir={dir}
-              onAdd={async (role, principal) => {
-                await api.addSystemBinding(role, principal);
-                refreshSystem();
-              }}
-            />
-          )}
-        </Card>
-      )}
+      <SystemRoles dir={dir} />
       {deleting && (
         <ConfirmDialog
           title={`Delete ${deleting.name}`}

@@ -1263,6 +1263,13 @@ own rows.
   they cover every host. Host-specific actions (OVS bridges, uplinks,
   DPDK, PCI devices, host paths) take the node's `Host` as resource, so
   a site can grant `host.network` on one node only.
+  `AddSystemBinding` takes `node` for that: `role.auditor`,
+  `role.net-admin` and `grant.host-paths` link to the node's `Host`.
+  `role.system-admin` and `role.image-admin` stay cluster-wide (their
+  actions are on the `Cluster`, images and projects, which a host link
+  doesn't cover). The operator-member rule (tenancy.md D4) applies the
+  same. Links are kept when the node leaves; node ids aren't reused, so
+  they cover nothing and are removed by hand.
 - New actions: `host.cluster` (init, join and rejoin tokens, node
   remove, forget, purge, detach, import approve and reject, snapshots,
   dissolve) under `system-admin`; `node.drain` under `system-admin`.

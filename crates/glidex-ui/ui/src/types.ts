@@ -1009,6 +1009,8 @@ export const HOST_ROLES = [
   "role.system-admin",
   "grant.host-paths",
 ] as const;
+/** System roles that can be given on one node's host (spec/clustering.md §12.2). */
+export const PER_HOST_ROLES = ["role.auditor", "role.net-admin", "grant.host-paths"] as const;
 
 export function roleLabel(role: string): string {
   return role.replace(/^(role|grant)\./, "");

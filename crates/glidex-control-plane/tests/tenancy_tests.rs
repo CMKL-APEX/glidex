@@ -451,6 +451,116 @@ async fn host_roles_need_the_operator_and_reach_only_its_cluster() {
     assert_eq!(s, StatusCode::OK);
 }
 
+/// spec/clustering.md §12.2: a host role can be given on one node's host.
+#[tokio::test]
+async fn a_host_role_on_one_node_covers_that_node_only() {
+    use glidex_control_plane::node::{Node, NodeStore};
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let nodes = NodeStore::new(h.app.manager.database());
+    let spec =
+        |name: &str| serde_json::from_value(json!({ "name": name, "role": "agent" })).unwrap();
+    nodes.put(&Node::new("n2-id", spec("n2"))).unwrap();
+    let mut gone = Node::new("n3-id", spec("n3"));
+    gone.status.phase = glidex_control_plane::node::NodePhase::Removed;
+    nodes.put(&gone).unwrap();
+    let bob = h.user("bob");
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{ADMIN_TENANT}/members"),
+            Some(json!({ "principal": { "type": "User", "id": bob } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let grant = |role: &str, node: &str| json!({ "role": role, "principal": { "type": "User", "id": bob }, "node": node });
+    // Cluster-wide roles aren't given on a host.
+    for role in ["role.system-admin", "role.image-admin"] {
+        let (s, v) = h
+            .rest("POST", "/system/bindings", Some(grant(role, "n2")), &at)
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{role}: {v}");
+    }
+    // A node is named by id or name; it has to be there.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/system/bindings",
+            Some(grant("role.auditor", "nope")),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/system/bindings",
+            Some(grant("role.auditor", "n3")),
+            &at,
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("node_departed")),
+        "{v}"
+    );
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/system/bindings",
+            Some(grant("role.auditor", "n2")),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["binding"]["resource"],
+        json!({ "type": "Host", "id": "n2-id" })
+    );
+    let link = v["binding"]["id"].as_str().unwrap().to_string();
+
+    // Bob reads n2, not the cluster's node list nor this host.
+    let bt = h.token(&bob);
+    let (s, v) = h.rest("GET", "/nodes/n2", None, &bt).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = h.rest("GET", "/nodes", None, &bt).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let local = glidex_control_plane::authz::node_id();
+    let (s, _) = h.rest("GET", &format!("/nodes/{local}"), None, &bt).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Listed with every system binding, and by node.
+    let (_, v) = h.rest("GET", "/system/bindings", None, &at).await;
+    assert!(
+        v["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == link),
+        "{v}"
+    );
+    let (_, v) = h.rest("GET", "/system/bindings?node=n2", None, &at).await;
+    let ids: Vec<&str> = v["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [link.as_str()]);
+    let (_, v) = h
+        .rest("GET", &format!("/system/bindings?node={local}"), None, &at)
+        .await;
+    assert!(v.get("bindings").is_none(), "{v}");
+
+    let (s, _) = h
+        .rest("DELETE", &format!("/system/bindings/{link}"), None, &at)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = h.rest("GET", "/nodes/n2", None, &bt).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn allocation_needs_an_admission_and_the_tenant_cap_binds() {
     let h = harness();

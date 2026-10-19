@@ -175,10 +175,13 @@ export function BindingTable({
   onRemove,
   connectors,
   nodes,
+  scope,
 }: {
   bindings: Binding[];
   dir: Directory;
   onRemove?: (b: Binding) => void;
+  /** With this, a column saying where each binding applies. */
+  scope?: (b: Binding) => ReactNode;
   /** With these (connector id → name), users show how they sign in. */
   connectors?: Record<string, string>;
   nodes?: Record<string, string>;
@@ -190,6 +193,7 @@ export function BindingTable({
         <tr className="text-left text-gray-500 border-b border-gray-100">
           <th className="py-2 font-medium">Principal</th>
           <th className="py-2 font-medium">Role</th>
+          {scope && <th className="py-2 font-medium">Scope</th>}
           <th className="py-2 font-medium">Link</th>
           {onRemove && <th className="py-2" />}
         </tr>
@@ -206,6 +210,7 @@ export function BindingTable({
             <td className="py-2">
               <Badge kind="role">{roleLabel(b.role)}</Badge>
             </td>
+            {scope && <td className="py-2 text-gray-700">{scope(b)}</td>}
             <td className="py-2 font-mono text-xs text-gray-500">{b.id}</td>
             {onRemove && (
               <td className="py-2 text-right">

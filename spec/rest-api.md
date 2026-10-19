@@ -279,7 +279,11 @@ router, and starting a VM, also need the project's tenant admitted here:
 `403 not_admitted` otherwise; going over the admission's cap is `403
 tenant_quota_exceeded`. Granting a host role through `/system/bindings`
 needs the principal to be a member of the operator tenant: `422
-not_operator_member` otherwise.
+not_operator_member` otherwise. With `node` (id or name), the role is
+linked to that node's `Host` instead of the `Cluster` (spec/clustering.md
+§12.2): only `role.auditor`, `role.net-admin` and `grant.host-paths`
+(`400` for the others), `404` for an unknown node, `409 node_departed`
+for one that has left. `GET /system/bindings?node=` lists one host's.
 
 Handlers live in `crates/glidex-control-plane/src/api/` (VM routes in
 `api/vms.rs`; the route table with each route's Cedar action in

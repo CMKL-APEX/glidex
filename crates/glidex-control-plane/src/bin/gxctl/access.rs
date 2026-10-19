@@ -571,24 +571,34 @@ fn print_links(links: &[Binding]) {
     }
     for l in links {
         println!(
-            "  {:<24} {:<18} {:<46} by {} {}",
+            "  {:<24} {:<18} {:<46} by {} {}{}",
             l.id.cyan(),
             l.role,
             entity(l.principal.as_option()),
             l.created_by,
-            ts(l.created_at.as_option()).dimmed()
+            ts(l.created_at.as_option()).dimmed(),
+            on_host(l)
         );
+    }
+}
+
+/// ` on host:<node>` for a link on one node's host (spec/clustering.md §12.2).
+fn on_host(l: &Binding) -> String {
+    match l.resource.as_option() {
+        Some(r) if r.r#type == "Host" => format!(" on {}", entity(Some(r))),
+        _ => String::new(),
     }
 }
 
 fn print_added(l: Option<&Binding>) {
     let l = l.cloned().unwrap_or_default();
     println!(
-        "{} {} {} → {}",
+        "{} {} {} → {}{}",
         "Added:".green(),
         l.id,
         l.role,
-        entity(l.principal.as_option())
+        entity(l.principal.as_option()),
+        on_host(&l)
     );
 }
 
@@ -652,12 +662,16 @@ pub async fn binding(client: &ApiClient, args: &[&str]) {
 }
 
 pub async fn system_binding(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: system-binding list | add <role> user:<id>|team:<id>|token:<id> | remove <binding-id>";
+    let u = "Usage: system-binding list [--node <node>] | add <role> user:<id>|team:<id>|token:<id> [--node <node>] | remove <binding-id>";
+    let node = flag_value(args, "--node").map(str::to_string);
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => {
             let svc = svc!(client, SystemBindingServiceClient);
             match svc
-                .list_system_bindings(ListSystemBindingsRequest::default())
+                .list_system_bindings(ListSystemBindingsRequest {
+                    node,
+                    ..Default::default()
+                })
                 .await
             {
                 Ok(r) => print_links(&r.into_owned().bindings),
@@ -677,6 +691,7 @@ pub async fn system_binding(client: &ApiClient, args: &[&str]) {
                 .add_system_binding(AddSystemBindingRequest {
                     role: role_name(role),
                     principal: principal.into(),
+                    node,
                     ..Default::default()
                 })
                 .await

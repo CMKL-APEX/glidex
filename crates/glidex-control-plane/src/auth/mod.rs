@@ -1664,11 +1664,12 @@ impl AuthService {
         match &resource {
             Ent::Project(_) if project_role => {}
             Ent::Cluster if host_role => {}
+            Ent::Node(_) if authz::PER_HOST_ROLES.contains(&template) => {}
             Ent::Tenant(_) if tenant_role => {}
             Ent::Directory(_) if directory_role => {}
             _ => {
                 return Err(AuthError::Invalid(format!(
-                    "{} can't be linked to {}: project roles link to a project, host roles to the host, tenant roles to a tenant, directory roles to the directory",
+                    "{} can't be linked to {}: project roles link to a project, host roles to the cluster or (auditor, net-admin, host paths) one node's host, tenant roles to a tenant, directory roles to the directory",
                     template, resource
                 )));
             }

@@ -983,11 +983,21 @@ pub async fn remove_binding(
     Ok(super::proto_no_content())
 }
 
-pub async fn list_system_bindings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    Ok(Proto(
-        StatusCode::OK,
-        acc::list_system_bindings(&c, Default::default())?,
-    ))
+#[derive(serde::Deserialize)]
+pub struct SystemBindingsQuery {
+    node: Option<String>,
+}
+
+/// `GET /system/bindings[?node=<id or name>]`.
+pub async fn list_system_bindings(
+    c: Caller,
+    Query(q): Query<SystemBindingsQuery>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListSystemBindingsRequest {
+        node: q.node,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::list_system_bindings(&c, req)?))
 }
 
 pub async fn add_system_binding(

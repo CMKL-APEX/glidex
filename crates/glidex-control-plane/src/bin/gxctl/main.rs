@@ -762,7 +762,7 @@ fn print_help() {
     );
     println!(
         "  {} - Host role bindings",
-        "system-binding list | add <role> <principal> | remove <id>".cyan()
+        "system-binding list [--node N] | add <role> <principal> [--node N] | remove <id>".cyan()
     );
     println!(
         "  {}         - Users and their identities",

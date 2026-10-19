@@ -1,6 +1,7 @@
 # Tenants, directories and operators (design)
 
-Status: **design**; T0 is implemented (§23). Builds on
+Status: **design**; T0, T1 and T2 are implemented on one directory and
+one cluster (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
 It lifts the "federation and SCIM provisioning" item of
@@ -1292,6 +1293,9 @@ T3–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
+T0, T1 and T2 are implemented; T2b and T3–T7 are not started. What
+follows is per milestone.
+
 T0 is implemented on one host: a cluster that hosts directory `local`,
 operated and owned by tenant `admin`, with tenant `default` holding the
 projects from before tenants.
@@ -1423,7 +1427,10 @@ Left for later: the acting tenant (the UI and gxctl asking which tenant
 when a user is in several; projects say their own tenant today), TPM2
 sealing of the KEK, and rotating the KEK with the CA.
 
-**T2** (presets and invitations) is in progress. Done (task 2):
+**T2** (presets and invitations) is implemented: tasks 1–5 of §18, then
+the follow-ups from testing against real Google Workspace and JumpCloud
+tenants. The real-IdP checklist ([idp-checks.md](idp-checks.md)) is the
+operator's to run. Task 2:
 
 | Spec | Code |
 |---|---|
@@ -1433,7 +1440,7 @@ sealing of the KEK, and rotating the KEK with the CA.
 | gxctl and UI | `gxctl connector add google`; the UI lists `google` connectors and offers them at login (its form is task 5) |
 | Tests | `presets/google.rs` unit tests; `connector_tests.rs::google_*` against the mock IdP |
 
-Done (task 3):
+Task 3:
 
 | Spec | Code |
 |---|---|
@@ -1443,7 +1450,7 @@ Done (task 3):
 | gxctl and UI | `gxctl invite list|create|revoke`; the tenant page's Invitations card (the link shown once); the signed-out page `/invite/<id>` (`pages/Invite.tsx`) |
 | Tests | `invitations.rs` unit tests; `connector_tests.rs::invitations_let_one_known_person_in_once`; UI e2e `invitations.spec.ts` |
 
-Done (tasks 4 and 5):
+Tasks 4 and 5, and the follow-ups:
 
 | Spec | Code |
 |---|---|
@@ -1455,6 +1462,7 @@ Done (tasks 4 and 5):
 | Delete a user (§6.3) | `IdentityStore::delete_user` (one write), `UserService.DeleteUser`; never oneself or the last `system-admin`/`directory-admin`; the Access page's Delete |
 | The first tenant-admin at tenant creation (§11) | `CreateTenantRequest.first_admin`, `invitation_link`; the Tenants page's create form |
 | One Directory page (§15) | `pages/Directory.tsx`: Overview, Tenants, Users & roles, Connectors, Policies as tabs; `/tenants`, `/access`, `/connectors`, `/policies` lead to them; a local account's label names its host in a cluster (`<name>@<node>`, clustering.md D13) |
+| Per-host system roles (clustering.md §12.2) | `AddSystemBinding.node` links auditor, net-admin or host paths to one node's `Host`; `ListSystemBindings.node`; `gxctl system-binding … --node`; the Scope select on System roles and the node page's Roles on this host |
 | Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
 | Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 
