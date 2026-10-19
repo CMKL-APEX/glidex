@@ -750,8 +750,11 @@ impl VmManager {
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
 
-        // Dependencies.
-        let bindings = match self.disk_bindings(vm) {
+        // Dependencies: disks, and this node's copy of the firmware.
+        let bindings = match self
+            .disk_bindings(vm)
+            .and_then(|(root, data)| Ok((root, data, self.firmware_binding(vm)?)))
+        {
             Ok(b) => {
                 set_cond(
                     &mut st.conditions,
@@ -896,9 +899,10 @@ impl VmManager {
         &self,
         vm: &Vm,
         st: &mut VmStatus,
-        (root, data): (
+        (root, data, firmware): (
             Option<(crate::models::DiskBinding, crate::images::Disk)>,
             Vec<crate::models::DiskBinding>,
+            Option<String>,
         ),
     ) -> Result<(), LaunchFailure> {
         let paths = vm.paths();
@@ -907,6 +911,9 @@ impl VmManager {
         let mut config = vm.config().clone();
         config.root_disk_binding = root.as_ref().map(|(b, _)| b.clone());
         config.data_disk_bindings = data;
+        if firmware.is_some() {
+            config.firmware_path = firmware;
+        }
         if config.firmware_path.is_some() && vm.hypervisor() == HypervisorType::Qemu {
             config.firmware_vars_path = Some(self.firmware_vars_path(&vm.id));
             if let Some(id) = &config.firmware_image {

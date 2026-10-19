@@ -1973,6 +1973,28 @@ impl VmManager {
         Ok((root, data))
     }
 
+    /// This node's copy of a VM's firmware image, checked to exist: the
+    /// stored `firmware_path` is the creating server's, which another node
+    /// need not share (spec/storage.md §15). `None` without a firmware image.
+    pub(crate) fn firmware_binding(&self, vm: &Vm) -> Result<Option<String>, VmManagerError> {
+        let Some(id) = vm.config().firmware_image.as_deref() else {
+            return Ok(None);
+        };
+        let path = self.images.firmware_path(id);
+        if !path.exists() {
+            let name = self
+                .images
+                .get_image(id)
+                .map(|i| i.name)
+                .unwrap_or_else(|_| id.to_string());
+            return Err(ImageError::NotReady(format!(
+                "firmware {name} has not been copied to this node yet"
+            ))
+            .into());
+        }
+        Ok(Some(path.to_string_lossy().into_owned()))
+    }
+
     // ---- desired power state ----------------------------------------------
 
     /// Start a VM, quotas not enforced (embedding and tests); returns at

@@ -1673,6 +1673,139 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     assert!(copies.iter().any(|c| c["node_name"] == "agent1"), "{v}");
 }
 
+/// A VM boots through its node's own copy of a firmware image, not the
+/// path on the server that created it (each test node has its own image
+/// directory), and waits for that copy (spec/storage.md §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = serial().await;
+    let mut cfg = test_config();
+    cfg.reconcile.resync_secs = 5;
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = new_cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    agent.manager.start_controllers();
+
+    // A firmware image only the server holds.
+    let data = vec![9u8; 4096];
+    let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
+    let fw_id = "fw-1";
+    let img = json!({
+        "id": fw_id, "name": "fw-ch", "kind": "firmware", "hypervisor": "cloudhypervisor",
+        "source": { "kind": "firmware", "key": "test", "url": "http://example.invalid/fw", "version": "1" },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": data.len(), "file_size_bytes": data.len(),
+        "sha256": sha, "arch": "x86_64", "created_at": 1,
+    });
+    let server_path = server.manager.images().firmware_path(fw_id);
+    std::fs::create_dir_all(server_path.parent().unwrap()).unwrap();
+    std::fs::write(&server_path, &data).unwrap();
+    server
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(fw_id, img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(json!({ "name": "fw-vm", "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
+                     "firmware": "fw-ch", "rootfs_path": "/path/to/disk.raw", "node": "agent1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    let (s, v) = call(&server, "POST", &format!("/vms/{id}/start"), None, &[]).await;
+    assert!(s.is_success(), "{s} {v}");
+
+    // The agent copies the firmware it needs, then launches through it.
+    let agent_path = agent.manager.images().firmware_path(fw_id);
+    assert_ne!(agent_path, server_path);
+    wait_for("the agent's firmware copy", || async {
+        agent_path.exists()
+    })
+    .await;
+    let launch = wait_for_launch_file(&agent, &id).await;
+    let argv: Vec<String> = serde_json::from_value(launch["argv"].clone()).unwrap();
+    let argv = argv.join(" ");
+    assert!(
+        argv.contains(agent_path.to_str().unwrap()),
+        "launched without the agent's copy: {argv}"
+    );
+    assert!(
+        !argv.contains(server_path.to_str().unwrap()),
+        "launched through the server's path: {argv}"
+    );
+}
+
+/// The `launch.json` a node wrote for `id`, once it has.
+async fn wait_for_launch_file(cp: &Cp, id: &str) -> Value {
+    let vm = cp
+        .manager
+        .list_vms()
+        .await
+        .into_iter()
+        .find(|v| v.id == id)
+        .expect("the VM is in the node's cache");
+    let path = vm.paths().launch;
+    wait_for("the launch file", || async {
+        std::path::Path::new(&path).exists()
+    })
+    .await;
+    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+}
+
 fn vm_unpinned(name: &str) -> Value {
     json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
             "firmware_path": "/path/to/CLOUDHV.fd", "rootfs_path": "/path/to/disk.raw" })
