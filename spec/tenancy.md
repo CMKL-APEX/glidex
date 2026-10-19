@@ -1662,7 +1662,7 @@ users and teams:
 | D20 in one write | `IdentityStore::deprovision`: disabled, sessions, personal tokens, the connector's memberships; an administrator's stop stays the reason |
 | Field ownership (§8.3) | `service/access.rs`: `409 managed_by_connector` for a managed user's name, enabling one its IdP disabled, deleting an enabled one, a managed team's name or deletion, and a provisioned connector's memberships; an administrator may disable a managed user |
 | Deleting a connector (§8.3) | `IdentityStore::release_connector` (one write); `DeleteConnectorRequest.users` (`disable` / `detach`), `DeleteConnectorResponse.{users, teams}`; gxctl `connector remove --detach-users`; the Connectors page asks for a SCIM connector |
-| UI | the Access page: "managed by <connector>", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
+| UI | the Access page: "managed by `<connector>`", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
 | Tests | `connector_tests.rs::managed_users_and_teams_belong_to_their_connector` |
 
 Task 3, SCIM tokens:
