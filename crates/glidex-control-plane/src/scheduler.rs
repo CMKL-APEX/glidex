@@ -73,6 +73,7 @@ impl Load {
 }
 
 /// One VM placed on a node, for [`loads`].
+#[derive(Debug, Clone, Default)]
 pub struct Placed {
     pub node: String,
     pub vcpus: u64,
@@ -1099,6 +1100,7 @@ mod tests {
                 page_kib: c.page_kib,
                 name: "vm".into(),
                 devices: Vec::new(),
+                ..Default::default()
             });
         }
         // The pool is full; ordinary memory is untouched.
@@ -1148,6 +1150,7 @@ mod tests {
             page_kib: 2048,
             name: "vm".into(),
             devices: Vec::new(),
+            ..Default::default()
         }]);
         let second = schedule(&r, &[(n.clone(), load)], &cfg()).unwrap();
         assert_eq!(
@@ -1174,6 +1177,7 @@ mod tests {
             page_kib: 2048,
             name: "vm".into(),
             devices: Vec::new(),
+            ..Default::default()
         }]);
         let nodes = vec![
             (with_hugepages("a", 8192, 2048, 0), busy),
@@ -1190,6 +1194,7 @@ mod tests {
             page_kib: p.page_kib,
             name: p.name.clone(),
             devices: p.devices.clone(),
+            ..Default::default()
         }))
         .remove("a")
         .unwrap_or_default()
