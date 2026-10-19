@@ -1,4 +1,6 @@
-//! Functional tests for firmware (UEFI) boot and cloud-init seed generation.
+//! Functional tests for firmware (UEFI) boot, direct kernel boot
+//! (`kernel_boot_with_initrd`: `GLIDEX_TEST_KERNEL`, `GLIDEX_TEST_INITRD`)
+//! and cloud-init seed generation.
 //!
 //! Two tiers:
 //!
@@ -801,6 +803,95 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     // The credential is no longer referenced and can be removed.
     let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, cloud-hypervisor and GLIDEX_TEST_{KERNEL,INITRD,IMAGE}"]
+async fn kernel_boot_with_initrd() {
+    kernel_boot_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, qemu-system-x86_64 and GLIDEX_TEST_{KERNEL,INITRD,IMAGE}"]
+async fn qemu_kernel_boot_with_initrd() {
+    kernel_boot_e2e("qemu").await;
+}
+
+/// Direct kernel boot from host paths (spec/kernel-boot.md K0): a distro
+/// kernel and its initramfs mount the cloud image's root partition, on the
+/// serial port by default and on the virtio console with `console=hvc0`.
+/// `GLIDEX_TEST_KERNEL` / `GLIDEX_TEST_INITRD` are the image build's own
+/// (Ubuntu publishes them in `unpacked/`); the image must have the
+/// `cloudimg-rootfs` label. No seed or NIC: the boot is checked up to
+/// systemd, then the VM is stopped.
+async fn kernel_boot_e2e(hypervisor: &str) {
+    let kernel = env_path("GLIDEX_TEST_KERNEL", None);
+    let initrd = env_path("GLIDEX_TEST_INITRD", None);
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let rootfs = tmp.path().join("rootfs.img");
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
+    std::fs::set_permissions(&rootfs, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+
+    for console_dev in ["ttyS0", "hvc0"] {
+        let name = format!("gx-kernel-{console_dev}");
+        let (status, vm) = request(
+            &app,
+            "POST",
+            "/vms",
+            Some(json!({
+                "name": name,
+                "vcpu_count": 2,
+                "mem_size_mib": 2048,
+                "hypervisor": hypervisor_pb(hypervisor),
+                "kernel_image_path": kernel,
+                "initrd_path": initrd,
+                "kernel_args": format!("console={console_dev} root=LABEL=cloudimg-rootfs ro panic=-1"),
+                "rootfs_path": rootfs,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{vm}");
+        let id = vm_id(&vm);
+        let (status, body) =
+            request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(state(&body), "running");
+
+        // The kernel's first line on the console (serial: from the very
+        // start; virtio: replayed from the console's history), the initrd's
+        // root mount, then systemd.
+        let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+        tokio::task::spawn_blocking(move || {
+            let mut console = Console::connect(&console_path);
+            if console_dev == "ttyS0" {
+                console.expect("Linux version", Duration::from_secs(60));
+            }
+            console.expect("Welcome to ", Duration::from_secs(180));
+        })
+        .await
+        .unwrap();
+
+        let (status, body) = request(
+            &app,
+            "POST",
+            &format!("/vms/{id}/stop?graceful_timeout_secs=5&wait=120"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(state(&body), "stopped");
+        let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

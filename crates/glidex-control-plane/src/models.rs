@@ -99,6 +99,9 @@ pub struct VmConfig {
     pub mem_size_mib: u32,
     #[serde(default)]
     pub kernel_image_path: String,
+    /// initramfs loaded with `kernel_image_path` (kernel boot only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_path: Option<String>,
     /// UEFI firmware: Cloud Hypervisor's `CLOUDHV.fd`, or an OVMF code
     /// image (`OVMF_CODE*.fd`) for QEMU. When set, the guest boots from its
     /// disk's bootloader and `kernel_image_path` / `kernel_args` are

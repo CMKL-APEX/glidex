@@ -112,7 +112,7 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 | Boot disk | `image`, `root_disk` or `rootfs_path` | Exactly one. Fixed. See below. |
 | Root disk size | `root_disk_size_gib` | With `image` only. Default: the image's size, at least 10 GiB. |
 | Firmware | `firmware` | A firmware image (name or id). Fixed. |
-| Kernel boot | `kernel_image_path`, `kernel_args` | Instead of firmware. Fixed path; arguments changeable. |
+| Kernel boot | `kernel_image_path`, `initrd_path`, `kernel_args` | Instead of firmware (not both). Fixed paths; arguments changeable. |
 | Credential | `credential` | A credential of the project. Firmware boot with the generated cloud-init seed only. |
 | Networks | `networks` | Up to 8 NICs, in order. Changeable; applies at the next start. |
 | Data disks | `data_disks` | Disks of the project, attached after the boot disk. Changeable; applies at the next start. |
@@ -152,14 +152,18 @@ you which one to pull (`cloudhv-edk2` for Cloud Hypervisor, `ovmf` for
 QEMU).
 
 For a direct kernel boot, give `kernel_image_path` (and a root
-filesystem in `rootfs_path`) instead. The default kernel arguments are
-`console=hvc0 root=/dev/vda reboot=k panic=1` on Cloud Hypervisor and
-`console=ttyS0 root=/dev/vda reboot=k panic=1` on QEMU.
+filesystem in `rootfs_path`) instead, plus `initrd_path` if the kernel
+needs an initramfs (distro kernels do). The default kernel arguments are
+`console=ttyS0 root=/dev/vda reboot=k panic=1` on both hypervisors. The
+console is on the serial port, unless the last `console=` in the
+arguments is `hvc0`, which selects the virtio console. A distro cloud
+image needs its own root, e.g.
+`console=ttyS0 root=LABEL=cloudimg-rootfs ro` for Ubuntu.
 
 ### Host paths
 
-`rootfs_path`, `kernel_image_path`, `cloud_init_path` and
-`firmware_path` name files on the host. Using them needs the
+`rootfs_path`, `kernel_image_path`, `initrd_path`, `cloud_init_path`
+and `firmware_path` name files on the host. Using them needs the
 `system-admin` role, and the files must be readable by the service
 user the control plane runs as. Most users should use images, disks and
 firmware images instead. A path under `/tmp` or `/var/tmp` is refused:

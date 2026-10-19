@@ -37,12 +37,12 @@ impl HypervisorType {
         }
     }
 
-    /// Get the default kernel boot arguments for this hypervisor
+    /// The kernel arguments a new kernel-boot VM gets when it names none.
+    /// The same for both backends: the serial port shows the kernel from
+    /// its first line (spec/kernel-boot.md K5). VMs created before this
+    /// keep the arguments they were stored with.
     pub fn default_kernel_args(&self) -> &'static str {
-        match self {
-            HypervisorType::CloudHypervisor => "console=hvc0 root=/dev/vda reboot=k panic=1",
-            HypervisorType::Qemu => "console=ttyS0 root=/dev/vda reboot=k panic=1",
-        }
+        DEFAULT_KERNEL_ARGS
     }
 
     /// The UEFI firmware a VM of this type boots from when the caller
@@ -69,6 +69,44 @@ impl fmt::Display for HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => write!(f, "cloudhypervisor"),
             HypervisorType::Qemu => write!(f, "qemu"),
+        }
+    }
+}
+
+/// See `HypervisorType::default_kernel_args`.
+pub const DEFAULT_KERNEL_ARGS: &str = "console=ttyS0 root=/dev/vda reboot=k panic=1";
+
+/// x86's `COMMAND_LINE_SIZE` (2048) less the terminating NUL.
+pub const MAX_KERNEL_ARGS_LEN: usize = 2047;
+
+/// Where the guest's console is (spec/kernel-boot.md §5.2): what the
+/// shim's PTY is wired to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleDevice {
+    /// The emulated 16550 UART (`ttyS0`).
+    Serial,
+    /// The virtio console (`hvc0`).
+    Virtio,
+}
+
+impl ConsoleDevice {
+    /// The device a VM's console is on: always the serial port on a
+    /// firmware boot (cloud images put their console there), else the one
+    /// the kernel's last `console=` names, as the kernel makes the last
+    /// one `/dev/console`. `hvc…` is the virtio console; any other name,
+    /// or no `console=`, the serial port.
+    pub fn of(config: &VmConfig) -> Self {
+        if config.firmware_path.is_some() {
+            return ConsoleDevice::Serial;
+        }
+        let last = config
+            .kernel_args
+            .split_whitespace()
+            .rev()
+            .find_map(|t| t.strip_prefix("console="));
+        match last {
+            Some(dev) if dev.starts_with("hvc") => ConsoleDevice::Virtio,
+            _ => ConsoleDevice::Serial,
         }
     }
 }
@@ -290,6 +328,23 @@ pub fn check_command_line_path(field: &str, path: &str) -> Result<(), Hypervisor
     Ok(())
 }
 
+/// Admission rule for `kernel_args` (spec/kernel-boot.md K7): it is one
+/// argv element, so only its length and control characters matter.
+pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
+    if args.len() > MAX_KERNEL_ARGS_LEN {
+        return Err(HypervisorError::InvalidConfig(format!(
+            "kernel_args must be at most {} bytes",
+            MAX_KERNEL_ARGS_LEN
+        )));
+    }
+    if args.chars().any(|c| c.is_control()) {
+        return Err(HypervisorError::InvalidConfig(
+            "kernel_args must not contain control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +389,60 @@ mod tests {
             assert_eq!(driver(ty).hypervisor_type(), ty);
             let _ = driver(ty).is_available();
         }
+    }
+
+    fn kernel_config(args: &str, firmware: Option<&str>) -> VmConfig {
+        serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": args, "firmware_path": firmware,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn console_device_follows_the_last_console() {
+        use ConsoleDevice::*;
+        for (args, want) in [
+            ("console=ttyS0 root=/dev/vda", Serial),
+            ("console=hvc0 root=/dev/vda", Virtio),
+            ("console=ttyS0 console=hvc0", Virtio),
+            ("console=hvc0 console=ttyS0,115200n8", Serial),
+            ("console=hvc1", Virtio),
+            ("root=/dev/vda", Serial),
+            ("", Serial),
+            // Only a whole `console=` token counts.
+            ("xconsole=hvc0", Serial),
+        ] {
+            assert_eq!(
+                ConsoleDevice::of(&kernel_config(args, None)),
+                want,
+                "{args}"
+            );
+        }
+        // Firmware boot: the serial port, whatever the arguments say.
+        assert_eq!(
+            ConsoleDevice::of(&kernel_config("console=hvc0", Some("/fw.fd"))),
+            Serial
+        );
+    }
+
+    #[test]
+    fn kernel_args_limits() {
+        assert!(check_kernel_args(DEFAULT_KERNEL_ARGS).is_ok());
+        assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN)).is_ok());
+        assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN + 1)).is_err());
+        assert!(check_kernel_args("root=/dev/vda init=/bin/sh").is_ok());
+        assert!(check_kernel_args("root=/dev/vda\ninit=/bin/sh").is_err());
+        assert!(check_kernel_args("a\tb").is_err());
+    }
+
+    #[test]
+    fn default_kernel_args_are_shared() {
+        assert_eq!(
+            HypervisorType::CloudHypervisor.default_kernel_args(),
+            HypervisorType::Qemu.default_kernel_args()
+        );
+        assert!(DEFAULT_KERNEL_ARGS.starts_with("console=ttyS0 "));
     }
 
     #[test]

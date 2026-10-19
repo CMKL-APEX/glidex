@@ -502,6 +502,7 @@ fn names_host_path(req: &pb::CreateVmRequest) -> bool {
         || !req.rootfs_path.is_empty()
         || req.cloud_init_path.is_some()
         || req.firmware_path.is_some()
+        || req.initrd_path.is_some()
 }
 
 pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
@@ -582,6 +583,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
         mem_size_mib: req.mem_size_mib,
         kernel_image_path: m::expand_tilde(req.kernel_image_path),
+        initrd_path: req.initrd_path.map(m::expand_tilde),
         firmware_path: req.firmware_path.map(m::expand_tilde),
         cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
         credential: req.credential,

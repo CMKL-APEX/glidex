@@ -2,8 +2,8 @@
 //! (no `-S`, D9), and driven over QMP (`glidex-hv-client`) at run time.
 
 use super::{
-    HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, VmDisk, needs_shared_memory,
-    resolve_binary, vfio_bdf, vfio_device_id, vm_disks,
+    ConsoleDevice, HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, VmDisk,
+    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
@@ -277,6 +277,9 @@ impl LaunchSpec<'_> {
             Some(Firmware::Bios(path)) => push(&mut args, "-bios", path.clone()),
             None => {
                 push(&mut args, "-kernel", config.kernel_image_path.clone());
+                if let Some(initrd) = &config.initrd_path {
+                    push(&mut args, "-initrd", initrd.clone());
+                }
                 push(&mut args, "-append", config.kernel_args.clone());
             }
         }
@@ -323,7 +326,17 @@ impl LaunchSpec<'_> {
             "-qmp",
             format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)),
         );
-        push(&mut args, "-serial", "stdio".into());
+        // The shim's PTY is QEMU's stdio; it carries whichever device the
+        // guest's console is on (spec/kernel-boot.md §5.2).
+        match ConsoleDevice::of(config) {
+            ConsoleDevice::Serial => push(&mut args, "-serial", "stdio".into()),
+            ConsoleDevice::Virtio => {
+                push(&mut args, "-serial", "none".into());
+                push(&mut args, "-device", "virtio-serial-pci,id=vser0".into());
+                push(&mut args, "-chardev", "stdio,id=con0".into());
+                push(&mut args, "-device", "virtconsole,chardev=con0".into());
+            }
+        }
         push(&mut args, "-display", "none".into());
         args
     }
@@ -598,6 +611,29 @@ mod tests {
             queue_pairs,
             mtu,
         }
+    }
+
+    #[test]
+    fn kernel_boot_with_initrd_and_console_device() {
+        let c = config(serde_json::json!({"initrd_path": "/boot/initrd.img"}));
+        let args = spec(&c).args();
+        assert_eq!(values(&args, "-initrd"), ["/boot/initrd.img"]);
+        assert_eq!(values(&args, "-serial"), ["stdio"]);
+        assert!(values(&args, "-chardev").is_empty());
+
+        // `console=hvc0`: a virtio console on stdio, no serial port.
+        let c = config(serde_json::json!({"kernel_args": "console=hvc0 root=/dev/vda"}));
+        let args = spec(&c).args();
+        assert!(values(&args, "-initrd").is_empty());
+        assert_eq!(values(&args, "-serial"), ["none"]);
+        assert_eq!(values(&args, "-chardev"), ["stdio,id=con0"]);
+        assert_eq!(
+            values(&args, "-device")
+                .into_iter()
+                .filter(|d| d.starts_with("virtio-serial") || d.starts_with("virtconsole"))
+                .collect::<Vec<_>>(),
+            ["virtio-serial-pci,id=vser0", "virtconsole,chardev=con0"]
+        );
     }
 
     #[test]

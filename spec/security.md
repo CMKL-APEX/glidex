@@ -21,7 +21,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | `glidex` group | Service group **and** netd authority **and** console access; the installer adds the invoking human (`glidex-install/src/main.rs:1083`). | Every member is a network administrator of the host and can bypass any API check. |
 | VM runtime files | `/tmp/<prefix>-<id>.{sock,console.sock,log,cloudinit.img}` (`models.rs:157-176`), `UMask=0007`, no `PrivateTmp`. | Group members can drive any VM's hypervisor API (CH HTTP / QMP) directly; predictable names in a shared `/tmp`. |
 | netd ownership | `detach_vm_port` / `release_vm` ignore the stored `owner_uid` (`glidex-netd/src/server.rs:561-580`). | Any full-socket peer can detach any VM's ports. |
-| Host paths | `rootfs_path`, `kernel_image_path`, `firmware_path`, `cloud_init_path` and `vfio_devices` are taken as given. | Any caller can make the control plane open any file it can read, or pass through any PCI device. |
+| Host paths | `rootfs_path`, `kernel_image_path`, `initrd_path`, `firmware_path`, `cloud_init_path` and `vfio_devices` are taken as given. | Any caller can make the control plane open any file it can read, or pass through any PCI device. |
 | NAT isolation | The NAT forward chain accepts anything entering from a NAT bridge (`glidex-ovs/src/nat.rs:265-268`), and nothing filters guest traffic to the host. | A VM on one NAT network can open connections to VMs on another, and to any host service listening on the gateway (e.g. the control plane with `GLIDEX_LISTEN=0.0.0.0`). Matters once projects own networks. |
 | Guest credentials | Hashes are never returned (`credentials.rs:72-110`). | — (kept) |
 | Downloads | Firmware, Cloud-Hypervisor and images are sha256-verified. Rust and Bun are installed with `curl … \| sh` (`glidex-install/src/main.rs:723,748`). | Unpinned scripts run on every install/update. |
@@ -851,7 +851,7 @@ allow.**
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
-**Paths.** Any explicit `kernel_image_path`, `rootfs_path` or
+**Paths.** Any explicit `kernel_image_path`, `initrd_path`, `rootfs_path` or
 `cloud_init_path` needs `useHostPath`, and so does any `firmware_path`.
 Managed disks are named with `image`, `root_disk` and `data_disks`
 instead, and firmware with `firmware` (a firmware image, `readImage`). Paths into the disk or image directories are not

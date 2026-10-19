@@ -807,7 +807,9 @@ pub async fn create(client: &ApiClient) {
     let kernel_args = if firmware_boot {
         None
     } else {
-        prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
+        prompt_optional(
+            "Kernel arguments (optional, default: console=ttyS0 root=/dev/vda reboot=k panic=1): ",
+        )
     };
 
     // Networks: offer the ones that exist.

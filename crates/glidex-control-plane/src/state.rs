@@ -15,7 +15,9 @@ use crate::controller::queue::{Key, WorkQueue};
 use crate::credentials::{
     CreateCredentialRequest, Credential, CredentialError, CredentialStore, UpdateCredentialRequest,
 };
-use crate::hypervisor::{HypervisorError, HypervisorType, check_command_line_path};
+use crate::hypervisor::{
+    HypervisorError, HypervisorType, check_command_line_path, check_kernel_args,
+};
 use crate::images::{
     self, CatalogItem, CreateDiskRequest, Disk, DiskResponse, ExtendMode, ImageError, ImageManager,
     ImageResponse, ImageSettings, PullImageRequest, ResizeDiskRequest, disk::requested_size,
@@ -282,6 +284,8 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub kernel_image_path: Option<serde_json::Value>,
     #[serde(default)]
+    pub initrd_path: Option<serde_json::Value>,
+    #[serde(default)]
     pub firmware_path: Option<serde_json::Value>,
     #[serde(default)]
     pub firmware: Option<serde_json::Value>,
@@ -301,6 +305,7 @@ impl ConfigPatch {
         for (name, present) in [
             ("hypervisor", self.hypervisor.is_some()),
             ("kernel_image_path", self.kernel_image_path.is_some()),
+            ("initrd_path", self.initrd_path.is_some()),
             ("firmware_path", self.firmware_path.is_some()),
             ("firmware", self.firmware.is_some()),
             ("rootfs_path", self.rootfs_path.is_some()),
@@ -1743,6 +1748,9 @@ impl VmManager {
             ("kernel_image_path", &config.kernel_image_path),
             ("rootfs_path", &config.rootfs_path),
         ];
+        if let Some(p) = &config.initrd_path {
+            paths.push(("initrd_path", p));
+        }
         if let Some(p) = &config.firmware_path {
             paths.push(("firmware_path", p));
         }
@@ -1908,6 +1916,18 @@ impl VmManager {
                 "give firmware (an image) or firmware_path, not both",
             ));
         }
+        // One boot mode (spec/kernel-boot.md K2): firmware no longer
+        // silently wins over a kernel.
+        if (sel.firmware.is_some() || config.firmware_path.is_some())
+            && !config.kernel_image_path.is_empty()
+        {
+            return Err(invalid(
+                "give a kernel (kernel_image_path) or firmware, not both",
+            ));
+        }
+        if config.initrd_path.is_some() && config.kernel_image_path.is_empty() {
+            return Err(invalid("initrd_path needs kernel_image_path"));
+        }
         // The VM's architecture: its root disk's image's (§9.2.1).
         let root_arch = match (&sel.image, &sel.root_disk) {
             (Some(key), _) => Some(self.images.get_image(key)?.arch),
@@ -1966,6 +1986,7 @@ impl VmManager {
         {
             return Err(invalid("either kernel_image_path or firmware is required"));
         }
+        check_kernel_args(&config.kernel_args)?;
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
@@ -2611,6 +2632,7 @@ impl VmManager {
                 config.mem_size_mib = m;
             }
             if let Some(a) = c.kernel_args {
+                check_kernel_args(&a)?;
                 config.kernel_args = a;
             }
             if let Some(h) = c.hugepages {

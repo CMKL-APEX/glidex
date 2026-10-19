@@ -1,6 +1,6 @@
 # Direct kernel boot
 
-Status: **draft**. Nothing here is implemented yet. Extends
+Status: **draft**; K0 implemented (§12). Extends
 [images.md](images.md), [hypervisors.md](hypervisors.md),
 [console.md](console.md) and [credentials.md](credentials.md). §13 lists
 the changes the other documents need once this is accepted.
@@ -216,15 +216,15 @@ quote and control-character rules and the systemd runner's `/tmp` rule.
 
 ### 5.2 Console (K5)
 
-`hypervisor::console_device(kernel_args) -> Serial | Virtio` takes the
-last `console=` token. The `console=` value up to the first `,` (or the
-whole value) starting with `hvc` means `Virtio`; any other value, or no
-`console=` at all, means `Serial`. Firmware boot is always `Serial`.
+`hypervisor::ConsoleDevice::of(config) -> Serial | Virtio` takes the
+last `console=` token of `kernel_args`. A value starting with `hvc`
+means `Virtio`; any other value, or no `console=` at all, means
+`Serial`. Firmware boot is always `Serial`.
 
 | | Serial | Virtio |
 |---|---|---|
 | Cloud Hypervisor | `--console off --serial tty` | `--console tty --serial off` (today's kernel boot) |
-| QEMU | `-serial stdio` (today) | `-serial none -device virtio-serial-pci,id=vser0 -chardev stdio,id=con0,signal=off -device virtconsole,chardev=con0` |
+| QEMU | `-serial stdio` (today) | `-serial none -device virtio-serial-pci,id=vser0 -chardev stdio,id=con0 -device virtconsole,chardev=con0` |
 
 Existing VMs: their stored `kernel_args` already say `console=hvc0`
 (Cloud Hypervisor) or `console=ttyS0` (QEMU), so each gets the device
@@ -371,7 +371,7 @@ and it has to treat the image's filesystem as untrusted input.
 ## 11. Testing
 
 - **Unit (backends).** Argv for kernel boot with and without initrd, for
-  both backends. `console_device` cases: `console=ttyS0`, `console=hvc0`,
+  both backends. `ConsoleDevice::of` cases: `console=ttyS0`, `console=hvc0`,
   both orders, `console=ttyS0,115200n8`, none. QEMU virtconsole argv.
   Existing-record defaults keep today's argv. The full command line parsed
   by the pinned Cloud Hypervisor (as
@@ -399,12 +399,26 @@ and it has to treat the image's filesystem as untrusted input.
   arguments, host-path fields only with `host.paths`.
   `vm-lifecycle.spec.ts`: a kernel-boot variant of the lifecycle test,
   where the host has the images.
+- **K0 host test (`#[ignore]`d, `kernel_boot_with_initrd` and
+  `qemu_kernel_boot_with_initrd` in `tests/functional_tests.rs`).**
+  `GLIDEX_TEST_KERNEL`, `GLIDEX_TEST_INITRD` and `GLIDEX_TEST_IMAGE` are
+  host paths. The test creates a VM with `initrd_path` and
+  `root=LABEL=cloudimg-rootfs`, starts it through the VM controller and
+  shim, and expects the kernel's first line and systemd's banner on the
+  console, first with `console=ttyS0` and then with `console=hvc0`.
+
+  Done on 2026-10-19 with Ubuntu 24.04 build `20261017` (its
+  `unpacked/` kernel `6.8.0-147-generic` and initrd, the qcow2 image as
+  `rootfs_path`), Cloud Hypervisor v53.0 and the host's QEMU. Both
+  backends passed on both console devices, including QEMU's new
+  `virtconsole`, in 62 s. Not covered by K0: seed, NIC and login,
+  which need K2.
 
 ## 12. Milestones
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **K0** backends | `initrd_path` (host path), `console_device` (K5) and the shared `console=ttyS0` default, `kernel_args` limits (K7), K2 conflict check | §11 backend unit tests; host boot of F-K3 through glidex with host paths. |
+| **K0** backends *(done)* | `initrd_path` (host path), `ConsoleDevice` (K5) and the shared `console=ttyS0` default, `kernel_args` limits (K7), K2 conflict check | §11 backend unit tests; host boot of F-K3 through glidex with host paths. |
 | **K1** kernel images | `ImageKind::Kernel`, storage, URL pull and host import, verify (K8), lifecycle, image cache | §11 image unit and API tests. |
 | **K2** VM integration | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch | §11 VM API tests; the functional test with a URL-pulled kernel. |
 | **K3** kernel catalog | `GET /images/kernel-catalog`, `kernel_for`, `kernel`, `with_kernel` if accepted | Catalog unit tests; the functional test as written. |

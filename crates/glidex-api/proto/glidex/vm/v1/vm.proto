@@ -375,6 +375,8 @@ message CreateVmRequest {
   optional string node = 24;
   // Wait this long (at most 300 s) for the controller to act.
   optional uint32 wait_secs = 25 [json_name = "wait_secs"];
+  // Host path (`useHostPath`): initramfs for `kernel_image_path`.
+  optional string initrd_path = 30 [json_name = "initrd_path"];
 }
 
 // The answer to a VM write (§12.3).

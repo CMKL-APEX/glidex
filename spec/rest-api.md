@@ -461,6 +461,11 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 ```
 
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
+  `initrd_path` adds an initramfs to `kernel_image_path` (a host path,
+  `useHostPath`). `kernel_args` defaults to `console=ttyS0 root=/dev/vda
+  reboot=k panic=1`; at most 2047 bytes, no control characters. The last
+  `console=` picks the console device: `hvc0` is the virtio console,
+  anything else the serial port.
 - `firmware` boots the disk through UEFI firmware instead of a kernel:
   a firmware image (id or name, [images.md](images.md#7-vm-integration))
   built for the VM's `hypervisor`, e.g.
@@ -472,8 +477,8 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   [hypervisors.md](hypervisors.md#firmware-boot-1)). `firmware_path`
   instead names a host file (needs `useHostPath`; not with `firmware`);
   relative paths resolve against the control plane's working directory,
-  so prefer absolute or `~` paths. `kernel_image_path` and `kernel_args`
-  may then be omitted; they are ignored if given. The
+  so prefer absolute or `~` paths. `kernel_image_path` must then be
+  omitted (`400 invalid_config` with both); `kernel_args` is ignored. The
   console is attached to the guest's serial port (`ttyS0`), which is where
   distro cloud images put their login prompt.
 - `cloud_init_path` attaches a NoCloud seed image
