@@ -113,6 +113,8 @@ tables! {
     DirectoryKeys = 44 => "directory_keys",
     // Invitations to tenants (spec/tenancy.md §6.1).
     Invitations = 45 => "invitations",
+    // SCIM bearer tokens, by hash (spec/tenancy.md §8.1).
+    ScimTokens = 46 => "scim_tokens",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -132,7 +134,7 @@ impl TableId {
         match self {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
-            | Invitations => Scope::Directory,
+            | Invitations | ScimTokens => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

@@ -1858,6 +1858,15 @@ export interface Connector {
   updated_at?: string;
 }
 
+/** A SCIM bearer token's record (glidex.directory.v1.ScimToken); never the token. */
+export interface ScimToken {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at?: string;
+  expires_at?: string;
+}
+
 /** The settable part of a connector, as POST and PATCH take it. */
 export type ConnectorInput = Omit<Connector, "directory_id" | "kind" | "secrets" | "source" | "created_at" | "updated_at">;
 

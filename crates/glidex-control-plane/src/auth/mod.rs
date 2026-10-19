@@ -248,6 +248,8 @@ pub struct AuthService {
     pub connectors: crate::directory::ConnectorStore,
     /// Invitations to the directory's tenants (spec/tenancy.md §6.1).
     pub invitations: crate::directory::invitations::InvitationStore,
+    /// SCIM bearer tokens (spec/tenancy.md §8.1).
+    pub scim_tokens: crate::directory::scim_tokens::ScimTokenStore,
     /// One OIDC client per connector, rebuilt when its record changes.
     oidc: Mutex<
         HashMap<
@@ -369,6 +371,7 @@ impl AuthService {
             connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
                 .map_err(connector_err)?,
             invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
+            scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
@@ -402,6 +405,7 @@ impl AuthService {
             connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
                 .map_err(connector_err)?,
             invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
+            scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,

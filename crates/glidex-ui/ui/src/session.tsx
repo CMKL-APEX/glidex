@@ -72,6 +72,8 @@ const HOST_ACTION_RESOURCE = {
   deleteConnector: "Directory",
   setConnectorSecret: "Directory",
   testConnector: "Directory",
+  readScimTokens: "Directory",
+  manageScimTokens: "Directory",
 } as const satisfies Record<string, HostResourceType>;
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;

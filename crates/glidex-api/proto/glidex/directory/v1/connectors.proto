@@ -51,6 +51,32 @@ service ConnectorService {
       rest: "PUT /connectors/{id}/secrets/{field}"
     };
   }
+  // A provisioned connector's SCIM bearer tokens (spec/tenancy.md §8.1):
+  // names and lifetimes, never the tokens.
+  rpc ListScimTokens(ListScimTokensRequest) returns (ListScimTokensResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readScimTokens"
+      kind: KIND_READ
+      rest: "GET /connectors/{id}/scim-tokens"
+    };
+  }
+  // A token for the IdP to call the connector's SCIM endpoints with,
+  // shown once. The connector needs `provisioning: scim`; at most five
+  // are live at once.
+  rpc CreateScimToken(CreateScimTokenRequest) returns (CreateScimTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageScimTokens"
+      kind: KIND_WRITE
+      rest: "POST /connectors/{id}/scim-tokens"
+    };
+  }
+  rpc RevokeScimToken(RevokeScimTokenRequest) returns (RevokeScimTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageScimTokens"
+      kind: KIND_WRITE
+      rest: "DELETE /connectors/{id}/scim-tokens/{token}"
+    };
+  }
   // Check what can be checked without a user: discovery and keys, the
   // client secret being set, glidex-authd being there.
   rpc TestConnector(TestConnectorRequest) returns (TestConnectorResponse) {
@@ -243,3 +269,45 @@ message TestStep {
   optional bool ok = 2;
   string message = 3;
 }
+
+// A SCIM bearer token's record; the token itself is shown only when made.
+message ScimToken {
+  string id = 1;
+  string name = 2;
+  string created_by = 3 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 5 [json_name = "expires_at"];
+}
+
+message ListScimTokensRequest {
+  string id = 1;
+}
+
+message ListScimTokensResponse {
+  repeated ScimToken tokens = 1;
+  // Where the IdP sends its requests: this server's path, which the
+  // web UI also serves under `/api`.
+  string path = 2;
+}
+
+message CreateScimTokenRequest {
+  string id = 1;
+  // Shown in lists (default `scim`).
+  string name = 2;
+  // 1–365, default 180.
+  optional uint32 days = 3;
+}
+
+message CreateScimTokenResponse {
+  ScimToken token = 1;
+  // `gxs_…`: shown once, never stored.
+  string secret = 2;
+  string path = 3;
+}
+
+message RevokeScimTokenRequest {
+  string id = 1;
+  string token = 2;
+}
+
+message RevokeScimTokenResponse {}

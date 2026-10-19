@@ -141,3 +141,46 @@ test("an administrator removes one of a user's sign-in methods", async ({ page }
     await del(`/users/${id}`);
   }
 });
+
+test("a SCIM connector gets its endpoint and a token shown once", async ({ page }) => {
+  const ID = "e2e-scim";
+  try {
+    await page.goto("/connectors");
+    await page.getByRole("button", { name: "+ Add Connector" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.locator("#connector-kind").selectOption("jumpcloud");
+    await dialog.locator("#connector-id").fill(ID);
+    await dialog.locator("#connector-client_id").fill("jc-client");
+    await dialog.getByLabel("Create users at their first login").check();
+    // Provisioned: only the IdP's people log in, so JIT goes off.
+    await dialog.locator("#connector-provisioning").selectOption("scim");
+    await expect(dialog.getByLabel("Create users at their first login")).toBeDisabled();
+    await dialog.locator("#connector-group-mode").selectOption("auto");
+    await dialog.getByRole("button", { name: "Create Connector" }).click();
+    await expect(dialog).toBeHidden();
+    const made = (await api(`/connectors/${ID}`)).connector;
+    expect(made).toMatchObject({ provisioning: "scim", group_mode: "auto", jit: false });
+
+    const row = page.getByRole("row", { name: new RegExp(ID) });
+    await expect(row).toContainText("SCIM-provisioned, a team per group");
+    await row.getByRole("button", { name: "SCIM" }).click();
+    const scim = page.getByRole("dialog");
+    await expect(scim.getByTestId("scim-url")).toHaveText(`${new URL(page.url()).origin}/api/scim/v2/c/${ID}`);
+    await expect(scim.getByText("No tokens")).toBeVisible();
+    await scim.locator("#scim-name").fill("jumpcloud");
+    await scim.locator("#scim-days").fill("30");
+    await scim.getByRole("button", { name: "Create token" }).click();
+    const secret = (await scim.getByTestId("scim-secret").textContent()) ?? "";
+    expect(secret).toMatch(/^gxs_[0-9A-Za-z]+$/);
+    await expect(scim.getByRole("cell", { name: "jumpcloud" })).toBeVisible();
+    // Never listed again.
+    const listed = await api(`/connectors/${ID}/scim-tokens`);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+    await scim.getByRole("button", { name: "Done" }).click();
+    await expect(scim.getByTestId("scim-secret")).toHaveCount(0);
+    await scim.getByRole("button", { name: "Revoke" }).click();
+    await expect(scim.getByText("No tokens")).toBeVisible();
+  } finally {
+    await del(`/connectors/${ID}`);
+  }
+});

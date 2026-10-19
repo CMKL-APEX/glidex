@@ -72,6 +72,30 @@ impl ConnectorService for Svc {
         op!(self, ctx, req, directory::set_secret)
     }
 
+    async fn list_scim_tokens(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListScimTokensRequest>,
+    ) -> ServiceResult<ListScimTokensResponse> {
+        op!(self, ctx, req, directory::list_scim_tokens)
+    }
+
+    async fn create_scim_token(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateScimTokenRequest>,
+    ) -> ServiceResult<CreateScimTokenResponse> {
+        op!(self, ctx, req, directory::create_scim_token)
+    }
+
+    async fn revoke_scim_token(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RevokeScimTokenRequest>,
+    ) -> ServiceResult<RevokeScimTokenResponse> {
+        op!(self, ctx, req, directory::revoke_scim_token)
+    }
+
     async fn test_connector(
         &self,
         ctx: RequestContext,

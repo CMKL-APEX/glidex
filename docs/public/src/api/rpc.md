@@ -354,4 +354,7 @@ unary. REST paths and RPC requests take the same ids and names.
 |  | `DeleteConnector` | `DELETE /connectors/{id}` |
 |  | `SetSecret` | `PUT /connectors/{id}/secrets/{field}` |
 |  | `TestConnector` | `POST /connectors/{id}/test` |
+|  | `ListScimTokens` | `GET /connectors/{id}/scim-tokens` |
+|  | `CreateScimToken` | `POST /connectors/{id}/scim-tokens` |
+|  | `RevokeScimToken` | `DELETE /connectors/{id}/scim-tokens/{token}` |
 

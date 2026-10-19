@@ -160,6 +160,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action testConnector in ["directory.connectors", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // SCIM bearer tokens (spec/tenancy.md §8.1): who holds one provisions
+  // the connector's users.
+  action readScimTokens in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action manageScimTokens in ["directory.connectors", "step-up", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action listAdmissions in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageAdmissions in ["cluster.admissions", "step-up", "host-scoped"]

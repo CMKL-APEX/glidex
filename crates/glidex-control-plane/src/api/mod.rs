@@ -993,6 +993,24 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/connectors/{id}/scim-tokens",
+        "readScimTokens",
+        get(connectors::list_scim_tokens),
+    )
+    .add(
+        "POST",
+        "/connectors/{id}/scim-tokens",
+        "manageScimTokens",
+        post(connectors::create_scim_token),
+    )
+    .add(
+        "DELETE",
+        "/connectors/{id}/scim-tokens/{token}",
+        "manageScimTokens",
+        delete(connectors::revoke_scim_token),
+    )
+    .add(
+        "GET",
         "/admissions",
         "listAdmissions",
         get(tenants::list_admissions),
