@@ -501,7 +501,11 @@ One directory's outage affects only its users. Responses carry
 A managed user's display name, email, `external_id` and disabled state
 belong to its connector: manual edits return `409
 managed_by_connector`, and so does deleting a managed user that is
-still enabled (disable it at the IdP first). A managed team's name and
+still enabled (disable it at the IdP first). One exception: an
+administrator may **disable** a managed user, as an emergency stop that
+doesn't wait for the IdP (`disabled_reason: admin`). SCIM's `active:
+true` doesn't undo it (D42); only an administrator enables the user
+again. A managed team's name and
 its connector memberships are the connector's too. Links and manual team memberships stay the
 directory's. Deleting a connector disables its users (default) or
 detaches them.
