@@ -3,7 +3,7 @@ import * as api from "../api";
 import { isOidcKind } from "../types";
 import { Card, ErrorBanner, PageHeader, dangerLink, errorMessage, secondaryButton, signInLabel } from "../components/ui";
 import ConfirmDialog from "../components/ConfirmDialog";
-import { useConnectorNames } from "../hooks";
+import { useConnectorNames, useNodeNames } from "../hooks";
 import { useSession } from "../session";
 
 const LINK_ERRORS: Record<string, string> = {
@@ -18,6 +18,7 @@ const LINK_ERRORS: Record<string, string> = {
 export default function Account() {
   const { me, methods, refresh } = useSession();
   const connectors = useConnectorNames();
+  const nodes = useNodeNames();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removing, setRemoving] = useState<{ key: string; label: string } | null>(null);
@@ -77,7 +78,7 @@ export default function Account() {
           <tbody>
             {identities.map((i) => {
               const key = `${i.provider}:${i.subject}`;
-              const label = signInLabel(i.provider, connectors);
+              const label = signInLabel(i.provider, connectors, i.subject, nodes);
               return (
                 <tr key={key} className="border-b border-gray-50">
                   <td className="py-2">{label}</td>

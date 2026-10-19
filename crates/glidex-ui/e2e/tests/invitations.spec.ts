@@ -59,3 +59,35 @@ test("an invitation is made on the tenant page and its link opens signed out", a
     await del(`/connectors/${CONNECTOR}`);
   }
 });
+
+test("a new tenant invites its first administrator", async ({ page }) => {
+  // spec/tenancy.md §11: the link comes back once, with the tenant.
+  await api("/connectors", {
+    method: "POST",
+    body: { connector: { id: CONNECTOR, display_name: "E2E SSO", oidc: { issuer: "https://idp.example", client_id: "glidex" } } },
+  });
+  let tenant: string | undefined;
+  try {
+    await page.goto("/tenants");
+    await page.getByRole("button", { name: "+ Create Tenant" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.locator("#tenant-slug").fill("e2e-acme");
+    await dialog.locator("#tenant-admin-email").fill("first@example.org");
+    await dialog.locator("#tenant-admin-connector").selectOption(CONNECTOR);
+    await dialog.getByRole("button", { name: "Create Tenant" }).click();
+    const shown = dialog.getByTestId("first-admin-link").locator("code");
+    await expect(shown).toContainText("/invite/");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(dialog).toBeHidden();
+    tenant = ((await api("/tenants")).tenants ?? []).find((t: { slug: string }) => t.slug === "e2e-acme")?.id;
+    expect(tenant).toBeTruthy();
+    const inv = (await api(`/tenants/${tenant}/invitations`)).invitations ?? [];
+    expect(inv.map((i: { email: string; role: string }) => [i.email, i.role])).toEqual([["first@example.org", "role.tenant-admin"]]);
+  } finally {
+    if (tenant) {
+      for (const i of (await api(`/tenants/${tenant}/invitations`)).invitations ?? []) await del(`/invitations/${i.id}`);
+      await del(`/tenants/${tenant}`);
+    }
+    await del(`/connectors/${CONNECTOR}`);
+  }
+});

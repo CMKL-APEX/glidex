@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Navigate, Routes, Route, useLocation } from "react-router-dom";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import Dashboard from "./pages/Dashboard";
@@ -18,21 +18,18 @@ const Images = lazy(() => import("./pages/Images"));
 const Disks = lazy(() => import("./pages/Disks"));
 const Projects = lazy(() => import("./pages/Projects"));
 const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
-const Access = lazy(() => import("./pages/Access"));
 const Tokens = lazy(() => import("./pages/Tokens"));
-const Policies = lazy(() => import("./pages/Policies"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Cluster = lazy(() => import("./pages/Cluster"));
 const NodeDetail = lazy(() => import("./pages/NodeDetail"));
 const ImportPlan = lazy(() => import("./pages/ImportPlan"));
 const Usage = lazy(() => import("./pages/Usage"));
-const Tenants = lazy(() => import("./pages/Tenants"));
 const TenantDetail = lazy(() => import("./pages/TenantDetail"));
 const Admissions = lazy(() => import("./pages/Admissions"));
-const Connectors = lazy(() => import("./pages/Connectors"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
 const Invite = lazy(() => import("./pages/Invite"));
 const Account = lazy(() => import("./pages/Account"));
+const Directory = lazy(() => import("./pages/Directory"));
 
 function Shell() {
   const { project } = useSession();
@@ -54,13 +51,16 @@ function Shell() {
             <Route path="/disks" element={<Disks />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
-            <Route path="/tenants" element={<Tenants />} />
+            <Route path="/directory" element={<Directory />} />
+            <Route path="/directory/:tab" element={<Directory />} />
+            {/* The directory's pages are its tabs now; old links still work. */}
+            <Route path="/tenants" element={<Navigate to="/directory/tenants" replace />} />
             <Route path="/tenants/:id" element={<TenantDetail />} />
             <Route path="/admissions" element={<Admissions />} />
-            <Route path="/connectors" element={<Connectors />} />
-            <Route path="/access" element={<Access />} />
+            <Route path="/connectors" element={<Navigate to="/directory/connectors" replace />} />
+            <Route path="/access" element={<Navigate to="/directory/access" replace />} />
             <Route path="/tokens" element={<Tokens />} />
-            <Route path="/policies" element={<Policies />} />
+            <Route path="/policies" element={<Navigate to="/directory/policies" replace />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/cluster" element={<Cluster />} />
             <Route path="/cluster/nodes/:id" element={<NodeDetail />} />

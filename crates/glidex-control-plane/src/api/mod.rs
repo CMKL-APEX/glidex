@@ -822,6 +822,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         axum::routing::patch(access::update_user),
     )
     .add(
+        "DELETE",
+        "/users/{id}",
+        "manageUsers",
+        delete(access::delete_user),
+    )
+    .add(
         "POST",
         "/users/{id}/identities",
         "manageUsers",

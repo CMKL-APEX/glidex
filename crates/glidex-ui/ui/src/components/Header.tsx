@@ -43,11 +43,13 @@ export default function Header() {
     { to: "/credentials", label: "Credentials", show: true },
     { to: "/networking", label: "Networking", show: true },
     { to: "/projects", label: "Projects", show: true },
-    { to: "/tenants", label: "Tenants", show: directoryReader || readsATenant },
-    { to: "/access", label: "Access", show: host.listUsers || host.listTeams || host.readSystemBindings },
-    { to: "/connectors", label: "Connectors", show: host.listConnectors },
+    // Tenants, users and roles, connectors and policies: the directory's tabs.
+    {
+      to: "/directory",
+      label: "Directory",
+      show: directoryReader || readsATenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
+    },
     { to: "/tokens", label: "Tokens", show: !me.token },
-    { to: "/policies", label: "Policies", show: host.readPolicy },
     { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
     { to: "/cluster", label: "Cluster", show: host.readCluster },

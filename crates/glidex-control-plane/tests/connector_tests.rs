@@ -2097,3 +2097,210 @@ async fn a_user_adds_and_removes_sign_in_methods() {
     let (st, _) = h.rest("GET", "/auth/whoami", None, &s).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "her session ended");
 }
+
+#[tokio::test]
+async fn deleting_a_user_takes_what_is_its_alone() {
+    // spec/tenancy.md §6.3: identities, sessions, personal tokens, teams,
+    // role links and tenant memberships go with the user; never oneself,
+    // nor the last directory or system administrator.
+    let h = harness();
+    let ada = h.admin("ada");
+    let s = h.session(&ada);
+    let bob = h.user("bob");
+    let bob_session = h.session(&bob);
+    let bob_token = h.token(&bob);
+    h.app
+        .auth
+        .store
+        .put_team(&auth::store::Team {
+            id: "team-lab".into(),
+            name: "lab".into(),
+            members: vec![auth::store::TeamMember {
+                user_id: bob.clone(),
+                source: auth::store::MemberSource::Manual,
+            }],
+            created_at: 0,
+        })
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-auditor",
+            Ent::User(bob.clone()),
+            Ent::Tenant("default".into()),
+            "test",
+        )
+        .unwrap();
+    h.app
+        .auth
+        .tenants
+        .add_member("default", Ent::User(bob.clone()), "test")
+        .unwrap();
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, v) = h.rest("DELETE", &format!("/users/{bob}"), None, &s).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    for k in [
+        "identities",
+        "sessions",
+        "tokens",
+        "links",
+        "teams",
+        "tenants",
+    ] {
+        assert!(v[k].as_u64().unwrap_or(0) >= 1, "{k}: {v}");
+    }
+    assert!(h.app.auth.store.user(&bob).unwrap().is_none());
+    assert!(h.app.auth.store.identities_of(&bob).unwrap().is_empty());
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "his token went");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_session).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "his session went");
+    let team = h.app.auth.store.team("team-lab").unwrap().unwrap();
+    assert!(team.members.is_empty(), "{team:?}");
+    let (_, m) = h.rest("GET", "/tenants/default/members", None, &s).await;
+    assert!(!m.to_string().contains(&bob), "{m}");
+    let (st, _) = h.rest("DELETE", &format!("/users/{bob}"), None, &s).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // Never oneself.
+    let (st, v) = h.rest("DELETE", &format!("/users/{ada}"), None, &s).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("cannot_delete_self")),
+        "{v}"
+    );
+    // Nor the last system administrator (whoever else holds the role, a
+    // team included, counts: here, nobody else does). Ada stays able to
+    // manage users as a directory administrator.
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(ada.clone()),
+            Ent::Directory("local".into()),
+            "test",
+        )
+        .unwrap();
+    for l in h.app.auth.store.links().unwrap() {
+        if l.link.template == "role.system-admin" {
+            h.app.auth.store.remove_link(&l.link.id).unwrap();
+        }
+    }
+    let dee = h.user("dee");
+    h.app
+        .auth
+        .add_link(
+            "role.system-admin",
+            Ent::User(dee.clone()),
+            Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    let (st, v) = h.rest("DELETE", &format!("/users/{dee}"), None, &s).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("last_admin")),
+        "{v}"
+    );
+    // Only a directory administrator deletes users.
+    let (st, _) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{dee}"),
+            None,
+            &h.session(&h.user("eve")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_new_tenant_invites_its_first_administrator() {
+    // spec/tenancy.md §11: a directory owner creates a tenant with its
+    // first tenant-admin invited; the invitation follows §6.1's rules, and
+    // a create whose invitation can't be made makes no tenant.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gc",
+            json!({"accounts": "GOOGLE_ACCOUNTS_ANY"}),
+            json!({"jit": false}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let s = h.session(&h.admin("ada"));
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "acme", "display_name": "Acme", "first_admin": {"email": "Erin@gmail.com", "connector": "gc"}})),
+            &s,
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let link = v["invitation_link"].as_str().unwrap().to_string();
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    // Erin takes it: acme's tenant-admin.
+    let (_, started) = h.begin_invited("gc", &invite_token(&link)).await;
+    let (state, nonce, browser) = started.unwrap();
+    let mut c = google_claims(&mock, "c-erin", "erin@gmail.com", None);
+    c["nonce"] = json!(nonce);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+    assert_eq!(
+        h.finish("gc", &state, &browser).await.0,
+        StatusCode::SEE_OTHER
+    );
+    let (_, b) = h
+        .rest("GET", &format!("/tenants/{acme}/bindings"), None, &s)
+        .await;
+    assert!(
+        b["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["role"] == "role.tenant-admin" && x["principal_name"] == "c-erin"),
+        "{b}"
+    );
+
+    // No invitation, no tenant.
+    for (slug, body, why) in [
+        (
+            "bad1",
+            json!({"email": "x@gmail.com", "connector": "nope"}),
+            "no such connector",
+        ),
+        (
+            "bad2",
+            json!({"email": "not-an-email", "connector": "gc"}),
+            "not an email",
+        ),
+    ] {
+        let (st, v) = h
+            .rest(
+                "POST",
+                "/tenants",
+                Some(json!({"slug": slug, "first_admin": body})),
+                &s,
+            )
+            .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{why}: {v}");
+        let (st, _) = h.rest("GET", &format!("/tenants/{slug}"), None, &s).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{why}: no tenant {slug}");
+    }
+    // An operator tenant's first administrator, never through consumer accounts (D22).
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "ops2", "operator": true, "first_admin": {"email": "x@gmail.com", "connector": "gc"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    let (st, _) = h.rest("GET", "/tenants/ops2", None, &s).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}

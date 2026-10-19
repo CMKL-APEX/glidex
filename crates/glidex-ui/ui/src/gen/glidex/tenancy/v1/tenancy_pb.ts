@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/tenancy/v1/tenancy.proto.
  */
 export const file_glidex_tenancy_v1_tenancy: GenFile = /*@__PURE__*/
-  fileDesc("Ch9nbGlkZXgvdGVuYW5jeS92MS90ZW5hbmN5LnByb3RvEhFnbGlkZXgudGVuYW5jeS52MSKeAwoGVGVuYW50EgoKAmlkGAEgASgJEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEgwKBHNsdWcYAyABKAkSIgoMZGlzcGxheV9uYW1lGAQgASgJUgxkaXNwbGF5X25hbWUSKwoOb3duc19kaXJlY3RvcnkYBSABKAhIAFIOb3duc19kaXJlY3RvcnmIAQESFQoIb3BlcmF0b3IYBiABKAhIAYgBARIWCglzdXNwZW5kZWQYByABKAhIAogBARI6CgpjcmVhdGVkX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBIvCglhZG1pc3Npb24YCSABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24SKQoNb3BlcmF0ZXNfaGVyZRgKIAEoCEgDUg1vcGVyYXRlc19oZXJliAEBQhEKD19vd25zX2RpcmVjdG9yeUILCglfb3BlcmF0b3JCDAoKX3N1c3BlbmRlZEIQCg5fb3BlcmF0ZXNfaGVyZSLZAgoGUXVvdGFzEhAKA3ZtcxgBIAEoDUgAiAEBEhIKBXZjcHVzGAIgASgNSAGIAQESIwoKbWVtb3J5X21pYhgDIAEoDUgCUgptZW1vcnlfbWliiAEBEh8KCGRpc2tfZ2liGAQgASgNSANSCGRpc2tfZ2liiAEBEiUKC3J1bm5pbmdfdm1zGAUgASgNSARSC3J1bm5pbmdfdm1ziAEBEhUKCG5ldHdvcmtzGAYgASgNSAWIAQESFAoHcm91dGVycxgHIAEoDUgGiAEBEicKDGV4dGVybmFsX2lwcxgIIAEoDUgHUgxleHRlcm5hbF9pcHOIAQFCBgoEX3Ztc0IICgZfdmNwdXNCDQoLX21lbW9yeV9taWJCCwoJX2Rpc2tfZ2liQg4KDF9ydW5uaW5nX3Ztc0ILCglfbmV0d29ya3NCCgoIX3JvdXRlcnNCDwoNX2V4dGVybmFsX2lwcyKxAgoJQWRtaXNzaW9uEhwKCXRlbmFudF9pZBgBIAEoCVIJdGVuYW50X2lkEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEiYKA2NhcBgDIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIyCgZzdGF0dXMYBCABKA4yIi5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb25TdGF0dXMSCgoCYnkYBSABKAkSJgoCYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiAKC3RlbmFudF9zbHVnGAcgASgJUgt0ZW5hbnRfc2x1ZxIwChN0ZW5hbnRfZGlzcGxheV9uYW1lGAggASgJUhN0ZW5hbnRfZGlzcGxheV9uYW1lIq8BCgZNZW1iZXISHAoJdGVuYW50X2lkGAEgASgJUgl0ZW5hbnRfaWQSKwoJcHJpbmNpcGFsGAIgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYSCgoCYnkYAyABKAkSJgoCYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiYKDnByaW5jaXBhbF9uYW1lGAUgASgJUg5wcmluY2lwYWxfbmFtZSLUAQoHQmluZGluZxIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEisKCXByaW5jaXBhbBgDIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmEiYKDnByaW5jaXBhbF9uYW1lGAQgASgJUg5wcmluY2lwYWxfbmFtZRIeCgpjcmVhdGVkX2J5GAUgASgJUgpjcmVhdGVkX2J5EjoKCmNyZWF0ZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0ImUKEkxpc3RUZW5hbnRzUmVxdWVzdBIhCglwYWdlX3NpemUYASABKA1IAFIJcGFnZV9zaXpliAEBEh4KCnBhZ2VfdG9rZW4YAiABKAlSCnBhZ2VfdG9rZW5CDAoKX3BhZ2Vfc2l6ZSJrChNMaXN0VGVuYW50c1Jlc3BvbnNlEioKB3RlbmFudHMYASADKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQSKAoPbmV4dF9wYWdlX3Rva2VuGAIgASgJUg9uZXh0X3BhZ2VfdG9rZW4iHgoQR2V0VGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSJrChNDcmVhdGVUZW5hbnRSZXF1ZXN0EgwKBHNsdWcYASABKAkSIgoMZGlzcGxheV9uYW1lGAIgASgJUgxkaXNwbGF5X25hbWUSFQoIb3BlcmF0b3IYAyABKAhIAIgBAUILCglfb3BlcmF0b3IifwoTVXBkYXRlVGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCRInCgxkaXNwbGF5X25hbWUYAiABKAlIAFIMZGlzcGxheV9uYW1liAEBEhUKCG9wZXJhdG9yGAMgASgISAGIAQFCDwoNX2Rpc3BsYXlfbmFtZUILCglfb3BlcmF0b3IiIgoUU3VzcGVuZFRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkiIQoTUmVzdW1lVGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSIhChNEZWxldGVUZW5hbnRSZXF1ZXN0EgoKAmlkGAEgASgJIhYKFERlbGV0ZVRlbmFudFJlc3BvbnNlIiAKEkxpc3RNZW1iZXJzUmVxdWVzdBIKCgJpZBgBIAEoCSJBChNMaXN0TWVtYmVyc1Jlc3BvbnNlEioKB21lbWJlcnMYASADKAsyGS5nbGlkZXgudGVuYW5jeS52MS5NZW1iZXIiSwoQQWRkTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoCRIrCglwcmluY2lwYWwYAiABKAsyGC5nbGlkZXguYXBpLnYxLkVudGl0eVJlZiI0ChNSZW1vdmVNZW1iZXJSZXF1ZXN0EgoKAmlkGAEgASgJEhEKCXByaW5jaXBhbBgCIAEoCSIWChRSZW1vdmVNZW1iZXJSZXNwb25zZSIhChNMaXN0QmluZGluZ3NSZXF1ZXN0EgoKAmlkGAEgASgJIkQKFExpc3RCaW5kaW5nc1Jlc3BvbnNlEiwKCGJpbmRpbmdzGAEgAygLMhouZ2xpZGV4LnRlbmFuY3kudjEuQmluZGluZyJaChFBZGRCaW5kaW5nUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEisKCXByaW5jaXBhbBgDIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmIjAKFFJlbW92ZUJpbmRpbmdSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBGxpbmsYAiABKAkiFwoVUmVtb3ZlQmluZGluZ1Jlc3BvbnNlIhcKFUxpc3RBZG1pc3Npb25zUmVxdWVzdCJKChZMaXN0QWRtaXNzaW9uc1Jlc3BvbnNlEjAKCmFkbWlzc2lvbnMYASADKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24icwoTU2V0QWRtaXNzaW9uUmVxdWVzdBIOCgZ0ZW5hbnQYASABKAkSJgoDY2FwGAIgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuUXVvdGFzEhYKCXN1c3BlbmRlZBgDIAEoCEgAiAEBQgwKCl9zdXNwZW5kZWQiKAoWUmVtb3ZlQWRtaXNzaW9uUmVxdWVzdBIOCgZ0ZW5hbnQYASABKAkiGQoXUmVtb3ZlQWRtaXNzaW9uUmVzcG9uc2UiPgoRR2V0VGVuYW50UmVzcG9uc2USKQoGdGVuYW50GAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50IkEKFENyZWF0ZVRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCJBChRVcGRhdGVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiQgoVU3VzcGVuZFRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCJBChRSZXN1bWVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiPgoRQWRkTWVtYmVyUmVzcG9uc2USKQoGbWVtYmVyGAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuTWVtYmVyIkEKEkFkZEJpbmRpbmdSZXNwb25zZRIrCgdiaW5kaW5nGAEgASgLMhouZ2xpZGV4LnRlbmFuY3kudjEuQmluZGluZyJHChRTZXRBZG1pc3Npb25SZXNwb25zZRIvCglhZG1pc3Npb24YASABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24qcgoPQWRtaXNzaW9uU3RhdHVzEiAKHEFETUlTU0lPTl9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlBRE1JU1NJT05fU1RBVFVTX0FETUlUVEVEEAESHgoaQURNSVNTSU9OX1NUQVRVU19TVVNQRU5ERUQQAjKJDwoNVGVuYW50U2VydmljZRKBAQoLTGlzdFRlbmFudHMSJS5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1JlcXVlc3QaJi5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1Jlc3BvbnNlIiPK6RgfCg1hdXRoZW50aWNhdGVkEAEaDEdFVCAvdGVuYW50cxJ9CglHZXRUZW5hbnQSIy5nbGlkZXgudGVuYW5jeS52MS5HZXRUZW5hbnRSZXF1ZXN0GiQuZ2xpZGV4LnRlbmFuY3kudjEuR2V0VGVuYW50UmVzcG9uc2UiJcrpGCEKCnJlYWRUZW5hbnQQARoRR0VUIC90ZW5hbnRzL3tpZH0ShAEKDENyZWF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLkNyZWF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5DcmVhdGVUZW5hbnRSZXNwb25zZSIjyukYHwoMY3JlYXRlVGVuYW50EAIaDVBPU1QgL3RlbmFudHMSigEKDFVwZGF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLlVwZGF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5VcGRhdGVUZW5hbnRSZXNwb25zZSIpyukYJQoMdXBkYXRlVGVuYW50EAIaE1BBVENIIC90ZW5hbnRzL3tpZH0SlQEKDVN1c3BlbmRUZW5hbnQSJy5nbGlkZXgudGVuYW5jeS52MS5TdXNwZW5kVGVuYW50UmVxdWVzdBooLmdsaWRleC50ZW5hbmN5LnYxLlN1c3BlbmRUZW5hbnRSZXNwb25zZSIxyukYLQoNc3VzcGVuZFRlbmFudBACGhpQT1NUIC90ZW5hbnRzL3tpZH0vc3VzcGVuZBKQAQoMUmVzdW1lVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuUmVzdW1lVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLlJlc3VtZVRlbmFudFJlc3BvbnNlIi/K6RgrCgxyZXN1bWVUZW5hbnQQAhoZUE9TVCAvdGVuYW50cy97aWR9L3Jlc3VtZRKLAQoMRGVsZXRlVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuRGVsZXRlVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkRlbGV0ZVRlbmFudFJlc3BvbnNlIirK6RgmCgxkZWxldGVUZW5hbnQQAhoUREVMRVRFIC90ZW5hbnRzL3tpZH0SkgEKC0xpc3RNZW1iZXJzEiUuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXNwb25zZSI0yukYMAoRcmVhZFRlbmFudE1lbWJlcnMQARoZR0VUIC90ZW5hbnRzL3tpZH0vbWVtYmVycxKPAQoJQWRkTWVtYmVyEiMuZ2xpZGV4LnRlbmFuY3kudjEuQWRkTWVtYmVyUmVxdWVzdBokLmdsaWRleC50ZW5hbmN5LnYxLkFkZE1lbWJlclJlc3BvbnNlIjfK6RgzChNtYW5hZ2VUZW5hbnRNZW1iZXJzEAIaGlBPU1QgL3RlbmFudHMve2lkfS9tZW1iZXJzEqYBCgxSZW1vdmVNZW1iZXISJi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVNZW1iZXJSZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UiRcrpGEEKE21hbmFnZVRlbmFudE1lbWJlcnMQAhooREVMRVRFIC90ZW5hbnRzL3tpZH0vbWVtYmVycy97cHJpbmNpcGFsfRKXAQoMTGlzdEJpbmRpbmdzEiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdEJpbmRpbmdzUmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RCaW5kaW5nc1Jlc3BvbnNlIjbK6RgyChJyZWFkVGVuYW50QmluZGluZ3MQARoaR0VUIC90ZW5hbnRzL3tpZH0vYmluZGluZ3MSlAEKCkFkZEJpbmRpbmcSJC5nbGlkZXgudGVuYW5jeS52MS5BZGRCaW5kaW5nUmVxdWVzdBolLmdsaWRleC50ZW5hbmN5LnYxLkFkZEJpbmRpbmdSZXNwb25zZSI5yukYNQoUbWFuYWdlVGVuYW50QmluZGluZ3MQAhobUE9TVCAvdGVuYW50cy97aWR9L2JpbmRpbmdzEqYBCg1SZW1vdmVCaW5kaW5nEicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlQmluZGluZ1JlcXVlc3QaKC5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVCaW5kaW5nUmVzcG9uc2UiQsrpGD4KFG1hbmFnZVRlbmFudEJpbmRpbmdzEAIaJERFTEVURSAvdGVuYW50cy97aWR9L2JpbmRpbmdzL3tsaW5rfTLbAwoQQWRtaXNzaW9uU2VydmljZRKOAQoOTGlzdEFkbWlzc2lvbnMSKC5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1JlcXVlc3QaKS5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1Jlc3BvbnNlIifK6RgjCg5saXN0QWRtaXNzaW9ucxABGg9HRVQgL2FkbWlzc2lvbnMSkwEKDFNldEFkbWlzc2lvbhImLmdsaWRleC50ZW5hbmN5LnYxLlNldEFkbWlzc2lvblJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5TZXRBZG1pc3Npb25SZXNwb25zZSIyyukYLgoQbWFuYWdlQWRtaXNzaW9ucxACGhhQVVQgL2FkbWlzc2lvbnMve3RlbmFudH0SnwEKD1JlbW92ZUFkbWlzc2lvbhIpLmdsaWRleC50ZW5hbmN5LnYxLlJlbW92ZUFkbWlzc2lvblJlcXVlc3QaKi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVBZG1pc3Npb25SZXNwb25zZSI1yukYMQoQbWFuYWdlQWRtaXNzaW9ucxACGhtERUxFVEUgL2FkbWlzc2lvbnMve3RlbmFudH1iBnByb3RvMw", [file_glidex_api_v1_options, file_glidex_api_v1_types, file_google_protobuf_timestamp]);
+  fileDesc("Ch9nbGlkZXgvdGVuYW5jeS92MS90ZW5hbmN5LnByb3RvEhFnbGlkZXgudGVuYW5jeS52MSKeAwoGVGVuYW50EgoKAmlkGAEgASgJEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEgwKBHNsdWcYAyABKAkSIgoMZGlzcGxheV9uYW1lGAQgASgJUgxkaXNwbGF5X25hbWUSKwoOb3duc19kaXJlY3RvcnkYBSABKAhIAFIOb3duc19kaXJlY3RvcnmIAQESFQoIb3BlcmF0b3IYBiABKAhIAYgBARIWCglzdXNwZW5kZWQYByABKAhIAogBARI6CgpjcmVhdGVkX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBIvCglhZG1pc3Npb24YCSABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24SKQoNb3BlcmF0ZXNfaGVyZRgKIAEoCEgDUg1vcGVyYXRlc19oZXJliAEBQhEKD19vd25zX2RpcmVjdG9yeUILCglfb3BlcmF0b3JCDAoKX3N1c3BlbmRlZEIQCg5fb3BlcmF0ZXNfaGVyZSLZAgoGUXVvdGFzEhAKA3ZtcxgBIAEoDUgAiAEBEhIKBXZjcHVzGAIgASgNSAGIAQESIwoKbWVtb3J5X21pYhgDIAEoDUgCUgptZW1vcnlfbWliiAEBEh8KCGRpc2tfZ2liGAQgASgNSANSCGRpc2tfZ2liiAEBEiUKC3J1bm5pbmdfdm1zGAUgASgNSARSC3J1bm5pbmdfdm1ziAEBEhUKCG5ldHdvcmtzGAYgASgNSAWIAQESFAoHcm91dGVycxgHIAEoDUgGiAEBEicKDGV4dGVybmFsX2lwcxgIIAEoDUgHUgxleHRlcm5hbF9pcHOIAQFCBgoEX3Ztc0IICgZfdmNwdXNCDQoLX21lbW9yeV9taWJCCwoJX2Rpc2tfZ2liQg4KDF9ydW5uaW5nX3Ztc0ILCglfbmV0d29ya3NCCgoIX3JvdXRlcnNCDwoNX2V4dGVybmFsX2lwcyKxAgoJQWRtaXNzaW9uEhwKCXRlbmFudF9pZBgBIAEoCVIJdGVuYW50X2lkEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEiYKA2NhcBgDIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIyCgZzdGF0dXMYBCABKA4yIi5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb25TdGF0dXMSCgoCYnkYBSABKAkSJgoCYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiAKC3RlbmFudF9zbHVnGAcgASgJUgt0ZW5hbnRfc2x1ZxIwChN0ZW5hbnRfZGlzcGxheV9uYW1lGAggASgJUhN0ZW5hbnRfZGlzcGxheV9uYW1lIq8BCgZNZW1iZXISHAoJdGVuYW50X2lkGAEgASgJUgl0ZW5hbnRfaWQSKwoJcHJpbmNpcGFsGAIgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYSCgoCYnkYAyABKAkSJgoCYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiYKDnByaW5jaXBhbF9uYW1lGAUgASgJUg5wcmluY2lwYWxfbmFtZSLUAQoHQmluZGluZxIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEisKCXByaW5jaXBhbBgDIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmEiYKDnByaW5jaXBhbF9uYW1lGAQgASgJUg5wcmluY2lwYWxfbmFtZRIeCgpjcmVhdGVkX2J5GAUgASgJUgpjcmVhdGVkX2J5EjoKCmNyZWF0ZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0ImUKEkxpc3RUZW5hbnRzUmVxdWVzdBIhCglwYWdlX3NpemUYASABKA1IAFIJcGFnZV9zaXpliAEBEh4KCnBhZ2VfdG9rZW4YAiABKAlSCnBhZ2VfdG9rZW5CDAoKX3BhZ2Vfc2l6ZSJrChNMaXN0VGVuYW50c1Jlc3BvbnNlEioKB3RlbmFudHMYASADKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQSKAoPbmV4dF9wYWdlX3Rva2VuGAIgASgJUg9uZXh0X3BhZ2VfdG9rZW4iHgoQR2V0VGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSKsAQoTQ3JlYXRlVGVuYW50UmVxdWVzdBIMCgRzbHVnGAEgASgJEiIKDGRpc3BsYXlfbmFtZRgCIAEoCVIMZGlzcGxheV9uYW1lEhUKCG9wZXJhdG9yGAMgASgISACIAQESPwoLZmlyc3RfYWRtaW4YBCABKAsyHS5nbGlkZXgudGVuYW5jeS52MS5GaXJzdEFkbWluUgtmaXJzdF9hZG1pbkILCglfb3BlcmF0b3IiSgoKRmlyc3RBZG1pbhINCgVlbWFpbBgBIAEoCRIRCgljb25uZWN0b3IYAiABKAkSEQoEZGF5cxgDIAEoDUgAiAEBQgcKBV9kYXlzIn8KE1VwZGF0ZVRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkSJwoMZGlzcGxheV9uYW1lGAIgASgJSABSDGRpc3BsYXlfbmFtZYgBARIVCghvcGVyYXRvchgDIAEoCEgBiAEBQg8KDV9kaXNwbGF5X25hbWVCCwoJX29wZXJhdG9yIiIKFFN1c3BlbmRUZW5hbnRSZXF1ZXN0EgoKAmlkGAEgASgJIiEKE1Jlc3VtZVRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkiIQoTRGVsZXRlVGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSIWChREZWxldGVUZW5hbnRSZXNwb25zZSIgChJMaXN0TWVtYmVyc1JlcXVlc3QSCgoCaWQYASABKAkiQQoTTGlzdE1lbWJlcnNSZXNwb25zZRIqCgdtZW1iZXJzGAEgAygLMhkuZ2xpZGV4LnRlbmFuY3kudjEuTWVtYmVyIksKEEFkZE1lbWJlclJlcXVlc3QSCgoCaWQYASABKAkSKwoJcHJpbmNpcGFsGAIgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYiNAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoCRIRCglwcmluY2lwYWwYAiABKAkiFgoUUmVtb3ZlTWVtYmVyUmVzcG9uc2UiIQoTTGlzdEJpbmRpbmdzUmVxdWVzdBIKCgJpZBgBIAEoCSJEChRMaXN0QmluZGluZ3NSZXNwb25zZRIsCghiaW5kaW5ncxgBIAMoCzIaLmdsaWRleC50ZW5hbmN5LnYxLkJpbmRpbmciWgoRQWRkQmluZGluZ1JlcXVlc3QSCgoCaWQYASABKAkSDAoEcm9sZRgCIAEoCRIrCglwcmluY2lwYWwYAyABKAsyGC5nbGlkZXguYXBpLnYxLkVudGl0eVJlZiIwChRSZW1vdmVCaW5kaW5nUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRsaW5rGAIgASgJIhcKFVJlbW92ZUJpbmRpbmdSZXNwb25zZSIXChVMaXN0QWRtaXNzaW9uc1JlcXVlc3QiSgoWTGlzdEFkbWlzc2lvbnNSZXNwb25zZRIwCgphZG1pc3Npb25zGAEgAygLMhwuZ2xpZGV4LnRlbmFuY3kudjEuQWRtaXNzaW9uInMKE1NldEFkbWlzc2lvblJlcXVlc3QSDgoGdGVuYW50GAEgASgJEiYKA2NhcBgCIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIWCglzdXNwZW5kZWQYAyABKAhIAIgBAUIMCgpfc3VzcGVuZGVkIigKFlJlbW92ZUFkbWlzc2lvblJlcXVlc3QSDgoGdGVuYW50GAEgASgJIhkKF1JlbW92ZUFkbWlzc2lvblJlc3BvbnNlIj4KEUdldFRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCKEAQoUQ3JlYXRlVGVuYW50UmVzcG9uc2USKQoGdGVuYW50GAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50Ei0KD2ludml0YXRpb25fbGluaxgCIAEoCUgAUg9pbnZpdGF0aW9uX2xpbmuIAQFCEgoQX2ludml0YXRpb25fbGluayJBChRVcGRhdGVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiQgoVU3VzcGVuZFRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCJBChRSZXN1bWVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiPgoRQWRkTWVtYmVyUmVzcG9uc2USKQoGbWVtYmVyGAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuTWVtYmVyIkEKEkFkZEJpbmRpbmdSZXNwb25zZRIrCgdiaW5kaW5nGAEgASgLMhouZ2xpZGV4LnRlbmFuY3kudjEuQmluZGluZyJHChRTZXRBZG1pc3Npb25SZXNwb25zZRIvCglhZG1pc3Npb24YASABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24qcgoPQWRtaXNzaW9uU3RhdHVzEiAKHEFETUlTU0lPTl9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlBRE1JU1NJT05fU1RBVFVTX0FETUlUVEVEEAESHgoaQURNSVNTSU9OX1NUQVRVU19TVVNQRU5ERUQQAjKJDwoNVGVuYW50U2VydmljZRKBAQoLTGlzdFRlbmFudHMSJS5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1JlcXVlc3QaJi5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1Jlc3BvbnNlIiPK6RgfCg1hdXRoZW50aWNhdGVkEAEaDEdFVCAvdGVuYW50cxJ9CglHZXRUZW5hbnQSIy5nbGlkZXgudGVuYW5jeS52MS5HZXRUZW5hbnRSZXF1ZXN0GiQuZ2xpZGV4LnRlbmFuY3kudjEuR2V0VGVuYW50UmVzcG9uc2UiJcrpGCEKCnJlYWRUZW5hbnQQARoRR0VUIC90ZW5hbnRzL3tpZH0ShAEKDENyZWF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLkNyZWF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5DcmVhdGVUZW5hbnRSZXNwb25zZSIjyukYHwoMY3JlYXRlVGVuYW50EAIaDVBPU1QgL3RlbmFudHMSigEKDFVwZGF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLlVwZGF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5VcGRhdGVUZW5hbnRSZXNwb25zZSIpyukYJQoMdXBkYXRlVGVuYW50EAIaE1BBVENIIC90ZW5hbnRzL3tpZH0SlQEKDVN1c3BlbmRUZW5hbnQSJy5nbGlkZXgudGVuYW5jeS52MS5TdXNwZW5kVGVuYW50UmVxdWVzdBooLmdsaWRleC50ZW5hbmN5LnYxLlN1c3BlbmRUZW5hbnRSZXNwb25zZSIxyukYLQoNc3VzcGVuZFRlbmFudBACGhpQT1NUIC90ZW5hbnRzL3tpZH0vc3VzcGVuZBKQAQoMUmVzdW1lVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuUmVzdW1lVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLlJlc3VtZVRlbmFudFJlc3BvbnNlIi/K6RgrCgxyZXN1bWVUZW5hbnQQAhoZUE9TVCAvdGVuYW50cy97aWR9L3Jlc3VtZRKLAQoMRGVsZXRlVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuRGVsZXRlVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkRlbGV0ZVRlbmFudFJlc3BvbnNlIirK6RgmCgxkZWxldGVUZW5hbnQQAhoUREVMRVRFIC90ZW5hbnRzL3tpZH0SkgEKC0xpc3RNZW1iZXJzEiUuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXNwb25zZSI0yukYMAoRcmVhZFRlbmFudE1lbWJlcnMQARoZR0VUIC90ZW5hbnRzL3tpZH0vbWVtYmVycxKPAQoJQWRkTWVtYmVyEiMuZ2xpZGV4LnRlbmFuY3kudjEuQWRkTWVtYmVyUmVxdWVzdBokLmdsaWRleC50ZW5hbmN5LnYxLkFkZE1lbWJlclJlc3BvbnNlIjfK6RgzChNtYW5hZ2VUZW5hbnRNZW1iZXJzEAIaGlBPU1QgL3RlbmFudHMve2lkfS9tZW1iZXJzEqYBCgxSZW1vdmVNZW1iZXISJi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVNZW1iZXJSZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UiRcrpGEEKE21hbmFnZVRlbmFudE1lbWJlcnMQAhooREVMRVRFIC90ZW5hbnRzL3tpZH0vbWVtYmVycy97cHJpbmNpcGFsfRKXAQoMTGlzdEJpbmRpbmdzEiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdEJpbmRpbmdzUmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RCaW5kaW5nc1Jlc3BvbnNlIjbK6RgyChJyZWFkVGVuYW50QmluZGluZ3MQARoaR0VUIC90ZW5hbnRzL3tpZH0vYmluZGluZ3MSlAEKCkFkZEJpbmRpbmcSJC5nbGlkZXgudGVuYW5jeS52MS5BZGRCaW5kaW5nUmVxdWVzdBolLmdsaWRleC50ZW5hbmN5LnYxLkFkZEJpbmRpbmdSZXNwb25zZSI5yukYNQoUbWFuYWdlVGVuYW50QmluZGluZ3MQAhobUE9TVCAvdGVuYW50cy97aWR9L2JpbmRpbmdzEqYBCg1SZW1vdmVCaW5kaW5nEicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlQmluZGluZ1JlcXVlc3QaKC5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVCaW5kaW5nUmVzcG9uc2UiQsrpGD4KFG1hbmFnZVRlbmFudEJpbmRpbmdzEAIaJERFTEVURSAvdGVuYW50cy97aWR9L2JpbmRpbmdzL3tsaW5rfTLbAwoQQWRtaXNzaW9uU2VydmljZRKOAQoOTGlzdEFkbWlzc2lvbnMSKC5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1JlcXVlc3QaKS5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1Jlc3BvbnNlIifK6RgjCg5saXN0QWRtaXNzaW9ucxABGg9HRVQgL2FkbWlzc2lvbnMSkwEKDFNldEFkbWlzc2lvbhImLmdsaWRleC50ZW5hbmN5LnYxLlNldEFkbWlzc2lvblJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5TZXRBZG1pc3Npb25SZXNwb25zZSIyyukYLgoQbWFuYWdlQWRtaXNzaW9ucxACGhhQVVQgL2FkbWlzc2lvbnMve3RlbmFudH0SnwEKD1JlbW92ZUFkbWlzc2lvbhIpLmdsaWRleC50ZW5hbmN5LnYxLlJlbW92ZUFkbWlzc2lvblJlcXVlc3QaKi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVBZG1pc3Npb25SZXNwb25zZSI1yukYMQoQbWFuYWdlQWRtaXNzaW9ucxACGhtERUxFVEUgL2FkbWlzc2lvbnMve3RlbmFudH1iBnByb3RvMw", [file_glidex_api_v1_options, file_glidex_api_v1_types, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.tenancy.v1.Tenant
@@ -626,6 +626,14 @@ export type CreateTenantRequest = Message<"glidex.tenancy.v1.CreateTenantRequest
    * @generated from field: optional bool operator = 3;
    */
   operator?: boolean | undefined;
+
+  /**
+   * Invite the tenant's first administrator (spec/tenancy.md §6.1, §11):
+   * role.tenant-admin, through `connector`. The link comes back once.
+   *
+   * @generated from field: glidex.tenancy.v1.FirstAdmin first_admin = 4 [json_name = "first_admin"];
+   */
+  firstAdmin?: FirstAdmin | undefined;
 };
 
 /**
@@ -646,6 +654,14 @@ export type CreateTenantRequestJson = {
    * @generated from field: optional bool operator = 3;
    */
   operator?: boolean;
+
+  /**
+   * Invite the tenant's first administrator (spec/tenancy.md §6.1, §11):
+   * role.tenant-admin, through `connector`. The link comes back once.
+   *
+   * @generated from field: glidex.tenancy.v1.FirstAdmin first_admin = 4 [json_name = "first_admin"];
+   */
+  first_admin?: FirstAdminJson;
 };
 
 /**
@@ -654,6 +670,57 @@ export type CreateTenantRequestJson = {
  */
 export const CreateTenantRequestSchema: GenMessage<CreateTenantRequest, {jsonType: CreateTenantRequestJson}> = /*@__PURE__*/
   messageDesc(file_glidex_tenancy_v1_tenancy, 8);
+
+/**
+ * @generated from message glidex.tenancy.v1.FirstAdmin
+ */
+export type FirstAdmin = Message<"glidex.tenancy.v1.FirstAdmin"> & {
+  /**
+   * @generated from field: string email = 1;
+   */
+  email: string;
+
+  /**
+   * @generated from field: string connector = 2;
+   */
+  connector: string;
+
+  /**
+   * 1-30; default 7.
+   *
+   * @generated from field: optional uint32 days = 3;
+   */
+  days?: number | undefined;
+};
+
+/**
+ * @generated from message glidex.tenancy.v1.FirstAdmin
+ */
+export type FirstAdminJson = {
+  /**
+   * @generated from field: string email = 1;
+   */
+  email?: string;
+
+  /**
+   * @generated from field: string connector = 2;
+   */
+  connector?: string;
+
+  /**
+   * 1-30; default 7.
+   *
+   * @generated from field: optional uint32 days = 3;
+   */
+  days?: number;
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.FirstAdmin.
+ * Use `create(FirstAdminSchema)` to create a new message.
+ */
+export const FirstAdminSchema: GenMessage<FirstAdmin, {jsonType: FirstAdminJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 9);
 
 /**
  * @generated from message glidex.tenancy.v1.UpdateTenantRequest
@@ -700,7 +767,7 @@ export type UpdateTenantRequestJson = {
  * Use `create(UpdateTenantRequestSchema)` to create a new message.
  */
 export const UpdateTenantRequestSchema: GenMessage<UpdateTenantRequest, {jsonType: UpdateTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 9);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 10);
 
 /**
  * @generated from message glidex.tenancy.v1.SuspendTenantRequest
@@ -727,7 +794,7 @@ export type SuspendTenantRequestJson = {
  * Use `create(SuspendTenantRequestSchema)` to create a new message.
  */
 export const SuspendTenantRequestSchema: GenMessage<SuspendTenantRequest, {jsonType: SuspendTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 10);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 11);
 
 /**
  * @generated from message glidex.tenancy.v1.ResumeTenantRequest
@@ -754,7 +821,7 @@ export type ResumeTenantRequestJson = {
  * Use `create(ResumeTenantRequestSchema)` to create a new message.
  */
 export const ResumeTenantRequestSchema: GenMessage<ResumeTenantRequest, {jsonType: ResumeTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 11);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 12);
 
 /**
  * @generated from message glidex.tenancy.v1.DeleteTenantRequest
@@ -781,7 +848,7 @@ export type DeleteTenantRequestJson = {
  * Use `create(DeleteTenantRequestSchema)` to create a new message.
  */
 export const DeleteTenantRequestSchema: GenMessage<DeleteTenantRequest, {jsonType: DeleteTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 12);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 13);
 
 /**
  * @generated from message glidex.tenancy.v1.DeleteTenantResponse
@@ -800,7 +867,7 @@ export type DeleteTenantResponseJson = {
  * Use `create(DeleteTenantResponseSchema)` to create a new message.
  */
 export const DeleteTenantResponseSchema: GenMessage<DeleteTenantResponse, {jsonType: DeleteTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 13);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 14);
 
 /**
  * @generated from message glidex.tenancy.v1.ListMembersRequest
@@ -827,7 +894,7 @@ export type ListMembersRequestJson = {
  * Use `create(ListMembersRequestSchema)` to create a new message.
  */
 export const ListMembersRequestSchema: GenMessage<ListMembersRequest, {jsonType: ListMembersRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 14);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 15);
 
 /**
  * @generated from message glidex.tenancy.v1.ListMembersResponse
@@ -854,7 +921,7 @@ export type ListMembersResponseJson = {
  * Use `create(ListMembersResponseSchema)` to create a new message.
  */
 export const ListMembersResponseSchema: GenMessage<ListMembersResponse, {jsonType: ListMembersResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 15);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 16);
 
 /**
  * @generated from message glidex.tenancy.v1.AddMemberRequest
@@ -891,7 +958,7 @@ export type AddMemberRequestJson = {
  * Use `create(AddMemberRequestSchema)` to create a new message.
  */
 export const AddMemberRequestSchema: GenMessage<AddMemberRequest, {jsonType: AddMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 16);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 17);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveMemberRequest
@@ -932,7 +999,7 @@ export type RemoveMemberRequestJson = {
  * Use `create(RemoveMemberRequestSchema)` to create a new message.
  */
 export const RemoveMemberRequestSchema: GenMessage<RemoveMemberRequest, {jsonType: RemoveMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 17);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 18);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveMemberResponse
@@ -951,7 +1018,7 @@ export type RemoveMemberResponseJson = {
  * Use `create(RemoveMemberResponseSchema)` to create a new message.
  */
 export const RemoveMemberResponseSchema: GenMessage<RemoveMemberResponse, {jsonType: RemoveMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 18);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 19);
 
 /**
  * @generated from message glidex.tenancy.v1.ListBindingsRequest
@@ -978,7 +1045,7 @@ export type ListBindingsRequestJson = {
  * Use `create(ListBindingsRequestSchema)` to create a new message.
  */
 export const ListBindingsRequestSchema: GenMessage<ListBindingsRequest, {jsonType: ListBindingsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 19);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 20);
 
 /**
  * @generated from message glidex.tenancy.v1.ListBindingsResponse
@@ -1005,7 +1072,7 @@ export type ListBindingsResponseJson = {
  * Use `create(ListBindingsResponseSchema)` to create a new message.
  */
 export const ListBindingsResponseSchema: GenMessage<ListBindingsResponse, {jsonType: ListBindingsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 20);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 21);
 
 /**
  * @generated from message glidex.tenancy.v1.AddBindingRequest
@@ -1052,7 +1119,7 @@ export type AddBindingRequestJson = {
  * Use `create(AddBindingRequestSchema)` to create a new message.
  */
 export const AddBindingRequestSchema: GenMessage<AddBindingRequest, {jsonType: AddBindingRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 21);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 22);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveBindingRequest
@@ -1089,7 +1156,7 @@ export type RemoveBindingRequestJson = {
  * Use `create(RemoveBindingRequestSchema)` to create a new message.
  */
 export const RemoveBindingRequestSchema: GenMessage<RemoveBindingRequest, {jsonType: RemoveBindingRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 22);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 23);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveBindingResponse
@@ -1108,7 +1175,7 @@ export type RemoveBindingResponseJson = {
  * Use `create(RemoveBindingResponseSchema)` to create a new message.
  */
 export const RemoveBindingResponseSchema: GenMessage<RemoveBindingResponse, {jsonType: RemoveBindingResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 23);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 24);
 
 /**
  * @generated from message glidex.tenancy.v1.ListAdmissionsRequest
@@ -1127,7 +1194,7 @@ export type ListAdmissionsRequestJson = {
  * Use `create(ListAdmissionsRequestSchema)` to create a new message.
  */
 export const ListAdmissionsRequestSchema: GenMessage<ListAdmissionsRequest, {jsonType: ListAdmissionsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 24);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 25);
 
 /**
  * @generated from message glidex.tenancy.v1.ListAdmissionsResponse
@@ -1154,7 +1221,7 @@ export type ListAdmissionsResponseJson = {
  * Use `create(ListAdmissionsResponseSchema)` to create a new message.
  */
 export const ListAdmissionsResponseSchema: GenMessage<ListAdmissionsResponse, {jsonType: ListAdmissionsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 25);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 26);
 
 /**
  * @generated from message glidex.tenancy.v1.SetAdmissionRequest
@@ -1209,7 +1276,7 @@ export type SetAdmissionRequestJson = {
  * Use `create(SetAdmissionRequestSchema)` to create a new message.
  */
 export const SetAdmissionRequestSchema: GenMessage<SetAdmissionRequest, {jsonType: SetAdmissionRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 26);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 27);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveAdmissionRequest
@@ -1236,7 +1303,7 @@ export type RemoveAdmissionRequestJson = {
  * Use `create(RemoveAdmissionRequestSchema)` to create a new message.
  */
 export const RemoveAdmissionRequestSchema: GenMessage<RemoveAdmissionRequest, {jsonType: RemoveAdmissionRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 27);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 28);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveAdmissionResponse
@@ -1255,7 +1322,7 @@ export type RemoveAdmissionResponseJson = {
  * Use `create(RemoveAdmissionResponseSchema)` to create a new message.
  */
 export const RemoveAdmissionResponseSchema: GenMessage<RemoveAdmissionResponse, {jsonType: RemoveAdmissionResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 28);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 29);
 
 /**
  * @generated from message glidex.tenancy.v1.GetTenantResponse
@@ -1282,7 +1349,7 @@ export type GetTenantResponseJson = {
  * Use `create(GetTenantResponseSchema)` to create a new message.
  */
 export const GetTenantResponseSchema: GenMessage<GetTenantResponse, {jsonType: GetTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 29);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 30);
 
 /**
  * @generated from message glidex.tenancy.v1.CreateTenantResponse
@@ -1292,6 +1359,14 @@ export type CreateTenantResponse = Message<"glidex.tenancy.v1.CreateTenantRespon
    * @generated from field: glidex.tenancy.v1.Tenant tenant = 1;
    */
   tenant?: Tenant | undefined;
+
+  /**
+   * With `first_admin`: the invitation's link (`…/invite/<id>#<secret>`),
+   * shown once.
+   *
+   * @generated from field: optional string invitation_link = 2 [json_name = "invitation_link"];
+   */
+  invitationLink?: string | undefined;
 };
 
 /**
@@ -1302,6 +1377,14 @@ export type CreateTenantResponseJson = {
    * @generated from field: glidex.tenancy.v1.Tenant tenant = 1;
    */
   tenant?: TenantJson;
+
+  /**
+   * With `first_admin`: the invitation's link (`…/invite/<id>#<secret>`),
+   * shown once.
+   *
+   * @generated from field: optional string invitation_link = 2 [json_name = "invitation_link"];
+   */
+  invitation_link?: string;
 };
 
 /**
@@ -1309,7 +1392,7 @@ export type CreateTenantResponseJson = {
  * Use `create(CreateTenantResponseSchema)` to create a new message.
  */
 export const CreateTenantResponseSchema: GenMessage<CreateTenantResponse, {jsonType: CreateTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 30);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 31);
 
 /**
  * @generated from message glidex.tenancy.v1.UpdateTenantResponse
@@ -1336,7 +1419,7 @@ export type UpdateTenantResponseJson = {
  * Use `create(UpdateTenantResponseSchema)` to create a new message.
  */
 export const UpdateTenantResponseSchema: GenMessage<UpdateTenantResponse, {jsonType: UpdateTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 31);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 32);
 
 /**
  * @generated from message glidex.tenancy.v1.SuspendTenantResponse
@@ -1363,7 +1446,7 @@ export type SuspendTenantResponseJson = {
  * Use `create(SuspendTenantResponseSchema)` to create a new message.
  */
 export const SuspendTenantResponseSchema: GenMessage<SuspendTenantResponse, {jsonType: SuspendTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 32);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 33);
 
 /**
  * @generated from message glidex.tenancy.v1.ResumeTenantResponse
@@ -1390,7 +1473,7 @@ export type ResumeTenantResponseJson = {
  * Use `create(ResumeTenantResponseSchema)` to create a new message.
  */
 export const ResumeTenantResponseSchema: GenMessage<ResumeTenantResponse, {jsonType: ResumeTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 33);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 34);
 
 /**
  * @generated from message glidex.tenancy.v1.AddMemberResponse
@@ -1417,7 +1500,7 @@ export type AddMemberResponseJson = {
  * Use `create(AddMemberResponseSchema)` to create a new message.
  */
 export const AddMemberResponseSchema: GenMessage<AddMemberResponse, {jsonType: AddMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 34);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 35);
 
 /**
  * @generated from message glidex.tenancy.v1.AddBindingResponse
@@ -1444,7 +1527,7 @@ export type AddBindingResponseJson = {
  * Use `create(AddBindingResponseSchema)` to create a new message.
  */
 export const AddBindingResponseSchema: GenMessage<AddBindingResponse, {jsonType: AddBindingResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 35);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 36);
 
 /**
  * @generated from message glidex.tenancy.v1.SetAdmissionResponse
@@ -1471,7 +1554,7 @@ export type SetAdmissionResponseJson = {
  * Use `create(SetAdmissionResponseSchema)` to create a new message.
  */
 export const SetAdmissionResponseSchema: GenMessage<SetAdmissionResponse, {jsonType: SetAdmissionResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 36);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 37);
 
 /**
  * @generated from enum glidex.tenancy.v1.AdmissionStatus

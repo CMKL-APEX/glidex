@@ -153,6 +153,17 @@ pub struct LinkRecord {
     pub created_at: u64,
 }
 
+/// What deleting a user took with it (counts).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeletedUser {
+    pub identities: usize,
+    pub sessions: usize,
+    pub tokens: usize,
+    pub links: usize,
+    pub teams: usize,
+    pub tenants: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub user_id: String,
@@ -449,6 +460,98 @@ impl IdentityStore {
                 }
             }
             Ok(n)
+        })
+    }
+
+    /// Delete user `id` and what is its alone, in one write (spec/tenancy.md
+    /// §6.3): its identities, sessions, personal tokens, team memberships,
+    /// role links and tenant memberships. Service-account tokens it made
+    /// stay (they are their project's); audit entries and taken invitations
+    /// stay as history. `None` when there is no such user.
+    pub fn delete_user(&self, id: &str) -> Result<Option<DeletedUser>, StoreError> {
+        const TENANT_MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_members");
+        let me = crate::authz::Ent::User(id.to_string());
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            let mut out = DeletedUser::default();
+            {
+                let mut users = tx.open_table(USERS)?;
+                if users.get(id)?.is_none() {
+                    return Ok(None);
+                }
+                users.remove(id)?;
+            }
+            // Every row of `table` whose record `drop` says to drop.
+            fn sweep<T: DeserializeOwned>(
+                t: &mut crate::store::RecTable<'_>,
+                drop: impl Fn(&str, &T) -> bool,
+            ) -> Result<Vec<(String, T)>, StoreError> {
+                let mut gone = Vec::new();
+                for r in t.iter()? {
+                    let (k, v) = r?;
+                    if let Ok(x) = serde_json::from_slice::<T>(v.value())
+                        && drop(k.value(), &x)
+                    {
+                        gone.push((k.value().to_string(), x));
+                    }
+                }
+                for (k, _) in &gone {
+                    t.remove(k.as_str())?;
+                }
+                Ok(gone)
+            }
+            {
+                let mut t = tx.open_table(IDENTITIES)?;
+                out.identities = sweep::<Identity>(&mut t, |_, i| i.user_id == id)?.len();
+            }
+            {
+                let mut t = tx.open_table(SESSIONS)?;
+                out.sessions = sweep::<Session>(&mut t, |_, s| s.user_id == id)?.len();
+            }
+            {
+                let mut t = tx.open_table(TOKENS)?;
+                out.tokens = sweep::<Token>(
+                    &mut t,
+                    |_, k| matches!(&k.kind, TokenKind::Personal { owner } if owner == id),
+                )?
+                .len();
+            }
+            {
+                let mut t = tx.open_table(LINKS)?;
+                out.links = sweep::<LinkRecord>(&mut t, |_, l| l.link.principal == me)?.len();
+            }
+            {
+                let mut t = tx.open_table(TEAMS)?;
+                let mut changed = Vec::new();
+                for r in t.iter()? {
+                    let (k, v) = r?;
+                    if let Ok(mut team) = serde_json::from_slice::<Team>(v.value()) {
+                        let before = team.members.len();
+                        team.members.retain(|m| m.user_id != id);
+                        if team.members.len() != before {
+                            changed.push((k.value().to_string(), team));
+                        }
+                    }
+                }
+                out.teams = changed.len();
+                for (k, team) in changed {
+                    t.insert(k.as_str(), serde_json::to_vec(&team)?.as_slice())?;
+                }
+            }
+            {
+                let mut t = tx.open_table(TENANT_MEMBERS)?;
+                let suffix = format!("/User:{id}");
+                let gone: Vec<String> = t
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .map(|(k, _)| k.value().to_string())
+                    .filter(|k| k.ends_with(&suffix))
+                    .collect();
+                out.tenants = gone.len();
+                for k in gone {
+                    t.remove(k.as_str())?;
+                }
+            }
+            Ok(Some(out))
         })
     }
 

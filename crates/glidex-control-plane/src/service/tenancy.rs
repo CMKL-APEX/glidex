@@ -10,6 +10,7 @@ use crate::tenants::{self, AdmissionStatus, TenantError};
 use axum::http::StatusCode;
 use buffa_types::google::protobuf::Timestamp;
 use glidex_api::proto::glidex::api::v1::EntityRef;
+use glidex_api::proto::glidex::directory::v1 as pb_dir;
 use glidex_api::proto::glidex::tenancy::v1 as pb;
 
 const MAX_PAGE: usize = 500;
@@ -251,8 +252,32 @@ pub fn create_tenant(
         .map_err(tenant_error)?;
     call.set_target(format!("tenant:{}", t.id));
     call.detail("slug", serde_json::json!(t.slug));
+    // The first administrator's invitation, made as any invitation is (its
+    // rules, D22 for an operator tenant); if it can't be, no tenant either.
+    let link = match req.first_admin.as_option() {
+        Some(f) => {
+            let inv = pb_dir::CreateInvitationRequest {
+                tenant: t.id.clone(),
+                email: f.email.clone(),
+                role: "role.tenant-admin".into(),
+                connector: f.connector.clone(),
+                days: f.days,
+                ..Default::default()
+            };
+            let as_invite = call.with_action("manageTenantInvitations");
+            match super::invitations::create_invitation(&as_invite, inv) {
+                Ok(r) => Some(r.link),
+                Err(e) => {
+                    let _ = call.auth().tenants.delete(&t.id);
+                    return Err(e);
+                }
+            }
+        }
+        None => None,
+    };
     Ok(pb::CreateTenantResponse {
         tenant: tenant_pb(call, &t)?.into(),
+        invitation_link: link,
         ..Default::default()
     })
 }

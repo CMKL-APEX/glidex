@@ -133,6 +133,14 @@ impl UserService for Svc {
         op!(self, ctx, req, svc::update_user)
     }
 
+    async fn delete_user(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteUserRequest>,
+    ) -> ServiceResult<DeleteUserResponse> {
+        op!(self, ctx, req, svc::delete_user)
+    }
+
     async fn link_identity(
         &self,
         ctx: RequestContext,

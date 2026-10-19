@@ -24,7 +24,7 @@ import {
   userIdOf,
 } from "../components/ui";
 import { useCan } from "../session";
-import { useConnectorNames, useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
 
 /** What the page offers, each checked on the tenant. */
@@ -367,6 +367,7 @@ export default function TenantDetail() {
   const navigate = useNavigate();
   const [dir] = useDirectory();
   const connectors = useConnectorNames();
+  const nodes = useNodeNames();
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [members, setMembers] = useState<TenantMember[] | null>(null);
   const [bindings, setBindings] = useState<TenantBinding[] | null>(null);
@@ -507,7 +508,7 @@ export default function TenantDetail() {
                     <td className="py-2" title={entityLabel(m.principal)}>
                       {m.principal_name || principalName(m.principal, names)}
                       {userIdOf(m.principal) && (
-                        <SignInMethods user={names.users.find((u) => u.id === userIdOf(m.principal))} connectors={connectors} />
+                        <SignInMethods user={names.users.find((u) => u.id === userIdOf(m.principal))} connectors={connectors} nodes={nodes} />
                       )}
                     </td>
                     <td className="py-2 text-gray-500">
@@ -554,6 +555,7 @@ export default function TenantDetail() {
               bindings={bindings.map((b) => asBinding(tenant.id, b))}
               dir={names}
               connectors={connectors}
+              nodes={nodes}
               onRemove={
                 can("manageTenantBindings")
                   ? (b) => run(() => api.removeTenantBinding(tenant.id, b.id), refreshBindings)

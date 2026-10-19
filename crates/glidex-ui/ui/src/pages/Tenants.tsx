@@ -2,10 +2,10 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
 import type { Tenant } from "../types";
-import { formatTimestamp } from "../types";
+import { formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
-import { Badge, ErrorBanner, Field, PageHeader, errorMessage, inputClass, primaryButton } from "../components/ui";
+import { Badge, ErrorBanner, Field, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton, selectClass } from "../components/ui";
 import { useSession } from "../session";
 
 /** The tenant's flags as badges: owner of the directory, operator of this
@@ -32,21 +32,68 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [operator, setOperator] = useState(false);
+  // The first tenant-admin, invited (spec/tenancy.md §11): optional.
+  const [adminEmail, setAdminEmail] = useState("");
+  const [connector, setConnector] = useState("");
+  const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);
+  const [link, setLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .authMethods()
+      .then((m) => {
+        const cs = (m.connectors ?? []).filter((c) => isOidcKind(c.kind)).map((c) => ({ id: c.id, label: c.display_name || c.id }));
+        setConnectors(cs);
+        setConnector((cur) => cur || cs[0]?.id || "");
+      })
+      .catch(() => setConnectors([]));
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api.createTenant({ slug, display_name: displayName || undefined, operator: operator || undefined });
-      onDone();
+      const r = await api.createTenant({
+        slug,
+        display_name: displayName || undefined,
+        operator: operator || undefined,
+        first_admin: adminEmail.trim() ? { email: adminEmail.trim(), connector } : undefined,
+      });
+      if (r.link) {
+        // On the address used here: the server's is its first allowed origin.
+        const u = new URL(r.link);
+        setLink(`${window.location.origin}${u.pathname}${u.hash}`);
+        setBusy(false);
+      } else {
+        onDone();
+      }
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
     }
   };
+
+  if (link) {
+    return (
+      <div className="space-y-4" data-testid="first-admin-link">
+        <p className="text-sm text-gray-700">
+          The tenant is made. Send this link to its first administrator; it is shown once and can't be shown again.
+        </p>
+        <code className="block break-all font-mono text-xs bg-gray-50 px-2 py-2 rounded border border-gray-200">{link}</code>
+        <div className="flex justify-end gap-3">
+          <button type="button" className={secondaryButton} onClick={() => void navigator.clipboard?.writeText(link)}>
+            Copy
+          </button>
+          <button type="button" className={primaryButton} onClick={onDone}>
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={submit} className="space-y-4">
@@ -69,7 +116,38 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
         <input type="checkbox" className="mt-1" checked={operator} onChange={(e) => setOperator(e.target.checked)} />
         <span>Operator tenant: its members can hold host roles on the clusters it operates.</span>
       </label>
-      <p className="text-xs text-gray-500">A new tenant isn't admitted to this cluster yet; admit it on the Admissions page.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Field label="First administrator's email (optional)" htmlFor="tenant-admin-email">
+          <input
+            id="tenant-admin-email"
+            type="email"
+            className={inputClass}
+            placeholder="person@example.org"
+            value={adminEmail}
+            onChange={(e) => setAdminEmail(e.target.value)}
+          />
+        </Field>
+        <Field label="Signs in through" htmlFor="tenant-admin-connector">
+          <select
+            id="tenant-admin-connector"
+            className={selectClass}
+            value={connector}
+            onChange={(e) => setConnector(e.target.value)}
+            disabled={!adminEmail.trim()}
+          >
+            {connectors.length === 0 && <option value="">No OIDC or Google connector</option>}
+            {connectors.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <p className="text-xs text-gray-500">
+        With an email, they get an invitation to be the tenant's administrator. A new tenant isn't admitted to this cluster
+        yet; admit it on the Admissions page.
+      </p>
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg" onClick={onCancel}>
           Cancel

@@ -488,6 +488,18 @@ export async function startLink(connector: string): Promise<void> {
 
 /** Remove one of a user's sign-in methods (`<provider>:<subject>`); never
  *  the last. `endSessions` (an administrator's): sign the user out too. */
+/** Delete a user and what is its alone (spec/tenancy.md §6.3); the counts
+ *  of what went with it. */
+export const deleteUser = (id: string) =>
+  rpc(UserService.method.deleteUser, { id }).then((r) => ({
+    identities: r.identities ?? 0,
+    sessions: r.sessions ?? 0,
+    tokens: r.tokens ?? 0,
+    links: r.links ?? 0,
+    teams: r.teams ?? 0,
+    tenants: r.tenants ?? 0,
+  }));
+
 export const unlinkIdentity = (user: string, key: string, endSessions = false) =>
   rpc(UserService.method.unlinkIdentity, { id: user, key, end_sessions: endSessions || undefined }).then(none);
 
@@ -1032,8 +1044,13 @@ export async function listTenants(): Promise<Tenant[]> {
   return out;
 }
 export const getTenant = (id: string) => rpc(TenantService.method.getTenant, { id }).then((r) => r.tenant as Tenant);
-export const createTenant = (req: { slug: string; display_name?: string; operator?: boolean }) =>
-  rpc(TenantService.method.createTenant, req).then((r) => r.tenant as Tenant);
+/** With `first_admin`, the first tenant-admin's invitation link comes back once. */
+export const createTenant = (req: {
+  slug: string;
+  display_name?: string;
+  operator?: boolean;
+  first_admin?: { email: string; connector: string };
+}) => rpc(TenantService.method.createTenant, req).then((r) => ({ tenant: r.tenant as Tenant, link: r.invitation_link }));
 export const updateTenant = (id: string, req: { display_name?: string; operator?: boolean }) =>
   rpc(TenantService.method.updateTenant, { ...req, id }).then((r) => r.tenant as Tenant);
 export const suspendTenant = (id: string) => rpc(TenantService.method.suspendTenant, { id }).then((r) => r as { tenant: Tenant });

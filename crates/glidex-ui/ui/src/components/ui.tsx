@@ -117,9 +117,22 @@ export function principalName(e: EntityRef, dir: Directory, known?: string): str
  *  host's local socket (`unix`: gxctl on the host, no password), or a
  *  connector by its name (`conn:<id>`; `oidc:<issuer>` is the
  *  file-defined OIDC connector). */
-export function signInLabel(provider: string, connectors: Record<string, string>): string {
-  if (provider === "pam") return "Local password";
-  if (provider === "unix") return "Host socket";
+export function signInLabel(
+  provider: string,
+  connectors: Record<string, string>,
+  subject?: string,
+  nodes?: Record<string, string>,
+): string {
+  if (provider === "pam" || provider === "unix") {
+    const base = provider === "pam" ? "Local password" : "Host socket";
+    // In a cluster a local account is one host's (`<name>@<node>`).
+    const at = subject?.lastIndexOf("@") ?? -1;
+    if (subject && at > 0) {
+      const node = subject.slice(at + 1);
+      return `${base} on ${nodes?.[node] ?? node.slice(0, 8)}`;
+    }
+    return base;
+  }
   if (provider.startsWith("conn:")) {
     const id = provider.slice(5);
     return connectors[id] ?? id;
@@ -133,8 +146,17 @@ export const userIdOf = (e: EntityRef): string | null => (e.type === "User" ? e.
 
 /** A user's ways to sign in, as small badges: two people with one name,
  *  one through Google and one a local account, look different. */
-export function SignInMethods({ user, connectors }: { user?: UserView; connectors: Record<string, string> }) {
-  const labels = [...new Set((user?.identities ?? []).map((i) => signInLabel(i.provider, connectors)))];
+export function SignInMethods({
+  user,
+  connectors,
+  nodes,
+}: {
+  user?: UserView;
+  connectors: Record<string, string>;
+  /** Node id → name, for a local account's host. */
+  nodes?: Record<string, string>;
+}) {
+  const labels = [...new Set((user?.identities ?? []).map((i) => signInLabel(i.provider, connectors, i.subject, nodes)))];
   if (labels.length === 0) return null;
   return (
     <span className="ml-2 inline-flex flex-wrap gap-1 align-middle" data-testid="sign-in-methods">
@@ -152,12 +174,14 @@ export function BindingTable({
   dir,
   onRemove,
   connectors,
+  nodes,
 }: {
   bindings: Binding[];
   dir: Directory;
   onRemove?: (b: Binding) => void;
   /** With these (connector id → name), users show how they sign in. */
   connectors?: Record<string, string>;
+  nodes?: Record<string, string>;
 }) {
   if (bindings.length === 0) return <p className="text-sm text-gray-500">No role links.</p>;
   return (
@@ -176,7 +200,7 @@ export function BindingTable({
             <td className="py-2" title={entityLabel(b.principal)}>
               {principalName(b.principal, dir, b.principal_name)}
               {connectors && userIdOf(b.principal) && (
-                <SignInMethods user={dir.users.find((u) => u.id === userIdOf(b.principal))} connectors={connectors} />
+                <SignInMethods user={dir.users.find((u) => u.id === userIdOf(b.principal))} connectors={connectors} nodes={nodes} />
               )}
             </td>
             <td className="py-2">
