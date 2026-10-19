@@ -118,6 +118,10 @@ organizations that **operate** it, and lets each keep its own identity.
 | D41 | A SCIM user meets its login | A user created by SCIM is a **managed user** of that connector, keyed by the SCIM `id` glidex assigns, with the IdP's `externalId` when it sends one (JumpCloud doesn't), `userName` and primary email. The first login through the **same** connector with no identity yet is matched to the one enabled managed user whose `external_id` equals the token's subject, else whose `userName` or primary email equals the token's **verified** email (case-insensitive). The identity `(connector, subject)` is then linked (D17) and later logins use it; a managed user that has an identity of the connector already isn't matched again. A connector with `provisioning: scim` lets in only its managed users: no JIT and no invitations through it. A `POST /Users` whose `userName` or email is that of an existing, unmanaged user who logs in through the same connector (one that had JIT before SCIM) adopts that user instead of making a second. | The login and the provisioning come from one IdP, through one connector, so its verified email is the same person; the IdP's SCIM and OIDC ids differ in general. Letting only provisioned users in makes the IdP the one place that decides who has an account. |
 | D42 | SCIM removal | `active: false` disables the user (D20, `disabled_reason: scim`); `active: true` enables it again, unless an administrator disabled it. `DELETE /Users/{id}` also disables it and ends the SCIM link (the SCIM `id` is gone; the user, its links and audit history stay). An administrator may then delete the user (§6.3). | An IdP deletes a user when it is unassigned from the app, which isn't a decision to erase its records; disabling closes the access at once either way. |
 | D43 | SCIM groups | Every SCIM group is kept (`scim_groups`: id, `displayName`, members), so the IdP's view round-trips. With `group_mode: auto` each group is a managed team (`managed_by`, `external_id` = the group's id, named after `displayName`); with `mapped`, members of a group named in `group_teams` (by `displayName` or id) are members of that team. Those memberships have `source: connector:<id>`, for enabled managed users only, and never replace a manual one. A group that is deleted leaves its `auto` team in place, unmanaged and without the connector's members, so the team's role links give nobody anything until an administrator decides. A SCIM connector doesn't sync groups at login (§6 step 2): SCIM is their source. | One source per membership; an unmapped group isn't an error, since IdPs push whatever is assigned. |
+| D44 | Who a pull brings in | A pulled connector names **Google groups**. Their members, nested groups' members included, are its **managed users**. They are keyed by the Directory API user `id`, which is the subject Google's ID tokens carry, so `external_id == sub` and a login is matched exactly, with no email match. Logins through it reach managed users only (as D41): no JIT, no invitations. A user who logged in before the pull, with that subject, is adopted. Nobody outside the groups gets an account. | Pulling a whole Workspace domain would give every employee a user; the groups the administrator names are who is meant to use glidex. |
+| D45 | Leaving, in a pull | A managed user no longer in the groups, or **suspended** or **archived** in Google, or deleted there, is disabled (D20, `disabled_reason: sync`) and stays managed. One back in the groups and active is enabled again, unless an administrator disabled it. | A pull sees only the current state, so leaving and a group change look alike; staying managed lets the person come back without an administrator, while D20 closes the access at once. |
+| D46 | A pull that fails or would remove many | An error from Google (or one it can't read) changes nothing: the run is recorded as failed and the next one tries again. A run that would disable more than `sync.max_disable` of the managed users (default 10 %, at least 5) applies nothing else either and sets the connector `blocked` until a directory administrator confirms that run (`POST /connectors/{id}/sync {confirm: true}`). | An outage, a renamed group or an expired key must never read as "everyone left". |
+| D47 | Google credentials | A **service account** with **domain-wide delegation**, granted only the read-only scopes `admin.directory.user.readonly` and `admin.directory.group.readonly`, impersonating `sync.admin_email` (a Workspace administrator, or a delegated admin with directory read). Its JSON key is the connector's write-only secret `service_account_key`, sealed like the client secret (§13); access tokens are kept in memory only. | The Directory API is read only through an administrator's delegated identity. Keyless workload identity federation needs glidex to be an issuer Google trusts (T5, T6). |
 
 ## 3. Threat model additions
 
@@ -453,7 +457,7 @@ One directory's outage affects only its users. Responses carry
   and is not a Cedar principal. A wrong, expired or revoked token, or
   another connector's, is `401` with the same body. A disabled
   connector, or one whose `provisioning` isn't `scim`, answers `403`.
-- **Connector.** `provisioning: none | scim` (pull is T4). With `scim`,
+- **Connector.** `provisioning: none | scim | pull` (pull: §8.2). With `scim`,
   logins follow D41, and `jit` and invitations don't apply.
   `default_tenant` is where new managed users become members. Tokens
   are not clamped to `token_max_days` (D20 clamps connectors without
@@ -485,16 +489,47 @@ One directory's outage affects only its users. Responses carry
 
 ### 8.2 Pull sync
 
-- Kinds `ldap`, `google`, `azure` (Graph), `github`; a controller on the
-  directory host's leader, every `sync.interval` (default 15 min,
-  minimum 5) and on `POST /connectors/{id}/sync`.
-- Each run diffs the connector's managed users and teams, committed in
-  write sets of ≤ 500 changes, with delta tokens in `connector_sync`
-  and a daily full resync.
-- **Safety stop:** a run that would disable more than `sync.max_disable`
-  (default 10 % of managed users, at least 5) is not applied; the
-  connector is `sync_blocked` until an owner confirms. An API error is
-  never read as "no users".
+T4 pulls from **Google Workspace** (`google` connectors with `accounts:
+workspace`). LDAP, Microsoft Graph and GitHub sources are later (T4b,
+§18); they reuse the same runs.
+
+- **Connector.** `provisioning: pull`. `sync`: `interval_minutes`
+  (default 15, at least 5), `max_disable` (a percentage of the managed
+  users, default 10; a run may always disable up to 5). Google's:
+  `sync.admin_email` and `sync.groups` (group emails, 1–50), and the
+  secret `service_account_key` (D47). With `pull`, logins follow D44:
+  `jit` is off, invitations don't apply, `required_groups` still can.
+- **Runs.** A task on the directory host's leader (a standalone host:
+  the host) runs each pulled connector every `interval_minutes`, and at
+  once on `POST /connectors/{id}/sync`. A run reads everything first:
+  - the members of each group in `sync.groups`, nested ones included
+    (`groups/{key}/members?includeDerivedMembership=true`, users only);
+  - those users (`users/{id}`): `id`, `primaryEmail`, `name`,
+    `suspended`, `archived`, and the SSH key field when one is set
+    (§5).
+  Then it diffs that against the connector's managed users and teams,
+  checks D46, and applies the changes in writes of at most 500.
+- **What it changes.** Users: made (or adopted, D44), their name and
+  email updated, disabled and enabled (D45). Teams: each group in
+  `sync.groups` is a team as D43 says (`group_mode: auto`: the team of
+  the group's id, named after the group; `mapped`: `group_teams` by the
+  group's email or name), with its members as the connector's
+  memberships. New users join `default_tenant`.
+- **Status** (`connector_sync`, per connector): the last run's start
+  and end, `ok` / `failed` / `blocked`, what it changed (counts), its
+  error (Google's message, never a token), and for `blocked` the users
+  it would disable. `GET /connectors/{id}` carries it; `POST
+  /connectors/{id}/sync` answers the run's status (`{confirm: true}`
+  applies a blocked run). Every applied change is audited as
+  `system:sync:<connector_id>`.
+- **Google's API.** A JWT signed with the key (RS256: `iss` the service
+  account, `sub` `sync.admin_email`, the two scopes) is exchanged at
+  `https://oauth2.googleapis.com/token` (RFC 7523); the access token is
+  reused until shortly before it expires. Requests go to
+  `https://admin.googleapis.com/admin/directory/v1/`, pages of 200,
+  retried with backoff on `429` and `5xx` within the run. `POST
+  /connectors/{id}/test` adds the steps "token" and "group" (each named
+  group can be read).
 
 ### 8.3 Ownership of fields
 
@@ -1151,8 +1186,11 @@ one login for both (D3). Nothing a user does today changes.
   login without one is refused; D42's `DELETE` keeps the records.
   Against real JumpCloud: idp-checks.md, with the URL reachable from
   JumpCloud.
-- **Pull sync:** failing APIs change nothing; the safety stop holds;
-  delta and full resync agree.
+- **Pull sync:** failing or unreadable answers change nothing; the
+  safety stop holds until confirmed; suspended, archived and removed
+  users are disabled and come back (D45); nested group members count;
+  the first login lands on the pulled user by subject (D44). Against a
+  real Workspace: idp-checks.md.
 - **Secrets:** no read or feed contains secret bytes; a hosted
   directory can't decrypt another's (different data keys).
 - **Federation:** wrong repository, `aud`, expiry, unpinned rules are
@@ -1208,7 +1246,8 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T2** OIDC presets and invitations | §5.1: `google` (Workspace and gated consumer accounts, D39), `jumpcloud`, `oidc`; invitations (§6.1, D40); MFA per preset; per-preset connector tests, wizard and gxctl | Mock tests per preset and for invitations (§17); manual checks against real Google (both kinds of account) and JumpCloud. |
 | **T2b** Entra and GitHub | `azure` (`tid`, `oid`, group overage) and `github` (OAuth 2.0 web and device flow, org membership); moved out of T2 | Mock tests; manual checks against real Entra and GitHub. T4's Graph and GitHub sync need it. Not scheduled. |
 | **T3** SCIM | §8.1, managed users and teams, D20, field ownership | SCIM fixtures; deprovision-revokes test. |
-| **T4** pull sync and attributes | `directory_sync`, LDAP, Google Directory, Graph, GitHub, safety stop; SSH keys from connectors | Pull sync tests; LDAP against OpenLDAP in CI. |
+| **T4** pull sync and attributes | §8.2 for Google Workspace (D44–D47): runs, the safety stop, status; SSH keys from Google | Pull tests against a mock Directory API; manual checks against a real Workspace. |
+| **T4b** more sources | LDAP (login and pull; AD, FreeIPA, OpenLDAP, JumpCloud LDAP), Microsoft Graph and GitHub (after T2b), on T4's runs | LDAP against OpenLDAP in CI. |
 | **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds | Federation tests; a GitHub Actions workflow deploys without a stored token. |
 | **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider, access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, standby and promote, gxctl `auth login --directory`, `trust`, UI | §17 trust tests; a check with two organizations' directories and two clusters across a real WAN link. Can start once T1 has landed. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
@@ -1284,7 +1323,29 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 5. Docs: the operator guide's provisioning section (JumpCloud, and
    making the URL reachable), idp-checks.md's SCIM checks; UI e2e.
 
-T4–T7 get their own task lists when they start; per-protocol code under
+**T4 tasks** (one PR each, in order):
+1. This spec (D44–D47, §8.2).
+2. Runs: `Provisioning::Pull`, `sync` settings and their validation,
+   `connector_sync` (directory scope), the diff and D46 (a source gives
+   users and groups; the run plans, checks, and applies through
+   `ScimTx` in writes of ≤ 500), the leader's task, `POST
+   /connectors/{id}/sync` and the status on both transports, gxctl
+   `connector sync`, D44's login and D45 (`DisabledReason::Sync`);
+   tests with a fake source.
+3. Google's source: the service account key (a sealed secret), the JWT
+   and token exchange, the Directory API client (members with derived
+   membership, users, pages, backoff), the connector test's steps;
+   tests against a mock of Google's token and Directory endpoints.
+4. UI and docs: the Google connector form's Directory sync (admin
+   email, groups, key, interval), the connector's sync status (last run,
+   changes, error, the blocked run to confirm, "Sync now"); the operator
+   guide (a service account, the Admin SDK, domain-wide delegation with
+   the two scopes); idp-checks.md; UI e2e.
+5. SSH keys from Google: a custom schema field (`sync.ssh_keys_field`,
+   `<schema>.<field>`, multi-valued) kept on the managed user, offered
+   by "my SSH keys" when the host has no local login for the user.
+
+T5–T7 get their own task lists when they start; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
 ## 19. Out of scope
@@ -1355,7 +1416,8 @@ T4–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0, T1, T2 and T3 are implemented; T2b and T4–T7 are not started. What
+T0, T1, T2 and T3 are implemented; T4 is in progress (its tasks in §18);
+T2b, T4b and T5–T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
