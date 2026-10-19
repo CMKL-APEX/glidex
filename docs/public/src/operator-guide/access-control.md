@@ -186,10 +186,25 @@ Teams can also be filled from outside:
 - `group_teams` of a login connector maps a Unix or identity provider
   group to a team; the user's membership is updated at every login.
   Memberships you added by hand are left alone.
+- A connector [provisioned by SCIM](authentication.md#provisioning-with-scim)
+  takes its groups from the IdP's pushes instead of from logins. With
+  `--group-mode mapped` (the default) they fill the teams named in
+  `--team GROUP=TEAM` (by the group's name or id); with `auto`, each
+  group is a team of its own, named after the group and renamed with it.
+  Only enabled users the IdP manages get these memberships.
 - On the local socket, each of the caller's Unix groups is a team
   `unix:<group>`. Bind it to give a whole Unix group a role for `gxctl`
   on the host: `gxctl binding add web operator team:unix:lab`. It applies
   only to requests on the socket.
+
+A team made by a SCIM connector (`auto`) shows *from &lt;connector&gt;*
+in **Users & roles**. Its name, and the memberships the IdP gave in any
+team, are the IdP's: renaming or deleting such a team, or removing such
+a membership, is refused with `409 managed_by_connector`. You can still
+add members by hand (the IdP never replaces them) and bind the team to
+roles. When the IdP deletes a group, its team stays, no longer managed
+and without the IdP's members, so its bindings give nobody anything
+until you decide what to do with it.
 
 ### Tenants and admissions
 
@@ -226,7 +241,8 @@ no option for it; create the tenant, then `gxctl invite create <tenant>
 From the **Users & roles** tab (needs `directory-admin`):
 
 - **Disable** a user: their sessions end and their tokens stop working,
-  but the user, their roles and their history stay. **Enable** undoes it.
+  but the user, their roles and their history stay. **Enable** undoes it
+  (for a user an IdP manages, see [below](#users-an-idp-manages)).
 - **Remove** one of a user's sign-in methods (a user can have several:
   a local account, a Google account, a JumpCloud one). A user's last
   sign-in method can only be removed once the user is disabled. Their
@@ -247,12 +263,51 @@ can't be undone. It is refused:
 - for the last holder of `system-admin` or `directory-admin` on its
   resource (a team that holds it counts): `409 last_admin`. Give the role
   to someone else first.
+- for a user an IdP manages that is still enabled:
+  `409 managed_by_connector` (see [Users an IdP
+  manages](#users-an-idp-manages)).
 
 A deleted person who can still sign in (a local account in
 `glidex-users`, a connector that creates users) gets a new, empty user
 at their next login. To keep someone out, disable them, or remove their
 access at the source. `gxctl` has no command for deleting a user; the
 API has `DELETE /users/{id}`.
+
+### Users an IdP manages
+
+A user that a [SCIM connector](authentication.md#provisioning-with-scim)
+created shows *managed by &lt;connector&gt;* in **Users & roles**. Its
+display name, email and whether it is enabled belong to the IdP; its
+roles, and the team memberships you add by hand, stay yours. When the
+IdP deactivates or removes it, it shows *disabled by its IdP*: its
+sessions end, its personal tokens are revoked and it leaves the teams
+the IdP put it in.
+
+These are refused with `409 managed_by_connector`, and the web UI
+doesn't offer them:
+
+| Change | Do instead |
+|---|---|
+| The user's display name | Change it at the IdP. |
+| **Enable** a user its IdP disabled | Reactivate it at the IdP. |
+| **Delete** a managed user that is still enabled | Deactivate or remove it at the IdP first (the IdP would only push it again), or disable it here. |
+| Rename or delete a team from the IdP, or remove a membership the IdP gave | Change the group at the IdP. |
+
+An administrator can always **Disable** a managed user, at once, as an
+emergency stop that doesn't wait for the IdP. The IdP can't undo it:
+reactivating the user there leaves it disabled until an administrator
+**Enable**s it again. Over the API, a user's `managed_by` names its
+connector, and `disabled_reason` says who disabled it: `admin`, `scim`
+(its IdP) or `connector_deleted`.
+
+Deleting a SCIM connector releases what it managed. By default its users
+are disabled (`connector_deleted`), with their sessions and personal
+tokens, and leave the teams it filled; with `gxctl connector remove <id>
+--detach-users` (or the choice in the web UI) they stay enabled, and the
+IdP's memberships become manual ones. Either way the users and teams
+become the directory's own, its SCIM tokens are deleted, and `gxctl`
+prints how many users and teams were released. A user an administrator
+had disabled stays disabled.
 <!-- TODO(verify): directory-admin can't be given through the API, so the last directory-admin from the first start can't be deleted; confirm whether that is intended. -->
 
 ## Quotas

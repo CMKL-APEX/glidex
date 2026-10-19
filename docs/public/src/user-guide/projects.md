@@ -123,7 +123,12 @@ Teams can also come from outside Glidex:
   `unix:<group>`, so `team:unix:lab-users` grants a role to that group's
   members when they use `gxctl` on the host;
 - the operator can map groups from the site's PAM or single sign-on setup
-  to teams.
+  to teams;
+- an identity provider that provisions users over SCIM can push its
+  groups as teams. Such a team shows *from &lt;connector&gt;*: its name
+  and the members the IdP put in it change at the IdP, not in Glidex
+  (Glidex refuses with `409 managed_by_connector`). Administrators can
+  still add members by hand.
 
 `gxctl whoami` lists the teams you are in.
 

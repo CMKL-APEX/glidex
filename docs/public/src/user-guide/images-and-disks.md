@@ -312,7 +312,10 @@ A disk lives on a datastore. On the built-in `local`, or another
 datastore each node has its own of, it lives on one node: the node of
 the first VM that uses it, and its VMs run there. On a **shared**
 datastore (one filesystem every node mounts), it is tied to no node, and
-its VM can run on any node that reaches the datastore. The **Disks**
+its VM can run on any node that reaches the datastore. Over the API,
+`node` (a node's name or id) binds a new disk on a node-local
+datastore to that node when it is created; an unknown node is refused
+with `400 invalid_config`. The **Disks**
 page has a *Datastore* column once there is more than `local`; `gxctl
 disk show` names it too.
 

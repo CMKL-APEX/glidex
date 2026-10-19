@@ -225,6 +225,9 @@ gxctl connector list
 - `--default-tenant <t>` makes new users members of tenant `<t>`. If
   that is the `admin` tenant or another operator tenant, a connector that creates users must also
   have `--require-group`.
+- `--provisioning scim` and `--group-mode mapped|auto` let the IdP
+  create and remove the connector's users (`oidc` and `jumpcloud` only);
+  see [Provisioning with SCIM](#provisioning-with-scim).
 - Changing a connector needs a recent login (see [Sessions and
   re-authentication](#sessions-and-re-authentication)).
 
@@ -395,7 +398,20 @@ deactivating someone in the IdP takes their access away at once.
    Or use the connector's **SCIM** button on the **Connectors** tab,
    which also shows the endpoint URL. A token lasts 180 days by default
    (`--days`, at most 365). A connector can have five at once, so make
-   the next one before the old one expires, then revoke the old one.
+   the next one before the old one expires, then revoke the old one:
+
+   ```bash
+   gxctl connector scim-token list jc              # ids, names, expiry; never the tokens
+   gxctl connector scim-token revoke jc <token-id>
+   ```
+
+   The token is a password for the connector's users: whoever holds it
+   can create users and put them in teams. Paste it straight into the
+   IdP, keep any copy in a secret manager, never in shell history,
+   scripts or tickets, and revoke a token that may have been exposed.
+   Making and revoking tokens needs a recent login; a connector that
+   isn't `--provisioning scim` refuses them (`409 not_provisioned`).
+   Expired tokens stay listed for 30 days.
 3. Make the endpoint reachable from the IdP (see below).
 4. In JumpCloud, open the application's **Identity Management**, choose
    **SCIM 2.0**, and enter:
@@ -410,7 +426,10 @@ What happens then:
 
 - **First login.** It is matched to the provisioned user by the IdP's
   id or, as for JumpCloud (which sends none), by the verified email
-  address. Somebody the IdP didn't provision is refused.
+  address. Somebody the IdP didn't provision is refused. The
+  connector's `--require-group` and `--mfa` still apply; invitations
+  can't be taken through it, and teams aren't synced at login: the IdP
+  pushes them.
 - **Deactivating** someone in the IdP disables the glidex user: their
   sessions end, their tokens are revoked, and they leave the teams the
   IdP put them in.
@@ -459,7 +478,9 @@ tailscale funnel status
   --set-path=/api/scim/v2/ off`.
 
 Only the SCIM token opens the endpoint: any other request gets `401`.
-It answers at most 20 requests a second per connector.
+A disabled connector, or one that isn't `--provisioning scim`, answers
+`403`. It answers at most 20 requests a second per connector. What the
+endpoint supports is in the [REST API](../api/rest.md#scim-20-for-identity-providers).
 
 ## Invitations
 
@@ -490,7 +511,9 @@ gxctl invite revoke <id>
   listed for 30 days. `revoke` deletes an invitation.
 - `--role` is `member` (the default: membership only),
   `role.tenant-admin` or `role.tenant-auditor`.
-- `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector.
+- `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector,
+  not one [provisioned by SCIM](#provisioning-with-scim): its users come
+  from the IdP, and an invitation can't be taken through it.
   Invitations into the `admin` tenant or an operator tenant go only
   through a connector that requires MFA and is allowed there.
 
@@ -643,7 +666,8 @@ or when the user signs out.
 Some actions need a login in the last 10 minutes:
 
 - writing site policies;
-- adding, changing or removing login connectors and their secrets;
+- adding, changing or removing login connectors, their secrets and
+  their SCIM tokens;
 - managing admissions and deleting tenants;
 - host network changes that can cut the host off (installing Open
   vSwitch, DPDK, committing or removing uplinks, deleting bridges);

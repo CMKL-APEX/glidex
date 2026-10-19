@@ -68,7 +68,7 @@ is the encoded `ErrorInfo`):
 | `RESOURCE_EXHAUSTED` | `quota_exceeded`, `tenant_quota_exceeded`, `too_large`, `rate_limited`, `slow_down` |
 | `NOT_FOUND` | `not_found`, `oidc_disabled` |
 | `ABORTED` | `conflict` (a name taken, a concurrent change): read again and retry |
-| `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, …), `unsupported_on_host` |
+| `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, `managed_by_connector`, `not_provisioned`, …), `unsupported_on_host` |
 | `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*` |
 | `UNAVAILABLE` | `not_leader`, `use_a_server`, `leader_changed`, `cluster_unavailable`, and `502`/`503` codes (`netd_unavailable`, `node_unreachable`, `too_many_watchers`, `console_unavailable`, …) |
 | `INTERNAL` | `internal`, `persistence_error` and other `500` codes. The message is generic and names the request id; the details are in the server log |

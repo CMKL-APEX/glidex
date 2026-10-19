@@ -14,7 +14,9 @@ console WebSocket is `VmService.Console`.
 
 - **Only on REST**: `/health`, `/auth/methods`, browser login and
   logout, OIDC and connector login redirects, CSV exports, the cluster
-  snapshot and `/system/reconcile`.
+  snapshot, `/system/reconcile`, and the [SCIM
+  endpoints](rest.md#scim-20-for-identity-providers) identity providers
+  call.
 - **Only on RPC**: the gRPC health service, server reflection (on
   `api.sock`) and `WatchService.WatchEvents` (one object's events as
   they happen).
@@ -69,7 +71,8 @@ once), with `gxctl auth login`, or from the web UI. See
 [Authentication](../operator-guide/authentication.md).
 
 A few operations need no credential: `GET /health`, `GET /auth/methods`,
-`GET /auth/server-info` and the login endpoints. Everything else is
+`GET /auth/server-info` and the login endpoints. The SCIM endpoints take
+only their connector's SCIM token. Everything else is
 authorized against the caller's roles and the site's Cedar policies
 ([Access control](../operator-guide/access-control.md)). A missing
 permission is `403 forbidden`; a resource in a project you can't read

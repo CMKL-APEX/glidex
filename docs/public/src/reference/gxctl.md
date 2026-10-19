@@ -249,14 +249,21 @@ and [Access control](../operator-guide/access-control.md).
 | `connector update <id> [--name TEXT] [--enable \| --disable] [common]` | Change a connector |
 | `connector secret set <id> [field] [--from-file PATH]` | Set a secret (default `client_secret`; a Google device client's is `device_client_secret`), from a hidden prompt, stdin or a file |
 | `connector test <id>` | Test it step by step |
-| `connector remove <id>` | Delete it |
+| `connector remove <id> [--detach-users]` | Delete it and its SCIM tokens. The users it provisioned are disabled, or with `--detach-users` stay enabled as the directory's own; prints how many users and teams it released |
+| `connector scim-token list <id>` | A SCIM connector's endpoint path and tokens: id, name, expiry, who made it; never the tokens |
+| `connector scim-token create <id> [--name TEXT] [--days N]` | Make a token for the IdP (`gxs_…`), printed once with the endpoint path. `--days` 1–365 (default 180); at most five live per connector |
+| `connector scim-token revoke <id> <token-id>` | Revoke a SCIM token |
 | `invite list <tenant>` | A tenant's invitations: open, taken or expired |
 | `invite create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` | Invite an email address into a tenant; prints the link once. `--role` defaults to `member`, `--days` to 7 (at most 30) |
 | `invite revoke <id>` | Delete an invitation |
 
 Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 `--mfa` / `--no-mfa`, `--team GROUP=TEAM`…, `--default-tenant T`,
-`--token-max-days N`. See [Authentication](../operator-guide/authentication.md)
+`--token-max-days N`, `--provisioning none|scim` (`scim`: the IdP
+provisions users over SCIM; `oidc` and `jumpcloud` only, with
+`--no-jit`), `--group-mode mapped|auto` (`auto`: a team per IdP group,
+for a SCIM connector). See [Authentication](../operator-guide/authentication.md),
+[Provisioning with SCIM](../operator-guide/authentication.md#provisioning-with-scim)
 and [Invitations](../operator-guide/authentication.md#invitations).
 
 ## Cluster and nodes

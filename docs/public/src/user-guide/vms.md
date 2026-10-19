@@ -422,6 +422,11 @@ state is `desired_state`. The VM's `conditions` say what is in the way
 stopped on request, stopped by the host, guest powered off, crashed (with
 its exit code or signal), failed to launch, host rebooted, or lost.
 
+On a cluster, a VM that boots through a firmware image needs that
+image's copy on its node. Until the node has fetched it, the VM waits
+with the condition `DisksReady` `False` (*firmware &lt;name&gt; has not been
+copied to this node yet*), and carries on by itself once the copy is there.
+
 Each VM keeps a list of events: created, spec changes, launches, exits,
 restarts, warnings such as a lost network port.
 

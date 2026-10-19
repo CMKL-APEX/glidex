@@ -203,6 +203,12 @@ you by your Unix account. A user can have several **sign-in methods**
 roles. A **team** is a group of users; teams can mirror Unix or
 identity-provider groups.
 
+A connector can also be **provisioned**: the identity provider (IdP)
+creates, changes and removes its users and groups in Glidex over SCIM,
+and only those users can log in through it. Such users and teams are
+*managed by* the connector: their names, and whether a user is enabled,
+are changed at the IdP, not in Glidex.
+
 An **invitation** is a one-time link that lets one email address into a
 tenant, with a role, through one connector, even when that connector
 doesn't create users by itself. It expires, after 7 days by default.

@@ -84,6 +84,9 @@ details:
 | `cannot_delete_self`, `last_admin` | Deleting yourself, or the last holder of `system-admin` or `directory-admin`. | Have another administrator do it; give the role to someone else first. See [Removing people](access-control.md#removing-people). |
 | `last_identity` | Removing a user's last sign-in method. | Disable the user first, or add another sign-in method. |
 | `node_departed` | Giving a role on one host whose node has left the cluster. | Pick a current node (`gxctl nodes`). |
+| `managed_by_connector` | The user or team is managed by a SCIM connector: its name, whether it is enabled, or a membership the IdP gave, belongs to the IdP. Also deleting a managed user that is still enabled. | Change it at the IdP, or disable the user first. See [Users an IdP manages](access-control.md#users-an-idp-manages). |
+| `not_provisioned` | Making a SCIM token for a connector that isn't provisioned by SCIM. | `gxctl connector update <id> --no-jit --provisioning scim` first. |
+| `login_not_allowed` | The connector's rules refused the login. Through a SCIM connector: the person wasn't provisioned, or their account is disabled. | Check the user is assigned to the application at the IdP and was pushed; see [Provisioning with SCIM](authentication.md#provisioning-with-scim). |
 | `precondition_failed` | Someone changed the resource since you read it. | Read it again and retry. |
 | `hypervisor_unavailable` | The VM's hypervisor isn't installed on this host. | Re-run the installer (without `--no-qemu` for QEMU). |
 | `hypervisor_error` | The hypervisor refused or failed. | `journalctl -u glidex-vm@<vm-id>`, `gxctl events <vm>`. |
@@ -99,6 +102,24 @@ details:
 | `node_unreachable` | The VM's node can't be reached. | Check that node; see [Clusters](clusters.md#a-node-is-down-for-a-while). |
 | `gateway_not_ready` | A gateway node doesn't map the edge's physical network or runs `br-int` in userspace. | See [Gateway nodes](host-networking.md#gateway-edge-nodes). |
 | `internal`, `persistence_error` | A bug or a storage problem. | `journalctl -u glidex-control-plane`; check disk space. |
+
+## SCIM provisioning
+
+When an IdP can't provision a [SCIM connector](authentication.md#provisioning-with-scim),
+its test or logs show the endpoint's answer:
+
+| Answer | Cause and fix |
+| --- | --- |
+| `401` | A wrong, expired or revoked token, or another connector's. Check `gxctl connector scim-token list <id>`, make a new token, and enter it in the IdP. |
+| `403` | The connector is disabled, or isn't `--provisioning scim`. |
+| `400 invalidFilter` | The IdP filters on an attribute Glidex doesn't: users by `userName`, `externalId`, `emails`, `displayName`; groups by `displayName`, `externalId`. |
+| `409 uniqueness` | A user with that `userName`, or a group with that name, already exists for the connector. |
+| `413` | A request body over 1 MiB. |
+| `429` | Over 20 requests a second for the connector. IdPs retry after `Retry-After`. |
+| The connection fails or times out | The endpoint isn't reachable from the IdP, or the path isn't published; see [Making the endpoint reachable](authentication.md#making-the-endpoint-reachable). |
+
+Every SCIM write is in the audit log as `system:scim:<connector-id>`:
+`gxctl audit --limit 50`.
 
 ## Certificate fingerprints
 

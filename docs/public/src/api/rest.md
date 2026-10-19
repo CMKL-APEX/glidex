@@ -56,7 +56,8 @@ VM's credential.
 
 Plain JSON bodies of their own: `/health`, `/auth/methods`,
 `/auth/login`, `/auth/logout`, the OIDC and connector redirects, and
-`/system/reconcile`.
+`/system/reconcile`. The [SCIM endpoints](#scim-20-for-identity-providers)
+speak SCIM 2.0 JSON instead.
 
 ### Authentication
 
@@ -103,6 +104,8 @@ Branch on `error`, never on `message`. Common codes:
 | 409 | `ambiguous` | A name matches several resources; use the id |
 | 409 | `cannot_delete_self`, `last_admin`, `last_identity` | Deleting yourself, the last holder of `system-admin` or `directory-admin`, or a user's last sign-in method |
 | 409 | `node_departed` | A per-host role on a node that has left the cluster |
+| 409 | `managed_by_connector` | The user or team is managed by a SCIM connector: change it at the IdP (see [Users an IdP manages](../operator-guide/access-control.md#users-an-idp-manages)) |
+| 409 | `not_provisioned` | A SCIM token for a connector that isn't `provisioning: scim` |
 | 409 | `would_lock_out`, `confirmation_required`, `host_interface_in_use`, `not_clustered`, `ovn_not_installed`, `dpdk_not_running`, … | A precondition isn't met; the message says which |
 | 412 | `precondition_failed` | `If-Match` didn't match; `details.resource_version` has the current one |
 | 413 | `too_large` | The body is too large |
@@ -334,7 +337,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/disks` | List disks |
-| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`) |
+| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`); `node` (name or id) binds it to a node now, an unknown node is `400 invalid_config` |
 | `GET` | `/disks/{id}` | Get a disk and its partition table |
 | `DELETE` | `/disks/{id}` | Delete (`409` while attached) |
 | `POST` | `/disks/{id}/resize` | Grow or shrink (`?wait=`) |
@@ -425,8 +428,8 @@ them to the node being managed).
 | `DELETE` | `/tokens/{id}` | Revoke a token |
 | `GET` | `/users` | List users and their identities |
 | `POST` | `/users` | Create a user |
-| `PATCH` | `/users/{id}` | Change a user |
-| `DELETE` | `/users/{id}` | Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went |
+| `PATCH` | `/users/{id}` | Change a user; for a user a SCIM connector manages (`managed_by`), its display name, and enabling it after its IdP disabled it, are `409 managed_by_connector` |
+| `DELETE` | `/users/{id}` | Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went. `409 managed_by_connector` for a managed user that is still enabled |
 | `POST` | `/users/{id}/identities` | Link a login identity to a user |
 | `DELETE` | `/users/{id}/identities/{key}` | Remove a sign-in method, yours or (as an administrator) anyone's, never the last unless the user is disabled (`end_sessions`) |
 | `GET` | `/users/me` | Same as `GET /auth/whoami` |
@@ -434,10 +437,10 @@ them to the node being managed).
 | `GET` | `/users/me/ssh-keys` | Your local account's SSH public keys, to prefill a guest credential |
 | `GET` | `/teams` | List teams |
 | `POST` | `/teams` | Create a team |
-| `PATCH` | `/teams/{id}` | Change a team |
-| `DELETE` | `/teams/{id}` | Delete a team |
+| `PATCH` | `/teams/{id}` | Change a team (`409 managed_by_connector` for a team a SCIM connector manages) |
+| `DELETE` | `/teams/{id}` | Delete a team (`409 managed_by_connector` for a managed team) |
 | `PUT` | `/teams/{id}/members/{user}` | Add a member |
-| `DELETE` | `/teams/{id}/members/{user}` | Remove a member |
+| `DELETE` | `/teams/{id}/members/{user}` | Remove a member's manual membership; one a SCIM connector gave is `409 managed_by_connector` |
 | `GET` | `/authz/policies` | List site Cedar policies |
 | `GET` | `/authz/policies/{id}` | Get a policy |
 | `GET` | `/authz/policies/{id}/versions` | A policy's history |
@@ -479,14 +482,73 @@ them to the node being managed).
 | `GET` | `/connectors` | List login connectors |
 | `POST` | `/connectors` | Create a connector (`pam`, `oidc`, `google` or `jumpcloud` settings) |
 | `GET` | `/connectors/{id}` | Get a connector (secrets show only whether they are set) |
-| `PATCH` | `/connectors/{id}` | Change a connector |
-| `DELETE` | `/connectors/{id}` | Delete a connector; `?users=detach` keeps the users it provisions enabled (the default disables them) |
+| `PATCH` | `/connectors/{id}` | Change a connector; `provisioning` (`none`, or `scim` for `oidc` and `jumpcloud` with `jit` off) and `group_mode` (`mapped`, or `auto` when provisioned) are fields like the others |
+| `DELETE` | `/connectors/{id}` | Delete a connector and its SCIM tokens; `?users=detach` keeps the users it provisions enabled (the default, `?users=disable`, disables them). Answers `200 {users, teams}`: how many it released |
 | `PUT` | `/connectors/{id}/secrets/{field}` | Set a connector secret (write-only) |
 | `POST` | `/connectors/{id}/test` | Test a connector step by step |
 | `POST` | `/connectors/{id}/sync` | Run a pulled connector's sync now; `{confirm: true}` applies one the safety stop blocked |
 | `GET` | `/connectors/{id}/scim-tokens` | A SCIM connector's tokens (never the tokens) and its endpoint path |
-| `POST` | `/connectors/{id}/scim-tokens` | Make a SCIM token; it is shown once |
+| `POST` | `/connectors/{id}/scim-tokens` | Make a SCIM token (`{name, days}`, 1–365 days, default 180; at most five live per connector): `201 {token, secret, path}`, the `gxs_` secret shown once. Needs a recent login; `409 not_provisioned` unless the connector is `provisioning: scim` |
 | `DELETE` | `/connectors/{id}/scim-tokens/{token}` | Revoke a SCIM token |
+
+### SCIM 2.0, for identity providers
+
+A connector with `provisioning: scim` serves a SCIM 2.0 endpoint for its
+IdP (see [Provisioning with
+SCIM](../operator-guide/authentication.md#provisioning-with-scim)):
+
+- `https://host.example.org:8841/scim/v2/c/{id}` on the API, and
+  `https://host.example.org:5173/api/scim/v2/c/{id}` through the web UI.
+- The IdP sends one of the connector's tokens:
+  `Authorization: Bearer gxs_<token>`. Nothing else opens it: not an API
+  token, not a session, not another connector's SCIM token.
+- Bodies and answers are `application/scim+json`; errors are SCIM error
+  bodies (`{"schemas": [...], "status": "400", "scimType": "invalidFilter", "detail": "..."}`),
+  not Glidex errors.
+
+| Method | Path (under `/scim/v2/c/{id}`) | What it does |
+|---|---|---|
+| `GET` | `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes` | What the endpoint supports |
+| `GET` | `/Users` | The connector's users (`filter`, `startIndex`, `count`) |
+| `POST` | `/Users` | Create a user; adopts a user that logged in through the connector before it was provisioned, with the same user name or email |
+| `GET`, `PUT`, `PATCH`, `DELETE` | `/Users/{uid}` | Read, replace, change, or remove a user |
+| `GET` | `/Groups` | The connector's groups (`filter`, `startIndex`, `count`) |
+| `POST` | `/Groups` | Create a group |
+| `GET`, `PUT`, `PATCH`, `DELETE` | `/Groups/{gid}` | Read, replace, change (members too), or delete a group |
+
+- **Filters**: `eq` only. Users by `userName`, `externalId`, `emails`
+  (or `emails.value`) and `displayName`; groups by `displayName` and
+  `externalId`.
+- **Paging**: `startIndex` (from 1) and `count`, at most 200 a page
+  (100 by default).
+- **PATCH**: `add`, `replace` and `remove`, with or without a `path`, in
+  the forms Entra, Okta and JumpCloud send: `active` (also as the string
+  `"False"`), `userName`, `externalId`, `displayName`, `name.givenName`,
+  `name.familyName`, `emails[type eq "work"].value`; a group's
+  `displayName` and `members` (a list, or `members[value eq "<id>"]`).
+  Attributes Glidex doesn't keep are ignored.
+- **Not supported**: bulk, sorting, ETags, `/Me`, password changes.
+- **Users**: `active: false` disables the user (sessions end, personal
+  tokens are revoked, it leaves the IdP's teams); `active: true` enables
+  it again only if the IdP disabled it, never after an administrator
+  did. `DELETE /Users/{uid}` disables the user and ends its link to the
+  IdP; the user and its history stay.
+- **Groups**: with `group_mode: auto` each group is a managed team;
+  with `mapped`, a group named in `group_teams` fills that team.
+
+| Status | `scimType` | Meaning |
+|---|---|---|
+| 400 | `invalidFilter` | A filter other than those above |
+| 400 | `invalidSyntax`, `invalidValue`, `noTarget` | A body that isn't JSON, a bad value, a `remove` without a path |
+| 401 | | No token, or a wrong, expired or revoked one (the same answer each time) |
+| 403 | | The connector is disabled or isn't `provisioning: scim` |
+| 404 | | No such user or group of this connector |
+| 409 | `uniqueness` | A `userName` or group the connector already has |
+| 413 | | A body over 1 MiB |
+| 429 | `tooMany` | Over 20 requests a second (with a short burst) per connector; retry after `Retry-After` seconds |
+
+Every write is in the [audit log](../operator-guide/access-control.md#audit-log)
+as `system:scim:<connector-id>`, never with the token.
 
 ### Cluster and nodes
 

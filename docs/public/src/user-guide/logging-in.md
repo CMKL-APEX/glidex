@@ -27,6 +27,18 @@ sign-in page shows what the site enables:
 If the page says *No login method is enabled on this host*, ask an
 administrator, or use `gxctl` on the host.
 
+Some single sign-on providers create your Glidex account for you ahead
+of time (*provisioning*). Through such a provider:
+
+- only people it provisioned can sign in; anyone else is refused
+  (`login_not_allowed`), even with an invitation;
+- your first sign-in is matched to the account it made, by your
+  provider's id or your verified email address;
+- your name and email come from the provider, and if the provider
+  deactivates you, you can't sign in until it reactivates you. An
+  administrator may also disable you in Glidex; then only an
+  administrator can enable you again.
+
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
 browser shows with the one your operator gives you before you accept it
