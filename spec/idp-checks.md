@@ -115,4 +115,5 @@ a chat. Turn the Funnel off after the checks.
 
 | Date | Build | Check | Result |
 |---|---|---|---|
+| — | T4 (#74–#85) | Google Workspace directory sync (`provisioning: pull`) | **not run yet**: deferred by the operator; run it before relying on the pull |
 | 2026-10-19 | `4a2c488` (T3, #61–#69) | JumpCloud SCIM, through a Cloudflare quick tunnel that published only `/api/scim/v2/`. JumpCloud did lookups (`GET /Users` with a filter), created and updated users (`POST`, `PUT`), created groups and changed their members (`POST`, `PATCH`), and removed a user and a group (`DELETE`); it never called `/ServiceProviderConfig` | pass: every request succeeded (no 4xx or 5xx from JumpCloud) |
