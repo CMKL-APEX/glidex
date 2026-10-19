@@ -824,6 +824,22 @@ Today's "controllers write status in one transaction" becomes "nodes
 send status to the leader, which writes it in one transaction". The
 envelope rules don't change.
 
+As built:
+- **Agents** send their write sets to `POST /cluster/v1/status-write`,
+  and the leader checks them with `check_status_write` (`cluster/sync.rs`).
+- **A server that isn't the leader** is a node too, and sends its own
+  work the same way. A write whose origin is node status
+  (`Origin::is_node_status`: controllers, disks and images, network
+  status) doesn't fail with `NotLeader`:
+  - `Tx::commit` sends it to that endpoint and waits until the follower
+    has applied it, so the controller reads its own write.
+  - Before this, a follower server's image copies, disks and VM status
+    were never written, so nothing placed on it got made.
+- **A server's own `nodes` record** keeps its raw path (`/cluster/v1/raw`),
+  because a server may write fields of its record that a node may not
+  (`raft_id`, `phase`).
+- Test: `cluster_tests.rs::a_follower_server_writes_its_status_through_the_leader`.
+
 ### 8.4 Console, live stats and logs
 
 A console session reaches the VM's node through the server: a WebSocket

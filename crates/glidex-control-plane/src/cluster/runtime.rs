@@ -536,6 +536,16 @@ impl crate::store::Forwarder for LeaderForwarder {
         self.post("/cluster/v1/raw", body).map(|_| ())
     }
 
+    fn status_write(&self, ws: &crate::store::WriteSet) -> Result<u64, crate::store::StoreError> {
+        let body = serde_json::to_vec(ws)
+            .map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?;
+        let out = self.post("/cluster/v1/status-write", body)?;
+        Ok(serde_json::from_slice::<serde_json::Value>(&out)
+            .ok()
+            .and_then(|v| v["index"].as_u64())
+            .unwrap_or(0))
+    }
+
     fn call(
         &self,
         op: &str,

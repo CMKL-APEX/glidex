@@ -460,9 +460,12 @@ impl NodeStore {
             return Err(NodeError::NameTaken(n.spec.name.clone()));
         }
         let bytes = serde_json::to_vec(n)?;
+        // Not a node-status origin (`Origin::is_node_status`): on a follower
+        // server this must fail with `NotLeader` and go the raw way below,
+        // which lets a server write all of its own record.
         let r = self
             .db
-            .write(Origin::Controller, |tx| -> Result<(), NodeError> {
+            .write(Origin::System, |tx| -> Result<(), NodeError> {
                 let mut t = tx.open_table(TableId::Nodes.definition())?;
                 t.insert(n.meta.id.as_str(), bytes.as_slice())?;
                 Ok(())

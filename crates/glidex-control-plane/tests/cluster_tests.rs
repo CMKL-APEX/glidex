@@ -1673,6 +1673,100 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     assert!(copies.iter().any(|c| c["node_name"] == "agent1"), "{v}");
 }
 
+/// A server that isn't the leader does a node's work too: its image
+/// copies, disks and VM status are written through the leader, as an
+/// agent's are (spec/clustering.md §8.3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_follower_server_writes_its_status_through_the_leader() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = serial().await;
+    let cps = form(2).await;
+    for cp in &cps[1..] {
+        cp.manager.initialize().await.unwrap();
+    }
+    for cp in &cps {
+        cp.manager.start_controllers();
+    }
+    let lead = leader_index(&cps, &[0, 1]).await;
+    let (leader, follower) = (&cps[lead], &cps[1 - lead]);
+
+    let data = vec![5u8; 64 * 1024];
+    let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
+    let img_id = "img-f";
+    let img = json!({
+        "id": img_id, "name": "base-f", "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 1048576, "file_size_bytes": data.len(), "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    let path = leader.manager.images().image_path(img_id);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &data).unwrap();
+    let disk = json!({ "id": "df", "name": "df", "project": "", "format": "qcow2", "size_bytes": 0,
+        "origin": { "kind": "image", "image_id": img_id, "mode": "linked" }, "created_at": 1, "phase": "pending",
+        "node": follower.manager.local_node_id() });
+    leader
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(img_id, img.to_string().as_bytes())?;
+                tx.open_table(TableId::Disks.definition())?
+                    .insert("df", disk.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let copy = follower.manager.images().image_path(img_id);
+    wait_for("the follower's copy", || async { copy.exists() }).await;
+    let me = follower.manager.local_node_id();
+    wait_for("the follower's copy recorded", || async {
+        leader.manager.image_caches(img_id).iter().any(|(n, r)| {
+            *n == me && r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready
+        })
+    })
+    .await;
+    // So are its disks (the image is no real qcow2, so making the disk
+    // fails, but the follower's controller says so) and VMs.
+    wait_for("the follower's disk controller's status", || async {
+        leader
+            .manager
+            .images()
+            .get_disk("df")
+            .is_ok_and(|d| d.phase != glidex_control_plane::images::DiskPhase::Pending)
+    })
+    .await;
+    // The scheduler needs the follower's capacity. Its node record brings
+    // it, at start once its own record has reached it, then every two
+    // minutes; ask now rather than wait.
+    wait_for("the follower's capacity on the leader", || async {
+        let _ = follower.manager.report_self();
+        let (_, v) = call(leader, "GET", "/nodes", None, &[]).await;
+        nodes_of(&v)
+            .iter()
+            .any(|n| n["meta"]["id"] == me.as_str() && num(&n["status"]["capacity"]["cpus"]) > 0)
+    })
+    .await;
+    let (s, vm) = call(
+        leader,
+        "POST",
+        "/vms",
+        Some(vm_body("on-follower", &me)),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    wait_for("the follower's VM status on the leader", || async {
+        let (_, v) = call(leader, "GET", &format!("/vms/{id}"), None, &[]).await;
+        num(&vm_of(&v)["observed_generation"]) >= 1
+    })
+    .await;
+}
+
 /// A VM boots through its node's own copy of a firmware image, not the
 /// path on the server that created it (each test node has its own image
 /// directory), and waits for that copy (spec/storage.md §15).
