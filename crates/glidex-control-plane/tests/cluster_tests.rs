@@ -1975,6 +1975,34 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     assert_eq!(vm_of(&vm)["node"], a2.as_str());
 
+    // A disk is bound to a node by name as by id, and stored as its id.
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "by-name", "size_gib": 1, "node": "agent2" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let stored = server
+        .manager
+        .images()
+        .list_disks()
+        .into_iter()
+        .find(|d| d.name == "by-name")
+        .unwrap();
+    assert_eq!(stored.node.as_deref(), Some(a2.as_str()), "{d}");
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "nowhere", "size_gib": 1, "node": "no-such-node" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+
     // Pin to a node and it goes there; a pin on a drained node waits;
     // with every node drained a VM waits and says why, then is placed.
     let (s, vm) = call(
