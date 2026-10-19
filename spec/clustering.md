@@ -849,8 +849,14 @@ changes.
    - allocatable CPU and memory minus what is already placed on the
      node. Placed VMs count whether running or not; overcommit is
      `cluster.scheduler.cpu_overcommit`, default 4.0, and memory 1.0;
-   - hugepages when the VM needs them (`hugepages`, or vhost-user with
-     the networking.md §0 rule);
+   - hugepages when the VM needs them: `hugepages` (of `hugepage_size`,
+     else the node's default size) must fit what is left of the node's
+     allocatable hugepages of that size, which leave out OVS-DPDK's
+     `dpdk-socket-mem`; never overcommitted, and not counted as ordinary
+     memory. A vhost-user VM gets 2M hugepages when they cover its
+     memory plus a quarter (at least 256 MiB), else ordinary memory
+     (host-topology.md §8a). The page size is recorded in
+     `status.placement.page_kib`, and the node launches with it;
    - the hypervisor type is installed;
    - vhost-user NICs need `br_int_datapath = netdev` (cluster networks)
      or the node network's bridge;

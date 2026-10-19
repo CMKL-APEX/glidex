@@ -434,3 +434,107 @@ async fn vm_service_over_connect_and_grpc() {
             .is_none()
     );
 }
+
+/// Hugepages asked for are counted in their size on a standalone host too
+/// (spec/host-topology.md §8a.3); a bad size is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn hugepage_sizes_are_checked_and_recorded_with_the_placement() {
+    let h = harness();
+    let t = h.token(&h.admin("ada"));
+    let p = h
+        .app
+        .manager
+        .projects()
+        .create("p", String::new(), None)
+        .unwrap()
+        .id;
+    let body = |name: &str, extra: Value| {
+        let mut b = vm_body(name, &p);
+        b["hypervisor"] = json!("HYPERVISOR_CLOUD_HYPERVISOR");
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+    for (extra, why) in [
+        (
+            json!({"hugepages": true, "hugepage_size": "3M"}),
+            "use 2M or 1G",
+        ),
+        (
+            json!({"hugepage_size": "2M"}),
+            "hugepage_size needs hugepages",
+        ),
+        (
+            json!({"hugepages": true, "hugepage_size": "1G", "mem_size_mib": 1536}),
+            "multiple of 1024 MiB",
+        ),
+    ] {
+        let (st, v) = h.rest("POST", "/vms", Some(body("bad", extra)), &t).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+        assert!(v.to_string().contains(why), "{why}: {v}");
+    }
+
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(body(
+                "huge",
+                json!({"hugepages": true, "hugepage_size": "2M"}),
+            )),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let vm = &v["vm"];
+    assert_eq!(
+        (&vm["hugepages"], &vm["hugepage_size"], &vm["page_kib"]),
+        (&json!(true), &json!("2M"), &json!("2048")),
+        "{v}"
+    );
+    let id = vm["id"].as_str().unwrap().to_string();
+
+    // Ordinary memory: nothing counted ahead; the node decides at start.
+    let (st, v) = h
+        .rest("POST", "/vms", Some(body("plain", json!({}))), &t)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert!(v["vm"].get("page_kib").is_none(), "{v}");
+
+    // A change of size is checked against the memory, and counted again.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{id}"),
+            Some(json!({"change": {"hugepage_size": "1G"}, "update_mask": "hugepage_size"})),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{id}"),
+            Some(
+                json!({"change": {"hugepage_size": "1G", "mem_size_mib": 1024},
+                        "update_mask": "hugepage_size,mem_size_mib"}),
+            ),
+            &t,
+        )
+        .await;
+    assert!(st.is_success(), "{st} {v}");
+    assert_eq!(v["vm"]["page_kib"], json!("1048576"), "{v}");
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{id}"),
+            Some(json!({"change": {"hugepages": false, "hugepage_size": ""},
+                        "update_mask": "hugepages,hugepage_size"})),
+            &t,
+        )
+        .await;
+    assert!(st.is_success(), "{st} {v}");
+    assert!(v["vm"].get("page_kib").is_none(), "{v}");
+    assert!(v["vm"].get("hugepages").is_none(), "{v}");
+}

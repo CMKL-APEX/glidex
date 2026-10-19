@@ -272,6 +272,13 @@ message Vm {
   optional string root_disk = 25 [json_name = "root_disk"];
   repeated string data_disks = 26 [json_name = "data_disks"];
   repeated string warnings = 27;
+  // Guest RAM in hugepages, and their size (`2M`, `1G`; absent: the
+  // node's default size).
+  optional bool hugepages = 28;
+  optional string hugepage_size = 29 [json_name = "hugepage_size"];
+  // The page size in KiB the scheduler counted guest RAM in: 4 for
+  // ordinary memory, else a hugepage size (spec/host-topology.md §8a.3).
+  optional uint64 page_kib = 30 [json_name = "page_kib"];
 }
 
 message ListVmsRequest {
@@ -309,6 +316,8 @@ message CreateVmRequest {
   repeated string vfio_devices = 17 [json_name = "vfio_devices"];
   repeated NetworkAttachment networks = 18;
   optional bool hugepages = 19;
+  // `2M` or `1G`, with `hugepages`; absent: the node's default size.
+  optional string hugepage_size = 26 [json_name = "hugepage_size"];
   // Default: stopped (create, then start).
   PowerState power = 20;
   RestartPolicy restart_policy = 21 [json_name = "restart_policy"];
@@ -342,6 +351,7 @@ message PreviewPlacementRequest {
   repeated string data_disks = 9 [json_name = "data_disks"];
   // The image the root disk would come from: its architecture counts.
   optional string image = 10;
+  optional string hugepage_size = 11 [json_name = "hugepage_size"];
 }
 message NodeFit {
   string id = 1;
@@ -354,6 +364,11 @@ message NodeFit {
   uint64 mem_mib_taken = 6 [json_name = "mem_mib_taken"];
   uint64 mem_mib_capacity = 7 [json_name = "mem_mib_capacity"];
   uint64 vms = 8;
+  // The page size in KiB guest RAM would be in there (4: ordinary memory),
+  // and for hugepages, what VMs take of that size and may take.
+  uint64 page_kib = 9 [json_name = "page_kib"];
+  uint64 hugepages_mib_taken = 10 [json_name = "hugepages_mib_taken"];
+  uint64 hugepages_mib_capacity = 11 [json_name = "hugepages_mib_capacity"];
 }
 message PreviewPlacementResponse {
   // The scheduler's choice, when anything fits.
@@ -384,6 +399,8 @@ message VmChange {
   // Disk ids or names, replacing the list.
   repeated string data_disks = 11 [json_name = "data_disks"];
   repeated NetworkAttachment networks = 12;
+  // `2M` or `1G`; empty: the node's default size.
+  string hugepage_size = 13 [json_name = "hugepage_size"];
 }
 
 message UpdateVmRequest {

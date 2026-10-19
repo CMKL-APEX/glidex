@@ -205,21 +205,28 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
         .collect()
 }
 
+/// MiB of `page_kib` hugepages free and not promised to a process now;
+/// 0 when they can't be read.
+pub(crate) fn hugepages_spare_mib(page_kib: u64) -> u64 {
+    let read = |f: &str| {
+        std::fs::read_to_string(format!(
+            "/sys/kernel/mm/hugepages/hugepages-{page_kib}kB/{f}"
+        ))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    };
+    let free = read("free_hugepages").unwrap_or(0);
+    let resv = read("resv_hugepages").unwrap_or(0);
+    free.saturating_sub(resv) * page_kib / 1024
+}
+
 /// Whether the host has enough unreserved 2 MiB hugepages to back a guest
 /// of `mem_mib`, leaving 25% (at least 256 MiB) for what OVS-DPDK and
-/// other guests are about to touch. `false` when they can't be read.
+/// other guests are about to touch. For VMs placed before the scheduler
+/// counted pages (spec/host-topology.md §8a.3).
 pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
-    let read = |f: &str| {
-        std::fs::read_to_string(format!("/sys/kernel/mm/hugepages/hugepages-2048kB/{}", f))
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-    };
-    let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else {
-        return false;
-    };
-    let spare_mib = free.saturating_sub(resv) * 2;
     let mem = mem_mib as u64;
-    mem.is_multiple_of(2) && spare_mib >= mem + (mem / 4).max(256)
+    mem.is_multiple_of(2) && hugepages_spare_mib(2048) >= mem + (mem / 4).max(256)
 }
 
 /// vhost-user: OVS maps guest RAM, so it must be shared.

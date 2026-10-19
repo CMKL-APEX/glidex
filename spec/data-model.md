@@ -93,7 +93,8 @@ Spec edits are accepted in any state; what varies is when they take
 effect. `power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`:
 at once. `vfio_devices`: hot-plugged while the guest runs (pending,
 `DevicesPending`, while paused). `data_disks`, `networks`, `vcpu_count`,
-`mem_size_mib`, `credential`, `kernel_args`, `hugepages`: at the next
+`mem_size_mib`, `credential`, `kernel_args`, `hugepages`,
+`hugepage_size`: at the next
 launch, with `RestartRequired=True` meanwhile. `hypervisor`,
 `kernel_image_path`, `firmware_path`, `rootfs_path`, `cloud_init_path`,
 `image`, `root_disk`: never (`400 invalid_config`, "immutable field").
@@ -205,7 +206,7 @@ with ([rest-api.md](rest-api.md#vm)):
 `PATCH /vms/{id}` takes `VmPatch` (`state.rs`): a JSON merge patch of
 the spec (`power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`,
 `config.{vcpu_count, mem_size_mib, kernel_args, credential, hugepages,
-vfio_devices, data_disks, networks}`); immutable fields are accepted by
+hugepage_size, vfio_devices, data_disks, networks}`); immutable fields are accepted by
 the parser only to be refused.
 
 `DeviceRequest` is the body for attach/detach:

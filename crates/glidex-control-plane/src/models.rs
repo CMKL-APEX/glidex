@@ -143,6 +143,11 @@ pub struct VmConfig {
     /// Back guest RAM with hugepages (implies shared memory).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hugepages: bool,
+    /// `2M` or `1G`: the hugepage size for `hugepages`; absent: the node's
+    /// default size (spec/host-topology.md §8a.3). At launch, the size the
+    /// scheduler counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hugepage_size: Option<String>,
     /// Host-side NIC bindings from glidex-netd, filled in by `start_vm`
     /// for the hypervisor; never persisted.
     #[serde(skip)]
@@ -237,6 +242,32 @@ pub struct VmSpec {
 pub struct Placement {
     pub node: String,
     pub at: u64,
+    /// The page size in KiB the scheduler counted guest RAM in: 4 for
+    /// ordinary memory, else a hugepage size (spec/host-topology.md §8a.3).
+    /// Absent: placed before it was counted; the node decides at start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_kib: Option<u64>,
+}
+
+/// KiB of ordinary memory pages.
+pub const SMALL_PAGE_KIB: u64 = 4;
+
+/// `2M` / `1G` → KiB; `None` for anything else.
+pub fn hugepage_size_kib(size: &str) -> Option<u64> {
+    match size {
+        "2M" => Some(2048),
+        "1G" => Some(1_048_576),
+        _ => None,
+    }
+}
+
+/// KiB → `2M` / `1G` (or `<n>K`).
+pub fn hugepage_size_name(kib: u64) -> String {
+    match kib {
+        2048 => "2M".into(),
+        1_048_576 => "1G".into(),
+        k => format!("{k}K"),
+    }
 }
 
 /// `status`: written only by the VM controller.

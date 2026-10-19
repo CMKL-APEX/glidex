@@ -45,6 +45,10 @@ pub struct HostCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpdk_mempool_driver: Option<bool>,
     pub dpdk_initialized: bool,
+    /// `other_config:dpdk-socket-mem` once DPDK is initialized: MiB of
+    /// hugepages DPDK takes per NUMA node (`1024` or `1024,1024`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_socket_mem: Option<String>,
     pub hugepages: Vec<Hugepages>,
     pub iommu: bool,
     /// `None` when the Cloud Hypervisor binary wasn't found.
@@ -167,6 +171,12 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
             caps.iface_types = row.set("iface_types");
             caps.datapath_types = row.set("datapath_types");
             caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
+        }
+        if caps.dpdk_initialized {
+            caps.dpdk_socket_mem = vsctl::list(exec, "Open_vSwitch", &["other_config"])
+                .ok()
+                .and_then(|rows| rows.first().map(|r| r.map("other_config")))
+                .and_then(|m| m.get("dpdk-socket-mem").cloned());
         }
     }
 
@@ -369,5 +379,25 @@ mod tests {
             "{:?}",
             by_id("B")
         );
+    }
+
+    #[test]
+    fn probe_reports_dpdk_socket_memory_once_initialized() {
+        let exec = RecordingExec::new();
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types,datapath_types,dpdk_initialized list Open_vSwitch",
+            Output::ok(r#"{"data":[[["set",["dpdk","dpdkvhostuserclient","internal","system"]],["set",["netdev","system"]],true]],"headings":["iface_types","datapath_types","dpdk_initialized"]}"#),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=other_config list Open_vSwitch",
+            Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024,1024"]]]]],"headings":["other_config"]}"#),
+        );
+        let caps = probe(&exec, &ProbeOptions::default());
+        assert!(caps.dpdk_initialized);
+        assert_eq!(caps.dpdk_socket_mem.as_deref(), Some("1024,1024"));
     }
 }
