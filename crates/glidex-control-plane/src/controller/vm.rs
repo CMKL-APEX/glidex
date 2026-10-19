@@ -900,8 +900,8 @@ impl VmManager {
         vm: &Vm,
         st: &mut VmStatus,
         (root, data, firmware): (
-            Option<(crate::models::DiskBinding, crate::images::Disk)>,
-            Vec<crate::models::DiskBinding>,
+            Option<(crate::models::VolumeBinding, crate::images::Disk)>,
+            Vec<crate::models::VolumeBinding>,
             Option<String>,
         ),
     ) -> Result<(), LaunchFailure> {

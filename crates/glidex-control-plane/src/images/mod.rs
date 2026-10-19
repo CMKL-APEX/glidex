@@ -391,6 +391,22 @@ pub struct Disk {
     /// until the disk is bound, at creation or at its first VM (D6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The datastore holding the disk (spec/storage.md §4.2). Records
+    /// without one, and every record written today, are `local`, which is
+    /// left out so they stay as older releases wrote them.
+    #[serde(
+        default = "local_datastore",
+        skip_serializing_if = "is_local_datastore"
+    )]
+    pub datastore: String,
+}
+
+fn local_datastore() -> String {
+    crate::datastore::LOCAL.to_string()
+}
+
+fn is_local_datastore(d: &str) -> bool {
+    d == crate::datastore::LOCAL
 }
 
 impl Disk {
@@ -422,6 +438,7 @@ impl Disk {
             deletion_requested_at: None,
             conditions: Vec::new(),
             node: None,
+            datastore: local_datastore(),
         }
     }
 
@@ -790,6 +807,8 @@ pub struct ImageManager {
     downloads: Arc<tokio::sync::Semaphore>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
+    /// The `local` datastore's driver, over `settings.disk_dir`.
+    local: crate::datastore::file::FileDriver,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -844,6 +863,7 @@ impl ImageManager {
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
             http: download::http_client(settings.allow_private_urls)?,
+            local: crate::datastore::file::FileDriver::new(settings.disk_dir.clone()),
             db,
             settings,
             images: RwLock::new(HashMap::new()),
@@ -1031,11 +1051,25 @@ impl ImageManager {
         )
     }
 
+    /// The file of a disk in the `local` datastore, whether or not it
+    /// exists: for reading it (responses, metering). Changes to a disk go
+    /// through its datastore's driver ([`Self::driver`]).
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        crate::paths::file_in(
-            &self.settings.disk_dir,
-            &format!("{}.{}", safe_stem(&d.id), d.format.extension()),
-        )
+        self.local.path(d)
+    }
+
+    /// The driver of `d`'s datastore. Only `local` exists so far
+    /// (spec/storage.md S1); a disk on any other is refused rather than
+    /// looked for in the local directory.
+    pub fn driver(&self, d: &Disk) -> Result<&dyn crate::datastore::StorageDriver, ImageError> {
+        if d.datastore == crate::datastore::LOCAL {
+            Ok(&self.local)
+        } else {
+            Err(ImageError::NotReady(format!(
+                "disk {} is on datastore {}, which this node doesn't have",
+                d.name, d.datastore
+            )))
+        }
     }
 
     // ---- persistence -------------------------------------------------------
@@ -1680,5 +1714,20 @@ mod tests {
         .unwrap();
         assert_eq!(s["state"], "downloading");
         assert_eq!(serde_json::to_value(ExtendMode::OnBoot).unwrap(), "on-boot");
+    }
+
+    /// Records written before datastores are `local`, and a `local` record
+    /// is written as they were (spec/storage.md S3).
+    #[test]
+    fn disks_without_a_datastore_are_local_and_stay_so_written() {
+        let old = serde_json::json!({ "id": "d", "name": "d", "project": "", "format": "qcow2", "size_bytes": 1048576,
+            "origin": { "kind": "blank" }, "created_at": 1 });
+        let d: Disk = serde_json::from_value(old).unwrap();
+        assert_eq!(d.datastore, crate::datastore::LOCAL);
+        let back = serde_json::to_value(&d).unwrap();
+        assert!(back.get("datastore").is_none(), "{back}");
+        let mut other = d;
+        other.datastore = "nfs-1".into();
+        assert_eq!(serde_json::to_value(&other).unwrap()["datastore"], "nfs-1");
     }
 }

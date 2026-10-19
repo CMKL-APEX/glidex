@@ -1,7 +1,7 @@
 # Datastores
 
-Status: **design (draft)**. Only S0's fixes 1–4 (§15) are implemented;
-the rest is design. The milestones are S0–S7 (§16). Decisions S13–S16
+Status: **design (draft)**. S0's fixes 1–4 (§15) and S1 (the driver
+trait, §7) are implemented; the rest is design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -54,7 +54,7 @@ later milestones (§11, §12).
 |---|---|---|
 | S1 | **CSI is not the first interface.** Shared storage starts as filesystems that the vendor or operator mounts (`shared-dir`). glidex never mounts them. glidex's own driver trait follows CSI's split between controller (create/delete/expand/publish) and node (stage/unstage), and uses CSI's topology and capability model. That way a CSI adapter is one more driver (§12, milestone S7), added only when a plugin is actually needed. | **Mounted filesystems:** nearly every vendor and open-source system offers an NFS or POSIX mount (NetApp, Pure, Dell PowerScale, CephFS, GPFS, Lustre). A mount keeps qcow2 and its features: linked clones, sparse files, `qemu-img` resize and shrink. It needs no root, because the mount is done outside glidex (README goal 4, images.md §1 "No step needs root").<br><br>**CSI:** it was designed for container orchestrators. Many plugins assume Kubernetes sidecars and Kubernetes objects such as Secrets, CRDs and node labels. Node plugins run as root and mount things. A VM can only use CSI's `Block` volume mode, which gives up qcow2. Outside Kubernetes, only Nomad and a few others host CSI plugins, and their compatibility differs from plugin to plugin. The cost is high and arrives before any user asks for a particular plugin. |
 | S2 | **A datastore is a cluster-scoped record in the replicated store.** Disks and image copies name their datastore by id. | Disks belong to a project and images to the cluster (security.md §7). Storage belongs to the operator, like nodes and networks. In a single-host install the "cluster" is the host (clustering.md D5), so this works the same there. |
-| S3 | **The current directories become the built-in datastore `local`** (driver `dir`, on every node, default for disks and images). A schema migration sets `datastore: "local"` on every disk and image copy. No file moves. | No user sees a change until an operator adds a datastore. D19 ("ids travel") still holds, because files stay named by id. |
+| S3 | **The current directories become the built-in datastore `local`** (driver `dir`, on every node, default for disks and images). A disk record that names no datastore is on `local`. No file moves. As built (S1), this is a serde default rather than a schema migration: `local` is never written into a record, so records stay as older releases wrote them, and nothing needs a schema bump. The stored `local` record comes with the resource in S2. | No user sees a change until an operator adds a datastore. D19 ("ids travel") still holds, because files stay named by id. |
 | S4 | **A datastore's topology says where it is reachable.**<br>- `node-local`: each node has its own separate copy; `dir`. A volume is bound to one node.<br>- `shared`: every node that reaches it sees the same files; `shared-dir`.<br>The scheduler places a VM only on a node that reaches every one of its volumes. | This generalises D6 without changing it for `local`. A shared volume has no node binding, so its VM can move when it is stopped (§9). |
 | S5 | **A node reaches a shared datastore only when it finds the datastore's marker file** (`<path>/.glidex-datastore`, holding datastore and cluster id) **on a writable mount**. | An NFS export that isn't mounted leaves an empty directory on the root filesystem. Writing there would quietly put disks on the wrong disk, and different nodes would see different files. The cluster id stops two clusters from sharing one export by mistake. |
 | S6 | **Exactly one node acts on a volume's files at a time:** the volume's **worker**. For a node-local volume it is the bound node. For a shared volume the leader chooses it and records it (`Disk.worker`): the VM's placement if the VM is placed, otherwise a Ready node that reaches the datastore. | Today "the disk controller on the bound node" gives this for free. With shared storage, every node's disk controller could see the record and act on it. Two `qemu-img resize` runs on one file corrupt it. |
@@ -318,6 +318,32 @@ pub enum VolumeBinding {
 `VolumeBinding`s. File bindings produce exactly today's CH `--disk path=…`
 and QEMU `driver: file` arguments, so a test pins the command lines as
 unchanged.
+
+**As built (S1)** (`src/datastore/`):
+- **Blocking methods.** The trait's methods block and are called from
+  the same `spawn_blocking` contexts as before, not `async` as sketched
+  above. A CSI or RBD driver can still wrap async calls behind them.
+- **Methods so far:** `capabilities`, `binding`, `exists`,
+  `create_volume`, `delete_volume`, `expand_volume`, `shrink_volume` and
+  `stage`.
+  - `create_volume` and `shrink_volume` take a `prepare` callback, run on
+    the new or shrunk volume before it becomes the disk's. Extend-root and
+    the GPT backup-header move run there. On the file driver that is
+    today's temporary-then-rename; a failure leaves nothing behind.
+  - `unstage`, `capacity`, `probe` and `publish` come with the milestones
+    that use them (S2, S3, S6).
+- **Driver lookup.** `ImageManager::driver(disk)` returns the driver of
+  the disk's datastore. A disk on any datastore but `local` is refused
+  (`NotReady`) rather than looked for in the local directory.
+- **What goes through the driver:** every change to a disk (create,
+  grow, shrink, extend-root, delete), staging at launch, and the missing
+  check in the disk controller.
+- **What still reads the `local` file path directly**
+  (`ImageManager::disk_path`): responses (`path`, `info`, the partition
+  table), metering's `disk.stored`, the startup orphan scan, the API's
+  early shrink and extend-root checks, and the `rootfs_path` filled in for
+  managed root disks. These are file-only until block drivers (S6).
+- **`DiskBinding` is gone;** `VmConfig` carries `VolumeBinding`s.
 
 ## 8. Disk operations
 
@@ -619,7 +645,7 @@ described below; fix 5 is part of S2.
 | # | Content | Depends on |
 |---|---|---|
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
-| S1 | `StorageDriver` trait. Today's code moved into `FileDriver` and `local` created by migration. `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. | S0 |
+| S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13) | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |

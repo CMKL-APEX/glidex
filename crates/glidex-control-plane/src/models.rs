@@ -1,5 +1,4 @@
 use crate::hypervisor::HypervisorType;
-use crate::images::qemu_img::DiskFormat;
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -150,10 +149,10 @@ pub struct VmConfig {
     /// Format etc. of a managed root disk, filled in by `start_vm`; never
     /// persisted. `None`: user-supplied `rootfs_path`, format probed.
     #[serde(skip)]
-    pub root_disk_binding: Option<DiskBinding>,
+    pub root_disk_binding: Option<VolumeBinding>,
     /// Managed data disks, filled in by `start_vm`; never persisted.
     #[serde(skip)]
-    pub data_disk_bindings: Vec<DiskBinding>,
+    pub data_disk_bindings: Vec<VolumeBinding>,
     /// This VM's own copy of the OVMF variable store (QEMU firmware boot),
     /// filled in by `start_vm`; never persisted.
     #[serde(skip)]
@@ -164,15 +163,8 @@ pub struct VmConfig {
     pub firmware_vars_template: Option<String>,
 }
 
-/// What a hypervisor needs to open one managed disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiskBinding {
-    pub path: String,
-    pub format: DiskFormat,
-    /// qcow2 overlay on an image: the backend must allow backing files.
-    /// Only ever set for disks glidex created.
-    pub backing_files: bool,
-}
+/// What a hypervisor needs to open one managed disk (spec/storage.md §7).
+pub use crate::datastore::VolumeBinding;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkAttachment {

@@ -215,7 +215,7 @@ impl HypervisorDriver for CloudHypervisorDriver {
 mod tests {
     use super::*;
     use crate::images::qemu_img::{DiskFormat, detect_image_type};
-    use crate::models::{DiskBinding, NicBinding};
+    use crate::models::{NicBinding, VolumeBinding};
 
     fn config(extra: serde_json::Value) -> VmConfig {
         let mut base = serde_json::json!({
@@ -280,12 +280,12 @@ mod tests {
     #[test]
     fn managed_disks_use_recorded_format_and_seed_stays_last() {
         let mut c = config(serde_json::json!({"cloud_init_path": "/run/x,y/seed.img"}));
-        c.root_disk_binding = Some(DiskBinding {
+        c.root_disk_binding = Some(VolumeBinding::File {
             path: "/disks/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,
         });
-        c.data_disk_bindings = vec![DiskBinding {
+        c.data_disk_bindings = vec![VolumeBinding::File {
             path: "/disks/data.raw".into(),
             format: DiskFormat::Raw,
             backing_files: false,
@@ -413,7 +413,7 @@ mod tests {
             "firmware_path": "/nonexistent/CLOUDHV.fd", "cloud_init_path": "/nonexistent/a,b/seed.img",
             "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]
         }));
-        c.root_disk_binding = Some(DiskBinding {
+        c.root_disk_binding = Some(VolumeBinding::File {
             path: "/nonexistent/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,

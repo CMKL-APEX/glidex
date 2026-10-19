@@ -229,8 +229,9 @@ impl VmManager {
 
     /// A made disk: missing file, resize, extend-root, on-boot grow done.
     async fn ready_round(&self, mut disk: Disk) -> Next {
-        let path = self.images.disk_path(&disk);
-        if !path.exists() {
+        let driver = self.images.driver(&disk)?;
+        if !driver.exists(&disk) {
+            let path = driver.binding(&disk).path().to_path_buf();
             if disk.phase != DiskPhase::Missing {
                 disk.phase = DiskPhase::Missing;
                 set_cond(
