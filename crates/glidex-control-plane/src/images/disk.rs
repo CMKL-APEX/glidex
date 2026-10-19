@@ -1,4 +1,6 @@
 //! Disk operations (spec §6): create, grow, shrink, extend root, delete.
+//! The volume itself is made and changed by the disk's datastore driver
+//! (spec/storage.md §7); partitions are edited here, on what it hands back.
 //!
 //! Everything here blocks (it shells out to qemu-img & co.) and assumes
 //! the caller (`VmManager`) has already checked that no running or paused
@@ -10,8 +12,8 @@ use super::{
     CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase, ExtendMode,
     ExtendOutcome, ImageError, ImageHold, ImageManager, ImageStatus, validate_name,
 };
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use crate::datastore::VolumeSource;
+use std::path::Path;
 use std::sync::Arc;
 
 /// `size_gib` / `size_bytes` → bytes rounded up to a whole MiB.
@@ -63,42 +65,7 @@ fn too_small(size: u64, image: &str, image_size: u64) -> ImageError {
     }
 }
 
-fn set_mode(path: &Path, mode: u32) -> Result<(), ImageError> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| ImageError::Io(format!("{}: {}", path.display(), e)))
-}
-
-/// Removes a temporary file unless disarmed.
-struct TempFile(Option<PathBuf>);
-
-impl TempFile {
-    fn path(&self) -> &Path {
-        self.0.as_deref().unwrap()
-    }
-
-    fn keep(mut self) -> PathBuf {
-        self.0.take().unwrap()
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        if let Some(p) = &self.0 {
-            let _ = std::fs::remove_file(p);
-        }
-    }
-}
-
 impl ImageManager {
-    fn temp_path(&self, id: &str, what: &str, format: DiskFormat) -> TempFile {
-        let p = crate::paths::file_in(
-            &self.settings.disk_dir,
-            &format!(".{}.{}.{}", super::safe_stem(id), what, format.extension()),
-        );
-        let _ = std::fs::remove_file(&p);
-        TempFile(Some(p))
-    }
-
     /// Validate a create request (spec §6.1) and return the record, in
     /// phase `Pending` and not yet persisted: the disk controller makes its
     /// file once the source image is ready (spec/reconciliation.md §10.1).
@@ -211,9 +178,10 @@ impl ImageManager {
             extend_root: None,
         });
         let mut disk = disk.clone();
-        let final_path = self.disk_path(&disk);
-        if final_path.exists() {
-            let info = qemu_img::info(&final_path, Some(disk.format))?;
+        let driver = self.driver(&disk)?;
+        if driver.exists(&disk) {
+            let made = driver.binding(&disk);
+            let info = qemu_img::info(made.path(), Some(disk.format))?;
             disk.size_bytes = info.virtual_size;
             disk.phase = DiskPhase::Ready;
             disk.create = None;
@@ -223,16 +191,14 @@ impl ImageManager {
                 _hold: None,
             });
         }
-        let tmp = self.temp_path(&disk.id, "create", disk.format);
-        let mut warnings = Vec::new();
         let mut hold = None;
-        let (size, image_size) = match disk.origin.clone() {
+        let image_path;
+        let (size, image_size, source) = match disk.origin.clone() {
             DiskOrigin::Blank => {
                 let size = spec
                     .size_bytes
                     .ok_or_else(|| ImageError::invalid_disk("a blank disk needs a size"))?;
-                qemu_img::create(tmp.path(), disk.format, size, None)?;
-                (size, None)
+                (size, None, VolumeSource::Blank)
             }
             DiskOrigin::Image { image_id, mode } => {
                 let img = self.get_image(&image_id)?;
@@ -246,7 +212,7 @@ impl ImageManager {
                         img.name, img.status
                     )));
                 }
-                let image_path = self.image_path(&img.id);
+                image_path = self.image_path(&img.id);
                 // On a node of a cluster the catalog says Ready before this
                 // node's copy has arrived (spec/clustering.md §9.2).
                 if !image_path.exists() {
@@ -260,39 +226,29 @@ impl ImageManager {
                     return Err(too_small(s, &img.name, image_size));
                 }
                 let size = self.root_size(spec.size_bytes, image_size);
-                match mode {
-                    CloneMode::Linked => {
-                        // Named relative to the disk directory, where the
-                        // overlay lives, so it never depends on where that
-                        // is mounted (spec/storage.md §15).
-                        let backing =
-                            crate::paths::relative_to(&image_path, &self.settings.disk_dir)
-                                .unwrap_or_else(|| image_path.clone());
-                        qemu_img::create(tmp.path(), disk.format, size, Some(&backing))?
-                    }
-                    CloneMode::Full => {
-                        qemu_img::convert(&image_path, DiskFormat::Qcow2, tmp.path(), disk.format)?;
-                        if size > image_size {
-                            qemu_img::resize(tmp.path(), disk.format, size, false)?;
-                        }
-                    }
-                }
-                (size, Some(image_size))
+                let source = VolumeSource::Image {
+                    path: &image_path,
+                    size_bytes: image_size,
+                    linked: mode == CloneMode::Linked,
+                };
+                (size, Some(image_size), source)
             }
         };
-        set_mode(tmp.path(), 0o600)?;
         disk.size_bytes = size;
-        let grew = image_size.is_some_and(|s| size > s);
-        if grew && spec.extend_root != Some(false) {
-            match self.extend_root_at(tmp.path(), &mut disk, ExtendMode::Offline) {
-                Ok((_, mut w)) => warnings.append(&mut w),
-                Err(ImageError::InvalidDisk { message, .. }) => {
-                    warnings.push(format!("root partition not extended: {}", message));
+        let extend = image_size.is_some_and(|s| size > s) && spec.extend_root != Some(false);
+        let mut warnings = Vec::new();
+        driver.create_volume(&disk.clone(), size, source, &mut |made| {
+            if extend {
+                match self.extend_root_at(made.path(), &mut disk, ExtendMode::Offline) {
+                    Ok((_, mut w)) => warnings.append(&mut w),
+                    Err(ImageError::InvalidDisk { message, .. }) => {
+                        warnings.push(format!("root partition not extended: {}", message));
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
             }
-        }
-        std::fs::rename(tmp.keep(), &final_path).map_err(|e| ImageError::Io(e.to_string()))?;
+            Ok(())
+        })?;
         disk.phase = DiskPhase::Ready;
         disk.create = None;
         tracing::info!(disk = %disk.name, size = disk.size_bytes, origin = ?disk.origin, "disk created");
@@ -306,17 +262,14 @@ impl ImageManager {
     /// Remove a disk's file after its record is gone. Failures are logged:
     /// the file stays as an orphan (spec §6.5).
     pub fn remove_disk_file(&self, disk: &Disk) {
-        let path = self.disk_path(disk);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(path = %path.display(), "could not remove disk file: {}", e),
+        if let Err(e) = self.driver(disk).and_then(|d| d.delete_volume(disk)) {
+            tracing::warn!(disk = %disk.name, "could not remove disk file: {}", e);
         }
     }
 
     /// Minimum size a disk can be shrunk to.
     pub fn shrink_minimum(&self, disk: &Disk) -> Result<(u64, TableKind), ImageError> {
-        let path = self.disk_path(disk);
+        let path = self.driver(disk)?.stage(disk)?.path().to_path_buf();
         let table = partition::read_table(&path, disk.format, disk.size_bytes)?.ok_or_else(|| {
             ImageError::invalid_disk("disk has no partition table, so where its data ends is unknown; it cannot be shrunk")
         })?;
@@ -342,7 +295,7 @@ impl ImageManager {
         extend_root: Option<bool>,
     ) -> Result<(Disk, Option<ExtendOutcome>, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.disk_path(&disk);
+        let path = self.driver(&disk)?.stage(&disk)?.path().to_path_buf();
         let new_size = round_up(new_size, MIB);
         if new_size == disk.size_bytes {
             return Ok((disk, None, vec!["size unchanged".into()]));
@@ -350,7 +303,7 @@ impl ImageManager {
         if new_size > disk.size_bytes {
             self.grow(&mut disk, &path, new_size, extend_root)
         } else {
-            self.shrink(&mut disk, &path, new_size)
+            self.shrink(&mut disk, new_size)
                 .map(|d| (d, None, Vec::new()))
         }
     }
@@ -362,8 +315,7 @@ impl ImageManager {
         new_size: u64,
         extend_root: Option<bool>,
     ) -> Result<(Disk, Option<ExtendOutcome>, Vec<String>), ImageError> {
-        // In place: growing only adds space at the end.
-        qemu_img::resize(path, disk.format, new_size, false)?;
+        self.driver(disk)?.expand_volume(disk, new_size)?;
         let old = disk.size_bytes;
         disk.size_bytes = new_size;
         self.put_disk(disk)?;
@@ -427,7 +379,7 @@ impl ImageManager {
         Ok((disk.clone(), Some(outcome), warnings))
     }
 
-    fn shrink(&self, disk: &mut Disk, path: &Path, new_size: u64) -> Result<Disk, ImageError> {
+    fn shrink(&self, disk: &mut Disk, new_size: u64) -> Result<Disk, ImageError> {
         let (min, kind) = self.shrink_minimum(disk)?;
         if new_size < min {
             return Err(ImageError::InvalidDisk {
@@ -450,23 +402,19 @@ impl ImageManager {
                 qemu_img::QEMU_IO.require()?;
             }
         }
-        // Work on a copy: `qemu-img resize --shrink` discards data without
-        // asking, and a crash part way must leave the original intact.
-        let tmp = self.temp_path(&disk.id, "shrink", disk.format);
-        qemu_img::copy_sparse(path, tmp.path())?;
-        qemu_img::resize(tmp.path(), disk.format, new_size, true)?;
-        if kind == TableKind::Gpt {
-            partition::edit(
-                tmp.path(),
-                disk.format,
-                new_size,
-                qemu_img::sgdisk_relocate_backup,
-            )?;
-        }
-        qemu_img::check(tmp.path(), disk.format)?;
-        set_mode(tmp.path(), 0o600)?;
+        self.driver(disk)?
+            .shrink_volume(disk, new_size, &mut |copy| {
+                if kind == TableKind::Gpt {
+                    partition::edit(
+                        copy.path(),
+                        disk.format,
+                        new_size,
+                        qemu_img::sgdisk_relocate_backup,
+                    )?;
+                }
+                Ok(())
+            })?;
         let old = disk.size_bytes;
-        std::fs::rename(tmp.keep(), path).map_err(|e| ImageError::Io(e.to_string()))?;
         disk.size_bytes = new_size;
         self.put_disk(disk)?;
         tracing::info!(disk = %disk.name, old, new = new_size, "disk shrunk");
@@ -480,7 +428,7 @@ impl ImageManager {
         mode: ExtendMode,
     ) -> Result<(Disk, ExtendOutcome, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.disk_path(&disk);
+        let path = self.driver(&disk)?.stage(&disk)?.path().to_path_buf();
         let (outcome, warnings) = self.extend_root_at(&path, &mut disk, mode)?;
         self.put_disk(&disk)?;
         Ok((disk, outcome, warnings))

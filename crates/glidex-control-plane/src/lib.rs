@@ -6,6 +6,7 @@ pub mod cluster;
 pub mod config;
 pub mod controller;
 pub mod credentials;
+pub mod datastore;
 pub mod directory;
 pub mod hypervisor;
 pub mod images;

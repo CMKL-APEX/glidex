@@ -520,7 +520,7 @@ impl HypervisorDriver for QemuDriver {
 mod tests {
     use super::*;
     use crate::images::qemu_img::DiskFormat;
-    use crate::models::DiskBinding;
+    use crate::models::VolumeBinding;
 
     fn config(extra: serde_json::Value) -> VmConfig {
         let mut base = serde_json::json!({
@@ -606,18 +606,18 @@ mod tests {
     #[test]
     fn disks_root_data_seed_in_order_and_backing_files_blocked() {
         let mut config = config(serde_json::json!({"cloud_init_path": "/tmp/seed,1.img"}));
-        config.root_disk_binding = Some(DiskBinding {
+        config.root_disk_binding = Some(VolumeBinding::File {
             path: "/disks/root.qcow2".into(),
             format: DiskFormat::Qcow2,
             backing_files: true,
         });
         config.data_disk_bindings = vec![
-            DiskBinding {
+            VolumeBinding::File {
                 path: "/disks/data.qcow2".into(),
                 format: DiskFormat::Qcow2,
                 backing_files: false,
             },
-            DiskBinding {
+            VolumeBinding::File {
                 path: "/disks/data.raw".into(),
                 format: DiskFormat::Raw,
                 backing_files: false,

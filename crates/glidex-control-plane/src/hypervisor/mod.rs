@@ -11,7 +11,7 @@ pub mod cloud_hypervisor;
 pub mod qemu;
 
 use crate::images::qemu_img::{ImageType, detect_image_type};
-use crate::models::VmConfig;
+use crate::models::{VmConfig, VolumeBinding};
 use glidex_hv_client::{HvError, Observed};
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
@@ -175,13 +175,20 @@ pub(crate) struct VmDisk {
 /// the database; only a user-supplied `rootfs_path` is probed. The seed
 /// is always the raw FAT image `write_seed_image` builds.
 pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
-    let root = match &config.root_disk_binding {
-        Some(b) => VmDisk {
-            path: b.path.clone(),
+    let managed = |b: &VolumeBinding| match b {
+        VolumeBinding::File {
+            path,
+            format,
+            backing_files,
+        } => VmDisk {
+            path: path.clone(),
             read_only: false,
-            format: Some(b.format.into()),
-            backing_files: b.backing_files,
+            format: Some((*format).into()),
+            backing_files: *backing_files,
         },
+    };
+    let root = match &config.root_disk_binding {
+        Some(b) => managed(b),
         None => VmDisk {
             path: config.rootfs_path.clone(),
             read_only: false,
@@ -190,12 +197,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
         },
     };
     std::iter::once(root)
-        .chain(config.data_disk_bindings.iter().map(|b| VmDisk {
-            path: b.path.clone(),
-            read_only: false,
-            format: Some(b.format.into()),
-            backing_files: b.backing_files,
-        }))
+        .chain(config.data_disk_bindings.iter().map(managed))
         .chain(config.cloud_init_path.iter().map(|path| VmDisk {
             path: path.clone(),
             read_only: true,

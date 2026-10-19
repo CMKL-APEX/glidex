@@ -22,8 +22,8 @@ use crate::images::{
 };
 use crate::instance::runner::Runner;
 use crate::models::{
-    DiskBinding, DiskSelection, HostBootPolicy, MAX_STOP_GRACE_SECS, NetworkAttachment, PowerState,
-    RestartPolicy, Vm, VmConfig, VmPhase, VmState,
+    DiskSelection, HostBootPolicy, MAX_STOP_GRACE_SECS, NetworkAttachment, PowerState,
+    RestartPolicy, Vm, VmConfig, VmPhase, VmState, VolumeBinding,
 };
 use crate::network::{
     self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore,
@@ -345,7 +345,7 @@ pub struct VmManager {
     pub(crate) me: Weak<VmManager>,
 }
 
-type RootBinding = (DiskBinding, Disk);
+type RootBinding = (VolumeBinding, Disk);
 
 /// A disk name derived from a VM name (`<vm>-root`), made valid.
 fn root_disk_name(vm_name: &str) -> String {
@@ -1929,8 +1929,8 @@ impl VmManager {
     pub(crate) fn disk_bindings(
         &self,
         vm: &Vm,
-    ) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
-        let bind = |id: &str| -> Result<(DiskBinding, Disk), VmManagerError> {
+    ) -> Result<(Option<RootBinding>, Vec<VolumeBinding>), VmManagerError> {
+        let bind = |id: &str| -> Result<(VolumeBinding, Disk), VmManagerError> {
             let d = self.images.get_disk(id)?;
             if d.phase != images::DiskPhase::Ready {
                 let why = d
@@ -1948,23 +1948,8 @@ impl VmManager {
             if let Some(op) = self.images.busy_op(&d.id) {
                 return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
             }
-            let path = self.images.disk_path(&d);
-            if !path.exists() {
-                return Err(ImageError::Io(format!(
-                    "disk {} file is missing: {}",
-                    d.name,
-                    path.display()
-                ))
-                .into());
-            }
-            Ok((
-                DiskBinding {
-                    path: path.to_string_lossy().into_owned(),
-                    format: d.format,
-                    backing_files: d.is_linked(),
-                },
-                d,
-            ))
+            let b = self.images.driver(&d)?.stage(&d)?;
+            Ok((b, d))
         };
         let root = vm.config().root_disk.as_deref().map(bind).transpose()?;
         let data = vm
