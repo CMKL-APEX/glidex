@@ -3,9 +3,10 @@
 Status: **design (draft)**. Implemented so far:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
-- S2a, the `Datastore` resource with registered `dir` datastores (§4.3).
+- S2, the `Datastore` resource with registered `dir` datastores (§4.3),
+  with its API, gxctl, UI and watch kind (§13).
 
-S2b (gxctl, UI, watch) and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
+S3 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -690,6 +691,24 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
   installer creates `/srv/glidex` (`root:root 0755`), and uninstall
   leaves it alone: operators' mounts are under it.
 
+**As built (S2b):**
+- **Watch:** kind `datastores` (`WATCH_KIND_DATASTORE`), with `datastore`
+  in the `WatchResponse` oneof. It lists what `readDatastore` on the
+  cluster may see. A free-space change is news only past the 1 % row
+  threshold (§4.3).
+- **gxctl:** `datastore list | show | create | set | rm`, and
+  `disk create --datastore`. `disk show` names the disk's datastore.
+  See cli.md.
+- **UI:** `pages/Datastores.tsx`, in the nav with `readDatastore`; its
+  actions need `manageDatastore`. The Disks page gets a Datastore column
+  and a create-form select once there is more than `local`. See
+  web-ui.md.
+- **Tests:**
+  - UI e2e: `datastores.spec.ts` (the `ui` project). The scratch
+    control plane sets `GLIDEX_DATASTORE_ROOT`;
+  - gxctl: `node_paths_are_node_equals_path`, and the in-process RPC
+    test lists `local`.
+
 **Quota:** project `disk_gib` stays cluster-wide (clustering.md §9.2),
 counting disks on every datastore. Per-datastore quotas are queued
 (S15).
@@ -774,7 +793,7 @@ described below; fix 5 is part of S2.
 |---|---|---|
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
-| S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **S2a implemented** (§4.3, §13 as built): everything but gxctl, the UI and the `datastores` watch kind, which are **S2b**. | S1 |
+| S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **Implemented** (§4.3, §13 as built), as S2a (resource, API) and S2b (gxctl, UI, watch). | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13) | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |

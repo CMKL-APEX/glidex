@@ -40,6 +40,7 @@ export default function Header() {
     { to: "/", label: "VMs", show: true },
     { to: "/images", label: "Images", show: true },
     { to: "/disks", label: "Disks", show: true },
+    { to: "/datastores", label: "Datastores", show: host.readDatastore },
     { to: "/credentials", label: "Credentials", show: true },
     { to: "/networking", label: "Networking", show: true },
     { to: "/projects", label: "Projects", show: true },

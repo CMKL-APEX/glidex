@@ -6,8 +6,8 @@
 use crate::client::{ApiClient, RpcTransport};
 use crate::tenancy::{err, rpc_err, usage};
 use crate::{
-    chosen_key_files, flag_value, format_bytes, format_unix_time, has_flag, own_public_key_files,
-    prompt, prompt_new_password, prompt_path, read_public_key_files,
+    chosen_key_files, flag_value, flag_values, format_bytes, format_unix_time, has_flag,
+    own_public_key_files, prompt, prompt_new_password, prompt_path, read_public_key_files,
 };
 use buffa::EnumValue;
 use colored::Colorize;
@@ -606,7 +606,7 @@ fn print_written(d: Option<&Disk>, name: &str) {
 
 /// `disk …`
 pub async fn disk(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
+    let u = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
     let gib = |s: &str| {
         s.parse::<u64>()
             .map_err(|_| format!("{} is not a whole number of GiB", s))
@@ -664,6 +664,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
                 Ok(r) => {
                     let d = r.disk.as_option().cloned().unwrap_or_default();
                     print_disk_result(&d);
+                    println!("  datastore: {}", d.datastore);
                     println!("  path: {}", d.path);
                     if let Some(b) = d.info.as_option().and_then(|i| i.backing_filename.as_ref()) {
                         println!("  backing file: {}", b);
@@ -705,6 +706,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
                 name: name.to_string(),
                 project: client.project(),
                 image: flag_value(args, "--image").map(String::from),
+                datastore: flag_value(args, "--datastore").map(String::from),
                 // Making it may wait for its image to download.
                 wait_secs: Some(300),
                 ..Default::default()
@@ -803,5 +805,291 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         _ => usage(u),
+    }
+}
+
+// ---- datastores (spec/storage.md §13) -------------------------------------
+
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> --path P [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
+
+/// `--node-path NODE=PATH`, repeated.
+fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
+    flag_values(args, "--node-path")
+        .into_iter()
+        .map(|v| {
+            v.split_once('=')
+                .map(|(n, p)| (n.to_string(), p.to_string()))
+                .ok_or_else(|| format!("--node-path {v}: give NODE=PATH"))
+        })
+        .collect()
+}
+
+fn node_list(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// `n of m nodes reach it`, and the most free space any of them has.
+fn reach(d: &Datastore) -> (String, String) {
+    let ok: Vec<&DatastoreNode> = d.node_status.iter().filter(|r| r.reachable).collect();
+    let free = ok.iter().map(|r| r.free_bytes).max();
+    (
+        format!("{}/{}", ok.len(), d.node_status.len()),
+        free.map(format_bytes).unwrap_or_else(|| "-".into()),
+    )
+}
+
+fn print_datastore(d: &Datastore) {
+    println!(
+        "{}{}{}",
+        d.name.cyan().bold(),
+        if d.builtin { " (built in)" } else { "" },
+        if d.default_for_disks {
+            " (default for disks)".green().to_string()
+        } else {
+            String::new()
+        }
+    );
+    println!("  id: {}", d.id);
+    if !d.builtin {
+        println!("  path: {}", d.path);
+        let mut np: Vec<_> = d.node_paths.iter().collect();
+        np.sort();
+        for (n, p) in np {
+            println!("  path on {n}: {p}");
+        }
+        println!(
+            "  nodes: {}",
+            if d.nodes.is_empty() {
+                "all".to_string()
+            } else {
+                d.nodes.join(", ")
+            }
+        );
+    }
+    println!(
+        "  overcommit: {}",
+        if d.overcommit { "yes (thin)" } else { "no" }
+    );
+    println!("  disks: {}", d.disks);
+    for r in &d.node_status {
+        let who = r.node_name.clone().unwrap_or_else(|| r.node.clone());
+        if r.reachable {
+            println!(
+                "  {} {}: {} free of {} at {}",
+                "ok".green(),
+                who,
+                format_bytes(r.free_bytes),
+                format_bytes(r.total_bytes),
+                r.path
+            );
+        } else {
+            println!(
+                "  {} {}: {} {}",
+                "unreachable".red(),
+                who,
+                r.reason,
+                r.message
+            );
+        }
+    }
+}
+
+pub async fn datastore(client: &ApiClient, args: &[&str]) {
+    let u = DATASTORE_USAGE;
+    let t = match rpc(client).await {
+        Ok(t) => t,
+        Err(e) => return err(e),
+    };
+    let svc = DatastoreServiceClient::new(t.clone(), t.config());
+    match args.first().copied().unwrap_or("list") {
+        "list" | "ls" => match svc
+            .list_datastores(ListDatastoresRequest::default())
+            .await
+            .map(|r| r.into_owned().datastores)
+        {
+            Ok(all) => {
+                #[derive(Tabled)]
+                struct Row {
+                    #[tabled(rename = "NAME")]
+                    name: String,
+                    #[tabled(rename = "DEFAULT")]
+                    default: String,
+                    #[tabled(rename = "NODES OK")]
+                    nodes: String,
+                    #[tabled(rename = "FREE")]
+                    free: String,
+                    #[tabled(rename = "DISKS")]
+                    disks: u32,
+                    #[tabled(rename = "PATH")]
+                    path: String,
+                }
+                let rows: Vec<Row> = all
+                    .iter()
+                    .map(|d| {
+                        let (nodes, free) = reach(d);
+                        Row {
+                            name: d.name.clone(),
+                            default: if d.default_for_disks {
+                                "*".into()
+                            } else {
+                                String::new()
+                            },
+                            nodes,
+                            free,
+                            disks: d.disks,
+                            path: if d.builtin {
+                                "(each node's disk directory)".into()
+                            } else {
+                                d.path.clone()
+                            },
+                        }
+                    })
+                    .collect();
+                println!("{}", Table::new(rows));
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        "show" | "get" => match args.get(1) {
+            Some(key) => match svc
+                .get_datastore(GetDatastoreRequest {
+                    id: key.to_string(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => print_datastore(&r.datastore.as_option().cloned().unwrap_or_default()),
+                Err(e) => err(rpc_err(e)),
+            },
+            None => usage(u),
+        },
+        "create" => {
+            let (Some(name), Some(path)) = (
+                args.get(1).filter(|a| !a.starts_with("--")),
+                flag_value(args, "--path"),
+            ) else {
+                return usage(u);
+            };
+            let node_paths = match node_paths(args) {
+                Ok(p) => p,
+                Err(e) => return err(e),
+            };
+            let req = CreateDatastoreRequest {
+                name: name.to_string(),
+                driver: DatastoreDriver::DATASTORE_DRIVER_DIR.into(),
+                path: path.to_string(),
+                node_paths: node_paths.into_iter().collect(),
+                nodes: flag_value(args, "--nodes")
+                    .map(node_list)
+                    .unwrap_or_default(),
+                default_for_disks: has_flag(args, "--default").then_some(true),
+                overcommit: has_flag(args, "--no-overcommit").then_some(false),
+                ..Default::default()
+            };
+            match svc.create_datastore(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    println!("{}", "Datastore created:".green());
+                    print_datastore(&r.datastore.as_option().cloned().unwrap_or_default());
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "set" => {
+            let Some(key) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                return usage(u);
+            };
+            let mut req = UpdateDatastoreRequest {
+                id: key.to_string(),
+                ..Default::default()
+            };
+            let mut mask = Vec::new();
+            if !flag_values(args, "--node-path").is_empty() {
+                match node_paths(args) {
+                    Ok(p) => req.node_paths = p.into_iter().collect(),
+                    Err(e) => return err(e),
+                }
+                mask.push("node_paths");
+            }
+            if let Some(n) = flag_value(args, "--nodes") {
+                req.nodes = node_list(n);
+                mask.push("nodes");
+            } else if has_flag(args, "--all-nodes") {
+                mask.push("nodes");
+            }
+            for (on, off, field) in [
+                ("--default", "--no-default", "default_for_disks"),
+                ("--overcommit", "--no-overcommit", "overcommit"),
+            ] {
+                let v = if has_flag(args, on) {
+                    Some(true)
+                } else if has_flag(args, off) {
+                    Some(false)
+                } else {
+                    continue;
+                };
+                if field == "default_for_disks" {
+                    req.default_for_disks = v;
+                } else {
+                    req.overcommit = v;
+                }
+                mask.push(field);
+            }
+            if mask.is_empty() {
+                return usage(u);
+            }
+            req.update_mask = buffa_types::google::protobuf::FieldMask {
+                paths: mask.into_iter().map(String::from).collect(),
+                ..Default::default()
+            }
+            .into();
+            match svc.update_datastore(req).await.map(|r| r.into_owned()) {
+                Ok(r) => print_datastore(&r.datastore.as_option().cloned().unwrap_or_default()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "rm" | "delete" => match args.get(1) {
+            Some(key) => match svc
+                .delete_datastore(DeleteDatastoreRequest {
+                    id: key.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("{} {}", "Datastore deleted:".green(), key),
+                Err(e) => err(rpc_err(e)),
+            },
+            None => usage(u),
+        },
+        _ => usage(u),
+    }
+}
+
+#[cfg(test)]
+mod datastore_tests {
+    use super::*;
+
+    #[test]
+    fn node_paths_are_node_equals_path() {
+        let args = [
+            "create",
+            "fast",
+            "--node-path",
+            "n1=/srv/glidex/a",
+            "--node-path",
+            "n2=/srv/glidex/b",
+        ];
+        assert_eq!(
+            node_paths(&args).unwrap(),
+            [
+                ("n1".to_string(), "/srv/glidex/a".to_string()),
+                ("n2".to_string(), "/srv/glidex/b".to_string())
+            ]
+        );
+        assert!(node_paths(&["--node-path", "n1"]).is_err());
+        assert_eq!(node_list(" a, b,,c "), ["a", "b", "c"]);
     }
 }

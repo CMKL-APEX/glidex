@@ -126,9 +126,14 @@ name (ids when `/projects` isn't readable).
 | `image rm <image>` | `DELETE /images/{id}?wait=60`; prints `Image deleted:` once gone, else `Deleting:` with the reason it waits |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks?wait=300` (it may wait for its image to download) |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | `POST /disks?wait=300` (it may wait for its image to download); `--datastore`: where it goes, else the default for disks (spec/storage.md S13) |
 | `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize?wait=120`; a refused shrink prints the minimum |
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
+| `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
+| `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
+| `datastore create <name> --path P [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore` (driver `dir`): a directory under `/srv/glidex` (spec/storage.md §13) |
+| `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
+| `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
 | `networks` / `network list` | `GET /networks` (project networks show their project) |
 | `network create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, or isolated with `--isolated`; tap ports, or vhost-user with `--vhost-user`; generated bridge); without: as `network-add` |

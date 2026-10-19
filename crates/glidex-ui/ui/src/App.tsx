@@ -16,6 +16,7 @@ const Credentials = lazy(() => import("./pages/Credentials"));
 const Networking = lazy(() => import("./pages/Networking"));
 const Images = lazy(() => import("./pages/Images"));
 const Disks = lazy(() => import("./pages/Disks"));
+const Datastores = lazy(() => import("./pages/Datastores"));
 const Projects = lazy(() => import("./pages/Projects"));
 const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
 const Tokens = lazy(() => import("./pages/Tokens"));
@@ -49,6 +50,7 @@ function Shell() {
             <Route path="/networking" element={<Networking />} />
             <Route path="/images" element={<Images />} />
             <Route path="/disks" element={<Disks />} />
+            <Route path="/datastores" element={<Datastores />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/directory" element={<Directory />} />

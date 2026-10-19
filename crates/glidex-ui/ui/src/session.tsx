@@ -42,6 +42,9 @@ const HOST_ACTION_RESOURCE = {
   manageAnyTokens: "Directory",
   createNetwork: "Host",
   readCluster: "Cluster",
+  // Datastores (spec/storage.md §13).
+  readDatastore: "Cluster",
+  manageDatastore: "Cluster",
   // Cluster operations (spec/clustering-ui.md §3.1).
   listNodes: "Cluster",
   removeNode: "Cluster",

@@ -18,7 +18,7 @@ import type { Event, EventJson } from "../../common/v1/common_pb";
 import { file_glidex_common_v1_common } from "../../common/v1/common_pb";
 import type { Network, NetworkJson } from "../../network/v1/network_pb";
 import { file_glidex_network_v1_network } from "../../network/v1/network_pb";
-import type { Disk, DiskJson, Image, ImageJson } from "../../storage/v1/storage_pb";
+import type { Datastore, DatastoreJson, Disk, DiskJson, Image, ImageJson } from "../../storage/v1/storage_pb";
 import { file_glidex_storage_v1_storage } from "../../storage/v1/storage_pb";
 import type { Vm, VmJson } from "../../vm/v1/vm_pb";
 import { file_glidex_vm_v1_vm } from "../../vm/v1/vm_pb";
@@ -28,7 +28,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/watch/v1/watch.proto.
  */
 export const file_glidex_watch_v1_watch: GenFile = /*@__PURE__*/
-  fileDesc("ChtnbGlkZXgvd2F0Y2gvdjEvd2F0Y2gucHJvdG8SD2dsaWRleC53YXRjaC52MSJbCgxXYXRjaFJlcXVlc3QSKQoFa2luZHMYASADKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEhQKB3Byb2plY3QYAiABKAlIAIgBAUIKCghfcHJvamVjdCIiCgxQb2xpY3lNYXJrZXISEgoKZ2VuZXJhdGlvbhgBIAEoBCL+AwoNV2F0Y2hSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEigKBGtpbmQYAiABKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEgoKAmlkGAMgASgJEh4KAnZtGAQgASgLMhAuZ2xpZGV4LnZtLnYxLlZtSAASJwoEZGlzaxgFIAEoCzIXLmdsaWRleC5zdG9yYWdlLnYxLkRpc2tIABIpCgVpbWFnZRgGIAEoCzIYLmdsaWRleC5zdG9yYWdlLnYxLkltYWdlSAASLQoHbmV0d29yaxgHIAEoCzIaLmdsaWRleC5uZXR3b3JrLnYxLk5ldHdvcmtIABInCgRub2RlGAggASgLMhcuZ2xpZGV4LmNsdXN0ZXIudjEuTm9kZUgAEkEKC2ltcG9ydF9wbGFuGAkgASgLMh0uZ2xpZGV4LmNsdXN0ZXIudjEuSW1wb3J0UGxhbkgAUgtpbXBvcnRfcGxhbhI+CgdjbHVzdGVyGAogASgLMisuZ2xpZGV4LmNsdXN0ZXIudjEuR2V0Q2x1c3RlclN0YXR1c1Jlc3BvbnNlSAASLwoGcG9saWN5GAsgASgLMh0uZ2xpZGV4LndhdGNoLnYxLlBvbGljeU1hcmtlckgAQggKBm9iamVjdCJKChJXYXRjaEV2ZW50c1JlcXVlc3QSKAoEa2luZBgBIAEoDjIaLmdsaWRleC53YXRjaC52MS5XYXRjaEtpbmQSCgoCaWQYAiABKAkibAoTV2F0Y2hFdmVudHNSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEiYKBWV2ZW50GAIgASgLMhcuZ2xpZGV4LmNvbW1vbi52MS5FdmVudCrYAQoJV2F0Y2hLaW5kEhoKFldBVENIX0tJTkRfVU5TUEVDSUZJRUQQABIRCg1XQVRDSF9LSU5EX1ZNEAESEwoPV0FUQ0hfS0lORF9ESVNLEAISFAoQV0FUQ0hfS0lORF9JTUFHRRADEhYKEldBVENIX0tJTkRfTkVUV09SSxAEEhMKD1dBVENIX0tJTkRfTk9ERRAFEhUKEVdBVENIX0tJTkRfSU1QT1JUEAYSFgoSV0FUQ0hfS0lORF9DTFVTVEVSEAcSFQoRV0FUQ0hfS0lORF9QT0xJQ1kQCCrmAQoOV2F0Y2hFdmVudFR5cGUSIAocV0FUQ0hfRVZFTlRfVFlQRV9VTlNQRUNJRklFRBAAEhoKFldBVENIX0VWRU5UX1RZUEVfQURERUQQARIdChlXQVRDSF9FVkVOVF9UWVBFX01PRElGSUVEEAISHAoYV0FUQ0hfRVZFTlRfVFlQRV9ERUxFVEVEEAMSGwoXV0FUQ0hfRVZFTlRfVFlQRV9TWU5DRUQQBBIcChhXQVRDSF9FVkVOVF9UWVBFX0VYUElSRUQQBRIeChpXQVRDSF9FVkVOVF9UWVBFX0tFRVBBTElWRRAGMu4BCgxXYXRjaFNlcnZpY2USawoFV2F0Y2gSHS5nbGlkZXgud2F0Y2gudjEuV2F0Y2hSZXF1ZXN0Gh4uZ2xpZGV4LndhdGNoLnYxLldhdGNoUmVzcG9uc2UiIcrpGB0KDWF1dGhlbnRpY2F0ZWQQARoKR0VUIC93YXRjaDABEnEKC1dhdGNoRXZlbnRzEiMuZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRzUmVxdWVzdBokLmdsaWRleC53YXRjaC52MS5XYXRjaEV2ZW50c1Jlc3BvbnNlIhXK6RgRCg1hdXRoZW50aWNhdGVkEAEwAWIGcHJvdG8z", [file_glidex_api_v1_options, file_glidex_cluster_v1_cluster, file_glidex_common_v1_common, file_glidex_network_v1_network, file_glidex_storage_v1_storage, file_glidex_vm_v1_vm]);
+  fileDesc("ChtnbGlkZXgvd2F0Y2gvdjEvd2F0Y2gucHJvdG8SD2dsaWRleC53YXRjaC52MSJbCgxXYXRjaFJlcXVlc3QSKQoFa2luZHMYASADKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEhQKB3Byb2plY3QYAiABKAlIAIgBAUIKCghfcHJvamVjdCIiCgxQb2xpY3lNYXJrZXISEgoKZ2VuZXJhdGlvbhgBIAEoBCKxBAoNV2F0Y2hSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEigKBGtpbmQYAiABKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEgoKAmlkGAMgASgJEh4KAnZtGAQgASgLMhAuZ2xpZGV4LnZtLnYxLlZtSAASJwoEZGlzaxgFIAEoCzIXLmdsaWRleC5zdG9yYWdlLnYxLkRpc2tIABIpCgVpbWFnZRgGIAEoCzIYLmdsaWRleC5zdG9yYWdlLnYxLkltYWdlSAASLQoHbmV0d29yaxgHIAEoCzIaLmdsaWRleC5uZXR3b3JrLnYxLk5ldHdvcmtIABInCgRub2RlGAggASgLMhcuZ2xpZGV4LmNsdXN0ZXIudjEuTm9kZUgAEkEKC2ltcG9ydF9wbGFuGAkgASgLMh0uZ2xpZGV4LmNsdXN0ZXIudjEuSW1wb3J0UGxhbkgAUgtpbXBvcnRfcGxhbhI+CgdjbHVzdGVyGAogASgLMisuZ2xpZGV4LmNsdXN0ZXIudjEuR2V0Q2x1c3RlclN0YXR1c1Jlc3BvbnNlSAASLwoGcG9saWN5GAsgASgLMh0uZ2xpZGV4LndhdGNoLnYxLlBvbGljeU1hcmtlckgAEjEKCWRhdGFzdG9yZRgMIAEoCzIcLmdsaWRleC5zdG9yYWdlLnYxLkRhdGFzdG9yZUgAQggKBm9iamVjdCJKChJXYXRjaEV2ZW50c1JlcXVlc3QSKAoEa2luZBgBIAEoDjIaLmdsaWRleC53YXRjaC52MS5XYXRjaEtpbmQSCgoCaWQYAiABKAkibAoTV2F0Y2hFdmVudHNSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEiYKBWV2ZW50GAIgASgLMhcuZ2xpZGV4LmNvbW1vbi52MS5FdmVudCryAQoJV2F0Y2hLaW5kEhoKFldBVENIX0tJTkRfVU5TUEVDSUZJRUQQABIRCg1XQVRDSF9LSU5EX1ZNEAESEwoPV0FUQ0hfS0lORF9ESVNLEAISFAoQV0FUQ0hfS0lORF9JTUFHRRADEhYKEldBVENIX0tJTkRfTkVUV09SSxAEEhMKD1dBVENIX0tJTkRfTk9ERRAFEhUKEVdBVENIX0tJTkRfSU1QT1JUEAYSFgoSV0FUQ0hfS0lORF9DTFVTVEVSEAcSFQoRV0FUQ0hfS0lORF9QT0xJQ1kQCBIYChRXQVRDSF9LSU5EX0RBVEFTVE9SRRAJKuYBCg5XYXRjaEV2ZW50VHlwZRIgChxXQVRDSF9FVkVOVF9UWVBFX1VOU1BFQ0lGSUVEEAASGgoWV0FUQ0hfRVZFTlRfVFlQRV9BRERFRBABEh0KGVdBVENIX0VWRU5UX1RZUEVfTU9ESUZJRUQQAhIcChhXQVRDSF9FVkVOVF9UWVBFX0RFTEVURUQQAxIbChdXQVRDSF9FVkVOVF9UWVBFX1NZTkNFRBAEEhwKGFdBVENIX0VWRU5UX1RZUEVfRVhQSVJFRBAFEh4KGldBVENIX0VWRU5UX1RZUEVfS0VFUEFMSVZFEAYy7gEKDFdhdGNoU2VydmljZRJrCgVXYXRjaBIdLmdsaWRleC53YXRjaC52MS5XYXRjaFJlcXVlc3QaHi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hSZXNwb25zZSIhyukYHQoNYXV0aGVudGljYXRlZBABGgpHRVQgL3dhdGNoMAEScQoLV2F0Y2hFdmVudHMSIy5nbGlkZXgud2F0Y2gudjEuV2F0Y2hFdmVudHNSZXF1ZXN0GiQuZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRzUmVzcG9uc2UiFcrpGBEKDWF1dGhlbnRpY2F0ZWQQATABYgZwcm90bzM", [file_glidex_api_v1_options, file_glidex_cluster_v1_cluster, file_glidex_common_v1_common, file_glidex_network_v1_network, file_glidex_storage_v1_storage, file_glidex_vm_v1_vm]);
 
 /**
  * @generated from message glidex.watch.v1.WatchRequest
@@ -176,6 +176,12 @@ export type WatchResponse = Message<"glidex.watch.v1.WatchResponse"> & {
      */
     value: PolicyMarker;
     case: "policy";
+  } | {
+    /**
+     * @generated from field: glidex.storage.v1.Datastore datastore = 12;
+     */
+    value: Datastore;
+    case: "datastore";
   } | { case: undefined; value?: undefined };
 };
 
@@ -239,6 +245,11 @@ export type WatchResponseJson = {
    * @generated from field: glidex.watch.v1.PolicyMarker policy = 11;
    */
   policy?: PolicyMarkerJson;
+
+  /**
+   * @generated from field: glidex.storage.v1.Datastore datastore = 12;
+   */
+  datastore?: DatastoreJson;
 };
 
 /**
@@ -388,12 +399,19 @@ export enum WatchKind {
    * @generated from enum value: WATCH_KIND_POLICY = 8;
    */
   POLICY = 8,
+
+  /**
+   * Datastores, with what each node finds at them (spec/storage.md §13).
+   *
+   * @generated from enum value: WATCH_KIND_DATASTORE = 9;
+   */
+  DATASTORE = 9,
 }
 
 /**
  * @generated from enum glidex.watch.v1.WatchKind
  */
-export type WatchKindJson = "WATCH_KIND_UNSPECIFIED" | "WATCH_KIND_VM" | "WATCH_KIND_DISK" | "WATCH_KIND_IMAGE" | "WATCH_KIND_NETWORK" | "WATCH_KIND_NODE" | "WATCH_KIND_IMPORT" | "WATCH_KIND_CLUSTER" | "WATCH_KIND_POLICY";
+export type WatchKindJson = "WATCH_KIND_UNSPECIFIED" | "WATCH_KIND_VM" | "WATCH_KIND_DISK" | "WATCH_KIND_IMAGE" | "WATCH_KIND_NETWORK" | "WATCH_KIND_NODE" | "WATCH_KIND_IMPORT" | "WATCH_KIND_CLUSTER" | "WATCH_KIND_POLICY" | "WATCH_KIND_DATASTORE";
 
 /**
  * Describes the enum glidex.watch.v1.WatchKind.
