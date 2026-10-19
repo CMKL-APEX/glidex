@@ -218,6 +218,15 @@ pub enum Origin {
     System,
 }
 
+impl Origin {
+    /// Writes a node makes about its own work, which a server that isn't
+    /// the leader sends to the leader (spec/clustering.md §8.3). The
+    /// leader decides what the node may write (`check_status_write`).
+    pub fn is_node_status(self) -> bool {
+        matches!(self, Origin::Controller | Origin::Images | Origin::Network)
+    }
+}
+
 /// The ordered `put`/`delete` operations of one write: the Raft log entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteSet {
@@ -328,6 +337,9 @@ pub struct Tx<'db> {
     origin: Origin,
     txn: redb::WriteTransaction,
     ops: RefCell<Vec<Op>>,
+    /// A node's status write on a server that isn't the leader: sent to
+    /// the leader at commit, as an agent's are (spec/clustering.md §8.3).
+    forward: bool,
     _lane: std::sync::MutexGuard<'db, ()>,
 }
 
@@ -354,6 +366,7 @@ impl Tx<'_> {
             origin,
             txn,
             ops,
+            forward,
             _lane,
         } = self;
         let ops = ops.into_inner();
@@ -371,6 +384,18 @@ impl Tx<'_> {
             origin,
             ops,
         };
+        if forward {
+            let _ = txn.abort();
+            let f = db.forwarder.lock().unwrap().clone();
+            let f = f.ok_or(StoreError::NotLeader { leader: None })?;
+            let index = f.status_write(&ws)?;
+            // Read your writes: the controller's next step reads this store.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while db.revision() < index && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Ok(());
+        }
         if let Some(m) = mirror {
             let _ = txn.abort();
             return match m.submit(&ws)? {
@@ -466,6 +491,9 @@ pub trait Replicator: Send + Sync {
 /// puts and deletes in a few tables, or a named operation.
 pub trait Forwarder: Send + Sync {
     fn write_raw(&self, ops: Vec<Op>) -> Result<(), StoreError>;
+    /// Have the leader check and apply a node's status write (§8.3);
+    /// returns the revision it was applied at.
+    fn status_write(&self, ws: &WriteSet) -> Result<u64, StoreError>;
     fn call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError>;
 }
 
@@ -630,8 +658,21 @@ impl Db {
             Mode::Replicated(r) => Some(r.clone()),
             _ => None,
         };
+        // On a server that isn't the leader, a node's own work (its
+        // controllers, disks and images, network status) is status for the
+        // leader to check, like an agent's; anything else is refused here
+        // as before.
+        let mut forward = false;
         if let Some(r) = replicator {
-            r.before_write()?;
+            match r.before_write() {
+                Ok(()) => {}
+                Err(StoreError::NotLeader { .. })
+                    if origin.is_node_status() && self.forwarder.lock().unwrap().is_some() =>
+                {
+                    forward = true;
+                }
+                Err(e) => return Err(e),
+            }
         }
         let txn = self.inner.begin_write()?;
         Ok(Tx {
@@ -639,6 +680,7 @@ impl Db {
             origin,
             txn,
             ops: RefCell::new(Vec::new()),
+            forward,
             _lane: lane,
         })
     }
