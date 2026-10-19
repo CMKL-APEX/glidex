@@ -649,6 +649,9 @@ struct Options {
     /// Let OVS installs / DPDK init restart ovs-vswitchd while it has
     /// bridges (interrupts their traffic). Never saved.
     allow_ovs_restart: bool,
+    /// `--release-hugepages` (kernel profile): give back the hugepages an
+    /// earlier dpdk profile reserved. Never saved.
+    release_hugepages: bool,
     /// Install OVN (`ovn-host`, `ovn-central` unless joining as an agent, and
     /// `conntrack` for gateway metering): cluster networks need it on every
     /// node (spec/clustering.md §10.1). Its services stay off until the host
@@ -699,6 +702,7 @@ impl Default for Options {
             ovs_profile: OvsProfile::Kernel,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
+            release_hugepages: false,
             ovn: true,
             join: None,
             leave: false,
@@ -748,6 +752,7 @@ impl Options {
                     o.pmd_cpu_mask = (!m.is_empty() && m != "auto").then_some(m);
                 }
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
+                "--release-hugepages" => o.release_hugepages = true,
                 "--ovn" => o.ovn = true,
                 "--no-ovn" => o.ovn = false,
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
@@ -816,6 +821,9 @@ impl Options {
                 j.role = "agent".into();
             }
         }
+        if o.release_hugepages && o.ovs_profile != OvsProfile::Kernel {
+            bail!("--release-hugepages goes with the kernel profile: OVS-DPDK needs its hugepages");
+        }
         Ok(o)
     }
 
@@ -858,7 +866,10 @@ fn print_help() {
          \x20     --no-services          don't install the systemd units, users and groups\n\
          \x20     --ovs-profile P        kernel (default) or dpdk (reserves hugepages and PMD cores)\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
-         \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
+         \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges (also\n\
+         \x20                            what turns DPDK off when going back to the kernel profile)\n\
+         \x20     --release-hugepages    kernel profile: give back the hugepages an earlier dpdk\n\
+         \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
@@ -2520,6 +2531,77 @@ fn reserve_hugepages() -> Result<()> {
     Ok(())
 }
 
+/// The kernel profile: turn off the DPDK an earlier dpdk profile left on
+/// in ovs-vswitchd, so `br-int` goes back to the kernel datapath
+/// (spec/networking.md §6.2). That restarts ovs-vswitchd, so with bridges
+/// it waits for `--allow-ovs-restart`. Returns whether DPDK is off.
+fn turn_off_dpdk(
+    opts: &Options,
+    exec: &glidex_ovs::SystemExec,
+    probe: &glidex_ovs::host::ProbeOptions,
+) -> bool {
+    use glidex_ovs::OvsError;
+    match glidex_ovs::install::deinit_dpdk(exec, probe, opts.allow_ovs_restart) {
+        Ok(true) => {
+            println!(
+                "{} OVS-DPDK off (kernel profile); glidex moves br-int to the kernel datapath within a minute",
+                "Ready:".green()
+            );
+            true
+        }
+        Ok(false) => true,
+        Err(OvsError::ConfirmationRequired { impact }) => {
+            println!(
+                "{} OVS still runs DPDK from an earlier dpdk profile. Turning it off: {}. Re-run with --allow-ovs-restart.",
+                "Note:".yellow(),
+                impact
+            );
+            false
+        }
+        Err(e) => {
+            println!("{} OVS-DPDK stays on: {}", "Warning:".yellow(), e);
+            false
+        }
+    }
+}
+
+/// `--release-hugepages`: put `vm.nr_hugepages` back to its value before
+/// glidex reserved hugepages (else 0) and drop it from the sysctl drop-in.
+/// Pages in use (by a running guest) are only given back once freed.
+fn release_hugepages() -> Result<()> {
+    use sysconfig::NR_HUGEPAGES;
+    let Ok(text) = fs::read_to_string(sysconfig::SYSCTL_DROPIN) else {
+        println!("{} no hugepages reserved by glidex", "Note:".yellow());
+        return Ok(());
+    };
+    let (value, rest) = sysconfig::release_hugepages(&sysconfig::parse(&text));
+    let Some(value) = value else {
+        println!("{} no hugepages reserved by glidex", "Note:".yellow());
+        return Ok(());
+    };
+    if rest.is_empty() {
+        sudo(&argv(&["rm", "-f", sysconfig::SYSCTL_DROPIN]))?;
+    } else {
+        sudo_write(sysconfig::SYSCTL_DROPIN, &sysconfig::render(&rest))?;
+    }
+    sudo(&argv(&[
+        "sysctl",
+        "-q",
+        "-w",
+        &format!("{NR_HUGEPAGES}={value}"),
+    ]))?;
+    let now = read_sysctl(NR_HUGEPAGES).unwrap_or_default();
+    println!("{} {} = {}", "Released:".green(), NR_HUGEPAGES, now);
+    if now != value {
+        println!(
+            "{} {} hugepages are still in use; they go back once freed (or after a reboot)",
+            "Note:".yellow(),
+            now
+        );
+    }
+    Ok(())
+}
+
 fn configure_host(
     profile: glidex_ovs::install::Profile,
     opts: &Options,
@@ -2557,6 +2639,19 @@ fn configure_host(
     }
     write_sysctls(&wanted)?;
     if !dpdk {
+        // The kernel profile runs no DPDK, also on a host an earlier dpdk
+        // profile set up; its hugepages stay unless asked for.
+        let dpdk_off = !ovs_ok || turn_off_dpdk(opts, exec, probe);
+        if opts.release_hugepages {
+            if dpdk_off {
+                release_hugepages()?;
+            } else {
+                println!(
+                    "{} hugepages kept: OVS-DPDK is still on, and needs them",
+                    "Note:".yellow()
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -3237,6 +3332,35 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `--release-hugepages` is a one-time kernel-profile action: refused
+    /// with dpdk (which needs them) and never saved for re-runs.
+    #[test]
+    fn release_hugepages_is_kernel_only_and_not_saved() {
+        let o = Options::parse(None, &args(&["--release-hugepages"])).unwrap();
+        assert!(o.release_hugepages);
+        assert!(!o.render().contains("hugepages"), "{}", o.render());
+        assert!(
+            !Options::parse(Some(&o.render()), &[])
+                .unwrap()
+                .release_hugepages
+        );
+        let err = Options::parse(
+            None,
+            &args(&["--ovs-profile", "dpdk", "--release-hugepages"]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("kernel profile"), "{err}");
+        // A host saved as dpdk, switched back with a flag: allowed.
+        let dpdk = Options::parse(None, &args(&["--ovs-profile", "dpdk"])).unwrap();
+        let back = Options::parse(
+            Some(&dpdk.render()),
+            &args(&["--ovs-profile", "kernel", "--release-hugepages"]),
+        )
+        .unwrap();
+        assert_eq!(back.ovs_profile, OvsProfile::Kernel);
+        assert!(back.release_hugepages);
     }
 
     #[test]

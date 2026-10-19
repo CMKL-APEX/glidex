@@ -510,6 +510,104 @@ pub fn init_dpdk(
     })
 }
 
+/// The `other_config` keys `init_dpdk` sets, which `deinit_dpdk` removes.
+const DPDK_KEYS: &[&str] = &[
+    "dpdk-init",
+    "dpdk-socket-mem",
+    "dpdk-lcore-mask",
+    "pmd-cpu-mask",
+    "pmd-auto-lb",
+    "userspace-tso-enable",
+];
+
+/// Interface types that only exist with DPDK: vhost-user VM NICs and DPDK
+/// uplinks.
+const DPDK_PORT_TYPES: &[&str] = &["dpdk", "dpdkvhostuser", "dpdkvhostuserclient"];
+
+/// Turn DPDK off in ovs-vswitchd, the way back to the kernel profile
+/// (spec §6.2): remove what `init_dpdk` set and restart. DPDK can't be
+/// stopped in a running vswitchd, so the restart is what applies it.
+/// Returns whether anything changed. Refused while a DPDK port exists,
+/// since it would stop working; with bridges, it needs `confirm`, the
+/// restart interrupting their traffic. Hugepages are left alone.
+pub fn deinit_dpdk(
+    exec: &dyn Exec,
+    probe_opts: &ProbeOptions,
+    confirm: bool,
+) -> Result<bool, OvsError> {
+    let caps = host::probe(exec, probe_opts);
+    let current = crate::vsctl::list(exec, "Open_vSwitch", &["other_config"])
+        .ok()
+        .and_then(|rows| rows.first().map(|r| r.map("other_config")))
+        .unwrap_or_default();
+    let configured: Vec<&str> = DPDK_KEYS
+        .iter()
+        .copied()
+        .filter(|k| current.contains_key(*k))
+        .collect();
+    if configured.is_empty() && !caps.dpdk_initialized {
+        return Ok(false);
+    }
+    let dpdk_ports: Vec<String> = crate::vsctl::list(exec, "Interface", &["name", "type"])
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| {
+            r.str("type")
+                .is_some_and(|t| DPDK_PORT_TYPES.contains(&t.as_str()))
+        })
+        .filter_map(|r| r.str("name"))
+        .collect();
+    if !dpdk_ports.is_empty() {
+        return Err(OvsError::Conflict {
+            message: format!(
+                "DPDK ports need DPDK: {} (vhost-user VM NICs or DPDK uplinks); remove them first",
+                dpdk_ports.join(", ")
+            ),
+        });
+    }
+    let bridges = bridge::list_all_names(exec).unwrap_or_default();
+    if caps.ovs_running && !bridges.is_empty() && !confirm {
+        return Err(OvsError::ConfirmationRequired {
+            impact: format!(
+                "ovs-vswitchd will restart without DPDK, interrupting traffic on bridges: {}",
+                bridges.join(", ")
+            ),
+        });
+    }
+    if !configured.is_empty() {
+        let mut args = vec![
+            "remove".to_string(),
+            "Open_vSwitch".into(),
+            ".".into(),
+            "other_config".into(),
+        ];
+        args.extend(configured.iter().map(|k| k.to_string()));
+        crate::vsctl::run(exec, args)?;
+    }
+    // Not running: the next start comes up without DPDK.
+    if !caps.ovs_running {
+        return Ok(true);
+    }
+    let family = detect_distro(exec)?
+        .family
+        .ok_or_else(|| OvsError::Unsupported {
+            missing: vec!["supported distro".into()],
+        })?;
+    exec.check(
+        &Cmd::new(Program::Systemctl, ["restart", service_for(family)])
+            .timeout(Duration::from_secs(120)),
+    )?;
+    for _ in 0..60 {
+        if !host::probe(exec, probe_opts).dpdk_initialized {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(OvsError::Unsupported {
+        missing: vec!["dpdk off after the restart (see the ovs-vswitchd log)".into()],
+    })
+}
+
 /// The `other_config` keys DPDK mode wants (besides `dpdk-init`), as
 /// `(key, value)`. An explicit `pmd_cpu_mask` wins; otherwise the PMD and
 /// non-PMD (lcore) CPUs come from `tuning::plan`, and are left to OVS's
@@ -1092,5 +1190,91 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("2.17.9"));
+    }
+
+    /// The way back to the kernel profile: what `init_dpdk` set is removed
+    /// and ovs-vswitchd restarted, only when DPDK is on, never under a
+    /// DPDK port, and with bridges only once confirmed.
+    #[test]
+    fn deinit_dpdk_turns_dpdk_off() {
+        const DPDK_CONFIG: &str = r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"],["pmd-cpu-mask","0x6"],["vlan-limit","0"]]]]],"headings":["other_config"]}"#;
+        const NO_CONFIG: &str =
+            r#"{"data":[[["map",[["vlan-limit","0"]]]]],"headings":["other_config"]}"#;
+        const TAP_PORTS: &str =
+            r#"{"data":[["gxp-1",""],["br-int","internal"]],"headings":["name","type"]}"#;
+        let initialized = OVS_DPDK_ROW.replace("false]]", "true]]");
+        let host = |config: &str, ports: &str, iface_rows: &[String]| {
+            let exec = RecordingExec::new();
+            exec.file("/etc/os-release", UBUNTU);
+            exec.on(
+                "ovs-vsctl --version",
+                Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+            );
+            for row in iface_rows {
+                exec.on(
+                    "ovs-vsctl --format=json --columns=iface_types",
+                    Output::ok(row.clone()),
+                );
+            }
+            exec.on(
+                "ovs-vsctl --format=json --columns=other_config",
+                Output::ok(config),
+            );
+            exec.on(
+                "ovs-vsctl --format=json --columns=name,type list Interface",
+                Output::ok(ports),
+            );
+            exec.on("ovs-vsctl list-br", Output::ok("br-int\ngxp-1\n"));
+            exec
+        };
+        let changed = |exec: &RecordingExec| {
+            exec.calls()
+                .iter()
+                .any(|c| c.contains("remove Open_vSwitch") || c.starts_with("systemctl restart"))
+        };
+
+        // Kernel profile already: nothing to do.
+        let exec = host(NO_CONFIG, TAP_PORTS, &[OVS_ROW.to_string()]);
+        assert!(!deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap());
+        assert!(!changed(&exec));
+
+        // A vhost-user NIC would stop working.
+        let exec = host(
+            DPDK_CONFIG,
+            r#"{"data":[["vhu-a","dpdkvhostuserclient"]],"headings":["name","type"]}"#,
+            std::slice::from_ref(&initialized),
+        );
+        let err = deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap_err();
+        assert!(
+            matches!(&err, OvsError::Conflict { message } if message.contains("vhu-a")),
+            "{err:?}"
+        );
+        assert!(!changed(&exec));
+
+        // Bridges: the restart needs confirming.
+        let exec = host(DPDK_CONFIG, TAP_PORTS, std::slice::from_ref(&initialized));
+        let err = deinit_dpdk(&exec, &ProbeOptions::default(), false).unwrap_err();
+        assert!(
+            matches!(&err, OvsError::ConfirmationRequired { impact } if impact.contains("br-int")),
+            "{err:?}"
+        );
+        assert!(!changed(&exec));
+
+        // Confirmed: exactly the DPDK keys go, then a restart until it's off.
+        let exec = host(
+            DPDK_CONFIG,
+            TAP_PORTS,
+            &[initialized, OVS_DPDK_ROW.to_string()],
+        );
+        assert!(deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap());
+        let calls = exec.calls();
+        assert!(
+            calls.contains(&"ovs-vsctl remove Open_vSwitch . other_config dpdk-init dpdk-socket-mem pmd-cpu-mask".to_string()),
+            "{calls:#?}"
+        );
+        assert!(
+            calls.contains(&"systemctl restart openvswitch-switch".to_string()),
+            "{calls:#?}"
+        );
     }
 }
