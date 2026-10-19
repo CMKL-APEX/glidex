@@ -247,6 +247,7 @@ pub fn disk_pb(d: &DiskResponse) -> pb::Disk {
         partition_table: table.into(),
         extend_root: extend.unwrap_or_default().into(),
         warnings: d.warnings.clone(),
+        datastore: d.datastore.clone(),
         ..Default::default()
     }
 }
@@ -737,6 +738,7 @@ pub async fn create_disk(call: &Call, req: pb::CreateDiskRequest) -> ServiceResu
         es.image(image);
         call.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
     }
+    let datastore = disk_datastore(call, req.datastore.as_deref())?;
     let r = img::CreateDiskRequest {
         name: req.name,
         project: Some(project.clone()),
@@ -747,6 +749,7 @@ pub async fn create_disk(call: &Call, req: pb::CreateDiskRequest) -> ServiceResu
         format: format_of(req.format.as_known().unwrap_or_default()),
         extend_root: req.extend_root,
         node: req.node,
+        datastore: Some(datastore),
     };
     let quota = call.quota_mode(&project);
     let (disk, over) = call
@@ -817,4 +820,203 @@ pub async fn disk_events(
         events: events.iter().map(event_pb).collect(),
         ..Default::default()
     })
+}
+
+// ---- datastores (spec/storage.md §13) -------------------------------------
+
+/// The datastore a new disk goes to (the one asked for, else the default
+/// for disks), which the caller must be allowed to use. Its id.
+pub fn disk_datastore(call: &Call, key: Option<&str>) -> ServiceResult<String> {
+    use crate::datastore::record;
+    let db = call.manager().database();
+    let ds = match key {
+        Some(k) => record::find(&db, k)
+            .map_err(|e| manager_err(e.into()))?
+            .ok_or_else(|| {
+                ServiceError::new(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    format!("no datastore {k}"),
+                )
+            })?,
+        None => record::default_for_disks(&db).map_err(|e| manager_err(e.into()))?,
+    };
+    let mut es = EntitySet::new();
+    es.datastore(&ds.id);
+    call.require_action("useDatastore", Ent::Datastore(ds.id.clone()), es, &[])?;
+    Ok(ds.id)
+}
+
+pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastore {
+    use crate::datastore::record::DriverSpec;
+    let d = &v.datastore;
+    let DriverSpec::Dir { path, node_paths } = &d.driver;
+    pb::Datastore {
+        id: d.id.clone(),
+        name: d.name.clone(),
+        driver: pb::DatastoreDriver::DATASTORE_DRIVER_DIR.into(),
+        topology: pb::DatastoreTopology::DATASTORE_TOPOLOGY_NODE_LOCAL.into(),
+        path: path.clone(),
+        node_paths: node_paths.clone().into_iter().collect(),
+        nodes: d.nodes.clone(),
+        default_for_disks: v.is_default,
+        overcommit: d.overcommit,
+        builtin: d.is_builtin(),
+        created_at: crate::service::common::ts_opt(d.created_at).into(),
+        node_status: v
+            .rows
+            .iter()
+            .map(|(n, r)| pb::DatastoreNode {
+                node: n.clone(),
+                node_name: v.node_names.get(n).cloned(),
+                reachable: r.reachable,
+                reason: r.reason.clone(),
+                message: r.message.clone(),
+                path: r.path.clone(),
+                total_bytes: r.total_bytes,
+                free_bytes: r.free_bytes,
+                checked_at: crate::service::common::ts_opt(r.checked_at).into(),
+                ..Default::default()
+            })
+            .collect(),
+        disks: v.disks,
+        ..Default::default()
+    }
+}
+
+fn require_datastore(call: &Call, id: &str) -> ServiceResult<()> {
+    let mut es = EntitySet::new();
+    es.datastore(id);
+    call.set_target(format!("datastore:{id}"));
+    call.require(Ent::Datastore(id.into()), es)?;
+    Ok(())
+}
+
+pub fn list_datastores(
+    call: &Call,
+    _req: pb::ListDatastoresRequest,
+) -> ServiceResult<pb::ListDatastoresResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    Ok(pb::ListDatastoresResponse {
+        datastores: call
+            .manager()
+            .list_datastores()
+            .map_err(manager_err)?
+            .iter()
+            .map(datastore_pb)
+            .collect(),
+        ..Default::default()
+    })
+}
+
+pub fn get_datastore(
+    call: &Call,
+    req: pb::GetDatastoreRequest,
+) -> ServiceResult<pb::GetDatastoreResponse> {
+    let v = call.manager().get_datastore(&req.id).map_err(manager_err)?;
+    require_datastore(call, &v.datastore.id)?;
+    Ok(pb::GetDatastoreResponse {
+        datastore: datastore_pb(&v).into(),
+        ..Default::default()
+    })
+}
+
+pub async fn create_datastore(
+    call: &Call,
+    req: pb::CreateDatastoreRequest,
+) -> ServiceResult<pb::CreateDatastoreResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    match req.driver.as_known() {
+        Some(pb::DatastoreDriver::DATASTORE_DRIVER_DIR)
+        | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => {}
+        _ => {
+            return Err(ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_datastore",
+                "driver: only dir is supported so far",
+            ));
+        }
+    }
+    let v = call
+        .manager()
+        .create_datastore(crate::datastore::manage::NewDatastore {
+            name: req.name,
+            path: req.path,
+            node_paths: req.node_paths.into_iter().collect(),
+            nodes: req.nodes,
+            default_for_disks: req.default_for_disks.unwrap_or(false),
+            overcommit: req.overcommit,
+        })
+        .await
+        .map_err(manager_err)?;
+    call.set_target(format!("datastore:{}", v.datastore.id));
+    Ok(pb::CreateDatastoreResponse {
+        datastore: datastore_pb(&v).into(),
+        ..Default::default()
+    })
+}
+
+pub async fn update_datastore(
+    call: &Call,
+    req: pb::UpdateDatastoreRequest,
+) -> ServiceResult<pb::UpdateDatastoreResponse> {
+    let id = call
+        .manager()
+        .get_datastore(&req.id)
+        .map_err(manager_err)?
+        .datastore
+        .id;
+    require_datastore(call, &id)?;
+    let paths: Vec<String> = req
+        .update_mask
+        .as_option()
+        .map(|m| m.paths.clone())
+        .unwrap_or_default();
+    let mut ch = crate::datastore::manage::DatastoreChanges::default();
+    for p in &paths {
+        match p.as_str() {
+            "node_paths" => ch.node_paths = Some(req.node_paths.clone().into_iter().collect()),
+            "nodes" => ch.nodes = Some(req.nodes.clone()),
+            "default_for_disks" => {
+                ch.default_for_disks = Some(req.default_for_disks.unwrap_or(false))
+            }
+            "overcommit" => ch.overcommit = Some(req.overcommit.unwrap_or(true)),
+            other => {
+                return Err(ServiceError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid",
+                    format!(
+                        "can't update {other}: node_paths, nodes, default_for_disks or overcommit"
+                    ),
+                ));
+            }
+        }
+    }
+    let v = call
+        .manager()
+        .update_datastore(&id, ch)
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::UpdateDatastoreResponse {
+        datastore: datastore_pb(&v).into(),
+        ..Default::default()
+    })
+}
+
+pub async fn delete_datastore(
+    call: &Call,
+    req: pb::DeleteDatastoreRequest,
+) -> ServiceResult<pb::DeleteDatastoreResponse> {
+    let id = call
+        .manager()
+        .get_datastore(&req.id)
+        .map_err(manager_err)?
+        .datastore
+        .id;
+    require_datastore(call, &id)?;
+    call.manager()
+        .delete_datastore(&id)
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::DeleteDatastoreResponse::default())
 }

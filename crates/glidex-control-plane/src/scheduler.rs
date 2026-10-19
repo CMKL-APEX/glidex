@@ -28,6 +28,9 @@ pub struct Request {
     pub pin: Option<String>,
     /// The node of each disk the VM uses, `None` for one not bound yet.
     pub disk_nodes: Vec<Option<String>>,
+    /// For each unbound disk on a registered datastore, the datastore's
+    /// name and the nodes that reach it (spec/storage.md §5.2).
+    pub disk_reach: Vec<(String, Vec<String>)>,
     /// The node of each `scope: node` network it attaches to.
     pub net_nodes: Vec<String>,
     /// VFIO devices, as the VM names them (sysfs paths or addresses).
@@ -558,6 +561,11 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
             return Err("a disk is bound to another node".into());
         }
     }
+    for (ds, nodes) in &req.disk_reach {
+        if !nodes.contains(&n.meta.id) {
+            return Err(format!("datastore {ds} is not reachable here"));
+        }
+    }
     for nn in &req.net_nodes {
         if nn != &n.meta.id {
             return Err("a network exists on another node".into());
@@ -1066,6 +1074,13 @@ mod tests {
         let mut r = req(1, 512);
         r.disk_nodes = vec![Some("plain".into())];
         assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "plain");
+        // An unbound disk on a datastore only some nodes reach.
+        let mut r = req(1, 512);
+        r.disk_reach = vec![("fast".into(), vec!["gpu".into()])];
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "gpu");
+        r.disk_reach = vec![("fast".into(), Vec::new())];
+        let err = schedule(&r, &nodes, &cfg()).unwrap_err();
+        assert!(explain(&err).contains("datastore fast is not reachable here"));
         let mut r = req(1, 512);
         r.pin = Some("gpu".into());
         assert_eq!(schedule(&r, &nodes, &cfg()).unwrap().node, "gpu");

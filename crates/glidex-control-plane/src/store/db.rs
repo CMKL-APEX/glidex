@@ -119,6 +119,9 @@ tables! {
     ScimGroups = 47 => "scim_groups",
     // Each pulled connector's last run (spec/tenancy.md §8.2).
     ConnectorSync = 48 => "connector_sync",
+    // Datastores and what each node finds at them (spec/storage.md §4.1).
+    Datastores = 49 => "datastores",
+    DatastoreNodes = 50 => "datastore_nodes",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they

@@ -85,6 +85,9 @@ fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
             (StatusCode::INTERNAL_SERVER_ERROR, "image_error")
         }
         ImageError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+        ImageError::InsufficientStorage { .. } => {
+            (StatusCode::INSUFFICIENT_STORAGE, "insufficient_storage")
+        }
     };
     (
         status,
@@ -228,6 +231,16 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
                     .with_details(serde_json::json!({ "resource_version": actual })),
             ),
         ),
+        VmManagerError::Datastore(e) => {
+            use crate::datastore::record::DatastoreError as D;
+            let (status, code) = match e {
+                D::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+                D::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_datastore"),
+                D::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+                D::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+            };
+            (status, Json(ApiError::new(code, error.to_string())))
+        }
         VmManagerError::Tenancy(e) => {
             let (status, code) = match e {
                 TenancyError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),

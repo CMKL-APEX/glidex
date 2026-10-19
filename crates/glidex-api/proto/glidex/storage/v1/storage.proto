@@ -568,6 +568,9 @@ message Disk {
   PartitionTable partition_table = 21 [json_name = "partition_table"];
   ExtendOutcome extend_root = 22 [json_name = "extend_root"];
   repeated string warnings = 23;
+  // The datastore holding it: an id, `local` for the built-in one
+  // (spec/storage.md §4.2).
+  string datastore = 24;
 }
 
 message ListDisksRequest {
@@ -601,6 +604,9 @@ message CreateDiskRequest {
   optional string node = 9;
   // Wait this long (at most 300 s) for the disk to settle.
   optional uint32 wait_secs = 10 [json_name = "wait_secs"];
+  // Datastore id or name; default: the one that is default for disks,
+  // else `local` (spec/storage.md S13).
+  optional string datastore = 11;
 }
 // The answer to a disk write (spec/reconciliation.md §12.3).
 message CreateDiskResponse {
@@ -645,3 +651,143 @@ message ListDiskEventsRequest {
 message ListDiskEventsResponse {
   repeated glidex.common.v1.Event events = 1;
 }
+
+// ---- datastores (spec/storage.md) --------------------------------------------
+
+// Where disks live, cluster-wide. `local`, each node's disk directory, is
+// built in: listed, never changed or deleted.
+service DatastoreService {
+  rpc ListDatastores(ListDatastoresRequest) returns (ListDatastoresResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDatastore"
+      kind: KIND_READ
+      rest: "GET /datastores"
+    };
+  }
+  rpc GetDatastore(GetDatastoreRequest) returns (GetDatastoreResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDatastore"
+      kind: KIND_READ
+      rest: "GET /datastores/{id}"
+    };
+  }
+  rpc CreateDatastore(CreateDatastoreRequest) returns (CreateDatastoreResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageDatastore"
+      kind: KIND_WRITE
+      rest: "POST /datastores"
+    };
+  }
+  // Changes the fields `update_mask` names (`node_paths`, `nodes`,
+  // `default_for_disks`, `overcommit`).
+  rpc UpdateDatastore(UpdateDatastoreRequest) returns (UpdateDatastoreResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageDatastore"
+      kind: KIND_WRITE
+      rest: "PATCH /datastores/{id}"
+    };
+  }
+  // Refused while a disk is on it.
+  rpc DeleteDatastore(DeleteDatastoreRequest) returns (DeleteDatastoreResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageDatastore"
+      kind: KIND_WRITE
+      rest: "DELETE /datastores/{id}"
+    };
+  }
+}
+
+enum DatastoreDriver {
+  DATASTORE_DRIVER_UNSPECIFIED = 0;
+  // A directory on each node, each node's own.
+  DATASTORE_DRIVER_DIR = 1;
+}
+
+enum DatastoreTopology {
+  DATASTORE_TOPOLOGY_UNSPECIFIED = 0;
+  // Each node has its own; a disk on it is bound to one node.
+  DATASTORE_TOPOLOGY_NODE_LOCAL = 1;
+}
+
+// What one node found at its path to a datastore, when it last looked.
+message DatastoreNode {
+  string node = 1;
+  optional string node_name = 2 [json_name = "node_name"];
+  bool reachable = 3;
+  // Why not: `OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`.
+  string reason = 4;
+  string message = 5;
+  string path = 6;
+  uint64 total_bytes = 7 [json_name = "total_bytes"];
+  uint64 free_bytes = 8 [json_name = "free_bytes"];
+  google.protobuf.Timestamp checked_at = 9 [json_name = "checked_at"];
+}
+
+message Datastore {
+  string id = 1;
+  string name = 2;
+  DatastoreDriver driver = 3;
+  DatastoreTopology topology = 4;
+  // The directory, on every node without its own (`node_paths`); under
+  // the datastore root, `/srv/glidex` by default.
+  string path = 5;
+  // Node id → that node's directory.
+  map<string, string> node_paths = 6 [json_name = "node_paths"];
+  // The nodes it is on; empty: every node.
+  repeated string nodes = 7;
+  // New disks go here unless they name a datastore.
+  bool default_for_disks = 8 [json_name = "default_for_disks"];
+  // Disks may promise more than the free space (thin files).
+  bool overcommit = 9;
+  // `local`: not stored, can't be changed.
+  bool builtin = 10;
+  google.protobuf.Timestamp created_at = 11 [json_name = "created_at"];
+  repeated DatastoreNode node_status = 12 [json_name = "node_status"];
+  // Disks on it.
+  uint32 disks = 13;
+}
+
+message ListDatastoresRequest {}
+message ListDatastoresResponse {
+  repeated Datastore datastores = 1;
+}
+
+message GetDatastoreRequest {
+  // Id or name.
+  string id = 1;
+}
+message GetDatastoreResponse {
+  Datastore datastore = 1;
+}
+
+message CreateDatastoreRequest {
+  string name = 1;
+  DatastoreDriver driver = 2;
+  string path = 3;
+  map<string, string> node_paths = 4 [json_name = "node_paths"];
+  repeated string nodes = 5;
+  optional bool default_for_disks = 6 [json_name = "default_for_disks"];
+  // Default: on.
+  optional bool overcommit = 7;
+}
+message CreateDatastoreResponse {
+  Datastore datastore = 1;
+}
+
+message UpdateDatastoreRequest {
+  string id = 1;
+  map<string, string> node_paths = 2 [json_name = "node_paths"];
+  repeated string nodes = 3;
+  optional bool default_for_disks = 4 [json_name = "default_for_disks"];
+  optional bool overcommit = 5;
+  // REST derives it from the fields present.
+  google.protobuf.FieldMask update_mask = 6 [json_name = "update_mask"];
+}
+message UpdateDatastoreResponse {
+  Datastore datastore = 1;
+}
+
+message DeleteDatastoreRequest {
+  string id = 1;
+}
+message DeleteDatastoreResponse {}

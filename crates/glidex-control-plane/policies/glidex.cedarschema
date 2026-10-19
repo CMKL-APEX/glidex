@@ -40,6 +40,8 @@ namespace Glidex {
   entity Disk in [Project] { project: Project };
   entity Credential in [Project] { project: Project };
   entity Image in [Cluster];
+  // Where disks live (spec/storage.md §13); `local` is built in.
+  entity Datastore in [Cluster];
   // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network.
   // tenant_grants: tenants whose every project may use a host network or
@@ -88,6 +90,7 @@ namespace Glidex {
   action "host.network", "host.devices" in ["role.net-admin"];
   action "host.network.critical" in ["host.network", "step-up"];
   action "image.manage" in ["role.image-admin"];
+  action "datastore.manage" in ["role.system-admin"];
   action "policy.write" in ["role.system-admin", "step-up"];
   action "host.paths", "quota.exceed", "cluster.admissions" in ["role.system-admin"];
   // Tenants and directories (spec/tenancy.md §10.5).
@@ -293,6 +296,16 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action deleteImage in ["image.manage", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Image], context: Ctx };
+
+  // ---- datastores (spec/storage.md §13) ----------------------------------
+  action readDatastore in ["shared"]
+    appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
+  action manageDatastore in ["datastore.manage", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
+  // Putting a disk on it: permitted to all (base.use-datastore); a site
+  // policy can forbid a datastore to some.
+  action useDatastore in ["shared"]
+    appliesTo { principal: [User, Token], resource: [Datastore], context: Ctx };
 
   // ---- identity, tokens, audit, policies ---------------------------------
   action listUsers, listTeams in ["directory.read", "directory-scoped"]

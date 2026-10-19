@@ -245,9 +245,12 @@ pub(crate) fn rpc_code(code: &str, status: StatusCode) -> ErrorCode {
         | "csrf_failed"
         | "protocol_not_allowed"
         | "agent_no_local_api" => ErrorCode::PermissionDenied,
-        "quota_exceeded" | "tenant_quota_exceeded" | "too_large" | "rate_limited" | "slow_down" => {
-            ErrorCode::ResourceExhausted
-        }
+        "quota_exceeded"
+        | "tenant_quota_exceeded"
+        | "too_large"
+        | "rate_limited"
+        | "slow_down"
+        | "insufficient_storage" => ErrorCode::ResourceExhausted,
         "not_found" | "oidc_disabled" => ErrorCode::NotFound,
         "conflict" => ErrorCode::Aborted,
         "authorization_pending" | "unsupported_on_host" => ErrorCode::FailedPrecondition,

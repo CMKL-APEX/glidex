@@ -236,10 +236,10 @@ pub struct BridgeAddr {
     pub gateway: Option<String>,
 }
 
-/// What this build supports. A new write-set format or schema migration
-/// raises it, and is used only once the cluster's level (the minimum over
-/// its servers) has reached it.
-pub const FEATURE_LEVEL: u32 = 1;
+/// What this build supports. A new write-set format, schema migration or
+/// table raises it, and is used only once the cluster's level (the minimum
+/// over its servers) has reached it. 2: datastores (spec/storage.md S2).
+pub const FEATURE_LEVEL: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Versions {

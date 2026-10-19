@@ -1,7 +1,11 @@
 # Datastores
 
-Status: **design (draft)**. S0's fixes 1–4 (§15) and S1 (the driver
-trait, §7) are implemented; the rest is design. The milestones are S0–S7 (§16). Decisions S13–S16
+Status: **design (draft)**. Implemented so far:
+- S0's fixes 1–4 (§15);
+- S1, the driver trait (§7);
+- S2a, the `Datastore` resource with registered `dir` datastores (§4.3).
+
+S2b (gxctl, UI, watch) and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -147,6 +151,102 @@ itself, like `image_caches`:
   - `Unsupported` (driver not available on this node).
 - `fs_id` is the filesystem's `f_fsid` plus the marker's datastore id. It lets the leader detect two nodes that think they share a datastore but see different filesystems (`reason: Diverged`, set by the leader).
 - Nodes check every 60 s and on start.
+
+### 4.3 As built (S2a)
+
+`src/datastore/record.rs`, `probe.rs`, `manage.rs`.
+
+**The record is smaller than §4.1 sketches:**
+```rust
+pub struct Datastore {
+    id, name,
+    driver: DriverSpec,          // Dir { path, node_paths } only
+    nodes: Vec<String>,          // empty: every node
+    default_for_disks: bool,     // S13: at most one; none means `local`
+    overcommit: bool,            // default true (thin files)
+    created_at,
+}
+```
+- Not built yet: `topology` (always node-local), `content` (disks
+  only), `linked_clones`, `direct_io`, `phase`. They come with the
+  milestones that need them.
+
+**`local` is still built in, not stored:**
+- `list` and `find` answer with it.
+- `PATCH` and `DELETE` on it are `409`.
+- It is the default whenever no stored datastore has
+  `default_for_disks`.
+- So there is no schema migration (§14 as built).
+
+**Per-node rows** (`datastore_nodes/<datastore>/<node>`):
+- Fields: `reachable`, `reason`, `message`, `path`, `total_bytes`,
+  `free_bytes`, `checked_at`.
+- `reason` is one of:
+  - `OutsideRoot`;
+  - `Missing`;
+  - `NotADirectory`;
+  - `ReadOnly`, which includes a sandbox that won't let it write.
+- **The probe** (`probe::probe`):
+  - checks the node's path is under the root and is a directory;
+  - creates `disks/` there (0700);
+  - writes and removes a test file;
+  - reads `statvfs` for the sizes.
+- **`local` gets a row too**, for capacity: its disk directory.
+- **Rows are written** only when something but the time changed:
+  free space counts only when it moved by more than 1 % of the total.
+- **Rows are dropped** when the node leaves the datastore's `nodes`.
+- **When nodes probe:** every 60 s, when a datastore is written (in a
+  cluster, `cache_sync`), and right after create and update.
+- **Row writes are status writes** (spec/clustering.md §8.3). The leader
+  accepts only the node's own key (`check_status_write`). A server that
+  isn't the leader sends them like an agent (`fix/follower-status-writes`).
+
+**Feature level:**
+- `FEATURE_LEVEL` is 2. A datastore can be created only once the
+  cluster's level (the lowest any server reports) is 2; until then it
+  is `409`.
+- The two tables reach only nodes reporting level 2
+  (`SHARED_DATASTORES` in `cluster/sync.rs`), so an agent one release
+  behind never gets a write set naming a table it doesn't know.
+
+**Disks:**
+- `CreateDiskRequest.datastore` takes an id or a name; the default is
+  as S13 says.
+- A VM's owned root disk goes to the default.
+- A disk bound to a node outside the datastore's `nodes` is `400`.
+- `ImageManager::driver` resolves a registered datastore to a
+  `FileDriver` over `<this node's path>/disks`.
+- `disk_path`, for responses and metering, goes through it too.
+
+**Scheduler:** for each unbound disk on a registered datastore, the
+`Request` gets the nodes whose row is reachable and that are in its
+`nodes` (`disk_reach`). Any other node is refused with "datastore X is
+not reachable here".
+
+**Capacity** (§15 fix 5):
+- Applies only to datastores with `overcommit: false`.
+- The disk's expected size must fit in the best reachable node's free
+  bytes, minus the disks still pending or being made there.
+- Otherwise the create is `507 insufficient_storage` (RPC
+  `ResourceExhausted`), with `free_bytes` and `needed_bytes` in
+  `details`.
+- `local` overcommits, so it behaves as before.
+
+**Changing a datastore:**
+- A `node_paths` change is refused (`409`) while a running VM on that
+  node has a disk of it open.
+- Dropping a node from `nodes` is refused while a disk of it is bound
+  there.
+- Delete is refused while any disk names it, checked in the same write.
+
+**Detach:** a node holding disks on a registered datastore can't leave
+with them (`409`). The other cluster has no record of the datastore.
+
+**Not yet:** a departed or forgotten node's rows stay until its
+datastore is deleted. The leader should prune them as it does image
+copies (`prune_departed_copies`).
+- Until it does, a stale row can make the scheduler try a node that is
+  gone. That node is refused there anyway, as not ready.
 
 ### 4.2 Changes to `Disk` and `Image`
 
@@ -566,6 +666,30 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
   root like the managed directories: a raw path into it needs
   `useHostPath`.
 
+**As built (S2a):**
+- **REST** (`api/storage.rs`): `GET /datastores`, `GET /datastores/{id}`
+  (id or name), `POST /datastores` (`201`), `PATCH /datastores/{id}`
+  (the fields present: `node_paths`, `nodes`, `default_for_disks`,
+  `overcommit`) and `DELETE /datastores/{id}` (`204`).
+- **RPC:** `glidex.storage.v1.DatastoreService`, with the proto messages
+  `Datastore` and `DatastoreNode`.
+- `Disk` and `CreateDiskRequest` gain `datastore`.
+- **Cedar** (`policies/glidex.cedarschema`, `base.cedar`):
+  - `entity Datastore in [Cluster]`;
+  - `readDatastore` is `shared`, and every user may read datastores
+    (`base.read-shared`, like images), so a user can choose one;
+  - `manageDatastore` is in a new `datastore.manage` permission held by
+    `role.system-admin` only, and is `host-scoped`. "Operator" above
+    meant the operator tenant, and the marker already limits it to that
+    tenant; `role.operator` is a project role and doesn't apply to a
+    cluster-scoped record;
+  - `useDatastore` is `shared` and permitted to all by
+    `base.use-datastore`; a site policy `forbid` narrows it. It is
+    checked on disk create and on a VM create that makes a root disk.
+- **Units:** both units have `ReadWritePaths=… -/srv/glidex`. The
+  installer creates `/srv/glidex` (`root:root 0755`), and uninstall
+  leaves it alone: operators' mounts are under it.
+
 **Quota:** project `disk_gib` stays cluster-wide (clustering.md §9.2),
 counting disks on every datastore. Per-datastore quotas are queued
 (S15).
@@ -578,6 +702,10 @@ counting disks on every datastore. Per-datastore quotas are queued
 - `group_by=datastore` is added.
 
 ## 14. Migration from today
+
+As built (S1, S2a), nothing migrates: `local` isn't stored, and a disk
+without a datastore is on it (S3). Point 3 below is built for every
+registered datastore, not only shared ones (§4.3). The plan was:
 
 1. A schema migration creates `local` and sets `datastore: "local"` on
    disks. It rewrites `image_caches/<image>/<node>` keys unchanged,
@@ -646,7 +774,7 @@ described below; fix 5 is part of S2.
 |---|---|---|
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
-| S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
+| S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **S2a implemented** (§4.3, §13 as built): everything but gxctl, the UI and the `datastores` watch kind, which are **S2b**. | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13) | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |

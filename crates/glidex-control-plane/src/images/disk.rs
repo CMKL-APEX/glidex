@@ -159,7 +159,82 @@ impl ImageManager {
             size_bytes: size,
             extend_root: req.extend_root,
         });
+        self.choose_datastore(req.datastore.as_deref(), &mut disk)?;
         Ok(disk)
+    }
+
+    /// Put a new disk on the datastore asked for, else the default for disks
+    /// (spec/storage.md S13), checking that it can go there: the node it is
+    /// bound to is one of the datastore's, and a datastore that doesn't
+    /// overcommit has room on some node it can go to (§5.2).
+    fn choose_datastore(&self, key: Option<&str>, disk: &mut Disk) -> Result<(), ImageError> {
+        use crate::datastore::record;
+        let io = |e: record::DatastoreError| ImageError::Io(e.to_string());
+        let ds = match key {
+            Some(k) => record::find(&self.db, k)
+                .map_err(io)?
+                .ok_or_else(|| ImageError::NotFound(format!("no datastore {k}")))?,
+            None => record::default_for_disks(&self.db).map_err(io)?,
+        };
+        if let Some(n) = &disk.node
+            && !ds.on_node(n)
+        {
+            return Err(ImageError::invalid_disk(format!(
+                "datastore {} is not on node {n}",
+                ds.name
+            )));
+        }
+        disk.datastore = ds.id.clone();
+        if ds.overcommit {
+            return Ok(());
+        }
+        let need = self.estimated_size(disk);
+        let pending = |node: &str| -> u64 {
+            self.list_disks()
+                .iter()
+                .filter(|d| {
+                    d.datastore == ds.id
+                        && matches!(d.phase, DiskPhase::Pending | DiskPhase::Creating)
+                        && d.node.as_deref().is_none_or(|n| n == node)
+                })
+                .map(|d| self.estimated_size(d))
+                .sum()
+        };
+        let best = record::rows(&self.db, &ds.id)
+            .map_err(io)?
+            .into_iter()
+            .filter(|(n, r)| {
+                r.reachable && ds.on_node(n) && disk.node.as_deref().is_none_or(|b| b == n)
+            })
+            .map(|(n, r)| r.free_bytes.saturating_sub(pending(&n)))
+            .max()
+            .unwrap_or(0);
+        if need > best {
+            return Err(ImageError::InsufficientStorage {
+                message: format!(
+                    "datastore {} has {} bytes free where this disk could go, and the disk needs {}",
+                    ds.name, best, need
+                ),
+                details: serde_json::json!({ "free_bytes": best, "needed_bytes": need }),
+            });
+        }
+        Ok(())
+    }
+
+    /// What a disk will take: its size once made, else what it asked for,
+    /// else its image's size or the default root size.
+    pub fn estimated_size(&self, d: &Disk) -> u64 {
+        let requested = d.create.as_ref().and_then(|c| c.size_bytes);
+        match &d.origin {
+            DiskOrigin::Blank => requested.unwrap_or(d.size_bytes),
+            DiskOrigin::Image { image_id, .. } => {
+                let image_size = self
+                    .get_image(image_id)
+                    .map(|i| i.virtual_size_bytes)
+                    .unwrap_or(0);
+                self.root_size(requested, image_size)
+            }
+        }
     }
 
     /// The size a disk cloned from an image of `image_size` bytes gets.

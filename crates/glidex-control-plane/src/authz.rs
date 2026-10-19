@@ -110,6 +110,8 @@ pub enum Ent {
     Disk(String),
     Credential(String),
     Image(String),
+    /// A datastore (spec/storage.md §13), in the cluster.
+    Datastore(String),
     Network(String),
     PciDevice(String),
     /// spec/tenancy.md §10.1.
@@ -144,6 +146,7 @@ impl Ent {
             Ent::Disk(_) => "Disk",
             Ent::Credential(_) => "Credential",
             Ent::Image(_) => "Image",
+            Ent::Datastore(_) => "Datastore",
             Ent::Network(_) => "Network",
             Ent::PciDevice(_) => "PciDevice",
             Ent::Tenant(_) => "Tenant",
@@ -165,6 +168,7 @@ impl Ent {
             | Ent::Disk(s)
             | Ent::Credential(s)
             | Ent::Image(s)
+            | Ent::Datastore(s)
             | Ent::Network(s)
             | Ent::PciDevice(s)
             | Ent::Tenant(s)
@@ -186,6 +190,7 @@ impl Ent {
             "Disk" => Ent::Disk(id),
             "Credential" => Ent::Credential(id),
             "Image" => Ent::Image(id),
+            "Datastore" => Ent::Datastore(id),
             "Network" => Ent::Network(id),
             "PciDevice" => Ent::PciDevice(id),
             "Tenant" => Ent::Tenant(id),
@@ -447,6 +452,10 @@ impl EntitySet {
 
     pub fn image(&mut self, id: &str) -> &mut Self {
         self.add(Ent::Image(id.into()), json!({}), vec![Ent::Cluster])
+    }
+
+    pub fn datastore(&mut self, id: &str) -> &mut Self {
+        self.add(Ent::Datastore(id.into()), json!({}), vec![Ent::Cluster])
     }
 
     pub fn network(
