@@ -129,6 +129,20 @@ pub fn split_for_uninstall(
         .partition(|s| !(keep_hugepages && s.key == NR_HUGEPAGES))
 }
 
+/// `--release-hugepages`: the hugepage count to go back to (the value
+/// before glidex reserved them, else 0) and the drop-in's other settings.
+/// `None` when the drop-in reserves none.
+pub fn release_hugepages(settings: &[Setting]) -> (Option<String>, Vec<Setting>) {
+    let (hugepages, rest): (Vec<Setting>, Vec<Setting>) = settings
+        .iter()
+        .cloned()
+        .partition(|s| s.key == NR_HUGEPAGES);
+    let value = hugepages
+        .first()
+        .map(|s| s.previous.clone().unwrap_or_else(|| "0".into()));
+    (value, rest)
+}
+
 pub fn mem_total_kb(meminfo: &str) -> Option<u64> {
     meminfo
         .lines()
@@ -233,6 +247,28 @@ mod tests {
             proc_path(IP_FORWARD),
             PathBuf::from("/proc/sys/net/ipv4/ip_forward")
         );
+    }
+
+    #[test]
+    fn released_hugepages_go_back_to_their_previous_value() {
+        let setting = |key: &str, value: &str, previous: Option<&str>| Setting {
+            key: key.into(),
+            value: value.into(),
+            previous: previous.map(String::from),
+        };
+        let settings = [
+            setting(IP_FORWARD, "1", Some("0")),
+            setting(NR_HUGEPAGES, "6144", Some("0")),
+        ];
+        let (value, rest) = release_hugepages(&settings);
+        assert_eq!(value.as_deref(), Some("0"));
+        assert_eq!(rest, vec![setting(IP_FORWARD, "1", Some("0"))]);
+        // Unknown previous value: none reserved.
+        let (value, _) = release_hugepages(&[setting(NR_HUGEPAGES, "2048", None)]);
+        assert_eq!(value.as_deref(), Some("0"));
+        // Nothing reserved by glidex: nothing to release.
+        let (value, rest) = release_hugepages(&[setting(IP_FORWARD, "1", None)]);
+        assert_eq!((value, rest.len()), (None, 1));
     }
 
     #[test]

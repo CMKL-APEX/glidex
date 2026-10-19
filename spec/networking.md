@@ -362,8 +362,22 @@ if the features the profile promises aren't in `iface_types`.
   `{"changed": false}`. `kernel` → `dpdk` adds the package and flips the
   alternative; nothing is ever removed.
 - **Restart impact.** If `ovs-vswitchd` is running with any bridges,
-  installing, switching profile, or `init_dpdk` returns
+  installing, switching profile, `init_dpdk` or `deinit_dpdk` returns
   `ConfirmationRequired` listing every bridge (glidex-owned or not).
+- **Back to the kernel profile.** The packages stay, but the `kernel`
+  profile runs no DPDK: `deinit_dpdk` removes what `init_dpdk` set
+  (`dpdk-init`, `dpdk-socket-mem`, `dpdk-lcore-mask`, `pmd-cpu-mask`,
+  `pmd-auto-lb`, `userspace-tso-enable`) and restarts `ovs-vswitchd`,
+  since DPDK can't be stopped in a running one. It is refused while a
+  DPDK port exists (`dpdk`, `dpdkvhostuser`, `dpdkvhostuserclient`: a
+  vhost-user VM NIC or DPDK uplink would stop working). With DPDK off,
+  `br-int`'s `auto` datapath is `system` again (clustering.md §11.6),
+  and glidex moves it at its next OVN round (not while VM ports are on
+  it). `glidex-install` with the
+  kernel profile (the default) does this when it finds DPDK on, once
+  allowed to restart OVS (`--allow-ovs-restart`); the hugepages the dpdk
+  profile reserved are kept unless `--release-hugepages`, which puts
+  `vm.nr_hugepages` back to its value before glidex (else 0).
 - Non-interactive (`DEBIAN_FRONTEND=noninteractive apt-get -y`), 30 min
   timeout; stdout/stderr tails returned in `InstallReport`.
 
