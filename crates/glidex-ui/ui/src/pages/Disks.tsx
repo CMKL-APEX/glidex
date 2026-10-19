@@ -3,7 +3,7 @@ import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
 import type { CloneMode, Datastore, DiskFormat, DiskInfo, ImageInfo, VmResponse } from "../types";
-import { cloneLabel, diskActivity, diskPhase, diskWaiting, formatBytes, formatLabel, imageState, isFirmware, notReady, num, enumLabel } from "../types";
+import { cloneLabel, diskActivity, diskPhase, diskWaiting, formatBytes, formatLabel, imageState, isDiskImage, notReady, num, enumLabel } from "../types";
 import { Spinner } from "../components/Activity";
 import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
@@ -68,7 +68,7 @@ function CreateDiskForm({
 }) {
   const { project } = useSession();
   // Firmware images are never a disk source.
-  const ready = images.filter((i) => imageState(i) === "ready" && !i.deleting && !isFirmware(i));
+  const ready = images.filter((i) => imageState(i) === "ready" && !i.deleting && isDiskImage(i));
   const [name, setName] = useState("");
   const [image, setImage] = useState(ready[0]?.id ?? "");
   const [size, setSize] = useState("");

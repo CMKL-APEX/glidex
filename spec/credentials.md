@@ -76,9 +76,11 @@ Violations → `CredentialError::Invalid` → `400 invalid_credential`.
 
 `VmConfig.credential: Option<String>` names a credential by username.
 
-- `create_vm` requires firmware boot without a custom `cloud_init_path`
-  (the credential only reaches the guest through the generated seed) and
-  that the credential exists; otherwise `400 invalid_config`. The check
+- `create_vm` requires the generated seed (`VmConfig::generates_seed`:
+  firmware boot, or kernel boot of a kernel image or a managed root disk,
+  without a custom `cloud_init_path`; [kernel-boot.md](kernel-boot.md)
+  K4), since the credential only reaches the guest through it, and that
+  the credential exists; otherwise `400 invalid_config`. The check
   runs under the VM-map write lock.
 - `start_vm` loads the credential and builds the seed with
   `SeedConfig::for_credential`: guest user = username, password hash via

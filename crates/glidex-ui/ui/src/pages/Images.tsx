@@ -9,7 +9,9 @@ import {
   formatBytes,
   hypervisorOf,
   imageState,
+  isDiskImage,
   isFirmware,
+  isKernel,
   isTombstone,
   num,
   sourceKey,
@@ -165,6 +167,8 @@ function SourceCell({ img }: { img: ImageInfo }) {
     <>
       {s.url ? (
         <span className="break-all">{s.url.url}</span>
+      ) : s.host ? (
+        <span className="break-all">{s.host.path}</span>
       ) : (
         <span>
           {cat?.key} <span className="text-gray-400">{cat?.version}</span>
@@ -178,7 +182,7 @@ function SourceCell({ img }: { img: ImageInfo }) {
 
 interface TableProps {
   images: ImageInfo[];
-  firmware: boolean;
+  kind: "disk" | "firmware" | "kernel";
   onRetry: (img: ImageInfo) => void;
   onRemove: (img: ImageInfo) => void;
   /** In a cluster: copies on chosen nodes (spec/clustering.md §9.2.2). */
@@ -187,24 +191,28 @@ interface TableProps {
   onRemoveCopy?: (img: ImageInfo, node: string) => void;
 }
 
-function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, onRemoveCopy }: TableProps) {
+function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemoveCopy }: TableProps) {
+  // Firmware and kernels are booted through, so VMs are their users.
+  const firmware = kind === "firmware";
+  const boot = kind !== "disk";
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-      <table className="w-full text-sm" data-testid={firmware ? "firmware-images" : "disk-images"}>
+      <table className="w-full text-sm" data-testid={`${kind}-images`}>
         <thead className="bg-gray-50 text-gray-600 text-left">
           <tr>
             <th className="px-4 py-3 font-medium">Name</th>
             {firmware && <th className="px-4 py-3 font-medium">Hypervisor</th>}
+            {kind === "kernel" && <th className="px-4 py-3 font-medium">Release</th>}
             <th className="px-4 py-3 font-medium">Status</th>
             <th className="px-4 py-3 font-medium">Size</th>
             <th className="px-4 py-3 font-medium">Source</th>
-            <th className="px-4 py-3 font-medium">{firmware ? "Used by VMs" : "Linked disks"}</th>
+            <th className="px-4 py-3 font-medium">{boot ? "Used by VMs" : "Linked disks"}</th>
             <th className="px-4 py-3" />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {images.map((img) => {
-            const users = (firmware ? img.used_by_vms : img.linked_disks) ?? [];
+            const users = (boot ? img.used_by_vms : img.linked_disks) ?? [];
             return (
               <tr key={img.id}>
                 <td className="px-4 py-3 font-mono">
@@ -221,12 +229,19 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
                     )}
                   </td>
                 )}
+                {kind === "kernel" && (
+                  <td className="px-4 py-3">
+                    <span className="font-mono">{img.kernel?.release ?? "—"}</span>
+                    <span className="block text-xs text-gray-500">{img.kernel?.initrd ? "with initramfs" : "no initramfs"}</span>
+                    {img.kernel?.cmdline && <span className="block text-xs text-gray-500 font-mono break-all">{img.kernel.cmdline}</span>}
+                  </td>
+                )}
                 <td className="px-4 py-3">
                   <StatusBadge image={img} />
                   <Copies img={img} onRemove={onRemoveCopy && ((node) => onRemoveCopy(img, node))} />
                 </td>
                 <td className="px-4 py-3">
-                  {firmware
+                  {boot
                     ? num(img.file_size_bytes)
                       ? formatBytes(img.file_size_bytes)
                       : "—"
@@ -254,7 +269,7 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
                   )}
                   <button
                     className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-50"
-                    disabled={users.length > 0 && firmware}
+                    disabled={users.length > 0 && boot}
                     title={users.length > 0 && firmware ? "VMs boot through it" : undefined}
                     onClick={() => onRemove(img)}
                   >
@@ -488,7 +503,8 @@ export default function Images() {
   };
 
   const remove = async (img: ImageInfo) => {
-    const what = imageState(img) === "downloading" ? "Cancel the download of" : isFirmware(img) ? "Delete firmware" : "Delete image";
+    const what =
+      imageState(img) === "downloading" ? "Cancel the download of" : isFirmware(img) ? "Delete firmware" : isKernel(img) ? "Delete kernel" : "Delete image";
     if (!confirm(`${what} ${img.name}?`)) return;
     setError(null);
     try {
@@ -533,8 +549,9 @@ export default function Images() {
         (imageState(i) === "downloading" || imageState(i) === "verifying"),
     );
 
-  const diskImages = images?.filter((i) => !isFirmware(i)) ?? [];
+  const diskImages = images?.filter(isDiskImage) ?? [];
   const firmwareImages = images?.filter(isFirmware) ?? [];
+  const kernelImages = images?.filter(isKernel) ?? [];
 
   return (
     <div>
@@ -635,7 +652,7 @@ export default function Images() {
           No images yet. Pull one from the catalog above.
         </div>
       ) : (
-        <ImageTable images={diskImages} firmware={false} onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable images={diskImages} kind="disk" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
       )}
 
       <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Firmware</h2>
@@ -646,7 +663,14 @@ export default function Images() {
           No firmware yet. VMs booting cloud images need one: pull it from the firmware catalog above.
         </div>
       ) : (
-        <ImageTable images={firmwareImages} firmware onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable images={firmwareImages} kind="firmware" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+      )}
+
+      {kernelImages.length > 0 && (
+        <>
+          <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Kernels</h2>
+          <ImageTable images={kernelImages} kind="kernel" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        </>
       )}
 
       {pulling && (

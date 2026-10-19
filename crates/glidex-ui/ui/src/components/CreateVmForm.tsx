@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkModeLabel, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isDiskImage, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -93,7 +93,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       .catch(() => setNetworks([]));
     listImages()
       .then((imgs) => {
-        const ready = imgs.filter((i) => imageState(i) === "ready" && !i.deleting && !isFirmware(i));
+        const ready = imgs.filter((i) => imageState(i) === "ready" && !i.deleting && isDiskImage(i));
         setImages(ready);
         setFirmwareImages(imgs);
         setFirmwareImage((cur) => cur || (firmwareFor(imgs, "cloudhypervisor")[0]?.id ?? ""));

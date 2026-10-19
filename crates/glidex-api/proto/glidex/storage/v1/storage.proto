@@ -192,6 +192,8 @@ enum ImageKind {
   IMAGE_KIND_DISK = 1;
   // UEFI firmware a VM boots through (raw `.fd`).
   IMAGE_KIND_FIRMWARE = 2;
+  // A kernel, its initramfs and command line a VM boots directly.
+  IMAGE_KIND_KERNEL = 3;
 }
 
 enum DiskFormat {
@@ -226,7 +228,12 @@ message ImageSource {
     // A firmware catalog entry: `url` is the pinned download or, for a
     // host package, the file it was copied from.
     CatalogSource firmware = 3;
+    // Copied from a host file by an admin (a kernel's `kernel_path`).
+    HostSource host = 4;
   }
+}
+message HostSource {
+  string path = 1;
 }
 message CatalogSource {
   string key = 1;
@@ -289,6 +296,21 @@ message Image {
   ImgInfo info = 19;
   // Deletion requested and not finished yet.
   optional bool deleting = 20;
+  // A kernel image's initramfs, command line and release.
+  KernelInfo kernel = 21;
+}
+
+message KernelInfo {
+  // From the kernel's header, when it carries one (an x86 bzImage does).
+  optional string release = 1;
+  // The default `kernel_args` of VMs booting it.
+  optional string cmdline = 2;
+  // Absent: the kernel boots without one.
+  FileInfo initrd = 3;
+}
+message FileInfo {
+  string sha256 = 1;
+  uint64 size_bytes = 2 [json_name = "size_bytes"];
 }
 
 message CatalogItem {
@@ -346,7 +368,8 @@ message GetImageResponse {
 }
 
 message PullImageRequest {
-  // A catalog key, or `url` (with `sha256`), or a firmware catalog key.
+  // A catalog key, or `url` (with `sha256`), or a firmware catalog key,
+  // or `kernel_path`.
   optional string catalog = 1;
   optional string url = 2;
   optional string sha256 = 3;
@@ -363,6 +386,14 @@ message PullImageRequest {
   repeated string nodes = 11;
   // `false`: the server's copy goes once one of `nodes` has one.
   optional bool keep_server_copy = 12 [json_name = "keep_server_copy"];
+  // With a kernel `url` (`IMAGE_KIND_KERNEL`): its initramfs.
+  optional string initrd_url = 13 [json_name = "initrd_url"];
+  optional string initrd_sha256 = 14 [json_name = "initrd_sha256"];
+  // A kernel image's default `kernel_args`.
+  optional string cmdline = 15;
+  // Copy a kernel (and initramfs) from host files: needs `useHostPath`.
+  optional string kernel_path = 16 [json_name = "kernel_path"];
+  optional string initrd_path = 17 [json_name = "initrd_path"];
 }
 message PullImageResponse {
   Image image = 1;

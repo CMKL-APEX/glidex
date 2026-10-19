@@ -134,6 +134,31 @@ each VM gets its own copy of it.
 A new VM uses the newest firmware image for its hypervisor unless you
 pick another when creating it (see [Virtual machines](vms.md)).
 
+## Kernel images
+
+A VM can also boot a kernel directly, without firmware: a *kernel image*
+is a kernel, an optional initramfs and the kernel command line VMs get
+by default. Over the API, from a URL:
+
+```bash
+curl … -X POST /images -d '{
+  "url": "https://example.org/vmlinuz-6.8.0-147-generic", "sha256": "<sha256>",
+  "kind": "IMAGE_KIND_KERNEL",
+  "initrd_url": "https://example.org/initrd.img-6.8.0-147-generic", "initrd_sha256": "<sha256>",
+  "cmdline": "root=LABEL=cloudimg-rootfs ro console=ttyS0"
+}'
+```
+
+or, for an administrator, from files on the host (`"kernel_path"`,
+`"initrd_path"`, `"cmdline"`). Kernel images appear under **Images**,
+*Kernels*, with their release; `gxctl image list` shows them as
+`kernel <release>`. Like firmware, a kernel image can't be deleted while
+a VM boots it.
+
+Use the kernel the cloud image was built with: the guest loads the
+kernel's modules from its own disk. Ubuntu publishes each build's kernel
+and initramfs next to the image, in `unpacked/`.
+
 ## Disks
 
 ### Creating a disk

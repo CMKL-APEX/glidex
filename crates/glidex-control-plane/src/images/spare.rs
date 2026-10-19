@@ -72,10 +72,8 @@ impl ImageManager {
         for img in self.images.read().unwrap().values() {
             known.insert(self.image_path(&img.id));
             known.insert(self.part_path(&img.id));
-            if img.kind == ImageKind::Firmware {
-                known.insert(self.firmware_path(&img.id));
-                known.insert(self.firmware_vars_template(&img.id));
-            }
+            known.insert(self.initrd_part_path(&img.id));
+            known.extend(self.image_files(img).into_iter().map(|(_, p)| p));
         }
         known
     }
@@ -116,11 +114,9 @@ impl ImageManager {
         let mut idx = self.load_index();
         let mut dirty = false;
         let mut found = None;
-        for f in self
-            .spare_files()
-            .into_iter()
-            .filter(|f| f.bytes == size && !f.name.ends_with(".vars.fd"))
-        {
+        for f in self.spare_files().into_iter().filter(|f| {
+            f.bytes == size && !f.name.ends_with(".vars.fd") && !f.name.ends_with(".initrd")
+        }) {
             let digest = match idx.hashes.get(&f.name) {
                 Some((s, m, h)) if *s == f.bytes && *m == f.mtime => h.clone(),
                 _ => {
@@ -145,21 +141,28 @@ impl ImageManager {
     }
 
     /// Make the spare file `spare` the file of image `id` (of `kind`): a
-    /// firmware's variable-store template (`<stem>.vars.fd`) goes with it.
+    /// firmware's variable-store template (`<stem>.vars.fd`), or a kernel's
+    /// initramfs (`<stem>.initrd`), goes with it.
     pub fn adopt_spare(&self, spare: &Path, id: &str, kind: ImageKind) -> std::io::Result<()> {
         let dest = match kind {
             ImageKind::Disk => self.image_path(id),
             ImageKind::Firmware => self.firmware_path(id),
+            ImageKind::Kernel => self.kernel_path(id),
         };
-        if kind == ImageKind::Firmware {
+        let companion = match kind {
+            ImageKind::Disk => None,
+            ImageKind::Firmware => Some((".fd", ".vars.fd", self.firmware_vars_template(id))),
+            ImageKind::Kernel => Some((".kernel", ".initrd", self.kernel_initrd_path(id))),
+        };
+        if let Some((suffix, other, to)) = companion {
             let stem = spare
                 .file_name()
                 .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_suffix(".fd"))
+                .and_then(|n| n.strip_suffix(suffix))
                 .unwrap_or_default();
-            let vars = self.spare_path(&format!("{stem}.vars.fd"));
-            if !stem.is_empty() && vars.is_file() {
-                std::fs::rename(&vars, self.firmware_vars_template(id))?;
+            let from = self.spare_path(&format!("{stem}{other}"));
+            if !stem.is_empty() && from.is_file() {
+                std::fs::rename(&from, to)?;
             }
         }
         std::fs::rename(spare, dest)?;
@@ -214,6 +217,8 @@ mod tests {
             default_root_bytes: 1 << 30,
             max_downloads: 1,
             allow_private_urls: false,
+            max_kernel_size: super::super::kernel::MAX_KERNEL_SIZE,
+            max_initrd_size: super::super::kernel::MAX_INITRD_SIZE,
         };
         ImageManager::new(db, settings).unwrap()
     }

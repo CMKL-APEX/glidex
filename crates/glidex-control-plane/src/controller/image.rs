@@ -70,6 +70,7 @@ impl VmManager {
                     total_bytes: None,
                 };
                 let _ = std::fs::remove_file(self.images.part_path(&img.id));
+                let _ = std::fs::remove_file(self.images.initrd_part_path(&img.id));
                 self.images.put_image(&img)?;
                 self.image_event(
                     &img.id,

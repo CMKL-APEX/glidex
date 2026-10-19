@@ -1,6 +1,6 @@
 # Direct kernel boot
 
-Status: **draft**; K0 implemented (§12). The open questions of the first
+Status: **draft**; K0, K1 and K2 implemented (§12). The open questions of the first
 draft are settled (§9): kernels come from the cloud image itself (K3,
 K9, K13), a catalog pull brings its kernel (K10), a VM's kernel may
 change at the next restart (K6), and a VM may opt in to following the
@@ -155,13 +155,14 @@ the pinned version; QEMU from the host's packages):
 - New fields, serde-defaulted:
   - `initrd: Option<FileMeta { sha256, size_bytes }>`;
   - `cmdline: Option<String>`, the default `kernel_args` (K7);
-  - `release: Option<String>`, the kernel's version string from its
-    header (bzImage `kernel_version` offset; ELF/`Image` don't carry one,
-    so `None`);
+  - `kernel_release: Option<String>`, the kernel's version string from
+    its header (bzImage `kernel_version` offset; ELF/`Image` don't carry
+    one, so `None`). Named so because `Image.release` already lists the
+    nodes asked to drop their copy;
   - `for_image: Option<String>`, the disk image (id) this kernel was
-    extracted from (K3);
+    extracted from (K3; not yet implemented);
   - `owner: Option<String>`, the VM a kernel extracted from its own disk
-    belongs to (K12, §10.5). Owned kernels are listed with the VM's
+    belongs to (K12, §10.5; with K3b). Owned kernels are listed with the VM's
     project and cleaned up with their last user.
 
 `ImageSource` gains `Extracted { image_id, image_sha256, path }`: the
@@ -463,7 +464,7 @@ path: files are kept in memory or written under the image's id.
 - **Kernel:** the highest version among `vmlinuz-<v>` that has an initrd
   for the same `<v>` (`initrd.img-<v>` or `initramfs-<v>.img`), compared
   segment by segment, numbers numerically. Then K8's header check, and
-  `release` must equal `<v>`.
+  `kernel_release` must equal `<v>`.
 - **Command line:** the BLS entry for `<v>` (`options`), else the first
   `grub.cfg` `linux` line naming `vmlinuz-<v>`. glidex drops
   `BOOT_IMAGE=`, every `console=` and `earlyprintk=`, and appends
@@ -545,6 +546,30 @@ next launch would extract again).
   arguments, host-path fields only with `host.paths`.
   `vm-lifecycle.spec.ts`: a kernel-boot variant of the lifecycle test,
   where the host has the images.
+- **K1/K2 tests.** Unit: `images::kernel::tests` (bzImage with release,
+  64-bit entry required, bad version pointers, ELF x86_64/aarch64, arm64
+  `Image`, junk), `download::tests::kernel_names_keep_the_release`. API
+  (`tests/image_tests.rs`): `kernel_images_are_downloaded_and_checked`
+  (URL pull with initramfs, digests, `0444` files, default name, a bad
+  initramfs digest and a non-kernel fail the image and leave no `.part`,
+  kernel-only fields refused, never a disk source, deleted with both
+  files), `kernel_images_from_host_files`, `vms_boot_kernel_images` (no
+  firmware needed, the kernel's command line by default, a credential,
+  the one-boot-mode rules, the `root=` warning, `409` while in use and
+  `used_by_vms`, PATCH `kernel`, refused on a firmware VM and to a
+  firmware image, `generate_seed` immutable).
+- **K2 host test (`#[ignore]`d, `kernel_image_boot_with_generated_cloud_init`
+  and its `qemu_` twin).** A kernel image copied from
+  `GLIDEX_TEST_KERNEL`/`GLIDEX_TEST_INITRD` with
+  `root=LABEL=cloudimg-rootfs ro console=ttyS0`, the image
+  `GLIDEX_TEST_IMAGE` as `rootfs_path`, and a stored credential: boot,
+  wait for cloud-init, log in on the console, check `uname -r` is the
+  kernel image's release and `sudo` works, stop on the power button
+  ("reboot: Power down").
+
+  Done on 2026-10-19 with Ubuntu 26.04 build `20260927` (kernel
+  `7.0.0-34-generic`) on Cloud Hypervisor v53.0 and QEMU: both passed in
+  68 s together.
 - **K0 host test (`#[ignore]`d, `kernel_boot_with_initrd` and
   `qemu_kernel_boot_with_initrd` in `tests/functional_tests.rs`).**
   `GLIDEX_TEST_KERNEL`, `GLIDEX_TEST_INITRD` and `GLIDEX_TEST_IMAGE` are
@@ -565,8 +590,8 @@ next launch would extract again).
 | # | Scope | Acceptance |
 |---|---|---|
 | **K0** backends *(done)* | `initrd_path` (host path), `ConsoleDevice` (K5) and the shared `console=ttyS0` default, `kernel_args` limits (K7), K2 conflict check | §11 backend unit tests; host boot of F-K3 through glidex with host paths. |
-| **K1** kernel images | `ImageKind::Kernel`, storage (datastore copies), URL pull and host import, verify (K8), lifecycle, image cache | §11 image unit and API tests. |
-| **K2** VM integration | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch | §11 VM API tests; the functional test with a URL-pulled kernel. |
+| **K1** kernel images *(done)* | `ImageKind::Kernel`, storage (datastore copies), URL pull and host import, verify (K8), lifecycle, image cache | §11 image unit and API tests. |
+| **K2** VM integration *(done)* | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch; the UI keeps kernel images out of its disk-image lists and lists them under *Kernels* | §11 VM API tests; the functional test with a kernel image and a credential. |
 | **K3** extraction | The extractor appliance (§10.1, K13), runs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10), `POST /vms/{id}/extract-kernel` (§10.5) | Stream and choice unit tests; the functional test on the five catalog distros (Ubuntu 22.04, 24.04 and 26.04, Debian 13, Fedora, Alma 9). |
 | **K3b** following the guest | `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | A functional test that installs a second kernel in the guest, restarts, sees `uname -r` change, and goes back with a PATCH. |
 | **K4** clients and docs | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |

@@ -299,6 +299,10 @@ pub(crate) fn is_firmware(i: &Image) -> bool {
     i.kind.as_known() == Some(ImageKind::IMAGE_KIND_FIRMWARE)
 }
 
+pub(crate) fn is_kernel(i: &Image) -> bool {
+    i.kind.as_known() == Some(ImageKind::IMAGE_KIND_KERNEL)
+}
+
 pub(crate) fn is_ready(i: &Image) -> bool {
     image_state(i) == Some(ImageState::IMAGE_STATE_READY)
 }
@@ -396,10 +400,17 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
                             format!("{} {}", c.key, c.version)
                         }
                         Some(Source::Url(s)) => s.url.clone(),
+                        Some(Source::Host(h)) => h.path.clone(),
                         None => String::new(),
                     };
                     let kind = match hypervisor_name(&i.hypervisor) {
                         h if is_firmware(i) && !h.is_empty() => format!("firmware/{}", h),
+                        _ if is_kernel(i) => {
+                            match i.kernel.as_option().and_then(|k| k.release.as_deref()) {
+                                Some(r) => format!("kernel {r}"),
+                                None => "kernel".to_string(),
+                            }
+                        }
                         _ => "disk".to_string(),
                     };
                     println!(
