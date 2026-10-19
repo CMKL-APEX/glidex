@@ -693,7 +693,7 @@ async fn connectors_are_managed_over_rest_connect_and_grpc() {
     );
 
     let (st, _) = h.rest("DELETE", "/connectors/corp", None, &s).await;
-    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert_eq!(st, StatusCode::OK);
     let (st, _) = h.rest("GET", "/connectors/corp", None, &t).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
@@ -821,6 +821,7 @@ async fn oidc_login_through_an_api_connector() {
             name: "lab".into(),
             members: vec![],
             created_at: 0,
+            managed: None,
         })
         .unwrap();
     h.oidc_connector(&mock, "corp", json!({"default_tenant": "default"}))
@@ -2120,6 +2121,7 @@ async fn deleting_a_user_takes_what_is_its_alone() {
                 source: auth::store::MemberSource::Manual,
             }],
             created_at: 0,
+            managed: None,
         })
         .unwrap();
     h.app
@@ -2303,4 +2305,251 @@ async fn a_new_tenant_invites_its_first_administrator() {
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     let (st, _) = h.rest("GET", "/tenants/ops2", None, &s).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// spec/tenancy.md §8.3, D20: a provisioned connector's users and teams
+/// are its own; deprovisioning revokes in one write; deleting the
+/// connector disables or detaches them. (SCIM itself is T3 task 4: the
+/// managed records are written to the store here.)
+#[tokio::test]
+async fn managed_users_and_teams_belong_to_their_connector() {
+    use auth::store::{DisabledReason, Managed, MemberSource, Team, TeamMember};
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("ada");
+    let s = h.session(&admin);
+    // A SCIM connector creates users by provisioning only.
+    let c = |extra: Value| {
+        let mut c = json!({"id": "scim1", "oidc": {"issuer": mock.base, "client_id": "glidex"},
+            "provisioning": "scim"});
+        for (k, v) in extra.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        json!({ "connector": c })
+    };
+    let (st, v) = h
+        .rest("POST", "/connectors", Some(c(json!({"jit": true}))), &s)
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(c(json!({"group_mode": "auto"}))),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["connector"]["provisioning"], "scim");
+    assert_eq!(v["connector"]["group_mode"], "auto");
+    // `auto` is for provisioned connectors; google isn't SCIM-provisioned.
+    let (st, _) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(
+                json!({"connector": {"id": "o2", "oidc": {"issuer": mock.base, "client_id": "g"},
+                "group_mode": "auto"}}),
+            ),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let store = &h.app.auth.store;
+    let managed = |u: &str| {
+        let mut x = store.user(u).unwrap().unwrap();
+        x.managed = Some(Managed {
+            connector: "scim1".into(),
+            external_id: Some(format!("ext-{u}")),
+            user_name: Some(format!("{u}@corp.example")),
+        });
+        x.email = Some(format!("{u}@corp.example"));
+        store.put_user(&x).unwrap();
+    };
+    let bob = h.user("bob");
+    let cara = h.user("cara");
+    managed(&bob);
+    managed(&cara);
+    for (id, name, m) in [("t-eng", "eng", true), ("t-lab", "lab", false)] {
+        store
+            .put_team(&Team {
+                id: id.into(),
+                name: name.into(),
+                members: vec![
+                    TeamMember {
+                        user_id: bob.clone(),
+                        source: MemberSource::Connector("scim1".into()),
+                    },
+                    TeamMember {
+                        user_id: cara.clone(),
+                        source: MemberSource::Manual,
+                    },
+                ],
+                created_at: 0,
+                managed: m.then(|| Managed {
+                    connector: "scim1".into(),
+                    external_id: Some(format!("g-{name}")),
+                    user_name: None,
+                }),
+            })
+            .unwrap();
+    }
+    let (_, v) = h.rest("GET", "/users", None, &s).await;
+    let b = v["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == bob)
+        .unwrap()
+        .clone();
+    assert_eq!(b["managed_by"], "scim1");
+    assert_eq!(b["external_id"], format!("ext-{bob}"));
+    assert_eq!(b["email"], format!("{bob}@corp.example"));
+
+    // Its fields are the connector's.
+    let conflict = |(st, v): (StatusCode, Value)| {
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::CONFLICT, Some("managed_by_connector")),
+            "{v}"
+        );
+    };
+    conflict(
+        h.rest(
+            "PATCH",
+            &format!("/users/{bob}"),
+            Some(json!({"display_name": "B"})),
+            &s,
+        )
+        .await,
+    );
+    conflict(h.rest("DELETE", &format!("/users/{bob}"), None, &s).await);
+    conflict(
+        h.rest("PATCH", "/teams/t-eng", Some(json!({"name": "x"})), &s)
+            .await,
+    );
+    conflict(h.rest("DELETE", "/teams/t-eng", None, &s).await);
+    conflict(
+        h.rest("DELETE", &format!("/teams/t-lab/members/{bob}"), None, &s)
+            .await,
+    );
+    // Manual memberships stay the directory's, in a managed team too.
+    let (st, v) = h
+        .rest("DELETE", &format!("/teams/t-eng/members/{cara}"), None, &s)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // An administrator may stop a managed user, and undo only that.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{cara}"),
+            Some(json!({"disabled": true})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["user"]["disabled_reason"], "admin");
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{cara}"),
+            Some(json!({"disabled": false})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(v["user"].get("disabled_reason").is_none(), "{v}");
+
+    // D20: deprovisioning ends sessions, revokes personal tokens and drops
+    // the connector's memberships, in one write.
+    let bob_token = h.token(&bob);
+    let _ = h.session(&bob);
+    let (_, d) = store
+        .deprovision(&bob, DisabledReason::Scim)
+        .unwrap()
+        .unwrap();
+    assert_eq!((d.sessions, d.tokens, d.teams), (1, 1, 2));
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert!(
+        store
+            .team("t-lab")
+            .unwrap()
+            .unwrap()
+            .members
+            .iter()
+            .all(|m| m.user_id != bob)
+    );
+    // Disabled by its IdP: an administrator can't enable it.
+    conflict(
+        h.rest(
+            "PATCH",
+            &format!("/users/{bob}"),
+            Some(json!({"disabled": false})),
+            &s,
+        )
+        .await,
+    );
+    // An administrator's stop stays the reason.
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{cara}"),
+            Some(json!({"disabled": true})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    store.deprovision(&cara, DisabledReason::Scim).unwrap();
+    assert_eq!(
+        store.user(&cara).unwrap().unwrap().disabled_reason,
+        Some(DisabledReason::Admin)
+    );
+    // A disabled managed user can be deleted.
+    let (st, v) = h.rest("DELETE", &format!("/users/{bob}"), None, &s).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // Deleting the connector: `detach` keeps the people and makes its
+    // memberships manual; the default disables them.
+    let dave = h.user("dave");
+    managed(&dave);
+    let mut t = store.team("t-eng").unwrap().unwrap();
+    t.members.push(TeamMember {
+        user_id: dave.clone(),
+        source: MemberSource::Connector("scim1".into()),
+    });
+    store.put_team(&t).unwrap();
+    let (st, v) = h
+        .rest("DELETE", "/connectors/scim1?users=bogus", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    let (st, v) = h
+        .rest("DELETE", "/connectors/scim1?users=detach", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["users"].as_u64(), v["teams"].as_u64()),
+        (Some(2), Some(1)),
+        "{v}"
+    );
+    let d = store.user(&dave).unwrap().unwrap();
+    assert!(!d.disabled && d.managed.is_none());
+    let t = store.team("t-eng").unwrap().unwrap();
+    assert!(t.managed.is_none());
+    assert!(
+        t.members
+            .iter()
+            .any(|m| m.user_id == dave && m.source == MemberSource::Manual)
+    );
+
+    let (st, _) = h.rest("POST", "/connectors", Some(c(json!({}))), &s).await;
+    assert_eq!(st, StatusCode::CREATED);
+    managed(&dave);
+    let (st, v) = h.rest("DELETE", "/connectors/scim1", None, &s).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let d = store.user(&dave).unwrap().unwrap();
+    assert!(d.disabled && d.managed.is_none());
+    assert_eq!(d.disabled_reason, Some(DisabledReason::ConnectorDeleted));
 }

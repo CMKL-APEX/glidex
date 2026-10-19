@@ -4367,6 +4367,8 @@ async fn the_secrets_key_rotates_on_every_server() {
         group_teams: Default::default(),
         default_tenant: None,
         token_max_days: None,
+        provisioning: Default::default(),
+        group_mode: Default::default(),
         settings: json!({"issuer": "https://idp.example", "client_id": "glidex"}),
         source: Source::Api,
         created_at: 0,

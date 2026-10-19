@@ -81,6 +81,13 @@ message Connector {
   optional string default_tenant = 10 [json_name = "default_tenant"];
   // Longest personal token a login through it mints (default 30 days).
   optional uint32 token_max_days = 11 [json_name = "token_max_days"];
+  // `none` (the default) or `scim`: the IdP pushes this connector's users
+  // and groups, and only those users log in (spec/tenancy.md §8.1, D41).
+  // `oidc` and `jumpcloud` connectors can be provisioned.
+  optional string provisioning = 20;
+  // `mapped` (the default: `group_teams`) or `auto` (a team per
+  // provisioned group, spec/tenancy.md D43).
+  optional string group_mode = 21 [json_name = "group_mode"];
   oneof settings {
     PamSettings pam = 12;
     OidcSettings oidc = 13;
@@ -198,9 +205,20 @@ message UpdateConnectorResponse {
 
 message DeleteConnectorRequest {
   string id = 1;
+  // What becomes of the users and teams it provisions (spec/tenancy.md
+  // §8.3): `disable` (the default: users are disabled as D20 says, with
+  // `disabled_reason: connector_deleted`) or `detach` (they stay enabled
+  // and become the directory's, and its memberships become manual). Either
+  // way they are no longer managed.
+  optional string users = 2;
 }
 
-message DeleteConnectorResponse {}
+message DeleteConnectorResponse {
+  // Managed users it disabled, or detached.
+  uint32 users = 1;
+  // Managed teams it detached.
+  uint32 teams = 2;
+}
 
 message SetSecretRequest {
   string id = 1;

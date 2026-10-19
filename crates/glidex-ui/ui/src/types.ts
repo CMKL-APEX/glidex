@@ -902,6 +902,13 @@ export interface User {
   created_at?: string;
   /** Sent by `GET /users`. */
   identities?: Identity[];
+  /** The connector that provisions it (spec/tenancy.md §8.3). */
+  managed_by?: string;
+  external_id?: string;
+  /** A managed user's email, from its connector. */
+  email?: string;
+  /** Why it is disabled. */
+  disabled_reason?: "admin" | "scim" | "connector_deleted";
 }
 
 export type UserView = User;
@@ -985,6 +992,9 @@ export interface Team {
   members?: TeamMember[];
   /** RFC 3339. */
   created_at?: string;
+  /** The connector whose group it is (`group_mode: auto`). */
+  managed_by?: string;
+  external_id?: string;
 }
 
 /** A role link (a Cedar template-linked policy; glidex.access.v1.Binding). */
@@ -1834,6 +1844,9 @@ export interface Connector {
   group_teams?: Record<string, string>;
   default_tenant?: string | null;
   token_max_days?: number | null;
+  /** `scim`: the IdP provisions its users and groups (spec/tenancy.md §8.1). */
+  provisioning?: "none" | "scim";
+  group_mode?: "mapped" | "auto";
   pam?: PamSettings;
   oidc?: OidcSettings;
   google?: GoogleSettings;

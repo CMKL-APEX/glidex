@@ -550,6 +550,8 @@ export default function Connectors() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  // Deleting a SCIM connector: keep its users (detach) instead of disabling them.
+  const [detach, setDetach] = useState(false);
 
   const refresh = useCallback(() => {
     api
@@ -736,15 +738,31 @@ export default function Connectors() {
         <ConfirmDialog
           title="Delete Connector"
           consequence={
-            <p>
-              Nobody can log in through <span className="font-semibold">{dialog.connector.display_name || dialog.connector.id}</span>{" "}
-              any more.
-            </p>
+            <>
+              <p>
+                Nobody can log in through <span className="font-semibold">{dialog.connector.display_name || dialog.connector.id}</span>{" "}
+                any more.
+              </p>
+              {dialog.connector.provisioning === "scim" && (
+                <fieldset className="mt-3 space-y-1 text-sm">
+                  <legend className="font-medium text-gray-700">The users and teams it provisions</legend>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="release" checked={!detach} onChange={() => setDetach(false)} />
+                    Disable them (their sessions and tokens end)
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="release" checked={detach} onChange={() => setDetach(true)} />
+                    Keep them, as the directory's own
+                  </label>
+                </fieldset>
+              )}
+            </>
           }
           typeToConfirm={dialog.connector.id}
           actionLabel="Delete"
           onConfirm={async () => {
-            await api.deleteConnector(dialog.connector.id);
+            await api.deleteConnector(dialog.connector.id, detach ? "detach" : undefined);
+            setDetach(false);
             refresh();
           }}
           onClose={close}

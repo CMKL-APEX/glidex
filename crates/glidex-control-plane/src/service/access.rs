@@ -9,7 +9,9 @@ use crate::api::{
     add_network, auth_error, credential_entities, directory_ent, disk_entities, project_entities,
     vm_entities,
 };
-use crate::auth::store::{Identity, MemberSource, StoreError, Team, TeamMember, TokenKind, User};
+use crate::auth::store::{
+    DisabledReason, Identity, MemberSource, StoreError, Team, TeamMember, TokenKind, User,
+};
 use crate::auth::{self, AuthError, Method};
 use crate::authz::{self, Ent, EntitySet, SiteSource};
 use crate::service::tenancy::{quotas_from_pb as quotas_of, quotas_to_pb};
@@ -18,6 +20,15 @@ use glidex_api::proto::glidex::access::v1 as pb;
 
 fn store_err(e: StoreError) -> ServiceError {
     auth_error(AuthError::Store(e)).into()
+}
+
+/// §8.3: a field its connector owns.
+fn managed_conflict(what: &str, connector: &str) -> ServiceError {
+    ServiceError::new(
+        StatusCode::CONFLICT,
+        "managed_by_connector",
+        format!("{what} is provisioned by connector {connector}: change it at the IdP"),
+    )
 }
 
 fn node_err(e: crate::node::NodeError) -> ServiceError {
@@ -62,6 +73,10 @@ pub fn user_pb(u: &User, identities: &[Identity]) -> pb::User {
         disabled: Some(u.disabled),
         default_project: u.default_project.clone(),
         created_at: ts(u.created_at).into(),
+        managed_by: u.managed.as_ref().map(|m| m.connector.clone()),
+        external_id: u.managed.as_ref().and_then(|m| m.external_id.clone()),
+        email: u.email.clone(),
+        disabled_reason: u.disabled_reason.map(|r| r.as_str().into()),
         identities: identities.iter().map(identity_pb).collect(),
         ..Default::default()
     }
@@ -97,6 +112,8 @@ fn team_pb(t: &Team) -> pb::Team {
             })
             .collect(),
         created_at: ts(t.created_at).into(),
+        managed_by: t.managed.as_ref().map(|m| m.connector.clone()),
+        external_id: t.managed.as_ref().and_then(|m| m.external_id.clone()),
         ..Default::default()
     }
 }
@@ -734,6 +751,9 @@ pub fn create_user(
         disabled: false,
         default_project: None,
         created_at: crate::auth::store::now(),
+        managed: None,
+        email: None,
+        disabled_reason: None,
     };
     s.put_user(&u).map_err(store_err)?;
     for i in req.identities {
@@ -764,9 +784,15 @@ pub fn update_user(
         .user(&req.id)
         .map_err(store_err)?
         .ok_or_else(|| not_found("user"))?;
+    let managed = u.managed.as_ref().map(|m| m.connector.clone());
     for path in mask_of(req.update_mask.as_option()) {
         match path.as_str() {
-            "display_name" => u.display_name = req.display_name.clone(),
+            "display_name" => {
+                if let Some(c) = &managed {
+                    return Err(managed_conflict("its display name", c));
+                }
+                u.display_name = req.display_name.clone()
+            }
             "default_project" => {
                 u.default_project = if req.default_project.is_empty() {
                     None
@@ -775,6 +801,20 @@ pub fn update_user(
                 }
             }
             "disabled" => {
+                // An administrator may stop a managed user at once, and
+                // only undo its own stop (§8.3, D42).
+                if !req.disabled
+                    && u.disabled
+                    && let Some(c) = &managed
+                    && u.disabled_reason != Some(DisabledReason::Admin)
+                {
+                    return Err(managed_conflict("whether it is enabled", c));
+                }
+                if req.disabled && !u.disabled {
+                    u.disabled_reason = Some(DisabledReason::Admin);
+                } else if !req.disabled {
+                    u.disabled_reason = None;
+                }
                 u.disabled = req.disabled;
                 if req.disabled {
                     s.remove_sessions_of(&u.id).map_err(store_err)?;
@@ -850,6 +890,12 @@ pub fn delete_user(
         .user(&req.id)
         .map_err(store_err)?
         .ok_or_else(|| not_found("user"))?;
+    // The IdP still has it: it would only provision it again (§8.3).
+    if let Some(m) = &user.managed
+        && !user.disabled
+    {
+        return Err(managed_conflict("an enabled user", &m.connector));
+    }
     // Nobody is left unable to administer the cluster or the directory.
     let links = s.links().map_err(store_err)?;
     let me = Ent::User(req.id.clone());
@@ -1063,6 +1109,7 @@ pub fn create_team(
         name: req.name,
         members: vec![],
         created_at: crate::auth::store::now(),
+        managed: None,
     };
     s.put_team(&t).map_err(store_err)?;
     call.set_target(format!("team:{}", t.id));
@@ -1088,6 +1135,9 @@ pub fn update_team(
     call.require(directory_ent(), EntitySet::new())?;
     valid_team_name(&req.name)?;
     let mut t = team(call, &req.id)?;
+    if let Some(m) = &t.managed {
+        return Err(managed_conflict("its name", &m.connector));
+    }
     t.name = req.name;
     call.auth().store.put_team(&t).map_err(store_err)?;
     Ok(pb::UpdateTeamResponse {
@@ -1101,7 +1151,9 @@ pub fn delete_team(
     req: pb::DeleteTeamRequest,
 ) -> ServiceResult<pb::DeleteTeamResponse> {
     call.require(directory_ent(), EntitySet::new())?;
-    team(call, &req.id)?;
+    if let Some(m) = team(call, &req.id)?.managed {
+        return Err(managed_conflict("the team", &m.connector));
+    }
     call.auth().store.remove_team(&req.id).map_err(store_err)?;
     call.auth()
         .forget_entity(&Ent::Team(req.id))
@@ -1143,7 +1195,34 @@ pub fn remove_team_member(
 ) -> ServiceResult<pb::RemoveTeamMemberResponse> {
     call.require(directory_ent(), EntitySet::new())?;
     let mut t = team(call, &req.id)?;
-    t.members.retain(|m| m.user_id != req.user);
+    // Memberships a connector gives are its own (§8.3); manual ones stay
+    // the directory's.
+    let mine = |m: &TeamMember| match &m.source {
+        MemberSource::Connector(c) => Some(c.clone()),
+        _ => None,
+    };
+    let synced: Vec<String> = t
+        .members
+        .iter()
+        .filter(|m| m.user_id == req.user)
+        .filter_map(mine)
+        .filter(|c| {
+            call.auth()
+                .connectors
+                .get(c)
+                .ok()
+                .flatten()
+                .is_some_and(|c| !c.provisioning.is_none())
+        })
+        .collect();
+    let before = t.members.len();
+    t.members
+        .retain(|m| m.user_id != req.user || mine(m).is_some_and(|c| synced.contains(&c)));
+    if t.members.len() == before
+        && let Some(c) = synced.first()
+    {
+        return Err(managed_conflict("this membership", c));
+    }
     call.auth().store.put_team(&t).map_err(store_err)?;
     Ok(pb::RemoveTeamMemberResponse {
         team: team_pb(&t).into(),
