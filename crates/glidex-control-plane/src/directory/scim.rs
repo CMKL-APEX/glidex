@@ -269,6 +269,7 @@ impl UserAttrs {
             user_name: None,
             given_name: None,
             family_name: None,
+            ssh_keys: vec![],
         });
         UserAttrs {
             user_name: m.user_name.unwrap_or_default(),
@@ -358,12 +359,20 @@ impl UserAttrs {
     pub fn apply(&self, u: &mut User, connector: &str) {
         u.display_name = self.display();
         u.email = self.email.clone();
+        // SSH keys come from a pull, not from these attributes: kept.
+        let ssh_keys = u
+            .managed
+            .as_ref()
+            .filter(|m| m.connector == connector)
+            .map(|m| m.ssh_keys.clone())
+            .unwrap_or_default();
         u.managed = Some(Managed {
             connector: connector.to_string(),
             external_id: self.external_id.clone(),
             user_name: Some(self.user_name.clone()),
             given_name: self.given_name.clone(),
             family_name: self.family_name.clone(),
+            ssh_keys,
         });
     }
 }

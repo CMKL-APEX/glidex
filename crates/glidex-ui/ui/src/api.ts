@@ -648,6 +648,8 @@ export interface MySshKeys {
   username?: string;
   keys: string[];
   reason?: string;
+  /** `local`, or `connector:<id>`: keys its directory holds. */
+  source?: string;
 }
 /** Proto JSON leaves out a false `available` and empty `keys`. */
 export const mySshKeys = () =>

@@ -178,7 +178,15 @@ function AddCredentialForm({
           <p className="mt-1 text-xs text-gray-400">Looking for your public keys…</p>
         ) : mine.available && mine.keys.length > 0 ? (
           <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
-            Filled in from your <span className="font-mono">~/.ssh/*.pub</span> ({mine.keys.length}{" "}
+            Filled in from{" "}
+            {mine.source?.startsWith("connector:") ? (
+              <>your directory account</>
+            ) : (
+              <>
+                your <span className="font-mono">~/.ssh/*.pub</span>
+              </>
+            )}{" "}
+            ({mine.keys.length}{" "}
             {mine.keys.length === 1 ? "key" : "keys"}).{" "}
             <button type="button" className="text-sky-600 hover:underline" onClick={useMyKeys}>
               Add my keys again

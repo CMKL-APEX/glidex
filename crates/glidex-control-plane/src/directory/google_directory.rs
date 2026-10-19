@@ -280,6 +280,44 @@ fn opt(v: &Value, p: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// Most SSH keys kept per user, and the longest one.
+const MAX_KEYS: usize = 32;
+const MAX_KEY_LEN: usize = 16 * 1024;
+
+/// The OpenSSH public keys among `keys`, in order, without repeats: the
+/// rest (a private key pasted by mistake, other text) is dropped.
+pub fn public_keys(keys: Vec<String>) -> Vec<String> {
+    const TYPES: [&str; 8] = [
+        "ssh-ed25519",
+        "ssh-rsa",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp521",
+        "sk-ssh-ed25519@openssh.com",
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+        "ssh-dss",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for k in keys {
+        let k = k.trim();
+        let mut parts = k.split_whitespace();
+        let (Some(ty), Some(body)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let b64 = body.len() >= 16
+            && body
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+        if TYPES.contains(&ty) && b64 && k.len() <= MAX_KEY_LEN && !out.iter().any(|x| x == k) {
+            out.push(k.to_string());
+        }
+        if out.len() == MAX_KEYS {
+            break;
+        }
+    }
+    out
+}
+
 /// A Directory API user, as a pull's [`SourceUser`].
 pub fn source_user(v: &Value, ssh_field: Option<&str>) -> Result<SourceUser, SyncError> {
     let id = opt(v, "/id").ok_or_else(|| SyncError::Source("a user without an id".into()))?;
@@ -308,6 +346,7 @@ pub fn source_user(v: &Value, ssh_field: Option<&str>) -> Result<SourceUser, Syn
         },
         None => Vec::new(),
     };
+    let ssh_keys = public_keys(ssh_keys);
     Ok(SourceUser {
         id,
         email,
@@ -395,10 +434,25 @@ mod tests {
             ("1077", "ada@corp.example")
         );
         assert!(!u.active, "archived");
-        assert_eq!(u.ssh_keys, ["ssh-ed25519 AAAA ada"]);
+        assert!(u.ssh_keys.is_empty(), "AAAA is too short to be a key");
         assert!(source_user(&json!({"primaryEmail": "x@y.z"}), None).is_err());
         let u = source_user(&json!({"id": "2", "primaryEmail": "b@c.d"}), None).unwrap();
         assert!(u.active && u.display_name.is_none());
+    }
+
+    #[test]
+    fn only_public_keys_are_kept() {
+        let ok = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxid ada@laptop".to_string();
+        let ec = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY=".to_string();
+        let keys = public_keys(vec![
+            ok.clone(),
+            ok.clone(),
+            "-----BEGIN OPENSSH PRIVATE KEY-----".into(),
+            "ssh-ed25519 not-base64!!".into(),
+            ec.clone(),
+            "hello world".into(),
+        ]);
+        assert_eq!(keys, [ok, ec]);
     }
 
     #[test]

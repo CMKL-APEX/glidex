@@ -1,6 +1,6 @@
 # Tenants, directories and operators (design)
 
-Status: **design**; T0–T3 are implemented on one directory and one
+Status: **design**; T0–T4 are implemented on one directory and one
 cluster (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
@@ -1418,9 +1418,7 @@ T5–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0, T1, T2 and T3 are implemented; T4 is in progress (its tasks in §18,
-the status below);
-T2b, T4b and T5–T7 are not started. What
+T0–T4 are implemented; T2b, T4b and T5–T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1636,7 +1634,9 @@ Task 5, docs and the UI e2e:
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
 | UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
 
-**T4** (pull sync from Google Workspace) is in progress. Task 2, the runs:
+**T4** (pull sync from Google Workspace) is implemented: tasks 1–5 of
+§18. The checks of [idp-checks.md](idp-checks.md) against a real
+Workspace are the operator's to run. Task 2, the runs:
 
 | Spec | Code |
 |---|---|
@@ -1665,4 +1665,13 @@ Task 4, UI and docs:
 | Operator guide | `operator-guide/authentication.md`, "Directory sync from Google Workspace": the Admin SDK, a service account and its JSON key, domain-wide delegation with the two scopes, the administrator it acts as, gxctl and the web UI, the safety stop |
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "Google Workspace directory sync" |
 | UI e2e | `connectors.spec.ts`: a pulled connector from the form, and a run that fails without its key, saying why |
+
+Task 5, SSH keys from Google:
+
+| Spec | Code |
+|---|---|
+| The key field (§8.2) | `sync.ssh_keys_field` (`<schema>.<field>`): the users are read with that custom schema; `google_directory::public_keys` keeps OpenSSH public keys only (known types, base64, ≤ 16 KiB, ≤ 32, no repeats) |
+| On the user | `Managed.ssh_keys`, set by each run (a change is an update); SCIM's attributes leave them alone |
+| "My SSH keys" | `UserService.GetMySshKeys` answers them, `source: connector:<id>`, when the host has no local login for the user (a local account's keys come first, `source: local`); the credential form says where they came from |
+| Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 

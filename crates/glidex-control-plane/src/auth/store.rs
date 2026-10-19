@@ -111,6 +111,9 @@ pub struct Managed {
     pub given_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family_name: Option<String>,
+    /// SSH public keys its IdP holds (a pull's `sync.ssh_keys_field`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_keys: Vec<String>,
 }
 
 /// A group a connector's IdP pushed over SCIM (spec/tenancy.md D43). Its
@@ -1550,6 +1553,7 @@ impl ScimTx<'_> {
                             user_name: None,
                             given_name: None,
                             family_name: None,
+                            ssh_keys: vec![],
                         }),
                     }),
                 }
@@ -1814,6 +1818,7 @@ mod tests {
                 user_name: Some("alice@example.org".into()),
                 given_name: None,
                 family_name: None,
+                ssh_keys: vec![],
             }),
             email: Some("alice@example.org".into()),
             disabled_reason: None,
