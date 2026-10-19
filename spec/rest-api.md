@@ -231,6 +231,7 @@ tenant (D7); every write needs a recent login. Secrets go in through
 | `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC and `google` check the secrets, discovery and the device grant (`google`: whether it has a device client) |
 | `GET` | `/connectors/{id}/scim-tokens` | `ListScimTokens` | `{tokens: [{id, name, created_by, created_at, expires_at}], path}`, never the tokens; `path` is `/scim/v2/c/{id}` on this server (and under the web UI's `/api`), tenancy.md §8.1 |
 | `POST` / `DELETE` | `/connectors/{id}/scim-tokens`, `…/{token}` | `CreateScimToken` / `RevokeScimToken` | `manageScimTokens`, step-up. POST `{name?, days?}` (1–365, default 180) answers `201 {token, secret, path}`: the `gxs_` secret once, only its SHA-256 kept; `409 not_provisioned` unless `provisioning: scim`; at most five live per connector. A deleted connector's tokens go with it |
+| any | `/scim/v2/c/{id}/…` | — (SCIM 2.0, RFC 7644; HTTP only, D29) | The connector's IdP, with its `gxs_` token (not a principal: the global layer leaves it to the handlers). `/Users`, `/Groups` (GET with `eq` filters and pages ≤ 200, POST, and by id GET, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`; `application/scim+json`, SCIM error bodies; `401` for any wrong token, `403` unless `provisioning: scim`, `429` past 20 requests/s, `413` past 1 MiB (tenancy.md §8.1) |
 
 Logging in through a connector, all public: `GET /auth/methods` lists the
 enabled ones (`connectors: [{id, kind, display_name}]`); `POST

@@ -1321,6 +1321,26 @@ impl AuthService {
             ));
         }
         let provider = c.identity_provider();
+        // D41: a provisioned connector lets in its managed users only; the
+        // IdP has given them their tenant and teams already (D43).
+        if c.provisioning == crate::directory::Provisioning::Scim {
+            if invite.is_some() {
+                return Err(AuthError::NotAllowed(
+                    "this connector's users are provisioned by its IdP: an invitation can't be taken through it".into(),
+                ));
+            }
+            let email = id.email.as_deref().filter(|_| id.email_verified);
+            let user = self
+                .store
+                .scim_login(&c.id, &provider, &id.subject, email)?
+                .ok_or_else(|| {
+                    AuthError::NotAllowed("no glidex account for this identity".into())
+                })?;
+            if user.disabled {
+                return Err(AuthError::NotAllowed("this account is disabled".into()));
+            }
+            return Ok(user);
+        }
         let existed = self.store.identity(&provider, &id.subject)?.is_some();
         let invited = match invite {
             Some(t) => Some(
@@ -1791,6 +1811,38 @@ impl AuthService {
     }
 
     // ---- audit ----------------------------------------------------------
+
+    /// Record an event a system actor did (`system:scim:<connector>`, spec/
+    /// tenancy.md §8.1): no principal of the directory, so it is named.
+    #[allow(clippy::too_many_arguments)]
+    pub fn audit_system(
+        &self,
+        who: &str,
+        request_id: &str,
+        action: &str,
+        target: Option<&str>,
+        result: &str,
+        error_code: Option<&str>,
+        details: serde_json::Value,
+    ) {
+        let entry = AuditEntry {
+            time: store::now_millis(),
+            request_id: request_id.to_string(),
+            principal: serde_json::json!({ "system": who }),
+            source: who.to_string(),
+            action: action.to_string(),
+            project: None,
+            target: target.map(String::from),
+            result: result.to_string(),
+            error_code: error_code.map(String::from),
+            policies: Vec::new(),
+            details,
+        };
+        tracing::info!(target: "glidex_audit", "{}", serde_json::to_string(&entry).unwrap_or_default());
+        if let Err(e) = self.store.append_audit(&entry) {
+            tracing::error!("audit write failed: {}", e);
+        }
+    }
 
     /// Record one audited event in the journal and the audit table.
     #[allow(clippy::too_many_arguments)]

@@ -2363,6 +2363,8 @@ async fn managed_users_and_teams_belong_to_their_connector() {
             connector: "scim1".into(),
             external_id: Some(format!("ext-{u}")),
             user_name: Some(format!("{u}@corp.example")),
+            given_name: None,
+            family_name: None,
         });
         x.email = Some(format!("{u}@corp.example"));
         store.put_user(&x).unwrap();
@@ -2391,6 +2393,8 @@ async fn managed_users_and_teams_belong_to_their_connector() {
                     connector: "scim1".into(),
                     external_id: Some(format!("g-{name}")),
                     user_name: None,
+                    given_name: None,
+                    family_name: None,
                 }),
             })
             .unwrap();
@@ -2697,4 +2701,595 @@ async fn scim_tokens_are_minted_for_a_provisioned_connector() {
             .is_none()
     );
     assert!(h.app.auth.scim_tokens.list("plain").unwrap().is_empty());
+}
+
+/// A SCIM connector `id` (JumpCloud, against the mock) and a token for it.
+async fn scim_connector(h: &H, mock: &idp::Mock, s: &str, id: &str, extra: Value) -> String {
+    let mut c = json!({"id": id, "display_name": "JumpCloud", "provisioning": "scim",
+        "jumpcloud": {"client_id": "glidex", "issuer": mock.base}});
+    for (k, v) in extra.as_object().unwrap() {
+        c[k] = v.clone();
+    }
+    let (st, v) = h
+        .rest("POST", "/connectors", Some(json!({ "connector": c })), s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let (st, v) = h
+        .rest(
+            "PUT",
+            &format!("/connectors/{id}/secrets/client_secret"),
+            Some(json!({"value": SECRET})),
+            s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    h.app
+        .auth
+        .scim_tokens
+        .create(id, "test", "test", None)
+        .unwrap()
+        .1
+}
+
+fn jc_claims(mock: &idp::Mock, sub: &str, email: &str) -> Value {
+    json!({"iss": mock.base, "aud": "glidex", "sub": sub, "exp": now() + 300, "iat": now(),
+           "email": email, "name": sub})
+}
+
+/// spec/tenancy.md §8.1, D41–D43, as JumpCloud sends it: users and groups
+/// pushed, the first login lands on the provisioned user, deactivation
+/// revokes at once, removal keeps the records.
+#[tokio::test]
+async fn scim_provisions_users_and_groups_as_jumpcloud_does() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("ada-admin");
+    let s = h.session(&admin);
+    let tok = scim_connector(
+        &h,
+        &mock,
+        &s,
+        "jc",
+        json!({"group_mode": "auto", "default_tenant": "default"}),
+    )
+    .await;
+    let other = scim_connector(&h, &mock, &s, "jc2", json!({})).await;
+    let scim = |m: &'static str, path: String, body: Option<Value>, t: String| {
+        let h = &h;
+        async move { h.rest(m, &format!("/scim/v2/c/jc{path}"), body, &t).await }
+    };
+
+    // Only this connector's token; the same answer for every wrong one.
+    for t in ["", "gxs_nope", other.as_str(), &h.token(&admin)] {
+        let (st, v) = scim("GET", "/Users".into(), None, t.into()).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "{t}: {v}");
+        assert_eq!(
+            v["schemas"][0],
+            "urn:ietf:params:scim:api:messages:2.0:Error"
+        );
+    }
+    let (st, v) = scim("GET", "/ServiceProviderConfig".into(), None, tok.clone()).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["patch"]["supported"], true);
+    let (st, v) = scim("GET", "/ResourceTypes".into(), None, tok.clone()).await;
+    assert_eq!((st, v["totalResults"].as_u64()), (StatusCode::OK, Some(2)));
+
+    // JumpCloud looks the user up, then makes it.
+    let (st, v) = scim(
+        "GET",
+        "/Users?filter=userName%20eq%20%22ada%40corp.example%22".into(),
+        None,
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(
+        (st, v["totalResults"].as_u64()),
+        (StatusCode::OK, Some(0)),
+        "{v}"
+    );
+    let ada_body = json!({"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": "ada@corp.example", "name": {"givenName": "Ada", "familyName": "Lovelace"},
+        "emails": [{"value": "ada@corp.example", "type": "work", "primary": true}], "active": true});
+    let (st, v) = scim("POST", "/Users".into(), Some(ada_body.clone()), tok.clone()).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let ada = v["id"].as_str().unwrap().to_string();
+    assert_eq!(v["displayName"], "Ada Lovelace");
+    assert!(
+        v["meta"]["location"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/scim/v2/c/jc/Users/{ada}")),
+        "{v}"
+    );
+    let (st, v) = scim("POST", "/Users".into(), Some(ada_body), tok.clone()).await;
+    assert_eq!(
+        (st, v["scimType"].as_str()),
+        (StatusCode::CONFLICT, Some("uniqueness")),
+        "{v}"
+    );
+    let (_, v) = scim(
+        "GET",
+        "/Users?filter=emails.value%20eq%20%22ADA%40corp.example%22".into(),
+        None,
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(v["Resources"][0]["id"], ada);
+    // Another connector's endpoint doesn't see it.
+    let (_, v) = h.rest("GET", "/scim/v2/c/jc2/Users", None, &other).await;
+    assert_eq!(v["totalResults"], 0);
+    // In the directory: managed, in the connector's tenant.
+    let u = h.app.auth.store.user(&ada).unwrap().unwrap();
+    assert_eq!(u.managed.as_ref().unwrap().connector, "jc");
+    assert!(
+        h.app
+            .auth
+            .is_member(&Ent::User(ada.clone()), "default")
+            .unwrap()
+    );
+
+    // A group: with `auto`, the team of the same id.
+    let (st, v) = scim(
+        "POST",
+        "/Groups".into(),
+        Some(json!({"displayName": "eng", "members": [{"value": ada}, {"value": "not-a-user"}]})),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let eng = v["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        v["members"].as_array().unwrap().len(),
+        1,
+        "unknown members are dropped"
+    );
+    let in_eng = |h: &H, u: &str| {
+        h.app
+            .auth
+            .store
+            .team(&eng)
+            .unwrap()
+            .unwrap()
+            .members
+            .iter()
+            .any(|m| m.user_id == u)
+    };
+    let team = h.app.auth.store.team(&eng).unwrap().unwrap();
+    assert_eq!(
+        (
+            team.name.as_str(),
+            team.managed.as_ref().unwrap().connector.as_str()
+        ),
+        ("eng", "jc")
+    );
+    assert!(in_eng(&h, &ada));
+
+    // D41: the first login is matched by its verified email and linked.
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "jc",
+            jc_claims(&mock, "jc-sub-ada", "ada@corp.example")
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    let i = h
+        .app
+        .auth
+        .store
+        .identity("conn:jc", "jc-sub-ada")
+        .unwrap()
+        .unwrap();
+    assert_eq!(i.user_id, ada);
+    // Somebody the IdP didn't provision doesn't get in, and no user is made.
+    let users = h.app.auth.store.users().unwrap().len();
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "jc",
+            jc_claims(&mock, "jc-sub-bob", "bob@corp.example")
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(h.app.auth.store.users().unwrap().len(), users);
+    // Nor does a second identity claiming Ada's address.
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "jc",
+            jc_claims(&mock, "jc-sub-eve", "ada@corp.example")
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    // D20 via SCIM: deactivating revokes within the request.
+    let ada_token = h.token(&ada);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &ada_token).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, v) = scim(
+        "PATCH",
+        format!("/Users/{ada}"),
+        Some(
+            json!({"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{"op": "replace", "path": "active", "value": false}]}),
+        ),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(
+        (st, v["active"].as_bool()),
+        (StatusCode::OK, Some(false)),
+        "{v}"
+    );
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &ada_token).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert!(!in_eng(&h, &ada));
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "jc",
+            jc_claims(&mock, "jc-sub-ada", "ada@corp.example")
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    // Active again: enabled, back in its team.
+    let (st, v) = scim("PUT", format!("/Users/{ada}"), Some(json!({"userName": "ada@corp.example",
+        "displayName": "Ada L.", "emails": [{"value": "ada@corp.example", "primary": true}], "active": true})), tok.clone()).await;
+    assert_eq!(
+        (st, v["active"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    assert_eq!(
+        h.app.auth.store.user(&ada).unwrap().unwrap().display_name,
+        "Ada L."
+    );
+    assert!(in_eng(&h, &ada));
+
+    // An administrator's stop holds against `active: true` (D42).
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{ada}"),
+            Some(json!({"disabled": true})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, v) = scim(
+        "PATCH",
+        format!("/Users/{ada}"),
+        Some(json!({"Operations": [{"op": "Replace", "path": "active", "value": "True"}]})),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(
+        v["active"], true,
+        "the IdP isn't told of an administrator's stop: {v}"
+    );
+    assert!(h.app.auth.store.user(&ada).unwrap().unwrap().disabled);
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{ada}"),
+            Some(json!({"disabled": false})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // Group membership by PATCH, as JumpCloud sends it.
+    let (st, v) = scim(
+        "PATCH",
+        format!("/Groups/{eng}"),
+        Some(json!({"Operations": [
+        {"op": "remove", "path": format!("members[value eq \"{ada}\"]")}]})),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(!in_eng(&h, &ada));
+    let (st, _) = scim(
+        "PATCH",
+        format!("/Groups/{eng}"),
+        Some(json!({"Operations": [
+        {"op": "add", "path": "members", "value": [{"value": ada}]},
+        {"op": "replace", "path": "displayName", "value": "engineering"}]})),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let team = h.app.auth.store.team(&eng).unwrap().unwrap();
+    assert_eq!(team.name, "engineering");
+    assert!(in_eng(&h, &ada));
+    // A managed team is the connector's.
+    let (st, _) = h.rest("DELETE", &format!("/teams/{eng}"), None, &s).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // DELETE: disabled and no longer the IdP's; the records stay.
+    let (st, _) = scim("DELETE", format!("/Users/{ada}"), None, tok.clone()).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let u = h.app.auth.store.user(&ada).unwrap().unwrap();
+    assert!(u.disabled && u.managed.is_none());
+    let (st, _) = scim("GET", format!("/Users/{ada}"), None, tok.clone()).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (_, v) = scim("GET", format!("/Groups/{eng}"), None, tok.clone()).await;
+    assert_eq!(v["members"], json!([]));
+    // A group that goes leaves its team unmanaged.
+    let (st, _) = scim("DELETE", format!("/Groups/{eng}"), None, tok.clone()).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert!(
+        h.app
+            .auth
+            .store
+            .team(&eng)
+            .unwrap()
+            .unwrap()
+            .managed
+            .is_none()
+    );
+
+    // Audited as the connector, never with the token.
+    let (_, a) = h.rest("GET", "/audit?limit=200", None, &s).await;
+    let text = a.to_string();
+    assert!(
+        text.contains("system:scim:jc") && text.contains("scimCreateUser"),
+        "{text}"
+    );
+    assert!(!text.contains(&tok[4..]));
+
+    // Bad bodies are SCIM errors.
+    let (st, v) = scim(
+        "POST",
+        "/Users".into(),
+        Some(json!({"displayName": "x"})),
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(
+        (st, v["status"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("400")),
+        "{v}"
+    );
+    let (st, v) = scim(
+        "GET",
+        "/Users?filter=title%20eq%20%22x%22".into(),
+        None,
+        tok.clone(),
+    )
+    .await;
+    assert_eq!(
+        (st, v["scimType"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalidFilter"))
+    );
+    let big = json!({"userName": "x".repeat(2 << 20)});
+    let (st, _) = scim("POST", "/Users".into(), Some(big), tok.clone()).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // A connector that isn't provisioned any more answers 403.
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            "/connectors/jc2",
+            Some(json!({"connector": {"provisioning": "none"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/scim/v2/c/jc2/Users", None, &other).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
+/// D41 by subject, `mapped` groups, and a connector that had JIT before
+/// SCIM: its users are adopted, not made twice. Then the rate limit.
+#[tokio::test]
+async fn scim_adopts_jit_users_and_maps_groups_to_teams() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("ada-admin2");
+    let s = h.session(&admin);
+    // JIT first: Bob logs in and gets a user.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(json!({"connector": {"id": "ok", "jit": true,
+            "jumpcloud": {"client_id": "glidex", "issuer": mock.base}}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    h.rest(
+        "PUT",
+        "/connectors/ok/secrets/client_secret",
+        Some(json!({"value": SECRET})),
+        &s,
+    )
+    .await;
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "ok",
+            jc_claims(&mock, "okta-bob", "bob@corp.example")
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    let bob = h
+        .app
+        .auth
+        .store
+        .identity("conn:ok", "okta-bob")
+        .unwrap()
+        .unwrap()
+        .user_id;
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            "/connectors/ok",
+            Some(json!({"connector": {"jit": false, "provisioning": "scim",
+            "group_teams": {"Engineering": "lab"}}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let tok = h
+        .app
+        .auth
+        .scim_tokens
+        .create("ok", "", "test", None)
+        .unwrap()
+        .1;
+    let (st, v) = h
+        .rest("POST", "/teams", Some(json!({"name": "lab"})), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let lab = v["team"]["id"].as_str().unwrap().to_string();
+
+    // Okta's POST, with an externalId: Bob is adopted.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/scim/v2/c/ok/Users",
+            Some(
+                json!({"userName": "bob@corp.example", "externalId": "00u-bob",
+            "emails": [{"value": "bob@corp.example", "primary": true}]}),
+            ),
+            &tok,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["id"], bob.as_str(), "the JIT user is adopted");
+    // Carol, new: her first login is matched by the subject.
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/scim/v2/c/ok/Users",
+            Some(json!({"userName": "carol", "externalId": "okta-carol"})),
+            &tok,
+        )
+        .await;
+    let carol = v["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        h.login_with(
+            &mock,
+            "ok",
+            jc_claims(&mock, "okta-carol", "c@elsewhere.example")
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        h.app
+            .auth
+            .store
+            .identity("conn:ok", "okta-carol")
+            .unwrap()
+            .unwrap()
+            .user_id,
+        carol
+    );
+
+    // `mapped`: the group named in group_teams fills the existing team.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/scim/v2/c/ok/Groups",
+            Some(json!({"displayName": "Engineering",
+            "members": [{"value": bob}, {"value": carol}]})),
+            &tok,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let gid = v["id"].as_str().unwrap().to_string();
+    let lab_members = |h: &H| {
+        let mut v: Vec<String> = h
+            .app
+            .auth
+            .store
+            .team(&lab)
+            .unwrap()
+            .unwrap()
+            .members
+            .iter()
+            .filter(|m| m.source == auth::store::MemberSource::Connector("ok".into()))
+            .map(|m| m.user_id.clone())
+            .collect();
+        v.sort();
+        v
+    };
+    let mut both = vec![bob.clone(), carol.clone()];
+    both.sort();
+    assert_eq!(lab_members(&h), both);
+    assert!(
+        h.app.auth.store.team(&gid).unwrap().is_none(),
+        "mapped groups make no team"
+    );
+    let (_, v) = h
+        .rest(
+            "GET",
+            "/scim/v2/c/ok/Groups?filter=displayName%20eq%20%22Engineering%22",
+            None,
+            &tok,
+        )
+        .await;
+    assert_eq!(v["Resources"][0]["id"], gid.as_str());
+    // A manual member of the team stays manual.
+    let (st, _) = h
+        .rest("PUT", &format!("/teams/{lab}/members/{admin}"), None, &s)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h
+        .rest(
+            "PUT",
+            &format!("/scim/v2/c/ok/Groups/{gid}"),
+            Some(json!({"displayName": "Engineering",
+            "members": [{"value": carol}]})),
+            &tok,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(lab_members(&h), vec![carol.clone()]);
+    assert!(
+        h.app
+            .auth
+            .store
+            .team(&lab)
+            .unwrap()
+            .unwrap()
+            .members
+            .iter()
+            .any(|m| m.user_id == admin)
+    );
+
+    // Through the web UI's /api: locations say so.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/scim/v2/c/ok/Users/{carol}"))
+        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+        .header("x-forwarded-host", "glidex.example")
+        .body(Body::empty())
+        .unwrap();
+    let (_, v, _) = h.send(req).await;
+    assert_eq!(
+        v["meta"]["location"],
+        format!("https://glidex.example/api/scim/v2/c/ok/Users/{carol}")
+    );
+
+    // 20 requests a second, with a burst.
+    let mut limited = false;
+    for _ in 0..80 {
+        let (st, _) = h
+            .rest("GET", "/scim/v2/c/ok/ServiceProviderConfig", None, &tok)
+            .await;
+        if st == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "the rate limit holds");
 }

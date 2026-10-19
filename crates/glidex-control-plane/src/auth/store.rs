@@ -18,6 +18,7 @@ const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
 const IDENTITIES: TableDefinition<&str, &[u8]> = TableDefinition::new("identities");
 const TEAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("teams");
 const LINKS: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_links");
+const SCIM_GROUPS: TableDefinition<&str, &[u8]> = TableDefinition::new("scim_groups");
 /// SHA-256 (hex) of the session id → session.
 const SESSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("sessions");
 /// SHA-256 (hex) of the token → token.
@@ -104,6 +105,29 @@ pub struct Managed {
     /// SCIM `userName` (users only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>,
+    /// SCIM `name.givenName` and `name.familyName`, kept so the IdP reads
+    /// back what it wrote (users only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_name: Option<String>,
+}
+
+/// A group a connector's IdP pushed over SCIM (spec/tenancy.md D43). Its
+/// members are user ids; with `group_mode: auto` it is also the team of
+/// the same id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScimGroup {
+    pub id: String,
+    pub connector: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub members: Vec<String>,
+    pub created_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
 }
 
 /// Why a user is disabled (D20, D42, §8.3).
@@ -628,73 +652,113 @@ impl IdentityStore {
         reason: DisabledReason,
     ) -> Result<Option<(User, Deprovisioned)>, StoreError> {
         self.db.write(crate::store::Origin::Auth, |tx| {
-            let mut out = Deprovisioned::default();
-            let user = {
-                let mut users = tx.open_table(USERS)?;
-                let Some(mut u): Option<User> = users
-                    .get(id)?
+            deprovision_in(tx, id, reason)
+        })
+    }
+
+    /// Run a SCIM request's writes (spec/tenancy.md §8.1) for `connector`
+    /// in one write.
+    pub fn scim<R, E: From<StoreError> + From<crate::store::StoreError>>(
+        &self,
+        connector: &str,
+        f: impl FnOnce(&ScimTx<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            f(&ScimTx {
+                tx,
+                connector: connector.to_string(),
+            })
+        })
+    }
+
+    /// D41: the managed user of `connector` a login is, linking its
+    /// identity the first time. An identity already linked counts only if
+    /// its user is managed by `connector`; otherwise the one enabled
+    /// managed user with no identity of `provider` yet whose `external_id`
+    /// is `subject`, else whose `userName` or email is `verified_email`.
+    pub fn scim_login(
+        &self,
+        connector: &str,
+        provider: &str,
+        subject: &str,
+        verified_email: Option<&str>,
+    ) -> Result<Option<User>, StoreError> {
+        self.scim(connector, |tx| {
+            let ours = |u: &User| u.managed.as_ref().is_some_and(|m| m.connector == connector);
+            let key = Identity::key(provider, subject);
+            let known: Option<Identity> = {
+                let t = tx.tx.open_table(IDENTITIES)?;
+                t.get(key.as_str())?
                     .map(|v| serde_json::from_slice(v.value()))
                     .transpose()?
-                else {
-                    return Ok(None);
-                };
-                if !(u.disabled && u.disabled_reason == Some(DisabledReason::Admin)) {
-                    u.disabled_reason = Some(reason);
-                }
-                u.disabled = true;
-                users.insert(id, serde_json::to_vec(&u)?.as_slice())?;
-                u
             };
-            let drop_rows = |t: &mut crate::store::RecTable<'_>,
-                             drop: &dyn Fn(&[u8]) -> bool|
-             -> Result<usize, StoreError> {
-                let gone: Vec<String> = t
-                    .iter()?
-                    .filter_map(|r| r.ok())
-                    .filter(|(_, v)| drop(v.value()))
-                    .map(|(k, _)| k.value().to_string())
-                    .collect();
-                for k in &gone {
-                    t.remove(k.as_str())?;
-                }
-                Ok(gone.len())
+            if let Some(i) = known {
+                return Ok(tx.user(&i.user_id)?.filter(ours));
+            }
+            let linked: Vec<String> = tx
+                .rows::<Identity>(IDENTITIES)?
+                .into_iter()
+                .filter(|i| i.provider == provider)
+                .map(|i| i.user_id)
+                .collect();
+            let free: Vec<User> = tx
+                .users()?
+                .into_iter()
+                .filter(|u| !u.disabled && !linked.contains(&u.id))
+                .collect();
+            let one = |v: Vec<&User>| (v.len() == 1).then(|| v[0].clone());
+            let by_id = one(free
+                .iter()
+                .filter(|u| {
+                    u.managed.as_ref().and_then(|m| m.external_id.as_deref()) == Some(subject)
+                })
+                .collect());
+            let by_email = || {
+                let e = verified_email?;
+                one(free
+                    .iter()
+                    .filter(|u| {
+                        u.email
+                            .as_deref()
+                            .is_some_and(|x| x.eq_ignore_ascii_case(e))
+                            || u.managed
+                                .as_ref()
+                                .and_then(|m| m.user_name.as_deref())
+                                .is_some_and(|x| x.eq_ignore_ascii_case(e))
+                    })
+                    .collect())
             };
-            {
-                let mut t = tx.open_table(SESSIONS)?;
-                out.sessions = drop_rows(&mut t, &|v| {
-                    serde_json::from_slice::<Session>(v).is_ok_and(|s| s.user_id == id)
-                })?;
-            }
-            {
-                let mut t = tx.open_table(TOKENS)?;
-                out.tokens = drop_rows(&mut t, &|v| {
-                    serde_json::from_slice::<Token>(v).is_ok_and(
-                        |k| matches!(&k.kind, TokenKind::Personal { owner } if owner == id),
-                    )
-                })?;
-            }
-            if let Some(m) = &user.managed {
-                let source = MemberSource::Connector(m.connector.clone());
-                let mut t = tx.open_table(TEAMS)?;
-                let mut changed = Vec::new();
-                for r in t.iter()? {
-                    let (k, v) = r?;
-                    if let Ok(mut team) = serde_json::from_slice::<Team>(v.value()) {
-                        let before = team.members.len();
-                        team.members
-                            .retain(|x| !(x.user_id == id && x.source == source));
-                        if team.members.len() != before {
-                            changed.push((k.value().to_string(), team));
-                        }
-                    }
-                }
-                out.teams = changed.len();
-                for (k, team) in changed {
-                    t.insert(k.as_str(), serde_json::to_vec(&team)?.as_slice())?;
-                }
-            }
-            Ok(Some((user, out)))
+            let Some(u) = by_id.or_else(by_email) else {
+                return Ok(None);
+            };
+            tx.put(
+                IDENTITIES,
+                &key,
+                &Identity {
+                    provider: provider.to_string(),
+                    subject: subject.to_string(),
+                    user_id: u.id.clone(),
+                    email: verified_email.map(String::from),
+                    created_at: now(),
+                },
+            )?;
+            Ok::<_, StoreError>(Some(u))
         })
+    }
+
+    /// The managed users and groups of `connector`, read outside a write.
+    pub fn scim_read(&self, connector: &str) -> Result<(Vec<User>, Vec<ScimGroup>), StoreError> {
+        let users = self
+            .users()?
+            .into_iter()
+            .filter(|u| u.managed.as_ref().is_some_and(|m| m.connector == connector))
+            .collect();
+        let groups = list::<ScimGroup>(&self.db, SCIM_GROUPS)?
+            .into_iter()
+            .map(|(_, g)| g)
+            .filter(|g| g.connector == connector)
+            .collect();
+        Ok((users, groups))
     }
 
     /// Delete user `id` and what is its alone, in one write (spec/tenancy.md
@@ -1178,6 +1242,341 @@ impl IdentityStore {
         };
         txn.commit()?;
         Ok(n)
+    }
+}
+
+/// [`IdentityStore::deprovision`] inside transaction `tx`.
+fn deprovision_in(
+    tx: &crate::store::Tx<'_>,
+    id: &str,
+    reason: DisabledReason,
+) -> Result<Option<(User, Deprovisioned)>, StoreError> {
+    let mut out = Deprovisioned::default();
+    let user = {
+        let mut users = tx.open_table(USERS)?;
+        let Some(mut u): Option<User> = users
+            .get(id)?
+            .map(|v| serde_json::from_slice(v.value()))
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        if !(u.disabled && u.disabled_reason == Some(DisabledReason::Admin)) {
+            u.disabled_reason = Some(reason);
+        }
+        u.disabled = true;
+        users.insert(id, serde_json::to_vec(&u)?.as_slice())?;
+        u
+    };
+    let drop_rows = |t: &mut crate::store::RecTable<'_>,
+                     drop: &dyn Fn(&[u8]) -> bool|
+     -> Result<usize, StoreError> {
+        let gone: Vec<String> = t
+            .iter()?
+            .filter_map(|r| r.ok())
+            .filter(|(_, v)| drop(v.value()))
+            .map(|(k, _)| k.value().to_string())
+            .collect();
+        for k in &gone {
+            t.remove(k.as_str())?;
+        }
+        Ok(gone.len())
+    };
+    {
+        let mut t = tx.open_table(SESSIONS)?;
+        out.sessions = drop_rows(&mut t, &|v| {
+            serde_json::from_slice::<Session>(v).is_ok_and(|s| s.user_id == id)
+        })?;
+    }
+    {
+        let mut t = tx.open_table(TOKENS)?;
+        out.tokens = drop_rows(&mut t, &|v| {
+            serde_json::from_slice::<Token>(v)
+                .is_ok_and(|k| matches!(&k.kind, TokenKind::Personal { owner } if owner == id))
+        })?;
+    }
+    if let Some(m) = &user.managed {
+        let source = MemberSource::Connector(m.connector.clone());
+        let mut t = tx.open_table(TEAMS)?;
+        let mut changed = Vec::new();
+        for r in t.iter()? {
+            let (k, v) = r?;
+            if let Ok(mut team) = serde_json::from_slice::<Team>(v.value()) {
+                let before = team.members.len();
+                team.members
+                    .retain(|x| !(x.user_id == id && x.source == source));
+                if team.members.len() != before {
+                    changed.push((k.value().to_string(), team));
+                }
+            }
+        }
+        out.teams = changed.len();
+        for (k, team) in changed {
+            t.insert(k.as_str(), serde_json::to_vec(&team)?.as_slice())?;
+        }
+    }
+    Ok(Some((user, out)))
+}
+
+/// A SCIM request's view of the store, inside its one write
+/// ([`IdentityStore::scim`]).
+pub struct ScimTx<'a> {
+    tx: &'a crate::store::Tx<'a>,
+    pub connector: String,
+}
+
+impl ScimTx<'_> {
+    fn rows<T: DeserializeOwned>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+    ) -> Result<Vec<T>, StoreError> {
+        let t = self.tx.open_table(def)?;
+        let mut out = Vec::new();
+        for r in t.iter()? {
+            let (_, v) = r?;
+            if let Ok(x) = serde_json::from_slice(v.value()) {
+                out.push(x);
+            }
+        }
+        Ok(out)
+    }
+
+    fn put<T: Serialize>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+        v: &T,
+    ) -> Result<(), StoreError> {
+        let mut t = self.tx.open_table(def)?;
+        t.insert(key, serde_json::to_vec(v)?.as_slice())?;
+        Ok(())
+    }
+
+    fn mine(&self, m: &Option<Managed>) -> bool {
+        m.as_ref().is_some_and(|m| m.connector == self.connector)
+    }
+
+    pub fn user(&self, id: &str) -> Result<Option<User>, StoreError> {
+        let t = self.tx.open_table(USERS)?;
+        Ok(match t.get(id)? {
+            Some(v) => Some(serde_json::from_slice(v.value())?),
+            None => None,
+        })
+    }
+
+    /// The users this connector manages, oldest first.
+    pub fn users(&self) -> Result<Vec<User>, StoreError> {
+        let mut v: Vec<User> = self
+            .rows::<User>(USERS)?
+            .into_iter()
+            .filter(|u| self.mine(&u.managed))
+            .collect();
+        v.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(v)
+    }
+
+    pub fn put_user(&self, u: &User) -> Result<(), StoreError> {
+        self.put(USERS, &u.id, u)
+    }
+
+    /// Users that aren't managed but log in through this connector with
+    /// `email`: a connector that had JIT before SCIM (adopted at `POST`).
+    pub fn unmanaged_with_email(
+        &self,
+        provider: &str,
+        email: &str,
+    ) -> Result<Vec<User>, StoreError> {
+        let ids: Vec<String> = self
+            .rows::<Identity>(IDENTITIES)?
+            .into_iter()
+            .filter(|i| {
+                i.provider == provider
+                    && i.email
+                        .as_deref()
+                        .is_some_and(|e| e.eq_ignore_ascii_case(email))
+            })
+            .map(|i| i.user_id)
+            .collect();
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(u) = self.user(&id)?
+                && u.managed.is_none()
+                && !out.iter().any(|x: &User| x.id == u.id)
+            {
+                out.push(u);
+            }
+        }
+        Ok(out)
+    }
+
+    /// D20, in this write.
+    pub fn deprovision(
+        &self,
+        id: &str,
+        reason: DisabledReason,
+    ) -> Result<Option<(User, Deprovisioned)>, StoreError> {
+        deprovision_in(self.tx, id, reason)
+    }
+
+    pub fn groups(&self) -> Result<Vec<ScimGroup>, StoreError> {
+        let mut v: Vec<ScimGroup> = self
+            .rows::<ScimGroup>(SCIM_GROUPS)?
+            .into_iter()
+            .filter(|g| g.connector == self.connector)
+            .collect();
+        v.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(v)
+    }
+
+    pub fn put_group(&self, g: &ScimGroup) -> Result<(), StoreError> {
+        self.put(SCIM_GROUPS, &g.id, g)
+    }
+
+    pub fn remove_group(&self, id: &str) -> Result<(), StoreError> {
+        let mut t = self.tx.open_table(SCIM_GROUPS)?;
+        t.remove(id)?;
+        Ok(())
+    }
+
+    /// A user leaves every group of this connector (it is removed).
+    pub fn leave_groups(&self, user: &str) -> Result<(), StoreError> {
+        for mut g in self.groups()? {
+            let n = g.members.len();
+            g.members.retain(|m| m != user);
+            if g.members.len() != n {
+                self.put_group(&g)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Make the teams match the groups (D43): with `auto`, each group is
+    /// the managed team of the same id (made, renamed, or detached when the
+    /// group goes); with `mapped`, `group_teams` names the teams. Members
+    /// of a group who are enabled and managed by this connector are the
+    /// team's `connector:<id>` members, unless they are manual members
+    /// already; nobody else is.
+    pub fn sync_teams(
+        &self,
+        auto: bool,
+        group_teams: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), StoreError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let source = MemberSource::Connector(self.connector.clone());
+        let enabled: BTreeSet<String> = self
+            .users()?
+            .into_iter()
+            .filter(|u| !u.disabled)
+            .map(|u| u.id)
+            .collect();
+        let groups = self.groups()?;
+        let mut teams: Vec<Team> = self.rows::<Team>(TEAMS)?;
+        // Team id → who the groups put in it.
+        let mut want: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let members = |g: &ScimGroup| -> BTreeSet<String> {
+            g.members
+                .iter()
+                .filter(|m| enabled.contains(*m))
+                .cloned()
+                .collect()
+        };
+        if auto {
+            for g in &groups {
+                let taken = |name: &str, teams: &[Team]| {
+                    teams.iter().any(|t| t.id != g.id && t.name == name)
+                };
+                let mut name: String = g.display_name.chars().take(64).collect();
+                if taken(&name, &teams) {
+                    let suffix = format!(" ({})", self.connector);
+                    let keep = 64usize.saturating_sub(suffix.chars().count());
+                    name = g.display_name.chars().take(keep).collect::<String>() + &suffix;
+                }
+                match teams.iter_mut().find(|t| t.id == g.id) {
+                    Some(t) => {
+                        if self.mine(&t.managed) && t.name != name {
+                            t.name = name;
+                        }
+                        if let Some(m) =
+                            t.managed.as_mut().filter(|m| m.connector == self.connector)
+                        {
+                            m.external_id = g.external_id.clone();
+                        }
+                    }
+                    None => teams.push(Team {
+                        id: g.id.clone(),
+                        name,
+                        members: vec![],
+                        created_at: now(),
+                        managed: Some(Managed {
+                            connector: self.connector.clone(),
+                            external_id: g.external_id.clone(),
+                            user_name: None,
+                            given_name: None,
+                            family_name: None,
+                        }),
+                    }),
+                }
+                want.entry(g.id.clone()).or_default().extend(members(g));
+            }
+            // A group that went leaves its team behind, unmanaged and empty
+            // of what the IdP gave: its role links give nobody anything.
+            for t in teams.iter_mut() {
+                if self.mine(&t.managed) && !groups.iter().any(|g| g.id == t.id) {
+                    t.managed = None;
+                }
+            }
+        } else {
+            for g in &groups {
+                let named = [Some(&g.display_name), Some(&g.id), g.external_id.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|k| group_teams.get(k));
+                if let Some(name) = named
+                    && let Some(t) = teams.iter().find(|t| &t.name == name)
+                {
+                    want.entry(t.id.clone()).or_default().extend(members(g));
+                }
+            }
+        }
+        let before: Vec<Team> = self.rows::<Team>(TEAMS)?;
+        for t in teams.iter_mut() {
+            let wanted = want.remove(&t.id).unwrap_or_default();
+            let manual: BTreeSet<String> = t
+                .members
+                .iter()
+                .filter(|m| m.source != source)
+                .map(|m| m.user_id.clone())
+                .collect();
+            t.members
+                .retain(|m| m.source != source || wanted.contains(&m.user_id));
+            for u in wanted {
+                let has = t
+                    .members
+                    .iter()
+                    .any(|m| m.user_id == u && m.source == source);
+                if !has && !manual.contains(&u) {
+                    t.members.push(TeamMember {
+                        user_id: u,
+                        source: source.clone(),
+                    });
+                }
+            }
+            if before.iter().find(|b| b.id == t.id) != Some(t) {
+                self.put(TEAMS, &t.id.clone(), t)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `user` becomes a member of `tenant` (its connector's
+    /// `default_tenant`), in this write.
+    pub fn join_tenant(&self, tenant: &str, user: &str) -> Result<(), StoreError> {
+        crate::tenants::add_member_in(
+            self.tx,
+            tenant,
+            Ent::User(user.to_string()),
+            &format!("connector:{}", self.connector),
+        )
     }
 }
 

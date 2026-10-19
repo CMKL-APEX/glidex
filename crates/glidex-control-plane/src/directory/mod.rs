@@ -14,6 +14,7 @@
 pub mod invitations;
 pub mod oidc;
 pub mod presets;
+pub mod scim;
 pub mod scim_tokens;
 pub mod secrets;
 
