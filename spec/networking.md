@@ -516,6 +516,7 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `delete_uplink` | full | `{bridge, name}` |
 | `ensure_nat` · `delete_nat` | full | `NatSpec` · `{bridge}` → `NatState` |
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
+| `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (host-topology.md §5.3) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 

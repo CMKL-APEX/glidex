@@ -642,6 +642,30 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "readHostTopology",
         get(nodes::topology),
     )
+    .add(
+        "POST",
+        "/nodes/{id}/devices/{address}/prepare",
+        "prepareDevice",
+        post(nodes::prepare_device),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/devices/{address}/release",
+        "releaseDevice",
+        post(nodes::release_device),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/devices/{address}/cordon",
+        "cordonDevice",
+        post(nodes::cordon_device),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/devices/{address}/uncordon",
+        "cordonDevice",
+        post(nodes::uncordon_device),
+    )
     .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
     .add(
         "PUT",

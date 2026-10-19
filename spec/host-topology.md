@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b and HT2 implemented** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2 and HT3 implemented** (§15). §17 records
 where the implementation differs from the design. Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
@@ -864,7 +864,7 @@ HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
 and HT4 are the user-visible parts.
 
-Done: **HT0** (#63), **HT0b** (#76), **HT1**, **HT1b** (#67), **HT2** (#71), with the part of HT1 it
+Done: **HT0** (#63), **HT0b** (#76), **HT1** (#78), **HT1b** (#67), **HT2** (#71), **HT3**, with the part of HT1 it
 needs: the topology summary in node status (§3.1, in the reduced shape
 of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
@@ -942,4 +942,22 @@ Where HT2 differs from the design above, and why:
   Not done from §4: refreshing on udev events and `gxctl node topology
   refresh` (H14): the summary is refreshed with the rest of node status,
   and the tree is read fresh on each request.
+- **HT3** (§5.3, §5.4): netd ops `prepare_device`, `release_device`,
+  `list_prepared_devices`, with a `devices` table keyed by IOMMU group;
+  the udev rule is one file per group, and the group device is given to
+  the VMs' group at once as well. The actions are `prepareDevice`,
+  `releaseDevice` and `cordonDevice` (also uncordon) in `host.devices`;
+  a server runs prepare and release on another node over
+  `/cluster/v1/devices/{address}/{op}` (servers only). Cordoned devices
+  are `spec.cordoned_devices` of the node. Health: AER counts in the
+  tree; the VM controller compares each held device's uncorrectable
+  count with the one recorded at launch (`status.instance.device_errors`)
+  and whether it is still on the bus, setting `DeviceHealthy` and
+  recording `DeviceError` once per turn to false; link changes and
+  reset failures aren't watched separately (a reset failure fails the
+  start, as before). Not done: the installer's `--vfio-devices`
+  persistence, and node events for devices no VM holds. Found on the
+  way: `glidex_ovs::nic::pci_netdevs` read a `net_names` file sysfs
+  doesn't have, so netd's host-NIC check before a DPDK bind never saw a
+  NIC; it reads the device's `net/` directory now.
 

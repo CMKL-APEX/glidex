@@ -25,6 +25,7 @@ pub mod source_build;
 pub mod stats;
 pub mod tuning;
 pub mod uplink;
+pub mod vfio;
 pub mod vm_port;
 pub mod vsctl;
 

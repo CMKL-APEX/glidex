@@ -2193,14 +2193,26 @@ impl VmManager {
             }
         }
         // A node that reports no groups: claims are by address only.
-        let groups = self
-            .nodes
-            .get(node)
-            .ok()
-            .flatten()
-            .map(|n| n.status.pci_groups)
+        let rec = self.nodes.get(node).ok().flatten();
+        let cordoned = rec
+            .as_ref()
+            .map(|n| n.spec.cordoned_devices.clone())
+            .unwrap_or_default();
+        let groups = rec.map(|n| n.status.pci_groups).unwrap_or_default();
+        // A cordoned device stays with the VM that has it (spec/host-topology.md §5.4).
+        let had: Vec<String> = except
+            .and_then(|id| vms.get(id))
+            .map(|v| {
+                Self::devices_held(v)
+                    .map(|d| crate::scheduler::pci_address(d))
+                    .collect()
+            })
             .unwrap_or_default();
         for d in devices {
+            let addr = crate::scheduler::pci_address(d);
+            if cordoned.contains(&addr) && !had.contains(&addr) {
+                return Err(ImageError::InUse(format!("PCI device {addr} is cordoned")).into());
+            }
             if let Some(why) = crate::scheduler::device_taken(&groups, &claimed, d) {
                 return Err(ImageError::InUse(why).into());
             }
@@ -3517,6 +3529,73 @@ impl VmManager {
         crate::topology::read_tree(summary, uplinks)
     }
 
+    /// `prepare` or `release` this host's PCI device `address` through
+    /// netd (spec/host-topology.md §5.3).
+    pub fn local_device_op(
+        &self,
+        address: &str,
+        op: &str,
+    ) -> Result<serde_json::Value, VmManagerError> {
+        device_op_on(&self.netd, address, op)
+    }
+
+    /// `prepare` or `release` node `id`'s device `address`: here, or on that
+    /// node over the cluster's node API (`/cluster/v1/devices/...`).
+    pub async fn node_device_op(
+        &self,
+        id: &str,
+        address: &str,
+        op: &str,
+    ) -> Result<serde_json::Value, VmManagerError> {
+        if id == self.local_node_id() {
+            let (netd, a, o) = (self.netd.clone(), address.to_string(), op.to_string());
+            return tokio::task::spawn_blocking(move || device_op_on(&netd, &a, &o))
+                .await
+                .map_err(|e| VmManagerError::Network(NetError::Unavailable(e.to_string())))?;
+        }
+        let unavailable = |m: String| VmManagerError::Network(NetError::Unavailable(m));
+        let cluster = self
+            .cluster()
+            .ok_or_else(|| unavailable("this host is not part of a cluster".into()))?;
+        let node = self
+            .nodes
+            .get(id)
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+            .ok_or_else(|| VmManagerError::Network(NetError::NotFound(format!("node {id}"))))?;
+        let addr = node
+            .status
+            .advertise
+            .ok_or_else(|| unavailable(format!("node {} has no address", node.spec.name)))?;
+        let r = cluster
+            .client
+            .request_timeout(
+                &addr.to_string(),
+                hyper::Method::POST,
+                &format!("/cluster/v1/devices/{address}/{op}"),
+                &[],
+                bytes::Bytes::new(),
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .map_err(|e| unavailable(format!("node {}: {e}", node.spec.name)))?;
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+        if r.status.is_success() {
+            return Ok(body);
+        }
+        // The node's netd refused: pass its answer on.
+        Err(VmManagerError::Network(NetError::Netd(
+            glidex_netd::proto::ErrorBody {
+                code: body["error"].as_str().unwrap_or("unavailable").to_string(),
+                message: format!(
+                    "node {}: {}",
+                    node.spec.name,
+                    body["message"].as_str().unwrap_or("no answer")
+                ),
+                details: serde_json::Value::Null,
+            },
+        )))
+    }
+
     /// Node `id`'s full topology: this host's, or read on that node over
     /// the cluster's node API (`/cluster/v1/topology`).
     pub async fn node_topology(
@@ -4666,6 +4745,17 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
         serde_json::to_value(m.local_topology()).ok()
     }
 
+    fn device_op(&self, address: &str, op: &str) -> Result<serde_json::Value, (String, String)> {
+        let m = self
+            .0
+            .upgrade()
+            .ok_or(("unavailable".to_string(), "shutting down".to_string()))?;
+        m.local_device_op(address, op).map_err(|e| match e {
+            VmManagerError::Network(NetError::Netd(b)) => (b.code, b.message),
+            e => ("internal".to_string(), e.to_string()),
+        })
+    }
+
     fn left_ovn<'a>(
         &'a self,
         node: &'a crate::node::Node,
@@ -4687,4 +4777,20 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
             std::process::exit(75);
         }
     }
+}
+
+/// `prepare` or `release` PCI device `address` through `netd`
+/// (spec/host-topology.md §5.3).
+fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
+    let address = address.to_string();
+    let r = match op {
+        "prepare" => netd.call(Op::PrepareDevice { address }),
+        "release" => netd.call(Op::ReleaseDevice { address }),
+        _ => {
+            return Err(VmManagerError::Network(NetError::Invalid(format!(
+                "no device op {op}"
+            ))));
+        }
+    };
+    r.map_err(VmManagerError::Network)
 }

@@ -198,6 +198,38 @@ impl NodeService for Svc {
         op_async!(self, ctx, req, node::get_node_topology)
     }
 
+    async fn prepare_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, PrepareDeviceRequest>,
+    ) -> ServiceResult<PrepareDeviceResponse> {
+        op_async!(self, ctx, req, node::prepare_device)
+    }
+
+    async fn release_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ReleaseDeviceRequest>,
+    ) -> ServiceResult<ReleaseDeviceResponse> {
+        op_async!(self, ctx, req, node::release_device)
+    }
+
+    async fn cordon_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CordonDeviceRequest>,
+    ) -> ServiceResult<CordonDeviceResponse> {
+        op!(self, ctx, req, node::cordon_device)
+    }
+
+    async fn uncordon_device(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UncordonDeviceRequest>,
+    ) -> ServiceResult<UncordonDeviceResponse> {
+        op!(self, ctx, req, node::uncordon_device)
+    }
+
     async fn drain_node(
         &self,
         ctx: RequestContext,

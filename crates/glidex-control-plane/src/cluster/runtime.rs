@@ -47,6 +47,11 @@ pub trait NodeHandlers: Send + Sync {
     fn topology(&self) -> Option<serde_json::Value> {
         None
     }
+    /// `prepare` or `release` this node's PCI device (spec/host-topology.md
+    /// §5.3); an error is netd's (code, message).
+    fn device_op(&self, _address: &str, _op: &str) -> Result<serde_json::Value, (String, String)> {
+        Err(("unavailable".into(), "not available".into()))
+    }
     /// This node's OVN chassis and tunnels from its netd (spec/clustering-ui.md §8b).
     fn ovn_status<'a>(
         &'a self,

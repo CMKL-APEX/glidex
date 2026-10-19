@@ -5,9 +5,25 @@ import { cpuList, num, pciClassWord } from "../types";
 import { Badge, Card, ErrorBanner, errorMessage } from "./ui";
 import { LoadingCard } from "./Loading";
 
-/** One device a VM could be given: what it is, where it sits, and whether
- * it is ready for passthrough (and if not, why). */
-function Device({ d }: { d: PciFunction }) {
+/** What the viewer may do with a node's devices, and how. */
+interface DeviceOps {
+  manage: boolean;
+  cordoned: Set<string>;
+  run: (op: "prepare" | "release" | "cordon" | "uncordon", address: string) => void;
+  busy: string | null;
+}
+
+/** One device a VM could be given: what it is, where it sits, whether it
+ * is ready for passthrough (and if not, why), its errors, and what a host
+ * administrator can do with it (spec/host-topology.md §5.3–5.4). */
+function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
+  const cordoned = ops.cordoned.has(d.address);
+  const errors = num(d.aer?.nonfatal) + num(d.aer?.fatal);
+  const button = (op: "prepare" | "release" | "cordon" | "uncordon", label: string) => (
+    <button className="text-xs text-sky-700 hover:underline disabled:opacity-50" disabled={ops.busy !== null} onClick={() => ops.run(op, d.address)}>
+      {ops.busy === `${op}:${d.address}` ? "…" : label}
+    </button>
+  );
   return (
     <li className="py-1 border-t border-gray-100 first:border-t-0">
       <div className="flex flex-wrap items-center gap-2">
@@ -17,6 +33,14 @@ function Device({ d }: { d: PciFunction }) {
           {(d.vendor_id ?? "").replace(/^0x/, "")}:{(d.device_id ?? "").replace(/^0x/, "")}
         </span>
         {d.ready ? <Badge kind="ok">ready</Badge> : <Badge kind="warn">not ready</Badge>}
+        {cordoned && <Badge kind="denied">cordoned</Badge>}
+        {errors > 0 && <Badge kind="denied">{errors} PCIe errors</Badge>}
+        {ops.manage && (
+          <span className="ml-auto flex gap-2">
+            {d.driver !== "vfio-pci" ? button("prepare", "Prepare") : button("release", "Release")}
+            {cordoned ? button("uncordon", "Uncordon") : button("cordon", "Cordon")}
+          </span>
+        )}
       </div>
       <div className="text-xs text-gray-500">
         {d.driver ?? "no driver"}
@@ -32,9 +56,11 @@ function Device({ d }: { d: PciFunction }) {
 
 /** A node's NUMA nodes with their CPUs, memory, hugepages and devices
  * (spec/host-topology.md §4.3), read on the node itself. */
-export default function TopologyCard({ node }: { node: string }) {
+export default function TopologyCard({ node, cordoned, manage, onChanged }: { node: string; cordoned: string[]; manage: boolean; onChanged: () => void }) {
   const [t, setT] = useState<HostTopology | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let live = true;
     api
@@ -44,8 +70,28 @@ export default function TopologyCard({ node }: { node: string }) {
     return () => {
       live = false;
     };
-  }, [node]);
-  if (error) {
+  }, [node, tick]);
+  const ops: DeviceOps = {
+    manage,
+    cordoned: new Set(cordoned),
+    busy,
+    run: async (op, address) => {
+      if (op === "prepare" && !confirm(`Bind ${address} and the rest of its IOMMU group to vfio-pci? The host's driver lets go of them.`)) return;
+      setBusy(`${op}:${address}`);
+      setError(null);
+      try {
+        const call = { prepare: api.prepareDevice, release: api.releaseDevice, cordon: api.cordonDevice, uncordon: api.uncordonDevice }[op];
+        await call(node, address);
+        setTick((x) => x + 1);
+        onChanged();
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+  };
+  if (error && !t) {
     return (
       <Card title="Topology">
         <ErrorBanner error={error} />
@@ -59,6 +105,7 @@ export default function TopologyCard({ node }: { node: string }) {
   const loose = devices.filter((d) => d.numa_node === undefined);
   return (
     <Card title={`Topology (${numa.length} NUMA ${numa.length === 1 ? "node" : "nodes"})`}>
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
       {(t.warnings ?? []).length > 0 && (
         <ul className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 space-y-0.5">
           {(t.warnings ?? []).map((w, i) => (
@@ -93,7 +140,7 @@ export default function TopologyCard({ node }: { node: string }) {
               {mine.length > 0 ? (
                 <ul className="mt-2 text-sm">
                   {mine.map((d) => (
-                    <Device key={d.address} d={d} />
+                    <Device key={d.address} d={d} ops={ops} />
                   ))}
                 </ul>
               ) : (
@@ -108,7 +155,7 @@ export default function TopologyCard({ node }: { node: string }) {
           <div className="text-sm font-medium text-gray-900">Devices without a NUMA node</div>
           <ul className="text-sm">
             {loose.map((d) => (
-              <Device key={d.address} d={d} />
+              <Device key={d.address} d={d} ops={ops} />
             ))}
           </ul>
         </div>

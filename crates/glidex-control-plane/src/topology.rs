@@ -296,6 +296,43 @@ impl PcieLink {
     }
 }
 
+/// AER error counts since boot (spec/host-topology.md §5.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AerCounts {
+    pub correctable: u64,
+    pub nonfatal: u64,
+    pub fatal: u64,
+}
+
+impl AerCounts {
+    /// Uncorrectable errors, fatal or not: what makes a device unhealthy.
+    pub fn uncorrectable(&self) -> u64 {
+        self.nonfatal + self.fatal
+    }
+}
+
+/// The `TOTAL_ERR_*` line of an `aer_dev_*` file (`TOTAL_ERR_FATAL 0`).
+pub fn aer_total(text: &str) -> Option<u64> {
+    text.lines()
+        .find(|l| l.starts_with("TOTAL_ERR"))
+        .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+}
+
+/// A device's AER counts from sysfs; `None` without AER.
+pub fn read_aer(address: &str) -> Option<AerCounts> {
+    let dir = std::path::Path::new("/sys/bus/pci/devices").join(address);
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f))
+            .ok()
+            .and_then(|t| aer_total(&t))
+    };
+    Some(AerCounts {
+        correctable: read("aer_dev_correctable")?,
+        nonfatal: read("aer_dev_nonfatal").unwrap_or(0),
+        fatal: read("aer_dev_fatal").unwrap_or(0),
+    })
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sriov {
     /// A physical function: VFs it can have, and has.
@@ -339,6 +376,8 @@ pub struct PciFunction {
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aer: Option<AerCounts>,
 }
 
 /// A gap the node reports, never acts on (§5.2).
@@ -376,6 +415,7 @@ pub struct RawPci {
     pub link: Option<PcieLink>,
     pub sriov: Option<Sriov>,
     pub physfn: Option<String>,
+    pub aer: Option<AerCounts>,
 }
 
 /// What readiness depends on besides the device.
@@ -556,6 +596,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             assignable,
             ready: assignable && not_ready.is_empty(),
             not_ready,
+            aer: r.aer,
         });
     }
     devices.sort_by(|a, b| a.address.cmp(&b.address));
@@ -624,6 +665,7 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
                 enabled_vfs: num("sriov_numvfs").unwrap_or(0),
             }),
             physfn: link_name(&dir, "physfn"),
+            aer: read_aer(&address),
             address,
         });
     }
@@ -956,6 +998,19 @@ mod tests {
             vec!["/dev/vfio/31 can't be opened by this user".to_string()]
         );
         assert!(!func(&t, "0000:88:00.0").ready, "the NIC is on mlx5_core");
+    }
+
+    #[test]
+    fn aer_totals_are_read_from_their_last_line() {
+        let text = "Undefined 0\nDLP 0\nTLP 2\nTOTAL_ERR_FATAL 3\n";
+        assert_eq!(aer_total(text), Some(3));
+        assert_eq!(aer_total("nothing"), None);
+        let c = AerCounts {
+            correctable: 9,
+            nonfatal: 1,
+            fatal: 2,
+        };
+        assert_eq!(c.uncorrectable(), 3);
     }
 
     #[test]

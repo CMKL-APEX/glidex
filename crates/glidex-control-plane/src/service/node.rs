@@ -69,6 +69,105 @@ pub async fn get_node_topology(
     })
 }
 
+/// The node and device a device operation names, authorized for the
+/// route's action on that node's host.
+fn device_target(call: &Call, id: String, address: &str) -> ServiceResult<(String, String)> {
+    let id = node_key(call, id)?;
+    let mut es = EntitySet::new();
+    es.host(&id);
+    call.require(Ent::host_of(&id), es)?;
+    let addr = crate::api::vms::device_bdf(address)?;
+    call.set_target(format!("node:{id}/device:{addr}"));
+    Ok((id, addr))
+}
+
+/// `POST /nodes/{id}/devices/{address}/prepare` (spec/host-topology.md
+/// §5.3): its IOMMU group bound to vfio-pci on that node.
+pub async fn prepare_device(
+    call: &Call,
+    req: pb::PrepareDeviceRequest,
+) -> ServiceResult<pb::PrepareDeviceResponse> {
+    let (id, addr) = device_target(call, req.id, &req.address)?;
+    let v = call
+        .manager()
+        .node_device_op(&id, &addr, "prepare")
+        .await
+        .map_err(crate::service::host::manager_err)?;
+    let p: glidex_ovs::vfio::Prepared = serde_json::from_value(v)
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, "unavailable", e.to_string()))?;
+    Ok(pb::PrepareDeviceResponse {
+        address: p.address,
+        iommu_group: p.iommu_group,
+        members: p
+            .members
+            .into_iter()
+            .map(|m| pb::PreparedMember {
+                address: m.address,
+                previous_driver: m.previous_driver,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    })
+}
+
+/// `POST /nodes/{id}/devices/{address}/release`: back on its drivers.
+pub async fn release_device(
+    call: &Call,
+    req: pb::ReleaseDeviceRequest,
+) -> ServiceResult<pb::ReleaseDeviceResponse> {
+    let (id, addr) = device_target(call, req.id, &req.address)?;
+    call.manager()
+        .node_device_op(&id, &addr, "release")
+        .await
+        .map_err(crate::service::host::manager_err)?;
+    Ok(Default::default())
+}
+
+/// Add or take `addr` off node `id`'s cordoned devices (§5.4).
+fn set_cordon(call: &Call, id: String, address: &str, cordon: bool) -> ServiceResult<Vec<String>> {
+    let (id, addr) = device_target(call, id, address)?;
+    let store = call.manager().nodes();
+    let mut n = store.get(&id).map_err(store_err)?.ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("node {id} not found"),
+        )
+    })?;
+    let changed = if cordon {
+        n.spec.cordoned_devices.insert(addr)
+    } else {
+        n.spec.cordoned_devices.remove(&addr)
+    };
+    if changed {
+        n.meta.generation += 1;
+        n.meta.resource_version += 1;
+        store.put(&n).map_err(store_err)?;
+    }
+    Ok(n.spec.cordoned_devices.into_iter().collect())
+}
+
+pub fn cordon_device(
+    call: &Call,
+    req: pb::CordonDeviceRequest,
+) -> ServiceResult<pb::CordonDeviceResponse> {
+    Ok(pb::CordonDeviceResponse {
+        cordoned: set_cordon(call, req.id, &req.address, true)?,
+        ..Default::default()
+    })
+}
+
+pub fn uncordon_device(
+    call: &Call,
+    req: pb::UncordonDeviceRequest,
+) -> ServiceResult<pb::UncordonDeviceResponse> {
+    Ok(pb::UncordonDeviceResponse {
+        cordoned: set_cordon(call, req.id, &req.address, false)?,
+        ..Default::default()
+    })
+}
+
 pub fn get_node(call: &Call, req: pb::GetNodeRequest) -> ServiceResult<pb::GetNodeResponse> {
     let id = node_key(call, req.id)?;
     let mut es = EntitySet::new();

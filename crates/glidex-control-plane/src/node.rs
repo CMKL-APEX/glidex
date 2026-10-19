@@ -73,6 +73,10 @@ pub struct NodeSpec {
     /// each value once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_spare_files_before: Option<u64>,
+    /// PCI devices (addresses) no new VM gets (spec/host-topology.md
+    /// §5.4); the VM holding one keeps it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub cordoned_devices: std::collections::BTreeSet<String>,
 }
 
 /// What an administrator chose for a node's `br-int` datapath.
@@ -506,6 +510,7 @@ impl NodeStore {
                     br_int_datapath: Default::default(),
                     bridge_mappings: Default::default(),
                     drop_spare_files_before: None,
+                    cordoned_devices: Default::default(),
                 },
             ),
             None => return Ok(None),

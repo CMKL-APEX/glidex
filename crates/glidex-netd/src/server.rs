@@ -2,7 +2,7 @@
 
 use crate::auth::{self, Peer};
 use crate::proto::*;
-use crate::store::{self, BRIDGES, META, NAT, Store, UPLINKS, VM_PORTS};
+use crate::store::{self, BRIDGES, DEVICES, META, NAT, Store, UPLINKS, VM_PORTS};
 use crate::supervisor::Supervisor;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
@@ -235,6 +235,15 @@ impl Netd {
                 Ok(Value::Null)
             }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
+            Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
+            Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
+            Op::ListPreparedDevices => to_value(
+                self.store
+                    .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
+                    .into_iter()
+                    .map(|(_, p)| p)
+                    .collect::<Vec<_>>(),
+            ),
             Op::LeaveOvn { confirm } => {
                 glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
                 tracing::info!("left OVN");
@@ -363,6 +372,60 @@ impl Netd {
     }
 
     // ---- uplinks -------------------------------------------------------
+
+    /// The addresses of this host's DPDK uplinks.
+    fn dpdk_uplink_addresses(&self) -> Result<Vec<String>, OvsError> {
+        Ok(self
+            .uplinks()?
+            .into_iter()
+            .filter_map(|r| match r.spec.kind {
+                UplinkKind::Dpdk { pci, .. } => Some(pci),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// spec/host-topology.md §5.3: bind the device's IOMMU group to
+    /// vfio-pci and give its group device to the VMs' group, remembering
+    /// the drivers for `release_device`. A group prepared already is
+    /// prepared again with what it had first.
+    fn prepare_device(&self, address: &str) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
+        let address = address.to_ascii_lowercase();
+        let uplinks = self.dpdk_uplink_addresses()?;
+        let mut p = glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group)?;
+        if let Some(before) = self
+            .store
+            .get::<glidex_ovs::vfio::Prepared>(DEVICES, &p.iommu_group)?
+        {
+            for m in &mut p.members {
+                if let Some(b) = before.members.iter().find(|b| b.address == m.address) {
+                    m.previous_driver = b.previous_driver.clone().or(m.previous_driver.take());
+                }
+            }
+        }
+        self.store.put(DEVICES, &p.iommu_group.clone(), &p)?;
+        tracing::info!(device = %address, group = %p.iommu_group, "prepared for passthrough");
+        Ok(p)
+    }
+
+    /// Undo `prepare_device` for the group `address` is in.
+    fn release_device(&self, address: &str) -> Result<(), OvsError> {
+        let address = address.to_ascii_lowercase();
+        let found = self
+            .store
+            .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
+            .into_iter()
+            .find(|(_, p)| p.members.iter().any(|m| m.address == address));
+        let Some((group, p)) = found else {
+            return Err(OvsError::not_found(format!(
+                "{address} was not prepared by glidex"
+            )));
+        };
+        glidex_ovs::vfio::release(self.ex(), &p)?;
+        self.store.delete(DEVICES, &group)?;
+        tracing::info!(device = %address, group = %group, "released from passthrough");
+        Ok(())
+    }
 
     fn uplinks(&self) -> Result<Vec<UplinkRecord>, OvsError> {
         Ok(self

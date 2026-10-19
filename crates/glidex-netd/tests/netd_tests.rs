@@ -1615,3 +1615,57 @@ fn a_port_moves_between_bridges_without_recreating_its_tap() {
         "{calls:?}"
     );
 }
+
+/// spec/host-topology.md §5.3: a device's IOMMU group is bound to
+/// vfio-pci, recorded, listed and put back; a device netd didn't prepare
+/// can't be released.
+#[test]
+fn devices_are_prepared_for_passthrough_and_released() {
+    let exec = exec();
+    for (bdf, class, driver) in [
+        ("0000:07:00.0", "0x030200", "nvidia"),
+        ("0000:07:00.1", "0x040300", "snd_hda_intel"),
+    ] {
+        exec.file(&format!("/sys/bus/pci/devices/{bdf}"), "");
+        exec.file(&format!("/sys/bus/pci/devices/{bdf}/class"), class);
+        exec.file(
+            &format!("/sys/bus/pci/devices/{bdf}/uevent"),
+            &format!("DRIVER={driver}\n"),
+        );
+        exec.link(&format!("/sys/bus/pci/devices/{bdf}/iommu_group"), "30");
+        exec.link(&format!("/sys/kernel/iommu_groups/30/devices/{bdf}"), bdf);
+    }
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    let p = netd
+        .handle(
+            Op::PrepareDevice {
+                address: "0000:07:00.0".into(),
+            },
+            &peer(),
+        )
+        .unwrap();
+    assert_eq!(p["iommu_group"], "30", "{p}");
+    assert_eq!(p["members"].as_array().unwrap().len(), 2, "{p}");
+    let listed = netd.handle(Op::ListPreparedDevices, &peer()).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    // Either function of the group releases it.
+    netd.handle(
+        Op::ReleaseDevice {
+            address: "0000:07:00.1".into(),
+        },
+        &peer(),
+    )
+    .unwrap();
+    let listed = netd.handle(Op::ListPreparedDevices, &peer()).unwrap();
+    assert!(listed.as_array().unwrap().is_empty(), "{listed}");
+    let e = netd
+        .handle(
+            Op::ReleaseDevice {
+                address: "0000:07:00.0".into(),
+            },
+            &peer(),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("was not prepared"), "{e}");
+}

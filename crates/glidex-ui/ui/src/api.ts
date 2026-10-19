@@ -972,6 +972,12 @@ export const getNode = (id: string) => rpc(NodeService.method.getNode, { id }).t
 /** A node's NUMA and PCIe topology, read on that node (spec/host-topology.md §3.2). */
 export const getNodeTopology = (id: string) =>
   rpc(NodeService.method.getNodeTopology, { id }).then((r) => r.topology as unknown as HostTopology);
+/** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/host-topology.md §5.3). */
+export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });
+export const releaseDevice = (id: string, address: string) => rpc(NodeService.method.releaseDevice, { id, address });
+/** No new VM gets a cordoned device (§5.4). */
+export const cordonDevice = (id: string, address: string) => rpc(NodeService.method.cordonDevice, { id, address });
+export const uncordonDevice = (id: string, address: string) => rpc(NodeService.method.uncordonDevice, { id, address });
 /** A node's br-int datapath (spec/clustering.md §11.6). */
 export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) =>
   rpc(NodeService.method.configureNodeOvn, { id, br_int_datapath }).then((r) => r as ConfigureNodeOvnResponse);
