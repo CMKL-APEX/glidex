@@ -725,7 +725,7 @@ deletes.
 |---|---|
 | Cluster membership | init, join and rejoin tokens, remove, forget, purge, drain, detach, imports, CA rotation, snapshots |
 | Host networking | OVS install, DPDK, bridges, uplinks, node-scope networks, OVN and the edge router |
-| Devices | PCI/VFIO grants. GPUs, DPUs and other accelerators: later (§20). |
+| Devices | PCI/VFIO grants. GPUs, DPUs and other accelerators: later (§20, [host-topology.md](host-topology.md)). |
 | Images | the cluster's image library |
 | Trust and admission | which directories it trusts and which of their tenants it admits, with caps and its own labels (`cluster.trust`, `cluster.admissions`); its fleet, its admission policies there, moving to another fleet (D34, D37); `max_staleness` per directory |
 | Policy | its site policies; audit and usage of what runs on it; support access to it (D15) |
@@ -1247,7 +1247,10 @@ T3–T7 get their own task lists when they start; per-protocol code under
   place of the cluster CA's node certificates (clustering.md §12.1).
 - **GPUs, DPUs and other server-attached accelerators**: modelling,
   scheduling and granting them to tenants; today's PCI grants (D25)
-  stay.
+  stay. Designed in [host-topology.md](host-topology.md): each node's
+  NUMA and PCIe topology, NUMA-aware and dedicated-CPU VMs, device
+  pools granted to tenants and projects (`pci.allow` by `pool`), quotas
+  per pool (`devices.<pool>`) and per-node VFIO claims.
 - **Federation between fleets**: for now a tenant or directory that
   wants clusters of several fleets registers in each (D37).
 - **Consolidated billing** per fleet account: usage reported by the

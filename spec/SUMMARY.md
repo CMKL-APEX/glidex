@@ -39,6 +39,7 @@
 
 - [Clustering](clustering.md)
 - [Clustering UI](clustering-ui.md)
+- [Host topology](host-topology.md)
 - [Cluster runbook](cluster-runbook.md)
 
 # Installation
