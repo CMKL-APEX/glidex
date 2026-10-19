@@ -178,6 +178,18 @@ already taken on that node is refused. Prepare each host (IOMMU,
 agent has no local API for `gxctl`; to list an agent's devices, use the
 web UI that agent serves, which runs the request on the agent.
 
+## NUMA
+
+A device is attached to one NUMA node of the host (`cat
+/sys/bus/pci/devices/0000:41:00.0/numa_node`). A VM with
+`numa_policy` (and, for pinned vCPUs, `cpu_policy:
+CPU_POLICY_DEDICATED`) gets its memory and vCPUs on its devices' node;
+see [NUMA and dedicated CPUs](../user-guide/vms.md#numa-and-dedicated-cpus).
+With `NUMA_POLICY_STRICT`, devices on two NUMA nodes, or a device whose
+firmware reports `-1`, are refused. Each node reports its NUMA nodes,
+cores and devices' NUMA nodes in its record (`GET /nodes/{id}`,
+`status.topology`).
+
 ## Troubleshooting
 
 | Symptom | Check |

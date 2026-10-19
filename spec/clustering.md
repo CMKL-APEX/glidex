@@ -857,6 +857,14 @@ changes.
      memory plus a quarter (at least 256 MiB), else ordinary memory
      (host-topology.md §8a). The page size is recorded in
      `status.placement.page_kib`, and the node launches with it;
+   - a `numa_policy` or `cpu_policy` (host-topology.md §8.2): a NUMA node
+     of the node's `status.topology` with the VM's devices, its memory or
+     hugepages and, dedicated, free CPUs (whole cores unless
+     `cluster.scheduler.dedicated_whole_cores` is off, never reserved
+     ones); `strict` refuses the node when none fits, `preferred` takes
+     the whole node with `NumaAligned=False`. Dedicated CPUs shrink the
+     shared vCPU capacity. A node without a topology takes no policy.
+     The NUMA node and CPUs go in `status.placement`;
    - the hypervisor type is installed;
    - vhost-user NICs need `br_int_datapath = netdev` (cluster networks)
      or the node network's bridge;
