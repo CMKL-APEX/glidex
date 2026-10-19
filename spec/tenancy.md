@@ -115,6 +115,9 @@ organizations that **operate** it, and lets each keep its own identity.
 | D38 | The fleet's directory and accounts | A fleet runs a directory of its own (the same directory software, D27), owned by the fleet operator's tenant: **fleet admins** are its members. Each organization that uses the fleet has an **account**, a tenant of that directory whose members (**fleet users**: mostly tenant admins and cluster operators of that organization) manage the account's registrations. An account can add a connector for its own IdP, so its people log in with their usual identity. Fleet admins manage accounts and their registry rights. Consolidated billing will attach to accounts (§20). | The registry needs owners and administrators like anything else; reusing the directory and tenant model gives logins, connectors, roles, audit and Cedar boundaries without a second system. |
 | D39 | Google accounts | The `google` preset serves **Google Workspace** (`accounts: workspace`, the default) and **consumer Google accounts** (`accounts: any`). Workspace logins are allowed by the ID token's `hd` claim, which must be one of `settings.domains`, never by the email's domain. A consumer connector admits only people the directory already knows: an invitation (D40), an address in `allowed_emails`, or (with `jit: false`) a linked identity. It needs `email_verified`. No tenant claims a public mail domain (`gmail.com`, `googlemail.com`). | Anyone can open a consumer Google account under any email address, so only `hd` proves Workspace membership. Consumer logins are a way in for known people, not signup (D31). |
 | D40 | Invitations | A directory owner or a tenant admin invites an **email address** to a tenant, with a tenant role, through one connector. The invitation is a link with a secret. The first login through that connector that brings the secret, with a **verified** email equal to the invited one, takes it: once, within 7 days. Only a hash of the secret is stored. It works with `jit: false`. | A gated connector needs a way in that doesn't need the IdP's subject in advance. The invitation names the tenant and the role up front. |
+| D41 | A SCIM user meets its login | A user created by SCIM is a **managed user** of that connector, keyed by the SCIM `id` glidex assigns, with the IdP's `externalId` when it sends one (JumpCloud doesn't), `userName` and primary email. The first login through the **same** connector with no identity yet is matched to the one enabled managed user whose `external_id` equals the token's subject, else whose `userName` or primary email equals the token's **verified** email (case-insensitive). The identity `(connector, subject)` is then linked (D17) and later logins use it. A connector with `provisioning: scim` lets in only its managed users: no JIT and no invitations through it. | The login and the provisioning come from one IdP, through one connector, so its verified email is the same person; the IdP's SCIM and OIDC ids differ in general. Letting only provisioned users in makes the IdP the one place that decides who has an account. |
+| D42 | SCIM removal | `active: false` disables the user (D20, `disabled_reason: scim`); `active: true` enables it again, unless an administrator disabled it. `DELETE /Users/{id}` also disables it and ends the SCIM link (the SCIM `id` is gone; the user, its links and audit history stay). An administrator may then delete the user (§6.3). | An IdP deletes a user when it is unassigned from the app, which isn't a decision to erase its records; disabling closes the access at once either way. |
+| D43 | SCIM groups | Every SCIM group is kept (`scim_groups`: id, `displayName`, members), so the IdP's view round-trips. With `group_mode: auto` each group is a managed team (`managed_by`, `external_id` = the group's id, named after `displayName`); with `mapped`, members of a group named in `group_teams` (by `displayName` or id) are members of that team. Those memberships have `source: connector:<id>`. A SCIM connector doesn't sync groups at login (§6 step 2): SCIM is their source. | One source per membership; an unmapped group isn't an error, since IdPs push whatever is assigned. |
 
 ## 3. Threat model additions
 
@@ -216,7 +219,7 @@ only whether each is set and when.
 | `azure` | OIDC preset (`…/<tid>/v2.0`); `tid` checked | SCIM (Entra provisioning) or pull via Microsoft Graph (delta) | — | `oid` (not the pairwise `sub`) | Group overage is resolved through Graph when pull is configured; otherwise the login is refused rather than mapping no groups. Later: not in T2 (§18). |
 | `github` | OAuth 2.0 web and device flow (not OIDC) | pull: org members and teams via a GitHub App | public SSH keys | numeric user id | Login requires membership of `settings.org`, checked at every login and sync. Later: not in T2 (§18). |
 | `jumpcloud` | OIDC preset | SCIM or LDAP | via LDAP `sshPublicKey` | `sub` | |
-| `scim` | — (pair with a login connector via `login_connector`) | SCIM 2.0 push | — | SCIM `externalId` | For IdPs that provision by SCIM but log in through another connector. |
+| `scim` | — (pair with a login connector via `login_connector`) | SCIM 2.0 push | — | SCIM `externalId` | For IdPs that provision by SCIM but log in through another connector. After T3, which puts `provisioning: scim` on the login connector itself. |
 
 **Presets** are stored with their kind for the UI's fields and checks;
 their code is `oidc` or OAuth 2.0 plus a short validation and
@@ -438,20 +441,47 @@ One directory's outage affects only its users. Responses carry
 
 ### 8.1 SCIM 2.0 (push)
 
-- Base `<issuer>/scim/v2/c/<connector_id>/`, TLS only. Bearer token
-  `gxs_<base62>` minted by `POST /connectors/{id}/scim-tokens` (shown
-  once, SHA-256 stored, expiry ≤ 1 year, several for rotation); it
-  authorizes exactly this connector and is not a Cedar principal.
-- Supported: `/Users` and `/Groups` with `GET` (filters `userName eq`,
-  `externalId eq`, `displayName eq`), `POST`, `PUT`, `PATCH` (the
-  operations Entra, Okta and JumpCloud send, including Entra's
-  `"value": "False"` for `active`), `DELETE`; `/ServiceProviderConfig`,
-  `/Schemas`, `/ResourceTypes`. No bulk, sort, or `/Me`. Pages ≤ 200.
-- Mapping: `externalId` → `User.external_id`, `active: false` or
-  `DELETE` → D20, groups → managed teams. Unknown attributes are
-  ignored. Groups create teams only with `group_mode: auto`.
-- Limits: 20 requests/s per connector, 1 MiB bodies, directory limits
-  as SCIM errors. Every write audited as `system:scim:<connector_id>`.
+- **Where.** `/scim/v2/c/<connector_id>/` on the API listener, and on
+  the web UI's `/api` (`https://<ui host>/api/scim/v2/c/<id>/`), TLS
+  only. The IdP calls it from its own network, so the URL must be
+  reachable from there (a public name, a reverse proxy, or a tunnel such
+  as Tailscale Funnel); glidex doesn't open anything itself.
+- **Who.** A bearer token `gxs_<base62>` minted by `POST
+  /connectors/{id}/scim-tokens` (`manageConnectors`, step-up; shown
+  once, SHA-256 stored, expiry 1–365 days, default 180, several at once
+  for rotation). It authorizes exactly this connector's SCIM endpoints
+  and is not a Cedar principal. A wrong, expired or revoked token, or
+  another connector's, is `401` with the same body. A disabled
+  connector, or one whose `provisioning` isn't `scim`, answers `403`.
+- **Connector.** `provisioning: none | scim` (pull is T4). With `scim`,
+  logins follow D41, and `jit` and invitations don't apply.
+  `default_tenant` is where new managed users become members. Tokens
+  are not clamped to `token_max_days` (D20 clamps connectors without
+  provisioning).
+- **Resources.** `/Users` and `/Groups` with `GET` (by id; list with
+  `startIndex`/`count`, pages ≤ 200, and filters `userName eq`,
+  `externalId eq`, `emails eq` / `emails.value eq`, `displayName eq`;
+  any other filter is `400 invalidFilter`), `POST`, `PUT`, `PATCH`,
+  `DELETE`; `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`. No
+  bulk, sort, ETags or `/Me`. Errors are SCIM error bodies (RFC 7644
+  §3.12). `POST` of a `userName` the connector already has is `409
+  uniqueness`.
+- **PATCH.** `add`, `replace` and `remove`, with or without `path`, as
+  Entra, Okta and JumpCloud send them: `active` (also Entra's `"False"`
+  string), `userName`, `externalId`, `displayName`, `name.givenName` /
+  `name.familyName`, `emails[type eq "work"].value`; groups' `members`
+  (`add`, `remove` with `members[value eq "<id>"]`, `replace`) and
+  `displayName`. Unknown attributes are ignored.
+- **Users.** `displayName`, else `name.formatted`, else given and family
+  names, else `userName`, is the display name. The primary (else the
+  first, else `work`) email is the user's email. Removal follows D42.
+  Groups follow D43.
+- **Writes.** Each request is one write: a user and its memberships
+  together; disabling also revokes sessions and tokens in it (D20).
+  Every write is audited as `system:scim:<connector_id>`, with the SCIM
+  ids, never tokens.
+- **Limits.** 20 requests/s per connector (`429` with `Retry-After`),
+  1 MiB bodies (`413`), the directory's limits as `400` SCIM errors.
 
 ### 8.2 Pull sync
 
@@ -470,7 +500,9 @@ One directory's outage affects only its users. Responses carry
 
 A managed user's display name, email, `external_id` and disabled state
 belong to its connector: manual edits return `409
-managed_by_connector`. Links and manual team memberships stay the
+managed_by_connector`, and so does deleting a managed user that is
+still enabled (disable it at the IdP first). A managed team's name and
+its connector memberships are the connector's too. Links and manual team memberships stay the
 directory's. Deleting a connector disables its users (default) or
 detaches them.
 
@@ -1109,8 +1141,12 @@ one login for both (D3). Nothing a user does today changes.
   page, and OAuth client secrets only through `gxctl connector secret
   set` on standard input. [idp-checks.md](idp-checks.md) holds the
   checklist and its results, never accounts.
-- **SCIM:** Entra and Okta sequences as fixtures; `active: false`
-  revokes within the request; connector X's token can't touch Y.
+- **SCIM:** JumpCloud, Okta and Entra request sequences as fixtures;
+  `active: false` revokes within the request; connector X's token can't
+  touch Y; the first login lands on the provisioned user (D41) and a
+  login without one is refused; D42's `DELETE` keeps the records.
+  Against real JumpCloud: idp-checks.md, with the URL reachable from
+  JumpCloud.
 - **Pull sync:** failing APIs change nothing; the safety stop holds;
   delta and full resync agree.
 - **Secrets:** no read or feed contains secret bytes; a hosted
@@ -1225,7 +1261,26 @@ Each milestone ships its API, CLI, UI and tests together and leaves
    connector test steps per preset, and `docs/` checklist for the real
    IdPs.
 
-T3–T7 get their own task lists when they start; per-protocol code under
+**T3 tasks** (one PR each, in order):
+1. This spec (D41–D43, §8.1, §8.3).
+2. Managed users and teams: `User.{managed_by, external_id, email,
+   disabled_reason}`, `Team.{managed_by, external_id}`; `Connector.provisioning`
+   and its validation; `AuthService::deprovision` (D20, one write:
+   disable, sessions, tokens, connector memberships); `409
+   managed_by_connector` on the user, team and delete paths; deleting
+   a connector disables or detaches its users (`?users=disable|detach`);
+   the API, gxctl and UI show who manages a user and why it is disabled.
+3. SCIM tokens: `scim_tokens` (directory scope), `ConnectorService.{Create,List,Revoke}ScimToken`
+   on both transports, `gxctl connector scim-token`, and the
+   connector page's Provisioning card (the URL, tokens, the secret shown
+   once).
+4. The SCIM server (`src/directory/scim.rs`, REST only, D29): resources,
+   filters, PATCH, paging, errors, limits, audit; `scim_groups` and D43;
+   the login match of D41; fixtures per IdP.
+5. Docs: the operator guide's provisioning section (JumpCloud, and
+   making the URL reachable), idp-checks.md's SCIM checks; UI e2e.
+
+T4–T7 get their own task lists when they start; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
 ## 19. Out of scope
@@ -1293,7 +1348,8 @@ T3–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0, T1 and T2 are implemented; T2b and T3–T7 are not started. What
+T0, T1 and T2 are implemented; T3 is in progress (its tasks in §18);
+T2b and T4–T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
