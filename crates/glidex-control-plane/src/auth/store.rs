@@ -1762,4 +1762,51 @@ mod tests {
         assert_eq!(s.prune_audit(2500).unwrap(), 2);
         assert_eq!(s.audit(0, 10, |_| true).unwrap().len(), 1);
     }
+
+    #[test]
+    fn a_scim_first_login_finds_only_its_connectors_users() {
+        let user = |id: &str, connector: Option<&str>, ext: &str| User {
+            id: id.into(),
+            display_name: id.into(),
+            disabled: false,
+            default_project: None,
+            created_at: 1,
+            managed: connector.map(|c| Managed {
+                connector: c.into(),
+                external_id: Some(ext.into()),
+                user_name: Some("alice@example.org".into()),
+                given_name: None,
+                family_name: None,
+            }),
+            email: Some("alice@example.org".into()),
+            disabled_reason: None,
+        };
+        let login = |s: &IdentityStore, c: &str| {
+            s.scim_login(c, "oidc:c", "sub-1", Some("alice@example.org"))
+        };
+        // A local account, then another connector's managed user, with the
+        // same email (and subject): each is the only candidate, and neither
+        // is c1's, so a login through c1 finds no one and links nothing.
+        for foreign in [user("local", None, ""), user("other", Some("c2"), "sub-1")] {
+            let (s, _d) = store();
+            s.put_user(&foreign).unwrap();
+            assert_eq!(login(&s, "c1").unwrap(), None, "{}", foreign.id);
+            assert!(s.identity("oidc:c", "sub-1").unwrap().is_none());
+        }
+
+        // c1's own user is found among them, and linked.
+        let (s, _d) = store();
+        for u in [
+            user("local", None, ""),
+            user("other", Some("c2"), "sub-1"),
+            user("mine", Some("c1"), "sub-1"),
+        ] {
+            s.put_user(&u).unwrap();
+        }
+        assert_eq!(login(&s, "c1").unwrap().unwrap().id, "mine");
+        assert_eq!(
+            s.identity("oidc:c", "sub-1").unwrap().unwrap().user_id,
+            "mine"
+        );
+    }
 }
