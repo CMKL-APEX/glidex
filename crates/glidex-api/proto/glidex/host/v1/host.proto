@@ -109,6 +109,18 @@ service PciService {
   }
 }
 
+// A host's NUMA and PCIe topology (spec/host-topology.md §3–§5).
+service TopologyService {
+  // The answering host's.
+  rpc GetHostTopology(GetHostTopologyRequest) returns (GetHostTopologyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readHostTopology"
+      kind: KIND_READ
+      rest: "GET /host/topology"
+    };
+  }
+}
+
 // ---- status and installation ------------------------------------------------
 
 enum NetdAccess {
@@ -409,6 +421,99 @@ message PciDevice {
   optional string driver = 5;
   optional string iommu_group = 6 [json_name = "iommu_group"];
   string sysfs_path = 7 [json_name = "sysfs_path"];
+  optional uint32 numa_node = 8 [json_name = "numa_node"];
+  // For a device a VM could be given: ready for passthrough, else why not.
+  optional bool ready = 9;
+  repeated string not_ready = 10 [json_name = "not_ready"];
+}
+
+message GetHostTopologyRequest {}
+message GetHostTopologyResponse {
+  Topology topology = 1;
+}
+
+message Topology {
+  TopologySummary summary = 1;
+  // Every PCI function, by address.
+  repeated PciFunction devices = 2;
+  repeated TopologyWarning warnings = 3;
+}
+
+// What a node reports in its status (spec/host-topology.md §3.1).
+message TopologySummary {
+  repeated NumaNode numa_nodes = 1 [json_name = "numa_nodes"];
+  // CPUs kept free of other tasks (isolcpus, nohz_full).
+  repeated uint32 isolated = 2;
+  // CPUs no VM gets, and why: pmd, dpdk_lcore, config.
+  map<uint32, string> reserved_cpus = 3 [json_name = "reserved_cpus"];
+  bool reserved_by_config = 4 [json_name = "reserved_by_config"];
+  // The NUMA node of each device a VM could be given, by address.
+  map<string, uint32> device_numa = 5 [json_name = "device_numa"];
+}
+
+message NumaNode {
+  uint32 id = 1;
+  repeated CpuCore cores = 2;
+  // Less the hugepage pool.
+  uint64 memory_mib = 3 [json_name = "memory_mib"];
+  // Page size in KiB to pages VMs may take, less OVS-DPDK's.
+  map<string, uint64> hugepages = 4;
+}
+
+message CpuCore {
+  // Its hyperthreads, lowest first.
+  repeated uint32 threads = 1;
+}
+
+enum PciKind {
+  PCI_KIND_UNSPECIFIED = 0;
+  PCI_KIND_ENDPOINT = 1;
+  PCI_KIND_ROOT_PORT = 2;
+  PCI_KIND_SWITCH_UPSTREAM = 3;
+  PCI_KIND_SWITCH_DOWNSTREAM = 4;
+}
+
+message PcieLink {
+  string current_speed = 1 [json_name = "current_speed"];
+  uint32 current_width = 2 [json_name = "current_width"];
+  string max_speed = 3 [json_name = "max_speed"];
+  uint32 max_width = 4 [json_name = "max_width"];
+}
+
+message Sriov {
+  uint32 total_vfs = 1 [json_name = "total_vfs"];
+  uint32 enabled_vfs = 2 [json_name = "enabled_vfs"];
+}
+
+message PciFunction {
+  string address = 1;
+  string vendor_id = 2 [json_name = "vendor_id"];
+  string device_id = 3 [json_name = "device_id"];
+  string class_id = 4 [json_name = "class_id"];
+  optional string driver = 5;
+  optional string iommu_group = 6 [json_name = "iommu_group"];
+  optional uint32 numa_node = 7 [json_name = "numa_node"];
+  // The bridge above it, or its root complex (pci0000:80).
+  string parent = 8;
+  PciKind kind = 9;
+  optional string root_port = 10 [json_name = "root_port"];
+  // The upstream port of the nearest switch above it.
+  optional string switch = 11;
+  PcieLink link = 12;
+  Sriov sriov = 13;
+  // A virtual function's physical function.
+  optional string physfn = 14;
+  // A device a VM could be given, and whether it is ready for passthrough.
+  bool assignable = 15;
+  bool ready = 16;
+  repeated string not_ready = 17 [json_name = "not_ready"];
+}
+
+message TopologyWarning {
+  // iommu_off, numa_unknown, group_shared, link_degraded,
+  // hugepages_unbalanced.
+  string kind = 1;
+  string detail = 2;
 }
 
 message ListPciDevicesRequest {}

@@ -80,8 +80,7 @@ import type {
   Tenant,
   TenantBinding,
   TenantMember,
-  TenantQuotas,
-} from "./types";
+  TenantQuotas, HostTopology } from "./types";
 
 import { fromJson, toJson, type DescMethodUnary, type JsonValue, type MessageJsonType } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, createContextKey, createContextValues, type Interceptor } from "@connectrpc/connect";
@@ -970,6 +969,9 @@ export interface PreviewRequest {
 export const previewPlacement = (req: PreviewRequest) =>
   rpc(VmService.method.previewPlacement, req).then((r) => r as unknown as PlacementPreview);
 export const getNode = (id: string) => rpc(NodeService.method.getNode, { id }).then((r) => r.node as unknown as NodeRecord);
+/** A node's NUMA and PCIe topology, read on that node (spec/host-topology.md §3.2). */
+export const getNodeTopology = (id: string) =>
+  rpc(NodeService.method.getNodeTopology, { id }).then((r) => r.topology as unknown as HostTopology);
 /** A node's br-int datapath (spec/clustering.md §11.6). */
 export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) =>
   rpc(NodeService.method.configureNodeOvn, { id, br_int_datapath }).then((r) => r as ConfigureNodeOvnResponse);

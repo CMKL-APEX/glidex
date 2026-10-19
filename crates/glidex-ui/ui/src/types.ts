@@ -2007,3 +2007,68 @@ export interface PciDevice {
   iommu_group?: string;
   sysfs_path: string;
 }
+
+// ---- host topology (spec/host-topology.md §3) ----------------------------------
+
+export interface TopologyNumaNode {
+  id?: number;
+  cores?: { threads?: number[] }[];
+  memory_mib?: U64;
+  /** Page size in KiB → pages. */
+  hugepages?: Record<string, U64>;
+}
+
+export interface PciFunction {
+  address: string;
+  vendor_id?: string;
+  device_id?: string;
+  class_id?: string;
+  driver?: string;
+  iommu_group?: string;
+  numa_node?: number;
+  parent?: string;
+  kind?: string;
+  root_port?: string;
+  switch?: string;
+  link?: { current_speed?: string; current_width?: number; max_speed?: string; max_width?: number };
+  sriov?: { total_vfs?: number; enabled_vfs?: number };
+  physfn?: string;
+  assignable?: boolean;
+  ready?: boolean;
+  not_ready?: string[];
+}
+
+export interface HostTopology {
+  summary?: {
+    numa_nodes?: TopologyNumaNode[];
+    isolated?: number[];
+    reserved_cpus?: Record<string, string>;
+    reserved_by_config?: boolean;
+    device_numa?: Record<string, number>;
+  };
+  devices?: PciFunction[];
+  warnings?: { kind?: string; detail?: string }[];
+}
+
+/** `0-3,8,10-11` for a set of CPUs. */
+export function cpuList(cpus: number[]): string {
+  const s = [...new Set(cpus)].sort((a, b) => a - b);
+  const out: string[] = [];
+  for (let i = 0; i < s.length; ) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    out.push(i === j ? `${s[i]}` : `${s[i]}-${s[j]}`);
+    i = j + 1;
+  }
+  return out.join(",");
+}
+
+/** A PCI class code's word (spec/host-topology.md §3.3). */
+export function pciClassWord(cls = ""): string {
+  const c = cls.replace(/^0x/, "");
+  if (c.startsWith("03")) return "GPU";
+  if (c.startsWith("0108")) return "NVMe";
+  if (c.startsWith("02")) return "NIC";
+  if (c.startsWith("12") || c.startsWith("0b40")) return "Accelerator";
+  return "Other";
+}

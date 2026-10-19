@@ -1099,6 +1099,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "rejoin-token",
             "detach",
             "import",
+            "topology",
         ],
     ),
     ("login", &["--oidc", "--token"]),

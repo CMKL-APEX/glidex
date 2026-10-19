@@ -28,6 +28,17 @@ pub async fn get_node(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     Ok(Proto(StatusCode::OK, svc::get_node(&c, req)?))
 }
 
+pub async fn topology(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetNodeTopologyRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(
+        StatusCode::OK,
+        svc::get_node_topology(&c, req).await?,
+    ))
+}
+
 pub async fn drain(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::DrainNodeRequest {
         id,

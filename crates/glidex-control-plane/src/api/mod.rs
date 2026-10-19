@@ -530,6 +530,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/host/topology",
+        "readHostTopology",
+        get(net::host_topology),
+    )
+    .add(
+        "GET",
         "/system/reconcile",
         "readSystemStatus",
         get(vms::system_reconcile),
@@ -630,6 +636,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     // ---- nodes (spec/clustering.md §7)
     .add("GET", "/nodes", "listNodes", get(nodes::list))
     .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
+    .add(
+        "GET",
+        "/nodes/{id}/topology",
+        "readHostTopology",
+        get(nodes::topology),
+    )
     .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
     .add(
         "PUT",

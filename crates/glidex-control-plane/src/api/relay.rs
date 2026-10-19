@@ -83,6 +83,7 @@ pub fn is_remote_host_path(path: &str) -> bool {
         // The host family's RPCs (spec/grpc.md §8).
         || path.starts_with("/glidex.host.v1.")
         || path == "/pci-devices"
+        || path == "/host/topology"
         || path == "/system/reconcile"
         || path == "/cluster/leave"
         || path == "/glidex.cluster.v1.ClusterService/LeaveCluster"

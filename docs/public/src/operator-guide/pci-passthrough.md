@@ -74,15 +74,30 @@ ls -l /dev/vfio/
 ## Find devices
 
 ```bash
-gxctl pci                    # every host PCI device: address, ids, class, driver, IOMMU group
-gxctl pci 0000:41:00.0       # one device, with its sysfs path
+gxctl pci                    # every host PCI device: address, ids, class, driver, IOMMU group, NUMA node, ready
+gxctl pci 0000:41:00.0       # one device, with its sysfs path and why it isn't ready
+gxctl node topology <node>   # a node's NUMA nodes with their CPUs, memory, hugepages and devices
+gxctl node topology <node> --devices   # its devices with their root port, switch, link and VFs
 ```
 
-A device ready for passthrough shows the driver `vfio-pci` and an IOMMU
-group. Over the API it is `GET /pci-devices`; listing needs a host role
-(`auditor`, `net-admin` or `system-admin`). The list is what this host
-has; in a cluster, a node's page (**Cluster** → a node) shows how many
-PCI devices it reports.
+A device is **ready** for passthrough when the host has an IOMMU, the
+device is bound to `vfio-pci`, every other device in its IOMMU group
+(bridges aside) is too, the `glidex` user can open `/dev/vfio/<group>`,
+and it isn't an OVS-DPDK uplink. A device that isn't says why
+(`not bound to vfio-pci (driver: nvidia)`, `IOMMU group 30 also holds
+0000:07:00.1 on snd_hda_intel`). Over the API it is `GET /pci-devices`
+for this host, and `GET /nodes/{id}/topology` for any node, read on that
+node (`GET /host/topology` for the answering host). Both need a host
+role (`auditor`, `net-admin` or `system-admin`) on that host. In the web
+UI, a node's page (**Cluster** → a node) has a **Topology** card.
+
+The topology also reports what it notices, without acting on it: no
+IOMMU (`iommu_off`), a device without a NUMA node on a host with
+several (`numa_unknown`), an IOMMU group shared with a device of another
+class (`group_shared`), a NIC or disk linked slower or narrower than it
+can (`link_degraded`; GPUs slow their link when idle, so they aren't
+flagged), and a device on a NUMA node without hugepages when others
+have them (`hugepages_unbalanced`).
 
 Glidex names a device by its sysfs path,
 `/sys/bus/pci/devices/0000:41:00.0`. The API also accepts the bare
@@ -185,9 +200,8 @@ node name or id) in the API request. A pinned VM asking for a device
 already taken on that node is refused. Prepare each host (IOMMU,
 `vfio-pci`, the udev rule) the same way.
 
-`gxctl pci` lists the devices of the host it is connected to. A cluster
-agent has no local API for `gxctl`; to list an agent's devices, use the
-web UI that agent serves, which runs the request on the agent.
+`gxctl pci` lists the devices of the host it is connected to. For an
+agent's, use `gxctl node topology <agent>`: the server asks the agent.
 
 ## NUMA
 

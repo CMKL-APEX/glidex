@@ -17,7 +17,7 @@ use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::install::{DpdkSettings, InstallReport, InstallRequest, Profile};
 use glidex_ovs::uplink::{UplinkKind, UplinkSpec, XdpMode};
 
-fn manager_err(e: VmManagerError) -> ServiceError {
+pub(crate) fn manager_err(e: VmManagerError) -> ServiceError {
     crate::api::error_to_response(e).into()
 }
 
@@ -590,20 +590,133 @@ pub fn list_pci_devices(
     _req: pb::ListPciDevicesRequest,
 ) -> ServiceResult<pb::ListPciDevicesResponse> {
     host(call)?;
+    // Readiness from the tree (spec/host-topology.md §5.1).
+    let tree = call.manager().local_topology();
+    let ready = |a: &str| tree.devices.iter().find(|d| d.address == a && d.assignable);
     Ok(pb::ListPciDevicesResponse {
         devices: crate::pci::scan_pci_devices()
             .into_iter()
-            .map(|d| pb::PciDevice {
-                address: d.address,
-                vendor_id: d.vendor_id,
-                device_id: d.device_id,
-                class_id: d.class_id,
-                driver: d.driver,
-                iommu_group: d.iommu_group,
-                sysfs_path: d.sysfs_path,
-                ..Default::default()
+            .map(|d| {
+                let r = ready(&d.address);
+                pb::PciDevice {
+                    numa_node: d.numa_node,
+                    ready: r.map(|f| f.ready),
+                    not_ready: r.map(|f| f.not_ready.clone()).unwrap_or_default(),
+                    address: d.address,
+                    vendor_id: d.vendor_id,
+                    device_id: d.device_id,
+                    class_id: d.class_id,
+                    driver: d.driver,
+                    iommu_group: d.iommu_group,
+                    sysfs_path: d.sysfs_path,
+                    ..Default::default()
+                }
             })
             .collect(),
         ..Default::default()
     })
+}
+
+/// `GET /host/topology`: this host's NUMA and PCIe topology.
+pub fn get_host_topology(
+    call: &Call,
+    _req: pb::GetHostTopologyRequest,
+) -> ServiceResult<pb::GetHostTopologyResponse> {
+    host(call)?;
+    Ok(pb::GetHostTopologyResponse {
+        topology: topology_pb(&call.manager().local_topology()).into(),
+        ..Default::default()
+    })
+}
+
+/// A topology tree in its proto form.
+pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
+    use crate::topology::PciKind;
+    let s = &t.summary;
+    pb::Topology {
+        summary: pb::TopologySummary {
+            numa_nodes: s
+                .numa_nodes
+                .iter()
+                .map(|n| pb::NumaNode {
+                    id: n.id,
+                    cores: n
+                        .cores
+                        .iter()
+                        .map(|c| pb::CpuCore {
+                            threads: c.clone(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    memory_mib: n.memory_mib,
+                    hugepages: n.hugepages.clone().into_iter().collect(),
+                    ..Default::default()
+                })
+                .collect(),
+            isolated: s.isolated.clone(),
+            reserved_cpus: s.reserved_cpus.clone().into_iter().collect(),
+            reserved_by_config: s.reserved_by_config,
+            device_numa: s.device_numa.clone().into_iter().collect(),
+            ..Default::default()
+        }
+        .into(),
+        devices: t
+            .devices
+            .iter()
+            .map(|d| pb::PciFunction {
+                address: d.address.clone(),
+                vendor_id: d.vendor_id.clone(),
+                device_id: d.device_id.clone(),
+                class_id: d.class_id.clone(),
+                driver: d.driver.clone(),
+                iommu_group: d.iommu_group.clone(),
+                numa_node: d.numa_node,
+                parent: d.parent.clone(),
+                kind: match d.kind {
+                    PciKind::Endpoint => pb::PciKind::PCI_KIND_ENDPOINT,
+                    PciKind::RootPort => pb::PciKind::PCI_KIND_ROOT_PORT,
+                    PciKind::SwitchUpstream => pb::PciKind::PCI_KIND_SWITCH_UPSTREAM,
+                    PciKind::SwitchDownstream => pb::PciKind::PCI_KIND_SWITCH_DOWNSTREAM,
+                }
+                .into(),
+                root_port: d.root_port.clone(),
+                switch: d.switch.clone(),
+                link: d
+                    .link
+                    .as_ref()
+                    .map(|l| pb::PcieLink {
+                        current_speed: l.current_speed.clone(),
+                        current_width: l.current_width,
+                        max_speed: l.max_speed.clone(),
+                        max_width: l.max_width,
+                        ..Default::default()
+                    })
+                    .into(),
+                sriov: d
+                    .sriov
+                    .as_ref()
+                    .map(|v| pb::Sriov {
+                        total_vfs: v.total_vfs,
+                        enabled_vfs: v.enabled_vfs,
+                        ..Default::default()
+                    })
+                    .into(),
+                physfn: d.physfn.clone(),
+                assignable: d.assignable,
+                ready: d.ready,
+                not_ready: d.not_ready.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        warnings: t
+            .warnings
+            .iter()
+            .map(|w| pb::TopologyWarning {
+                kind: w.kind.clone(),
+                detail: w.detail.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
 }

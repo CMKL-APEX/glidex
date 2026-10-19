@@ -160,7 +160,7 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-add <bridge> --dpdk <pci-address> --name <port> [--rxq N]` | Add a DPDK uplink |
 | `uplink-reapply <bridge> <name>` | Set up again an uplink rolled back at start |
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
-| `pci`, `pci-devices` | List the host's PCI devices |
+| `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
 | `pci <address>` | One device in detail |
 
 See [Host networking](../operator-guide/host-networking.md) and
@@ -255,6 +255,7 @@ Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 | `nodes`, `node` | List nodes |
 | `node <id>` | One node in detail |
 | `node drain <node>`, `node undrain <node>` | Stop or resume placing VMs on a node |
+| `node topology <node> [--devices]` | A node's NUMA nodes, CPUs, memory, hugepages and the devices a VM could be given, read on that node; `--devices`: the devices with their place in the PCIe tree |
 | `node remove <node> [--force]` | Remove an empty node |
 | `node forget <node> [--fenced] [--force]` | Forget a node that is gone for good |
 | `node purge <node>` | Drop a forgotten node's record |

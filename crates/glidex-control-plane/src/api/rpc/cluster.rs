@@ -190,6 +190,14 @@ impl NodeService for Svc {
         op!(self, ctx, req, node::get_node)
     }
 
+    async fn get_node_topology(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetNodeTopologyRequest>,
+    ) -> ServiceResult<GetNodeTopologyResponse> {
+        op_async!(self, ctx, req, node::get_node_topology)
+    }
+
     async fn drain_node(
         &self,
         ctx: RequestContext,

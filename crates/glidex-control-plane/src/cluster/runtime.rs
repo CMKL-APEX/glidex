@@ -42,6 +42,11 @@ pub trait NodeHandlers: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+    /// This node's NUMA and PCIe topology (spec/host-topology.md §3.2), as
+    /// `TopologyTree` JSON.
+    fn topology(&self) -> Option<serde_json::Value> {
+        None
+    }
     /// This node's OVN chassis and tunnels from its netd (spec/clustering-ui.md §8b).
     fn ovn_status<'a>(
         &'a self,

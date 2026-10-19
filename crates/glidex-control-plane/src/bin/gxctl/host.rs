@@ -54,6 +54,18 @@ pub(crate) struct PciRow {
     driver: Option<String>,
     #[tabled(display = "display_option")]
     iommu_group: Option<String>,
+    numa: String,
+    /// Ready for passthrough: `yes`, `no`, or `-` for a device no VM gets.
+    ready: String,
+}
+
+/// `yes`, `no`, or `-`.
+pub(crate) fn ready_word(ready: Option<bool>) -> String {
+    match ready {
+        Some(true) => "yes".into(),
+        Some(false) => "no".into(),
+        None => "-".into(),
+    }
 }
 
 impl From<&PciDevice> for PciRow {
@@ -65,6 +77,8 @@ impl From<&PciDevice> for PciRow {
             class_id: d.class_id.clone(),
             driver: d.driver.clone(),
             iommu_group: d.iommu_group.clone(),
+            numa: d.numa_node.map_or("-".into(), |n| n.to_string()),
+            ready: ready_word(d.ready),
         }
     }
 }
@@ -88,6 +102,19 @@ fn pci_details(dev: &PciDevice) -> Vec<String> {
         format!("Driver:     {}", display_option(&dev.driver)),
         format!("IOMMU:      {}", display_option(&dev.iommu_group)),
         format!("Sysfs path: {}", dev.sysfs_path),
+        format!(
+            "NUMA node:  {}",
+            dev.numa_node.map_or("-".into(), |n| n.to_string())
+        ),
+        format!(
+            "Ready:      {}{}",
+            ready_word(dev.ready),
+            if dev.not_ready.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", dev.not_ready.join("; "))
+            }
+        ),
     ]
 }
 

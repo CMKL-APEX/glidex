@@ -2291,3 +2291,28 @@ async fn pci_grants_name_the_node() {
         assert_eq!(s, want, "{bdf}: {v}");
     }
 }
+
+/// spec/host-topology.md H13: a host's topology takes a host role.
+#[tokio::test]
+async fn host_topology_needs_a_host_role() {
+    let h = harness();
+    h.app.manager.report_self().unwrap();
+    let (alice, aud) = (h.user("alice"), h.user("aud"));
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
+    let (a, u) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&aud)));
+    let (s, _, _) = h.call("GET", "/host/topology", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v, _) = h.call("GET", "/host/topology", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        !v["topology"]["summary"]["numa_nodes"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{v}"
+    );
+    let (s, v, _) = h.call("GET", "/nodes/local/topology", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, _) = h.call("GET", "/nodes/local/topology", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

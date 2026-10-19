@@ -2459,6 +2459,71 @@ async fn hugepages_are_counted_per_node_and_fill_up() {
     );
 }
 
+/// spec/host-topology.md §3.2: a server reads an agent's topology on the
+/// agent, over the cluster's node API.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_server_reads_a_nodes_topology_on_that_node() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    let me = server.manager.local_node_id();
+    for who in ["agent1", me.as_str()] {
+        let (s, v) = call(&server, "GET", &format!("/nodes/{who}/topology"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{who}: {v}");
+        assert!(
+            !v["topology"]["summary"]["numa_nodes"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{who}: {v}"
+        );
+    }
+    let (s, v) = call(&server, "GET", "/nodes/nope/topology", None, &[]).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_do() {
     use glidex_control_plane::cluster::config::EdgeConfig;

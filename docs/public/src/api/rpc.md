@@ -259,6 +259,7 @@ unary. REST paths and RPC requests take the same ids and names.
 |  | `CommitUplink` | `POST /ovs/bridges/{name}/uplinks/{uplink}/commit` |
 |  | `ReapplyUplink` | `POST /ovs/bridges/{name}/uplinks/{uplink}/reapply` |
 | `PciService` | `ListPciDevices` | `GET /pci-devices` |
+| `TopologyService` | `GetHostTopology` | `GET /host/topology` |
 
 ### `glidex.usage.v1`
 

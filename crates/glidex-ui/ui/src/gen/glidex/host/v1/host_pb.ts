@@ -19,7 +19,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/host/v1/host.proto.
  */
 export const file_glidex_host_v1_host: GenFile = /*@__PURE__*/
-  fileDesc("ChlnbGlkZXgvaG9zdC92MS9ob3N0LnByb3RvEg5nbGlkZXguaG9zdC52MSJ8CgpOZXRkU3RhdHVzEhYKCWF2YWlsYWJsZRgBIAEoCEgAiAEBEioKBmFjY2VzcxgCIAEoDjIaLmdsaWRleC5ob3N0LnYxLk5ldGRBY2Nlc3MSEgoFZXJyb3IYAyABKAlIAYgBAUIMCgpfYXZhaWxhYmxlQggKBl9lcnJvciJCCglIdWdlcGFnZXMSGAoHc2l6ZV9rYhgBIAEoBFIHc2l6ZV9rYhINCgV0b3RhbBgCIAEoBBIMCgRmcmVlGAMgASgEImUKC0NvbWJpbmF0aW9uEgoKAmlkGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEhYKCWF2YWlsYWJsZRgDIAEoCEgAiAEBEg8KB21pc3NpbmcYBCADKAlCDAoKX2F2YWlsYWJsZSKZBwoQSG9zdENhcGFiaWxpdGllcxIpCg1vdnNfaW5zdGFsbGVkGAEgASgISABSDW92c19pbnN0YWxsZWSIAQESJQoLb3ZzX3ZlcnNpb24YAiABKAlIAVILb3ZzX3ZlcnNpb26IAQESOQoVb3ZzX3ZlcnNpb25fc3VwcG9ydGVkGAMgASgISAJSFW92c192ZXJzaW9uX3N1cHBvcnRlZIgBARIlCgtvdnNfcnVubmluZxgEIAEoCEgDUgtvdnNfcnVubmluZ4gBARIgCgtpZmFjZV90eXBlcxgFIAMoCVILaWZhY2VfdHlwZXMSJgoOZGF0YXBhdGhfdHlwZXMYBiADKAlSDmRhdGFwYXRoX3R5cGVzEisKDm92c19kcGRrX2J1aWxkGAcgASgISARSDm92c19kcGRrX2J1aWxkiAEBEjUKE2RwZGtfbWVtcG9vbF9kcml2ZXIYCCABKAhIBVITZHBka19tZW1wb29sX2RyaXZlcogBARIvChBkcGRrX2luaXRpYWxpemVkGAkgASgISAZSEGRwZGtfaW5pdGlhbGl6ZWSIAQESLAoJaHVnZXBhZ2VzGAogAygLMhkuZ2xpZGV4Lmhvc3QudjEuSHVnZXBhZ2VzEhIKBWlvbW11GAsgASgISAeIAQESJwoMY2hfbmV0X2FkbWluGAwgASgISAhSDGNoX25ldF9hZG1pbogBARIUCgdkbnNtYXNxGA0gASgISAmIAQESEAoDbmZ0GA4gASgISAqIAQESIwoKaXBfZm9yd2FyZBgPIAEoCEgLUgppcF9mb3J3YXJkiAEBEhEKCWZpcmV3YWxscxgQIAMoCRIqChBuZXR3b3JrX21hbmFnZXJzGBEgAygJUhBuZXR3b3JrX21hbmFnZXJzEjEKDGNvbWJpbmF0aW9ucxgSIAMoCzIbLmdsaWRleC5ob3N0LnYxLkNvbWJpbmF0aW9uQhAKDl9vdnNfaW5zdGFsbGVkQg4KDF9vdnNfdmVyc2lvbkIYChZfb3ZzX3ZlcnNpb25fc3VwcG9ydGVkQg4KDF9vdnNfcnVubmluZ0IRCg9fb3ZzX2RwZGtfYnVpbGRCFgoUX2RwZGtfbWVtcG9vbF9kcml2ZXJCEwoRX2RwZGtfaW5pdGlhbGl6ZWRCCAoGX2lvbW11Qg8KDV9jaF9uZXRfYWRtaW5CCgoIX2Ruc21hc3FCBgoEX25mdEINCgtfaXBfZm9yd2FyZCIVChNHZXRPdnNTdGF0dXNSZXF1ZXN0InAKFEdldE92c1N0YXR1c1Jlc3BvbnNlEigKBG5ldGQYASABKAsyGi5nbGlkZXguaG9zdC52MS5OZXRkU3RhdHVzEi4KBGhvc3QYAiABKAsyIC5nbGlkZXguaG9zdC52MS5Ib3N0Q2FwYWJpbGl0aWVzInUKEUluc3RhbGxPdnNSZXF1ZXN0EisKB3Byb2ZpbGUYASABKA4yGi5nbGlkZXguaG9zdC52MS5PdnNQcm9maWxlEiIKDHNvdXJjZV9idWlsZBgCIAEoCFIMc291cmNlX2J1aWxkEg8KB2NvbmZpcm0YAyABKAgiwwEKEkluc3RhbGxPdnNSZXNwb25zZRIUCgdjaGFuZ2VkGAEgASgISACIAQESDgoGbWV0aG9kGAIgASgJEhAKCHBhY2thZ2VzGAMgAygJEiUKC292c192ZXJzaW9uGAQgASgJSAFSC292c192ZXJzaW9uiAEBEhAKCHdhcm5pbmdzGAUgAygJEiAKC291dHB1dF90YWlsGAYgASgJUgtvdXRwdXRfdGFpbEIKCghfY2hhbmdlZEIOCgxfb3ZzX3ZlcnNpb24ifAoPSW5pdERwZGtSZXF1ZXN0Eh4KCnNvY2tldF9tZW0YASABKAlSCnNvY2tldF9tZW0SJwoMcG1kX2NwdV9tYXNrGAIgASgJSABSDHBtZF9jcHVfbWFza4gBARIPCgdjb25maXJtGAMgASgIQg8KDV9wbWRfY3B1X21hc2siEgoQSW5pdERwZGtSZXNwb25zZSKQAQoKQnJpZGdlU3BlYxIMCgRuYW1lGAEgASgJEioKCGRhdGFwYXRoGAIgASgOMhguZ2xpZGV4Lmhvc3QudjEuRGF0YXBhdGgSEAoDbXR1GAMgASgNSACIAQESEgoFYWRvcHQYBCABKAhIAYgBARIQCghpc29sYXRlZBgFIAEoCEIGCgRfbXR1QggKBl9hZG9wdCJzCgpCcmlkZ2VJbmZvEgwKBG5hbWUYASABKAkSKgoIZGF0YXBhdGgYAiABKA4yGC5nbGlkZXguaG9zdC52MS5EYXRhcGF0aBISCgVvd25lZBgDIAEoCEgAiAEBEg0KBXBvcnRzGAQgAygJQggKBl9vd25lZCJcCgZCcmlkZ2USKAoEc3BlYxgBIAEoCzIaLmdsaWRleC5ob3N0LnYxLkJyaWRnZVNwZWMSKAoEbGl2ZRgCIAEoCzIaLmdsaWRleC5ob3N0LnYxLkJyaWRnZUluZm8iFAoSTGlzdEJyaWRnZXNSZXF1ZXN0Ij4KE0xpc3RCcmlkZ2VzUmVzcG9uc2USJwoHYnJpZGdlcxgBIAMoCzIWLmdsaWRleC5ob3N0LnYxLkJyaWRnZSKKAQoTQ3JlYXRlQnJpZGdlUmVxdWVzdBIMCgRuYW1lGAEgASgJEioKCGRhdGFwYXRoGAIgASgOMhguZ2xpZGV4Lmhvc3QudjEuRGF0YXBhdGgSEAoDbXR1GAMgASgNSACIAQESDQoFYWRvcHQYBCABKAgSEAoIaXNvbGF0ZWQYBSABKAhCBgoEX210dSI+ChRDcmVhdGVCcmlkZ2VSZXNwb25zZRImCgZicmlkZ2UYASABKAsyFi5nbGlkZXguaG9zdC52MS5CcmlkZ2UiIwoTRGVsZXRlQnJpZGdlUmVxdWVzdBIMCgRuYW1lGAEgASgJIhYKFERlbGV0ZUJyaWRnZVJlc3BvbnNlIpwCCgpVcGxpbmtTcGVjEgwKBG5hbWUYASABKAkSDgoGYnJpZGdlGAIgASgJEigKBGtpbmQYAyABKA4yGi5nbGlkZXguaG9zdC52MS5VcGxpbmtLaW5kEhMKBmlmbmFtZRgEIAEoCUgAiAEBEhAKA3BjaRgFIAEoCUgBiAEBEjMKCHhkcF9tb2RlGAYgASgOMhcuZ2xpZGV4Lmhvc3QudjEuWGRwTW9kZVIIeGRwX21vZGUSGQoFbl9yeHEYByABKA1IAlIFbl9yeHGIAQESIwoKbWlncmF0ZV9pcBgIIAEoCEgDUgptaWdyYXRlX2lwiAEBQgkKB19pZm5hbWVCBgoEX3BjaUIICgZfbl9yeHFCDQoLX21pZ3JhdGVfaXAiVgoFUm91dGUSCwoDZHN0GAEgASgJEhQKB2dhdGV3YXkYAiABKAlIAIgBARITCgZtZXRyaWMYAyABKA1IAYgBAUIKCghfZ2F0ZXdheUIJCgdfbWV0cmljIm4KCFNuYXBzaG90Eg4KBmlmbmFtZRgBIAEoCRIQCgNtYWMYAiABKAlIAIgBARIRCglhZGRyZXNzZXMYAyADKAkSJQoGcm91dGVzGAQgAygLMhUuZ2xpZGV4Lmhvc3QudjEuUm91dGVCBgoEX21hYyJMCg1QZW5kaW5nQ29tbWl0Eg0KBXRva2VuGAEgASgJEiwKCGRlYWRsaW5lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJGCgxCb290Um9sbGJhY2sSJgoCYXQYASABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg4KBnJlYXNvbhgCIAEoCSKxAgoMVXBsaW5rUmVjb3JkEigKBHNwZWMYASABKAsyGi5nbGlkZXguaG9zdC52MS5VcGxpbmtTcGVjEiUKC29yaWdfZHJpdmVyGAIgASgJSABSC29yaWdfZHJpdmVyiAEBEioKCHNuYXBzaG90GAMgASgLMhguZ2xpZGV4Lmhvc3QudjEuU25hcHNob3QSLgoHcGVuZGluZxgEIAEoCzIdLmdsaWRleC5ob3N0LnYxLlBlbmRpbmdDb21taXQSQgoNYm9vdF9yb2xsYmFjaxgFIAEoCzIcLmdsaWRleC5ob3N0LnYxLkJvb3RSb2xsYmFja1INYm9vdF9yb2xsYmFjaxIgCgthY2NlcHRfZGhjcBgGIAEoCFILYWNjZXB0X2RoY3BCDgoMX29yaWdfZHJpdmVyInEKC1VwbGlua1N0YXRlEhIKBWVycm9yGAEgASgJSACIAQESIwoKbGlua19zdGF0ZRgCIAEoCUgBUgpsaW5rX3N0YXRliAEBEhAKCHdhcm5pbmdzGAMgAygJQggKBl9lcnJvckINCgtfbGlua19zdGF0ZSI0Cg5DbGFzc2lmaWNhdGlvbhIPCgdyZWFzb25zGAEgAygJEhEKCWFkZHJlc3NlcxgCIAMoCSLFAQoGVXBsaW5rEiwKBnJlY29yZBgBIAEoCzIcLmdsaWRleC5ob3N0LnYxLlVwbGlua1JlY29yZBIqCgVwaGFzZRgCIAEoDjIbLmdsaWRleC5ob3N0LnYxLlVwbGlua1BoYXNlEikKBGxpdmUYAyABKAsyGy5nbGlkZXguaG9zdC52MS5VcGxpbmtTdGF0ZRI2Cg5jbGFzc2lmaWNhdGlvbhgEIAEoCzIeLmdsaWRleC5ob3N0LnYxLkNsYXNzaWZpY2F0aW9uIiQKEkxpc3RVcGxpbmtzUmVxdWVzdBIOCgZicmlkZ2UYASABKAkiPgoTTGlzdFVwbGlua3NSZXNwb25zZRInCgd1cGxpbmtzGAEgAygLMhYuZ2xpZGV4Lmhvc3QudjEuVXBsaW5rIsQCChNFbnN1cmVVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJEigKBGtpbmQYAyABKA4yGi5nbGlkZXguaG9zdC52MS5VcGxpbmtLaW5kEhMKBmlmbmFtZRgEIAEoCUgAiAEBEhAKA3BjaRgFIAEoCUgBiAEBEjMKCHhkcF9tb2RlGAYgASgOMhcuZ2xpZGV4Lmhvc3QudjEuWGRwTW9kZVIIeGRwX21vZGUSGQoFbl9yeHEYByABKA1IAlIFbl9yeHGIAQESHgoKbWlncmF0ZV9pcBgIIAEoCFIKbWlncmF0ZV9pcBIPCgdjb25maXJtGAkgASgIEiAKC2FjY2VwdF9kaGNwGAogASgIUgthY2NlcHRfZGhjcEIJCgdfaWZuYW1lQgYKBF9wY2lCCAoGX25fcnhxIj4KFEVuc3VyZVVwbGlua1Jlc3BvbnNlEiYKBnVwbGluaxgBIAEoCzIWLmdsaWRleC5ob3N0LnYxLlVwbGluayIzChNEZWxldGVVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJIhYKFERlbGV0ZVVwbGlua1Jlc3BvbnNlIkIKE0NvbW1pdFVwbGlua1JlcXVlc3QSDgoGYnJpZGdlGAEgASgJEgwKBG5hbWUYAiABKAkSDQoFdG9rZW4YAyABKAkiPgoUQ29tbWl0VXBsaW5rUmVzcG9uc2USJgoGdXBsaW5rGAEgASgLMhYuZ2xpZGV4Lmhvc3QudjEuVXBsaW5rIjQKFFJlYXBwbHlVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJIj8KFVJlYXBwbHlVcGxpbmtSZXNwb25zZRImCgZ1cGxpbmsYASABKAsyFi5nbGlkZXguaG9zdC52MS5VcGxpbmsi6wEKCVBjaURldmljZRIPCgdhZGRyZXNzGAEgASgJEhwKCXZlbmRvcl9pZBgCIAEoCVIJdmVuZG9yX2lkEhwKCWRldmljZV9pZBgDIAEoCVIJZGV2aWNlX2lkEhoKCGNsYXNzX2lkGAQgASgJUghjbGFzc19pZBITCgZkcml2ZXIYBSABKAlIAIgBARIlCgtpb21tdV9ncm91cBgGIAEoCUgBUgtpb21tdV9ncm91cIgBARIeCgpzeXNmc19wYXRoGAcgASgJUgpzeXNmc19wYXRoQgkKB19kcml2ZXJCDgoMX2lvbW11X2dyb3VwIhcKFUxpc3RQY2lEZXZpY2VzUmVxdWVzdCJEChZMaXN0UGNpRGV2aWNlc1Jlc3BvbnNlEioKB2RldmljZXMYASADKAsyGS5nbGlkZXguaG9zdC52MS5QY2lEZXZpY2UqbQoKTmV0ZEFjY2VzcxIbChdORVREX0FDQ0VTU19VTlNQRUNJRklFRBAAEhQKEE5FVERfQUNDRVNTX0ZVTEwQARIWChJORVREX0FDQ0VTU19TVEFUVVMQAhIUChBORVREX0FDQ0VTU19OT05FEAMqVwoKT3ZzUHJvZmlsZRIbChdPVlNfUFJPRklMRV9VTlNQRUNJRklFRBAAEhYKEk9WU19QUk9GSUxFX0tFUk5FTBABEhQKEE9WU19QUk9GSUxFX0RQREsQAipOCghEYXRhcGF0aBIYChREQVRBUEFUSF9VTlNQRUNJRklFRBAAEhMKD0RBVEFQQVRIX1NZU1RFTRABEhMKD0RBVEFQQVRIX05FVERFVhACKm4KClVwbGlua0tpbmQSGwoXVVBMSU5LX0tJTkRfVU5TUEVDSUZJRUQQABIWChJVUExJTktfS0lORF9LRVJORUwQARIVChFVUExJTktfS0lORF9BRlhEUBACEhQKEFVQTElOS19LSU5EX0RQREsQAyqLAQoHWGRwTW9kZRIYChRYRFBfTU9ERV9VTlNQRUNJRklFRBAAEhgKFFhEUF9NT0RFX0JFU1RfRUZGT1JUEAESEwoPWERQX01PREVfTkFUSVZFEAISIQodWERQX01PREVfTkFUSVZFX1dJVEhfWkVST0NPUFkQAxIUChBYRFBfTU9ERV9HRU5FUklDEAQqZQoLVXBsaW5rUGhhc2USHAoYVVBMSU5LX1BIQVNFX1VOU1BFQ0lGSUVEEAASFwoTVVBMSU5LX1BIQVNFX0FDVElWRRABEh8KG1VQTElOS19QSEFTRV9QRU5ESU5HX0NPTU1JVBACMqsMChJIb3N0TmV0d29ya1NlcnZpY2USgQEKDEdldE92c1N0YXR1cxIjLmdsaWRleC5ob3N0LnYxLkdldE92c1N0YXR1c1JlcXVlc3QaJC5nbGlkZXguaG9zdC52MS5HZXRPdnNTdGF0dXNSZXNwb25zZSImyukYIgoNcmVhZE92c1N0YXR1cxABGg9HRVQgL292cy9zdGF0dXMSegoKSW5zdGFsbE92cxIhLmdsaWRleC5ob3N0LnYxLkluc3RhbGxPdnNSZXF1ZXN0GiIuZ2xpZGV4Lmhvc3QudjEuSW5zdGFsbE92c1Jlc3BvbnNlIiXK6RghCgppbnN0YWxsT3ZzEAIaEVBPU1QgL292cy9pbnN0YWxsEnQKCEluaXREcGRrEh8uZ2xpZGV4Lmhvc3QudjEuSW5pdERwZGtSZXF1ZXN0GiAuZ2xpZGV4Lmhvc3QudjEuSW5pdERwZGtSZXNwb25zZSIlyukYIQoIaW5pdERwZGsQAhoTUE9TVCAvb3ZzL2RwZGstaW5pdBJ9CgtMaXN0QnJpZGdlcxIiLmdsaWRleC5ob3N0LnYxLkxpc3RCcmlkZ2VzUmVxdWVzdBojLmdsaWRleC5ob3N0LnYxLkxpc3RCcmlkZ2VzUmVzcG9uc2UiJcrpGCEKC2xpc3RCcmlkZ2VzEAEaEEdFVCAvb3ZzL2JyaWRnZXMSggEKDENyZWF0ZUJyaWRnZRIjLmdsaWRleC5ob3N0LnYxLkNyZWF0ZUJyaWRnZVJlcXVlc3QaJC5nbGlkZXguaG9zdC52MS5DcmVhdGVCcmlkZ2VSZXNwb25zZSInyukYIwoMY3JlYXRlQnJpZGdlEAIaEVBPU1QgL292cy9icmlkZ2VzEosBCgxEZWxldGVCcmlkZ2USIy5nbGlkZXguaG9zdC52MS5EZWxldGVCcmlkZ2VSZXF1ZXN0GiQuZ2xpZGV4Lmhvc3QudjEuRGVsZXRlQnJpZGdlUmVzcG9uc2UiMMrpGCwKDGRlbGV0ZUJyaWRnZRACGhpERUxFVEUgL292cy9icmlkZ2VzL3tuYW1lfRKMAQoLTGlzdFVwbGlua3MSIi5nbGlkZXguaG9zdC52MS5MaXN0VXBsaW5rc1JlcXVlc3QaIy5nbGlkZXguaG9zdC52MS5MaXN0VXBsaW5rc1Jlc3BvbnNlIjTK6RgwCgtsaXN0VXBsaW5rcxABGh9HRVQgL292cy9icmlkZ2VzL3tuYW1lfS91cGxpbmtzEpEBCgxFbnN1cmVVcGxpbmsSIy5nbGlkZXguaG9zdC52MS5FbnN1cmVVcGxpbmtSZXF1ZXN0GiQuZ2xpZGV4Lmhvc3QudjEuRW5zdXJlVXBsaW5rUmVzcG9uc2UiNsrpGDIKDGVuc3VyZVVwbGluaxACGiBQT1NUIC9vdnMvYnJpZGdlcy97bmFtZX0vdXBsaW5rcxKcAQoMRGVsZXRlVXBsaW5rEiMuZ2xpZGV4Lmhvc3QudjEuRGVsZXRlVXBsaW5rUmVxdWVzdBokLmdsaWRleC5ob3N0LnYxLkRlbGV0ZVVwbGlua1Jlc3BvbnNlIkHK6Rg9CgxkZWxldGVVcGxpbmsQAhorREVMRVRFIC9vdnMvYnJpZGdlcy97bmFtZX0vdXBsaW5rcy97dXBsaW5rfRKhAQoMQ29tbWl0VXBsaW5rEiMuZ2xpZGV4Lmhvc3QudjEuQ29tbWl0VXBsaW5rUmVxdWVzdBokLmdsaWRleC5ob3N0LnYxLkNvbW1pdFVwbGlua1Jlc3BvbnNlIkbK6RhCCgxjb21taXRVcGxpbmsQAhowUE9TVCAvb3ZzL2JyaWRnZXMve25hbWV9L3VwbGlua3Mve3VwbGlua30vY29tbWl0EqYBCg1SZWFwcGx5VXBsaW5rEiQuZ2xpZGV4Lmhvc3QudjEuUmVhcHBseVVwbGlua1JlcXVlc3QaJS5nbGlkZXguaG9zdC52MS5SZWFwcGx5VXBsaW5rUmVzcG9uc2UiSMrpGEQKDWNvbmZpcm1VcGxpbmsQAhoxUE9TVCAvb3ZzL2JyaWRnZXMve25hbWV9L3VwbGlua3Mve3VwbGlua30vcmVhcHBseTKYAQoKUGNpU2VydmljZRKJAQoOTGlzdFBjaURldmljZXMSJS5nbGlkZXguaG9zdC52MS5MaXN0UGNpRGV2aWNlc1JlcXVlc3QaJi5nbGlkZXguaG9zdC52MS5MaXN0UGNpRGV2aWNlc1Jlc3BvbnNlIijK6RgkCg5saXN0UGNpRGV2aWNlcxABGhBHRVQgL3BjaS1kZXZpY2VzYgZwcm90bzM", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
+  fileDesc("ChlnbGlkZXgvaG9zdC92MS9ob3N0LnByb3RvEg5nbGlkZXguaG9zdC52MSJ8CgpOZXRkU3RhdHVzEhYKCWF2YWlsYWJsZRgBIAEoCEgAiAEBEioKBmFjY2VzcxgCIAEoDjIaLmdsaWRleC5ob3N0LnYxLk5ldGRBY2Nlc3MSEgoFZXJyb3IYAyABKAlIAYgBAUIMCgpfYXZhaWxhYmxlQggKBl9lcnJvciJCCglIdWdlcGFnZXMSGAoHc2l6ZV9rYhgBIAEoBFIHc2l6ZV9rYhINCgV0b3RhbBgCIAEoBBIMCgRmcmVlGAMgASgEImUKC0NvbWJpbmF0aW9uEgoKAmlkGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEhYKCWF2YWlsYWJsZRgDIAEoCEgAiAEBEg8KB21pc3NpbmcYBCADKAlCDAoKX2F2YWlsYWJsZSKZBwoQSG9zdENhcGFiaWxpdGllcxIpCg1vdnNfaW5zdGFsbGVkGAEgASgISABSDW92c19pbnN0YWxsZWSIAQESJQoLb3ZzX3ZlcnNpb24YAiABKAlIAVILb3ZzX3ZlcnNpb26IAQESOQoVb3ZzX3ZlcnNpb25fc3VwcG9ydGVkGAMgASgISAJSFW92c192ZXJzaW9uX3N1cHBvcnRlZIgBARIlCgtvdnNfcnVubmluZxgEIAEoCEgDUgtvdnNfcnVubmluZ4gBARIgCgtpZmFjZV90eXBlcxgFIAMoCVILaWZhY2VfdHlwZXMSJgoOZGF0YXBhdGhfdHlwZXMYBiADKAlSDmRhdGFwYXRoX3R5cGVzEisKDm92c19kcGRrX2J1aWxkGAcgASgISARSDm92c19kcGRrX2J1aWxkiAEBEjUKE2RwZGtfbWVtcG9vbF9kcml2ZXIYCCABKAhIBVITZHBka19tZW1wb29sX2RyaXZlcogBARIvChBkcGRrX2luaXRpYWxpemVkGAkgASgISAZSEGRwZGtfaW5pdGlhbGl6ZWSIAQESLAoJaHVnZXBhZ2VzGAogAygLMhkuZ2xpZGV4Lmhvc3QudjEuSHVnZXBhZ2VzEhIKBWlvbW11GAsgASgISAeIAQESJwoMY2hfbmV0X2FkbWluGAwgASgISAhSDGNoX25ldF9hZG1pbogBARIUCgdkbnNtYXNxGA0gASgISAmIAQESEAoDbmZ0GA4gASgISAqIAQESIwoKaXBfZm9yd2FyZBgPIAEoCEgLUgppcF9mb3J3YXJkiAEBEhEKCWZpcmV3YWxscxgQIAMoCRIqChBuZXR3b3JrX21hbmFnZXJzGBEgAygJUhBuZXR3b3JrX21hbmFnZXJzEjEKDGNvbWJpbmF0aW9ucxgSIAMoCzIbLmdsaWRleC5ob3N0LnYxLkNvbWJpbmF0aW9uQhAKDl9vdnNfaW5zdGFsbGVkQg4KDF9vdnNfdmVyc2lvbkIYChZfb3ZzX3ZlcnNpb25fc3VwcG9ydGVkQg4KDF9vdnNfcnVubmluZ0IRCg9fb3ZzX2RwZGtfYnVpbGRCFgoUX2RwZGtfbWVtcG9vbF9kcml2ZXJCEwoRX2RwZGtfaW5pdGlhbGl6ZWRCCAoGX2lvbW11Qg8KDV9jaF9uZXRfYWRtaW5CCgoIX2Ruc21hc3FCBgoEX25mdEINCgtfaXBfZm9yd2FyZCIVChNHZXRPdnNTdGF0dXNSZXF1ZXN0InAKFEdldE92c1N0YXR1c1Jlc3BvbnNlEigKBG5ldGQYASABKAsyGi5nbGlkZXguaG9zdC52MS5OZXRkU3RhdHVzEi4KBGhvc3QYAiABKAsyIC5nbGlkZXguaG9zdC52MS5Ib3N0Q2FwYWJpbGl0aWVzInUKEUluc3RhbGxPdnNSZXF1ZXN0EisKB3Byb2ZpbGUYASABKA4yGi5nbGlkZXguaG9zdC52MS5PdnNQcm9maWxlEiIKDHNvdXJjZV9idWlsZBgCIAEoCFIMc291cmNlX2J1aWxkEg8KB2NvbmZpcm0YAyABKAgiwwEKEkluc3RhbGxPdnNSZXNwb25zZRIUCgdjaGFuZ2VkGAEgASgISACIAQESDgoGbWV0aG9kGAIgASgJEhAKCHBhY2thZ2VzGAMgAygJEiUKC292c192ZXJzaW9uGAQgASgJSAFSC292c192ZXJzaW9uiAEBEhAKCHdhcm5pbmdzGAUgAygJEiAKC291dHB1dF90YWlsGAYgASgJUgtvdXRwdXRfdGFpbEIKCghfY2hhbmdlZEIOCgxfb3ZzX3ZlcnNpb24ifAoPSW5pdERwZGtSZXF1ZXN0Eh4KCnNvY2tldF9tZW0YASABKAlSCnNvY2tldF9tZW0SJwoMcG1kX2NwdV9tYXNrGAIgASgJSABSDHBtZF9jcHVfbWFza4gBARIPCgdjb25maXJtGAMgASgIQg8KDV9wbWRfY3B1X21hc2siEgoQSW5pdERwZGtSZXNwb25zZSKQAQoKQnJpZGdlU3BlYxIMCgRuYW1lGAEgASgJEioKCGRhdGFwYXRoGAIgASgOMhguZ2xpZGV4Lmhvc3QudjEuRGF0YXBhdGgSEAoDbXR1GAMgASgNSACIAQESEgoFYWRvcHQYBCABKAhIAYgBARIQCghpc29sYXRlZBgFIAEoCEIGCgRfbXR1QggKBl9hZG9wdCJzCgpCcmlkZ2VJbmZvEgwKBG5hbWUYASABKAkSKgoIZGF0YXBhdGgYAiABKA4yGC5nbGlkZXguaG9zdC52MS5EYXRhcGF0aBISCgVvd25lZBgDIAEoCEgAiAEBEg0KBXBvcnRzGAQgAygJQggKBl9vd25lZCJcCgZCcmlkZ2USKAoEc3BlYxgBIAEoCzIaLmdsaWRleC5ob3N0LnYxLkJyaWRnZVNwZWMSKAoEbGl2ZRgCIAEoCzIaLmdsaWRleC5ob3N0LnYxLkJyaWRnZUluZm8iFAoSTGlzdEJyaWRnZXNSZXF1ZXN0Ij4KE0xpc3RCcmlkZ2VzUmVzcG9uc2USJwoHYnJpZGdlcxgBIAMoCzIWLmdsaWRleC5ob3N0LnYxLkJyaWRnZSKKAQoTQ3JlYXRlQnJpZGdlUmVxdWVzdBIMCgRuYW1lGAEgASgJEioKCGRhdGFwYXRoGAIgASgOMhguZ2xpZGV4Lmhvc3QudjEuRGF0YXBhdGgSEAoDbXR1GAMgASgNSACIAQESDQoFYWRvcHQYBCABKAgSEAoIaXNvbGF0ZWQYBSABKAhCBgoEX210dSI+ChRDcmVhdGVCcmlkZ2VSZXNwb25zZRImCgZicmlkZ2UYASABKAsyFi5nbGlkZXguaG9zdC52MS5CcmlkZ2UiIwoTRGVsZXRlQnJpZGdlUmVxdWVzdBIMCgRuYW1lGAEgASgJIhYKFERlbGV0ZUJyaWRnZVJlc3BvbnNlIpwCCgpVcGxpbmtTcGVjEgwKBG5hbWUYASABKAkSDgoGYnJpZGdlGAIgASgJEigKBGtpbmQYAyABKA4yGi5nbGlkZXguaG9zdC52MS5VcGxpbmtLaW5kEhMKBmlmbmFtZRgEIAEoCUgAiAEBEhAKA3BjaRgFIAEoCUgBiAEBEjMKCHhkcF9tb2RlGAYgASgOMhcuZ2xpZGV4Lmhvc3QudjEuWGRwTW9kZVIIeGRwX21vZGUSGQoFbl9yeHEYByABKA1IAlIFbl9yeHGIAQESIwoKbWlncmF0ZV9pcBgIIAEoCEgDUgptaWdyYXRlX2lwiAEBQgkKB19pZm5hbWVCBgoEX3BjaUIICgZfbl9yeHFCDQoLX21pZ3JhdGVfaXAiVgoFUm91dGUSCwoDZHN0GAEgASgJEhQKB2dhdGV3YXkYAiABKAlIAIgBARITCgZtZXRyaWMYAyABKA1IAYgBAUIKCghfZ2F0ZXdheUIJCgdfbWV0cmljIm4KCFNuYXBzaG90Eg4KBmlmbmFtZRgBIAEoCRIQCgNtYWMYAiABKAlIAIgBARIRCglhZGRyZXNzZXMYAyADKAkSJQoGcm91dGVzGAQgAygLMhUuZ2xpZGV4Lmhvc3QudjEuUm91dGVCBgoEX21hYyJMCg1QZW5kaW5nQ29tbWl0Eg0KBXRva2VuGAEgASgJEiwKCGRlYWRsaW5lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJGCgxCb290Um9sbGJhY2sSJgoCYXQYASABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg4KBnJlYXNvbhgCIAEoCSKxAgoMVXBsaW5rUmVjb3JkEigKBHNwZWMYASABKAsyGi5nbGlkZXguaG9zdC52MS5VcGxpbmtTcGVjEiUKC29yaWdfZHJpdmVyGAIgASgJSABSC29yaWdfZHJpdmVyiAEBEioKCHNuYXBzaG90GAMgASgLMhguZ2xpZGV4Lmhvc3QudjEuU25hcHNob3QSLgoHcGVuZGluZxgEIAEoCzIdLmdsaWRleC5ob3N0LnYxLlBlbmRpbmdDb21taXQSQgoNYm9vdF9yb2xsYmFjaxgFIAEoCzIcLmdsaWRleC5ob3N0LnYxLkJvb3RSb2xsYmFja1INYm9vdF9yb2xsYmFjaxIgCgthY2NlcHRfZGhjcBgGIAEoCFILYWNjZXB0X2RoY3BCDgoMX29yaWdfZHJpdmVyInEKC1VwbGlua1N0YXRlEhIKBWVycm9yGAEgASgJSACIAQESIwoKbGlua19zdGF0ZRgCIAEoCUgBUgpsaW5rX3N0YXRliAEBEhAKCHdhcm5pbmdzGAMgAygJQggKBl9lcnJvckINCgtfbGlua19zdGF0ZSI0Cg5DbGFzc2lmaWNhdGlvbhIPCgdyZWFzb25zGAEgAygJEhEKCWFkZHJlc3NlcxgCIAMoCSLFAQoGVXBsaW5rEiwKBnJlY29yZBgBIAEoCzIcLmdsaWRleC5ob3N0LnYxLlVwbGlua1JlY29yZBIqCgVwaGFzZRgCIAEoDjIbLmdsaWRleC5ob3N0LnYxLlVwbGlua1BoYXNlEikKBGxpdmUYAyABKAsyGy5nbGlkZXguaG9zdC52MS5VcGxpbmtTdGF0ZRI2Cg5jbGFzc2lmaWNhdGlvbhgEIAEoCzIeLmdsaWRleC5ob3N0LnYxLkNsYXNzaWZpY2F0aW9uIiQKEkxpc3RVcGxpbmtzUmVxdWVzdBIOCgZicmlkZ2UYASABKAkiPgoTTGlzdFVwbGlua3NSZXNwb25zZRInCgd1cGxpbmtzGAEgAygLMhYuZ2xpZGV4Lmhvc3QudjEuVXBsaW5rIsQCChNFbnN1cmVVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJEigKBGtpbmQYAyABKA4yGi5nbGlkZXguaG9zdC52MS5VcGxpbmtLaW5kEhMKBmlmbmFtZRgEIAEoCUgAiAEBEhAKA3BjaRgFIAEoCUgBiAEBEjMKCHhkcF9tb2RlGAYgASgOMhcuZ2xpZGV4Lmhvc3QudjEuWGRwTW9kZVIIeGRwX21vZGUSGQoFbl9yeHEYByABKA1IAlIFbl9yeHGIAQESHgoKbWlncmF0ZV9pcBgIIAEoCFIKbWlncmF0ZV9pcBIPCgdjb25maXJtGAkgASgIEiAKC2FjY2VwdF9kaGNwGAogASgIUgthY2NlcHRfZGhjcEIJCgdfaWZuYW1lQgYKBF9wY2lCCAoGX25fcnhxIj4KFEVuc3VyZVVwbGlua1Jlc3BvbnNlEiYKBnVwbGluaxgBIAEoCzIWLmdsaWRleC5ob3N0LnYxLlVwbGluayIzChNEZWxldGVVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJIhYKFERlbGV0ZVVwbGlua1Jlc3BvbnNlIkIKE0NvbW1pdFVwbGlua1JlcXVlc3QSDgoGYnJpZGdlGAEgASgJEgwKBG5hbWUYAiABKAkSDQoFdG9rZW4YAyABKAkiPgoUQ29tbWl0VXBsaW5rUmVzcG9uc2USJgoGdXBsaW5rGAEgASgLMhYuZ2xpZGV4Lmhvc3QudjEuVXBsaW5rIjQKFFJlYXBwbHlVcGxpbmtSZXF1ZXN0Eg4KBmJyaWRnZRgBIAEoCRIMCgRuYW1lGAIgASgJIj8KFVJlYXBwbHlVcGxpbmtSZXNwb25zZRImCgZ1cGxpbmsYASABKAsyFi5nbGlkZXguaG9zdC52MS5VcGxpbmsi2AIKCVBjaURldmljZRIPCgdhZGRyZXNzGAEgASgJEhwKCXZlbmRvcl9pZBgCIAEoCVIJdmVuZG9yX2lkEhwKCWRldmljZV9pZBgDIAEoCVIJZGV2aWNlX2lkEhoKCGNsYXNzX2lkGAQgASgJUghjbGFzc19pZBITCgZkcml2ZXIYBSABKAlIAIgBARIlCgtpb21tdV9ncm91cBgGIAEoCUgBUgtpb21tdV9ncm91cIgBARIeCgpzeXNmc19wYXRoGAcgASgJUgpzeXNmc19wYXRoEiEKCW51bWFfbm9kZRgIIAEoDUgCUgludW1hX25vZGWIAQESEgoFcmVhZHkYCSABKAhIA4gBARIcCglub3RfcmVhZHkYCiADKAlSCW5vdF9yZWFkeUIJCgdfZHJpdmVyQg4KDF9pb21tdV9ncm91cEIMCgpfbnVtYV9ub2RlQggKBl9yZWFkeSIYChZHZXRIb3N0VG9wb2xvZ3lSZXF1ZXN0IkUKF0dldEhvc3RUb3BvbG9neVJlc3BvbnNlEioKCHRvcG9sb2d5GAEgASgLMhguZ2xpZGV4Lmhvc3QudjEuVG9wb2xvZ3kinQEKCFRvcG9sb2d5EjAKB3N1bW1hcnkYASABKAsyHy5nbGlkZXguaG9zdC52MS5Ub3BvbG9neVN1bW1hcnkSLAoHZGV2aWNlcxgCIAMoCzIbLmdsaWRleC5ob3N0LnYxLlBjaUZ1bmN0aW9uEjEKCHdhcm5pbmdzGAMgAygLMh8uZ2xpZGV4Lmhvc3QudjEuVG9wb2xvZ3lXYXJuaW5nIqEDCg9Ub3BvbG9neVN1bW1hcnkSOAoKbnVtYV9ub2RlcxgBIAMoCzIYLmdsaWRleC5ob3N0LnYxLk51bWFOb2RlUgpudW1hX25vZGVzEhAKCGlzb2xhdGVkGAIgAygNElcKDXJlc2VydmVkX2NwdXMYAyADKAsyMS5nbGlkZXguaG9zdC52MS5Ub3BvbG9neVN1bW1hcnkuUmVzZXJ2ZWRDcHVzRW50cnlSDXJlc2VydmVkX2NwdXMSLgoScmVzZXJ2ZWRfYnlfY29uZmlnGAQgASgIUhJyZXNlcnZlZF9ieV9jb25maWcSUQoLZGV2aWNlX251bWEYBSADKAsyLy5nbGlkZXguaG9zdC52MS5Ub3BvbG9neVN1bW1hcnkuRGV2aWNlTnVtYUVudHJ5UgtkZXZpY2VfbnVtYRozChFSZXNlcnZlZENwdXNFbnRyeRILCgNrZXkYASABKA0SDQoFdmFsdWUYAiABKAk6AjgBGjEKD0RldmljZU51bWFFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKA06AjgBIswBCghOdW1hTm9kZRIKCgJpZBgBIAEoDRImCgVjb3JlcxgCIAMoCzIXLmdsaWRleC5ob3N0LnYxLkNwdUNvcmUSHgoKbWVtb3J5X21pYhgDIAEoBFIKbWVtb3J5X21pYhI6CglodWdlcGFnZXMYBCADKAsyJy5nbGlkZXguaG9zdC52MS5OdW1hTm9kZS5IdWdlcGFnZXNFbnRyeRowCg5IdWdlcGFnZXNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIhoKB0NwdUNvcmUSDwoHdGhyZWFkcxgBIAMoDSKSAQoIUGNpZUxpbmsSJAoNY3VycmVudF9zcGVlZBgBIAEoCVINY3VycmVudF9zcGVlZBIkCg1jdXJyZW50X3dpZHRoGAIgASgNUg1jdXJyZW50X3dpZHRoEhwKCW1heF9zcGVlZBgDIAEoCVIJbWF4X3NwZWVkEhwKCW1heF93aWR0aBgEIAEoDVIJbWF4X3dpZHRoIkcKBVNyaW92EhwKCXRvdGFsX3ZmcxgBIAEoDVIJdG90YWxfdmZzEiAKC2VuYWJsZWRfdmZzGAIgASgNUgtlbmFibGVkX3ZmcyK1BAoLUGNpRnVuY3Rpb24SDwoHYWRkcmVzcxgBIAEoCRIcCgl2ZW5kb3JfaWQYAiABKAlSCXZlbmRvcl9pZBIcCglkZXZpY2VfaWQYAyABKAlSCWRldmljZV9pZBIaCghjbGFzc19pZBgEIAEoCVIIY2xhc3NfaWQSEwoGZHJpdmVyGAUgASgJSACIAQESJQoLaW9tbXVfZ3JvdXAYBiABKAlIAVILaW9tbXVfZ3JvdXCIAQESIQoJbnVtYV9ub2RlGAcgASgNSAJSCW51bWFfbm9kZYgBARIOCgZwYXJlbnQYCCABKAkSJQoEa2luZBgJIAEoDjIXLmdsaWRleC5ob3N0LnYxLlBjaUtpbmQSIQoJcm9vdF9wb3J0GAogASgJSANSCXJvb3RfcG9ydIgBARITCgZzd2l0Y2gYCyABKAlIBIgBARImCgRsaW5rGAwgASgLMhguZ2xpZGV4Lmhvc3QudjEuUGNpZUxpbmsSJAoFc3Jpb3YYDSABKAsyFS5nbGlkZXguaG9zdC52MS5TcmlvdhITCgZwaHlzZm4YDiABKAlIBYgBARISCgphc3NpZ25hYmxlGA8gASgIEg0KBXJlYWR5GBAgASgIEhwKCW5vdF9yZWFkeRgRIAMoCVIJbm90X3JlYWR5QgkKB19kcml2ZXJCDgoMX2lvbW11X2dyb3VwQgwKCl9udW1hX25vZGVCDAoKX3Jvb3RfcG9ydEIJCgdfc3dpdGNoQgkKB19waHlzZm4iLwoPVG9wb2xvZ3lXYXJuaW5nEgwKBGtpbmQYASABKAkSDgoGZGV0YWlsGAIgASgJIhcKFUxpc3RQY2lEZXZpY2VzUmVxdWVzdCJEChZMaXN0UGNpRGV2aWNlc1Jlc3BvbnNlEioKB2RldmljZXMYASADKAsyGS5nbGlkZXguaG9zdC52MS5QY2lEZXZpY2UqbQoKTmV0ZEFjY2VzcxIbChdORVREX0FDQ0VTU19VTlNQRUNJRklFRBAAEhQKEE5FVERfQUNDRVNTX0ZVTEwQARIWChJORVREX0FDQ0VTU19TVEFUVVMQAhIUChBORVREX0FDQ0VTU19OT05FEAMqVwoKT3ZzUHJvZmlsZRIbChdPVlNfUFJPRklMRV9VTlNQRUNJRklFRBAAEhYKEk9WU19QUk9GSUxFX0tFUk5FTBABEhQKEE9WU19QUk9GSUxFX0RQREsQAipOCghEYXRhcGF0aBIYChREQVRBUEFUSF9VTlNQRUNJRklFRBAAEhMKD0RBVEFQQVRIX1NZU1RFTRABEhMKD0RBVEFQQVRIX05FVERFVhACKm4KClVwbGlua0tpbmQSGwoXVVBMSU5LX0tJTkRfVU5TUEVDSUZJRUQQABIWChJVUExJTktfS0lORF9LRVJORUwQARIVChFVUExJTktfS0lORF9BRlhEUBACEhQKEFVQTElOS19LSU5EX0RQREsQAyqLAQoHWGRwTW9kZRIYChRYRFBfTU9ERV9VTlNQRUNJRklFRBAAEhgKFFhEUF9NT0RFX0JFU1RfRUZGT1JUEAESEwoPWERQX01PREVfTkFUSVZFEAISIQodWERQX01PREVfTkFUSVZFX1dJVEhfWkVST0NPUFkQAxIUChBYRFBfTU9ERV9HRU5FUklDEAQqZQoLVXBsaW5rUGhhc2USHAoYVVBMSU5LX1BIQVNFX1VOU1BFQ0lGSUVEEAASFwoTVVBMSU5LX1BIQVNFX0FDVElWRRABEh8KG1VQTElOS19QSEFTRV9QRU5ESU5HX0NPTU1JVBACKpABCgdQY2lLaW5kEhgKFFBDSV9LSU5EX1VOU1BFQ0lGSUVEEAASFQoRUENJX0tJTkRfRU5EUE9JTlQQARIWChJQQ0lfS0lORF9ST09UX1BPUlQQAhIcChhQQ0lfS0lORF9TV0lUQ0hfVVBTVFJFQU0QAxIeChpQQ0lfS0lORF9TV0lUQ0hfRE9XTlNUUkVBTRAEMqsMChJIb3N0TmV0d29ya1NlcnZpY2USgQEKDEdldE92c1N0YXR1cxIjLmdsaWRleC5ob3N0LnYxLkdldE92c1N0YXR1c1JlcXVlc3QaJC5nbGlkZXguaG9zdC52MS5HZXRPdnNTdGF0dXNSZXNwb25zZSImyukYIgoNcmVhZE92c1N0YXR1cxABGg9HRVQgL292cy9zdGF0dXMSegoKSW5zdGFsbE92cxIhLmdsaWRleC5ob3N0LnYxLkluc3RhbGxPdnNSZXF1ZXN0GiIuZ2xpZGV4Lmhvc3QudjEuSW5zdGFsbE92c1Jlc3BvbnNlIiXK6RghCgppbnN0YWxsT3ZzEAIaEVBPU1QgL292cy9pbnN0YWxsEnQKCEluaXREcGRrEh8uZ2xpZGV4Lmhvc3QudjEuSW5pdERwZGtSZXF1ZXN0GiAuZ2xpZGV4Lmhvc3QudjEuSW5pdERwZGtSZXNwb25zZSIlyukYIQoIaW5pdERwZGsQAhoTUE9TVCAvb3ZzL2RwZGstaW5pdBJ9CgtMaXN0QnJpZGdlcxIiLmdsaWRleC5ob3N0LnYxLkxpc3RCcmlkZ2VzUmVxdWVzdBojLmdsaWRleC5ob3N0LnYxLkxpc3RCcmlkZ2VzUmVzcG9uc2UiJcrpGCEKC2xpc3RCcmlkZ2VzEAEaEEdFVCAvb3ZzL2JyaWRnZXMSggEKDENyZWF0ZUJyaWRnZRIjLmdsaWRleC5ob3N0LnYxLkNyZWF0ZUJyaWRnZVJlcXVlc3QaJC5nbGlkZXguaG9zdC52MS5DcmVhdGVCcmlkZ2VSZXNwb25zZSInyukYIwoMY3JlYXRlQnJpZGdlEAIaEVBPU1QgL292cy9icmlkZ2VzEosBCgxEZWxldGVCcmlkZ2USIy5nbGlkZXguaG9zdC52MS5EZWxldGVCcmlkZ2VSZXF1ZXN0GiQuZ2xpZGV4Lmhvc3QudjEuRGVsZXRlQnJpZGdlUmVzcG9uc2UiMMrpGCwKDGRlbGV0ZUJyaWRnZRACGhpERUxFVEUgL292cy9icmlkZ2VzL3tuYW1lfRKMAQoLTGlzdFVwbGlua3MSIi5nbGlkZXguaG9zdC52MS5MaXN0VXBsaW5rc1JlcXVlc3QaIy5nbGlkZXguaG9zdC52MS5MaXN0VXBsaW5rc1Jlc3BvbnNlIjTK6RgwCgtsaXN0VXBsaW5rcxABGh9HRVQgL292cy9icmlkZ2VzL3tuYW1lfS91cGxpbmtzEpEBCgxFbnN1cmVVcGxpbmsSIy5nbGlkZXguaG9zdC52MS5FbnN1cmVVcGxpbmtSZXF1ZXN0GiQuZ2xpZGV4Lmhvc3QudjEuRW5zdXJlVXBsaW5rUmVzcG9uc2UiNsrpGDIKDGVuc3VyZVVwbGluaxACGiBQT1NUIC9vdnMvYnJpZGdlcy97bmFtZX0vdXBsaW5rcxKcAQoMRGVsZXRlVXBsaW5rEiMuZ2xpZGV4Lmhvc3QudjEuRGVsZXRlVXBsaW5rUmVxdWVzdBokLmdsaWRleC5ob3N0LnYxLkRlbGV0ZVVwbGlua1Jlc3BvbnNlIkHK6Rg9CgxkZWxldGVVcGxpbmsQAhorREVMRVRFIC9vdnMvYnJpZGdlcy97bmFtZX0vdXBsaW5rcy97dXBsaW5rfRKhAQoMQ29tbWl0VXBsaW5rEiMuZ2xpZGV4Lmhvc3QudjEuQ29tbWl0VXBsaW5rUmVxdWVzdBokLmdsaWRleC5ob3N0LnYxLkNvbW1pdFVwbGlua1Jlc3BvbnNlIkbK6RhCCgxjb21taXRVcGxpbmsQAhowUE9TVCAvb3ZzL2JyaWRnZXMve25hbWV9L3VwbGlua3Mve3VwbGlua30vY29tbWl0EqYBCg1SZWFwcGx5VXBsaW5rEiQuZ2xpZGV4Lmhvc3QudjEuUmVhcHBseVVwbGlua1JlcXVlc3QaJS5nbGlkZXguaG9zdC52MS5SZWFwcGx5VXBsaW5rUmVzcG9uc2UiSMrpGEQKDWNvbmZpcm1VcGxpbmsQAhoxUE9TVCAvb3ZzL2JyaWRnZXMve25hbWV9L3VwbGlua3Mve3VwbGlua30vcmVhcHBseTKYAQoKUGNpU2VydmljZRKJAQoOTGlzdFBjaURldmljZXMSJS5nbGlkZXguaG9zdC52MS5MaXN0UGNpRGV2aWNlc1JlcXVlc3QaJi5nbGlkZXguaG9zdC52MS5MaXN0UGNpRGV2aWNlc1Jlc3BvbnNlIijK6RgkCg5saXN0UGNpRGV2aWNlcxABGhBHRVQgL3BjaS1kZXZpY2VzMqQBCg9Ub3BvbG9neVNlcnZpY2USkAEKD0dldEhvc3RUb3BvbG9neRImLmdsaWRleC5ob3N0LnYxLkdldEhvc3RUb3BvbG9neVJlcXVlc3QaJy5nbGlkZXguaG9zdC52MS5HZXRIb3N0VG9wb2xvZ3lSZXNwb25zZSIsyukYKAoQcmVhZEhvc3RUb3BvbG9neRABGhJHRVQgL2hvc3QvdG9wb2xvZ3liBnByb3RvMw", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.host.v1.NetdStatus
@@ -1965,6 +1965,23 @@ export type PciDevice = Message<"glidex.host.v1.PciDevice"> & {
    * @generated from field: string sysfs_path = 7 [json_name = "sysfs_path"];
    */
   sysfsPath: string;
+
+  /**
+   * @generated from field: optional uint32 numa_node = 8 [json_name = "numa_node"];
+   */
+  numaNode?: number | undefined;
+
+  /**
+   * For a device a VM could be given: ready for passthrough, else why not.
+   *
+   * @generated from field: optional bool ready = 9;
+   */
+  ready?: boolean | undefined;
+
+  /**
+   * @generated from field: repeated string not_ready = 10 [json_name = "not_ready"];
+   */
+  notReady: string[];
 };
 
 /**
@@ -2007,6 +2024,23 @@ export type PciDeviceJson = {
    * @generated from field: string sysfs_path = 7 [json_name = "sysfs_path"];
    */
   sysfs_path?: string;
+
+  /**
+   * @generated from field: optional uint32 numa_node = 8 [json_name = "numa_node"];
+   */
+  numa_node?: number;
+
+  /**
+   * For a device a VM could be given: ready for passthrough, else why not.
+   *
+   * @generated from field: optional bool ready = 9;
+   */
+  ready?: boolean;
+
+  /**
+   * @generated from field: repeated string not_ready = 10 [json_name = "not_ready"];
+   */
+  not_ready?: string[];
 };
 
 /**
@@ -2015,6 +2049,622 @@ export type PciDeviceJson = {
  */
 export const PciDeviceSchema: GenMessage<PciDevice, {jsonType: PciDeviceJson}> = /*@__PURE__*/
   messageDesc(file_glidex_host_v1_host, 38);
+
+/**
+ * @generated from message glidex.host.v1.GetHostTopologyRequest
+ */
+export type GetHostTopologyRequest = Message<"glidex.host.v1.GetHostTopologyRequest"> & {
+};
+
+/**
+ * @generated from message glidex.host.v1.GetHostTopologyRequest
+ */
+export type GetHostTopologyRequestJson = {
+};
+
+/**
+ * Describes the message glidex.host.v1.GetHostTopologyRequest.
+ * Use `create(GetHostTopologyRequestSchema)` to create a new message.
+ */
+export const GetHostTopologyRequestSchema: GenMessage<GetHostTopologyRequest, {jsonType: GetHostTopologyRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 39);
+
+/**
+ * @generated from message glidex.host.v1.GetHostTopologyResponse
+ */
+export type GetHostTopologyResponse = Message<"glidex.host.v1.GetHostTopologyResponse"> & {
+  /**
+   * @generated from field: glidex.host.v1.Topology topology = 1;
+   */
+  topology?: Topology | undefined;
+};
+
+/**
+ * @generated from message glidex.host.v1.GetHostTopologyResponse
+ */
+export type GetHostTopologyResponseJson = {
+  /**
+   * @generated from field: glidex.host.v1.Topology topology = 1;
+   */
+  topology?: TopologyJson;
+};
+
+/**
+ * Describes the message glidex.host.v1.GetHostTopologyResponse.
+ * Use `create(GetHostTopologyResponseSchema)` to create a new message.
+ */
+export const GetHostTopologyResponseSchema: GenMessage<GetHostTopologyResponse, {jsonType: GetHostTopologyResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 40);
+
+/**
+ * @generated from message glidex.host.v1.Topology
+ */
+export type Topology = Message<"glidex.host.v1.Topology"> & {
+  /**
+   * @generated from field: glidex.host.v1.TopologySummary summary = 1;
+   */
+  summary?: TopologySummary | undefined;
+
+  /**
+   * Every PCI function, by address.
+   *
+   * @generated from field: repeated glidex.host.v1.PciFunction devices = 2;
+   */
+  devices: PciFunction[];
+
+  /**
+   * @generated from field: repeated glidex.host.v1.TopologyWarning warnings = 3;
+   */
+  warnings: TopologyWarning[];
+};
+
+/**
+ * @generated from message glidex.host.v1.Topology
+ */
+export type TopologyJson = {
+  /**
+   * @generated from field: glidex.host.v1.TopologySummary summary = 1;
+   */
+  summary?: TopologySummaryJson;
+
+  /**
+   * Every PCI function, by address.
+   *
+   * @generated from field: repeated glidex.host.v1.PciFunction devices = 2;
+   */
+  devices?: PciFunctionJson[];
+
+  /**
+   * @generated from field: repeated glidex.host.v1.TopologyWarning warnings = 3;
+   */
+  warnings?: TopologyWarningJson[];
+};
+
+/**
+ * Describes the message glidex.host.v1.Topology.
+ * Use `create(TopologySchema)` to create a new message.
+ */
+export const TopologySchema: GenMessage<Topology, {jsonType: TopologyJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 41);
+
+/**
+ * What a node reports in its status (spec/host-topology.md §3.1).
+ *
+ * @generated from message glidex.host.v1.TopologySummary
+ */
+export type TopologySummary = Message<"glidex.host.v1.TopologySummary"> & {
+  /**
+   * @generated from field: repeated glidex.host.v1.NumaNode numa_nodes = 1 [json_name = "numa_nodes"];
+   */
+  numaNodes: NumaNode[];
+
+  /**
+   * CPUs kept free of other tasks (isolcpus, nohz_full).
+   *
+   * @generated from field: repeated uint32 isolated = 2;
+   */
+  isolated: number[];
+
+  /**
+   * CPUs no VM gets, and why: pmd, dpdk_lcore, config.
+   *
+   * @generated from field: map<uint32, string> reserved_cpus = 3 [json_name = "reserved_cpus"];
+   */
+  reservedCpus: { [key: number]: string };
+
+  /**
+   * @generated from field: bool reserved_by_config = 4 [json_name = "reserved_by_config"];
+   */
+  reservedByConfig: boolean;
+
+  /**
+   * The NUMA node of each device a VM could be given, by address.
+   *
+   * @generated from field: map<string, uint32> device_numa = 5 [json_name = "device_numa"];
+   */
+  deviceNuma: { [key: string]: number };
+};
+
+/**
+ * What a node reports in its status (spec/host-topology.md §3.1).
+ *
+ * @generated from message glidex.host.v1.TopologySummary
+ */
+export type TopologySummaryJson = {
+  /**
+   * @generated from field: repeated glidex.host.v1.NumaNode numa_nodes = 1 [json_name = "numa_nodes"];
+   */
+  numa_nodes?: NumaNodeJson[];
+
+  /**
+   * CPUs kept free of other tasks (isolcpus, nohz_full).
+   *
+   * @generated from field: repeated uint32 isolated = 2;
+   */
+  isolated?: number[];
+
+  /**
+   * CPUs no VM gets, and why: pmd, dpdk_lcore, config.
+   *
+   * @generated from field: map<uint32, string> reserved_cpus = 3 [json_name = "reserved_cpus"];
+   */
+  reserved_cpus?: { [key: number]: string };
+
+  /**
+   * @generated from field: bool reserved_by_config = 4 [json_name = "reserved_by_config"];
+   */
+  reserved_by_config?: boolean;
+
+  /**
+   * The NUMA node of each device a VM could be given, by address.
+   *
+   * @generated from field: map<string, uint32> device_numa = 5 [json_name = "device_numa"];
+   */
+  device_numa?: { [key: string]: number };
+};
+
+/**
+ * Describes the message glidex.host.v1.TopologySummary.
+ * Use `create(TopologySummarySchema)` to create a new message.
+ */
+export const TopologySummarySchema: GenMessage<TopologySummary, {jsonType: TopologySummaryJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 42);
+
+/**
+ * @generated from message glidex.host.v1.NumaNode
+ */
+export type NumaNode = Message<"glidex.host.v1.NumaNode"> & {
+  /**
+   * @generated from field: uint32 id = 1;
+   */
+  id: number;
+
+  /**
+   * @generated from field: repeated glidex.host.v1.CpuCore cores = 2;
+   */
+  cores: CpuCore[];
+
+  /**
+   * Less the hugepage pool.
+   *
+   * @generated from field: uint64 memory_mib = 3 [json_name = "memory_mib"];
+   */
+  memoryMib: bigint;
+
+  /**
+   * Page size in KiB to pages VMs may take, less OVS-DPDK's.
+   *
+   * @generated from field: map<string, uint64> hugepages = 4;
+   */
+  hugepages: { [key: string]: bigint };
+};
+
+/**
+ * @generated from message glidex.host.v1.NumaNode
+ */
+export type NumaNodeJson = {
+  /**
+   * @generated from field: uint32 id = 1;
+   */
+  id?: number;
+
+  /**
+   * @generated from field: repeated glidex.host.v1.CpuCore cores = 2;
+   */
+  cores?: CpuCoreJson[];
+
+  /**
+   * Less the hugepage pool.
+   *
+   * @generated from field: uint64 memory_mib = 3 [json_name = "memory_mib"];
+   */
+  memory_mib?: string;
+
+  /**
+   * Page size in KiB to pages VMs may take, less OVS-DPDK's.
+   *
+   * @generated from field: map<string, uint64> hugepages = 4;
+   */
+  hugepages?: { [key: string]: string };
+};
+
+/**
+ * Describes the message glidex.host.v1.NumaNode.
+ * Use `create(NumaNodeSchema)` to create a new message.
+ */
+export const NumaNodeSchema: GenMessage<NumaNode, {jsonType: NumaNodeJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 43);
+
+/**
+ * @generated from message glidex.host.v1.CpuCore
+ */
+export type CpuCore = Message<"glidex.host.v1.CpuCore"> & {
+  /**
+   * Its hyperthreads, lowest first.
+   *
+   * @generated from field: repeated uint32 threads = 1;
+   */
+  threads: number[];
+};
+
+/**
+ * @generated from message glidex.host.v1.CpuCore
+ */
+export type CpuCoreJson = {
+  /**
+   * Its hyperthreads, lowest first.
+   *
+   * @generated from field: repeated uint32 threads = 1;
+   */
+  threads?: number[];
+};
+
+/**
+ * Describes the message glidex.host.v1.CpuCore.
+ * Use `create(CpuCoreSchema)` to create a new message.
+ */
+export const CpuCoreSchema: GenMessage<CpuCore, {jsonType: CpuCoreJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 44);
+
+/**
+ * @generated from message glidex.host.v1.PcieLink
+ */
+export type PcieLink = Message<"glidex.host.v1.PcieLink"> & {
+  /**
+   * @generated from field: string current_speed = 1 [json_name = "current_speed"];
+   */
+  currentSpeed: string;
+
+  /**
+   * @generated from field: uint32 current_width = 2 [json_name = "current_width"];
+   */
+  currentWidth: number;
+
+  /**
+   * @generated from field: string max_speed = 3 [json_name = "max_speed"];
+   */
+  maxSpeed: string;
+
+  /**
+   * @generated from field: uint32 max_width = 4 [json_name = "max_width"];
+   */
+  maxWidth: number;
+};
+
+/**
+ * @generated from message glidex.host.v1.PcieLink
+ */
+export type PcieLinkJson = {
+  /**
+   * @generated from field: string current_speed = 1 [json_name = "current_speed"];
+   */
+  current_speed?: string;
+
+  /**
+   * @generated from field: uint32 current_width = 2 [json_name = "current_width"];
+   */
+  current_width?: number;
+
+  /**
+   * @generated from field: string max_speed = 3 [json_name = "max_speed"];
+   */
+  max_speed?: string;
+
+  /**
+   * @generated from field: uint32 max_width = 4 [json_name = "max_width"];
+   */
+  max_width?: number;
+};
+
+/**
+ * Describes the message glidex.host.v1.PcieLink.
+ * Use `create(PcieLinkSchema)` to create a new message.
+ */
+export const PcieLinkSchema: GenMessage<PcieLink, {jsonType: PcieLinkJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 45);
+
+/**
+ * @generated from message glidex.host.v1.Sriov
+ */
+export type Sriov = Message<"glidex.host.v1.Sriov"> & {
+  /**
+   * @generated from field: uint32 total_vfs = 1 [json_name = "total_vfs"];
+   */
+  totalVfs: number;
+
+  /**
+   * @generated from field: uint32 enabled_vfs = 2 [json_name = "enabled_vfs"];
+   */
+  enabledVfs: number;
+};
+
+/**
+ * @generated from message glidex.host.v1.Sriov
+ */
+export type SriovJson = {
+  /**
+   * @generated from field: uint32 total_vfs = 1 [json_name = "total_vfs"];
+   */
+  total_vfs?: number;
+
+  /**
+   * @generated from field: uint32 enabled_vfs = 2 [json_name = "enabled_vfs"];
+   */
+  enabled_vfs?: number;
+};
+
+/**
+ * Describes the message glidex.host.v1.Sriov.
+ * Use `create(SriovSchema)` to create a new message.
+ */
+export const SriovSchema: GenMessage<Sriov, {jsonType: SriovJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 46);
+
+/**
+ * @generated from message glidex.host.v1.PciFunction
+ */
+export type PciFunction = Message<"glidex.host.v1.PciFunction"> & {
+  /**
+   * @generated from field: string address = 1;
+   */
+  address: string;
+
+  /**
+   * @generated from field: string vendor_id = 2 [json_name = "vendor_id"];
+   */
+  vendorId: string;
+
+  /**
+   * @generated from field: string device_id = 3 [json_name = "device_id"];
+   */
+  deviceId: string;
+
+  /**
+   * @generated from field: string class_id = 4 [json_name = "class_id"];
+   */
+  classId: string;
+
+  /**
+   * @generated from field: optional string driver = 5;
+   */
+  driver?: string | undefined;
+
+  /**
+   * @generated from field: optional string iommu_group = 6 [json_name = "iommu_group"];
+   */
+  iommuGroup?: string | undefined;
+
+  /**
+   * @generated from field: optional uint32 numa_node = 7 [json_name = "numa_node"];
+   */
+  numaNode?: number | undefined;
+
+  /**
+   * The bridge above it, or its root complex (pci0000:80).
+   *
+   * @generated from field: string parent = 8;
+   */
+  parent: string;
+
+  /**
+   * @generated from field: glidex.host.v1.PciKind kind = 9;
+   */
+  kind: PciKind;
+
+  /**
+   * @generated from field: optional string root_port = 10 [json_name = "root_port"];
+   */
+  rootPort?: string | undefined;
+
+  /**
+   * The upstream port of the nearest switch above it.
+   *
+   * @generated from field: optional string switch = 11;
+   */
+  switch?: string | undefined;
+
+  /**
+   * @generated from field: glidex.host.v1.PcieLink link = 12;
+   */
+  link?: PcieLink | undefined;
+
+  /**
+   * @generated from field: glidex.host.v1.Sriov sriov = 13;
+   */
+  sriov?: Sriov | undefined;
+
+  /**
+   * A virtual function's physical function.
+   *
+   * @generated from field: optional string physfn = 14;
+   */
+  physfn?: string | undefined;
+
+  /**
+   * A device a VM could be given, and whether it is ready for passthrough.
+   *
+   * @generated from field: bool assignable = 15;
+   */
+  assignable: boolean;
+
+  /**
+   * @generated from field: bool ready = 16;
+   */
+  ready: boolean;
+
+  /**
+   * @generated from field: repeated string not_ready = 17 [json_name = "not_ready"];
+   */
+  notReady: string[];
+};
+
+/**
+ * @generated from message glidex.host.v1.PciFunction
+ */
+export type PciFunctionJson = {
+  /**
+   * @generated from field: string address = 1;
+   */
+  address?: string;
+
+  /**
+   * @generated from field: string vendor_id = 2 [json_name = "vendor_id"];
+   */
+  vendor_id?: string;
+
+  /**
+   * @generated from field: string device_id = 3 [json_name = "device_id"];
+   */
+  device_id?: string;
+
+  /**
+   * @generated from field: string class_id = 4 [json_name = "class_id"];
+   */
+  class_id?: string;
+
+  /**
+   * @generated from field: optional string driver = 5;
+   */
+  driver?: string;
+
+  /**
+   * @generated from field: optional string iommu_group = 6 [json_name = "iommu_group"];
+   */
+  iommu_group?: string;
+
+  /**
+   * @generated from field: optional uint32 numa_node = 7 [json_name = "numa_node"];
+   */
+  numa_node?: number;
+
+  /**
+   * The bridge above it, or its root complex (pci0000:80).
+   *
+   * @generated from field: string parent = 8;
+   */
+  parent?: string;
+
+  /**
+   * @generated from field: glidex.host.v1.PciKind kind = 9;
+   */
+  kind?: PciKindJson;
+
+  /**
+   * @generated from field: optional string root_port = 10 [json_name = "root_port"];
+   */
+  root_port?: string;
+
+  /**
+   * The upstream port of the nearest switch above it.
+   *
+   * @generated from field: optional string switch = 11;
+   */
+  switch?: string;
+
+  /**
+   * @generated from field: glidex.host.v1.PcieLink link = 12;
+   */
+  link?: PcieLinkJson;
+
+  /**
+   * @generated from field: glidex.host.v1.Sriov sriov = 13;
+   */
+  sriov?: SriovJson;
+
+  /**
+   * A virtual function's physical function.
+   *
+   * @generated from field: optional string physfn = 14;
+   */
+  physfn?: string;
+
+  /**
+   * A device a VM could be given, and whether it is ready for passthrough.
+   *
+   * @generated from field: bool assignable = 15;
+   */
+  assignable?: boolean;
+
+  /**
+   * @generated from field: bool ready = 16;
+   */
+  ready?: boolean;
+
+  /**
+   * @generated from field: repeated string not_ready = 17 [json_name = "not_ready"];
+   */
+  not_ready?: string[];
+};
+
+/**
+ * Describes the message glidex.host.v1.PciFunction.
+ * Use `create(PciFunctionSchema)` to create a new message.
+ */
+export const PciFunctionSchema: GenMessage<PciFunction, {jsonType: PciFunctionJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 47);
+
+/**
+ * @generated from message glidex.host.v1.TopologyWarning
+ */
+export type TopologyWarning = Message<"glidex.host.v1.TopologyWarning"> & {
+  /**
+   * iommu_off, numa_unknown, group_shared, link_degraded,
+   * hugepages_unbalanced.
+   *
+   * @generated from field: string kind = 1;
+   */
+  kind: string;
+
+  /**
+   * @generated from field: string detail = 2;
+   */
+  detail: string;
+};
+
+/**
+ * @generated from message glidex.host.v1.TopologyWarning
+ */
+export type TopologyWarningJson = {
+  /**
+   * iommu_off, numa_unknown, group_shared, link_degraded,
+   * hugepages_unbalanced.
+   *
+   * @generated from field: string kind = 1;
+   */
+  kind?: string;
+
+  /**
+   * @generated from field: string detail = 2;
+   */
+  detail?: string;
+};
+
+/**
+ * Describes the message glidex.host.v1.TopologyWarning.
+ * Use `create(TopologyWarningSchema)` to create a new message.
+ */
+export const TopologyWarningSchema: GenMessage<TopologyWarning, {jsonType: TopologyWarningJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_host_v1_host, 48);
 
 /**
  * @generated from message glidex.host.v1.ListPciDevicesRequest
@@ -2033,7 +2683,7 @@ export type ListPciDevicesRequestJson = {
  * Use `create(ListPciDevicesRequestSchema)` to create a new message.
  */
 export const ListPciDevicesRequestSchema: GenMessage<ListPciDevicesRequest, {jsonType: ListPciDevicesRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_host_v1_host, 39);
+  messageDesc(file_glidex_host_v1_host, 49);
 
 /**
  * @generated from message glidex.host.v1.ListPciDevicesResponse
@@ -2060,7 +2710,7 @@ export type ListPciDevicesResponseJson = {
  * Use `create(ListPciDevicesResponseSchema)` to create a new message.
  */
 export const ListPciDevicesResponseSchema: GenMessage<ListPciDevicesResponse, {jsonType: ListPciDevicesResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_host_v1_host, 40);
+  messageDesc(file_glidex_host_v1_host, 50);
 
 /**
  * @generated from enum glidex.host.v1.NetdAccess
@@ -2285,6 +2935,47 @@ export const UplinkPhaseSchema: GenEnum<UplinkPhase, UplinkPhaseJson> = /*@__PUR
   enumDesc(file_glidex_host_v1_host, 5);
 
 /**
+ * @generated from enum glidex.host.v1.PciKind
+ */
+export enum PciKind {
+  /**
+   * @generated from enum value: PCI_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PCI_KIND_ENDPOINT = 1;
+   */
+  ENDPOINT = 1,
+
+  /**
+   * @generated from enum value: PCI_KIND_ROOT_PORT = 2;
+   */
+  ROOT_PORT = 2,
+
+  /**
+   * @generated from enum value: PCI_KIND_SWITCH_UPSTREAM = 3;
+   */
+  SWITCH_UPSTREAM = 3,
+
+  /**
+   * @generated from enum value: PCI_KIND_SWITCH_DOWNSTREAM = 4;
+   */
+  SWITCH_DOWNSTREAM = 4,
+}
+
+/**
+ * @generated from enum glidex.host.v1.PciKind
+ */
+export type PciKindJson = "PCI_KIND_UNSPECIFIED" | "PCI_KIND_ENDPOINT" | "PCI_KIND_ROOT_PORT" | "PCI_KIND_SWITCH_UPSTREAM" | "PCI_KIND_SWITCH_DOWNSTREAM";
+
+/**
+ * Describes the enum glidex.host.v1.PciKind.
+ */
+export const PciKindSchema: GenEnum<PciKind, PciKindJson> = /*@__PURE__*/
+  enumDesc(file_glidex_host_v1_host, 6);
+
+/**
  * @generated from service glidex.host.v1.HostNetworkService
  */
 export const HostNetworkService: GenService<{
@@ -2407,4 +3098,23 @@ export const PciService: GenService<{
   },
 }> = /*@__PURE__*/
   serviceDesc(file_glidex_host_v1_host, 1);
+
+/**
+ * A host's NUMA and PCIe topology (spec/host-topology.md §3–§5).
+ *
+ * @generated from service glidex.host.v1.TopologyService
+ */
+export const TopologyService: GenService<{
+  /**
+   * The answering host's.
+   *
+   * @generated from rpc glidex.host.v1.TopologyService.GetHostTopology
+   */
+  getHostTopology: {
+    methodKind: "unary";
+    input: typeof GetHostTopologyRequestSchema;
+    output: typeof GetHostTopologyResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_glidex_host_v1_host, 2);
 

@@ -48,6 +48,27 @@ pub fn list(call: &Call, _req: pb::ListNodesRequest) -> ServiceResult<pb::ListNo
     })
 }
 
+/// `GET /nodes/{id}/topology`: node `id`'s NUMA and PCIe topology, read
+/// on that node (spec/host-topology.md §3.2).
+pub async fn get_node_topology(
+    call: &Call,
+    req: pb::GetNodeTopologyRequest,
+) -> ServiceResult<pb::GetNodeTopologyResponse> {
+    let id = node_key(call, req.id)?;
+    let mut es = EntitySet::new();
+    es.host(&id);
+    call.require(Ent::host_of(&id), es)?;
+    let t = call
+        .manager()
+        .node_topology(&id)
+        .await
+        .map_err(crate::service::host::manager_err)?;
+    Ok(pb::GetNodeTopologyResponse {
+        topology: crate::service::host::topology_pb(&t).into(),
+        ..Default::default()
+    })
+}
+
 pub fn get_node(call: &Call, req: pb::GetNodeRequest) -> ServiceResult<pb::GetNodeResponse> {
     let id = node_key(call, req.id)?;
     let mut es = EntitySet::new();

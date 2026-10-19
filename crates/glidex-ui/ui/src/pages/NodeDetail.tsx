@@ -10,6 +10,7 @@ import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
 import SystemRoles from "../components/SystemRoles";
+import TopologyCard from "../components/TopologyCard";
 import { useDirectory } from "../hooks";
 import { NodeOvnCard } from "../components/OvnViews";
 import { useCan, useSession } from "../session";
@@ -63,8 +64,9 @@ export default function NodeDetail() {
   const [brIntOpen, setBrIntOpen] = useState(false);
   const [mapsOpen, setMapsOpen] = useState(false);
   const nodeHost = hostOf(id, dir.self);
-  const canConf = useAllowed(["configureNode"], [nodeHost]);
+  const canConf = useAllowed(["configureNode", "readHostTopology"], [nodeHost]);
   const canConfigure = !!canConf?.(nodeHost, "configureNode");
+  const canTopology = !!canConf?.(nodeHost, "readHostTopology");
 
   const load = useCallback(async () => {
     try {
@@ -228,6 +230,8 @@ export default function NodeDetail() {
           </dl>
         </Card>
       </div>
+
+      {canTopology && !isTombstone(node.status.phase) && ready === "True" && <TopologyCard node={id} />}
 
       {host.readCluster && <NodeOvnCard node={id} />}
 
