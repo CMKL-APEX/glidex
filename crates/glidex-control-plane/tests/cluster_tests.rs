@@ -2256,6 +2256,155 @@ async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
     );
 }
 
+/// A VM whose disks are on a shared datastore is placed again: when
+/// stopped, on another node; when its node is forgotten (Lost), on one that
+/// is left. One with a node-local disk can't go (spec/storage.md S10).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let server_id = server.manager.local_node_id();
+    let dir = root.join(format!("nfs-move-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).unwrap();
+    let body = json!({ "name": "nfs-move", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR" });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+        if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        break;
+    }
+    wait_for("both nodes reaching it", || async {
+        let (_, v) = call(&server, "GET", "/datastores/nfs-move", None, &[]).await;
+        v["datastore"]["node_status"]
+            .as_array()
+            .is_some_and(|r| r.len() == 2 && r.iter().all(|r| r["reachable"] == true))
+    })
+    .await;
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let disk = |name: &str, store: &str| json!({ "name": name, "project": project, "size_gib": 1, "datastore": store });
+    let (s, d) = call(&server, "POST", "/disks", Some(disk("mv", "nfs-move")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    // A VM on the agent, never started, with the shared disk and no
+    // host-path root.
+    let vm_req = |name: &str, disks: Value| {
+        json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
+                "kernel_image_path": "/path/to/vmlinux", "root_disk": disks[0], "node": "agent1" })
+    };
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_req("mover", json!(["mv"]))),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = vm_of(&v)["id"].as_str().unwrap().to_string();
+    assert_eq!(vm_of(&v)["node"], agent.manager.local_node_id().as_str());
+
+    // Stopped: to the server (by name), its disk's worker with it.
+    let server_name = server
+        .manager
+        .nodes()
+        .get(&server_id)
+        .unwrap()
+        .unwrap()
+        .spec
+        .name;
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/place"),
+        Some(json!({ "node": server_name })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(vm_of(&v)["node"], server_id.as_str(), "{v}");
+    let d = server.manager.images().get_disk(&disk_id).unwrap();
+    assert_eq!(d.worker.as_deref(), Some(server_id.as_str()), "{d:?}");
+
+    // A node-local disk can't go with its VM.
+    let (s, d) = call(&server, "POST", "/disks", Some(disk("stuck", "local")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_req("stuck-vm", json!(["stuck"]))),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let stuck = vm_of(&v)["id"].as_str().unwrap().to_string();
+    let (s, e) = call(
+        &server,
+        "POST",
+        &format!("/vms/{stuck}/place"),
+        Some(json!({ "node": server_name })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("stuck"), "{e}");
+
+    // Back to the agent, then the agent is lost: forgotten, its VM Lost,
+    // and placed again on the server.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/place"),
+        Some(json!({ "node": "agent1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, e) = call(&server, "DELETE", &format!("/vms/{stuck}"), None, &[]).await;
+    assert!(s.is_success(), "{e}");
+    cluster(&agent).stop().await;
+    wait_for("the agent to be reported unreachable", || async {
+        let (_, v) = call(&server, "GET", "/nodes", None, &[]).await;
+        nodes_of(&v)
+            .iter()
+            .any(|n| n["spec"]["name"] == "agent1" && n["status"]["ready"] != READY)
+    })
+    .await;
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/forget",
+        Some(json!({ "fenced": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/place"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(vm_of(&v)["node"], server_id.as_str(), "{v}");
+    let ready = vm_of(&v)["conditions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !ready.iter().any(|c| c["reason"] == "Lost"),
+        "no longer Lost: {v}"
+    );
+}
+
 /// The datastore root of this test process (spec/storage.md S11), set once.
 fn datastore_root() -> &'static std::path::Path {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();

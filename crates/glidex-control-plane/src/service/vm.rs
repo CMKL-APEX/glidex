@@ -679,6 +679,20 @@ pub async fn start_vm(call: &Call, req: pb::StartVmRequest) -> ServiceResult<VmR
     .await
 }
 
+/// `POST /vms/{id}/place` (spec/storage.md S10).
+pub async fn place_vm(call: &Call, req: pb::PlaceVmRequest) -> ServiceResult<pb::PlaceVmResponse> {
+    let (vm, _, _) = visible_vm(call, &req.id).await?;
+    let vm = call
+        .manager()
+        .place_vm(&vm.id, req.node.as_deref(), &call.actor())
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::PlaceVmResponse {
+        vm: vm_pb(call, &vm).into(),
+        ..Default::default()
+    })
+}
+
 pub async fn stop_vm(call: &Call, req: pb::StopVmRequest) -> ServiceResult<VmReply> {
     let grace = req
         .graceful_timeout_secs

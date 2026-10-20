@@ -571,6 +571,10 @@ export const createVm = (req: CreateVmRequest) =>
  * (spec/reconciliation.md §12.3). */
 const WAIT_SECS = 60;
 
+/** Place a stopped (or lost) VM on `node`, or where there is room (spec/storage.md S10). */
+export const placeVm = (id: string, node?: string) =>
+  rpc(VmService.method.placeVm, { id, node }).then((r) => r.vm as VmResponse);
+
 export const startVm = (id: string) =>
   vmWrite(rpc(VmService.method.startVm, { id, wait_secs: WAIT_SECS }) as Promise<VmWriteResponse>);
 

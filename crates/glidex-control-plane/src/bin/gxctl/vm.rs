@@ -402,6 +402,49 @@ pub async fn start(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// `place <name|id> [--node N]`: place a stopped or lost VM again
+/// (spec/storage.md S10).
+pub async fn place(client: &ApiClient, args: &[&str]) {
+    let Some(vm_id) = resolve(client, args, "Usage: place <name|id> [--node N]").await else {
+        return;
+    };
+    let t = match rpc(client).await {
+        Ok(t) => t,
+        Err(e) => return err(e),
+    };
+    let r = t
+        .place_vm(PlaceVmRequest {
+            id: vm_id,
+            node: crate::flag_value(args, "--node").map(String::from),
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned());
+    match r {
+        Ok(Some(vm)) if !vm.node.as_deref().unwrap_or_default().is_empty() => println!(
+            "{} {} on {}",
+            "Placed:".green(),
+            vm.name,
+            vm.node_name
+                .as_deref()
+                .or(vm.node.as_deref())
+                .unwrap_or_default()
+        ),
+        Ok(Some(vm)) => println!(
+            "{} {} waits for a node: {}",
+            "Not placed yet:".yellow(),
+            vm.name,
+            vm.conditions
+                .iter()
+                .find(|c| c.kind == "Scheduled")
+                .map(|c| c.message.clone())
+                .unwrap_or_default()
+        ),
+        Ok(None) => {}
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
 /// `stop <name|id> [--graceful [secs]] [--no-wait]`
 pub async fn stop(client: &ApiClient, args: &[&str]) {
     if args.is_empty() {

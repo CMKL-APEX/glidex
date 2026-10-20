@@ -176,6 +176,18 @@ impl VmService for Svc {
         vm_write!(self, ctx, req, svc::start_vm, StartVmResponse)
     }
 
+    async fn place_vm(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, PlaceVmRequest>,
+    ) -> ServiceResult<PlaceVmResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            svc::place_vm(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
     async fn stop_vm(
         &self,
         ctx: RequestContext,

@@ -7,9 +7,10 @@ Status: **design (draft)**. Implemented so far:
   with its API, gxctl, UI and watch kind (§13);
 - S3, shared datastores (`shared-dir`) with workers and volume locks
   (§4.4), and images in them for linked disks plus the installer's
-  registration (§4.5).
+  registration (§4.5);
+- S4, placing a stopped or lost VM again (§9).
 
-S4 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
+S5 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -673,6 +674,51 @@ for node-local disks: moving from `local` on node A to `local` on node B.
 - **`Lost` VM** (after `node forget --fenced`, clustering.md §5.6): the same call is allowed, which is what that section anticipated.
 - **Running VM:** refused with `409 invalid_state`. Live migration is out of scope.
 
+**As built (S4)** (`VmManager::place_vm`, `controller/placement.rs`):
+- **Which VMs:**
+  - a stopped VM: desired power stopped, no live instance, phase
+    `Stopped` or `Failed`;
+  - a Lost one: its placement names a node that is a tombstone or gone.
+  - Anything else is `409 invalid_state`.
+  - A standalone host is `400`: there is nowhere else to go.
+- **What can go with it** (else `400`, naming the cause):
+  - every disk on a shared datastore, or node-local and already on the
+    target node (never for a Lost VM: its node's disks are gone);
+  - no host-path root;
+  - no PCI devices;
+  - no `scope: node` network.
+- **What it does:**
+  - clears `status.placement` and the `Scheduled` condition, and the
+    `Ready/Lost` condition too;
+  - for a Lost VM, also clears the dead node's instance record and sets
+    the phase `Stopped`;
+  - sets `spec.node` to the target, or clears it, since a pin to the old
+    node would keep it there. It writes all this as a spec change
+    (`Replacing` event);
+  - runs a placement pass at once (`place_pending`), which places the VM
+    as it would a new one and moves its shared disks' workers
+    (`Disk::bind_to`). The answer is the VM: placed, or waiting with its
+    `Scheduled` reason.
+- **API:**
+  - REST `POST /vms/{id}/place {node?}` (node id or name) and RPC
+    `VmService.PlaceVm`;
+  - gxctl `place <vm> [--node N]`;
+  - the VM page's "Place on another node" ("on a live node" when Lost)
+    for those with `placeVm`.
+- **Cedar:** `placeVm` is in `node.drain` (system-admin) and is
+  `host-scoped`. Moving a VM between nodes is cluster operations, not
+  the tenant's.
+- **Left on the old node:** files under the VM's runtime directory, and
+  for QEMU its UEFI variable store (`firmware-vars/<vm>.fd`). On the new
+  node the VM starts with a fresh store from its firmware image's
+  template, so UEFI variables don't move.
+- **Test:** `cluster_tests.rs::a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost`:
+  - a stopped VM moves from the agent to the server, with its disk's
+    worker;
+  - one with a node-local disk is refused;
+  - after the agent is stopped and forgotten, its Lost VM is placed on
+    the server.
+
 ## 10. Exclusive access
 
 The invariants of images.md §3 and reconciliation.md D11 (one VM per
@@ -959,7 +1005,7 @@ described below; fix 5 is part of S2.
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **Implemented** (§4.3, §13 as built), as S2a (resource, API) and S2b (gxctl, UI, watch). | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **Implemented** (§4.4, §4.5), as S3a (driver, workers, locks) and S3b (images in shared datastores, installer). | S2 |
-| S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
+| S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced`. **Implemented** (§9 as built). | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |

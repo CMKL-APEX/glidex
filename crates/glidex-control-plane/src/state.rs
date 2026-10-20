@@ -403,7 +403,7 @@ fn root_disk_name(vm_name: &str) -> String {
     name
 }
 
-fn invalid(msg: impl Into<String>) -> VmManagerError {
+pub(crate) fn invalid(msg: impl Into<String>) -> VmManagerError {
     HypervisorError::InvalidConfig(msg.into()).into()
 }
 
@@ -1536,10 +1536,12 @@ impl VmManager {
     }
 
     async fn refresh_vms(&self, ids: &[String]) {
+        // Read under the lock: a table read from before a write that holds
+        // it would put that write's old record back.
+        let mut vms = self.vms.write().await;
         let Ok(all) = self.store.load_all() else {
             return;
         };
-        let mut vms = self.vms.write().await;
         for id in ids {
             match all.iter().find(|v| &v.id == id) {
                 Some(v) => {
@@ -1561,10 +1563,10 @@ impl VmManager {
     /// Replace the cache with the table's contents (after a snapshot, or a
     /// missed notification).
     pub async fn reload_vms(&self) {
+        let mut vms = self.vms.write().await;
         let Ok(all) = self.store.load_all() else {
             return;
         };
-        let mut vms = self.vms.write().await;
         *vms = all.into_iter().map(|v| (v.id.clone(), v)).collect();
         drop(vms);
         self.images.reload_all();
@@ -1699,7 +1701,7 @@ impl VmManager {
 
     /// A spec write: bump generation and resource version, persist with an
     /// event, queue the VM for its controller.
-    fn spec_write(
+    pub(crate) fn spec_write(
         &self,
         vms: &mut HashMap<String, Vm>,
         mut vm: Vm,
