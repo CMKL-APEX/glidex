@@ -99,16 +99,16 @@ on [one host](#on-one-host-of-a-cluster) instead). Only members of the
 |---|---|
 | `auditor` | Read everything (as `viewer` on every project), the policies, the audit log and usage. |
 | `image-admin` | Manage the shared image library. |
-| `net-admin` | Manage host networking: bridges, uplinks, Open vSwitch, PCI devices. |
-| `system-admin` | Everything above, as `owner` on every project, plus policies, bindings, cluster membership and admissions, host paths, and going over quotas. |
+| `net-admin` | Manage host networking: bridges, uplinks, Open vSwitch, PCI devices (prepare, release, cordon) and device pools; read host topology. |
+| `system-admin` | Everything above, as `owner` on every project, plus policies, bindings, cluster membership and admissions, datastores, placing VMs on another node, host paths, and going over quotas. |
 | `grant.host-paths` | Only: give the API paths of files on the host (disk images, kernels). |
 
 ### Tenant roles
 
 | Role | May |
 |---|---|
-| `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members and bindings. Includes `owner` on its projects. |
-| `tenant-auditor` | Read the tenant, its members and bindings, and its projects. |
+| `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members, bindings and [tenant pools](host-resources.md#tenant-pools). Includes `owner` on its projects. |
+| `tenant-auditor` | Read the tenant, its members, bindings and tenant pools, and its projects. |
 
 ## Giving roles
 
@@ -192,19 +192,25 @@ Teams can also be filled from outside:
   `--team GROUP=TEAM` (by the group's name or id); with `auto`, each
   group is a team of its own, named after the group and renamed with it.
   Only enabled users the IdP manages get these memberships.
+- A Google Workspace connector with a [directory
+  sync](authentication.md#directory-sync-from-google-workspace) does the
+  same with the Google groups it names, at each run: `mapped` fills the
+  teams named by `--team GROUP=TEAM` (by the group's email or name),
+  `auto` makes a team per named group.
 - On the local socket, each of the caller's Unix groups is a team
   `unix:<group>`. Bind it to give a whole Unix group a role for `gxctl`
   on the host: `gxctl binding add web operator team:unix:lab`. It applies
   only to requests on the socket.
 
-A team made by a SCIM connector (`auto`) shows *from &lt;connector&gt;*
-in **Users & roles**. Its name, and the memberships the IdP gave in any
-team, are the IdP's: renaming or deleting such a team, or removing such
-a membership, is refused with `409 managed_by_connector`. You can still
-add members by hand (the IdP never replaces them) and bind the team to
-roles. When the IdP deletes a group, its team stays, no longer managed
-and without the IdP's members, so its bindings give nobody anything
-until you decide what to do with it.
+A team made by a SCIM connector or a directory sync (`auto`) shows
+*from &lt;connector&gt;* in **Users & roles**. Its name, and the
+memberships the IdP gave in any team, are the IdP's: renaming or
+deleting such a team, or removing such a membership, is refused with
+`409 managed_by_connector`. You can still add members by hand (the IdP
+never replaces them) and bind the team to roles. When the IdP deletes a
+group (or a directory sync stops naming it), its team stays, no longer
+managed and without the IdP's members, so its bindings give nobody
+anything until you decide what to do with it.
 
 ### Tenants and admissions
 
@@ -276,12 +282,17 @@ API has `DELETE /users/{id}`.
 ### Users an IdP manages
 
 A user that a [SCIM connector](authentication.md#provisioning-with-scim)
-created shows *managed by &lt;connector&gt;* in **Users & roles**. Its
-display name, email and whether it is enabled belong to the IdP; its
+or a [directory
+sync](authentication.md#directory-sync-from-google-workspace) created,
+or adopted, shows *managed by &lt;connector&gt;* in **Users & roles**.
+Its display name, email and whether it is enabled belong to the IdP; its
 roles, and the team memberships you add by hand, stay yours. When the
 IdP deactivates or removes it, it shows *disabled by its IdP*: its
 sessions end, its personal tokens are revoked and it leaves the teams
-the IdP put it in.
+the IdP put it in. For a directory sync, that is someone suspended,
+archived or deleted in Google, or no longer in the connector's groups;
+they stay managed, and the run that finds them back enables them
+again.
 
 These are refused with `409 managed_by_connector`, and the web UI
 doesn't offer them:
@@ -289,7 +300,7 @@ doesn't offer them:
 | Change | Do instead |
 |---|---|
 | The user's display name | Change it at the IdP. |
-| **Enable** a user its IdP disabled | Reactivate it at the IdP. |
+| **Enable** a user its IdP disabled | Reactivate it at the IdP; for a directory sync, restore the account in Google or put it back in a group, then wait for the next run or **Sync now**. |
 | **Delete** a managed user that is still enabled | Deactivate or remove it at the IdP first (the IdP would only push it again), or disable it here. |
 | Rename or delete a team from the IdP, or remove a membership the IdP gave | Change the group at the IdP. |
 
@@ -298,14 +309,25 @@ emergency stop that doesn't wait for the IdP. The IdP can't undo it:
 reactivating the user there leaves it disabled until an administrator
 **Enable**s it again. Over the API, a user's `managed_by` names its
 connector, and `disabled_reason` says who disabled it: `admin`, `scim`
-(its IdP) or `connector_deleted`.
+(its IdP, over SCIM), `sync` (a directory sync) or `connector_deleted`.
 
-Deleting a SCIM connector releases what it managed. By default its users
+A pulled user you delete (once it is disabled) is made again, as a new,
+empty user, at the next run if it is still active in one of the
+connector's groups: take it out of the groups in Google to keep it
+out.
+
+A directory sync never disables many users by surprise: a run that
+would disable more than the connector's limit (10 % of its users by
+default, always allowing 5) changes nothing until a directory
+administrator applies it or fixes the groups in Google (see [The safety
+stop](authentication.md#the-safety-stop)).
+
+Deleting a SCIM or directory sync connector releases what it managed. By default its users
 are disabled (`connector_deleted`), with their sessions and personal
 tokens, and leave the teams it filled; with `gxctl connector remove <id>
 --detach-users` (or the choice in the web UI) they stay enabled, and the
 IdP's memberships become manual ones. Either way the users and teams
-become the directory's own, its SCIM tokens are deleted, and `gxctl`
+become the directory's own, its SCIM tokens and sync status are deleted, and `gxctl`
 prints how many users and teams were released. A user an administrator
 had disabled stays disabled.
 <!-- TODO(verify): directory-admin can't be given through the API, so the last directory-admin from the first start can't be deleted; confirm whether that is intended. -->
@@ -314,7 +336,9 @@ had disabled stays disabled.
 
 Each project has quotas: `vms`, `vcpus`, `memory_mib`, `disk_gib`,
 `running_vms`, `networks`, plus `routers` and `external_ips` for
-cluster networks. New projects get `quotas.default` from
+cluster networks, and `devices.<pool>` for [device
+pools](host-resources.md#quotas). `disk_gib` counts disks on every
+datastore together. New projects get `quotas.default` from
 `control-plane.json` (by default 2 networks, 1 router, 1 external
 address, the rest unlimited). Tenant administrators change them:
 
@@ -375,6 +399,32 @@ the validation errors name what is wrong. The **Directory** page's
 **Policies** tab in the web UI lists the base policies, role definitions and site policies with
 their full text, as a reference.
 <!-- TODO(verify): no public list of Cedar action names yet; link to the API reference once it lists them. -->
+
+### Datastore, device and directory sync actions
+
+Actions of these features, and who has them out of the box:
+
+| Action | Resource | Who |
+|---|---|---|
+| `readDatastore` | `Glidex::Datastore` | Everyone. |
+| `manageDatastore` | `Glidex::Datastore` | `system-admin`. |
+| `useDatastore` | `Glidex::Datastore::"<datastore-id>"` | Everyone (base policy `base.use-datastore`); checked when a disk is created on the datastore or moved to it. Forbid it to keep a datastore for some (see [Who may use a datastore](datastores.md#who-may-use-a-datastore)). |
+| `moveDisk` | `Glidex::Disk` | `editor` of the disk's project, with `useDatastore` on the destination. |
+| `placeVm` | `Glidex::Vm` | `system-admin`. |
+| `readHostTopology`, `listPciPools` | the host | `auditor`, `net-admin`. |
+| `prepareDevice`, `releaseDevice`, `cordonDevice` (also uncordons) | the host | `net-admin`, on the cluster or that host. |
+| `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow` (base policy `base.pci-pool-grant`). |
+| `readTenantDevicePools` | `Glidex::Tenant` | `tenant-auditor`, `tenant-admin`. |
+| `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
+| `syncConnector` | the directory | `directory-admin`. |
+| `confirmConnectorSync` | the directory | `directory-admin`, with a recent login; applying a sync the safety stop blocked needs it as well as `syncConnector`. |
+
+`system-admin` has every host role above. A PCI device is
+`Glidex::PciDevice::"<node-id>/<address>"`, for example
+`Glidex::PciDevice::"<node-id>/0000:41:00.0"`, in its node's host: the
+same address on two nodes is two devices, and a role on one host covers
+that host's devices. A site policy that names devices by their address
+alone no longer matches them: name the node too.
 
 ### Applying it
 

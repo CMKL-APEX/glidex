@@ -19,6 +19,9 @@ changes what is missing or outdated.
 - Internet access to the distribution's package mirrors and to GitHub
   (Cloud Hypervisor, its firmware, Bun). Every download that isn't a
   distribution package is checked against a pinned SHA-256 before use.
+  Once running, Glidex itself also connects out for image downloads,
+  logins and, if you use them, directory sync and kernel extraction:
+  see [Outbound connections](configuration.md#outbound-connections).
 
 If `/dev/kvm` is missing, the installer says how to enable it (CPU
 virtualization in the firmware setup, then `modprobe kvm_intel` or
@@ -98,8 +101,19 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
 | `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
+| `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
+| `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
+| `--datastore-default` | Make the first of these datastores the default for new disks. Not saved. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |
+
+Without `--datastore` or `--local-datastore`, an interactive run
+offers each filesystem mounted directly under `/srv/glidex` that isn't
+a datastore yet: register it as a shared datastore named after its
+directory (default no), and make it the default for new disks (default
+no). Datastores are registered only when the services are installed
+(not with `--no-services`); if that fails, the installer warns and goes
+on.
 
 Options for joining or leaving a cluster (`--join`, `--role`,
 `--token-file`, `--advertise`, `--node-name`, `--import`, `--rejoin`,
@@ -127,6 +141,7 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 | `/etc/pam.d/glidex` | The PAM service for web logins with local passwords. |
 | `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages` (kept after going back to the kernel profile unless `--release-hugepages`). The previous values are recorded for the uninstaller. |
 | `/etc/modules-load.d/glidex.conf` | Loads `vfio-pci` at boot, with `--ovs-profile dpdk`. |
+| `/srv/glidex/` | The datastore root (`root:root`, mode 0755), empty: mount or create [datastores](datastores.md) under it. |
 | `/var/lib/glidex-control-plane/` | The `glidex` user's home. Its `.glidex/` holds the database, images, disks, firmware and the self-signed certificate. |
 
 The installer also puts a copy of the Cloud Hypervisor firmware in your
@@ -209,6 +224,9 @@ By default it keeps your data and site configuration, and says so:
 - a locally edited `/etc/pam.d/glidex`;
 - Open vSwitch, its DPDK settings and the hugepages they need, and the
   `cloud-hypervisor` binary.
+
+It never touches `/srv/glidex` and the datastores under it, not even
+with `--purge-user-data`: unmount and remove them yourself.
 
 | Option | Effect |
 |---|---|

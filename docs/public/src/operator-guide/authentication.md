@@ -228,6 +228,9 @@ gxctl connector list
 - `--provisioning scim` and `--group-mode mapped|auto` let the IdP
   create and remove the connector's users (`oidc` and `jumpcloud` only);
   see [Provisioning with SCIM](#provisioning-with-scim).
+  `--provisioning pull` makes Glidex read them from Google Workspace
+  instead (`google` only); see [Directory sync from Google
+  Workspace](#directory-sync-from-google-workspace).
 - Changing a connector needs a recent login (see [Sessions and
   re-authentication](#sessions-and-re-authentication)).
 
@@ -276,25 +279,27 @@ people)*. The web client and the device client each have their own
 - Without a device client, `gxctl auth login --oidc` through the
   connector fails with `device_flow_unsupported`. `connector test`
   reports whether device logins are set up.
-- Google sends no groups, so `--require-group` and `--team` don't apply;
-  give people roles in Glidex instead.
+- Google sends no groups at login, so `--require-group` doesn't apply,
+  and `--team` only does with a [directory
+  sync](#directory-sync-from-google-workspace), which reads the groups
+  from Google. Otherwise give people roles in Glidex.
 
 #### Directory sync from Google Workspace
 
 A Workspace `google` connector can **pull** its users from Google: the
 members of the Google groups you name, nested groups included, get
-glidex users, and nobody else logs in through it. Suspending someone in
-Google, archiving them, or taking them out of the groups disables their
-glidex user at the next run (their sessions and tokens end); bringing
-them back enables it again. Runs come every 15 minutes, and on demand.
+Glidex users ahead of their first login, and nobody else logs in
+through it. Glidex reads the directory every 15 minutes, and on demand.
+It is the Google Workspace counterpart of [SCIM](#provisioning-with-scim):
+Google can't push users to Glidex, so Glidex reads them instead.
 
-glidex reads the directory as a Google Cloud **service account** with
+Glidex reads the directory as a Google Cloud **service account** with
 **domain-wide delegation**, read-only:
 
 1. In the Google Cloud console, in a project of your organization:
    enable the **Admin SDK API**, create a service account (it needs no
    roles in the project), and create a **JSON key** for it. Keep the
-   key file safe; it goes only into glidex's secret, below.
+   key file safe; it goes only into Glidex's secret, below.
 2. In the Google Admin console, **Security → Access and data control →
    API controls → Domain-wide delegation → Add new**: the service
    account's **client ID** (the number on its page, not its email), and
@@ -309,37 +314,155 @@ glidex reads the directory as a Google Cloud **service account** with
 4. Switch the connector to the pull, and set the key:
 
    ```bash
-   gxctl connector update gw --no-jit --provisioning pull --group-mode auto \
-     --sync-admin admin@example.com --sync-group glidex-users@example.com
-   gxctl connector secret set gw service_account_key --from-file key.json
-   gxctl connector test gw      # token, and each group
-   gxctl connector sync gw
+   gxctl connector update gws --no-jit --provisioning pull --group-mode auto \
+     --sync-admin admin@example.org --sync-group glidex-users@example.org
+   gxctl connector secret set gws service_account_key --from-file <service-account-key.json>
+   gxctl connector test gws      # the key, the token, and each group
+   gxctl connector sync gws
    ```
 
-   In the web UI: the connector's form, **Provisioning: Directory
-   sync**, then **Set service account key** (choose the JSON file).
-   Remove the key file afterwards; glidex keeps it sealed and never
-   shows it.
+   Give the key with `--from-file`: it is several lines long, and the
+   hidden prompt reads one. In the web UI: the connector's form,
+   **Provisioning** *Directory sync*, **Save**, then **Set service
+   account key** (choose the JSON file, or paste it). Either way, delete
+   the key file afterwards: Glidex keeps the key encrypted and never
+   shows it, not even in the form.
+5. Let the control plane reach Google: it needs outbound HTTPS to
+   `oauth2.googleapis.com` and `admin.googleapis.com`. In a cluster, the
+   runs happen on the leader, so every server node needs it. Unlike
+   SCIM, nothing has to reach Glidex from outside.
 
-- `--sync-group` (repeat it) names who gets in; with `--group-mode auto`
-  each group is also a glidex team, otherwise `--team GROUP=TEAM` puts
-  a group's members in an existing team (by the group's email or name).
-- `--sync-interval` (minutes, at least 5) and `--sync-max-disable` (a
-  percentage, default 10).
-- People who logged in before the pull keep their users: the pull
-  adopts them.
-- **SSH keys.** With `--ssh-keys-field <schema>.<field>`, a Workspace
-  custom schema field (multi-valued, one public key per value) gives
-  each user's SSH public keys. Anything that isn't a public key is
-  dropped. When the host has no local account for the user, the VM
-  credential form fills in these keys.
-- **Safety stop.** A run that would disable more than that share of
-  the users (always allowing 5) changes nothing and shows as
-  **blocked**, listing who it would disable. If that is right, apply it
-  with `gxctl connector sync gw --confirm` or **Review blocked sync** in
-  the web UI; if a group was renamed or emptied by mistake, fix it in
-  Google instead. An error from Google changes nothing either: the
-  connector shows the run as **failed**, with Google's message.
+The settings, as `gxctl` flags and in the form (**Directory sync**):
+
+| Flag | Form | Meaning |
+|---|---|---|
+| `--sync-admin EMAIL` | **Administrator to act as** | The Workspace administrator of step 3. |
+| `--sync-group GROUP` (repeat it) | **Groups** | 1 to 50 group emails. Their members, nested groups' members included, are who gets in. |
+| `--sync-interval MIN` | **Every (minutes)** | Minutes between runs: 15 by default, at least 5. |
+| `--sync-max-disable PCT` | **Stop above (%)** | The [safety stop](#the-safety-stop): 10 by default, 1 to 100. |
+| `--ssh-keys-field SCHEMA.FIELD` | **SSH key field** | Optional: where the users' [SSH keys](#ssh-keys-from-google) are. |
+
+- A pull needs a Workspace connector (*Google Workspace (by domain)*,
+  not `--consumer`) with `--no-jit`; the web UI turns JIT off for you.
+- Any of the `--sync-…` flags sets them all: repeat the ones you keep
+  when you change one, or edit them in the web UI.
+- `--group-mode auto` makes each named group a Glidex team, named after
+  the group. With `mapped` (the default), `--team GROUP=TEAM` puts a
+  group's members in an existing team, by the group's email or name. In
+  the form, this is **Groups**, *A team per IdP group* or *Mapped to
+  teams below*. Only the named groups become teams; members of a nested
+  group count as members of the group that holds it. A group you stop
+  naming leaves its team behind, as a group deleted at a SCIM IdP does
+  (see [Teams](access-control.md#teams)).
+- `--default-tenant <t>` makes new users members of tenant `<t>`.
+- `connector test` checks the key is set, that the service account gets
+  a token as the administrator, and that it can read each group.
+
+<!-- TODO(verify): gxctl can't clear a connector's sync settings, so `gxctl connector update <id> --provisioning none` on a pulled connector is refused ("sync settings are for provisioning pull"); the web UI's form clears them. Document how to stop a pull with gxctl once fixed. -->
+To stop pulling, set **Provisioning** back to *None* in the web UI's
+connector form, or delete the connector (below).
+
+##### What a run does
+
+A run reads the groups' members and those users from Google first, then
+compares them with the connector's users and teams, then applies the
+difference:
+
+- **New members** get a Glidex user, managed by the connector, and join
+  `--default-tenant`. Someone already suspended in Google gets none.
+- **First login.** It is matched to the pulled user by Google's account
+  id (the subject of Google's login), never by email address. Someone
+  the pull didn't bring in is refused (`login_not_allowed`).
+  Invitations can't be taken through the connector. `--mfa` and
+  `--trust-2sv` still apply.
+- **Changes** in Google (name, primary email) reach Glidex at the next
+  run.
+- **Leaving.** Someone suspended or archived in Google, deleted there,
+  or no longer in any of the groups is disabled in Glidex: their
+  sessions end, their personal tokens are revoked, and they leave the
+  teams the pull put them in. The user stays managed by the connector.
+- **Coming back.** Once they are active and in a group again, the next
+  run enables the user. Not if an administrator disabled it in Glidex:
+  then only an administrator enables it again.
+- **Users who logged in before the pull** through the same connector
+  are adopted: the pull takes over the user they already have, with its
+  roles, rather than making a second one.
+- **What Google owns.** A pulled user's name, email and whether it is
+  enabled are Google's, and the pulled teams' names and memberships
+  too: see [Users an IdP
+  manages](access-control.md#users-an-idp-manages).
+- Every change a run applies is in the audit log, done by
+  `system:sync:<connector-id>` (the action `syncConnector`); a run that
+  changed nothing isn't recorded.
+
+A disabled connector isn't pulled on schedule. Deleting the connector disables its
+users, unless `gxctl connector remove gws --detach-users` (or the choice
+in the web UI) keeps them, as for SCIM.
+
+##### The safety stop
+
+A run that would disable more than `--sync-max-disable` percent of the
+connector's users changes nothing at all, and shows as **blocked**,
+listing who it would disable. Up to 5 can always be disabled. It guards
+against a group renamed, emptied or deleted by mistake, which would
+otherwise read as "everyone left".
+
+- If a group was changed by mistake, fix it in Google. The next run
+  (or **Sync now**) sees it and applies normally.
+- If the change is right, apply it: `gxctl connector sync gws
+  --confirm`, or **Review blocked sync** in the web UI, which lists the
+  users first. This reads Google again and applies what it finds then,
+  without the stop, once. It needs a recent login (see [Sessions and
+  re-authentication](#sessions-and-re-authentication)).
+
+An error from Google, or an answer Glidex can't read, changes nothing
+either: the run shows as **failed**, with Google's message, and the
+next one tries again. Glidex retries Google's `429` and `5xx` answers a
+few times within a run; any other error ends it.
+
+##### Watching the runs
+
+`gxctl connector show gws` prints the pull's settings and the last run;
+the **Connectors** tab shows it under each pulled connector:
+
+| State | Meaning |
+|---|---|
+| `ok` (*synced*) | Applied. How many users were created, adopted, updated, disabled and enabled. |
+| `FAILED` (*failed*) | Google's error, or a missing or unreadable key. Nothing changed. |
+| `BLOCKED` (*blocked*) | The safety stop: who it would disable. Nothing changed. |
+
+**Sync now** (or `gxctl connector sync gws`) runs one at once and shows
+its result; if a run of that connector is already going, it is refused
+with `409 sync_running`. `directory-auditor` sees the status;
+running a sync takes `directory-admin`.
+
+##### SSH keys from Google
+
+With `--ssh-keys-field <schema>.<field>`, each run also reads the users'
+SSH public keys from a Workspace custom attribute:
+
+1. In the Google Admin console, add a custom attribute for users (a
+   category, which is the schema, and a field in it), of type text,
+   multi-valued.
+2. Put one OpenSSH public key per value (`ssh-ed25519 AAAA…
+   alice@laptop`) on the users who need it.
+3. Set `--ssh-keys-field <schema>.<field>` (in the form, **SSH key
+   field**), for example `glidex.ssh_keys`.
+
+<!-- TODO(verify): how the Admin console's custom attribute category and field names map to the Directory API's schema and field names (spaces, case); the docs assume they are the same. -->
+
+- Only public keys are kept: OpenSSH keys of a known type, without
+  repeats, at most 32 per user. Anything else, such as a private key
+  pasted by mistake, is dropped.
+- Each run replaces the user's keys with what Google holds.
+- The keys go into a VM only through a guest credential: when the user
+  has no local account on the host, the web UI's **Add Credential** form
+  fills them in (see [Guest
+  credentials](../user-guide/credentials.md#adding-a-credential)).
+  Removing a key in Google doesn't remove it from credentials or VMs
+  that already have it.
+- Whoever can edit the attribute in Google decides which keys a user
+  is offered: keep it to administrators.
 
 ### JumpCloud
 
@@ -512,8 +635,9 @@ gxctl invite revoke <id>
 - `--role` is `member` (the default: membership only),
   `role.tenant-admin` or `role.tenant-auditor`.
 - `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector,
-  not one [provisioned by SCIM](#provisioning-with-scim): its users come
-  from the IdP, and an invitation can't be taken through it.
+  not one [provisioned by SCIM](#provisioning-with-scim) or by a
+  [directory sync](#directory-sync-from-google-workspace): its users
+  come from the IdP, and an invitation can't be taken through it.
   Invitations into the `admin` tenant or an operator tenant go only
   through a connector that requires MFA and is allowed there.
 
@@ -667,7 +791,8 @@ Some actions need a login in the last 10 minutes:
 
 - writing site policies;
 - adding, changing or removing login connectors, their secrets and
-  their SCIM tokens;
+  their SCIM tokens, and applying a [blocked directory
+  sync](#the-safety-stop);
 - managing admissions and deleting tenants;
 - host network changes that can cut the host off (installing Open
   vSwitch, DPDK, committing or removing uplinks, deleting bridges);

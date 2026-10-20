@@ -62,10 +62,11 @@ comes first and is the only one preselected; **Extract it from the
 image** makes it if there is none. Another image's kernel usually won't
 boot this one: its initramfs waits for that image's root disk),
 or, for administrators, **Kernel files on the host** (kernel and
-initramfs paths). **Kernel Arguments** default to the kernel image's own
-command line. **Follow the guest's kernel** boots the kernel the guest
-installs (see [Firmware or kernel boot](#firmware-or-kernel-boot)). The
-boot disk and login credential work as with firmware.
+initramfs paths, see [Host paths](#host-paths)). **Kernel Arguments**
+default to the kernel image's own command line. **Follow the guest's
+kernel** boots the kernel the guest installs (see
+[Kernel boot](kernel-boot.md)). The boot disk and login credential work
+as with firmware.
 
 On the VM's page, **Kernel** shows the kernel image (and, when following
 the guest, the kernel it boots and the one before), lets you pick
@@ -92,6 +93,7 @@ cloud-init seed image (optional, default: auto-generated):
 Login credential (one of: alice; 'none' for no login) [alice]:
 Networks (comma-separated; available: default, lab; 'none' for no NIC) [default]:
 VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
+Device pools (comma-separated pool[:count], e.g. a100:2; optional):
 ```
 
 For a direct kernel boot, answer `kernel` at the firmware prompt: gxctl
@@ -136,7 +138,9 @@ fixed list take their full names, as in the table below
 | Root disk size | `root_disk_size_gib` | With `image` only. Default: the image's size, at least 10 GiB. |
 | Firmware | `firmware` | A firmware image (name or id). Fixed. |
 | Kernel boot | `kernel`, or `kernel_image_path` and `initrd_path`; `kernel_args` | Instead of firmware (not both). A kernel image (`kernel`) can be changed and applies at the next start; host paths are fixed; arguments changeable. |
-| Credential | `credential` | A credential of the project. Firmware boot with the generated cloud-init seed only. |
+| Follow the guest's kernel | `kernel_from_disk` | With `kernel` and `image` or `root_disk`: boot the kernel the guest installed. See [Following the guest's kernel](kernel-boot.md#following-the-guests-kernel). Changeable; applies at the next start. |
+| Generate seed | `generate_seed` | Overrides whether Glidex generates the cloud-init seed; not with `cloud_init_path`. Fixed. |
+| Credential | `credential` | A credential of the project. Needs the generated cloud-init seed: firmware boot, or kernel boot of a kernel image or a managed root disk, without `cloud_init_path`. |
 | Networks | `networks` | Up to 8 NICs, in order. Changeable; applies at the next start. |
 | Data disks | `data_disks` | Disks of the project, attached after the boot disk. Changeable; applies at the next start. |
 | PCI devices | `vfio_devices` | Changeable while the VM runs. |
@@ -144,11 +148,11 @@ fixed list take their full names, as in the table below
 | On host boot | `on_host_boot` | `HOST_BOOT_POLICY_RESUME` (default) or `HOST_BOOT_POLICY_STOP`. Changeable. |
 | Stop grace | `stop_grace_secs` | Seconds a stop waits after the power button; 0 (default) stops at once; at most 300. Changeable. |
 | Initial power | `power` | `POWER_STATE_STOPPED` (default), `POWER_STATE_RUNNING` or `POWER_STATE_PAUSED`. |
-| Node | `node` | Clusters: pin the VM to a node (name or id). Fixed. |
+| Node | `node` | Clusters: pin the VM to a node (name or id). Fixed, except by [placing the VM again](#placing-a-vm-again). |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
 | NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
-| Device pools | `devices` | `[{"pool": "a100", "count": 1, "same_switch": false}]`: devices the scheduler picks from a pool your project may use; shown as `pool_devices`. See [Device pools](../operator-guide/pci-passthrough.md#device-pools). Changeable; applies at the next start. |
+| Device pools | `devices` | `[{"pool": "a100", "count": 1, "same_switch": false}]`: devices the scheduler picks from a pool your project may use; shown as `pool_devices`. See [Devices from a pool](#devices-from-a-pool). Changeable; applies at the next start. |
 | CPU policy | `cpu_policy` | `CPU_POLICY_SHARED` (default) or `CPU_POLICY_DEDICATED`: each vCPU on a host CPU of its own. Changeable; applies at the next start. |
 
 ### Boot disk
@@ -156,8 +160,11 @@ fixed list take their full names, as in the table below
 Give exactly one of:
 
 - `image`: Glidex creates a linked root disk from the image for this VM
-  (named `<vm>-root`), grows it to `root_disk_size_gib`, and extends the
-  guest's root partition at first boot. The disk belongs to the VM and
+  (named `<vm>-root`) on the default
+  [datastore](../operator-guide/datastores.md), grows it to
+  `root_disk_size_gib`, and extends the guest's root partition at first
+  boot. To put it on another datastore, create the disk first
+  (`gxctl disk create … --datastore`) and give it as `root_disk`. The disk belongs to the VM and
   is deleted with it, unless you delete with `--keep-disk`.
 - `root_disk`: an existing, unattached disk of the project (name or
   id). It is not deleted with the VM.
@@ -196,12 +203,15 @@ stopped VM, as a new kernel image you can then set as `kernel`.
 
 An administrator can also give host paths: `kernel_image_path` (and a
 root filesystem in `rootfs_path`), plus `initrd_path` if the kernel
-needs an initramfs (distro kernels do). The default kernel arguments are
+needs an initramfs (distro kernels do). With host paths, or a kernel
+image without a command line, the default kernel arguments are
 `console=ttyS0 root=/dev/vda reboot=k panic=1` on both hypervisors. The
 console is on the serial port, unless the last `console=` in the
-arguments is `hvc0`, which selects the virtio console. A distro cloud
-image needs its own root, e.g.
-`console=ttyS0 root=LABEL=cloudimg-rootfs ro` for Ubuntu.
+arguments names `hvc…` (such as `hvc0`), which selects the virtio
+console. A distro cloud image needs its own root, e.g.
+`console=ttyS0 root=LABEL=cloudimg-rootfs ro` for Ubuntu. See
+[Kernel boot](kernel-boot.md) for kernel images, the command line, the
+console and following the guest's kernel.
 
 ### Host paths
 
@@ -214,8 +224,9 @@ VMs have a private `/tmp`.
 
 ### Credential and cloud-init
 
-With firmware boot and no `cloud_init_path`, Glidex generates a
-cloud-init seed for the VM: its hostname, the root partition grow, and,
+Without `cloud_init_path`, Glidex generates a cloud-init seed for a VM
+that boots through firmware, or that boots a kernel image or from
+`image` or `root_disk` ([kernel boot](kernel-boot.md)): its hostname, the root partition grow, and,
 if you name a `credential`, that user with its password and SSH keys.
 cloud-init applies it on the VM's first boot. Without a credential the
 guest has no login. See [Guest credentials](credentials.md).
@@ -283,6 +294,46 @@ gxctl> detach-device my-vm /sys/bus/pci/devices/0000:41:00.0
 On a running VM, devices are hot-plugged. On a paused VM, the change
 waits until it runs again.
 
+#### Devices from a pool
+
+Instead of naming devices, ask for a number of them from a **device
+pool** your project may use; Glidex picks which. To see the pools and
+how many devices are free:
+
+```
+gxctl> pci pools --project lab        # pool, class, free
+```
+
+In the web UI's create form, **Device Pools (optional)** lists them with
+their free counts: set how many devices to take from each, and tick
+**Under one PCIe switch** to keep several together (for GPUs that talk
+to each other). `gxctl create` asks for them as `a100:2` or
+`a100:2:switch`. Over the API:
+
+```json
+"devices": [{"pool": "a100", "count": 2, "same_switch": true}]
+```
+
+The picked devices are on the NUMA node of the VM's other devices when
+they can be, and show as `pool_devices` (`gxctl get <vm>` and the
+VM's page list each request with what it got). The VM gets them at its
+next start and keeps them until the request changes or the VM is
+deleted. Asking needs a grant for the pool:
+
+- `no device pool a100` (`400`): no such pool for this project.
+- `forbidden` (`403`): the project may not use the pool.
+- `quota_exceeded` with resource `devices.a100`: the project's quota
+  for the pool is used up (see [Quotas](projects.md#quotas)).
+  `tenant_quota_exceeded` with `tenant_pool.<name>`: a tenant pool's
+  maximum is reached.
+- `pool a100: 1 of 2 free`: not enough free devices. On a cluster the
+  VM waits for them; on a single host it is refused (`409`).
+
+A pool your tenant set up for some of its projects (a **tenant pool**)
+is asked for by its own name; the VM shows the cluster pool it draws
+from and `tenant_pool`. Devices from pools are metered
+(`device.alloc.<pool>`, see [Usage](usage.md)).
+
 ## Lifecycle
 
 | Action | Web UI | gxctl | API |
@@ -293,6 +344,7 @@ waits until it runs again.
 | Graceful stop | **Shut down** | `stop <vm> --graceful [secs]` | `POST /vms/{id}/stop?graceful_timeout_secs=60` |
 | Immediate stop | **Stop** | `stop <vm>` | `POST /vms/{id}/stop` |
 | Delete | **Delete** | `delete <vm> [--keep-disk]` | `DELETE /vms/{id}` |
+| Place a stopped or lost VM on another node | **Place on another node** | `place <vm> [--node N]` | `POST /vms/{id}/place` |
 
 `gxctl` waits up to 60 seconds for the VM to get there (longer for a
 graceful stop) and prints the state it reached; `--no-wait` returns at
@@ -359,8 +411,10 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 
 ### Change a VM
 
-Change vCPUs, memory, networks, data disks, PCI devices, kernel
-arguments, the credential, hugepages and the policies with
+Change vCPUs, memory, networks, data disks, PCI devices, device pool
+requests, kernel arguments, the kernel image and following it (`kernel`,
+`kernel_from_disk`), the credential, hugepages and the policies
+with
 `PATCH /vms/{id}`. The body has two fields: `change` holds the new
 values, and `update_mask` lists the fields to change (comma-separated;
 without it, the fields present in `change` are changed). Settings
@@ -379,7 +433,8 @@ The web UI and `gxctl` have no edit form; `gxctl` changes PCI devices
 only (`attach-device`, `detach-device`).
 
 A change to vCPUs, memory, kernel arguments, the credential, hugepages,
-networks or data disks of a running VM takes effect at the next start:
+policies, device pool requests, networks or data disks of a running VM
+takes effect at the next start:
 the web UI says **Configuration changes take effect at the next start**,
 and the API sets `restart_required`. Stop and start the VM to apply it.
 A new credential doesn't change logins in a guest that already booted
@@ -387,6 +442,12 @@ A new credential doesn't change logins in a guest that already booted
 
 Pass the VM's `resource_version` in an `If-Match` header to refuse the
 change (`409`) if someone else changed the VM since you read it.
+
+A change to vCPUs, memory, hugepages, policies, devices or networks of a
+VM that already has a node is fitted again on that node: its hugepages,
+NUMA node, dedicated CPUs and pool devices are picked again. If it no
+longer fits there, the change is refused with `409` and the reason, for
+example `node agent1: not enough 2M hugepages (1024 of 2048 MiB taken)`.
 
 ### Delete
 
@@ -422,10 +483,19 @@ state is `desired_state`. The VM's `conditions` say what is in the way
 stopped on request, stopped by the host, guest powered off, crashed (with
 its exit code or signal), failed to launch, host rebooted, or lost.
 
-On a cluster, a VM that boots through a firmware image needs that
-image's copy on its node. Until the node has fetched it, the VM waits
-with the condition `DisksReady` `False` (*firmware &lt;name&gt; has not been
-copied to this node yet*), and carries on by itself once the copy is there.
+On a cluster, a VM that boots through a firmware image, or boots a
+kernel image, needs that image's copy on its node. Until the node has
+fetched it, the VM waits with the condition `DisksReady` `False`
+(*firmware &lt;name&gt; has not been copied to this node yet*, or
+*kernel &lt;name&gt; has not been copied to this node yet*), and carries
+on by itself once the copy is there.
+
+A VM also doesn't start while one of its disks is being moved to
+another datastore (`DisksReady` `False`, reason `DiskNotReady`: *disk …
+is moving to datastore …*), or while another node holds the lock of a
+disk on a shared datastore (reason `DiskBusy`: *disk … is in use
+elsewhere (… is locked)*). See
+[Volume locks](../operator-guide/datastores.md#volume-locks).
 
 Each VM keeps a list of events: created, spec changes, launches, exits,
 restarts, warnings such as a lost network port.
@@ -444,6 +514,30 @@ change:
 gxctl> watch                  # Ctrl-C stops
 gxctl> watch vms
 ```
+
+## Hugepages
+
+`hugepages: true` backs the guest's memory with hugepages, which can
+make memory-heavy guests faster. `hugepage_size` picks `2M` or `1G`
+(default: the host's default size, usually 2M); the memory must be a
+whole number of pages. Set them over the API (`POST /vms` or
+`PATCH /vms/{id}` with `update_mask` `hugepages,hugepage_size`):
+
+```json
+{"name": "db", "vcpu_count": 8, "mem_size_mib": 32768, "hugepages": true, "hugepage_size": "1G", "...": "..."}
+```
+
+The VM takes its memory from the host's hugepages, which the
+administrator reserves. They are counted per node and size and never
+overcommitted, and a VM holds them while it exists, running or not. If
+there aren't enough, the VM waits for a node (on a cluster) with a
+reason like `not enough 1G hugepages (30720 of 32768 MiB taken)`, or
+its start fails with the counts.
+
+A VM with a vhost-user NIC gets 2M hugepages without asking when the
+host has them to spare, and ordinary memory otherwise. The VM's
+`page_kib` says what it got: 4 for ordinary memory, else the page size
+in KiB.
 
 ## NUMA and dedicated CPUs
 
@@ -471,10 +565,32 @@ on the same node. Two settings ask for that:
 A VM with shared vCPUs and a NUMA policy has its memory on the node but
 its vCPUs anywhere on the host, so no node's CPUs sit idle.
 
+Set them over the API, at creation or with `PATCH /vms/{id}`
+(`update_mask` `numa_policy,cpu_policy`); the web UI and `gxctl` don't
+have them yet:
+
+```json
+{"name": "train", "vcpu_count": 16, "mem_size_mib": 65536,
+ "numa_policy": "NUMA_POLICY_STRICT", "cpu_policy": "CPU_POLICY_DEDICATED",
+ "devices": [{"pool": "a100", "count": 2}], "...": "..."}
+```
+
 The VM shows where it went: `numa_node`, and for dedicated vCPUs `cpus`
-(vCPU *i* on `cpus[i]`). A change to its vCPUs, memory, policies,
-devices or networks picks again on the same host, and applies when it
-next starts.
+(vCPU *i* on `cpus[i]`), in `GET /vms/{id}` and the scheduler preview.
+A change to its vCPUs, memory, policies, devices or networks picks
+again on the same host, and applies when it next starts.
+
+When a VM can't be placed this way, the reason says why:
+
+| Reason | Meaning |
+|---|---|
+| `NUMA node 1: not enough memory (… of … MiB taken)` | That NUMA node is full. |
+| `NUMA node 0: not enough free CPUs (8 dedicated vCPUs, 6 CPUs free)` | Too few CPUs left for dedicated vCPUs. |
+| `its PCI devices are on NUMA nodes 0 and 1` | A strict VM's devices are split. |
+| `PCI device … has no NUMA node` | A strict VM's device has no NUMA node. |
+
+A `PREFERRED` VM that didn't fit on one NUMA node runs anyway, with its
+`NumaAligned` condition `False`.
 
 ## Placement on a cluster
 
@@ -482,36 +598,31 @@ On a cluster, the scheduler picks the node for a new VM when it is
 created. It considers only nodes that are active, ready and not
 draining, that have the hypervisor, enough vCPUs and memory left, the
 PCI devices, hugepages and physical networks the VM needs, and that hold
-its disks and node networks. Of those, it prefers the least loaded.
+its disks and node networks, or reach the datastores its disks are on.
+Of those, it prefers the least loaded.
 
-Hugepages are counted on their own: a VM with `hugepages` takes its
-memory from the node's hugepages of its size, not from ordinary memory,
-and needs that much left of them (`not enough 2M hugepages (… of … MiB
-taken)`). They are never overcommitted, and stopped VMs hold theirs
-too. A VM with a vhost-user NIC gets 2M hugepages without asking when
-the node has them to spare (its memory plus a quarter, at least
-256 MiB), and ordinary memory otherwise. The VM's `page_kib` says which:
-4 for ordinary memory, else the hugepage size in KiB.
+Hugepages are counted on their own: a VM with `hugepages` needs that
+much left of the node's hugepages of its size (see
+[Hugepages](#hugepages)). A VM with a NUMA or CPU policy needs a NUMA
+node with room (see
+[NUMA and dedicated CPUs](#numa-and-dedicated-cpus)), and a VM asking
+for devices from a pool needs a node with enough free devices of it.
 
 PCI devices are claimed per node: nodes with a device at the same
 address each take one VM with it. A node where another VM holds the
 device, or a device of its IOMMU group, is skipped. If every such node's
 device is taken, the VM waits, and the reason names the VM holding it.
 A VM pinned to a node where its device is taken is refused instead.
+Nodes where a device is cordoned by an administrator, or where your
+project has no grant for it, are skipped too (`PCI device … is
+cordoned`, `its PCI devices are not granted to the project on this
+node`).
 
-A VM stays on its node: Glidex doesn't move it, and doesn't restart it
-elsewhere if the node fails. If no node can take the VM, it is still
-created and waits for one; its page says **Waiting for a node** with
-each node's reason.
-
-A VM whose disks are on shared datastores (see
-[Where a disk lives](images-and-disks.md#where-a-disk-lives)) can be
-placed on another node by an administrator: when it is stopped, or when
-its node was lost and forgotten. On the VM's page it is **Place on
-another node** (**Place on a live node** for a lost VM), with a node or
-**Where there is room**; with gxctl, `gxctl place <vm> [--node N]`. A
-VM with a disk on one node's own storage, a host-path root, PCI devices
-or a node network can't move.
+A VM stays on the node it was placed on: Glidex doesn't move it by
+itself, and doesn't restart it elsewhere if the node fails. An
+administrator can place it again (see below). If no node can take the
+VM, it is still created and waits for one; its page says **Waiting for a
+node** with each node's reason.
 
 In the web UI's create form, **Placement** shows **Automatic (now:
 &lt;node&gt;)** and each node with its free vCPUs and memory, or why it
@@ -531,5 +642,25 @@ The answer has the node it would pick (`pick`) and every node's fit
 The VM's node shows in `gxctl list` and on its page. If the node stops
 reporting, the page shows the VM's last known state; the VM may still be
 running there.
+
+### Placing a VM again
+
+A **stopped** VM, or a **lost** one whose node was forgotten, can be
+placed again on another node, if its disks can go there: disks on
+shared datastores always can, a disk on a node-local datastore only to
+its own node. It needs the `system-admin` role.
+
+- **Web UI:** the VM's page, **Place on another node** (**Place on a
+  live node** for a lost VM).
+- **gxctl:** `place <vm> --node <node>`, or `place <vm>` for wherever
+  the scheduler finds room.
+- **API:** `POST /vms/{id}/place` with an optional `node`.
+
+With a node, the VM is pinned there; without one, its old pin goes.
+Start it again afterwards. A QEMU VM's UEFI variables stay on the old
+node: it starts with fresh ones from its firmware. See [Placing a
+stopped or lost VM
+again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again)
+for what can go along and what is refused.
 
 See [Clusters](../operator-guide/clusters.md) for nodes and draining.

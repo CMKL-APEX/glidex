@@ -89,8 +89,17 @@ sudo systemctl restart glidex-control-plane
 | `authz.policy_history` | integer, 1–1000 | `50` | Versions kept of each site policy. |
 | `quotas.default` | object | `{"networks": 2}` | Quotas of new projects, and of the `default` project when it is first created. Keys: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, and `devices` (`{"a100": 2}`: devices per pool). An omitted key is unlimited, except `networks` (2), `routers` (1) and `external_ips` (1); `null` is unlimited. |
 | `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool. See [PCI passthrough](pci-passthrough.md). |
-| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs. See [PCI passthrough](pci-passthrough.md#device-pools). |
+| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs. See [Device pools](host-resources.md#device-pools). |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
+
+The control plane refuses to start when the pools or grants don't add
+up, with one of:
+
+- `pci.pools: pool names must be set and unique (…)`;
+- `pci.pools: pool <name> matches every device; give it a match`;
+- `pci.pools: pools <a> and <b> match the same devices`;
+- `pci.allow: no pool <name>`: a grant names an unknown pool;
+- `pci.allow: each grant names one bdf or one pool`.
 
 ### `reconcile` and `console`
 
@@ -216,6 +225,7 @@ Under the installed services:
 | `/run/glidex/` | `glidex-netd`'s sockets. |
 | `/run/glidex-authd/auth.sock` | `glidex-authd`'s socket. |
 | `/var/lib/glidex-ui/tls/` | The web UI's self-signed certificate. |
+| `/srv/glidex/` | The datastore root: registered [datastores](datastores.md) are directories under it. The installer creates it (`root:root`, mode 0755). |
 
 The data directory is `~/.glidex` of the user the control plane runs as;
 for the service that user is `glidex`, whose home is
@@ -226,6 +236,18 @@ must be inside it or readable by `glidex` outside `/home`, `/root`,
 
 A control plane you start by hand uses your own `~/.glidex` and the run
 directory `$XDG_RUNTIME_DIR/glidex` (else `/tmp/glidex-<uid>`).
+
+## Outbound connections
+
+Besides what [Installation](installation.md#requirements) needs, the
+control plane makes these outbound HTTPS connections:
+
+| To | When |
+|---|---|
+| Image and firmware URLs, and the catalog's mirrors | Pulling images. |
+| Your OIDC provider, Google, JumpCloud | Logins through those connectors. |
+| `oauth2.googleapis.com`, `admin.googleapis.com` | A [directory sync from Google Workspace](authentication.md#directory-sync-from-google-workspace), from the cluster's leader: allow it from every server. |
+| `snapshot.debian.org` | The first kernel extraction on a host: the pinned extractor packages, about 35 MB, kept afterwards. Not needed with `GLIDEX_KERNEL_EXTRACTION=off`. |
 
 ## Environment variables
 
@@ -243,6 +265,11 @@ directory `$XDG_RUNTIME_DIR/glidex` (else `/tmp/glidex-<uid>`).
 | `GLIDEX_MAX_DOWNLOADS` | `2` | Image downloads at the same time. |
 | `GLIDEX_ALLOW_PRIVATE_IMAGE_URLS` | unset | `1` allows image downloads from private and local addresses. |
 | `GLIDEX_NETD_RUN_DIR` | `/run/glidex` | Where to find `glidex-netd`'s sockets. |
+| `GLIDEX_DATASTORE_ROOT` | `/srv/glidex` | The directory registered datastores must be under. The installed units only let the control plane and the VMs write under `/srv/glidex`: if you change it, add `ReadWritePaths=<new root>` in drop-ins for both `glidex-control-plane` and `glidex-vm@` (`sudo systemctl edit glidex-vm@`), on every node. |
+| `GLIDEX_KERNEL_EXTRACTION` | on | `off` never extracts kernels from disk images: catalog pulls bring only the disk image, `kernel_from` and `extract-kernel` are refused (`400 invalid_image`), and a VM following its guest's kernel keeps the one it has. For a host that can't download the extractor. See [Kernel boot](../user-guide/kernel-boot.md#from-a-cloud-image). |
+| `GLIDEX_MAX_EXTRACTIONS` | `1` | Kernel extractions at the same time on this node. |
+| `GLIDEX_MAX_KERNEL_SIZE` | `128M` | Largest kernel of a kernel image, with a `K`, `M`, `G` or `T` suffix (binary units). |
+| `GLIDEX_MAX_INITRD_SIZE` | `1G` | Largest initramfs of a kernel image, likewise. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |
 | `RUST_LOG` | `glidex_control_plane=info,tower_http=info` | Log filter. |
 

@@ -40,6 +40,11 @@ mutual TLS. A **scheduler** picks the node for each new VM, and explains
 its choice. A node can be **drained** (no new VMs are placed on it),
 removed, and rejoined. See [Clusters](operator-guide/clusters.md).
 
+A VM stays on the node it was placed on. An administrator can
+**place** a stopped VM, or a **lost** one whose node was forgotten,
+again on another node, when its disks can go there (see
+[Placing a stopped or lost VM again](operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again)).
+
 ## Tenants and projects
 
 A **project** is where VMs, disks, guest credentials and project
@@ -102,6 +107,19 @@ Stopping is either **graceful** (press the guest's power button, wait,
 then stop) or immediate. Each VM keeps a short list of **events**:
 starts, exits, restarts. See [Virtual machines](user-guide/vms.md).
 
+A VM boots in one of two ways, fixed when it is created:
+
+- **Firmware boot** (the default): UEFI firmware runs the boot loader
+  on the root disk, which picks the kernel.
+- **Direct kernel boot**: the hypervisor loads a kernel, an optional
+  **initramfs** (the small root filesystem a kernel starts from before
+  it mounts the real one) and a command line that Glidex hands it. With
+  **following the guest's kernel** (`kernel_from_disk`), Glidex takes
+  the kernel the guest installed out of its disk before a start, so it
+  boots next time.
+
+See [Kernel boot](user-guide/kernel-boot.md).
+
 ## Hypervisors
 
 Each VM runs on one **hypervisor**:
@@ -131,9 +149,17 @@ administrators with the image role pull and delete them.
   Hypervisor, `ovmf` for QEMU. A new VM uses the newest firmware image
   for its hypervisor unless you choose another.
 
-An image is **downloading**, **verifying**, **ready**, **failed** or
-**missing** (its file is gone). See
-[Images and disks](user-guide/images-and-disks.md).
+- A **kernel image** is a kernel, an optional initramfs and a default
+  command line, for direct kernel boot. Pulling a catalog image also
+  makes one from it by **kernel extraction**: Glidex reads the image's
+  `/boot` inside a small VM, never on the host. A kernel taken from a
+  VM's own disk is a **VM-owned kernel image**, deleted once no VM uses
+  it.
+
+An image is **downloading**, **verifying**, **extracting** (a kernel
+image), **ready**, **failed** or **missing** (its file is gone). See
+[Images and disks](user-guide/images-and-disks.md) and
+[Kernel boot](user-guide/kernel-boot.md#kernel-images).
 
 ## Disks
 
@@ -150,6 +176,43 @@ it, grows it to the size you ask for, and extends the guest's root
 partition to fill it. That disk belongs to the VM and is deleted with
 it unless you keep it. Disks can be resized; a resize of a disk that
 is in use is held until it can be applied.
+
+## Datastores
+
+A **datastore** is where disks live; every disk is on one. See
+[Datastores](operator-guide/datastores.md).
+
+- **`local`**, built in: each node's own disk directory. The default
+  for new disks until an administrator picks another.
+- A **node-local** datastore is a directory each node has its own of.
+  A disk on it, as on `local`, is bound to one node, and so is its VM.
+- A **shared** datastore is one filesystem every node mounts (NFS,
+  CephFS). Its disks are bound to no node: their VM can be placed on
+  any node that reaches it. A **marker** file in its directory proves
+  to each node that it sees the right filesystem; the disk's **worker**
+  is the node that works on its file; a **volume lock** keeps two nodes
+  from using one disk at once.
+
+A disk no running VM uses can **move** to another datastore. A linked disk is then
+rebased on the image's copy there, or **flattened** into a standalone
+copy.
+
+## Host resources
+
+Glidex knows each host's **host topology**: its NUMA nodes, cores,
+hugepages and PCIe tree. See
+[Host resources](operator-guide/host-resources.md).
+
+- A **NUMA policy** keeps a VM's memory, vCPUs and devices on one NUMA
+  node (a socket, or part of one): preferred, or strict.
+- **Dedicated CPUs** give each vCPU a host CPU no other VM uses.
+- **Hugepages** back guest memory with large pages (2M or 1G), counted
+  per node; a VM's `page_kib` says what it got.
+- A **device pool** is a named set of like devices (GPUs, NICs) a VM
+  asks for by count. A **tenant pool** is a tenant's share of one,
+  split among its projects.
+- A device is **ready** when it can be passed through as it is, and
+  **cordoned** when an administrator keeps it from new VMs.
 
 ## Guest credentials
 
@@ -208,6 +271,14 @@ creates, changes and removes its users and groups in Glidex over SCIM,
 and only those users can log in through it. Such users and teams are
 *managed by* the connector: their names, and whether a user is enabled,
 are changed at the IdP, not in Glidex.
+
+A Google Workspace connector can **pull** instead (**directory sync**):
+Glidex reads the members of the Google groups you name, as a Google
+**service account** whose key you give it, every 15 minutes, and the
+users it brings in are managed the same way. A **safety stop** holds a
+run that would disable too many users until an administrator confirms
+it. See [Directory sync from Google
+Workspace](operator-guide/authentication.md#directory-sync-from-google-workspace).
 
 An **invitation** is a one-time link that lets one email address into a
 tenant, with a role, through one connector, even when that connector

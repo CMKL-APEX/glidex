@@ -65,10 +65,10 @@ is the encoded `ErrorInfo`):
 |---|---|
 | `UNAUTHENTICATED` | `unauthenticated`, `login_failed`, `reauth_required`, `cookie_not_accepted` |
 | `PERMISSION_DENIED` | `forbidden`, `login_not_allowed`, `tls_required`, `ticket_required`, `tenant_suspended`, `origin_not_allowed`, `csrf_failed`, `protocol_not_allowed`, `not_admitted`, … |
-| `RESOURCE_EXHAUSTED` | `quota_exceeded`, `tenant_quota_exceeded`, `too_large`, `rate_limited`, `slow_down` |
+| `RESOURCE_EXHAUSTED` | `quota_exceeded`, `tenant_quota_exceeded`, `insufficient_storage`, `too_large`, `rate_limited`, `slow_down` |
 | `NOT_FOUND` | `not_found`, `oidc_disabled` |
 | `ABORTED` | `conflict` (a name taken, a concurrent change): read again and retry |
-| `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, `managed_by_connector`, `not_provisioned`, …), `unsupported_on_host` |
+| `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, `managed_by_connector`, `not_provisioned`, `not_pulled`, `no_source`, `sync_running`, …), `unsupported_on_host` |
 | `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*` |
 | `UNAVAILABLE` | `not_leader`, `use_a_server`, `leader_changed`, `cluster_unavailable`, and `502`/`503` codes (`netd_unavailable`, `node_unreachable`, `too_many_watchers`, `console_unavailable`, …) |
 | `INTERNAL` | `internal`, `persistence_error` and other `500` codes. The message is generic and names the request id; the details are in the server log |
@@ -98,11 +98,11 @@ server you reach and are not forwarded to the leader.
 **`Watch`** sends the same events as `GET /watch`
 ([Live changes](rest.md#live-changes-get-watch)). The request takes
 `kinds` (`WATCH_KIND_VM`, `…_DISK`, `…_IMAGE`, `…_NETWORK` by default;
-also `…_NODE`, `…_IMPORT`, `…_CLUSTER`, `…_POLICY`) and `project`. Each
+also `…_NODE`, `…_IMPORT`, `…_CLUSTER`, `…_POLICY`, `…_DATASTORE`) and `project`. Each
 `WatchResponse` has a `type` (`WATCH_EVENT_TYPE_ADDED`, `…_MODIFIED`,
 `…_DELETED`, `…_SYNCED`, `…_EXPIRED`), `kind`, `id` and the object in a
 `oneof` (`vm`, `disk`, `image`, `network`, `node`, `import_plan`,
-`cluster`, `policy`). After 15 s without an event the server sends
+`cluster`, `policy`, `datastore`). After 15 s without an event the server sends
 `WATCH_EVENT_TYPE_KEEPALIVE`, so proxies keep a quiet stream open;
 ignore it. The stream ends after 5 minutes with `…_EXPIRED`: open a new
 one for a fresh snapshot.
@@ -255,6 +255,7 @@ same ids and names.
 |  | `UpdateVm` | `PATCH /vms/{id}` |
 |  | `DeleteVm` | `DELETE /vms/{id}` |
 |  | `StartVm` | `POST /vms/{id}/start` |
+|  | `PlaceVm` | `POST /vms/{id}/place` |
 |  | `StopVm` | `POST /vms/{id}/stop` |
 |  | `PauseVm` | `POST /vms/{id}/pause` |
 |  | `ListVmEvents` | `GET /vms/{id}/events` |
@@ -286,6 +287,7 @@ same ids and names.
 |  | `AddImageCopy` | `POST /images/{id}/copies` |
 |  | `RemoveImageCopy` | `DELETE /images/{id}/copies/{node}` |
 |  | `ListImageEvents` | `GET /images/{id}/events` |
+|  | `ExtractVmKernel` | `POST /vms/{id}/extract-kernel` |
 | `DiskService` | `ListDisks` | `GET /disks` |
 |  | `GetDisk` | `GET /disks/{id}` |
 |  | `CreateDisk` | `POST /disks` |
@@ -293,6 +295,12 @@ same ids and names.
 |  | `ExtendRoot` | `POST /disks/{id}/extend-root` |
 |  | `DeleteDisk` | `DELETE /disks/{id}` |
 |  | `ListDiskEvents` | `GET /disks/{id}/events` |
+|  | `MoveDisk` | `POST /disks/{id}/move` |
+| `DatastoreService` | `ListDatastores` | `GET /datastores` |
+|  | `GetDatastore` | `GET /datastores/{id}` |
+|  | `CreateDatastore` | `POST /datastores` |
+|  | `UpdateDatastore` | `PATCH /datastores/{id}` |
+|  | `DeleteDatastore` | `DELETE /datastores/{id}` |
 
 ### `glidex.network.v1`
 
@@ -479,6 +487,12 @@ same ids and names.
 |  | `AbortDetach` | `POST /nodes/{id}/detach` with `abort` |
 |  | `ForgetDeparted` | `POST /nodes/{id}/detach` with `departed` |
 |  | `ListDepartures` | `GET /departures` |
+|  | `GetNodeTopology` | `GET /nodes/{id}/topology` |
+|  | `PrepareDevice` | `POST /nodes/{id}/devices/{address}/prepare` |
+|  | `ReleaseDevice` | `POST /nodes/{id}/devices/{address}/release` |
+|  | `CordonDevice` | `POST /nodes/{id}/devices/{address}/cordon` |
+|  | `UncordonDevice` | `POST /nodes/{id}/devices/{address}/uncordon` |
+|  | `ListPciPools` | `GET /pci-pools` |
 | `ImportService` | `ListImports` | `GET /imports` |
 |  | `GetImport` | `GET /imports/{plan}` |
 |  | `ApproveImport` | `POST /imports/{plan}/approve` |

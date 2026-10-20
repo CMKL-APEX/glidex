@@ -75,18 +75,22 @@ details:
 | `reauth_required` | The action needs a recent login (cluster changes, installing OVS, uplink and bridge changes, policies). | Log in again and retry. |
 | `forbidden` | Your roles or the site policies don't allow it. | Check `gxctl whoami`; ask for a role. See [Access control](access-control.md). |
 | `not_found` | No such VM, network, image… in the project you're using. | Check `--project` / your default project (`gxctl project use`). |
-| `conflict` | A name is taken, or the resource is in use or busy (a disk claimed by a VM, a PCI device used by another VM on the same host or sharing its IOMMU group, a DPDK NIC). | Read the message: it names what holds it. |
+| `conflict` | A name is taken, or the resource is in use or busy (a disk claimed by a VM or being moved, a PCI device used by another VM on the same host or sharing its IOMMU group, a DPDK NIC, a kernel image a VM boots, a datastore that still has disks). | Read the message: it names what holds it. |
 | `ambiguous` | A name matches more than one thing. | Use the id. |
 | `invalid_state` | The VM can't do that now (start a running VM, attach what's already attached). | Check its state with `gxctl get <vm>`. |
 | `invalid_config`, `invalid`, `invalid_network`, `invalid_image`, `invalid_disk` | A bad request: wrong path, out-of-range value, unknown network. | The message says which field. |
+| `invalid_datastore` | A datastore name or path that isn't allowed: the path must be a directory under `/srv/glidex`. | See [Datastores](datastores.md#preparing-the-directory). |
+| `insufficient_storage` (`507`) | A datastore without overcommit lacks the space for a new or moved disk; `details` has `free_bytes` and `needed_bytes`. | Free space, pick another datastore, or allow overcommit; see [Overcommit and capacity](datastores.md#overcommit-and-capacity). |
 | `quota_exceeded`, `tenant_quota_exceeded` | The project or tenant would go over a quota. | Raise it (`gxctl project quota`) or free resources. |
 | `device_flow_unsupported` | `gxctl auth login --oidc` through a `google` connector that has no device client. | Add a *TVs and Limited Input devices* client to the connector (`--device-client-id`, then `connector secret set <id> device_client_secret`); see [Google](authentication.md#google). |
 | `cannot_delete_self`, `last_admin` | Deleting yourself, or the last holder of `system-admin` or `directory-admin`. | Have another administrator do it; give the role to someone else first. See [Removing people](access-control.md#removing-people). |
 | `last_identity` | Removing a user's last sign-in method. | Disable the user first, or add another sign-in method. |
 | `node_departed` | Giving a role on one host whose node has left the cluster. | Pick a current node (`gxctl nodes`). |
-| `managed_by_connector` | The user or team is managed by a SCIM connector: its name, whether it is enabled, or a membership the IdP gave, belongs to the IdP. Also deleting a managed user that is still enabled. | Change it at the IdP, or disable the user first. See [Users an IdP manages](access-control.md#users-an-idp-manages). |
+| `managed_by_connector` | The user or team is managed by a SCIM connector or a directory sync: its name, whether it is enabled, or a membership the IdP gave, belongs to the IdP. Also deleting a managed user that is still enabled. | Change it at the IdP, or disable the user first. See [Users an IdP manages](access-control.md#users-an-idp-manages). |
 | `not_provisioned` | Making a SCIM token for a connector that isn't provisioned by SCIM. | `gxctl connector update <id> --no-jit --provisioning scim` first. |
-| `login_not_allowed` | The connector's rules refused the login. Through a SCIM connector: the person wasn't provisioned, or their account is disabled. | Check the user is assigned to the application at the IdP and was pushed; see [Provisioning with SCIM](authentication.md#provisioning-with-scim). |
+| `not_pulled`, `no_source` | Running a directory sync of a connector that isn't `--provisioning pull`, or isn't a Google Workspace connector. | See [Directory sync from Google Workspace](authentication.md#directory-sync-from-google-workspace). |
+| `sync_running` | A run of that connector's directory sync is already going. | Wait, then `gxctl connector show <id>`. |
+| `login_not_allowed` | The connector's rules refused the login. Through a SCIM connector or a directory sync: the person wasn't provisioned (pulled), or their account is disabled. | Check the user is assigned to the application at the IdP and was pushed; see [Provisioning with SCIM](authentication.md#provisioning-with-scim). |
 | `precondition_failed` | Someone changed the resource since you read it. | Read it again and retry. |
 | `hypervisor_unavailable` | The VM's hypervisor isn't installed on this host. | Re-run the installer (without `--no-qemu` for QEMU). |
 | `hypervisor_error` | The hypervisor refused or failed. | `journalctl -u glidex-vm@<vm-id>`, `gxctl events <vm>`. |
@@ -177,9 +181,13 @@ are opened by that user, so:
 - Passing host paths at all needs the `host.paths` permission
   (`system-admin`).
 
-Put such files somewhere like `/srv/glidex/` with
-`sudo chgrp -R glidex /srv/glidex && sudo chmod -R g+rX /srv/glidex`. Better
-still, import them as images, which Glidex stores itself.
+Put such files in a directory of their own, such as `/srv/vm-files`:
+`sudo chgrp -R glidex /srv/vm-files && sudo chmod -R g+rX /srv/vm-files`.
+Not under `/srv/glidex`: that is where [datastores](datastores.md) are
+mounted and registered, and the installer offers what is mounted there
+as datastores. Better still, import them as images (a kernel as a
+[kernel image](../user-guide/kernel-boot.md#from-host-files)), which
+Glidex stores itself.
 
 ## KVM
 
@@ -207,8 +215,43 @@ lsmod | grep kvm
   node's reason: `no PCI device …` (the node doesn't report it), or the
   VM holding it on every node that has it.
 
+- **A VM's `DeviceHealthy` condition is `False`.** One of its devices
+  fell off the bus or had new uncorrectable PCIe errors (event
+  `DeviceError`). Glidex leaves the VM running; check
+  `gxctl node topology <node> --devices` and the host's `dmesg`, and
+  [cordon](host-resources.md#device-health-and-cordoning) the device
+  if you don't trust it.
+- **A VM's `NumaAligned` condition is `False`.** A `NUMA_POLICY_PREFERRED`
+  VM didn't fit on one NUMA node and spans the host.
+
 See [PCI passthrough](pci-passthrough.md#troubleshooting) for host setup
-problems (IOMMU, `vfio-pci`, `/dev/vfio` permissions).
+problems (IOMMU, `vfio-pci`, `/dev/vfio` permissions), and [Host
+resources](host-resources.md#troubleshooting) for hugepages, NUMA,
+dedicated CPUs, device pools and cordoned devices.
+
+## Datastores and disks
+
+| Symptom | Cause and fix |
+| --- | --- |
+| A node doesn't reach a datastore (`NODES OK` below the node count) | `gxctl datastore show <ds>` gives each node's reason (`OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`, `NoMarker`, `ForeignMarker`, `NotEmpty`); see [Each node's status](datastores.md#each-nodes-status). |
+| A VM waits for a node: `datastore … is not reachable here` | Its disks are on a datastore that node doesn't reach. Fix the datastore on the nodes it should be on. |
+| A VM doesn't start: `disk … is in use elsewhere (… is locked)` (condition reason `DiskBusy`) | Another node holds the disk's [volume lock](datastores.md#volume-locks), for example a node that seemed gone still runs the VM. Find and stop it there; the VM starts once the lock is free. |
+| A disk shows `Ready` `False`, reason `MovePending`, or *· moving* | A move is going on. The disk's events say `Moved` when it is done, or `MoveFailed` with the reason; it then stays where it was. While it moves it can't be attached or resized (`409 conflict`), and its VM doesn't start (*disk … is moving to datastore …*). |
+| A linked disk waits: `image … has not been copied into datastore … yet` | The disk's worker copies the image into the shared datastore first; it carries on by itself. See [Images in shared datastores](datastores.md#images-in-shared-datastores). |
+| `place` answers *Not placed yet* | No node can take the VM yet; the reason follows. The VM's events record `Replacing`. See [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again). |
+| A datastore can't be changed or deleted (`409 conflict`) | The message gives the reason: it is `local`, disks are still on it, a running VM with a disk open on a node whose path changes, or a node a disk is bound to. See [Changing and deleting](datastores.md#changing-and-deleting). |
+
+## Kernel boot
+
+| Symptom | Cause and fix |
+| --- | --- |
+| A kernel image stays `failed` | The extraction failed: its message says why. `gxctl image retry <image>` (or **Retry**) runs it again. The image's events (`GET /images/{id}/events`) record `Retrying` and, once done, `Extracted`. |
+| `kernel_from` refused with `400 invalid_image`, or catalog pulls bring no kernel | Extraction is off on this host (`GLIDEX_KERNEL_EXTRACTION=off`), the host isn't x86_64, or it has no Cloud Hypervisor or QEMU. See [Configuration](configuration.md#environment-variables). |
+| The first extraction fails to download | It fetches pinned Debian packages over HTTPS from `snapshot.debian.org` once; allow that, or add kernel images from a URL or host files. |
+| A VM's `KernelExtracted` condition is `False` (reason `ExtractFailed`, event `KernelExtractFailed`) | Following the guest's kernel failed; the VM boots the kernel it has, and the next start tries again. See [Following the guest's kernel](../user-guide/kernel-boot.md#following-the-guests-kernel). |
+| A VM doesn't start: `Ready` `False`, reason `KernelNotExtracted` | A VM that follows its guest's kernel has no kernel to boot yet. Fix the cause in the message, or set `kernel` to a ready kernel image. |
+| A VM waits: `kernel … has not been copied to this node yet` (`DisksReady` `False`, `DiskNotReady`) | The node fetches its copy of the kernel image; the VM carries on by itself. |
+| `409 conflict` deleting a kernel image | VMs boot it or keep it to go back to; the message names them. A VM-owned kernel image goes by itself once unused (event `Unused`). |
 
 ## Networking
 

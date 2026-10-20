@@ -9,7 +9,7 @@
   console WebSocket, the console log (raw bytes), CSV exports, the
   cluster snapshot and `/watch` (server-sent events).
 - **Ids and names**: VM paths take the VM's id. Disks, images,
-  networks, projects and nodes take an id or a name (for nodes, a live
+  datastores, networks, projects and nodes take an id or a name (for nodes, a live
   node's name before a departed one's), tenants an id or a slug; a name
   that several visible resources share is `409 ambiguous`. `gxctl`
   resolves VM names for you.
@@ -90,7 +90,7 @@ Branch on `error`, never on `message`. Common codes:
 
 | Status | `error` | Meaning |
 |---|---|---|
-| 400 | `bad_request`, `invalid_request`, `invalid_config`, `invalid_disk`, `invalid_image`, `invalid_network`, `invalid_credential`, `invalid_project`, `invalid_state`, `project_required`, `range_too_large` | The request is malformed or not valid here |
+| 400 | `bad_request`, `invalid_request`, `invalid_config`, `invalid_disk`, `invalid_image`, `invalid_datastore`, `invalid_network`, `invalid_credential`, `invalid_project`, `invalid_state`, `project_required`, `range_too_large` | The request is malformed or not valid here |
 | 400 | `device_flow_unsupported` | A device login through a `google` connector that has no device client |
 | 401 | `unauthenticated` | No credential, or an invalid or expired token |
 | 401 | `login_failed` | Wrong username or password |
@@ -104,11 +104,13 @@ Branch on `error`, never on `message`. Common codes:
 | 409 | `ambiguous` | A name matches several resources; use the id |
 | 409 | `cannot_delete_self`, `last_admin`, `last_identity` | Deleting yourself, the last holder of `system-admin` or `directory-admin`, or a user's last sign-in method |
 | 409 | `node_departed` | A per-host role on a node that has left the cluster |
-| 409 | `managed_by_connector` | The user or team is managed by a SCIM connector: change it at the IdP (see [Users an IdP manages](../operator-guide/access-control.md#users-an-idp-manages)) |
+| 409 | `managed_by_connector` | The user or team is managed by a SCIM connector or a directory sync: change it at the IdP (see [Users an IdP manages](../operator-guide/access-control.md#users-an-idp-manages)) |
 | 409 | `not_provisioned` | A SCIM token for a connector that isn't `provisioning: scim` |
+| 409 | `not_pulled`, `no_source`, `sync_running` | A directory sync of a connector that isn't `provisioning: pull`, of a kind Glidex can't pull from (only Google Workspace), or whose run is already going |
 | 409 | `would_lock_out`, `confirmation_required`, `host_interface_in_use`, `not_clustered`, `ovn_not_installed`, `dpdk_not_running`, … | A precondition isn't met; the message says which |
 | 412 | `precondition_failed` | `If-Match` didn't match; `details.resource_version` has the current one |
 | 413 | `too_large` | The body is too large |
+| 507 | `insufficient_storage` | A datastore without overcommit lacks the space for a new or moved disk; `details` has `free_bytes` and `needed_bytes` |
 | 421 | `not_leader`, `use_a_server` | Ask a cluster server (clients retry another) |
 | 422 | `invalid` | The body isn't the expected message (unknown field, wrong type, unknown enum value) |
 | 422 | `invalid_policy`, `invalid_connector`, `unsupported_on_host` | Rejected policy text or connector settings; a feature this host can't do |
@@ -133,7 +135,7 @@ a delete with nothing left to do). Add `?wait=<secs>` (at most
 | The resource is gone (a delete) | `204` |
 
 `?wait` applies to VM create, start, stop, pause, `PATCH`, delete,
-device and disk attach/detach; disk create, resize and extend-root;
+device and disk attach/detach; disk create, resize, move and extend-root;
 image delete; network delete. `gxctl` waits 60 s by default.
 
 A VM's `state` is what the controller last saw and `desired_state`
@@ -159,7 +161,7 @@ A stream of server-sent events (`text/event-stream`) with the VMs,
 disks, images and networks you may list:
 
 - `?kinds=vms,disks,images,networks` (the default); also `nodes`,
-  `imports`, `cluster`, `policy`.
+  `imports`, `cluster`, `policy`, `datastores`.
 - `?project=<p>` limits VMs and disks to one project.
 
 The stream starts with an `added` event per object, then `synced`;
@@ -289,15 +291,17 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
-| `POST` | `/vms` | Create a VM (`?wait=`) |
-| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there |
+| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path` |
+| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU and `devices` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned` and `pool_devices` |
 | `GET` | `/vms/{id}` | Get a VM |
-| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`) |
+| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy` and `devices` |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
 | `POST` | `/vms/{id}/start` | Start, or resume a paused VM (`?wait=`) |
+| `POST` | `/vms/{id}/place` | Place a stopped or lost VM again: on `node` (`{node}`, optional), or where the scheduler finds room; answers `{vm}`. See [Placing a stopped or lost VM again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again) |
 | `POST` | `/vms/{id}/stop` | Stop; `?graceful_timeout_secs=N` presses the power button first and waits up to `N` s (`?wait=`) |
 | `POST` | `/vms/{id}/pause` | Pause (`?wait=`) |
 | `GET` | `/vms/{id}/events` | The VM's last events |
+| `POST` | `/vms/{id}/extract-kernel` | Extract the kernel on a stopped VM's root disk as a new kernel image the VM owns: `202 {image}`, extracting. See [Extract once](../user-guide/kernel-boot.md#extract-once) |
 | `POST` | `/vms/{id}/devices` | Attach a PCI device (VFIO); hot-plugged if running |
 | `DELETE` | `/vms/{id}/devices` | Detach a PCI device |
 | `POST` | `/vms/{id}/disks` | Attach a data disk (on a running VM: at its next start) |
@@ -324,10 +328,10 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/images/catalog` | Built-in cloud images for this host's architecture |
 | `GET` | `/images/firmware-catalog` | Built-in UEFI firmware images |
 | `GET` | `/images` | List images |
-| `POST` | `/images` | Download and verify an image (`catalog`, `url` + `sha256`, or `firmware`) |
+| `POST` | `/images` | Download and verify an image (`catalog`, `url` + `sha256`, or `firmware`); `202` for a new one, `200` with one already in flight. Kernel images: `kind: IMAGE_KIND_KERNEL` with `url`, `initrd_url`, `initrd_sha256` and `cmdline`; `kernel_path` and `initrd_path` (host files); `kernel_from` (extract from a disk image); `with_kernel` (also extract a pulled disk image's kernel). See [Kernel boot](../user-guide/kernel-boot.md#kernel-images) |
 | `GET` | `/images/{id}` | Get an image and its download progress |
-| `DELETE` | `/images/{id}` | Delete, or cancel a download (`?wait=`; `409` while a disk uses it) |
-| `POST` | `/images/{id}/retry` | Download a failed image again |
+| `DELETE` | `/images/{id}` | Delete, or cancel a download (`?wait=`; `409` while a disk uses it, or a VM boots or keeps a kernel image) |
+| `POST` | `/images/{id}/retry` | Download a failed image again, or run a failed kernel extraction again |
 | `GET` | `/images/{id}/events` | The image's last events |
 | `POST` | `/images/{id}/copies` | Cluster: keep a copy on a node (`{node}`) |
 | `DELETE` | `/images/{id}/copies/{node}` | Cluster: drop a node's copy |
@@ -337,12 +341,38 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/disks` | List disks |
-| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`); `node` (name or id) binds it to a node now, an unknown node is `400 invalid_config` |
+| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`); `node` (name or id) binds it to a node now, an unknown node is `400 invalid_config`; `datastore` (name or id) puts it there instead of the default datastore |
 | `GET` | `/disks/{id}` | Get a disk and its partition table |
 | `DELETE` | `/disks/{id}` | Delete (`409` while attached) |
+| `POST` | `/disks/{id}/move` | Move a disk no running VM uses to another datastore: `{datastore, node, flatten, wait_secs}` (`wait_secs` or `?wait=`, at most 300); `200` once moved, else `202`. See [Moving a disk between datastores](../operator-guide/datastores.md#moving-a-disk-between-datastores) |
 | `POST` | `/disks/{id}/resize` | Grow or shrink (`?wait=`) |
 | `POST` | `/disks/{id}/extend-root` | Grow the root partition, offline or at next boot (`?wait=`) |
 | `GET` | `/disks/{id}/events` | The disk's last events |
+
+A disk has `datastore` (an id, or `local`) and, while it moves,
+`moving_to`. On a shared datastore it has no `node`; `worker` and
+`worker_name` name the node that works on its file.
+
+### Datastores
+
+See [Datastores](../operator-guide/datastores.md). `{id}` is an id or a
+name.
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/datastores` | List datastores, with each node's status (everyone) |
+| `POST` | `/datastores` | Register one: `name`, `driver` (`DATASTORE_DRIVER_DIR` or `DATASTORE_DRIVER_SHARED_DIR`), `path`, optional `node_paths` (node → path), `nodes`, `default_for_disks`, `overcommit` (default on); `201` |
+| `GET` | `/datastores/{id}` | Get a datastore |
+| `PATCH` | `/datastores/{id}` | Change `node_paths`, `nodes`, `default_for_disks` or `overcommit` |
+| `DELETE` | `/datastores/{id}` | Delete a datastore no disk is on (`409` otherwise); `204` |
+
+A datastore also has `topology` (`DATASTORE_TOPOLOGY_NODE_LOCAL` or
+`DATASTORE_TOPOLOGY_SHARED`), `builtin` (`local`), `created_at`,
+`disks` (how many are on it) and `node_status`: per node, `node`,
+`node_name`, `reachable`, `reason` and `message` when it isn't, `path`,
+`total_bytes`, `free_bytes` and `checked_at`. An image's copy in a
+shared datastore has `datastore` and `datastore_name` instead of a
+`node`.
 
 ### Networks
 
@@ -385,7 +415,7 @@ them to the node being managed).
 | `DELETE` | `/ovs/bridges/{name}/uplinks/{uplink}` | Remove an uplink, restoring the NIC |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
-| `GET` | `/pci-devices` | List the host's PCI devices |
+| `GET` | `/pci-devices` | List the host's PCI devices, with `numa_node`, `ready` and, when not ready, `not_ready` (the reasons) |
 | `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts; `?project=` the pools that project may use, free counts only |
 | `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
@@ -434,7 +464,7 @@ them to the node being managed).
 | `DELETE` | `/users/{id}/identities/{key}` | Remove a sign-in method, yours or (as an administrator) anyone's, never the last unless the user is disabled (`end_sessions`) |
 | `GET` | `/users/me` | Same as `GET /auth/whoami` |
 | `PATCH` | `/users/me` | Change your own profile (e.g. `default_project`) |
-| `GET` | `/users/me/ssh-keys` | Your local account's SSH public keys, to prefill a guest credential |
+| `GET` | `/users/me/ssh-keys` | Your SSH public keys, to prefill a guest credential: your local account's, or, without one here, those of a pulled connector's SSH key field; `source` says which (`local`, `connector:<id>`) |
 | `GET` | `/teams` | List teams |
 | `POST` | `/teams` | Create a team |
 | `PATCH` | `/teams/{id}` | Change a team (`409 managed_by_connector` for a team a SCIM connector manages) |
@@ -481,12 +511,12 @@ them to the node being managed).
 | `DELETE` | `/admissions/{tenant}` | Remove an admission |
 | `GET` | `/connectors` | List login connectors |
 | `POST` | `/connectors` | Create a connector (`pam`, `oidc`, `google` or `jumpcloud` settings) |
-| `GET` | `/connectors/{id}` | Get a connector (secrets show only whether they are set) |
-| `PATCH` | `/connectors/{id}` | Change a connector; `provisioning` (`none`, or `scim` for `oidc` and `jumpcloud` with `jit` off) and `group_mode` (`mapped`, or `auto` when provisioned) are fields like the others |
+| `GET` | `/connectors/{id}` | Get a connector (secrets show only whether they are set); a pulled one has `sync` (its settings) and `sync_status` (the last run) |
+| `PATCH` | `/connectors/{id}` | Change a connector; `provisioning` (`none`; `scim` for `oidc` and `jumpcloud`, or `pull` for a Google Workspace connector, both with `jit` off), `group_mode` (`mapped`, or `auto` when provisioned) and `sync` (`interval_minutes`, `max_disable`, `admin_email`, `groups`, `ssh_keys_field`) are fields like the others |
 | `DELETE` | `/connectors/{id}` | Delete a connector and its SCIM tokens; `?users=detach` keeps the users it provisions enabled (the default, `?users=disable`, disables them). Answers `200 {users, teams}`: how many it released |
 | `PUT` | `/connectors/{id}/secrets/{field}` | Set a connector secret (write-only) |
 | `POST` | `/connectors/{id}/test` | Test a connector step by step |
-| `POST` | `/connectors/{id}/sync` | Run a pulled connector's sync now; `{confirm: true}` applies one the safety stop blocked |
+| `POST` | `/connectors/{id}/sync` | Run a pulled connector's sync now: `{status}`, with `state` (`SYNC_STATE_OK`, `_FAILED`, `_BLOCKED`), `started_at`, `finished_at`, `changes` (`created`, `adopted`, `updated`, `disabled`, `enabled`), `error`, `would_disable` and `last_applied_at`. `{confirm: true}` applies one the safety stop blocked, and needs a recent login |
 | `GET` | `/connectors/{id}/scim-tokens` | A SCIM connector's tokens (never the tokens) and its endpoint path |
 | `POST` | `/connectors/{id}/scim-tokens` | Make a SCIM token (`{name, days}`, 1–365 days, default 180; at most five live per connector): `201 {token, secret, path}`, the `gxs_` secret shown once. Needs a recent login; `409 not_provisioned` unless the connector is `provisioning: scim` |
 | `DELETE` | `/connectors/{id}/scim-tokens/{token}` | Revoke a SCIM token |

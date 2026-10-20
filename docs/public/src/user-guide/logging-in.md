@@ -28,16 +28,24 @@ If the page says *No login method is enabled on this host*, ask an
 administrator, or use `gxctl` on the host.
 
 Some single sign-on providers create your Glidex account for you ahead
-of time (*provisioning*). Through such a provider:
+of time (*provisioning*): the identity provider pushes it over SCIM, or
+Glidex reads it from your organisation's Google Workspace (a *directory
+sync*). Through such a provider:
 
 - only people it provisioned can sign in; anyone else is refused
-  (`login_not_allowed`), even with an invitation;
+  (`login_not_allowed`), even with an invitation. With a directory sync,
+  that is the members of the Google groups your operator chose;
 - your first sign-in is matched to the account it made, by your
-  provider's id or your verified email address;
+  provider's id or, over SCIM, your verified email address;
 - your name and email come from the provider, and if the provider
-  deactivates you, you can't sign in until it reactivates you. An
-  administrator may also disable you in Glidex; then only an
-  administrator can enable you again.
+  deactivates you, you can't sign in until it reactivates you. With a
+  directory sync, being suspended in Google or taken out of the groups
+  counts as deactivated. An administrator may also disable you in
+  Glidex; then only an administrator can enable you again.
+
+A directory sync reads Google every 15 minutes unless the operator chose
+otherwise, so after you are added to a group (or come back), it can take
+that long before you can sign in.
 
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
@@ -82,6 +90,7 @@ local password and a Google account; each gives the same roles.
   providers and sign in there; it is added to you. This needs a recent
   login. A provider that provisions its users (SCIM) can't be added:
   its sign-ins belong to the accounts it manages.
+  <!-- TODO(verify): the server refuses adding a SCIM connector's sign-in but not a directory-sync (pull) connector's; confirm the intended behaviour before documenting it either way. -->
 - **Remove** takes one away. You can't remove your last one.
 
 Signing in a second way without adding it first makes a second, separate

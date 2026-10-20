@@ -1,6 +1,6 @@
 # The console
 
-Every VM has one serial console. You can type into it from the browser
+Every VM has one console. You can type into it from the browser
 or from `gxctl`, as many clients at once as you like, and everything it
 prints is logged, so you can read what happened before you connected.
 Opening a console or reading its log needs the `operator` role in the
@@ -8,20 +8,32 @@ VM's project.
 
 What the console shows depends on the guest: a cloud image booted
 through UEFI firmware prints the firmware, the boot loader and the
-kernel there, then a login prompt. Log in with the VM's
+kernel there, then a login prompt; with [kernel boot](kernel-boot.md)
+it starts at the kernel. Log in with the VM's
 [guest credential](credentials.md).
 
-The guest sees the console as its first serial port, `ttyS0`, except
-for a direct kernel boot on Cloud Hypervisor, where it is the virtio
-console `hvc0` (the default kernel arguments set `console=` to match).
-There is no second console and no setting to pick one.
+Which guest device the console is depends on how the VM boots, the same
+on Cloud Hypervisor and QEMU:
+
+| Boot | Console device in the guest |
+|---|---|
+| UEFI firmware | The first serial port, `ttyS0`. |
+| Kernel boot, last `console=` in the kernel arguments is `hvc…` | The virtio console, `hvc0`. The VM then has no serial port. |
+| Kernel boot, any other last `console=`, or none | The first serial port, `ttyS0`. |
+
+The default kernel arguments, and kernels extracted from cloud images,
+say `console=ttyS0`. A Cloud Hypervisor VM created with kernel boot by
+an earlier version of Glidex keeps the `console=hvc0` it was created
+with. There is no second console: to move the console, change the VM's
+`kernel_args` (see [The console](kernel-boot.md#the-console)); it
+applies at the next start.
 
 ## In the browser
 
 On the VM's page, click **Open Console**. The console opens in the page
 and connects at once; the **Status** at the top says **connecting**,
 **connected**, **closed** or **error**. Type into it as into a
-terminal: input goes straight to the VM's serial port.
+terminal: input goes straight to the guest's console device.
 
 When you connect, the console first replays what the VM printed so far
 (its current log), then follows live output. The replay leaves out the
@@ -89,7 +101,7 @@ detach; the VM keeps running. If the console closes from the other end
 
 Any number of clients can be connected to one VM at the same time:
 browser tabs, `gxctl` sessions, or both. They all see the same output,
-and what any of them types goes to the same serial port. A client that
+and what any of them types goes to the same console. A client that
 falls far behind (several MiB of output it hasn't read) is disconnected;
 it can reconnect and replay the log.
 

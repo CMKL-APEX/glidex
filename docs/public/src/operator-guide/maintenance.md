@@ -66,7 +66,8 @@ restarts and adoptions.
 | --- | --- |
 | `/var/lib/glidex-control-plane/.glidex/glidex.db` | The control plane's database: VMs, networks, projects, users, credentials, tokens. |
 | `/var/lib/glidex-control-plane/.glidex/secrets.kek` | The key that seals connector secrets. Without it, sealed secrets in the database can't be opened. |
-| `/var/lib/glidex-control-plane/.glidex/images/`, `disks/` | Cloud images, firmware and VM disks. |
+| `/var/lib/glidex-control-plane/.glidex/images/`, `disks/` | Cloud images, firmware and VM disks: the built-in `local` datastore. |
+| `/srv/glidex/<name>/` | Registered [datastores](datastores.md): `disks/`, and on a shared datastore also `images/` (copies for linked disks), `.locks/` and the `.glidex-datastore` marker. |
 | `/var/lib/glidex-control-plane/.glidex/tls/` | The API's self-signed certificate and key, if you didn't configure one. |
 | `/var/lib/glidex-control-plane/.glidex/cluster/` | In a cluster: this node's identity, certificates and Raft log. |
 | `/etc/glidex/` | Site configuration: `control-plane.json`, `netd.json`, `policies/`, `install.conf`, and certificates you put there. |
@@ -85,7 +86,8 @@ What to keep, on every host:
 - `tls/` (or your own certificates), and `cluster/` on a cluster node;
 - `/etc/glidex/`;
 - `/var/lib/glidex/netd.db`;
-- `images/` and `disks/` if you can't re-create them.
+- `images/` and `disks/` if you can't re-create them, and the
+  `disks/` of each datastore under `/srv/glidex`.
 
 These files hold password hashes, token hashes and private keys. Keep
 backups encrypted, readable only by administrators, and in your
@@ -105,7 +107,13 @@ sudo systemctl start glidex-control-plane glidex-ui
 ```
 
 Disks of running VMs change while you copy them. Copy a VM's disk while
-the VM is stopped, or back up from inside the guest.
+the VM is stopped, or back up from inside the guest. `gxctl disk show`
+gives a disk's datastore and the path of its file.
+
+A disk file on a datastore is named by the disk's id. A linked disk
+names its image by a relative path (`../images/<image-id>.qcow2` on a
+shared datastore), so copy a shared datastore's `images/` along with
+its `disks/`, or restore into the same layout.
 
 To restore, install Glidex, stop the two services, put the files back
 (owned by `glidex:glidex`, mode 0600 for files, 0700 for directories),
@@ -122,8 +130,17 @@ gxctl cluster snapshot glidex-$(date +%F).gxsnap
 
 The file is written 0600 and holds credential and token hashes. A
 snapshot is what you recover from if a majority of servers is lost; see
-[Clusters](clusters.md#backups-and-lost-quorum). VM disks stay on their
-nodes: back them up per node as above.
+[Clusters](clusters.md#backups-and-lost-quorum). The snapshot holds
+records, not disk files. Disks on `local` and other node-local
+datastores stay on their nodes: back them up per node as above. Disks on
+a shared datastore are on the shared filesystem: back that up with the
+storage system's own tools, or per disk while its VM is stopped.
+
+If a node is lost for good, VMs whose disks are all on shared
+datastores can run on another node once it is forgotten; see
+[A node is gone for good](clusters.md#a-node-is-gone-for-good). VMs with
+disks on the lost node's own storage need those disks restored from a
+backup.
 
 ## Logs
 
@@ -184,6 +201,9 @@ vSwitch and `cloud-hypervisor` stay unless you ask:
 
 `-y` / `--yes` skips the confirmation. Back up first if you might want
 the data back.
+
+`/srv/glidex` and the [datastores](datastores.md) under it always stay,
+with their disks; unmount and remove them yourself.
 
 On a cluster node, take the node out of the cluster first
 ([Remove an empty node](clusters.md#remove-an-empty-node) or

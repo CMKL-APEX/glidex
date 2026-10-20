@@ -77,9 +77,10 @@ See [Logging in](../user-guide/logging-in.md).
 | Command | Effect |
 |---|---|
 | `list`, `ls` | List VMs; `STATE` shows `state → desired` while they differ |
-| `get <vm>` | VM details, and why it isn't ready yet if it isn't |
-| `create` | Create a VM, asking for name, size, hypervisor, firmware, image or disk, credential and networks |
+| `get <vm>` | VM details, and why it isn't ready yet if it isn't; a `Pool:` line per device pool request with the devices it got |
+| `create` | Create a VM, asking for name, size, hypervisor, firmware, image or disk, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments |
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
+| `place <vm> [--node N]` | Place a stopped or lost VM again, on node `N` or where the scheduler finds room; prints the node, or *Not placed yet* with the reason it waits (`system-admin`) |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
@@ -94,7 +95,8 @@ See [Logging in](../user-guide/logging-in.md).
 
 `start`, `stop`, `pause` and `delete` wait for the controller and print
 where the VM ended up; `--no-wait` returns at once. See
-[Virtual machines](../user-guide/vms.md).
+[Virtual machines](../user-guide/vms.md); for `place`,
+[Placing a stopped or lost VM again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again).
 
 ## Guest credentials
 
@@ -114,20 +116,21 @@ Private key files are refused before anything is sent. See
 | Command | Effect |
 |---|---|
 | `image catalog` | Built-in cloud images and UEFI firmware |
-| `image list`, `images` | Downloaded images and their state |
-| `image pull <catalog-key\|https-url> [--name N] [--sha256 H]` | Download and verify an image, showing progress |
+| `image list`, `images` | Images and their state. Kernel images show as `kernel <release>`, in state `extracting` until ready; the source of an extracted one is `extracted: <partition>:<path>` |
+| `image pull <catalog-key\|https-url> [--name N] [--sha256 H]` | Download and verify an image, showing progress. A catalog pull also extracts the image's kernel as `<name>-kernel` where the host can |
 | `image pull --firmware <key> [--name N]` | Download UEFI firmware from the catalog (`cloudhv-edk2`, `ovmf`) |
 | `image pull <url> --firmware-for <cloudhypervisor\|qemu> [--vars-url U] [--vars-sha256 H]` | Download firmware from a URL (QEMU: with its variable store) |
 | `image pull <key> --no-kernel` | Pull a catalog image without taking its kernel out |
 | `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline C]` | Download a kernel image |
 | `image pull --kernel-path P [--initrd-path P] [--cmdline C]` | Copy a kernel image from host files (administrators) |
 | `image extract-kernel <image>` | Take the kernel out of a disk image |
-| `image retry <image>` | Download a failed image again |
-| `image rm <image>` | Delete an image |
+| `image retry <image>` | Download a failed image again, or run a failed kernel extraction again |
+| `image rm <image>` | Delete an image; refused (`409`) while a disk uses it, or a VM boots or keeps a kernel image |
 | `disk list`, `disks` | List disks |
-| `disk show <disk>` | Details and partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: where it lives (default: the default datastore) |
+| `disk show <disk>` | Details, datastore and partitions |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: on this datastore instead of the default |
 | `disk resize <disk> <GiB> [--no-extend]` | Grow or shrink |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | Move a disk no running VM uses to another datastore; waits up to 5 minutes. `--node`: for a node-local destination, the node that has the disk; `--flatten`: a linked disk becomes a standalone copy |
 | `disk extend-root <disk> [--on-boot]` | Grow the root partition now (offline) or at next boot |
 | `disk move <disk> --datastore D [--node N] [--flatten]` | Copy a disk no running VM uses to another datastore, waiting up to 5 minutes. `--flatten`: a linked disk becomes a full copy |
 | `disk rm <disk>` | Delete after confirmation |
@@ -138,7 +141,22 @@ Private key files are refused before anything is sent. See
 | `datastore rm <datastore>` | Delete one no disk is on; its files stay |
 
 See [Images and disks](../user-guide/images-and-disks.md) and
-[Datastores](../operator-guide/datastores.md).
+[Kernel boot](../user-guide/kernel-boot.md).
+
+## Datastores
+
+`<ds>` is a datastore's name or id. Everyone can list them; the other
+commands need `system-admin`.
+
+| Command | Effect |
+|---|---|
+| `datastore list`, `datastores`, `datastore ls` | Datastores: `NAME`, `DEFAULT` (`*`), `NODES OK` (nodes that reach it, such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` |
+| `datastore show <ds>`, `get` | One datastore: id, path, each node's own path, nodes, overcommit, disks, and each node's status and free space |
+| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a directory under `/srv/glidex`: node-local, or with `--shared` one filesystem every node mounts. `--nodes`: only these nodes; `--node-path`: a node's own path; `--default`: the default for new disks |
+| `datastore set <ds> [--node-path NODE=P]… [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit |
+| `datastore rm <ds>`, `delete` | Delete a datastore no disk is on, without confirmation; its files stay |
+
+See [Datastores](../operator-guide/datastores.md).
 
 ## Networks
 
@@ -241,14 +259,15 @@ and [Access control](../operator-guide/access-control.md).
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips` |
 | `admission remove <tenant>` | Remove an admission |
-| `connector list \| show <id>` | Login connectors (secrets show only whether they are set) |
+| `connector list \| show <id>` | Login connectors (secrets show only whether they are set). `show` of a pulled connector adds its groups, administrator and interval (`Pull:`), and the last run: its result, changes, error, and the users a blocked run would disable |
 | `connector add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]… [common]` | Add an OIDC connector |
 | `connector add pam <id> [--name TEXT] [--allow-group G]… [common]` | Add a PAM connector |
 | `connector add google <id> --client-id ID [--name TEXT] (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID] [common]` | Add a Google connector: Workspace accounts of the `--domain` domains, or (`--consumer`) any Google account of people invited or listed. `--device-client-id`: the *TVs and Limited Input devices* client for `auth login --oidc` |
 | `connector add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]… [common]` | Add a JumpCloud connector; `--groups-claim` defaults to `memberOf` |
 | `connector update <id> [--name TEXT] [--enable \| --disable] [common]` | Change a connector |
-| `connector secret set <id> [field] [--from-file PATH]` | Set a secret (default `client_secret`; a Google device client's is `device_client_secret`), from a hidden prompt, stdin or a file |
+| `connector secret set <id> [field] [--from-file PATH]` | Set a secret (default `client_secret`; a Google device client's is `device_client_secret`, a directory sync's `service_account_key`), from a hidden prompt, stdin or a file. Give a service account key with `--from-file` |
 | `connector test <id>` | Test it step by step |
+| `connector sync <id> [--confirm]` | Run a pulled connector's directory sync now and print the result. `--confirm` applies a run the safety stop blocked (needs a recent login) |
 | `connector remove <id> [--detach-users]` | Delete it and its SCIM tokens. The users it provisioned are disabled, or with `--detach-users` stay enabled as the directory's own; prints how many users and teams it released |
 | `connector scim-token list <id>` | A SCIM connector's endpoint path and tokens: id, name, expiry, who made it; never the tokens |
 | `connector scim-token create <id> [--name TEXT] [--days N]` | Make a token for the IdP (`gxs_…`), printed once with the endpoint path. `--days` 1–365 (default 180); at most five live per connector |
@@ -259,11 +278,21 @@ and [Access control](../operator-guide/access-control.md).
 
 Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 `--mfa` / `--no-mfa`, `--team GROUP=TEAM`…, `--default-tenant T`,
-`--token-max-days N`, `--provisioning none|scim` (`scim`: the IdP
-provisions users over SCIM; `oidc` and `jumpcloud` only, with
-`--no-jit`), `--group-mode mapped|auto` (`auto`: a team per IdP group,
-for a SCIM connector). See [Authentication](../operator-guide/authentication.md),
-[Provisioning with SCIM](../operator-guide/authentication.md#provisioning-with-scim)
+`--token-max-days N`, `--provisioning none|scim|pull` (`scim`: the IdP
+provisions users over SCIM, `oidc` and `jumpcloud` only; `pull`: a
+Google Workspace connector reads its users from Google; both with
+`--no-jit`), `--group-mode mapped|auto` (`auto`: a team per IdP
+group, for a provisioned connector).
+
+Directory sync flags, for `--provisioning pull`: `--sync-admin EMAIL`,
+`--sync-group GROUP`… (1 to 50), `--sync-interval MIN` (default 15, at
+least 5), `--sync-max-disable PCT` (1 to 100, default 10),
+`--ssh-keys-field SCHEMA.FIELD`. Any of them replaces all the sync
+settings: repeat the ones you keep.
+
+See [Authentication](../operator-guide/authentication.md),
+[Provisioning with SCIM](../operator-guide/authentication.md#provisioning-with-scim),
+[Directory sync from Google Workspace](../operator-guide/authentication.md#directory-sync-from-google-workspace)
 and [Invitations](../operator-guide/authentication.md#invitations).
 
 ## Cluster and nodes
