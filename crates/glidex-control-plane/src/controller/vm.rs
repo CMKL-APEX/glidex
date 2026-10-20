@@ -1234,6 +1234,19 @@ impl VmManager {
         launch
             .write(&paths.launch)
             .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
+        // Block volumes: the VM's unit may open exactly these (S18).
+        let devices: Vec<String> = config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .filter(|b| b.is_block())
+            .map(|b| b.path().to_string_lossy().into_owned())
+            .collect();
+        let id = vm.id.clone();
+        tokio::task::spawn_blocking(move || crate::datastore::lvm::allow_devices(&id, devices))
+            .await
+            .map_err(|e| before_intent(VmManagerError::PersistenceError(e.to_string())))?
+            .map_err(before_intent)?;
 
         // 5.4 the intent record, before anything runs.
         let runner = self.runner();
@@ -1941,6 +1954,14 @@ impl VmManager {
         if has(FINALIZER_RUNTIME) {
             let _ = std::fs::remove_file(self.firmware_vars_path(&vm.id));
             crate::paths::remove_vm_dir(&vm.id);
+            // Its unit's block devices (S18); under /run, so a stord that is
+            // away only leaves one until the next boot.
+            let id = vm.id.clone();
+            if let Ok(Err(e)) =
+                blocking(move || crate::datastore::lvm::allow_devices(&id, Vec::new())).await
+            {
+                tracing::warn!(vm_id = %vm.id, "removing the VM unit's devices: {}", e);
+            }
         }
         self.notify_changed();
         tracing::info!(vm_id = %vm.id, name = %vm.name, "VM deleted");

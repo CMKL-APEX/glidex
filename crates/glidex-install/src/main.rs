@@ -4270,6 +4270,7 @@ mod tests {
             "ProtectHome=yes",
             "ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex",
             "DevicePolicy=closed",
+            "DeviceAllow=block-device-mapper rw",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
             "LockPersonality=yes",
             "RestrictSUIDSGID=yes",
@@ -4285,12 +4286,14 @@ mod tests {
             "consoles are reached through the API now"
         );
         // Hypervisors run in the glidex-vm units (spec/reconciliation.md
-        // §13.3): this one opens no device and serves no vhost-user socket.
-        for key in [
-            "DeviceAllow=",
-            "ReadWritePaths=-/run/glidex/vhost",
-            "KillMode=",
-        ] {
+        // §13.3): this one opens no device but LVM volumes (S18) and serves
+        // no vhost-user socket.
+        assert_eq!(
+            s.iter().filter(|l| l.starts_with("DeviceAllow=")).count(),
+            1,
+            "only block-device-mapper"
+        );
+        for key in ["ReadWritePaths=-/run/glidex/vhost", "KillMode="] {
             assert!(
                 !s.iter().any(|l| l.starts_with(key)),
                 "{key} is for the VM units"

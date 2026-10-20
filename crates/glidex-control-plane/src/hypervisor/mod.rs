@@ -210,6 +210,8 @@ pub(crate) struct VmDisk {
     /// On a shared datastore: QEMU's image locking must be on, so another
     /// node's QEMU can't open it (spec/storage.md §10).
     pub shared: bool,
+    /// A block device (an LVM volume, spec/storage.md §11.1), raw.
+    pub block: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
@@ -228,6 +230,15 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: Some((*format).into()),
             backing_files: *backing_files,
             shared: lock.is_some(),
+            block: false,
+        },
+        VolumeBinding::Block { path } => VmDisk {
+            path: path.clone(),
+            read_only: false,
+            format: Some(ImageType::Raw),
+            backing_files: false,
+            shared: false,
+            block: true,
         },
     };
     let root = match &config.root_disk_binding {
@@ -238,6 +249,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: detect_image_type(&config.rootfs_path),
             backing_files: false,
             shared: false,
+            block: false,
         },
     };
     std::iter::once(root)
@@ -248,6 +260,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: Some(ImageType::Raw),
             backing_files: false,
             shared: false,
+            block: false,
         }))
         .collect()
 }

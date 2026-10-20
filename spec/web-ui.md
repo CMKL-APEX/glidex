@@ -430,9 +430,11 @@ Disks page's create form never offers a firmware image as contents.
   free/total, else its reason and message).
 
 With `manageDatastore` the page also offers:
-- **Add Datastore:** name, path (default `/srv/glidex/<name>`), the
-  nodes it is on and per-node paths in a cluster, the default flag, and
-  overcommit;
+- **Add Datastore:** a kind (*Directory on each node*, *Shared
+  filesystem*, *LVM-thin on each node*), name, path (default
+  `/srv/glidex/<name>`) or for LVM the volume group and thin pool, the
+  nodes it is on and per-node paths (volume groups) in a cluster, the
+  default flag, and overcommit;
 - **Make default** (on `local`: clear the other's flag);
 - overcommit on or off;
 - **Delete**, disabled while disks are on it.

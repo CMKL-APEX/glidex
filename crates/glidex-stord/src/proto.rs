@@ -77,6 +77,13 @@ pub enum Op {
         vg: String,
         name: String,
     },
+    /// Rename `from` to `to` and activate it again (a volume is built
+    /// under a temporary name, then renamed into place, as files are).
+    RenameVolume {
+        vg: String,
+        from: String,
+        to: String,
+    },
     /// Refused while it is open or a snapshot uses it.
     DeleteVolume {
         vg: String,
@@ -110,6 +117,7 @@ impl Op {
             Op::ExtendVolume { .. } => "extend_volume",
             Op::Activate { .. } => "activate",
             Op::Deactivate { .. } => "deactivate",
+            Op::RenameVolume { .. } => "rename_volume",
             Op::DeleteVolume { .. } => "delete_volume",
             Op::AllowDevices { .. } => "allow_devices",
         }

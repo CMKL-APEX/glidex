@@ -133,7 +133,7 @@ Private key files are refused before anything is sent. See
 | `disk rm <disk>` | Delete after confirmation |
 | `datastore list`, `datastores` | Datastores, how many nodes reach each, and free space |
 | `datastore show <datastore>` | Paths, nodes, and each node's view: free space, why it can't reach it, or mount warnings |
-| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`). `--shared`: one filesystem every node mounts |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`). `--shared`: one filesystem every node mounts; `--lvm`: LVM-thin in volume group VG's thin pool POOL on each node |
 | `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change one |
 | `datastore rm <datastore>` | Delete one no disk is on; its files stay |
 

@@ -759,7 +759,10 @@ export interface DatastoreNode {
 export interface Datastore {
   id: string;
   name: string;
-  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR";
+  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM";
+  /** `lvm`: the volume group (`node_paths`: each node's own) and its thin pool. */
+  volume_group?: string;
+  thin_pool?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -782,6 +785,10 @@ export interface DatastoreInput {
   name?: string;
   /** Create only: one filesystem every node mounts (`shared-dir`). */
   shared?: boolean;
+  /** Create only: LVM-thin (`lvm`), with `volume_group` and `thin_pool` instead of `path`. */
+  lvm?: boolean;
+  volume_group?: string;
+  thin_pool?: string;
   path?: string;
   node_paths?: Record<string, string>;
   nodes?: string[];

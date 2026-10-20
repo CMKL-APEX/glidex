@@ -264,6 +264,26 @@ pub fn convert(
     run(&QEMU_IMG, cmd).map(|_| ())
 }
 
+/// `qemu-img convert` into an existing, freshly made block device (a new
+/// thin volume reads as zeros, so zeros aren't written: spec/storage.md
+/// §19, H4). `src_format` `None`: probed (only for files glidex made).
+pub fn convert_to_device(
+    src: &Path,
+    src_format: Option<DiskFormat>,
+    dev: &Path,
+) -> Result<(), ImageError> {
+    let mut cmd = QEMU_IMG.command()?;
+    cmd.arg("convert")
+        .arg("-q")
+        .arg("-n")
+        .arg("--target-is-zero");
+    if let Some(f) = src_format {
+        cmd.arg("-f").arg(f.as_str());
+    }
+    cmd.arg("-O").arg("raw").arg(src).arg(dev);
+    run(&QEMU_IMG, cmd).map(|_| ())
+}
+
 /// `qemu-img resize`. `shrink` must be set to make the file smaller;
 /// qemu-img then discards everything past the new end without asking.
 pub fn resize(

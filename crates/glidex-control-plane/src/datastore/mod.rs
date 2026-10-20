@@ -8,6 +8,7 @@
 //! Like the disk operations that call it, everything here blocks.
 
 pub mod file;
+pub mod lvm;
 pub mod manage;
 pub mod probe;
 pub mod record;
@@ -33,25 +34,34 @@ pub enum VolumeBinding {
         /// volume open (spec/storage.md S16).
         lock: Option<String>,
     },
+    /// A raw block device, `/dev/<vg>/<lv>` (spec/storage.md §11.1).
+    Block { path: String },
 }
 
 impl VolumeBinding {
     pub fn path(&self) -> &Path {
         match self {
-            VolumeBinding::File { path, .. } => Path::new(path),
+            VolumeBinding::File { path, .. } | VolumeBinding::Block { path } => Path::new(path),
         }
     }
 
     pub fn format(&self) -> DiskFormat {
         match self {
             VolumeBinding::File { format, .. } => *format,
+            VolumeBinding::Block { .. } => DiskFormat::Raw,
         }
     }
 
     pub fn lock(&self) -> Option<&str> {
         match self {
             VolumeBinding::File { lock, .. } => lock.as_deref(),
+            // On one node the hypervisors' own locks suffice (S19).
+            VolumeBinding::Block { .. } => None,
         }
+    }
+
+    pub fn is_block(&self) -> bool {
+        matches!(self, VolumeBinding::Block { .. })
     }
 }
 

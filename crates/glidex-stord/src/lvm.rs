@@ -357,6 +357,18 @@ pub fn deactivate(ex: &dyn Exec, vg: &str, name: &str) -> Result<(), StordError>
     .map(|_| ())
 }
 
+/// Rename `from` to `to`, which must not exist yet.
+pub fn rename_volume(ex: &dyn Exec, vg: &str, from: &str, to: &str) -> Result<(), StordError> {
+    let all = list_volumes(ex, vg)?;
+    if !all.iter().any(|v| v.name == from) {
+        return Err(StordError::NotFound(format!("no volume {vg}/{from}")));
+    }
+    if all.iter().any(|v| v.name == to) {
+        return Err(StordError::Busy(format!("{vg}/{to} exists already")));
+    }
+    lvm(ex, "lvrename", &["lvrename", "-q", vg, from, to]).map(|_| ())
+}
+
 pub fn delete_volume(ex: &dyn Exec, vg: &str, name: &str) -> Result<(), StordError> {
     let all = list_volumes(ex, vg)?;
     let Some(v) = all.iter().find(|v| v.name == name) else {
@@ -533,6 +545,13 @@ pub mod fake {
                     );
                     ok(String::new())
                 }
+                "lvrename" => {
+                    let (vg, from, to) = (args[2], args[3], args[4]);
+                    let lvs = vgs.get_mut(vg).unwrap();
+                    let lv = lvs.remove(from).unwrap();
+                    lvs.insert(to.to_string(), lv);
+                    ok(String::new())
+                }
                 "lvchange" | "lvextend" | "lvremove" => {
                     let (vg, name) = split(args.last().unwrap());
                     let Some(lvs) = vgs.get_mut(&vg) else {
@@ -672,5 +691,22 @@ mod tests {
         delete_volume(&f, "vg0", "gx-d-1").unwrap();
         delete_volume(&f, "vg0", "gx-i-img").unwrap();
         assert!(list_volumes(&f, "vg0").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_volume_is_renamed_into_place() {
+        let f = Fake::with_pool("vg0", "pool", 10 * G);
+        create_volume(&f, "vg0", "pool", "gx-d-1.new", G).unwrap();
+        rename_volume(&f, "vg0", "gx-d-1.new", "gx-d-1").unwrap();
+        assert!(f.lv("vg0", "gx-d-1").is_some() && f.lv("vg0", "gx-d-1.new").is_none());
+        create_volume(&f, "vg0", "pool", "gx-d-2", G).unwrap();
+        assert!(matches!(
+            rename_volume(&f, "vg0", "gx-d-2", "gx-d-1"),
+            Err(StordError::Busy(_))
+        ));
+        assert!(matches!(
+            rename_volume(&f, "vg0", "gx-d-9", "gx-d-8"),
+            Err(StordError::NotFound(_))
+        ));
     }
 }

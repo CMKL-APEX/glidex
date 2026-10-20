@@ -297,15 +297,19 @@ pub fn growable_root(table: &PartitionTable) -> Result<&Partition, ImageError> {
     Ok(root)
 }
 
-/// Run `f` on a raw view of the disk. Raw disks are passed through as is;
-/// qcow2 disks go through a shadow file (see module docs).
+/// Run `f` on a raw view of the disk. Raw disk files are passed through as
+/// is; qcow2 disks and block devices go through a shadow file (see module
+/// docs): `growpart` can't edit a device-mapper device that has no
+/// partition devices (spec/storage.md §19, H7).
 pub fn edit<T>(
     path: &Path,
     format: DiskFormat,
     disk_size: u64,
     f: impl FnOnce(&Path) -> Result<T, ImageError>,
 ) -> Result<T, ImageError> {
-    if format == DiskFormat::Raw {
+    use std::os::unix::fs::FileTypeExt;
+    let block = std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device());
+    if format == DiskFormat::Raw && !block {
         return f(path);
     }
     let w = window_for(disk_size);
@@ -314,7 +318,14 @@ pub fn edit<T>(
             "disk is too small to hold a partition table",
         ));
     }
-    let dir = path.parent().unwrap_or(Path::new("."));
+    // Next to the disk, so the shadow is on its filesystem; a device's
+    // directory is /dev, so its shadow goes to the (private) temp dir.
+    let tmpdir = std::env::temp_dir();
+    let dir = if block {
+        tmpdir.as_path()
+    } else {
+        path.parent().unwrap_or(Path::new("."))
+    };
     let tmp = tempfile::Builder::new()
         .prefix(".gx-edit")
         .tempdir_in(dir)

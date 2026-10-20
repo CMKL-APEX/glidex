@@ -31,6 +31,9 @@ pub struct NewDatastore {
     /// One filesystem every node mounts (`shared-dir`), else each node's
     /// own directory (`dir`).
     pub shared: bool,
+    /// `lvm`: (volume group, thin pool) instead of `path`; `node_paths`
+    /// then name each node's volume group.
+    pub lvm: Option<(String, String)>,
 }
 
 /// `PATCH /datastores/{id}`: what is `Some` changes.
@@ -125,7 +128,13 @@ impl VmManager {
         let ds = Datastore {
             id: uuid::Uuid::new_v4().to_string(),
             name: req.name,
-            driver: if req.shared {
+            driver: if let Some((vg, thin_pool)) = req.lvm {
+                DriverSpec::Lvm {
+                    vg,
+                    thin_pool,
+                    node_vgs: self.node_path_ids(&req.node_paths)?,
+                }
+            } else if req.shared {
                 DriverSpec::SharedDir {
                     path: req.path,
                     node_paths: self.node_path_ids(&req.node_paths)?,

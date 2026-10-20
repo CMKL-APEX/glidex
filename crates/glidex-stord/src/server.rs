@@ -155,6 +155,14 @@ impl Stord {
                 names::volume(&name)?;
                 lvm::deactivate(self.ex(), &vg, &name).map(|_| Value::Null)
             }
+            Op::RenameVolume { vg, from, to } => {
+                self.allowed(&vg)?;
+                names::volume(&from)?;
+                names::volume(&to)?;
+                lvm::rename_volume(self.ex(), &vg, &from, &to)?;
+                // The renamed device node is udev's new one (§19, H5).
+                to_value(self.activate(&vg, &to)?)
+            }
             Op::DeleteVolume { vg, name } => {
                 self.allowed(&vg)?;
                 names::volume(&name)?;

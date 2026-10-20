@@ -797,8 +797,11 @@ export const imageEvents = (id: string) =>
 export const listDatastores = () =>
   rpc(DatastoreService.method.listDatastores).then((r) => (r.datastores ?? []) as Datastore[]);
 export const getDatastore = (id: string) => rpc(DatastoreService.method.getDatastore, { id }).then((r) => r.datastore as Datastore);
-export const createDatastore = ({ shared, ...req }: DatastoreInput) =>
-  rpc(DatastoreService.method.createDatastore, { ...req, driver: shared ? "DATASTORE_DRIVER_SHARED_DIR" : "DATASTORE_DRIVER_DIR" }).then(
+export const createDatastore = ({ shared, lvm, ...req }: DatastoreInput) =>
+  rpc(DatastoreService.method.createDatastore, {
+    ...req,
+    driver: lvm ? "DATASTORE_DRIVER_LVM" : shared ? "DATASTORE_DRIVER_SHARED_DIR" : "DATASTORE_DRIVER_DIR",
+  }).then(
     (r) => r.datastore as Datastore,
   );
 /** Changes the fields `req` has. */
