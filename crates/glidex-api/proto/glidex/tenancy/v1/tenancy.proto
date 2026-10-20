@@ -102,6 +102,23 @@ service TenantService {
       rest: "DELETE /tenants/{id}/bindings/{link}"
     };
   }
+  // The tenant's pools on this cluster (spec/host-topology.md §9.1a), with
+  // what its projects hold of each and what is free in its cluster pool.
+  rpc ListDevicePools(ListDevicePoolsRequest) returns (ListDevicePoolsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantDevicePools"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/device-pools"
+    };
+  }
+  // Replaces the tenant's pools on this cluster with `pools`.
+  rpc SetDevicePools(SetDevicePoolsRequest) returns (SetDevicePoolsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantDevicePools"
+      kind: KIND_WRITE
+      rest: "PUT /tenants/{id}/device-pools"
+    };
+  }
 }
 
 // Which tenants this cluster admits, with their caps (D9, D19). Its
@@ -178,6 +195,45 @@ message Admission {
   // directory's tenants.
   string tenant_slug = 7 [json_name = "tenant_slug"];
   string tenant_display_name = 8 [json_name = "tenant_display_name"];
+}
+
+// A tenant's share of a cluster device pool, split among its projects.
+message TenantDevicePool {
+  // Unique in the tenant, and not a cluster pool's name.
+  string name = 1;
+  // The cluster pool (`pci.pools`) its devices come from; the tenant must
+  // be granted it.
+  string from = 2;
+  // Devices its projects' VMs ask for at once, in all.
+  uint32 max = 3;
+  // Projects (id or name; answered as ids) that may ask for it.
+  repeated string projects = 4;
+  // Answers only: devices its projects' VMs ask for now.
+  uint32 used = 5;
+  // Answers only: free devices of the cluster pool.
+  uint32 free = 6;
+  // Answers only: the tenant is no longer granted `from`; nothing new is
+  // given from it.
+  bool ungranted = 7;
+  string by = 8;
+  google.protobuf.Timestamp at = 9;
+}
+
+message ListDevicePoolsRequest {
+  string id = 1;
+}
+
+message ListDevicePoolsResponse {
+  repeated TenantDevicePool pools = 1;
+}
+
+message SetDevicePoolsRequest {
+  string id = 1;
+  repeated TenantDevicePool pools = 2;
+}
+
+message SetDevicePoolsResponse {
+  repeated TenantDevicePool pools = 1;
 }
 
 message Member {

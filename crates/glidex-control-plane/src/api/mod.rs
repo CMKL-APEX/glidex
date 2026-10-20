@@ -983,6 +983,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/tenants/{id}/device-pools",
+        "readTenantDevicePools",
+        get(tenants::list_device_pools),
+    )
+    .add(
+        "PUT",
+        "/tenants/{id}/device-pools",
+        "manageTenantDevicePools",
+        put(tenants::set_device_pools),
+    )
+    .add(
+        "GET",
         "/tenants/{id}/bindings",
         "readTenantBindings",
         get(tenants::list_bindings),

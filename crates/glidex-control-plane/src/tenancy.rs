@@ -178,6 +178,8 @@ pub struct Delta {
     pub external_ips: u64,
     /// Pool devices, by pool.
     pub devices: BTreeMap<String, u64>,
+    /// Devices asked of each tenant pool (spec/host-topology.md §9.1a).
+    pub tenant_pools: BTreeMap<String, u64>,
 }
 
 /// Limits `delta` would exceed on top of `usage`.

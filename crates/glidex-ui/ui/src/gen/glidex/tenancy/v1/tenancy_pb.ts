@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/tenancy/v1/tenancy.proto.
  */
 export const file_glidex_tenancy_v1_tenancy: GenFile = /*@__PURE__*/
-  fileDesc("Ch9nbGlkZXgvdGVuYW5jeS92MS90ZW5hbmN5LnByb3RvEhFnbGlkZXgudGVuYW5jeS52MSKeAwoGVGVuYW50EgoKAmlkGAEgASgJEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEgwKBHNsdWcYAyABKAkSIgoMZGlzcGxheV9uYW1lGAQgASgJUgxkaXNwbGF5X25hbWUSKwoOb3duc19kaXJlY3RvcnkYBSABKAhIAFIOb3duc19kaXJlY3RvcnmIAQESFQoIb3BlcmF0b3IYBiABKAhIAYgBARIWCglzdXNwZW5kZWQYByABKAhIAogBARI6CgpjcmVhdGVkX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBIvCglhZG1pc3Npb24YCSABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24SKQoNb3BlcmF0ZXNfaGVyZRgKIAEoCEgDUg1vcGVyYXRlc19oZXJliAEBQhEKD19vd25zX2RpcmVjdG9yeUILCglfb3BlcmF0b3JCDAoKX3N1c3BlbmRlZEIQCg5fb3BlcmF0ZXNfaGVyZSLCAwoGUXVvdGFzEhAKA3ZtcxgBIAEoDUgAiAEBEhIKBXZjcHVzGAIgASgNSAGIAQESIwoKbWVtb3J5X21pYhgDIAEoDUgCUgptZW1vcnlfbWliiAEBEh8KCGRpc2tfZ2liGAQgASgNSANSCGRpc2tfZ2liiAEBEiUKC3J1bm5pbmdfdm1zGAUgASgNSARSC3J1bm5pbmdfdm1ziAEBEhUKCG5ldHdvcmtzGAYgASgNSAWIAQESFAoHcm91dGVycxgHIAEoDUgGiAEBEicKDGV4dGVybmFsX2lwcxgIIAEoDUgHUgxleHRlcm5hbF9pcHOIAQESNwoHZGV2aWNlcxgJIAMoCzImLmdsaWRleC50ZW5hbmN5LnYxLlF1b3Rhcy5EZXZpY2VzRW50cnkaLgoMRGV2aWNlc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDToCOAFCBgoEX3Ztc0IICgZfdmNwdXNCDQoLX21lbW9yeV9taWJCCwoJX2Rpc2tfZ2liQg4KDF9ydW5uaW5nX3Ztc0ILCglfbmV0d29ya3NCCgoIX3JvdXRlcnNCDwoNX2V4dGVybmFsX2lwcyKxAgoJQWRtaXNzaW9uEhwKCXRlbmFudF9pZBgBIAEoCVIJdGVuYW50X2lkEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEiYKA2NhcBgDIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIyCgZzdGF0dXMYBCABKA4yIi5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb25TdGF0dXMSCgoCYnkYBSABKAkSJgoCYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiAKC3RlbmFudF9zbHVnGAcgASgJUgt0ZW5hbnRfc2x1ZxIwChN0ZW5hbnRfZGlzcGxheV9uYW1lGAggASgJUhN0ZW5hbnRfZGlzcGxheV9uYW1lIq8BCgZNZW1iZXISHAoJdGVuYW50X2lkGAEgASgJUgl0ZW5hbnRfaWQSKwoJcHJpbmNpcGFsGAIgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYSCgoCYnkYAyABKAkSJgoCYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiYKDnByaW5jaXBhbF9uYW1lGAUgASgJUg5wcmluY2lwYWxfbmFtZSLUAQoHQmluZGluZxIKCgJpZBgBIAEoCRIMCgRyb2xlGAIgASgJEisKCXByaW5jaXBhbBgDIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmEiYKDnByaW5jaXBhbF9uYW1lGAQgASgJUg5wcmluY2lwYWxfbmFtZRIeCgpjcmVhdGVkX2J5GAUgASgJUgpjcmVhdGVkX2J5EjoKCmNyZWF0ZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0ImUKEkxpc3RUZW5hbnRzUmVxdWVzdBIhCglwYWdlX3NpemUYASABKA1IAFIJcGFnZV9zaXpliAEBEh4KCnBhZ2VfdG9rZW4YAiABKAlSCnBhZ2VfdG9rZW5CDAoKX3BhZ2Vfc2l6ZSJrChNMaXN0VGVuYW50c1Jlc3BvbnNlEioKB3RlbmFudHMYASADKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQSKAoPbmV4dF9wYWdlX3Rva2VuGAIgASgJUg9uZXh0X3BhZ2VfdG9rZW4iHgoQR2V0VGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSKsAQoTQ3JlYXRlVGVuYW50UmVxdWVzdBIMCgRzbHVnGAEgASgJEiIKDGRpc3BsYXlfbmFtZRgCIAEoCVIMZGlzcGxheV9uYW1lEhUKCG9wZXJhdG9yGAMgASgISACIAQESPwoLZmlyc3RfYWRtaW4YBCABKAsyHS5nbGlkZXgudGVuYW5jeS52MS5GaXJzdEFkbWluUgtmaXJzdF9hZG1pbkILCglfb3BlcmF0b3IiSgoKRmlyc3RBZG1pbhINCgVlbWFpbBgBIAEoCRIRCgljb25uZWN0b3IYAiABKAkSEQoEZGF5cxgDIAEoDUgAiAEBQgcKBV9kYXlzIn8KE1VwZGF0ZVRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkSJwoMZGlzcGxheV9uYW1lGAIgASgJSABSDGRpc3BsYXlfbmFtZYgBARIVCghvcGVyYXRvchgDIAEoCEgBiAEBQg8KDV9kaXNwbGF5X25hbWVCCwoJX29wZXJhdG9yIiIKFFN1c3BlbmRUZW5hbnRSZXF1ZXN0EgoKAmlkGAEgASgJIiEKE1Jlc3VtZVRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkiIQoTRGVsZXRlVGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSIWChREZWxldGVUZW5hbnRSZXNwb25zZSIgChJMaXN0TWVtYmVyc1JlcXVlc3QSCgoCaWQYASABKAkiQQoTTGlzdE1lbWJlcnNSZXNwb25zZRIqCgdtZW1iZXJzGAEgAygLMhkuZ2xpZGV4LnRlbmFuY3kudjEuTWVtYmVyIksKEEFkZE1lbWJlclJlcXVlc3QSCgoCaWQYASABKAkSKwoJcHJpbmNpcGFsGAIgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYiNAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIKCgJpZBgBIAEoCRIRCglwcmluY2lwYWwYAiABKAkiFgoUUmVtb3ZlTWVtYmVyUmVzcG9uc2UiIQoTTGlzdEJpbmRpbmdzUmVxdWVzdBIKCgJpZBgBIAEoCSJEChRMaXN0QmluZGluZ3NSZXNwb25zZRIsCghiaW5kaW5ncxgBIAMoCzIaLmdsaWRleC50ZW5hbmN5LnYxLkJpbmRpbmciWgoRQWRkQmluZGluZ1JlcXVlc3QSCgoCaWQYASABKAkSDAoEcm9sZRgCIAEoCRIrCglwcmluY2lwYWwYAyABKAsyGC5nbGlkZXguYXBpLnYxLkVudGl0eVJlZiIwChRSZW1vdmVCaW5kaW5nUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgRsaW5rGAIgASgJIhcKFVJlbW92ZUJpbmRpbmdSZXNwb25zZSIXChVMaXN0QWRtaXNzaW9uc1JlcXVlc3QiSgoWTGlzdEFkbWlzc2lvbnNSZXNwb25zZRIwCgphZG1pc3Npb25zGAEgAygLMhwuZ2xpZGV4LnRlbmFuY3kudjEuQWRtaXNzaW9uInMKE1NldEFkbWlzc2lvblJlcXVlc3QSDgoGdGVuYW50GAEgASgJEiYKA2NhcBgCIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIWCglzdXNwZW5kZWQYAyABKAhIAIgBAUIMCgpfc3VzcGVuZGVkIigKFlJlbW92ZUFkbWlzc2lvblJlcXVlc3QSDgoGdGVuYW50GAEgASgJIhkKF1JlbW92ZUFkbWlzc2lvblJlc3BvbnNlIj4KEUdldFRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCKEAQoUQ3JlYXRlVGVuYW50UmVzcG9uc2USKQoGdGVuYW50GAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50Ei0KD2ludml0YXRpb25fbGluaxgCIAEoCUgAUg9pbnZpdGF0aW9uX2xpbmuIAQFCEgoQX2ludml0YXRpb25fbGluayJBChRVcGRhdGVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiQgoVU3VzcGVuZFRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudCJBChRSZXN1bWVUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiPgoRQWRkTWVtYmVyUmVzcG9uc2USKQoGbWVtYmVyGAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuTWVtYmVyIkEKEkFkZEJpbmRpbmdSZXNwb25zZRIrCgdiaW5kaW5nGAEgASgLMhouZ2xpZGV4LnRlbmFuY3kudjEuQmluZGluZyJHChRTZXRBZG1pc3Npb25SZXNwb25zZRIvCglhZG1pc3Npb24YASABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24qcgoPQWRtaXNzaW9uU3RhdHVzEiAKHEFETUlTU0lPTl9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlBRE1JU1NJT05fU1RBVFVTX0FETUlUVEVEEAESHgoaQURNSVNTSU9OX1NUQVRVU19TVVNQRU5ERUQQAjKJDwoNVGVuYW50U2VydmljZRKBAQoLTGlzdFRlbmFudHMSJS5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1JlcXVlc3QaJi5nbGlkZXgudGVuYW5jeS52MS5MaXN0VGVuYW50c1Jlc3BvbnNlIiPK6RgfCg1hdXRoZW50aWNhdGVkEAEaDEdFVCAvdGVuYW50cxJ9CglHZXRUZW5hbnQSIy5nbGlkZXgudGVuYW5jeS52MS5HZXRUZW5hbnRSZXF1ZXN0GiQuZ2xpZGV4LnRlbmFuY3kudjEuR2V0VGVuYW50UmVzcG9uc2UiJcrpGCEKCnJlYWRUZW5hbnQQARoRR0VUIC90ZW5hbnRzL3tpZH0ShAEKDENyZWF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLkNyZWF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5DcmVhdGVUZW5hbnRSZXNwb25zZSIjyukYHwoMY3JlYXRlVGVuYW50EAIaDVBPU1QgL3RlbmFudHMSigEKDFVwZGF0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLlVwZGF0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5VcGRhdGVUZW5hbnRSZXNwb25zZSIpyukYJQoMdXBkYXRlVGVuYW50EAIaE1BBVENIIC90ZW5hbnRzL3tpZH0SlQEKDVN1c3BlbmRUZW5hbnQSJy5nbGlkZXgudGVuYW5jeS52MS5TdXNwZW5kVGVuYW50UmVxdWVzdBooLmdsaWRleC50ZW5hbmN5LnYxLlN1c3BlbmRUZW5hbnRSZXNwb25zZSIxyukYLQoNc3VzcGVuZFRlbmFudBACGhpQT1NUIC90ZW5hbnRzL3tpZH0vc3VzcGVuZBKQAQoMUmVzdW1lVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuUmVzdW1lVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLlJlc3VtZVRlbmFudFJlc3BvbnNlIi/K6RgrCgxyZXN1bWVUZW5hbnQQAhoZUE9TVCAvdGVuYW50cy97aWR9L3Jlc3VtZRKLAQoMRGVsZXRlVGVuYW50EiYuZ2xpZGV4LnRlbmFuY3kudjEuRGVsZXRlVGVuYW50UmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkRlbGV0ZVRlbmFudFJlc3BvbnNlIirK6RgmCgxkZWxldGVUZW5hbnQQAhoUREVMRVRFIC90ZW5hbnRzL3tpZH0SkgEKC0xpc3RNZW1iZXJzEiUuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdE1lbWJlcnNSZXNwb25zZSI0yukYMAoRcmVhZFRlbmFudE1lbWJlcnMQARoZR0VUIC90ZW5hbnRzL3tpZH0vbWVtYmVycxKPAQoJQWRkTWVtYmVyEiMuZ2xpZGV4LnRlbmFuY3kudjEuQWRkTWVtYmVyUmVxdWVzdBokLmdsaWRleC50ZW5hbmN5LnYxLkFkZE1lbWJlclJlc3BvbnNlIjfK6RgzChNtYW5hZ2VUZW5hbnRNZW1iZXJzEAIaGlBPU1QgL3RlbmFudHMve2lkfS9tZW1iZXJzEqYBCgxSZW1vdmVNZW1iZXISJi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVNZW1iZXJSZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UiRcrpGEEKE21hbmFnZVRlbmFudE1lbWJlcnMQAhooREVMRVRFIC90ZW5hbnRzL3tpZH0vbWVtYmVycy97cHJpbmNpcGFsfRKXAQoMTGlzdEJpbmRpbmdzEiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdEJpbmRpbmdzUmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RCaW5kaW5nc1Jlc3BvbnNlIjbK6RgyChJyZWFkVGVuYW50QmluZGluZ3MQARoaR0VUIC90ZW5hbnRzL3tpZH0vYmluZGluZ3MSlAEKCkFkZEJpbmRpbmcSJC5nbGlkZXgudGVuYW5jeS52MS5BZGRCaW5kaW5nUmVxdWVzdBolLmdsaWRleC50ZW5hbmN5LnYxLkFkZEJpbmRpbmdSZXNwb25zZSI5yukYNQoUbWFuYWdlVGVuYW50QmluZGluZ3MQAhobUE9TVCAvdGVuYW50cy97aWR9L2JpbmRpbmdzEqYBCg1SZW1vdmVCaW5kaW5nEicuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlQmluZGluZ1JlcXVlc3QaKC5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVCaW5kaW5nUmVzcG9uc2UiQsrpGD4KFG1hbmFnZVRlbmFudEJpbmRpbmdzEAIaJERFTEVURSAvdGVuYW50cy97aWR9L2JpbmRpbmdzL3tsaW5rfTLbAwoQQWRtaXNzaW9uU2VydmljZRKOAQoOTGlzdEFkbWlzc2lvbnMSKC5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1JlcXVlc3QaKS5nbGlkZXgudGVuYW5jeS52MS5MaXN0QWRtaXNzaW9uc1Jlc3BvbnNlIifK6RgjCg5saXN0QWRtaXNzaW9ucxABGg9HRVQgL2FkbWlzc2lvbnMSkwEKDFNldEFkbWlzc2lvbhImLmdsaWRleC50ZW5hbmN5LnYxLlNldEFkbWlzc2lvblJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5TZXRBZG1pc3Npb25SZXNwb25zZSIyyukYLgoQbWFuYWdlQWRtaXNzaW9ucxACGhhQVVQgL2FkbWlzc2lvbnMve3RlbmFudH0SnwEKD1JlbW92ZUFkbWlzc2lvbhIpLmdsaWRleC50ZW5hbmN5LnYxLlJlbW92ZUFkbWlzc2lvblJlcXVlc3QaKi5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVBZG1pc3Npb25SZXNwb25zZSI1yukYMQoQbWFuYWdlQWRtaXNzaW9ucxACGhtERUxFVEUgL2FkbWlzc2lvbnMve3RlbmFudH1iBnByb3RvMw", [file_glidex_api_v1_options, file_glidex_api_v1_types, file_google_protobuf_timestamp]);
+  fileDesc("Ch9nbGlkZXgvdGVuYW5jeS92MS90ZW5hbmN5LnByb3RvEhFnbGlkZXgudGVuYW5jeS52MSKeAwoGVGVuYW50EgoKAmlkGAEgASgJEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEgwKBHNsdWcYAyABKAkSIgoMZGlzcGxheV9uYW1lGAQgASgJUgxkaXNwbGF5X25hbWUSKwoOb3duc19kaXJlY3RvcnkYBSABKAhIAFIOb3duc19kaXJlY3RvcnmIAQESFQoIb3BlcmF0b3IYBiABKAhIAYgBARIWCglzdXNwZW5kZWQYByABKAhIAogBARI6CgpjcmVhdGVkX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdBIvCglhZG1pc3Npb24YCSABKAsyHC5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb24SKQoNb3BlcmF0ZXNfaGVyZRgKIAEoCEgDUg1vcGVyYXRlc19oZXJliAEBQhEKD19vd25zX2RpcmVjdG9yeUILCglfb3BlcmF0b3JCDAoKX3N1c3BlbmRlZEIQCg5fb3BlcmF0ZXNfaGVyZSLCAwoGUXVvdGFzEhAKA3ZtcxgBIAEoDUgAiAEBEhIKBXZjcHVzGAIgASgNSAGIAQESIwoKbWVtb3J5X21pYhgDIAEoDUgCUgptZW1vcnlfbWliiAEBEh8KCGRpc2tfZ2liGAQgASgNSANSCGRpc2tfZ2liiAEBEiUKC3J1bm5pbmdfdm1zGAUgASgNSARSC3J1bm5pbmdfdm1ziAEBEhUKCG5ldHdvcmtzGAYgASgNSAWIAQESFAoHcm91dGVycxgHIAEoDUgGiAEBEicKDGV4dGVybmFsX2lwcxgIIAEoDUgHUgxleHRlcm5hbF9pcHOIAQESNwoHZGV2aWNlcxgJIAMoCzImLmdsaWRleC50ZW5hbmN5LnYxLlF1b3Rhcy5EZXZpY2VzRW50cnkaLgoMRGV2aWNlc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDToCOAFCBgoEX3Ztc0IICgZfdmNwdXNCDQoLX21lbW9yeV9taWJCCwoJX2Rpc2tfZ2liQg4KDF9ydW5uaW5nX3Ztc0ILCglfbmV0d29ya3NCCgoIX3JvdXRlcnNCDwoNX2V4dGVybmFsX2lwcyKxAgoJQWRtaXNzaW9uEhwKCXRlbmFudF9pZBgBIAEoCVIJdGVuYW50X2lkEiIKDGRpcmVjdG9yeV9pZBgCIAEoCVIMZGlyZWN0b3J5X2lkEiYKA2NhcBgDIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlF1b3RhcxIyCgZzdGF0dXMYBCABKA4yIi5nbGlkZXgudGVuYW5jeS52MS5BZG1pc3Npb25TdGF0dXMSCgoCYnkYBSABKAkSJgoCYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiAKC3RlbmFudF9zbHVnGAcgASgJUgt0ZW5hbnRfc2x1ZxIwChN0ZW5hbnRfZGlzcGxheV9uYW1lGAggASgJUhN0ZW5hbnRfZGlzcGxheV9uYW1lIrABChBUZW5hbnREZXZpY2VQb29sEgwKBG5hbWUYASABKAkSDAoEZnJvbRgCIAEoCRILCgNtYXgYAyABKA0SEAoIcHJvamVjdHMYBCADKAkSDAoEdXNlZBgFIAEoDRIMCgRmcmVlGAYgASgNEhEKCXVuZ3JhbnRlZBgHIAEoCBIKCgJieRgIIAEoCRImCgJhdBgJIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiJAoWTGlzdERldmljZVBvb2xzUmVxdWVzdBIKCgJpZBgBIAEoCSJNChdMaXN0RGV2aWNlUG9vbHNSZXNwb25zZRIyCgVwb29scxgBIAMoCzIjLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudERldmljZVBvb2wiVwoVU2V0RGV2aWNlUG9vbHNSZXF1ZXN0EgoKAmlkGAEgASgJEjIKBXBvb2xzGAIgAygLMiMuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50RGV2aWNlUG9vbCJMChZTZXREZXZpY2VQb29sc1Jlc3BvbnNlEjIKBXBvb2xzGAEgAygLMiMuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50RGV2aWNlUG9vbCKvAQoGTWVtYmVyEhwKCXRlbmFudF9pZBgBIAEoCVIJdGVuYW50X2lkEisKCXByaW5jaXBhbBgCIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmEgoKAmJ5GAMgASgJEiYKAmF0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBImCg5wcmluY2lwYWxfbmFtZRgFIAEoCVIOcHJpbmNpcGFsX25hbWUi1AEKB0JpbmRpbmcSCgoCaWQYASABKAkSDAoEcm9sZRgCIAEoCRIrCglwcmluY2lwYWwYAyABKAsyGC5nbGlkZXguYXBpLnYxLkVudGl0eVJlZhImCg5wcmluY2lwYWxfbmFtZRgEIAEoCVIOcHJpbmNpcGFsX25hbWUSHgoKY3JlYXRlZF9ieRgFIAEoCVIKY3JlYXRlZF9ieRI6CgpjcmVhdGVkX2F0GAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKY3JlYXRlZF9hdCJlChJMaXN0VGVuYW50c1JlcXVlc3QSIQoJcGFnZV9zaXplGAEgASgNSABSCXBhZ2Vfc2l6ZYgBARIeCgpwYWdlX3Rva2VuGAIgASgJUgpwYWdlX3Rva2VuQgwKCl9wYWdlX3NpemUiawoTTGlzdFRlbmFudHNSZXNwb25zZRIqCgd0ZW5hbnRzGAEgAygLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50EigKD25leHRfcGFnZV90b2tlbhgCIAEoCVIPbmV4dF9wYWdlX3Rva2VuIh4KEEdldFRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkirAEKE0NyZWF0ZVRlbmFudFJlcXVlc3QSDAoEc2x1ZxgBIAEoCRIiCgxkaXNwbGF5X25hbWUYAiABKAlSDGRpc3BsYXlfbmFtZRIVCghvcGVyYXRvchgDIAEoCEgAiAEBEj8KC2ZpcnN0X2FkbWluGAQgASgLMh0uZ2xpZGV4LnRlbmFuY3kudjEuRmlyc3RBZG1pblILZmlyc3RfYWRtaW5CCwoJX29wZXJhdG9yIkoKCkZpcnN0QWRtaW4SDQoFZW1haWwYASABKAkSEQoJY29ubmVjdG9yGAIgASgJEhEKBGRheXMYAyABKA1IAIgBAUIHCgVfZGF5cyJ/ChNVcGRhdGVUZW5hbnRSZXF1ZXN0EgoKAmlkGAEgASgJEicKDGRpc3BsYXlfbmFtZRgCIAEoCUgAUgxkaXNwbGF5X25hbWWIAQESFQoIb3BlcmF0b3IYAyABKAhIAYgBAUIPCg1fZGlzcGxheV9uYW1lQgsKCV9vcGVyYXRvciIiChRTdXNwZW5kVGVuYW50UmVxdWVzdBIKCgJpZBgBIAEoCSIhChNSZXN1bWVUZW5hbnRSZXF1ZXN0EgoKAmlkGAEgASgJIiEKE0RlbGV0ZVRlbmFudFJlcXVlc3QSCgoCaWQYASABKAkiFgoURGVsZXRlVGVuYW50UmVzcG9uc2UiIAoSTGlzdE1lbWJlcnNSZXF1ZXN0EgoKAmlkGAEgASgJIkEKE0xpc3RNZW1iZXJzUmVzcG9uc2USKgoHbWVtYmVycxgBIAMoCzIZLmdsaWRleC50ZW5hbmN5LnYxLk1lbWJlciJLChBBZGRNZW1iZXJSZXF1ZXN0EgoKAmlkGAEgASgJEisKCXByaW5jaXBhbBgCIAEoCzIYLmdsaWRleC5hcGkudjEuRW50aXR5UmVmIjQKE1JlbW92ZU1lbWJlclJlcXVlc3QSCgoCaWQYASABKAkSEQoJcHJpbmNpcGFsGAIgASgJIhYKFFJlbW92ZU1lbWJlclJlc3BvbnNlIiEKE0xpc3RCaW5kaW5nc1JlcXVlc3QSCgoCaWQYASABKAkiRAoUTGlzdEJpbmRpbmdzUmVzcG9uc2USLAoIYmluZGluZ3MYASADKAsyGi5nbGlkZXgudGVuYW5jeS52MS5CaW5kaW5nIloKEUFkZEJpbmRpbmdSZXF1ZXN0EgoKAmlkGAEgASgJEgwKBHJvbGUYAiABKAkSKwoJcHJpbmNpcGFsGAMgASgLMhguZ2xpZGV4LmFwaS52MS5FbnRpdHlSZWYiMAoUUmVtb3ZlQmluZGluZ1JlcXVlc3QSCgoCaWQYASABKAkSDAoEbGluaxgCIAEoCSIXChVSZW1vdmVCaW5kaW5nUmVzcG9uc2UiFwoVTGlzdEFkbWlzc2lvbnNSZXF1ZXN0IkoKFkxpc3RBZG1pc3Npb25zUmVzcG9uc2USMAoKYWRtaXNzaW9ucxgBIAMoCzIcLmdsaWRleC50ZW5hbmN5LnYxLkFkbWlzc2lvbiJzChNTZXRBZG1pc3Npb25SZXF1ZXN0Eg4KBnRlbmFudBgBIAEoCRImCgNjYXAYAiABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5RdW90YXMSFgoJc3VzcGVuZGVkGAMgASgISACIAQFCDAoKX3N1c3BlbmRlZCIoChZSZW1vdmVBZG1pc3Npb25SZXF1ZXN0Eg4KBnRlbmFudBgBIAEoCSIZChdSZW1vdmVBZG1pc3Npb25SZXNwb25zZSI+ChFHZXRUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQihAEKFENyZWF0ZVRlbmFudFJlc3BvbnNlEikKBnRlbmFudBgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLlRlbmFudBItCg9pbnZpdGF0aW9uX2xpbmsYAiABKAlIAFIPaW52aXRhdGlvbl9saW5riAEBQhIKEF9pbnZpdGF0aW9uX2xpbmsiQQoUVXBkYXRlVGVuYW50UmVzcG9uc2USKQoGdGVuYW50GAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50IkIKFVN1c3BlbmRUZW5hbnRSZXNwb25zZRIpCgZ0ZW5hbnQYASABKAsyGS5nbGlkZXgudGVuYW5jeS52MS5UZW5hbnQiQQoUUmVzdW1lVGVuYW50UmVzcG9uc2USKQoGdGVuYW50GAEgASgLMhkuZ2xpZGV4LnRlbmFuY3kudjEuVGVuYW50Ij4KEUFkZE1lbWJlclJlc3BvbnNlEikKBm1lbWJlchgBIAEoCzIZLmdsaWRleC50ZW5hbmN5LnYxLk1lbWJlciJBChJBZGRCaW5kaW5nUmVzcG9uc2USKwoHYmluZGluZxgBIAEoCzIaLmdsaWRleC50ZW5hbmN5LnYxLkJpbmRpbmciRwoUU2V0QWRtaXNzaW9uUmVzcG9uc2USLwoJYWRtaXNzaW9uGAEgASgLMhwuZ2xpZGV4LnRlbmFuY3kudjEuQWRtaXNzaW9uKnIKD0FkbWlzc2lvblN0YXR1cxIgChxBRE1JU1NJT05fU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZQURNSVNTSU9OX1NUQVRVU19BRE1JVFRFRBABEh4KGkFETUlTU0lPTl9TVEFUVVNfU1VTUEVOREVEEAIy3BEKDVRlbmFudFNlcnZpY2USgQEKC0xpc3RUZW5hbnRzEiUuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdFRlbmFudHNSZXF1ZXN0GiYuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdFRlbmFudHNSZXNwb25zZSIjyukYHwoNYXV0aGVudGljYXRlZBABGgxHRVQgL3RlbmFudHMSfQoJR2V0VGVuYW50EiMuZ2xpZGV4LnRlbmFuY3kudjEuR2V0VGVuYW50UmVxdWVzdBokLmdsaWRleC50ZW5hbmN5LnYxLkdldFRlbmFudFJlc3BvbnNlIiXK6RghCgpyZWFkVGVuYW50EAEaEUdFVCAvdGVuYW50cy97aWR9EoQBCgxDcmVhdGVUZW5hbnQSJi5nbGlkZXgudGVuYW5jeS52MS5DcmVhdGVUZW5hbnRSZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuQ3JlYXRlVGVuYW50UmVzcG9uc2UiI8rpGB8KDGNyZWF0ZVRlbmFudBACGg1QT1NUIC90ZW5hbnRzEooBCgxVcGRhdGVUZW5hbnQSJi5nbGlkZXgudGVuYW5jeS52MS5VcGRhdGVUZW5hbnRSZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuVXBkYXRlVGVuYW50UmVzcG9uc2UiKcrpGCUKDHVwZGF0ZVRlbmFudBACGhNQQVRDSCAvdGVuYW50cy97aWR9EpUBCg1TdXNwZW5kVGVuYW50EicuZ2xpZGV4LnRlbmFuY3kudjEuU3VzcGVuZFRlbmFudFJlcXVlc3QaKC5nbGlkZXgudGVuYW5jeS52MS5TdXNwZW5kVGVuYW50UmVzcG9uc2UiMcrpGC0KDXN1c3BlbmRUZW5hbnQQAhoaUE9TVCAvdGVuYW50cy97aWR9L3N1c3BlbmQSkAEKDFJlc3VtZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLlJlc3VtZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5SZXN1bWVUZW5hbnRSZXNwb25zZSIvyukYKwoMcmVzdW1lVGVuYW50EAIaGVBPU1QgL3RlbmFudHMve2lkfS9yZXN1bWUSiwEKDERlbGV0ZVRlbmFudBImLmdsaWRleC50ZW5hbmN5LnYxLkRlbGV0ZVRlbmFudFJlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5EZWxldGVUZW5hbnRSZXNwb25zZSIqyukYJgoMZGVsZXRlVGVuYW50EAIaFERFTEVURSAvdGVuYW50cy97aWR9EpIBCgtMaXN0TWVtYmVycxIlLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RNZW1iZXJzUmVxdWVzdBomLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RNZW1iZXJzUmVzcG9uc2UiNMrpGDAKEXJlYWRUZW5hbnRNZW1iZXJzEAEaGUdFVCAvdGVuYW50cy97aWR9L21lbWJlcnMSjwEKCUFkZE1lbWJlchIjLmdsaWRleC50ZW5hbmN5LnYxLkFkZE1lbWJlclJlcXVlc3QaJC5nbGlkZXgudGVuYW5jeS52MS5BZGRNZW1iZXJSZXNwb25zZSI3yukYMwoTbWFuYWdlVGVuYW50TWVtYmVycxACGhpQT1NUIC90ZW5hbnRzL3tpZH0vbWVtYmVycxKmAQoMUmVtb3ZlTWVtYmVyEiYuZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBonLmdsaWRleC50ZW5hbmN5LnYxLlJlbW92ZU1lbWJlclJlc3BvbnNlIkXK6RhBChNtYW5hZ2VUZW5hbnRNZW1iZXJzEAIaKERFTEVURSAvdGVuYW50cy97aWR9L21lbWJlcnMve3ByaW5jaXBhbH0SlwEKDExpc3RCaW5kaW5ncxImLmdsaWRleC50ZW5hbmN5LnYxLkxpc3RCaW5kaW5nc1JlcXVlc3QaJy5nbGlkZXgudGVuYW5jeS52MS5MaXN0QmluZGluZ3NSZXNwb25zZSI2yukYMgoScmVhZFRlbmFudEJpbmRpbmdzEAEaGkdFVCAvdGVuYW50cy97aWR9L2JpbmRpbmdzEpQBCgpBZGRCaW5kaW5nEiQuZ2xpZGV4LnRlbmFuY3kudjEuQWRkQmluZGluZ1JlcXVlc3QaJS5nbGlkZXgudGVuYW5jeS52MS5BZGRCaW5kaW5nUmVzcG9uc2UiOcrpGDUKFG1hbmFnZVRlbmFudEJpbmRpbmdzEAIaG1BPU1QgL3RlbmFudHMve2lkfS9iaW5kaW5ncxKmAQoNUmVtb3ZlQmluZGluZxInLmdsaWRleC50ZW5hbmN5LnYxLlJlbW92ZUJpbmRpbmdSZXF1ZXN0GiguZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlQmluZGluZ1Jlc3BvbnNlIkLK6Rg+ChRtYW5hZ2VUZW5hbnRCaW5kaW5ncxACGiRERUxFVEUgL3RlbmFudHMve2lkfS9iaW5kaW5ncy97bGlua30SpwEKD0xpc3REZXZpY2VQb29scxIpLmdsaWRleC50ZW5hbmN5LnYxLkxpc3REZXZpY2VQb29sc1JlcXVlc3QaKi5nbGlkZXgudGVuYW5jeS52MS5MaXN0RGV2aWNlUG9vbHNSZXNwb25zZSI9yukYOQoVcmVhZFRlbmFudERldmljZVBvb2xzEAEaHkdFVCAvdGVuYW50cy97aWR9L2RldmljZS1wb29scxKmAQoOU2V0RGV2aWNlUG9vbHMSKC5nbGlkZXgudGVuYW5jeS52MS5TZXREZXZpY2VQb29sc1JlcXVlc3QaKS5nbGlkZXgudGVuYW5jeS52MS5TZXREZXZpY2VQb29sc1Jlc3BvbnNlIj/K6Rg7ChdtYW5hZ2VUZW5hbnREZXZpY2VQb29scxACGh5QVVQgL3RlbmFudHMve2lkfS9kZXZpY2UtcG9vbHMy2wMKEEFkbWlzc2lvblNlcnZpY2USjgEKDkxpc3RBZG1pc3Npb25zEiguZ2xpZGV4LnRlbmFuY3kudjEuTGlzdEFkbWlzc2lvbnNSZXF1ZXN0GikuZ2xpZGV4LnRlbmFuY3kudjEuTGlzdEFkbWlzc2lvbnNSZXNwb25zZSInyukYIwoObGlzdEFkbWlzc2lvbnMQARoPR0VUIC9hZG1pc3Npb25zEpMBCgxTZXRBZG1pc3Npb24SJi5nbGlkZXgudGVuYW5jeS52MS5TZXRBZG1pc3Npb25SZXF1ZXN0GicuZ2xpZGV4LnRlbmFuY3kudjEuU2V0QWRtaXNzaW9uUmVzcG9uc2UiMsrpGC4KEG1hbmFnZUFkbWlzc2lvbnMQAhoYUFVUIC9hZG1pc3Npb25zL3t0ZW5hbnR9Ep8BCg9SZW1vdmVBZG1pc3Npb24SKS5nbGlkZXgudGVuYW5jeS52MS5SZW1vdmVBZG1pc3Npb25SZXF1ZXN0GiouZ2xpZGV4LnRlbmFuY3kudjEuUmVtb3ZlQWRtaXNzaW9uUmVzcG9uc2UiNcrpGDEKEG1hbmFnZUFkbWlzc2lvbnMQAhobREVMRVRFIC9hZG1pc3Npb25zL3t0ZW5hbnR9YgZwcm90bzM", [file_glidex_api_v1_options, file_glidex_api_v1_types, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.tenancy.v1.Tenant
@@ -366,6 +366,267 @@ export const AdmissionSchema: GenMessage<Admission, {jsonType: AdmissionJson}> =
   messageDesc(file_glidex_tenancy_v1_tenancy, 2);
 
 /**
+ * A tenant's share of a cluster device pool, split among its projects.
+ *
+ * @generated from message glidex.tenancy.v1.TenantDevicePool
+ */
+export type TenantDevicePool = Message<"glidex.tenancy.v1.TenantDevicePool"> & {
+  /**
+   * Unique in the tenant, and not a cluster pool's name.
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * The cluster pool (`pci.pools`) its devices come from; the tenant must
+   * be granted it.
+   *
+   * @generated from field: string from = 2;
+   */
+  from: string;
+
+  /**
+   * Devices its projects' VMs ask for at once, in all.
+   *
+   * @generated from field: uint32 max = 3;
+   */
+  max: number;
+
+  /**
+   * Projects (id or name; answered as ids) that may ask for it.
+   *
+   * @generated from field: repeated string projects = 4;
+   */
+  projects: string[];
+
+  /**
+   * Answers only: devices its projects' VMs ask for now.
+   *
+   * @generated from field: uint32 used = 5;
+   */
+  used: number;
+
+  /**
+   * Answers only: free devices of the cluster pool.
+   *
+   * @generated from field: uint32 free = 6;
+   */
+  free: number;
+
+  /**
+   * Answers only: the tenant is no longer granted `from`; nothing new is
+   * given from it.
+   *
+   * @generated from field: bool ungranted = 7;
+   */
+  ungranted: boolean;
+
+  /**
+   * @generated from field: string by = 8;
+   */
+  by: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp at = 9;
+   */
+  at?: Timestamp | undefined;
+};
+
+/**
+ * A tenant's share of a cluster device pool, split among its projects.
+ *
+ * @generated from message glidex.tenancy.v1.TenantDevicePool
+ */
+export type TenantDevicePoolJson = {
+  /**
+   * Unique in the tenant, and not a cluster pool's name.
+   *
+   * @generated from field: string name = 1;
+   */
+  name?: string;
+
+  /**
+   * The cluster pool (`pci.pools`) its devices come from; the tenant must
+   * be granted it.
+   *
+   * @generated from field: string from = 2;
+   */
+  from?: string;
+
+  /**
+   * Devices its projects' VMs ask for at once, in all.
+   *
+   * @generated from field: uint32 max = 3;
+   */
+  max?: number;
+
+  /**
+   * Projects (id or name; answered as ids) that may ask for it.
+   *
+   * @generated from field: repeated string projects = 4;
+   */
+  projects?: string[];
+
+  /**
+   * Answers only: devices its projects' VMs ask for now.
+   *
+   * @generated from field: uint32 used = 5;
+   */
+  used?: number;
+
+  /**
+   * Answers only: free devices of the cluster pool.
+   *
+   * @generated from field: uint32 free = 6;
+   */
+  free?: number;
+
+  /**
+   * Answers only: the tenant is no longer granted `from`; nothing new is
+   * given from it.
+   *
+   * @generated from field: bool ungranted = 7;
+   */
+  ungranted?: boolean;
+
+  /**
+   * @generated from field: string by = 8;
+   */
+  by?: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp at = 9;
+   */
+  at?: TimestampJson;
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.TenantDevicePool.
+ * Use `create(TenantDevicePoolSchema)` to create a new message.
+ */
+export const TenantDevicePoolSchema: GenMessage<TenantDevicePool, {jsonType: TenantDevicePoolJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 3);
+
+/**
+ * @generated from message glidex.tenancy.v1.ListDevicePoolsRequest
+ */
+export type ListDevicePoolsRequest = Message<"glidex.tenancy.v1.ListDevicePoolsRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * @generated from message glidex.tenancy.v1.ListDevicePoolsRequest
+ */
+export type ListDevicePoolsRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.ListDevicePoolsRequest.
+ * Use `create(ListDevicePoolsRequestSchema)` to create a new message.
+ */
+export const ListDevicePoolsRequestSchema: GenMessage<ListDevicePoolsRequest, {jsonType: ListDevicePoolsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 4);
+
+/**
+ * @generated from message glidex.tenancy.v1.ListDevicePoolsResponse
+ */
+export type ListDevicePoolsResponse = Message<"glidex.tenancy.v1.ListDevicePoolsResponse"> & {
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 1;
+   */
+  pools: TenantDevicePool[];
+};
+
+/**
+ * @generated from message glidex.tenancy.v1.ListDevicePoolsResponse
+ */
+export type ListDevicePoolsResponseJson = {
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 1;
+   */
+  pools?: TenantDevicePoolJson[];
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.ListDevicePoolsResponse.
+ * Use `create(ListDevicePoolsResponseSchema)` to create a new message.
+ */
+export const ListDevicePoolsResponseSchema: GenMessage<ListDevicePoolsResponse, {jsonType: ListDevicePoolsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 5);
+
+/**
+ * @generated from message glidex.tenancy.v1.SetDevicePoolsRequest
+ */
+export type SetDevicePoolsRequest = Message<"glidex.tenancy.v1.SetDevicePoolsRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 2;
+   */
+  pools: TenantDevicePool[];
+};
+
+/**
+ * @generated from message glidex.tenancy.v1.SetDevicePoolsRequest
+ */
+export type SetDevicePoolsRequestJson = {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id?: string;
+
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 2;
+   */
+  pools?: TenantDevicePoolJson[];
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.SetDevicePoolsRequest.
+ * Use `create(SetDevicePoolsRequestSchema)` to create a new message.
+ */
+export const SetDevicePoolsRequestSchema: GenMessage<SetDevicePoolsRequest, {jsonType: SetDevicePoolsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 6);
+
+/**
+ * @generated from message glidex.tenancy.v1.SetDevicePoolsResponse
+ */
+export type SetDevicePoolsResponse = Message<"glidex.tenancy.v1.SetDevicePoolsResponse"> & {
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 1;
+   */
+  pools: TenantDevicePool[];
+};
+
+/**
+ * @generated from message glidex.tenancy.v1.SetDevicePoolsResponse
+ */
+export type SetDevicePoolsResponseJson = {
+  /**
+   * @generated from field: repeated glidex.tenancy.v1.TenantDevicePool pools = 1;
+   */
+  pools?: TenantDevicePoolJson[];
+};
+
+/**
+ * Describes the message glidex.tenancy.v1.SetDevicePoolsResponse.
+ * Use `create(SetDevicePoolsResponseSchema)` to create a new message.
+ */
+export const SetDevicePoolsResponseSchema: GenMessage<SetDevicePoolsResponse, {jsonType: SetDevicePoolsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_tenancy_v1_tenancy, 7);
+
+/**
  * @generated from message glidex.tenancy.v1.Member
  */
 export type Member = Message<"glidex.tenancy.v1.Member"> & {
@@ -434,7 +695,7 @@ export type MemberJson = {
  * Use `create(MemberSchema)` to create a new message.
  */
 export const MemberSchema: GenMessage<Member, {jsonType: MemberJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 3);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 8);
 
 /**
  * A role link on the tenant (role.tenant-admin, role.tenant-auditor).
@@ -515,7 +776,7 @@ export type BindingJson = {
  * Use `create(BindingSchema)` to create a new message.
  */
 export const BindingSchema: GenMessage<Binding, {jsonType: BindingJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 4);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 9);
 
 /**
  * @generated from message glidex.tenancy.v1.ListTenantsRequest
@@ -552,7 +813,7 @@ export type ListTenantsRequestJson = {
  * Use `create(ListTenantsRequestSchema)` to create a new message.
  */
 export const ListTenantsRequestSchema: GenMessage<ListTenantsRequest, {jsonType: ListTenantsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 5);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 10);
 
 /**
  * @generated from message glidex.tenancy.v1.ListTenantsResponse
@@ -589,7 +850,7 @@ export type ListTenantsResponseJson = {
  * Use `create(ListTenantsResponseSchema)` to create a new message.
  */
 export const ListTenantsResponseSchema: GenMessage<ListTenantsResponse, {jsonType: ListTenantsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 6);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 11);
 
 /**
  * @generated from message glidex.tenancy.v1.GetTenantRequest
@@ -620,7 +881,7 @@ export type GetTenantRequestJson = {
  * Use `create(GetTenantRequestSchema)` to create a new message.
  */
 export const GetTenantRequestSchema: GenMessage<GetTenantRequest, {jsonType: GetTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 7);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 12);
 
 /**
  * @generated from message glidex.tenancy.v1.CreateTenantRequest
@@ -683,7 +944,7 @@ export type CreateTenantRequestJson = {
  * Use `create(CreateTenantRequestSchema)` to create a new message.
  */
 export const CreateTenantRequestSchema: GenMessage<CreateTenantRequest, {jsonType: CreateTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 8);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 13);
 
 /**
  * @generated from message glidex.tenancy.v1.FirstAdmin
@@ -734,7 +995,7 @@ export type FirstAdminJson = {
  * Use `create(FirstAdminSchema)` to create a new message.
  */
 export const FirstAdminSchema: GenMessage<FirstAdmin, {jsonType: FirstAdminJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 9);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 14);
 
 /**
  * @generated from message glidex.tenancy.v1.UpdateTenantRequest
@@ -781,7 +1042,7 @@ export type UpdateTenantRequestJson = {
  * Use `create(UpdateTenantRequestSchema)` to create a new message.
  */
 export const UpdateTenantRequestSchema: GenMessage<UpdateTenantRequest, {jsonType: UpdateTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 10);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 15);
 
 /**
  * @generated from message glidex.tenancy.v1.SuspendTenantRequest
@@ -808,7 +1069,7 @@ export type SuspendTenantRequestJson = {
  * Use `create(SuspendTenantRequestSchema)` to create a new message.
  */
 export const SuspendTenantRequestSchema: GenMessage<SuspendTenantRequest, {jsonType: SuspendTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 11);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 16);
 
 /**
  * @generated from message glidex.tenancy.v1.ResumeTenantRequest
@@ -835,7 +1096,7 @@ export type ResumeTenantRequestJson = {
  * Use `create(ResumeTenantRequestSchema)` to create a new message.
  */
 export const ResumeTenantRequestSchema: GenMessage<ResumeTenantRequest, {jsonType: ResumeTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 12);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 17);
 
 /**
  * @generated from message glidex.tenancy.v1.DeleteTenantRequest
@@ -862,7 +1123,7 @@ export type DeleteTenantRequestJson = {
  * Use `create(DeleteTenantRequestSchema)` to create a new message.
  */
 export const DeleteTenantRequestSchema: GenMessage<DeleteTenantRequest, {jsonType: DeleteTenantRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 13);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 18);
 
 /**
  * @generated from message glidex.tenancy.v1.DeleteTenantResponse
@@ -881,7 +1142,7 @@ export type DeleteTenantResponseJson = {
  * Use `create(DeleteTenantResponseSchema)` to create a new message.
  */
 export const DeleteTenantResponseSchema: GenMessage<DeleteTenantResponse, {jsonType: DeleteTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 14);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 19);
 
 /**
  * @generated from message glidex.tenancy.v1.ListMembersRequest
@@ -908,7 +1169,7 @@ export type ListMembersRequestJson = {
  * Use `create(ListMembersRequestSchema)` to create a new message.
  */
 export const ListMembersRequestSchema: GenMessage<ListMembersRequest, {jsonType: ListMembersRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 15);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 20);
 
 /**
  * @generated from message glidex.tenancy.v1.ListMembersResponse
@@ -935,7 +1196,7 @@ export type ListMembersResponseJson = {
  * Use `create(ListMembersResponseSchema)` to create a new message.
  */
 export const ListMembersResponseSchema: GenMessage<ListMembersResponse, {jsonType: ListMembersResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 16);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 21);
 
 /**
  * @generated from message glidex.tenancy.v1.AddMemberRequest
@@ -972,7 +1233,7 @@ export type AddMemberRequestJson = {
  * Use `create(AddMemberRequestSchema)` to create a new message.
  */
 export const AddMemberRequestSchema: GenMessage<AddMemberRequest, {jsonType: AddMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 17);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 22);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveMemberRequest
@@ -1013,7 +1274,7 @@ export type RemoveMemberRequestJson = {
  * Use `create(RemoveMemberRequestSchema)` to create a new message.
  */
 export const RemoveMemberRequestSchema: GenMessage<RemoveMemberRequest, {jsonType: RemoveMemberRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 18);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 23);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveMemberResponse
@@ -1032,7 +1293,7 @@ export type RemoveMemberResponseJson = {
  * Use `create(RemoveMemberResponseSchema)` to create a new message.
  */
 export const RemoveMemberResponseSchema: GenMessage<RemoveMemberResponse, {jsonType: RemoveMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 19);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 24);
 
 /**
  * @generated from message glidex.tenancy.v1.ListBindingsRequest
@@ -1059,7 +1320,7 @@ export type ListBindingsRequestJson = {
  * Use `create(ListBindingsRequestSchema)` to create a new message.
  */
 export const ListBindingsRequestSchema: GenMessage<ListBindingsRequest, {jsonType: ListBindingsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 20);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 25);
 
 /**
  * @generated from message glidex.tenancy.v1.ListBindingsResponse
@@ -1086,7 +1347,7 @@ export type ListBindingsResponseJson = {
  * Use `create(ListBindingsResponseSchema)` to create a new message.
  */
 export const ListBindingsResponseSchema: GenMessage<ListBindingsResponse, {jsonType: ListBindingsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 21);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 26);
 
 /**
  * @generated from message glidex.tenancy.v1.AddBindingRequest
@@ -1133,7 +1394,7 @@ export type AddBindingRequestJson = {
  * Use `create(AddBindingRequestSchema)` to create a new message.
  */
 export const AddBindingRequestSchema: GenMessage<AddBindingRequest, {jsonType: AddBindingRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 22);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 27);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveBindingRequest
@@ -1170,7 +1431,7 @@ export type RemoveBindingRequestJson = {
  * Use `create(RemoveBindingRequestSchema)` to create a new message.
  */
 export const RemoveBindingRequestSchema: GenMessage<RemoveBindingRequest, {jsonType: RemoveBindingRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 23);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 28);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveBindingResponse
@@ -1189,7 +1450,7 @@ export type RemoveBindingResponseJson = {
  * Use `create(RemoveBindingResponseSchema)` to create a new message.
  */
 export const RemoveBindingResponseSchema: GenMessage<RemoveBindingResponse, {jsonType: RemoveBindingResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 24);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 29);
 
 /**
  * @generated from message glidex.tenancy.v1.ListAdmissionsRequest
@@ -1208,7 +1469,7 @@ export type ListAdmissionsRequestJson = {
  * Use `create(ListAdmissionsRequestSchema)` to create a new message.
  */
 export const ListAdmissionsRequestSchema: GenMessage<ListAdmissionsRequest, {jsonType: ListAdmissionsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 25);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 30);
 
 /**
  * @generated from message glidex.tenancy.v1.ListAdmissionsResponse
@@ -1235,7 +1496,7 @@ export type ListAdmissionsResponseJson = {
  * Use `create(ListAdmissionsResponseSchema)` to create a new message.
  */
 export const ListAdmissionsResponseSchema: GenMessage<ListAdmissionsResponse, {jsonType: ListAdmissionsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 26);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 31);
 
 /**
  * @generated from message glidex.tenancy.v1.SetAdmissionRequest
@@ -1290,7 +1551,7 @@ export type SetAdmissionRequestJson = {
  * Use `create(SetAdmissionRequestSchema)` to create a new message.
  */
 export const SetAdmissionRequestSchema: GenMessage<SetAdmissionRequest, {jsonType: SetAdmissionRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 27);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 32);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveAdmissionRequest
@@ -1317,7 +1578,7 @@ export type RemoveAdmissionRequestJson = {
  * Use `create(RemoveAdmissionRequestSchema)` to create a new message.
  */
 export const RemoveAdmissionRequestSchema: GenMessage<RemoveAdmissionRequest, {jsonType: RemoveAdmissionRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 28);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 33);
 
 /**
  * @generated from message glidex.tenancy.v1.RemoveAdmissionResponse
@@ -1336,7 +1597,7 @@ export type RemoveAdmissionResponseJson = {
  * Use `create(RemoveAdmissionResponseSchema)` to create a new message.
  */
 export const RemoveAdmissionResponseSchema: GenMessage<RemoveAdmissionResponse, {jsonType: RemoveAdmissionResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 29);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 34);
 
 /**
  * @generated from message glidex.tenancy.v1.GetTenantResponse
@@ -1363,7 +1624,7 @@ export type GetTenantResponseJson = {
  * Use `create(GetTenantResponseSchema)` to create a new message.
  */
 export const GetTenantResponseSchema: GenMessage<GetTenantResponse, {jsonType: GetTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 30);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 35);
 
 /**
  * @generated from message glidex.tenancy.v1.CreateTenantResponse
@@ -1406,7 +1667,7 @@ export type CreateTenantResponseJson = {
  * Use `create(CreateTenantResponseSchema)` to create a new message.
  */
 export const CreateTenantResponseSchema: GenMessage<CreateTenantResponse, {jsonType: CreateTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 31);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 36);
 
 /**
  * @generated from message glidex.tenancy.v1.UpdateTenantResponse
@@ -1433,7 +1694,7 @@ export type UpdateTenantResponseJson = {
  * Use `create(UpdateTenantResponseSchema)` to create a new message.
  */
 export const UpdateTenantResponseSchema: GenMessage<UpdateTenantResponse, {jsonType: UpdateTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 32);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 37);
 
 /**
  * @generated from message glidex.tenancy.v1.SuspendTenantResponse
@@ -1460,7 +1721,7 @@ export type SuspendTenantResponseJson = {
  * Use `create(SuspendTenantResponseSchema)` to create a new message.
  */
 export const SuspendTenantResponseSchema: GenMessage<SuspendTenantResponse, {jsonType: SuspendTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 33);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 38);
 
 /**
  * @generated from message glidex.tenancy.v1.ResumeTenantResponse
@@ -1487,7 +1748,7 @@ export type ResumeTenantResponseJson = {
  * Use `create(ResumeTenantResponseSchema)` to create a new message.
  */
 export const ResumeTenantResponseSchema: GenMessage<ResumeTenantResponse, {jsonType: ResumeTenantResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 34);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 39);
 
 /**
  * @generated from message glidex.tenancy.v1.AddMemberResponse
@@ -1514,7 +1775,7 @@ export type AddMemberResponseJson = {
  * Use `create(AddMemberResponseSchema)` to create a new message.
  */
 export const AddMemberResponseSchema: GenMessage<AddMemberResponse, {jsonType: AddMemberResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 35);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 40);
 
 /**
  * @generated from message glidex.tenancy.v1.AddBindingResponse
@@ -1541,7 +1802,7 @@ export type AddBindingResponseJson = {
  * Use `create(AddBindingResponseSchema)` to create a new message.
  */
 export const AddBindingResponseSchema: GenMessage<AddBindingResponse, {jsonType: AddBindingResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 36);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 41);
 
 /**
  * @generated from message glidex.tenancy.v1.SetAdmissionResponse
@@ -1568,7 +1829,7 @@ export type SetAdmissionResponseJson = {
  * Use `create(SetAdmissionResponseSchema)` to create a new message.
  */
 export const SetAdmissionResponseSchema: GenMessage<SetAdmissionResponse, {jsonType: SetAdmissionResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_tenancy_v1_tenancy, 37);
+  messageDesc(file_glidex_tenancy_v1_tenancy, 42);
 
 /**
  * @generated from enum glidex.tenancy.v1.AdmissionStatus
@@ -1714,6 +1975,27 @@ export const TenantService: GenService<{
     methodKind: "unary";
     input: typeof RemoveBindingRequestSchema;
     output: typeof RemoveBindingResponseSchema;
+  },
+  /**
+   * The tenant's pools on this cluster (spec/host-topology.md §9.1a), with
+   * what its projects hold of each and what is free in its cluster pool.
+   *
+   * @generated from rpc glidex.tenancy.v1.TenantService.ListDevicePools
+   */
+  listDevicePools: {
+    methodKind: "unary";
+    input: typeof ListDevicePoolsRequestSchema;
+    output: typeof ListDevicePoolsResponseSchema;
+  },
+  /**
+   * Replaces the tenant's pools on this cluster with `pools`.
+   *
+   * @generated from rpc glidex.tenancy.v1.TenantService.SetDevicePools
+   */
+  setDevicePools: {
+    methodKind: "unary";
+    input: typeof SetDevicePoolsRequestSchema;
+    output: typeof SetDevicePoolsResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_glidex_tenancy_v1_tenancy, 0);

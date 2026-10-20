@@ -517,6 +517,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 <div key={name} className="flex flex-wrap items-center gap-3 text-sm">
                   <span className="font-mono w-32 truncate" title={name}>{name}</span>
                   {p.class && <span className="text-xs text-gray-500">{p.class}</span>}
+                  {p.from && (
+                    <span className="text-xs text-gray-500">
+                      tenant pool of {p.from}, {p.used ?? 0}/{p.max ?? 0} held
+                    </span>
+                  )}
                   <span className="text-xs text-gray-500">{p.free ?? 0} free</span>
                   <input
                     type="number"

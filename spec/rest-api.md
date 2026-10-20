@@ -212,6 +212,7 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/tenants/{id}/members/{user:<id>\|team:<id>}` | `RemoveMember` | |
 | `GET` / `POST` | `/tenants/{id}/bindings` | `ListBindings` / `AddBinding` | Tenant roles: `role.tenant-admin`, `role.tenant-auditor` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
+| `GET` / `PUT` | `/tenants/{id}/device-pools` | `ListDevicePools` / `SetDevicePools` | Tenant pools on this cluster ([host-topology.md](host-topology.md) §9.1a): `{pools: [{name, from, max, projects}]}` replaces them all; answered with `used`, the cluster pool's `free` and `ungranted`. Actions `readTenantDevicePools` (tenant-auditor) and `manageTenantDevicePools` (tenant-admin) |
 | `GET` / `POST` | `/tenants/{id}/invitations` | `InvitationService.ListInvitations` / `CreateInvitation` | Invitations ([tenancy.md](tenancy.md) §6.1): `{email, role, connector, days?}` (`role`: `member` or a tenant role; `connector`: an `oidc` or `google` one; 1-30 days, default 7) → `201 {invitation, link}`, the link (`…/invite/<id>#<secret>`) answered once; listed without secrets, open ones and taken or expired ones for 30 days |
 | `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |

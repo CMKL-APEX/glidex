@@ -110,7 +110,7 @@ import { CredentialService, DatastoreService, DiskService, ImageService } from "
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
-import { AdmissionService, TenantService, type SetAdmissionRequestJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import { AdmissionService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
@@ -1107,6 +1107,17 @@ export const inspectInvitation = (invitation: string) =>
 /** Start the invitation's login: the secret goes in the body, never a URL. */
 export const startInvitedLogin = (connector: string, invitation: string) =>
   request<{ redirect: string }>("POST", `/auth/c/${encodeURIComponent(connector)}/start`, { invitation, return_to: "/" }, { quiet401: true });
+
+/** A tenant's shares of cluster device pools on this cluster (spec/host-topology.md §9.1a). */
+export type TenantDevicePool = TenantDevicePoolJson;
+export const listTenantDevicePools = (id: string) =>
+  rpc(TenantService.method.listDevicePools, { id }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
+/** Replaces the tenant's pools; only `name`, `from`, `max` and `projects` are read. */
+export const setTenantDevicePools = (id: string, pools: TenantDevicePool[]) =>
+  rpc(TenantService.method.setDevicePools, {
+    id,
+    pools: pools.map(({ name, from, max, projects }) => ({ name, from, max, projects })),
+  }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
 
 export const listTenantMembers = (id: string) =>
   rpc(TenantService.method.listMembers, { id }).then((r) => (r.members ?? []) as TenantMember[]);

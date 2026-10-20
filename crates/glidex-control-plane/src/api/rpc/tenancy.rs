@@ -22,6 +22,17 @@ macro_rules! op {
     }};
 }
 
+/// An async one.
+macro_rules! op_async {
+    ($self:ident, $ctx:ident, $req:ident, $f:path) => {{
+        let req = $req.to_owned_message();
+        unary(&$self.app, &$ctx, |c| async move {
+            $f(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }};
+}
+
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
 #[allow(refining_impl_trait)]
 impl TenantService for Svc {
@@ -79,6 +90,22 @@ impl TenantService for Svc {
         req: ServiceRequest<'_, DeleteTenantRequest>,
     ) -> ServiceResult<DeleteTenantResponse> {
         op!(self, ctx, req, tenancy::delete_tenant)
+    }
+
+    async fn list_device_pools(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListDevicePoolsRequest>,
+    ) -> ServiceResult<ListDevicePoolsResponse> {
+        op_async!(self, ctx, req, tenancy::list_device_pools)
+    }
+
+    async fn set_device_pools(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetDevicePoolsRequest>,
+    ) -> ServiceResult<SetDevicePoolsResponse> {
+        op_async!(self, ctx, req, tenancy::set_device_pools)
     }
 
     async fn list_members(

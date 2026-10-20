@@ -39,8 +39,160 @@ const CAPS = [
   "manageTenantBindings",
   "readTenantInvitations",
   "manageTenantInvitations",
+  "readTenantDevicePools",
+  "manageTenantDevicePools",
 ] as const;
 type Cap = (typeof CAPS)[number];
+
+/** The tenant's shares of cluster device pools, split among its projects
+ *  (spec/host-topology.md §9.1a). */
+function DevicePoolsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
+  const [pools, setPools] = useState<api.TenantDevicePool[] | null>(null);
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
+  const [name, setName] = useState("");
+  const [from, setFrom] = useState("");
+  const [max, setMax] = useState(1);
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    api
+      .listTenantDevicePools(tenant.id)
+      .then(setPools)
+      .catch((e) => setError(errorMessage(e)));
+  }, [tenant.id]);
+  useEffect(() => refresh(), [refresh]);
+  useEffect(() => {
+    api
+      .listProjects()
+      .then((ps) => setProjects(ps.filter((p) => p.tenant_id === tenant.id).map((p) => ({ id: p.id, name: p.name }))))
+      .catch(() => setProjects([]));
+  }, [tenant.id]);
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+
+  const save = async (next: api.TenantDevicePool[]) => {
+    setError(null);
+    try {
+      setPools(await api.setTenantDevicePools(tenant.id, next));
+      return true;
+    } catch (e) {
+      setError(errorMessage(e));
+      return false;
+    }
+  };
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    const rest = (pools ?? []).filter((p) => p.name !== name.trim());
+    if (await save([...rest, { name: name.trim(), from: from.trim(), max, projects: chosen }])) {
+      setName("");
+      setFrom("");
+      setMax(1);
+      setChosen([]);
+    }
+  };
+
+  return (
+    <Card title="Device pools">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {pools === null ? (
+        <Loading />
+      ) : pools.length === 0 ? (
+        <p className="text-sm text-gray-500">
+          No tenant pools on this cluster. A tenant pool shares devices of a cluster pool the tenant is granted among
+          some of its projects.
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-100">
+              <th className="py-2 font-medium">Pool</th>
+              <th className="py-2 font-medium">From</th>
+              <th className="py-2 font-medium">Held / max</th>
+              <th className="py-2 font-medium">Free in cluster pool</th>
+              <th className="py-2 font-medium">Projects</th>
+              {canManage && <th />}
+            </tr>
+          </thead>
+          <tbody>
+            {pools.map((p) => (
+              <tr key={p.name} className="border-b border-gray-50">
+                <td className="py-2 font-mono">{p.name}</td>
+                <td className="py-2 font-mono">
+                  {p.from}
+                  {p.ungranted && <span className="ml-2 text-xs text-red-600">ungranted</span>}
+                </td>
+                <td className="py-2">
+                  {p.used ?? 0} / {p.max ?? 0}
+                </td>
+                <td className="py-2">{p.free ?? 0}</td>
+                <td className="py-2">{(p.projects ?? []).map(projectName).join(", ") || "—"}</td>
+                {canManage && (
+                  <td className="py-2 text-right">
+                    <button
+                      className={dangerLink}
+                      onClick={() => void save(pools.filter((o) => o.name !== p.name))}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {canManage && (
+        <form onSubmit={add} className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Field label="Name" htmlFor="tenant-pool-name">
+            <input
+              id="tenant-pool-name"
+              className={inputClass}
+              required
+              pattern="[a-z0-9\-]{1,63}"
+              title="1-63 lowercase letters, digits and dashes"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </Field>
+          <Field label="From cluster pool" htmlFor="tenant-pool-from">
+            <input id="tenant-pool-from" className={inputClass} required value={from} onChange={(e) => setFrom(e.target.value)} />
+          </Field>
+          <Field label="Max devices" htmlFor="tenant-pool-max">
+            <input
+              id="tenant-pool-max"
+              className={inputClass}
+              type="number"
+              min={1}
+              required
+              value={max}
+              onChange={(e) => setMax(Math.max(1, Number(e.target.value)))}
+            />
+          </Field>
+          <div className="sm:col-span-3">
+            <div className="text-sm font-medium text-gray-700">Projects</div>
+            <div className="mt-1 flex flex-wrap gap-3">
+              {projects.map((p) => (
+                <label key={p.id} className="flex items-center gap-1 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={chosen.includes(p.id)}
+                    onChange={(e) => setChosen(e.target.checked ? [...chosen, p.id] : chosen.filter((x) => x !== p.id))}
+                  />
+                  {p.name}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="sm:col-span-3">
+            <button type="submit" className={primaryButton}>
+              Add or replace pool
+            </button>
+          </div>
+        </form>
+      )}
+    </Card>
+  );
+}
 
 /** A tenant role link in the shape the shared binding table shows. */
 function asBinding(tenant: string, b: TenantBinding): Binding {
@@ -545,6 +697,8 @@ export default function TenantDetail() {
       )}
 
       {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
+
+      {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
 
       {canReadBindings && (
         <Card title="Tenant roles">

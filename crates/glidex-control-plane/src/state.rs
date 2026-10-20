@@ -2112,6 +2112,7 @@ impl VmManager {
             disk_gib: sel.root_disk_size_gib.unwrap_or(0),
             running_vms: u64::from(power != PowerState::Stopped),
             devices: pool_counts(&config.devices),
+            tenant_pools: tenant_pool_counts(&config.devices),
             ..Default::default()
         };
         let usage = self.usage_locked(project, &vms)?;
@@ -2813,15 +2814,18 @@ impl VmManager {
                 config.cpu_policy = p;
             }
             if let Some(d) = c.devices {
-                let (old, new) = (pool_counts(&config.devices), pool_counts(&d));
-                delta.devices = new
-                    .into_iter()
-                    .map(|(pool, n)| {
-                        let more = n.saturating_sub(old.get(&pool).copied().unwrap_or(0));
-                        (pool, more)
-                    })
-                    .filter(|&(_, more)| more > 0)
-                    .collect();
+                let more = |old: BTreeMap<String, u64>, new: BTreeMap<String, u64>| {
+                    new.into_iter()
+                        .map(|(pool, n)| {
+                            let more = n.saturating_sub(old.get(&pool).copied().unwrap_or(0));
+                            (pool, more)
+                        })
+                        .filter(|&(_, more)| more > 0)
+                        .collect()
+                };
+                delta.devices = more(pool_counts(&config.devices), pool_counts(&d));
+                delta.tenant_pools =
+                    more(tenant_pool_counts(&config.devices), tenant_pool_counts(&d));
                 config.devices = d;
             }
             match c.hugepage_size {
@@ -5005,6 +5009,7 @@ impl VmManager {
         vms: &HashMap<String, Vm>,
     ) -> Result<(), VmManagerError> {
         Self::apply_quota(&p.quotas, usage, delta, mode, bypassed)?;
+        self.apply_tenant_pools(p, delta, mode, bypassed, vms)?;
         let Some(admission) = self
             .tenants
             .admission(&p.tenant_id)
@@ -5032,6 +5037,83 @@ impl VmManager {
                 Ok(())
             }
         }
+    }
+
+    /// The `max` of each tenant pool `delta` asks of, over the VMs of all
+    /// the tenant's projects (spec/host-topology.md §9.1a).
+    fn apply_tenant_pools(
+        &self,
+        p: &tenancy::Project,
+        delta: &Delta,
+        mode: QuotaMode,
+        bypassed: &mut Vec<QuotaOverrun>,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<(), VmManagerError> {
+        if delta.tenant_pools.is_empty() {
+            return Ok(());
+        }
+        let storage = |e: crate::tenants::TenantError| {
+            VmManagerError::Tenancy(TenancyError::Storage(e.to_string()))
+        };
+        let used = self.tenant_pool_use(&p.tenant_id, vms)?;
+        let mut over = Vec::new();
+        for (name, &n) in &delta.tenant_pools {
+            let tp = self
+                .tenants
+                .device_pool(&p.tenant_id, name)
+                .map_err(storage)?
+                .ok_or_else(|| invalid(format!("no device pool {name}")))?;
+            let used = used.get(name).copied().unwrap_or(0);
+            if used + n > tp.max as u64 {
+                over.push(QuotaOverrun {
+                    resource: format!("tenant_pool.{name}"),
+                    limit: tp.max as u64,
+                    used,
+                    requested: n,
+                });
+            }
+        }
+        if over.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            QuotaMode::Enforce => Err(VmManagerError::TenantQuotaExceeded(over)),
+            QuotaMode::MayExceed => {
+                bypassed.extend(over);
+                Ok(())
+            }
+        }
+    }
+
+    /// Devices asked of each of `tenant`'s tenant pools by its VMs.
+    fn tenant_pool_use(
+        &self,
+        tenant: &str,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<BTreeMap<String, u64>, VmManagerError> {
+        let projects: std::collections::HashSet<String> = self
+            .projects
+            .list()?
+            .into_iter()
+            .filter(|o| o.tenant_id == tenant)
+            .map(|o| o.id)
+            .collect();
+        let mut out = BTreeMap::new();
+        for vm in vms.values().filter(|vm| projects.contains(&vm.project)) {
+            for (name, n) in tenant_pool_counts(&vm.config().devices) {
+                *out.entry(name).or_default() += n;
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Self::tenant_pool_use`], for the tenant pool listing.
+    pub async fn tenant_pools_used(
+        &self,
+        tenant: &str,
+    ) -> Result<BTreeMap<String, u64>, VmManagerError> {
+        let vms = self.vms.read().await;
+        self.tenant_pool_use(tenant, &vms)
     }
 
     /// Whether a project still owns anything (it can't be deleted then).
@@ -5102,6 +5184,17 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// Size in GiB, rounded up.
+/// Devices asked of each tenant pool.
+fn tenant_pool_counts(devices: &[crate::models::DeviceRequest]) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for d in devices {
+        if let Some(t) = &d.tenant_pool {
+            *out.entry(t.clone()).or_default() += d.count as u64;
+        }
+    }
+    out
+}
+
 /// Devices asked of each pool.
 fn pool_counts(devices: &[crate::models::DeviceRequest]) -> BTreeMap<String, u64> {
     let mut out = BTreeMap::new();
