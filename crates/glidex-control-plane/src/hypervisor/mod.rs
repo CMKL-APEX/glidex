@@ -207,6 +207,9 @@ pub(crate) struct VmDisk {
     /// disks glidex created: a user-supplied qcow2 could otherwise name any
     /// host file as its backing file and hand it to the guest.
     pub backing_files: bool,
+    /// On a shared datastore: QEMU's image locking must be on, so another
+    /// node's QEMU can't open it (spec/storage.md §10).
+    pub shared: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
@@ -218,11 +221,13 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             path,
             format,
             backing_files,
+            lock,
         } => VmDisk {
             path: path.clone(),
             read_only: false,
             format: Some((*format).into()),
             backing_files: *backing_files,
+            shared: lock.is_some(),
         },
     };
     let root = match &config.root_disk_binding {
@@ -232,6 +237,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             read_only: false,
             format: detect_image_type(&config.rootfs_path),
             backing_files: false,
+            shared: false,
         },
     };
     std::iter::once(root)
@@ -241,6 +247,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             read_only: true,
             format: Some(ImageType::Raw),
             backing_files: false,
+            shared: false,
         }))
         .collect()
 }

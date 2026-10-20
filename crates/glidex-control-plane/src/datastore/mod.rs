@@ -29,6 +29,9 @@ pub enum VolumeBinding {
         /// qcow2 overlay on an image: the backend must allow backing
         /// files. Only ever set for disks glidex created.
         backing_files: bool,
+        /// On a shared datastore: the file whose write lock says who has the
+        /// volume open (spec/storage.md S16).
+        lock: Option<String>,
     },
 }
 
@@ -42,6 +45,12 @@ impl VolumeBinding {
     pub fn format(&self) -> DiskFormat {
         match self {
             VolumeBinding::File { format, .. } => *format,
+        }
+    }
+
+    pub fn lock(&self) -> Option<&str> {
+        match self {
+            VolumeBinding::File { lock, .. } => lock.as_deref(),
         }
     }
 }
@@ -103,6 +112,23 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     /// `prepare` and checked, that replaces the volume only if both pass.
     fn shrink_volume(&self, disk: &Disk, size: u64, prepare: Prepare<'_>)
     -> Result<(), ImageError>;
+
+    /// Hold `disk`'s volume against every other node while the returned
+    /// guard lives (S16): `Busy` when someone holds it. `None` where no
+    /// lock is needed (a node-local volume only its node opens).
+    fn lock(&self, disk: &Disk) -> Result<Option<std::fs::File>, ImageError> {
+        let Some(path) = self.binding(disk).lock().map(String::from) else {
+            return Ok(None);
+        };
+        match glidex_vm_shim::util::try_lock_file(Path::new(&path)) {
+            Ok(Some(f)) => Ok(Some(f)),
+            Ok(None) => Err(ImageError::Busy(format!(
+                "disk {} is in use elsewhere ({path} is locked)",
+                disk.name
+            ))),
+            Err(e) => Err(ImageError::Io(format!("{path}: {e}"))),
+        }
+    }
 
     /// `disk`'s volume, ready to be opened on this node.
     fn stage(&self, disk: &Disk) -> Result<VolumeBinding, ImageError> {

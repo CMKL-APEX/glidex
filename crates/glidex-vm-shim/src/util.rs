@@ -3,6 +3,38 @@
 use std::path::Path;
 
 /// Milliseconds since the epoch.
+/// Take an OFD write lock on all of `path` (created 0600 if missing)
+/// without waiting: `Ok(None)` when another open file holds one, on this
+/// host or (over NFSv4) another. The lock lasts as long as the returned
+/// file stays open, which is close-on-exec, so a child never inherits it
+/// (spec/storage.md S16).
+pub fn try_lock_file(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(path)?;
+    // SAFETY: a zeroed flock is valid; the fields set are the lock's.
+    let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+    fl.l_type = libc::F_WRLCK as libc::c_short;
+    fl.l_whence = libc::SEEK_SET as libc::c_short;
+    // SAFETY: fd is open for the call; fl is a valid flock.
+    let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
+    if r == 0 {
+        return Ok(Some(f));
+    }
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EAGAIN) | Some(libc::EACCES) => Ok(None),
+        _ => Err(e),
+    }
+}
+
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -296,5 +328,17 @@ mod tests {
             0o600
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_file_lock_is_held_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("d.lock");
+        let first = try_lock_file(&p).unwrap().expect("free");
+        // Another open file of the same process is refused, as another
+        // process's would be: OFD locks belong to the open file.
+        assert!(try_lock_file(&p).unwrap().is_none());
+        drop(first);
+        assert!(try_lock_file(&p).unwrap().is_some());
     }
 }

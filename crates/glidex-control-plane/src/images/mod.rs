@@ -471,6 +471,10 @@ pub struct Disk {
         skip_serializing_if = "is_local_datastore"
     )]
     pub datastore: String,
+    /// On a shared datastore, where `node` stays `None`: the node that acts
+    /// on the disk's file now, its VM's when placed (spec/storage.md S6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
 }
 
 fn local_datastore() -> String {
@@ -511,6 +515,17 @@ impl Disk {
             conditions: Vec::new(),
             node: None,
             datastore: local_datastore(),
+            worker: None,
+        }
+    }
+
+    /// Bind it to the node of its VM: a shared disk's worker follows the
+    /// VM; any other disk is bound once, where it is first used (D6).
+    pub fn bind_to(&mut self, node: &str, shared: bool) {
+        if shared {
+            self.worker = Some(node.to_string());
+        } else {
+            self.node.get_or_insert_with(|| node.to_string());
         }
     }
 
@@ -768,6 +783,8 @@ pub struct DiskResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub datastore: String,
+    pub worker: Option<String>,
+    pub worker_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1273,9 +1290,23 @@ impl ImageManager {
         if !ds.on_node(&node) {
             return Err(missing("which this node isn't on"));
         }
-        let dir = std::path::Path::new(ds.path_for(&node)).join("disks");
+        let root = std::path::Path::new(ds.path_for(&node));
+        let dir = root.join("disks");
         crate::paths::checked_path(&dir).map_err(ImageError::Io)?;
-        Ok(Arc::new(crate::datastore::file::FileDriver::new(dir)))
+        Ok(Arc::new(if ds.is_shared() {
+            crate::datastore::file::FileDriver::shared(dir, root.join(".locks"))
+        } else {
+            crate::datastore::file::FileDriver::new(dir)
+        }))
+    }
+
+    /// Whether `d` is on a shared datastore (S4): unbound, with a worker.
+    pub fn is_shared(&self, d: &Disk) -> bool {
+        d.datastore != crate::datastore::LOCAL
+            && crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| ds.is_shared())
     }
 
     /// The node this manager works for (cluster attach and detach).
@@ -1598,6 +1629,17 @@ impl ImageManager {
             extend_root: None,
             warnings: Vec::new(),
             datastore: d.datastore.clone(),
+            worker: d.worker.clone(),
+            worker_name: d
+                .worker
+                .as_deref()
+                .and_then(|n| {
+                    crate::node::NodeStore::new(self.db.clone())
+                        .get(n)
+                        .ok()
+                        .flatten()
+                })
+                .map(|n| n.spec.name),
         }
     }
 

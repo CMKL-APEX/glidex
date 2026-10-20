@@ -623,6 +623,9 @@ export interface DiskInfo {
   warnings?: string[];
   /** The datastore holding it: an id, `local` for the built-in one (spec/storage.md §4.2). */
   datastore?: string;
+  /** On a shared datastore (no `node`): the node acting on it, its VM's when placed. */
+  worker?: string;
+  worker_name?: string;
 }
 
 /** A disk's phase without its prefix: `ready`, `creating`, … (`""` when unset). */
@@ -727,7 +730,9 @@ export interface DatastoreNode {
 export interface Datastore {
   id: string;
   name: string;
-  driver?: "DATASTORE_DRIVER_DIR";
+  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR";
+  /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
+  topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
   path?: string;
   /** Node id → that node's directory. */
@@ -746,6 +751,8 @@ export interface Datastore {
 /** `POST /datastores`; `PATCH` takes the same fields but `name` and `path`. */
 export interface DatastoreInput {
   name?: string;
+  /** Create only: one filesystem every node mounts (`shared-dir`). */
+  shared?: boolean;
   path?: string;
   node_paths?: Record<string, string>;
   nodes?: string[];

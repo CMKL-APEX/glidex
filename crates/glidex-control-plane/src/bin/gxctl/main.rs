@@ -709,7 +709,7 @@ fn print_help() {
     );
     println!(
         "  {} - Register a directory under /srv/glidex",
-        "datastore create <name> --path P [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+        "datastore create <name> --path P [--shared] [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
     println!(

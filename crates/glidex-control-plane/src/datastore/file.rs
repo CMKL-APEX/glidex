@@ -12,11 +12,30 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct FileDriver {
     dir: PathBuf,
+    /// A shared datastore's lock directory (S16); `None`: node-local.
+    locks: Option<PathBuf>,
 }
 
 impl FileDriver {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self { dir, locks: None }
+    }
+
+    /// Volumes in `dir` that other nodes see too, with their lock files in
+    /// `locks`.
+    pub fn shared(dir: PathBuf, locks: PathBuf) -> Self {
+        Self {
+            dir,
+            locks: Some(locks),
+        }
+    }
+
+    fn lock_path(&self, disk: &Disk) -> Option<String> {
+        self.locks.as_ref().map(|l| {
+            crate::paths::file_in(l, &format!("{}.lock", crate::images::safe_stem(&disk.id)))
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     /// `<dir>/<disk-id>.<qcow2|raw>`.
@@ -45,11 +64,12 @@ impl FileDriver {
         TempFile(Some(p))
     }
 
-    fn file(path: &Path, disk: &Disk) -> VolumeBinding {
+    fn file(&self, path: &Path, disk: &Disk) -> VolumeBinding {
         VolumeBinding::File {
             path: path.to_string_lossy().into_owned(),
             format: disk.format,
             backing_files: disk.is_linked(),
+            lock: self.lock_path(disk),
         }
     }
 }
@@ -63,7 +83,7 @@ impl StorageDriver for FileDriver {
     }
 
     fn binding(&self, disk: &Disk) -> VolumeBinding {
-        Self::file(&self.path(disk), disk)
+        self.file(&self.path(disk), disk)
     }
 
     fn exists(&self, disk: &Disk) -> bool {
@@ -100,7 +120,7 @@ impl StorageDriver for FileDriver {
             }
         }
         set_mode(tmp.path(), 0o600)?;
-        prepare(&Self::file(tmp.path(), disk))?;
+        prepare(&self.file(tmp.path(), disk))?;
         std::fs::rename(tmp.keep(), self.path(disk)).map_err(|e| ImageError::Io(e.to_string()))
     }
 
@@ -130,7 +150,7 @@ impl StorageDriver for FileDriver {
         let tmp = self.temp(disk, "shrink");
         qemu_img::copy_sparse(&path, tmp.path())?;
         qemu_img::resize(tmp.path(), disk.format, size, true)?;
-        prepare(&Self::file(tmp.path(), disk))?;
+        prepare(&self.file(tmp.path(), disk))?;
         qemu_img::check(tmp.path(), disk.format)?;
         set_mode(tmp.path(), 0o600)?;
         std::fs::rename(tmp.keep(), &path).map_err(|e| ImageError::Io(e.to_string()))
@@ -230,6 +250,37 @@ mod tests {
         assert!(names(tmp.path()).is_empty());
     }
 
+    /// A shared volume's lock is taken once; a node-local one has none (S16).
+    #[test]
+    fn a_shared_volume_is_locked_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let locks = tmp.path().join(".locks");
+        std::fs::create_dir(&locks).unwrap();
+        let drv = FileDriver::shared(tmp.path().join("disks"), locks.clone());
+        let d = disk("s1", DiskFormat::Qcow2);
+        assert_eq!(
+            drv.binding(&d).lock(),
+            Some(locks.join("s1.lock").to_str().unwrap())
+        );
+        let held = drv.lock(&d).unwrap().expect("a shared volume has a lock");
+        assert!(matches!(drv.lock(&d), Err(ImageError::Busy(_))));
+        drop(held);
+        // A child another test forks may hold a copy of the descriptor until
+        // it execs (close-on-exec acts only then): the lock goes with it.
+        let mut again = None;
+        for _ in 0..100 {
+            if let Ok(Some(f)) = drv.lock(&d) {
+                again = Some(f);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(again.is_some(), "released");
+        let local = FileDriver::new(tmp.path().join("disks"));
+        assert!(local.binding(&d).lock().is_none());
+        assert!(local.lock(&d).unwrap().is_none());
+    }
+
     #[test]
     fn staging_a_missing_volume_fails() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -243,6 +294,7 @@ mod tests {
                 path: tmp.path().join("gone.qcow2").to_string_lossy().into_owned(),
                 format: DiskFormat::Qcow2,
                 backing_files: false,
+                lock: None,
             }
         );
     }

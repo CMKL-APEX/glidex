@@ -28,6 +28,9 @@ pub struct NewDatastore {
     pub nodes: Vec<String>,
     pub default_for_disks: bool,
     pub overcommit: Option<bool>,
+    /// One filesystem every node mounts (`shared-dir`), else each node's
+    /// own directory (`dir`).
+    pub shared: bool,
 }
 
 /// `PATCH /datastores/{id}`: what is `Some` changes.
@@ -122,9 +125,16 @@ impl VmManager {
         let ds = Datastore {
             id: uuid::Uuid::new_v4().to_string(),
             name: req.name,
-            driver: DriverSpec::Dir {
-                path: req.path,
-                node_paths: self.node_path_ids(&req.node_paths)?,
+            driver: if req.shared {
+                DriverSpec::SharedDir {
+                    path: req.path,
+                    node_paths: self.node_path_ids(&req.node_paths)?,
+                }
+            } else {
+                DriverSpec::Dir {
+                    path: req.path,
+                    node_paths: self.node_path_ids(&req.node_paths)?,
+                }
             },
             nodes: self.node_ids(&req.nodes)?,
             default_for_disks: req.default_for_disks,
@@ -160,16 +170,25 @@ impl VmManager {
             .collect();
         if let Some(paths) = &ch.node_paths {
             let paths = self.node_path_ids(paths)?;
-            let DriverSpec::Dir { path, node_paths } = &mut ds.driver;
-            // A hypervisor holds the old path while its VM runs (S14).
+            let (path, node_paths) = ds.driver.paths();
+            // A hypervisor holds the old path while its VM runs (S14), on
+            // the VM's node (a shared disk names none of its own).
             let vms = self.vms.read().await;
             for d in &disks {
-                let (Some(node), Some(vm)) = (&d.node, &d.attached_to) else {
+                let Some(vm) = d.attached_to.as_ref().and_then(|v| vms.get(v)) else {
                     continue;
                 };
-                let old = node_paths.get(node).unwrap_or(path);
-                let new = paths.get(node).unwrap_or(path);
-                if old != new && vms.get(vm).is_some_and(|v| v.status.instance.is_some()) {
+                let Some(node) = d
+                    .node
+                    .clone()
+                    .or_else(|| vm.status.placement.as_ref().map(|p| p.node.clone()))
+                else {
+                    continue;
+                };
+                let old = node_paths.get(&node).unwrap_or(path);
+                let new = paths.get(&node).unwrap_or(path);
+                if old != new && vm.status.instance.is_some() {
+                    let vm = &vm.name;
                     return Err(DatastoreError::Conflict(format!(
                         "VM {vm} on node {node} has disk {} open at {old}; stop it first",
                         d.name
@@ -177,7 +196,7 @@ impl VmManager {
                     .into());
                 }
             }
-            *node_paths = paths;
+            *ds.driver.node_paths_mut() = paths;
         }
         if let Some(nodes) = &ch.nodes {
             let nodes = self.node_ids(nodes)?;

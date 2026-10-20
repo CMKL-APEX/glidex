@@ -58,7 +58,8 @@ impl VmManager {
                     );
                     vm.resource_version += 1;
                     for d in &mut disks {
-                        d.node.get_or_insert_with(|| node.clone());
+                        let shared = self.images.is_shared(d);
+                        d.bind_to(&node, shared);
                     }
                     let ev = Event::new(
                         "scheduler",

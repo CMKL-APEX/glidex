@@ -41,6 +41,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         cpu_affinity: vec![],
         vcpu_pins: vec![],
         job: false,
+        volume_locks: vec![],
     }
 }
 
@@ -263,6 +264,32 @@ fn binaries_off_the_allowlist_never_run() {
     let exit = instance(dir.path()).unwrap().exit.unwrap();
     assert_eq!(exit.cause, ExitCause::LaunchFailed);
     assert!(exit.message.unwrap().contains("not an allowed hypervisor"));
+}
+
+/// A disk another holder has locked keeps the hypervisor from starting at
+/// all (spec/storage.md S16); a free one is held for the shim's life.
+#[test]
+fn a_locked_disk_stops_the_launch() {
+    let Some(ch) = cloud_hypervisor() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("d.lock");
+    let held = glidex_vm_shim::util::try_lock_file(&lock).unwrap().unwrap();
+    let mut launch = ch_launch(dir.path(), &ch);
+    launch.volume_locks = vec![lock.to_string_lossy().into_owned()];
+    let mut shim = start_shim(dir.path(), &launch);
+    assert_eq!(wait_exit_status(&mut shim), 2);
+    let exit = instance(dir.path()).unwrap().exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::LaunchFailed);
+    assert!(
+        exit.message.as_deref().unwrap_or("").contains("is locked"),
+        "{:?}",
+        exit.message
+    );
+    assert!(
+        !dir.path().join("api.sock").exists(),
+        "the hypervisor never ran"
+    );
+    drop(held);
 }
 
 #[test]

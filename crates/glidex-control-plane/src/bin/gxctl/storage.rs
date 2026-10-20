@@ -824,7 +824,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
 
 // ---- datastores (spec/storage.md §13) -------------------------------------
 
-const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> --path P [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> --path P [--shared] [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
 
 /// `--node-path NODE=PATH`, repeated.
 fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
@@ -868,6 +868,9 @@ fn print_datastore(d: &Datastore) {
         }
     );
     println!("  id: {}", d.id);
+    if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED) {
+        println!("  shared: the same files from every node (one mount)");
+    }
     if !d.builtin {
         println!("  path: {}", d.path);
         let mut np: Vec<_> = d.node_paths.iter().collect();
@@ -994,7 +997,12 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             };
             let req = CreateDatastoreRequest {
                 name: name.to_string(),
-                driver: DatastoreDriver::DATASTORE_DRIVER_DIR.into(),
+                driver: if has_flag(args, "--shared") {
+                    DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR
+                } else {
+                    DatastoreDriver::DATASTORE_DRIVER_DIR
+                }
+                .into(),
                 path: path.to_string(),
                 node_paths: node_paths.into_iter().collect(),
                 nodes: flag_value(args, "--nodes")

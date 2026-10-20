@@ -131,7 +131,7 @@ name (ids when `/projects` isn't readable).
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
 | `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
-| `datastore create <name> --path P [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore` (driver `dir`): a directory under `/srv/glidex` (spec/storage.md §13) |
+| `datastore create <name> --path P [--shared] [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`) |
 | `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
 | `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |

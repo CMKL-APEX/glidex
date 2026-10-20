@@ -287,6 +287,8 @@ pub fn disk_pb(d: &DiskResponse) -> pb::Disk {
         extend_root: extend.unwrap_or_default().into(),
         warnings: d.warnings.clone(),
         datastore: d.datastore.clone(),
+        worker: d.worker.clone(),
+        worker_name: d.worker_name.clone(),
         ..Default::default()
     }
 }
@@ -901,12 +903,22 @@ pub fn disk_datastore(call: &Call, key: Option<&str>) -> ServiceResult<String> {
 pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastore {
     use crate::datastore::record::DriverSpec;
     let d = &v.datastore;
-    let DriverSpec::Dir { path, node_paths } = &d.driver;
+    let (path, node_paths) = d.driver.paths();
+    let (driver, topology) = match d.driver {
+        DriverSpec::Dir { .. } => (
+            pb::DatastoreDriver::DATASTORE_DRIVER_DIR,
+            pb::DatastoreTopology::DATASTORE_TOPOLOGY_NODE_LOCAL,
+        ),
+        DriverSpec::SharedDir { .. } => (
+            pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR,
+            pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
+        ),
+    };
     pb::Datastore {
         id: d.id.clone(),
         name: d.name.clone(),
-        driver: pb::DatastoreDriver::DATASTORE_DRIVER_DIR.into(),
-        topology: pb::DatastoreTopology::DATASTORE_TOPOLOGY_NODE_LOCAL.into(),
+        driver: driver.into(),
+        topology: topology.into(),
         path: path.clone(),
         node_paths: node_paths.clone().into_iter().collect(),
         nodes: d.nodes.clone(),
@@ -977,17 +989,18 @@ pub async fn create_datastore(
     req: pb::CreateDatastoreRequest,
 ) -> ServiceResult<pb::CreateDatastoreResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
-    match req.driver.as_known() {
+    let shared = match req.driver.as_known() {
         Some(pb::DatastoreDriver::DATASTORE_DRIVER_DIR)
-        | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => {}
-        _ => {
+        | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => false,
+        Some(pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR) => true,
+        None => {
             return Err(ServiceError::new(
                 StatusCode::BAD_REQUEST,
                 "invalid_datastore",
-                "driver: only dir is supported so far",
+                "driver: dir or shared-dir",
             ));
         }
-    }
+    };
     let v = call
         .manager()
         .create_datastore(crate::datastore::manage::NewDatastore {
@@ -997,6 +1010,7 @@ pub async fn create_datastore(
             nodes: req.nodes,
             default_for_disks: req.default_for_disks.unwrap_or(false),
             overcommit: req.overcommit,
+            shared,
         })
         .await
         .map_err(manager_err)?;

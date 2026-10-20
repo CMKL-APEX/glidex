@@ -53,6 +53,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   const [onNodes, setOnNodes] = useState<string[]>([]);
   const [paths, setPaths] = useState("");
   const [isDefault, setIsDefault] = useState(false);
+  const [shared, setShared] = useState(false);
   const [overcommit, setOvercommit] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -71,6 +72,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         nodes: onNodes,
         default_for_disks: isDefault,
         overcommit,
+        shared,
       });
       onDone();
     } catch (err) {
@@ -125,6 +127,13 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           <p className="text-xs text-gray-500">One node=path per line, for nodes that mount it somewhere else.</p>
         </div>
       )}
+      <label className="flex items-start space-x-2 text-sm">
+        <input type="checkbox" className="mt-1" checked={shared} onChange={(e) => setShared(e.target.checked)} />
+        <span>
+          Shared: one filesystem every node mounts (NFS, CephFS). Disks on it aren't tied to a node, and their VMs can run on
+          any node that reaches it. The directory must be empty; glidex marks it as this datastore's.
+        </span>
+      </label>
       <label className="flex items-center space-x-2 text-sm">
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
         <span>New disks go here unless they name a datastore</span>
@@ -272,6 +281,7 @@ export default function Datastores() {
                         {d.name}
                       </button>
                       {d.builtin && <span className="ml-2 text-xs text-gray-500">built in</span>}
+                      {d.topology === "DATASTORE_TOPOLOGY_SHARED" && <span className="ml-2 text-xs text-sky-700">shared</span>}
                       {d.default_for_disks && <span className="ml-2 text-xs text-green-700">default for disks</span>}
                       {!d.overcommit && <span className="ml-2 text-xs text-amber-700">no overcommit</span>}
                     </td>

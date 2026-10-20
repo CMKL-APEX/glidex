@@ -1175,7 +1175,16 @@ impl VmManager {
                 .map_err(before_intent)?
         };
         let settings = self.settings();
+        // Shared disks' locks: the shim takes them before the hypervisor
+        // starts (spec/storage.md S16).
+        let volume_locks = config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .filter_map(|b| b.lock().map(String::from))
+            .collect();
         let launch = LaunchFile {
+            volume_locks,
             version: glidex_vm_shim::launch::LAUNCH_VERSION,
             vm_id: vm.id.clone(),
             instance_id: instance_id.clone(),

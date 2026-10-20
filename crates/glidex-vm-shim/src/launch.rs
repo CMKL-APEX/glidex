@@ -66,6 +66,12 @@ pub struct LaunchFile {
     /// so an exit is recorded as usual (status 0: `clean_exit`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub job: bool,
+    /// Lock files of the VM's disks on shared datastores: the shim holds a
+    /// write lock on each for as long as it runs, taken before the
+    /// hypervisor starts, so no other node's hypervisor opens those disks
+    /// meanwhile (spec/storage.md S16). Empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_locks: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +261,7 @@ mod tests {
             cpu_affinity: vec![],
             vcpu_pins: vec![],
             job: false,
+            volume_locks: vec![],
         }
     }
 

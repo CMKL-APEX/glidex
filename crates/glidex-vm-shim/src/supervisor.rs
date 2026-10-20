@@ -105,6 +105,21 @@ pub fn run(args: Args) -> i32 {
         sup.record_exit(ExitCause::LaunchFailed, None, Some(e.to_string()));
         return EXIT_BAD_LAUNCH;
     }
+    // Before anything opens a disk: a held lock means another node's
+    // hypervisor (or disk operation) has it (spec/storage.md S16).
+    for path in sup.launch.volume_locks.clone() {
+        let why = match crate::util::try_lock_file(std::path::Path::new(&path)) {
+            Ok(Some(f)) => {
+                sup.locks.push(f);
+                continue;
+            }
+            Ok(None) => format!("a disk is in use elsewhere: {path} is locked"),
+            Err(e) => format!("{path}: {e}"),
+        };
+        eprintln!("glidex-vm-shim: {}", why);
+        sup.record_exit(ExitCause::LaunchFailed, None, Some(why));
+        return EXIT_BAD_LAUNCH;
+    }
     sup.run()
 }
 
@@ -133,6 +148,8 @@ struct Supervisor {
     disk_poll: Arc<Mutex<Option<DiskPoll>>>,
     /// Tells the poller to stop.
     poll_stop: Arc<AtomicBool>,
+    /// Shared disks' locks, held until the shim exits (S16).
+    locks: Vec<File>,
 }
 
 impl Supervisor {
@@ -164,6 +181,7 @@ impl Supervisor {
             auto_release: false,
             disk_poll: Arc::new(Mutex::new(None)),
             poll_stop: Arc::new(AtomicBool::new(false)),
+            locks: Vec::new(),
         };
         s.save();
         Ok(s)

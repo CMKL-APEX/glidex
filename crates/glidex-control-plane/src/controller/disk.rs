@@ -32,11 +32,74 @@ impl VmManager {
         Ok(())
     }
 
+    /// Who should act on shared disk `d` (spec/storage.md S6, §8.1): its VM's
+    /// node while placed; else its worker while that node is ready and
+    /// reaches the datastore; else a ready node that does, this one first.
+    /// `None`: no node reaches it now.
+    async fn pick_worker(&self, d: &Disk) -> Option<String> {
+        use crate::datastore::record;
+        if let Some(vm) = d.attached_to.as_ref() {
+            let placed = self
+                .vms
+                .read()
+                .await
+                .get(vm)
+                .and_then(|v| v.status.placement.as_ref().map(|p| p.node.clone()));
+            if placed.is_some() {
+                return placed;
+            }
+        }
+        let db = self.store.database();
+        let ds = record::find(&db, &d.datastore).ok().flatten()?;
+        let rows = record::rows(&db, &ds.id).unwrap_or_default();
+        let nodes = self.nodes().list().unwrap_or_default();
+        let fit = |n: &str| {
+            ds.on_node(n)
+                && rows.get(n).is_some_and(|r| r.reachable)
+                && nodes.iter().any(|x| {
+                    x.meta.id == n
+                        && !x.status.phase.is_tombstone()
+                        && x.status.ready == Tristate::True
+                })
+        };
+        if let Some(w) = d.worker.as_ref().filter(|w| fit(w)) {
+            return Some(w.clone());
+        }
+        let me = self.local_node_id();
+        if fit(&me) {
+            return Some(me);
+        }
+        let mut ok: Vec<&String> = rows.keys().filter(|n| fit(n)).collect();
+        ok.sort();
+        ok.first().map(|n| n.to_string())
+    }
+
     /// One round for disk `id`.
     pub async fn reconcile_disk(&self, id: &str) -> Next {
         let Ok(disk) = self.images.get_disk(id) else {
             return Ok(None);
         };
+        // A shared disk's worker is the leader's to choose (S6).
+        if disk.node.is_none()
+            && self.cluster().is_some()
+            && self.store.database().can_write()
+            && self.images.is_shared(&disk)
+            && let Some(w) = self.pick_worker(&disk).await
+            && disk.worker.as_ref() != Some(&w)
+        {
+            let mut d = disk;
+            let msg = format!(
+                "{} acts on it now (was {})",
+                w,
+                d.worker.as_deref().unwrap_or("none")
+            );
+            d.worker = Some(w);
+            self.put_disk_with_event(
+                &d,
+                Some(Event::new("controller", EventKind::Normal, "Worker", msg)),
+            )?;
+            return Ok(Some(Duration::from_secs(1)));
+        }
         if !self.is_local_disk(&disk) {
             return Ok(None);
         }
