@@ -590,6 +590,24 @@ export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmWrit
 export const pauseVm = (id: string) =>
   vmWrite(rpc(VmService.method.pauseVm, { id, wait_secs: WAIT_SECS }) as Promise<VmWriteResponse>);
 
+/** Another kernel image, and/or following the guest's kernel, from the
+ * next start (spec/kernel-boot.md K6, K11). Setting `kernel` without
+ * `follow` turns following off. */
+export function setVmKernel(id: string, change: { kernel?: string; follow?: boolean }) {
+  const paths = [change.kernel !== undefined && "kernel", change.follow !== undefined && "kernel_from_disk"].filter(Boolean);
+  return vmWrite(
+    rpc(VmService.method.updateVm, {
+      id,
+      change: { kernel: change.kernel, kernel_from_disk: change.follow },
+      update_mask: paths.join(","),
+    }) as Promise<VmWriteResponse>,
+  );
+}
+
+/** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
+export const extractVmKernel = (id: string) =>
+  rpc(ImageService.method.extractVmKernel, { id }).then((r) => r.image as ImageInfo);
+
 /** Delete a VM: `undefined` once it is gone, else the VM still being torn down. */
 export const deleteVm = (id: string, keepDisk = false) =>
   rpc(VmService.method.deleteVm, { id, wait_secs: WAIT_SECS, keep_disk: keepDisk }).then((r) => r.vm as VmResponse | undefined);

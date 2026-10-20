@@ -1,21 +1,23 @@
 import { useRef, useEffect, useState, type FormEvent } from "react";
-import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPools } from "../api";
+import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPools, pullImage } from "../api";
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isDiskImage, networkModeLabel, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
 
 type BootMode = "firmware" | "kernel";
+/** Where a kernel-boot VM's kernel comes from (spec/kernel-boot.md §6). */
+type KernelSource = "image" | "path";
 
 /** The firmware catalog entry to pull for each hypervisor (Images page). */
 const FIRMWARE_KEY: Record<HypervisorType, string> = {
   cloudhypervisor: "cloudhv-edk2",
   qemu: "ovmf",
 };
-/** Where a firmware-boot VM's root disk comes from (spec/images.md §7). */
+/** Where a VM's root disk comes from (spec/images.md §7). */
 type RootSource = "image" | "disk" | "path";
 
 interface CreateVmFormProps {
@@ -40,6 +42,13 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
   const [kernelPath, setKernelPath] = useState("");
+  const [initrdPath, setInitrdPath] = useState("");
+  const [kernelSource, setKernelSource] = useState<KernelSource>("image");
+  /** Kernel image id; "" until chosen. */
+  const [kernelImage, setKernelImage] = useState("");
+  const [kernelImages, setKernelImages] = useState<ImageInfo[]>([]);
+  const [followGuest, setFollowGuest] = useState(false);
+  const [extracting, setExtracting] = useState<string | null>(null);
   const [rootfsPath, setRootfsPath] = useState("");
   const [kernelArgs, setKernelArgs] = useState("");
   const [vfioDevices, setVfioDevices] = useState("");
@@ -63,6 +72,44 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [node, setNode] = useState("");
 
   const firmware = bootMode === "firmware";
+  const fromKernelImage = !firmware && kernelSource === "image";
+  // A managed root disk, or a kernel image, gets the generated cloud-init
+  // seed, and so a credential (spec/kernel-boot.md K4).
+  const seeded = firmware || fromKernelImage || rootSource !== "path";
+
+  // Kernels for the chosen image's architecture; the one extracted from
+  // it first (spec/kernel-boot.md K3).
+  const rootImage = rootSource === "image" ? images.find((i) => i.id === image) : undefined;
+  const kernelChoices = kernelImages
+    .filter((k) => !rootImage || k.arch === rootImage.arch)
+    .sort((a, b) => Number(b.for_image === image) - Number(a.for_image === image));
+  const chosenKernel = kernelImages.find((k) => k.id === kernelImage);
+  useEffect(() => {
+    if (!kernelChoices.some((k) => k.id === kernelImage)) setKernelImage(kernelChoices[0]?.id ?? "");
+  }, [kernelChoices, kernelImage]);
+  const extractKernel = async () => {
+    if (!rootImage) return;
+    setExtracting(rootImage.name);
+    try {
+      await pullImage({ kernel_from: rootImage.id });
+      // Ready in seconds; poll until it is (or failed).
+      for (let i = 0; i < 90; i++) {
+        const all = await listImages();
+        const k = all.find((x) => isKernel(x) && x.for_image === rootImage.id);
+        if (k && imageState(k) !== "extracting") {
+          setKernelImages(all.filter((x) => isKernel(x) && imageState(x) === "ready" && !x.deleting));
+          if (imageState(k) === "ready") setKernelImage(k.id);
+          else setSubmitError(`Extracting the kernel failed: ${k.status?.reason ?? "unknown"}`);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Extracting the kernel failed");
+    } finally {
+      setExtracting(null);
+    }
+  };
 
   // Firmware is built for one hypervisor: pick the newest for the new one.
   const firmwareChoices = firmwareFor(firmwareImages, hypervisor);
@@ -100,6 +147,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         const ready = imgs.filter((i) => imageState(i) === "ready" && !i.deleting && isDiskImage(i));
         setImages(ready);
         setFirmwareImages(imgs);
+        setKernelImages(imgs.filter((i) => isKernel(i) && imageState(i) === "ready" && !i.deleting));
         setFirmwareImage((cur) => cur || (firmwareFor(imgs, "cloudhypervisor")[0]?.id ?? ""));
         if (ready.length > 0) {
           setImage(ready[0].id);
@@ -145,16 +193,18 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         name,
         vcpu_count: vcpuCount,
         mem_size_mib: memSizeMib,
-        kernel_image_path: firmware ? "" : kernelPath,
+        kernel_image_path: !firmware && kernelSource === "path" ? kernelPath : "",
+        initrd_path: !firmware && kernelSource === "path" && initrdPath ? initrdPath : undefined,
+        kernel: fromKernelImage ? kernelImage : undefined,
+        kernel_from_disk: fromKernelImage && rootSource !== "path" && followGuest ? true : undefined,
         firmware: firmware ? firmwareImage : undefined,
-        credential: firmware && credential ? credential : undefined,
+        credential: seeded && credential ? credential : undefined,
         networks:
           selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
-        rootfs_path: !firmware || rootSource === "path" ? rootfsPath : undefined,
-        image: firmware && rootSource === "image" ? image : undefined,
-        root_disk_size_gib:
-          firmware && rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
-        root_disk: firmware && rootSource === "disk" ? rootDisk : undefined,
+        rootfs_path: rootSource === "path" ? rootfsPath : undefined,
+        image: rootSource === "image" ? image : undefined,
+        root_disk_size_gib: rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
+        root_disk: rootSource === "disk" ? rootDisk : undefined,
         hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
         kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
         vfio_devices: devices.length > 0 ? devices : undefined,
@@ -249,7 +299,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               .map((d) => d.trim())
               .filter((d) => d.length > 0),
             devices: poolRequests.length > 0 ? poolRequests : undefined,
-            image: firmware && rootSource === "image" && image ? image : undefined,
+            image: rootSource === "image" && image ? image : undefined,
           }}
           value={node}
           onChange={setNode}
@@ -271,7 +321,6 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       </div>
 
       {firmware ? (
-        <>
           <div>
             <label className="block text-sm font-medium text-gray-700">
               UEFI Firmware
@@ -304,6 +353,123 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               )}
             </p>
           </div>
+      ) : (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Kernel
+            </label>
+            <select
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+              value={kernelSource}
+              onChange={(e) => setKernelSource(e.target.value as KernelSource)}
+            >
+              <option value="image">A kernel image</option>
+              <option value="path">Kernel files on the host (administrators)</option>
+            </select>
+          </div>
+
+          {kernelSource === "image" ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                Kernel Image
+              </label>
+              <select
+                className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+                required
+                value={kernelImage}
+                onChange={(e) => setKernelImage(e.target.value)}
+                data-testid="kernel-image"
+              >
+                {kernelChoices.length === 0 && <option value="">No kernel image{rootImage ? ` for ${archLabel(rootImage.arch)}` : ""}</option>}
+                {kernelChoices.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.name}
+                    {k.kernel?.release ? ` (${k.kernel.release})` : ""}
+                    {k.for_image === image && rootImage ? " — from this image" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500" data-testid="kernel-hint">
+                {rootImage && !kernelChoices.some((k) => k.for_image === rootImage.id) ? (
+                  <>
+                    No kernel from {rootImage.name} yet.{" "}
+                    <button
+                      type="button"
+                      className="text-sky-700 hover:underline disabled:opacity-50"
+                      disabled={extracting !== null}
+                      onClick={extractKernel}
+                    >
+                      {extracting ? `Extracting from ${extracting}…` : "Extract it from the image"}
+                    </button>
+                  </>
+                ) : kernelChoices.length === 0 ? (
+                  <>
+                    A catalog image brings its kernel; pull one on the{" "}
+                    <Link to="/images" className="text-sky-700 hover:underline">
+                      Images page
+                    </Link>
+                    .
+                  </>
+                ) : (
+                  "Use the kernel the image was built with: its modules are on the disk."
+                )}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Kernel Image Path
+                </label>
+                <input
+                  type="text"
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+                  placeholder="/path/to/vmlinuz"
+                  required
+                  value={kernelPath}
+                  onChange={(e) => setKernelPath(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Initramfs Path (optional)
+                </label>
+                <input
+                  type="text"
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+                  placeholder="/path/to/initrd.img"
+                  value={initrdPath}
+                  onChange={(e) => setInitrdPath(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Kernel Arguments (optional)
+            </label>
+            <input
+              type="text"
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+              placeholder={
+                fromKernelImage && chosenKernel?.kernel?.cmdline
+                  ? chosenKernel.kernel.cmdline
+                  : "console=ttyS0 root=/dev/vda reboot=k panic=1"
+              }
+              value={kernelArgs}
+              onChange={(e) => setKernelArgs(e.target.value)}
+              data-testid="kernel-args"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              {fromKernelImage && chosenKernel?.kernel?.cmdline
+                ? "Empty: the kernel image's own command line (shown)."
+                : "Empty: the default above. A cloud image needs its root, e.g. root=LABEL=cloudimg-rootfs ro."}
+            </p>
+          </div>
+        </>
+      )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700">
@@ -388,11 +554,26 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 onChange={(e) => setRootfsPath(e.target.value)}
               />
               <p className="mt-1 text-xs text-gray-500">
-                UEFI-bootable image file (raw or qcow2), used as is
+                {firmware
+                  ? "UEFI-bootable image file (raw or qcow2), used as is"
+                  : "A root filesystem or disk image file (raw or qcow2), used as is"}
               </p>
             </div>
           )}
 
+          {fromKernelImage && rootSource !== "path" && (
+            <label className="flex items-start gap-2 text-sm text-gray-700">
+              <input type="checkbox" className="mt-1" checked={followGuest} onChange={(e) => setFollowGuest(e.target.checked)} />
+              <span>
+                Follow the guest&apos;s kernel
+                <span className="block text-xs text-gray-500">
+                  Before each start, use the kernel installed on the disk if it changed (e.g. after an upgrade in the guest).
+                </span>
+              </span>
+            </label>
+          )}
+
+      {seeded && (
           <div>
             <label className="block text-sm font-medium text-gray-700">
               Login Credential
@@ -424,50 +605,6 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                   : "Without a credential the VM has no way to log in. Manage credentials on the Credentials page."}
             </p>
           </div>
-        </>
-      ) : (
-        <>
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Kernel Image Path
-          </label>
-          <input
-            type="text"
-            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-            placeholder="/path/to/vmlinux"
-            required
-            value={kernelPath}
-            onChange={(e) => setKernelPath(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Root Filesystem Path
-          </label>
-          <input
-            type="text"
-            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-            placeholder="/path/to/rootfs.ext4"
-            required
-            value={rootfsPath}
-            onChange={(e) => setRootfsPath(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Kernel Arguments (optional)
-          </label>
-          <input
-            type="text"
-            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-            placeholder="console=ttyS0 root=/dev/vda reboot=k panic=1"
-            value={kernelArgs}
-            onChange={(e) => setKernelArgs(e.target.value)}
-          />
-        </div>
-        </>
       )}
 
       {networks.length === 0 && (

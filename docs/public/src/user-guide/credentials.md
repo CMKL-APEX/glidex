@@ -111,8 +111,10 @@ When you create a VM that boots a cloud image:
   the VM without a login.
 - **API**: `"credential": "alice"` in `POST /vms`.
 
-A credential only works with the seed Glidex generates: a VM that boots a
-kernel directly, or brings its own seed, can't use one.
+A credential only works with the seed Glidex generates: a VM that
+brings its own seed, or boots host kernel files with a root filesystem
+file path, can't use one. A kernel image or a managed boot disk gets the
+seed as with firmware.
 
 ## Your own cloud-init seed
 

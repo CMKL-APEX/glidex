@@ -24,6 +24,7 @@ import VmActions, { type VmAction } from "../components/VmActions";
 import PlaceVm from "../components/PlaceVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
+import VmKernel from "../components/VmKernel";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -269,6 +270,13 @@ export default function VmDetail() {
                       {firmwareName ?? vm.firmware}
                     </Link>
                   </p>
+                </div>
+              )}
+              {vm.kernel && <VmKernel vm={vm} onChanged={fetchVm} />}
+              {vm.boot === "BOOT_MODE_KERNEL" && !vm.kernel && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Kernel</h3>
+                  <p className="text-sm text-gray-700">Kernel files on the host</p>
                 </div>
               )}
               {vm.root_disk && (

@@ -350,23 +350,35 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
 
 ## 7. Clients
 
-- **Web UI** (`CreateVmForm`). **Direct kernel boot** gets the same root
-  disk sources as firmware (image / disk / path) and the credential
-  picker. Instead of the firmware picker it shows a **Kernel** picker:
-  kernel images of the root image's architecture, preferring the one
-  `for_image` the chosen image, with an "Extract kernel from this image"
-  button when there is none. **Host path…** shows kernel, initrd and
-  arguments fields, only with `host.paths`. The arguments field is
-  prefilled with the kernel's `cmdline`. **Images page**: the catalog's
-  Pull keeps a "with kernel" checkbox (on by default, K10); kernels are
-  listed with their `release` and `for` image.
-  **VM detail**: boot mode and kernel.
+- **Web UI** (`CreateVmForm`). **Direct kernel boot** gets the same boot
+  disk sources as firmware (image / disk / path) and, when the disk is
+  seeded, the credential picker. Instead of the firmware picker it has
+  a **Kernel** choice: *A kernel image* lists ready kernel images of the
+  root image's architecture, the one `for_image` the chosen image first
+  ("— from this image"), with an *Extract it from the image* button when
+  there is none (`kernel_from`, then it waits for the image); *Kernel
+  files on the host* (administrators, `host.paths`) shows kernel and
+  initramfs path fields. The arguments field's placeholder is the
+  kernel image's `cmdline`, used when left empty. *Follow the guest's
+  kernel* sets `kernel_from_disk` (K11) for an image or disk root.
+  **Images page**: a note that catalog pulls bring the image's kernel
+  (K10); an *Extract kernel* button on disk images that have none;
+  kernels are listed with their `release` and `for` image.
+  **VM detail** (`VmKernel`): the kernel image, and when following the
+  guest the booted and previous kernels (K12); a picker with *Use from
+  the next start* (K6), the follow checkbox, and *Extract from its disk
+  now* while stopped (§10.5).
 - **gxctl.** `image pull <key> [--no-kernel]`, `image extract-kernel
   <image>`, `image pull <url> --kernel [--initrd-url U]
-  [--initrd-sha256 H] [--cmdline S]`. In `create`, the firmware prompt
-  accepts `kernel` and then asks for a kernel image (the matched one is
-  the default), or a path when `host.paths` is held. Initrd is a prompt
-  after the kernel path. `vm set <vm> --kernel <image>`.
+  [--initrd-sha256 H] [--cmdline S]`, `image pull --kernel-path P
+  [--initrd-path P]` (host import); pulls wait through `Extracting` and
+  print the kernel's release and command line. In `create`, the
+  firmware prompt accepts `kernel` and then asks for a kernel image (the
+  matched one is the default), or a path when `host.paths` is held,
+  then an initramfs path, and whether to follow the guest's kernel.
+  `kernel <vm> [--set <image>] [--follow on|off] [--extract]` shows and
+  changes a VM's kernel (from the next start) and extracts the kernel on
+  its disk.
 - **REST/gRPC.** The `PullImageRequest` oneof gains `kernel_from` and
   `kernel_path`, and the request `with_kernel`. `IMAGE_KIND_KERNEL`,
   `IMAGE_STATE_EXTRACTING`.
@@ -685,7 +697,7 @@ the mask turns following off, and the VM boots the spec's kernel again.
 | **K2** VM integration *(done)* | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch; the UI keeps kernel images out of its disk-image lists and lists them under *Kernels* | §11 VM API tests; the functional test with a kernel image and a credential. |
 | **K3** extraction *(done)* | The extractor appliance (§10.1, K13), runs as shim jobs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10) | Stream and choice unit tests; the functional test on the catalog distros (§11). |
 | **K3b** following the guest *(done)* | `POST /vms/{id}/extract-kernel` (§10.5; moved from K3: it makes VM-owned kernel images), `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | `kernel_from_disk_requests` (API); `guest_kernel_updates_are_followed` (functional, §11). |
-| **K4** clients and docs | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |
+| **K4** clients and docs *(done)* | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |
 
 ## 13. Changes to other specs (to apply on acceptance)
 

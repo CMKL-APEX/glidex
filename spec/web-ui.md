@@ -256,6 +256,12 @@ it now** (`power: "running"`; unchecked, the VM is created stopped).
 `onSubmit` returns a promise: a refused create keeps the form open,
 with what was typed and the error under it.
 
+For **Direct kernel boot** the form shares the boot disk block with
+firmware boot and replaces the firmware picker with a kernel choice
+(kernel image or host files) and *Follow the guest's kernel*; the VM
+detail page's `VmKernel` shows and changes the kernel
+([kernel-boot.md §7](kernel-boot.md#7-clients)).
+
 ## Live stream
 
 `LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one

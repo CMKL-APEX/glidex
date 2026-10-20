@@ -100,6 +100,13 @@ export interface VmResponse {
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
   firmware?: string;
+  /** Kernel image id it boots directly (spec/kernel-boot.md §6). */
+  kernel?: string;
+  boot?: "BOOT_MODE_FIRMWARE" | "BOOT_MODE_KERNEL";
+  /** Following the guest's kernel, and the kernel images extracted from its disk it boots, and booted before. */
+  kernel_from_disk?: boolean;
+  booted_kernel?: string;
+  previous_kernel?: string;
   root_disk?: string;
   data_disks?: string[];
   warnings?: string[];
@@ -278,6 +285,11 @@ export interface CreateVmRequest {
   root_disk?: string;
   data_disks?: string[];
   kernel_args?: string;
+  /** Kernel image id/name to boot directly; host files instead with `kernel_image_path` (+ `initrd_path`). */
+  kernel?: string;
+  initrd_path?: string;
+  /** Boot the kernel the guest installs (spec/kernel-boot.md K11). */
+  kernel_from_disk?: boolean;
   hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
   /** Devices asked for by pool; the scheduler picks them (spec/host-topology.md §9). */
@@ -546,6 +558,16 @@ export interface PullImageRequest {
   arch?: Arch;
   nodes?: string[];
   keep_server_copy?: boolean;
+  /** A kernel image (spec/kernel-boot.md §4.2): its initramfs, command line,
+   * or host files (admins); `kernel_from` extracts one from a disk image. */
+  initrd_url?: string;
+  initrd_sha256?: string;
+  cmdline?: string;
+  kernel_path?: string;
+  initrd_path?: string;
+  kernel_from?: string;
+  /** With a catalog or URL pull: also extract the image's kernel (default: on for a catalog pull). */
+  with_kernel?: boolean;
 }
 
 export interface PullImageResponse {
