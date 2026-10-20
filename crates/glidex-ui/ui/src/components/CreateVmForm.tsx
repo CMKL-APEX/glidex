@@ -84,9 +84,17 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     .filter((k) => !rootImage || k.arch === rootImage.arch)
     .sort((a, b) => Number(b.for_image === image) - Number(a.for_image === image));
   const chosenKernel = kernelImages.find((k) => k.id === kernelImage);
+  // Preselect the image's own kernel only: another image's initramfs looks
+  // for that image's root, and its modules aren't on this disk.
+  const ownKernel = rootImage ? kernelChoices.find((k) => k.for_image === rootImage.id) : undefined;
+  const defaultKernel = rootImage ? (ownKernel?.id ?? "") : (kernelChoices[0]?.id ?? "");
   useEffect(() => {
-    if (!kernelChoices.some((k) => k.id === kernelImage)) setKernelImage(kernelChoices[0]?.id ?? "");
-  }, [kernelChoices, kernelImage]);
+    setKernelImage(defaultKernel);
+  }, [image, rootSource, defaultKernel]);
+  // Taken from a different image than the one this VM boots.
+  const mismatched =
+    rootImage && chosenKernel?.for_image && chosenKernel.for_image !== rootImage.id ? chosenKernel : undefined;
+  const imageName = (id?: string) => images.find((i) => i.id === id)?.name ?? "another image";
   const extractKernel = async () => {
     if (!rootImage) return;
     setExtracting(rootImage.name);
@@ -381,15 +389,29 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 onChange={(e) => setKernelImage(e.target.value)}
                 data-testid="kernel-image"
               >
-                {kernelChoices.length === 0 && <option value="">No kernel image{rootImage ? ` for ${archLabel(rootImage.arch)}` : ""}</option>}
+                {kernelChoices.length === 0 ? (
+                  <option value="">No kernel image{rootImage ? ` for ${archLabel(rootImage.arch)}` : ""}</option>
+                ) : (
+                  !kernelImage && <option value="">Choose a kernel</option>
+                )}
                 {kernelChoices.map((k) => (
                   <option key={k.id} value={k.id}>
                     {k.name}
                     {k.kernel?.release ? ` (${k.kernel.release})` : ""}
-                    {k.for_image === image && rootImage ? " — from this image" : ""}
+                    {rootImage && k.for_image === rootImage.id
+                      ? " — from this image"
+                      : rootImage && k.for_image
+                        ? ` — from ${imageName(k.for_image)}`
+                        : ""}
                   </option>
                 ))}
               </select>
+              {mismatched && (
+                <p className="mt-1 text-xs text-amber-700" data-testid="kernel-mismatch">
+                  This kernel was taken from {imageName(mismatched.for_image)}; {rootImage?.name} may not boot with
+                  it (its initramfs looks for that image&apos;s root disk).
+                </p>
+              )}
               <p className="mt-1 text-xs text-gray-500" data-testid="kernel-hint">
                 {rootImage && !kernelChoices.some((k) => k.for_image === rootImage.id) ? (
                   <>

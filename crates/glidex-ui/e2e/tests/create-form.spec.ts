@@ -1,5 +1,5 @@
 // CreateVmForm per hypervisor: no VM is booted, so no KVM or image needed.
-import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, test, vmCard, waitForRpc, type Hypervisor } from "../fixtures";
+import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, rpcRoute, test, vmCard, waitForRpc, type Hypervisor } from "../fixtures";
 
 const other = (hv: Hypervisor): Hypervisor => (hv === "qemu" ? "cloudhypervisor" : "qemu");
 
@@ -37,6 +37,42 @@ test("offers firmware boot through the hypervisor's firmware image", async ({ pa
   await expect(page.getByText("Initramfs Path (optional)")).toBeVisible();
   await field(page, "Boot Disk").selectOption("path");
   await expect(page.getByText("Login Credential")).toBeHidden();
+});
+
+test("preselects only the chosen image's own kernel", async ({ page }) => {
+  // Two disk images, and the kernel taken from one of them.
+  const ready = { state: "IMAGE_STATE_READY" };
+  const disk = (id: string) => ({ id, name: id, kind: "IMAGE_KIND_DISK", arch: "ARCH_X86_64", status: ready, virtual_size_bytes: "1073741824" });
+  await rpcRoute(page, "glidex.storage.v1.ImageService/ListImages", () => ({
+    message: {
+      images: [
+        disk("beta"),
+        disk("alpha"),
+        { id: "alpha-kernel", name: "alpha-kernel", kind: "IMAGE_KIND_KERNEL", arch: "ARCH_X86_64", status: ready, for_image: "alpha", kernel: { release: "6.1.0", cmdline: "root=LABEL=alpha ro console=ttyS0" } },
+      ],
+    },
+  }));
+  await page.reload();
+  await page.getByRole("button", { name: "+ Create VM" }).click();
+  await field(page, "Boot Mode").selectOption("kernel");
+  const kernel = page.getByTestId("kernel-image");
+
+  // beta has no kernel of its own: none is chosen for it.
+  await expect(field(page, "Image")).toHaveValue("beta");
+  await expect(kernel).toHaveValue("");
+  await expect(page.getByTestId("kernel-hint")).toContainText("No kernel from beta yet");
+  await expect(kernel.locator("option", { hasText: "alpha-kernel" })).toContainText("from alpha");
+
+  // alpha's own kernel is.
+  await field(page, "Image").selectOption("alpha");
+  await expect(kernel).toHaveValue("alpha-kernel");
+  await expect(page.getByTestId("kernel-mismatch")).toBeHidden();
+
+  // Picking another image's kernel on purpose warns.
+  await field(page, "Image").selectOption("beta");
+  await expect(kernel).toHaveValue("");
+  await kernel.selectOption("alpha-kernel");
+  await expect(page.getByTestId("kernel-mismatch")).toContainText("taken from alpha");
 });
 
 test("offers only firmware built for the chosen hypervisor", async ({ page, hypervisor }) => {
