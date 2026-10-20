@@ -751,6 +751,8 @@ export interface DatastoreNode {
   total_bytes?: U64;
   free_bytes?: U64;
   checked_at?: string;
+  /** Risky mount options on a reachable shared datastore (NFS `soft`, local locks). */
+  warnings?: string[];
 }
 
 /** Where disks live (spec/storage.md §13); `local` is built in. */
