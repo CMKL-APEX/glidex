@@ -927,6 +927,19 @@ Creating | Ready | Resizing | Missing | Failed`), `actual_size_bytes`,
   controller treats a busy disk as `DisksReady=False/DiskBusy` and
   requeues.
 - **File gone** → `Missing`, never recreated.
+- **Where it runs** (storage.md §8.1). A disk on a node-local datastore
+  is reconciled on its `node`; one on a shared datastore on its
+  `worker`, which the leader moves to the node of the disk's VM when it
+  is placed. Both nodes' QEMU and glidex volume locks keep two
+  hypervisors off one file (storage.md §10).
+- **Move** (storage.md §8.3). `POST /disks/{id}/move` writes
+  `moving = {datastore, node, mover, flatten}`; the phase stays `Ready`
+  (no `Moving` phase). The mover copies under the busy guard and both
+  volume locks, then one write switches `datastore`, `node` and
+  `worker` and clears `moving` (event `Moved`), and the old file is
+  removed. A destination image copy still being made →
+  `Ready=False/MovePending`, retried; a failed copy clears `moving`
+  (event `MoveFailed`).
 
 ### 10.2 Image
 

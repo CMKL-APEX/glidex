@@ -78,7 +78,92 @@ pub fn probe(
     let _ = std::fs::remove_file(&test);
     (row.total_bytes, row.free_bytes) = space(p);
     row.reachable = true;
+    if ds.is_shared()
+        && let Ok(info) = std::fs::read_to_string("/proc/self/mountinfo")
+        && let Some((fstype, options)) = mount_of(p, &info)
+    {
+        row.warnings = mount_warnings(&fstype, &options);
+    }
     row
+}
+
+/// The filesystem type and its options (mount and superblock options
+/// together) of the mount holding `p`, from `/proc/self/mountinfo`.
+fn mount_of(p: &Path, mountinfo: &str) -> Option<(String, Vec<String>)> {
+    let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut best: Option<(usize, String, Vec<String>)> = None;
+    for line in mountinfo.lines() {
+        // id parent dev root mountpoint options [optional…] - fstype source super
+        let Some((pre, post)) = line.split_once(" - ") else {
+            continue;
+        };
+        let pre: Vec<&str> = pre.split(' ').collect();
+        let post: Vec<&str> = post.split(' ').collect();
+        let (Some(point), Some(opts), Some(fstype)) = (pre.get(4), pre.get(5), post.first()) else {
+            continue;
+        };
+        let point = unescape(point);
+        if !p.starts_with(&point) || best.as_ref().is_some_and(|b| b.0 > point.len()) {
+            continue;
+        }
+        let mut options: Vec<String> = opts.split(',').map(str::to_string).collect();
+        if let Some(sup) = post.get(2) {
+            options.extend(sup.split(',').map(str::to_string));
+        }
+        best = Some((point.len(), fstype.to_string(), options));
+    }
+    best.map(|(_, t, o)| (t, o))
+}
+
+/// A mount point as mountinfo writes it: space, tab, newline and
+/// backslash as octal escapes.
+fn unescape(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && let Ok(c) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(c);
+            i += 4;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What is risky for disks about a shared mount (spec/storage.md §17):
+/// on NFS, `soft` (a server outage fails guests' writes, which can leave
+/// a qcow2 corrupt) and locks kept on this node only (`nolock`,
+/// `local_lock=`), with which the volume locks (S16) no longer keep two
+/// nodes' hypervisors off one disk.
+fn mount_warnings(fstype: &str, options: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if !fstype.starts_with("nfs") {
+        return out;
+    }
+    let has = |o: &str| options.iter().any(|x| x == o);
+    if has("soft") || has("softerr") {
+        out.push(
+            "mounted soft: an NFS server outage fails the guests' disk writes; mount it hard"
+                .to_string(),
+        );
+    }
+    let local = options
+        .iter()
+        .find_map(|o| o.strip_prefix("local_lock="))
+        .filter(|v| *v != "none");
+    if has("nolock") || local.is_some() {
+        out.push(format!(
+            "NFS locks are local to this node ({}): disk locks don't keep other nodes off a disk; mount without nolock or local_lock",
+            local.map(|v| format!("local_lock={v}")).unwrap_or_else(|| "nolock".into())
+        ));
+    }
+    out
 }
 
 /// Make sure the shared directory `p` is datastore `id`'s of `cluster`: its
@@ -200,6 +285,7 @@ pub fn worth_writing(old: Option<&NodeRow>, new: &NodeRow) -> bool {
     let moved = old.free_bytes.abs_diff(new.free_bytes);
     old.reachable != new.reachable
         || old.reason != new.reason
+        || old.warnings != new.warnings
         || old.message != new.message
         || old.path != new.path
         || old.total_bytes != new.total_bytes
@@ -313,6 +399,37 @@ mod tests {
         };
         assert_eq!(probe(&b, "n1", "c1", true, root, 7).reason, "NotEmpty");
         assert!(!busy.join(MARKER).exists());
+    }
+
+    #[test]
+    fn risky_nfs_mounts_are_warned_about() {
+        let info = "\
+22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+40 22 0:40 / /srv/glidex/nfs\\040a rw,relatime shared:9 - nfs4 fs:/e rw,vers=4.2,soft,local_lock=none,addr=10.0.0.1
+41 22 0:41 / /srv/glidex/v3 rw,relatime - nfs fs:/f rw,vers=3,hard,nolock,local_lock=all
+42 22 0:42 / /srv/glidex/ok rw,relatime - nfs4 fs:/g rw,vers=4.2,hard,local_lock=none
+";
+        let at = |p: &str| {
+            let (t, o) = mount_of(Path::new(p), info).unwrap();
+            mount_warnings(&t, &o)
+        };
+        let soft = at("/srv/glidex/nfs a/disks");
+        assert_eq!(soft.len(), 1, "{soft:?}");
+        assert!(soft[0].contains("soft"));
+        let v3 = at("/srv/glidex/v3");
+        assert_eq!(v3.len(), 1, "{v3:?}");
+        assert!(v3[0].contains("local_lock=all"), "{v3:?}");
+        assert!(at("/srv/glidex/ok").is_empty());
+        // Not NFS: the root filesystem.
+        assert!(at("/srv/glidex/other").is_empty());
+        let mut a = NodeRow::default();
+        let b = NodeRow {
+            warnings: vec!["x".into()],
+            ..Default::default()
+        };
+        assert!(worth_writing(Some(&a), &b));
+        a.warnings = b.warnings.clone();
+        assert!(!worth_writing(Some(&a), &b));
     }
 
     #[test]

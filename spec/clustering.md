@@ -75,7 +75,7 @@ Non-goals for this revision (each in §18):
 | D3 | **One write lane on the leader.** Writes are serialized. A write's closure runs only once the previous write has been applied locally. | The closure then reads exactly the state its write set will apply to, so no extra conflict detection is needed. Control-plane write rates (tens per second) fit easily in a LAN Raft round trip. Pipelining is a later optimization (§18). |
 | D4 | **One binary, two roles.** `glidex-control-plane` runs the **node** role on every host (VM, disk and image-cache controllers, metering sampler, netd sync), plus the **server** role on server hosts (API, Raft, scheduler, cluster controllers, ledger). | The node role is today's host-facing code, unchanged in substance. A standalone host is both roles in one process with a local store (D5). |
 | D5 | **Standalone stays non-Raft.** The store is a trait with two implementations: `Local` (today's direct ReDB) and `Replicated`. `gxctl cluster init` switches a host to `Replicated` with one voter. | Existing single-host users carry no Raft cost and no risk until they opt in. Both implementations take the same write sets (C0), so the code paths stay common. |
-| D6 | **Placement is sticky and local-storage-bound.** The scheduler places a VM once (`status.placement`). After that the VM moves only when an administrator explicitly re-places it, which needs the old node to be gone and fenced (§18). A disk is bound to a node at creation or at its first use. | Disks are local files. Moving a VM without its disk is impossible; moving it while the old node may still run it breaks D8. |
+| D6 | **Placement is sticky and follows the disks' datastores.** The scheduler places a VM once (`status.placement`). After that the VM moves only when an administrator re-places it (`POST /vms/{id}/place`, storage.md §9): a stopped VM, or a Lost one after its node was forgotten. A disk on a node-local datastore is bound to a node at creation or at its first use; a disk on a shared datastore is bound to no node, and its VM may go to any node that reaches the datastore (storage.md §5.2). | A node-local disk is a file on one node: moving a VM without it is impossible. Moving a VM while the old node may still run it breaks D8. |
 | D7 | **Node liveness is held in the leader's memory.** Nodes heartbeat every 5 s over the cluster port. Only *transitions* (`Ready` ↔ `Unknown`) are written through Raft. After a leader change, every node gets a fresh grace period. | A heartbeat per node per 5 s through Raft is pure log churn. A new leader must not declare every node dead because it has not heard from them yet. |
 | D8 | **No automatic failover of VMs.** A node that stops heartbeating makes its VMs `Ready=Unknown/NodeUnreachable`. Nothing is restarted elsewhere. | A partitioned node may still run its VMs (reconciliation.md D1). Starting copies elsewhere would put two writers on one disk the moment storage is shared, and with local disks there is nothing to start from anyway. |
 | D9 | **OVN for cluster networks**, on the OVS each host already runs. The leader's network controller writes the OVN **northbound** database. netd on each host only joins the host to OVN and plugs VM ports into `br-int`. | OVN provides the overlay, logical switches and routers, DHCP, SNAT gateway high availability, port security, and (later) multi-chassis port binding for live migration (§18). The NB database is a network service reached over TLS, so the unprivileged control plane can write it, while netd keeps owning everything privileged on the host. |
@@ -765,7 +765,7 @@ and at least every 10 minutes. Heartbeats themselves are not written
 | Node lifecycle | leader | node `Ready` transitions, VM `NodeUnreachable` conditions |
 | Ledger close and roll-ups (§13) | leader | `usage_*`, `rate_5m` (closed) |
 | VM (reconciliation.md §9) | **node**, for VMs placed on it | VM status (through the API, §8.3) |
-| Disk (reconciliation.md §10.1) | **node**, for disks bound to it | disk status |
+| Disk (reconciliation.md §10.1) | **node**, for disks bound to it or whose worker it is (storage.md §8.1) | disk status |
 | Image cache (§9.2) | **node** | `image_caches/<image>/<node>` |
 | Network (`scope: node`) (networking.md §11.2a) | **node**, for its node networks | network status |
 | Metering sampler | **node** | node-local ledger, then shipped (§13) |
@@ -887,7 +887,9 @@ changes.
      or the node network's bridge;
    - VFIO devices: each BDF is granted for that node
      (`pci.allow[].node`, §16) and free;
-   - disks: every attached disk unbound or bound to this node (D6);
+   - disks: every attached node-local disk unbound or bound to this
+     node, and every datastore of the VM's disks reachable from it (D6,
+     storage.md §5.2);
    - networks: a `scope: node` network on this node; a provider network
      whose physnet this node maps (§11.3).
 2. **Score:** least allocated by `max(cpu share, memory share)`, then
@@ -912,7 +914,11 @@ changes. Placement is never changed by the scheduler afterwards (D6).
   `node` binds at once; without it, the disk binds to the node of the
   first VM placed with it (like Kubernetes' `WaitForFirstConsumer`).
   The images.md §2 invariants (file named by id, orphans never deleted)
-  hold on each node.
+  hold on each node. A disk on a shared datastore has no `node`; its
+  `worker` acts on it (storage.md §8.1).
+- **Image copies per location:** besides each node's copy, a shared
+  datastore holding linked disks has its own copy of their image,
+  `image_caches/<image>/ds:<datastore>` (storage.md §4.5).
 - **Quotas** stay cluster-wide, in the same admission write as today.
 
 #### 9.2.1 Architectures
@@ -1647,8 +1653,8 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
 
 ## 18. Later (needs its own design)
 
-- **Shared storage classes** (`shared-fs` over NFS or CephFS; `rbd`
-  through krbd), followed by **live migration** of tap VMs. With OVN,
+- **Live migration** of tap VMs, on shared datastores
+  ([storage.md](storage.md); block drivers such as `rbd` are its §11). With OVN,
   live migration means multi-chassis port binding
   (`requested-chassis=src,dst`) with `activation-strategy=rarp`. It
   also needs a CPU-model policy for Cloud Hypervisor, and the vhost-user
@@ -1663,14 +1669,16 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
 - **Placement groups / anti-affinity.**
 - **A native OVSDB client** in place of `ovn-nbctl`; write-lane
   pipelining (D3).
-- **Moving resources between hosts** (copying disk files to another
-  node, offline or as part of live migration). Detach and import (§5.8,
-  §5.9) move *ownership* with the host; the files never leave it.
+- **Moving disks between hosts as part of live migration.** Offline
+  moves go through a shared datastore (storage.md §8.3). Detach and
+  import (§5.8, §5.9) move *ownership* with the host; the files never
+  leave it.
 - **Keeping addresses across a detach or import** for NICs on mapped
   networks (e.g. moving a cluster subnet with its VMs), instead of
   re-addressing them (§5.8.1).
-- **A shared image store**, which also deduplicates images imported
-  with the same checksum (§5.9).
+- **Deduplicating images imported with the same checksum** (§5.9).
+  Shared datastores hold one copy per datastore (storage.md §4.5) but
+  keep image ids as they are.
 - **Floating IPs and port forwarding** on VPC routers (`dnat_and_snat`),
   and overlapping CIDRs between VPCs (D21).
 - **Router peering and a transit gateway.** Today a network has one

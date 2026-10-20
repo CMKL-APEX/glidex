@@ -982,6 +982,9 @@ fn print_datastore(d: &Datastore) {
                 format_bytes(r.total_bytes),
                 r.path
             );
+            for w in &r.warnings {
+                println!("    {} {w}", "warning:".yellow());
+            }
         } else {
             println!(
                 "  {} {}: {} {}",

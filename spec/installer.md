@@ -534,8 +534,10 @@ switched off get the UI back on the next run.
 ## Datastores (spec/storage.md S13)
 
 The installer creates `/srv/glidex` (`root:root 0755`), and both units
-may write under it. Operators mount datastores there, owned by `glidex`.
-Uninstall leaves `/srv/glidex` alone.
+may write under it. Operators mount datastores there, owned by `glidex`
+(NFS: export the directory owned by the `glidex` uid, the same on every
+node; root squash is fine, since glidex never writes as root). Uninstall
+leaves `/srv/glidex` alone.
 
 To register datastores once the services are up:
 - `--datastore NAME=PATH` registers a shared datastore (one filesystem

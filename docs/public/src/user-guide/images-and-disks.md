@@ -200,6 +200,9 @@ a root disk independent of any one VM.
   smaller than the image.
 - **Format**: `qcow2` (default) or `raw`.
 - **Clone** (from an image): **Linked** or **Full copy**.
+- **Datastore**: where the disk lives, shown once the operator has
+  registered more than `local` ([Datastores](../operator-guide/datastores.md)).
+  The default is preselected.
 
 **gxctl:**
 
@@ -207,6 +210,7 @@ a root disk independent of any one VM.
 gxctl disk create data1 --size-gib 50                    # blank qcow2
 gxctl disk create web-root --image ubuntu-24.04 --size-gib 20
 gxctl disk create web-root2 --image ubuntu-24.04 --full --raw
+gxctl disk create data2 --size-gib 50 --datastore nfs1   # on a datastore other than the default
 ```
 
 When a disk is made from an image and given more space than the image
@@ -302,8 +306,42 @@ attached to a VM can't be deleted: detach it or delete the VM first. A
 root disk that was created along with a VM is deleted with the VM,
 unless you delete the VM with `--keep-disk`.
 
-In a cluster, a disk lives on one node. It is bound to the node of the
-first VM that uses it, and its VMs run there.
+### Where a disk lives
+
+A disk lives on a datastore. On the built-in `local`, or another
+datastore each node has its own of, it lives on one node: the node of
+the first VM that uses it, and its VMs run there. On a **shared**
+datastore (one filesystem every node mounts), it is tied to no node, and
+its VM can run on any node that reaches the datastore. The **Disks**
+page has a *Datastore* column once there is more than `local`; `gxctl
+disk show` names it too.
+
+### Moving a disk
+
+A disk can move to another datastore while no running VM uses it (stop
+the VM first). Its data is copied, then the old file is removed.
+
+**Web UI:** **Disks**, **Move** on the disk's row: pick the datastore.
+For a linked disk, **Flatten** makes it a full copy instead of an overlay
+on the image there.
+
+**gxctl:**
+
+```bash
+gxctl disk move data1 --datastore nfs1
+gxctl disk move web-root --datastore fast --flatten
+```
+
+It waits up to five minutes and prints the disk, or that it is still
+moving; a disk that is moving shows *moving* in its status, and can't
+be attached, resized or started from until it's done. A linked disk
+moved to a shared datastore waits for the image to be copied there
+first.
+
+Moving a disk from one node's own storage to another node's isn't
+possible directly: move it to a shared datastore, then from there. A
+disk on a shared datastore lets its VM move between nodes (see
+[Placement on a cluster](vms.md#placement-on-a-cluster)).
 
 ### Over the API
 
@@ -312,6 +350,7 @@ api() { curl --cacert host.crt -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Cont
 api -X POST https://host.example.org:8841/images -d '{"catalog": "ubuntu-24.04"}'
 api -X POST https://host.example.org:8841/disks -d '{"name": "data1", "project": "lab", "size_gib": 50}'
 api -X POST https://host.example.org:8841/disks/data1/resize -d '{"size_gib": 100}'
+api -X POST https://host.example.org:8841/disks/data1/move -d '{"datastore": "nfs1", "wait_secs": 300}'
 api -X DELETE https://host.example.org:8841/disks/data1
 ```
 

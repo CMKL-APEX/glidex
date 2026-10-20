@@ -179,8 +179,9 @@ only if it is `Active`, ready, not draining, has room, and has what the
 VM needs: the hypervisor, the image's architecture, hugepages if asked,
 its PCI devices, the physical networks of its provider networks, a
 userspace `br-int` for vhost-user NICs on cluster networks, an OVN
-version as new as the cluster's, and the node of any disk or node
-network it uses. Among candidates it picks the least allocated
+version as new as the cluster's, the node of any node-local disk or node
+network it uses, and every datastore its disks are on
+([Datastores](datastores.md)). Among candidates it picks the least allocated
 (the largest of the CPU, memory and, for a VM in hugepages, hugepage
 shares after placing), then the one with fewest VMs.
 
@@ -212,6 +213,9 @@ API). A VM no node can take is still created and waits, with each
 node's reason in its status.
 
 A VM stays on its node once placed. Glidex doesn't move running VMs.
+A stopped VM whose disks are on shared datastores can be placed on
+another node: `gxctl place <vm> [--node N]`, or **Place on another
+node** on its page.
 
 ## Node lifecycle
 
@@ -283,7 +287,8 @@ last synced are lost. Then, on a server, run
    `gxctl node forget node3 --fenced` (add `--force` if that leaves an
    even number of voters). Its VMs stay recorded, marked lost; its
    certificate is refused from now on; a forgotten server is rotated out
-   of the CA.
+   of the CA. Lost VMs whose disks are on shared datastores can be
+   placed on a live node: `gxctl place <vm>`.
 2. When you no longer want its records:
    `gxctl node purge node3`. This deletes the records of its VMs, disks
    and networks, not any files.

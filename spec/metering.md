@@ -411,6 +411,13 @@ New calls in `glidex-hv-client`:
   lag. That error is accepted.
 - Unmanaged `rootfs_path` disks are not metered, just as they are not
   under quota.
+- **Datastores** ([storage.md](storage.md)). A disk is sampled by the
+  node acting on it: its `node` on a node-local datastore, its `worker`
+  on a shared one (`VmManager::is_local_disk`), so a shared disk is
+  counted once. A shared datastore's copy of an image
+  (`<path>/images/<id>.qcow2`, storage.md §4.5) is not metered yet,
+  and usage can't be grouped by datastore yet (`group_by=datastore`,
+  later).
 
 ### 5.4 Network: bridge-port counters
 

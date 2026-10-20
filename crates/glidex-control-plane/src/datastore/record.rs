@@ -165,6 +165,10 @@ pub struct NodeRow {
     pub total_bytes: u64,
     pub free_bytes: u64,
     pub checked_at: u64,
+    /// What is risky about how it is mounted here, though it is reachable
+    /// (spec/storage.md §4.4): NFS mounted `soft`, or with local locks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

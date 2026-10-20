@@ -837,6 +837,9 @@ message DatastoreNode {
   uint64 total_bytes = 7 [json_name = "total_bytes"];
   uint64 free_bytes = 8 [json_name = "free_bytes"];
   google.protobuf.Timestamp checked_at = 9 [json_name = "checked_at"];
+  // What is risky about how a reachable shared datastore is mounted on
+  // the node: NFS mounted `soft`, or with locks local to the node.
+  repeated string warnings = 10;
 }
 
 message Datastore {

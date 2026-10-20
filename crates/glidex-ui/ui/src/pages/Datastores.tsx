@@ -27,6 +27,12 @@ function reach(d: Datastore): { ok: number; all: number; free: number | null } {
 }
 
 function RowStatus({ r }: { r: DatastoreNode }) {
+  if (r.reachable && (r.warnings ?? []).length)
+    return (
+      <span className="text-amber-700" title={(r.warnings ?? []).join("\n")}>
+        reachable, with warnings
+      </span>
+    );
   if (r.reachable) return <span className="text-green-700">reachable</span>;
   return (
     <span className="text-red-700" title={r.message}>
@@ -195,6 +201,11 @@ function Detail({ d }: { d: Datastore }) {
                 <td>
                   <RowStatus r={r} />
                   {!r.reachable && r.message && <div className="text-gray-500 max-w-xs truncate">{r.message}</div>}
+                  {(r.warnings ?? []).map((w) => (
+                    <div key={w} className="text-amber-700 max-w-xs">
+                      {w}
+                    </div>
+                  ))}
                 </td>
                 <td>{r.reachable ? `${formatBytes(r.free_bytes)} of ${formatBytes(r.total_bytes)}` : "—"}</td>
                 <td className="font-mono break-all">{r.path}</td>
