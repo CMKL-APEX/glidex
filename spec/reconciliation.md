@@ -410,8 +410,8 @@ Phases:
 |---|---|
 | `power`, `stop_grace_secs`, `restart_policy`, `on_host_boot` | at once |
 | `config.vfio_devices` | hot-plugged/unplugged while the guest is observed `Running`; while `Paused`, pending (`DevicesPending`) |
-| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `hugepages` | next launch; `RestartRequired=True` meanwhile |
-| `hypervisor`, `kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
+| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `kernel` (a kernel image, kernel-boot.md K6), `hugepages` | next launch; `RestartRequired=True` meanwhile |
+| `hypervisor`, `kernel_image_path`, `initrd_path`, `generate_seed`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
 
 `RestartRequired` compares the spec at `generation` with the spec at
 `instance.launched_generation`, ignoring the "at once" and hot-plug
@@ -524,6 +524,12 @@ the intent record:
   run by the shim: if the hypervisor exits before its socket answers and
   its captured output contains one of the strings (case-insensitive),
   the shim runs `fallback.argv` once.
+- `job` (default `false`): a one-shot run, not a VM
+  ([kernel-boot.md §10.2](kernel-boot.md#102-run), the kernel
+  extractor). The shim reports `Running` as soon as the hypervisor
+  starts, without waiting for `api_socket`, and records its exit as for
+  a VM (`clean_exit` on status 0). Such instances are named `extract-…`
+  and are no VM's; startup's orphan scan leaves them alone.
 - The environment is not configurable: the shim starts the hypervisor
   with `LC_ALL=C`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and nothing else.
 - No secret is ever in `argv` (it is visible in `/proc`): credentials
@@ -540,15 +546,15 @@ Built by `cloud_hypervisor.rs` from the same inputs as today's
 | `cpus {boot_vcpus, max_vcpus}` | `--cpus boot=<n>,max=<n>` |
 | `memory {size, shared, hugepages}` | `--memory size=<mib>M[,shared=on][,hugepages=on]` |
 | `payload.firmware` | `--firmware <path>` |
-| `payload.kernel`, `payload.cmdline` | `--kernel <path> --cmdline <args>` (a separate argv element; not split) |
+| `payload.kernel`, `payload.initramfs`, `payload.cmdline` | `--kernel <path> [--initramfs <path>] --cmdline <args>` (a separate argv element; not split) |
 | `disks[]` (`[root, data…, seed]`) | one `--disk path=<q>[,readonly=on][,image_type=<t>][,backing_files=on]` each |
 | `net[]` | one `--net id=net<i>,mac=<mac>,num_queues=<2·qp>[,mtu=<m>]` plus `tap=<if>` or `vhost_user=on,socket=<q>,vhost_mode=server` |
 | `devices[]` (VFIO) | one `--device path=<q>,id=vfio_…` each |
-| `console`, `serial` (boot-mode table, hypervisors.md) | `--console tty --serial off` (kernel boot) or `--console off --serial tty` (firmware boot) |
+| `console`, `serial` (boot-mode table, hypervisors.md) | `--console off --serial tty` (serial port: firmware boot, and kernel boot by default) or `--console tty --serial off` (kernel boot whose last `console=` is `hvc…`) |
 
 `<q>` is a path written as `"<path>"` when it contains `,` (F2).
 **Admission rule (new):** every path that reaches a hypervisor command
-line (`kernel_image_path`, `firmware_path`, `rootfs_path`,
+line (`kernel_image_path`, `initrd_path`, `firmware_path`, `rootfs_path`,
 `cloud_init_path`, managed disk files, VFIO sysfs paths) must not
 contain `"`, a control character or a newline: `400 invalid_config`.
 QEMU's `-blockdev` JSON already needs no escaping; its `-drive`/`-kernel`

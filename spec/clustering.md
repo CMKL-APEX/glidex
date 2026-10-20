@@ -922,7 +922,7 @@ A cluster may mix `x86_64` and `aarch64` nodes. An image record has one
 - **Nodes** report `status.features.arch` (`x86_64` | `aarch64`). A node
   of an older version reports none and counts as matching anything.
 - **A VM's architecture** is that of the image its root disk comes from,
-  else of its firmware image; a VM with neither (direct kernel boot)
+  else of its firmware or kernel image; a VM with neither (host-path kernel boot)
   has none. Create refuses an image and a firmware of different
   architectures (`400`). The default firmware (none named) is the newest
   usable one for the hypervisor *and* the VM's architecture.

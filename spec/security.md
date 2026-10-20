@@ -21,7 +21,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | `glidex` group | Service group **and** netd authority **and** console access; the installer adds the invoking human (`glidex-install/src/main.rs:1083`). | Every member is a network administrator of the host and can bypass any API check. |
 | VM runtime files | `/tmp/<prefix>-<id>.{sock,console.sock,log,cloudinit.img}` (`models.rs:157-176`), `UMask=0007`, no `PrivateTmp`. | Group members can drive any VM's hypervisor API (CH HTTP / QMP) directly; predictable names in a shared `/tmp`. |
 | netd ownership | `detach_vm_port` / `release_vm` ignore the stored `owner_uid` (`glidex-netd/src/server.rs:561-580`). | Any full-socket peer can detach any VM's ports. |
-| Host paths | `rootfs_path`, `kernel_image_path`, `firmware_path`, `cloud_init_path` and `vfio_devices` are taken as given. | Any caller can make the control plane open any file it can read, or pass through any PCI device. |
+| Host paths | `rootfs_path`, `kernel_image_path`, `initrd_path`, `firmware_path`, `cloud_init_path` and `vfio_devices` are taken as given. | Any caller can make the control plane open any file it can read, or pass through any PCI device. |
 | NAT isolation | The NAT forward chain accepts anything entering from a NAT bridge (`glidex-ovs/src/nat.rs:265-268`), and nothing filters guest traffic to the host. | A VM on one NAT network can open connections to VMs on another, and to any host service listening on the gateway (e.g. the control plane with `GLIDEX_LISTEN=0.0.0.0`). Matters once projects own networks. |
 | Guest credentials | Hashes are never returned (`credentials.rs:72-110`). | — (kept) |
 | Downloads | Firmware, Cloud-Hypervisor and images are sha256-verified. Rust and Bun are installed with `curl … \| sh` (`glidex-install/src/main.rs:723,748`). | Unpinned scripts run on every install/update. |
@@ -844,17 +844,24 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
-| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
-**Paths.** Any explicit `kernel_image_path`, `rootfs_path` or
+**Paths.** Any explicit `kernel_image_path`, `initrd_path`, `rootfs_path` or
 `cloud_init_path` needs `useHostPath`, and so does any `firmware_path`.
 Managed disks are named with `image`, `root_disk` and `data_disks`
-instead, and firmware with `firmware` (a firmware image, `readImage`). Paths into the disk or image directories are not
+instead, firmware with `firmware` and kernels with `kernel` (a firmware or
+kernel image, `readImage`). Pulling a kernel image from host files
+(`POST /images` with `kernel_path` or `initrd_path`) needs `useHostPath`
+too; VMs then boot it with `readImage` only. Kernels extracted from a
+disk image (`kernel_from`, and catalog pulls) are read by a network-less
+extractor VM in a `glidex-vm@` unit, never by the control plane: the
+host only parses the extractor's length-checked output stream
+([kernel-boot.md](kernel-boot.md) K9, §10). Paths into the disk or image directories are not
 treated as managed: they would reach other projects' disks, or let a VM
 write to a shared base image.
 

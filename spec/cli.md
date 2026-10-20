@@ -321,7 +321,7 @@ Interactive `handle_create` asks, in order:
    the default instead (`none` for no login). With
    no credentials in the project gxctl says "no login available" and
    doesn't ask.
-9. Kernel args (optional — server picks per-hypervisor default) —
+9. Kernel args (optional — server default `console=ttyS0 root=/dev/vda reboot=k panic=1`) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.
 

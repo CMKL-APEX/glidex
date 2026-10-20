@@ -309,6 +309,18 @@ message Vm {
   // (spec/host-topology.md §9).
   repeated DeviceRequest devices = 35;
   repeated PoolDevice pool_devices = 36 [json_name = "pool_devices"];
+  // Kernel image id (spec/kernel-boot.md §6).
+  optional string kernel = 37;
+  BootMode boot = 38;
+}
+
+// How a VM boots (spec/kernel-boot.md).
+enum BootMode {
+  BOOT_MODE_UNSPECIFIED = 0;
+  // UEFI firmware runs the bootloader on the root disk.
+  BOOT_MODE_FIRMWARE = 1;
+  // The hypervisor loads a kernel directly.
+  BOOT_MODE_KERNEL = 2;
 }
 
 // `count` devices of pool `pool`, all under one PCIe switch with
@@ -375,6 +387,14 @@ message CreateVmRequest {
   optional string node = 24;
   // Wait this long (at most 300 s) for the controller to act.
   optional uint32 wait_secs = 25 [json_name = "wait_secs"];
+  // Host path (`useHostPath`): initramfs for `kernel_image_path`.
+  optional string initrd_path = 30 [json_name = "initrd_path"];
+  // Kernel image id or name to boot directly (not with a firmware or
+  // `kernel_image_path`).
+  optional string kernel = 31;
+  // Generate the cloud-init seed (default: firmware boot, and kernel boot
+  // of a managed kernel or root disk). Not with `cloud_init_path`.
+  optional bool generate_seed = 32 [json_name = "generate_seed"];
 }
 
 // The answer to a VM write (§12.3).
@@ -461,6 +481,8 @@ message VmChange {
   NumaPolicy numa_policy = 14 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 15 [json_name = "cpu_policy"];
   repeated DeviceRequest devices = 16;
+  // Kernel image id or name; the VM must already boot a kernel image.
+  optional string kernel = 17;
 }
 
 message UpdateVmRequest {

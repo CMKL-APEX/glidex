@@ -9,8 +9,8 @@
 //! containing `,` must be double-quoted.
 
 use super::{
-    HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, needs_shared_memory,
-    resolve_binary, vfio_device_id, vm_disks,
+    ConsoleDevice, HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs,
+    needs_shared_memory, resolve_binary, vfio_device_id, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::VmConfig;
@@ -152,22 +152,28 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         }
     }
 
-    // Firmware boot hands off to the disk's own bootloader; distro cloud
-    // images put their console on ttyS0, so the serial port is the console
-    // there instead of hvc0. `tty` is CH's stdio: the shim's PTY.
-    let (console, serial) = match &config.firmware_path {
+    // Firmware boot hands off to the disk's own bootloader.
+    match &config.firmware_path {
         Some(fw) => {
             a.push("--firmware".into());
             a.push(fw.clone());
-            ("off", "tty")
         }
         None => {
             a.push("--kernel".into());
             a.push(config.kernel_image_path.clone());
+            if let Some(initrd) = &config.initrd_path {
+                a.push("--initramfs".into());
+                a.push(initrd.clone());
+            }
             a.push("--cmdline".into());
             a.push(config.kernel_args.clone());
-            ("tty", "off")
         }
+    }
+    // `tty` is CH's stdio: the shim's PTY, on whichever device the guest's
+    // console is (spec/kernel-boot.md §5.2).
+    let (console, serial) = match ConsoleDevice::of(config) {
+        ConsoleDevice::Serial => ("off", "tty"),
+        ConsoleDevice::Virtio => ("tty", "off"),
     };
 
     let disks = disk_args(config);
@@ -196,6 +202,43 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         serial.into(),
     ]);
     a
+}
+
+/// The kernel extractor's run (spec/kernel-boot.md §10.2): the appliance,
+/// the image read-only, the raw output disk, the serial port on stdio; no
+/// API socket, no NIC, 1 vCPU and 1 GiB.
+pub(crate) fn extractor_args(
+    bin: &str,
+    (kernel, initrd): (&str, &str),
+    (disk, format): (&str, ImageType),
+    out: &str,
+) -> Vec<String> {
+    [
+        bin,
+        "--cpus",
+        "boot=1",
+        "--memory",
+        "size=1024M",
+        "--kernel",
+        kernel,
+        "--initramfs",
+        initrd,
+        "--cmdline",
+        crate::images::extractor::CMDLINE,
+        "--disk",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        format!(
+            "path={},readonly=on,image_type={}",
+            q(disk),
+            image_type_name(format)
+        ),
+        format!("path={},image_type=raw", q(out)),
+    ])
+    .chain(["--serial", "tty", "--console", "off"].map(String::from))
+    .collect()
 }
 
 pub struct CloudHypervisorDriver;
@@ -293,12 +336,36 @@ mod tests {
         assert_eq!(values(&a, "--kernel"), ["/k"]);
         assert_eq!(values(&a, "--cmdline"), ["console=hvc0 root=/dev/vda"]);
         assert!(values(&a, "--firmware").is_empty());
-        // Kernel boot: the virtio console is the guest console.
+        assert!(values(&a, "--initramfs").is_empty());
+        // `console=hvc0`: the virtio console is the guest console.
         assert_eq!(
             (values(&a, "--console"), values(&a, "--serial")),
             (vec!["tty"], vec!["off"])
         );
         assert!(!a.iter().any(|x| x == "--net" || x == "--device"));
+    }
+
+    #[test]
+    fn kernel_boot_with_initramfs_on_the_serial_port() {
+        let a = args(
+            &config(serde_json::json!({
+                "initrd_path": "/boot/initrd.img",
+                "kernel_args": "console=ttyS0 root=LABEL=cloudimg-rootfs ro"
+            })),
+            "/s",
+        );
+        // CH takes the payload options in any order; this one is fixed.
+        let i = |flag: &str| a.iter().position(|x| x == flag).unwrap();
+        assert!(i("--kernel") < i("--initramfs") && i("--initramfs") < i("--cmdline"));
+        assert_eq!(values(&a, "--initramfs"), ["/boot/initrd.img"]);
+        assert_eq!(
+            values(&a, "--cmdline"),
+            ["console=ttyS0 root=LABEL=cloudimg-rootfs ro"]
+        );
+        assert_eq!(
+            (values(&a, "--console"), values(&a, "--serial")),
+            (vec!["off"], vec!["tty"])
+        );
     }
 
     #[test]
@@ -497,8 +564,15 @@ mod tests {
             mtu: Some(1500),
         }];
         let api = dir.path().join("api.sock");
-        let out = std::process::Command::new(bin)
-            .args(args(&c, api.to_str().unwrap()))
+        // The kernel extractor's command line parses too (§10.2).
+        let x = extractor_args(
+            bin.to_str().unwrap(),
+            ("/nonexistent/kernel", "/nonexistent/initrd"),
+            ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2),
+            "/nonexistent/out.raw",
+        );
+        let out = std::process::Command::new(&x[0])
+            .args(&x[1..])
             .output()
             .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
@@ -507,5 +581,28 @@ mod tests {
             !err.contains("ParsingConfig") && !err.contains("required arguments"),
             "{err}"
         );
+        assert!(
+            x.contains(
+                &"path=\"/nonexistent/a,b/disk.qcow2\",readonly=on,image_type=qcow2".to_string()
+            ),
+            "{x:?}"
+        );
+        // Firmware boot, then kernel boot with an initramfs.
+        let mut kernel = c.clone();
+        kernel.firmware_path = None;
+        kernel.kernel_image_path = "/nonexistent/vmlinuz".into();
+        kernel.initrd_path = Some("/nonexistent/initrd.img".into());
+        for c in [c, kernel] {
+            let out = std::process::Command::new(&bin)
+                .args(args(&c, api.to_str().unwrap()))
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success());
+            assert!(
+                !err.contains("ParsingConfig") && !err.contains("required arguments"),
+                "{err}"
+            );
+        }
     }
 }

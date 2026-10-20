@@ -61,6 +61,11 @@ pub struct LaunchFile {
     /// Cloud Hypervisor takes `--cpus affinity=` instead. Empty: none.
     #[serde(default)]
     pub vcpu_pins: Vec<u32>,
+    /// A one-shot run, not a VM (spec/kernel-boot.md §10.2): `Running` as
+    /// soon as the hypervisor starts, without waiting for its API socket,
+    /// so an exit is recorded as usual (status 0: `clean_exit`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub job: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -249,6 +254,7 @@ mod tests {
             meter_poll_secs: 0,
             cpu_affinity: vec![],
             vcpu_pins: vec![],
+            job: false,
         }
     }
 

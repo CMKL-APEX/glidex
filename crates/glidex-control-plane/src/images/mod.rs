@@ -11,6 +11,11 @@
 //! through, pulled from the firmware catalog or a URL; they are images of
 //! kind `firmware` and never the source of a disk.
 //!
+//! *Kernel* images (`kernel.rs`, spec/kernel-boot.md §4) are a kernel, an
+//! optional initramfs and a default command line VMs boot directly,
+//! pulled from a URL or copied from the host; they are images of kind
+//! `kernel` and never the source of a disk either.
+//!
 //! Records live in the `images` and `disks` tables of the control plane's
 //! ReDB file; files live under `<dir>/images` and `<dir>/disks`, named by
 //! id only.
@@ -18,7 +23,10 @@
 pub mod catalog;
 pub mod disk;
 pub mod download;
+pub mod extract;
+pub mod extractor;
 pub mod firmware;
+pub mod kernel;
 pub mod partition;
 pub mod qemu_img;
 pub mod spare;
@@ -150,6 +158,21 @@ pub enum ImageSource {
         url: String,
         version: String,
     },
+    /// Copied from a host file by an admin (a kernel image's `kernel_path`).
+    Host { path: String },
+    /// Extracted from a disk image's `/boot` (spec/kernel-boot.md §10):
+    /// the image, the digest of the copy read, the kernel's place in it
+    /// (`vda13:/vmlinuz-…`; empty until extracted), and whether that image
+    /// was verified.
+    Extracted {
+        image_id: String,
+        #[serde(default)]
+        image_sha256: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        verified: bool,
+    },
 }
 
 /// What an image is for.
@@ -161,6 +184,9 @@ pub enum ImageKind {
     Disk,
     /// UEFI firmware a VM boots through (raw `.fd`).
     Firmware,
+    /// A kernel, its initramfs and command line a VM boots directly
+    /// (spec/kernel-boot.md §4).
+    Kernel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -171,6 +197,8 @@ pub enum ImageStatus {
         total_bytes: Option<u64>,
     },
     Verifying,
+    /// A kernel image waiting for, or running, its extraction (§10).
+    Extracting,
     Ready,
     Failed {
         reason: String,
@@ -197,6 +225,19 @@ pub struct DownloadMeta {
     pub vars_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vars_sha256: Option<String>,
+    /// A kernel download's initramfs, fetched after the kernel and stored
+    /// as `<id>.initrd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_sha256: Option<String>,
+}
+
+/// A file an image is made of besides its main one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMeta {
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +283,18 @@ pub struct Image {
     /// one (the downloading server's, §9.2.2).
     #[serde(default = "keep_copies", skip_serializing_if = "is_true")]
     pub keep_server_copy: bool,
+    /// A kernel image's initramfs (`<id>.initrd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<FileMeta>,
+    /// A kernel image's default `kernel_args` (spec/kernel-boot.md K7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmdline: Option<String>,
+    /// A kernel image's release, from its header when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_release: Option<String>,
+    /// The disk image (id) a kernel image was extracted from (K3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -265,14 +318,22 @@ impl Image {
             } => {
                 expected_sha256.is_some()
                     && (self.download.vars_url.is_none() || self.download.vars_sha256.is_some())
+                    && (self.download.initrd_url.is_none() || self.download.initrd_sha256.is_some())
             }
+            // An admin's file: nothing glidex checked it against.
+            ImageSource::Host { .. } => false,
+            // As trusted as the image it came from.
+            ImageSource::Extracted { verified, .. } => *verified,
         }
     }
 
     pub fn catalog_key(&self) -> Option<&str> {
         match &self.source {
             ImageSource::Catalog { key, .. } => Some(key),
-            ImageSource::Url { .. } | ImageSource::Firmware { .. } => None,
+            ImageSource::Url { .. }
+            | ImageSource::Firmware { .. }
+            | ImageSource::Host { .. }
+            | ImageSource::Extracted { .. } => None,
         }
     }
 
@@ -285,6 +346,10 @@ impl Image {
 
     pub fn is_firmware(&self) -> bool {
         self.kind == ImageKind::Firmware
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.kind == ImageKind::Kernel
     }
 
     /// Ready and not being deleted: usable by a new disk or VM.
@@ -501,6 +566,28 @@ pub struct PullImageRequest {
     /// `false`: the server's copy goes once one of `nodes` has one.
     #[serde(default)]
     pub keep_server_copy: Option<bool>,
+    /// With a kernel `url`: its initramfs (spec/kernel-boot.md §4.2).
+    #[serde(default)]
+    pub initrd_url: Option<String>,
+    #[serde(default)]
+    pub initrd_sha256: Option<String>,
+    /// A kernel image's default `kernel_args`.
+    #[serde(default)]
+    pub cmdline: Option<String>,
+    /// Copy a kernel from this host file (needs `useHostPath`), with
+    /// `initrd_path` as its initramfs.
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+    #[serde(default)]
+    pub initrd_path: Option<String>,
+    /// Extract a kernel image from this disk image (id or name, §10).
+    #[serde(default)]
+    pub kernel_from: Option<String>,
+    /// With a disk image pull: also extract its kernel once downloaded
+    /// (K10; default: on for catalog pulls with an extractor for the
+    /// architecture, off for URL pulls).
+    #[serde(default)]
+    pub with_kernel: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -608,9 +695,16 @@ pub struct ImageResponse {
     /// code and a per-VM store; without one, `-bios`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub vars_template: bool,
-    /// VMs that boot through this firmware image (filled in by `VmManager`).
+    /// VMs that boot through this firmware or kernel image (filled in by
+    /// `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by_vms: Vec<String>,
+    /// A kernel image's initramfs, command line and release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<KernelResponse>,
+    /// The disk image a kernel image was extracted from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
     /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
     /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -620,6 +714,16 @@ pub struct ImageResponse {
     /// Deletion requested and not finished yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub deleting: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cmdline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<FileMeta>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -723,6 +827,14 @@ pub struct ImageSettings {
     pub default_root_bytes: u64,
     pub max_downloads: usize,
     pub allow_private_urls: bool,
+    /// A kernel image's kernel and initramfs limits (spec/kernel-boot.md §4.3).
+    pub max_kernel_size: u64,
+    pub max_initrd_size: u64,
+    /// Extractions at once on this node (`GLIDEX_MAX_EXTRACTIONS`, §10.2).
+    pub max_extractions: usize,
+    /// `GLIDEX_KERNEL_EXTRACTION=off`: never extract kernels (a host that
+    /// can't download the extractor, or tests).
+    pub kernel_extraction: bool,
 }
 
 impl ImageSettings {
@@ -752,6 +864,21 @@ impl ImageSettings {
                 .unwrap_or(2),
             allow_private_urls: std::env::var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS")
                 .is_ok_and(|v| v == "1"),
+            max_kernel_size: std::env::var("GLIDEX_MAX_KERNEL_SIZE")
+                .ok()
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(kernel::MAX_KERNEL_SIZE),
+            max_initrd_size: std::env::var("GLIDEX_MAX_INITRD_SIZE")
+                .ok()
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(kernel::MAX_INITRD_SIZE),
+            max_extractions: std::env::var("GLIDEX_MAX_EXTRACTIONS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(1),
+            kernel_extraction: std::env::var("GLIDEX_KERNEL_EXTRACTION")
+                .map_or(true, |v| v != "off"),
         }
     }
 }
@@ -817,6 +944,10 @@ pub struct ImageManager {
     /// Image id → disks being cloned from it but not yet committed.
     holds: Mutex<HashMap<String, usize>>,
     downloads: Arc<tokio::sync::Semaphore>,
+    /// Extractor runs at once (§10.2), and the extractor appliance's
+    /// download and assembly, done once.
+    pub(crate) extractions: Arc<tokio::sync::Semaphore>,
+    pub(crate) extractor_lock: tokio::sync::Mutex<()>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
     /// The `local` datastore's driver, over `settings.disk_dir`.
@@ -876,6 +1007,8 @@ impl ImageManager {
 
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
+            extractions: Arc::new(tokio::sync::Semaphore::new(settings.max_extractions)),
+            extractor_lock: tokio::sync::Mutex::new(()),
             http: download::http_client(settings.allow_private_urls)?,
             local: Arc::new(crate::datastore::file::FileDriver::new(
                 settings.disk_dir.clone(),
@@ -980,11 +1113,10 @@ impl ImageManager {
         let mut known = std::collections::HashSet::new();
         let images: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
         for mut img in images {
-            known.insert(self.image_file(&img));
+            known.extend(self.image_files(&img).into_iter().map(|(_, p)| p));
             known.insert(self.part_path(&img.id));
-            if img.is_firmware() {
-                known.insert(self.firmware_vars_template(&img.id));
-            }
+            known.insert(self.initrd_part_path(&img.id));
+            known.insert(self.extract_out_path(&img.id));
             let exists = self.image_file(&img).exists();
             let new_status = match &img.status {
                 ImageStatus::Ready if !exists && held_elsewhere(&img) => None,
@@ -1016,7 +1148,9 @@ impl ImageManager {
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    let index = p.file_name().is_some_and(|n| n == "spare-index.json");
+                    let index = p
+                        .file_name()
+                        .is_some_and(|n| n == "spare-index.json" || n == extract::EXTRACTOR_DIR);
                     if !known.contains(&p) && !index {
                         tracing::warn!(path = %p.display(), "file without a glidex record left in place");
                     }
@@ -1053,12 +1187,50 @@ impl ImageManager {
         )
     }
 
+    /// A kernel image's kernel.
+    pub fn kernel_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.kernel", safe_stem(id)),
+        )
+    }
+
+    /// A kernel image's initramfs.
+    pub fn kernel_initrd_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.initrd", safe_stem(id)),
+        )
+    }
+
+    /// A kernel download's initramfs while it arrives.
+    pub fn initrd_part_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.initrd.part", safe_stem(id)),
+        )
+    }
+
     /// The file an image's record stands for.
     pub fn image_file(&self, img: &Image) -> PathBuf {
         match img.kind {
             ImageKind::Disk => self.image_path(&img.id),
             ImageKind::Firmware => self.firmware_path(&img.id),
+            ImageKind::Kernel => self.kernel_path(&img.id),
         }
+    }
+
+    /// Every file an image is made of, by the part name nodes copy it under
+    /// (spec/clustering.md §9.2): `main` first, then a firmware's `vars`
+    /// template or a kernel's `initrd`, which an image may lack.
+    pub fn image_files(&self, img: &Image) -> Vec<(&'static str, PathBuf)> {
+        let mut files = vec![("main", self.image_file(img))];
+        match img.kind {
+            ImageKind::Disk => {}
+            ImageKind::Firmware => files.push(("vars", self.firmware_vars_template(&img.id))),
+            ImageKind::Kernel => files.push(("initrd", self.kernel_initrd_path(&img.id))),
+        }
+        files
     }
 
     pub fn part_path(&self, id: &str) -> PathBuf {
@@ -1329,7 +1501,7 @@ impl ImageManager {
 
     pub fn image_response(&self, img: &Image, with_info: bool) -> ImageResponse {
         let path = self.image_file(img);
-        let info = (with_info && img.status == ImageStatus::Ready && !img.is_firmware())
+        let info = (with_info && img.status == ImageStatus::Ready && img.kind == ImageKind::Disk)
             .then(|| qemu_img::info(&path, Some(DiskFormat::Qcow2)).ok())
             .flatten();
         ImageResponse {
@@ -1355,6 +1527,12 @@ impl ImageManager {
             used_by_vms: Vec::new(),
             copies: Vec::new(),
             vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
+            kernel: img.is_kernel().then(|| KernelResponse {
+                release: img.kernel_release.clone(),
+                cmdline: img.cmdline.clone(),
+                initrd: img.initrd.clone(),
+            }),
+            for_image: img.for_image.clone(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -1589,14 +1767,11 @@ impl ImageManager {
             task.abort();
         }
         self.remove_image_record(&img.id)?;
-        let files = match img.kind {
-            ImageKind::Disk => vec![self.image_path(&img.id), self.part_path(&img.id)],
-            ImageKind::Firmware => vec![
-                self.firmware_path(&img.id),
-                self.firmware_vars_template(&img.id),
-                self.part_path(&img.id),
-            ],
-        };
+        let files = self
+            .image_files(&img)
+            .into_iter()
+            .map(|(_, p)| p)
+            .chain([self.part_path(&img.id), self.initrd_part_path(&img.id)]);
         for p in files {
             match std::fs::remove_file(&p) {
                 Ok(()) => {}
@@ -1676,6 +1851,10 @@ mod tests {
             pinned: Vec::new(),
             release: Vec::new(),
             keep_server_copy: true,
+            initrd: None,
+            cmdline: None,
+            kernel_release: None,
+            for_image: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");

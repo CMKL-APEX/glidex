@@ -2,8 +2,8 @@
 //! (no `-S`, D9), and driven over QMP (`glidex-hv-client`) at run time.
 
 use super::{
-    HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, VmDisk, needs_shared_memory,
-    resolve_binary, vfio_bdf, vfio_device_id, vm_disks,
+    ConsoleDevice, HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, VmDisk,
+    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
@@ -277,6 +277,9 @@ impl LaunchSpec<'_> {
             Some(Firmware::Bios(path)) => push(&mut args, "-bios", path.clone()),
             None => {
                 push(&mut args, "-kernel", config.kernel_image_path.clone());
+                if let Some(initrd) = &config.initrd_path {
+                    push(&mut args, "-initrd", initrd.clone());
+                }
                 push(&mut args, "-append", config.kernel_args.clone());
             }
         }
@@ -323,7 +326,17 @@ impl LaunchSpec<'_> {
             "-qmp",
             format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)),
         );
-        push(&mut args, "-serial", "stdio".into());
+        // The shim's PTY is QEMU's stdio; it carries whichever device the
+        // guest's console is on (spec/kernel-boot.md §5.2).
+        match ConsoleDevice::of(config) {
+            ConsoleDevice::Serial => push(&mut args, "-serial", "stdio".into()),
+            ConsoleDevice::Virtio => {
+                push(&mut args, "-serial", "none".into());
+                push(&mut args, "-device", "virtio-serial-pci,id=vser0".into());
+                push(&mut args, "-chardev", "stdio,id=con0".into());
+                push(&mut args, "-device", "virtconsole,chardev=con0".into());
+            }
+        }
         push(&mut args, "-display", "none".into());
         args
     }
@@ -546,6 +559,60 @@ impl HypervisorDriver for QemuDriver {
     }
 }
 
+/// The kernel extractor's run (spec/kernel-boot.md §10.2), as
+/// [`super::cloud_hypervisor::extractor_args`]: `-no-reboot`, so the
+/// appliance's power-off ends QEMU.
+pub(crate) fn extractor_args(
+    bin: &str,
+    (kernel, initrd): (&str, &str),
+    (disk, format): (&str, ImageType),
+    out: &str,
+) -> Vec<String> {
+    let blockdev = |node: &str, path: &str, driver: &str, read_only: bool| {
+        let mut b = serde_json::json!({
+            "driver": driver, "node-name": node, "read-only": read_only,
+            "file": {"driver": "file", "filename": path, "read-only": read_only},
+        });
+        // Never a backing file a qcow2 header names (as for VM disks).
+        if driver == "qcow2" {
+            b["backing"] = serde_json::Value::Null;
+        }
+        b.to_string()
+    };
+    [
+        bin,
+        "-nodefaults",
+        "-no-user-config",
+        "-enable-kvm",
+        "-machine",
+        "q35",
+        "-m",
+        "1024M",
+        "-smp",
+        "1",
+        "-kernel",
+        kernel,
+        "-initrd",
+        initrd,
+        "-append",
+        crate::images::extractor::CMDLINE,
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        "-blockdev".into(),
+        blockdev("src", disk, format.qemu_format(), true),
+        "-device".into(),
+        "virtio-blk-pci,drive=src".into(),
+        "-blockdev".into(),
+        blockdev("out", out, "raw", false),
+        "-device".into(),
+        "virtio-blk-pci,drive=out".into(),
+    ])
+    .chain(["-serial", "stdio", "-display", "none", "-no-reboot"].map(String::from))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +665,55 @@ mod tests {
             queue_pairs,
             mtu,
         }
+    }
+
+    #[test]
+    fn kernel_extractor_command_line() {
+        let a = extractor_args(
+            "/usr/bin/qemu-system-x86_64",
+            ("/x/kernel", "/x/initrd"),
+            ("/i/a.qcow2", ImageType::Qcow2),
+            "/i/.k.extract.raw",
+        );
+        assert_eq!(values(&a, "-kernel"), ["/x/kernel"]);
+        assert_eq!(values(&a, "-initrd"), ["/x/initrd"]);
+        assert_eq!(values(&a, "-append"), [crate::images::extractor::CMDLINE]);
+        let bd: Vec<serde_json::Value> = values(&a, "-blockdev")
+            .iter()
+            .map(|b| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(bd[0]["read-only"], true);
+        assert_eq!(bd[0]["driver"], "qcow2");
+        assert!(bd[0]["backing"].is_null() && bd[0].get("backing").is_some());
+        assert_eq!(
+            (bd[1]["driver"].as_str(), bd[1]["read-only"].as_bool()),
+            (Some("raw"), Some(false))
+        );
+        assert!(a.contains(&"-no-reboot".to_string()));
+        assert!(!a.iter().any(|x| x.starts_with("-netdev") || x == "-qmp"));
+    }
+
+    #[test]
+    fn kernel_boot_with_initrd_and_console_device() {
+        let c = config(serde_json::json!({"initrd_path": "/boot/initrd.img"}));
+        let args = spec(&c).args();
+        assert_eq!(values(&args, "-initrd"), ["/boot/initrd.img"]);
+        assert_eq!(values(&args, "-serial"), ["stdio"]);
+        assert!(values(&args, "-chardev").is_empty());
+
+        // `console=hvc0`: a virtio console on stdio, no serial port.
+        let c = config(serde_json::json!({"kernel_args": "console=hvc0 root=/dev/vda"}));
+        let args = spec(&c).args();
+        assert!(values(&args, "-initrd").is_empty());
+        assert_eq!(values(&args, "-serial"), ["none"]);
+        assert_eq!(values(&args, "-chardev"), ["stdio,id=con0"]);
+        assert_eq!(
+            values(&args, "-device")
+                .into_iter()
+                .filter(|d| d.starts_with("virtio-serial") || d.starts_with("virtconsole"))
+                .collect::<Vec<_>>(),
+            ["virtio-serial-pci,id=vser0", "virtconsole,chardev=con0"]
+        );
     }
 
     #[test]

@@ -15,7 +15,9 @@ use crate::controller::queue::{Key, WorkQueue};
 use crate::credentials::{
     CreateCredentialRequest, Credential, CredentialError, CredentialStore, UpdateCredentialRequest,
 };
-use crate::hypervisor::{HypervisorError, HypervisorType, check_command_line_path};
+use crate::hypervisor::{
+    HypervisorError, HypervisorType, check_command_line_path, check_kernel_args,
+};
 use crate::images::{
     self, CatalogItem, CreateDiskRequest, Disk, DiskResponse, ExtendMode, ImageError, ImageManager,
     ImageResponse, ImageSettings, PullImageRequest, ResizeDiskRequest, disk::requested_size,
@@ -276,11 +278,18 @@ pub struct ConfigPatch {
     pub data_disks: Option<Vec<String>>,
     #[serde(default)]
     pub networks: Option<Vec<NetworkAttachment>>,
+    /// Kernel image id or name (spec/kernel-boot.md K6); next launch.
+    #[serde(default)]
+    pub kernel: Option<String>,
     // Immutable (§7.3): present only to be refused.
     #[serde(default)]
     pub hypervisor: Option<serde_json::Value>,
     #[serde(default)]
     pub kernel_image_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub initrd_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub generate_seed: Option<serde_json::Value>,
     #[serde(default)]
     pub firmware_path: Option<serde_json::Value>,
     #[serde(default)]
@@ -301,6 +310,8 @@ impl ConfigPatch {
         for (name, present) in [
             ("hypervisor", self.hypervisor.is_some()),
             ("kernel_image_path", self.kernel_image_path.is_some()),
+            ("initrd_path", self.initrd_path.is_some()),
+            ("generate_seed", self.generate_seed.is_some()),
             ("firmware_path", self.firmware_path.is_some()),
             ("firmware", self.firmware.is_some()),
             ("rootfs_path", self.rootfs_path.is_some()),
@@ -1004,8 +1015,8 @@ impl VmManager {
     }
 
     /// A VM's architecture (spec/clustering.md §9.2.1): that of the image a
-    /// disk of it comes from, else of its firmware image; `None` for one
-    /// with neither (direct kernel boot).
+    /// disk of it comes from, else of its firmware or kernel image; `None`
+    /// for one with neither (host-path kernel boot).
     pub(crate) fn vm_arch(
         &self,
         c: &VmConfig,
@@ -1020,6 +1031,7 @@ impl VmManager {
         from_disk.or_else(|| {
             c.firmware_image
                 .as_deref()
+                .or(c.kernel_image.as_deref())
                 .and_then(|f| self.images.get_image(f).ok())
                 .map(|i| i.arch)
         })
@@ -1743,6 +1755,9 @@ impl VmManager {
             ("kernel_image_path", &config.kernel_image_path),
             ("rootfs_path", &config.rootfs_path),
         ];
+        if let Some(p) = &config.initrd_path {
+            paths.push(("initrd_path", p));
+        }
         if let Some(p) = &config.firmware_path {
             paths.push(("firmware_path", p));
         }
@@ -1856,9 +1871,9 @@ impl VmManager {
     fn check_credential(&self, project: &str, config: &VmConfig) -> Result<(), VmManagerError> {
         if let Some(username) = &config.credential {
             // A credential only takes effect through the generated seed.
-            if config.firmware_path.is_none() || config.cloud_init_path.is_some() {
+            if !config.generates_seed() {
                 return Err(invalid(
-                    "credential requires firmware boot without a custom cloud_init_path",
+                    "credential requires the generated seed (firmware boot, or kernel boot of a managed kernel or root disk, without a custom cloud_init_path)",
                 ));
             }
             match self.credentials.get(project, username) {
@@ -1908,6 +1923,31 @@ impl VmManager {
                 "give firmware (an image) or firmware_path, not both",
             ));
         }
+        // One boot mode (spec/kernel-boot.md K2): firmware no longer
+        // silently wins over a kernel.
+        if (sel.firmware.is_some() || config.firmware_path.is_some())
+            && !config.kernel_image_path.is_empty()
+        {
+            return Err(invalid(
+                "give a kernel (kernel_image_path) or firmware, not both",
+            ));
+        }
+        if config.initrd_path.is_some() && config.kernel_image_path.is_empty() {
+            return Err(invalid("initrd_path needs kernel_image_path"));
+        }
+        if sel.kernel.is_some() && !config.kernel_image_path.is_empty() {
+            return Err(invalid(
+                "give kernel (an image) or kernel_image_path, not both",
+            ));
+        }
+        if sel.kernel.is_some() && (sel.firmware.is_some() || config.firmware_path.is_some()) {
+            return Err(invalid("give a kernel or firmware, not both"));
+        }
+        if config.generate_seed == Some(true) && config.cloud_init_path.is_some() {
+            return Err(invalid(
+                "generate_seed and cloud_init_path exclude each other",
+            ));
+        }
         // The VM's architecture: its root disk's image's (§9.2.1).
         let root_arch = match (&sel.image, &sel.root_disk) {
             (Some(key), _) => Some(self.images.get_image(key)?.arch),
@@ -1923,6 +1963,31 @@ impl VmManager {
             },
             _ => None,
         };
+        // A kernel image (spec/kernel-boot.md §6): of the root image's
+        // architecture, its command line the default `kernel_args`.
+        let kernel = sel
+            .kernel
+            .as_deref()
+            .map(|key| self.images.get_image(key))
+            .transpose()?;
+        if let Some(k) = &kernel {
+            if let Some(a) = root_arch
+                && k.arch != a
+            {
+                return Err(invalid(format!(
+                    "kernel {} is {}, the root disk's image is {}: they must match",
+                    k.name,
+                    k.arch.as_str(),
+                    a.as_str()
+                )));
+            }
+            if config.kernel_args.is_empty() {
+                config.kernel_args = k
+                    .cmdline
+                    .clone()
+                    .unwrap_or_else(|| config.hypervisor.default_kernel_args().to_string());
+            }
+        }
         // A managed root disk is a cloud image: firmware boot unless the
         // caller brought a kernel, through the newest firmware image for
         // the hypervisor and the VM's architecture unless one is named.
@@ -1930,11 +1995,12 @@ impl VmManager {
             Some(key) => Some(self.images.get_image(key)?),
             None if (sel.image.is_some() || sel.root_disk.is_some())
                 && config.kernel_image_path.is_empty()
+                && kernel.is_none()
                 && config.firmware_path.is_none() =>
             {
                 Some(self.images.default_firmware(config.hypervisor, root_arch).ok_or_else(|| {
                     invalid(format!(
-                        "no firmware image for {}{}: pull one from the firmware catalog (GET /images/firmware-catalog){}, or give kernel_image_path",
+                        "no firmware image for {}{}: pull one from the firmware catalog (GET /images/firmware-catalog){}, or give a kernel",
                         config.hypervisor,
                         root_arch.map(|a| format!(" on {}", a.as_str())).unwrap_or_default(),
                         root_arch.map(|a| format!(" with arch {}", a.as_str())).unwrap_or_default(),
@@ -1961,11 +2027,23 @@ impl VmManager {
         }
         Self::check_hugepages(&config)?;
         if firmware.is_none()
+            && kernel.is_none()
             && config.firmware_path.is_none()
             && config.kernel_image_path.is_empty()
         {
-            return Err(invalid("either kernel_image_path or firmware is required"));
+            return Err(invalid("either a kernel or firmware is required"));
         }
+        check_kernel_args(&config.kernel_args)?;
+        // A cloud image's root is on a partition: the default `root=/dev/vda`
+        // won't find it, and a command line without `root=` may not either.
+        let managed_root = sel.image.is_some() || sel.root_disk.is_some();
+        let no_root_arg = firmware.is_none()
+            && config.firmware_path.is_none()
+            && managed_root
+            && !config
+                .kernel_args
+                .split_whitespace()
+                .any(|t| t.starts_with("root="));
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
@@ -1986,6 +2064,30 @@ impl VmManager {
             );
             config.firmware_image = Some(fw.id);
         }
+        if let Some(k) = &kernel {
+            let k = self.images.get_image(&k.id)?;
+            Self::check_kernel(&k)?;
+            config.kernel_image_path = self
+                .images
+                .kernel_path(&k.id)
+                .to_string_lossy()
+                .into_owned();
+            config.initrd_path = k.initrd.is_some().then(|| {
+                self.images
+                    .kernel_initrd_path(&k.id)
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            config.kernel_image = Some(k.id);
+        }
+        // Who generates the seed is fixed now (spec/kernel-boot.md K4):
+        // firmware boot, and kernel boot of a managed kernel or root disk.
+        config.generate_seed = Some(config.generate_seed.unwrap_or(
+            config.cloud_init_path.is_none()
+                && (config.firmware_path.is_some()
+                    || config.kernel_image.is_some()
+                    || managed_root),
+        ));
 
         // Checked under the VM write lock so delete_credential (which holds
         // the read lock) can't remove it between the check and the insert.
@@ -2048,6 +2150,11 @@ impl VmManager {
         // can claim the same disk in between.
         let mut disks: Vec<Disk> = Vec::new();
         let mut warnings = Vec::new();
+        if no_root_arg {
+            warnings.push(
+                "kernel_args has no root=; the kernel may not find the root disk".to_string(),
+            );
+        }
         for key in &sel.data_disks {
             let d = self.attachable_disk_in(&vms, key, project, None)?;
             if disks.iter().any(|x| x.id == d.id) {
@@ -2251,11 +2358,32 @@ impl VmManager {
         Ok(())
     }
 
-    /// Names of the VMs booting through firmware image `id`.
-    fn firmware_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
+    /// A kernel image a new VM, or a VM's PATCH, may boot.
+    fn check_kernel(k: &images::Image) -> Result<(), VmManagerError> {
+        if !k.is_kernel() {
+            return Err(invalid(format!("image {} is not a kernel image", k.name)));
+        }
+        if k.deletion_requested_at.is_some() {
+            return Err(ImageError::NotReady(format!("kernel {} is being deleted", k.name)).into());
+        }
+        if k.status != images::ImageStatus::Ready {
+            return Err(ImageError::NotReady(format!(
+                "kernel {} is not ready ({:?})",
+                k.name, k.status
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Names of the VMs booting through firmware or kernel image `id`.
+    fn boot_image_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
         let mut v: Vec<String> = vms
             .values()
-            .filter(|vm| vm.config().firmware_image.as_deref() == Some(id))
+            .filter(|vm| {
+                let c = vm.config();
+                c.firmware_image.as_deref() == Some(id) || c.kernel_image.as_deref() == Some(id)
+            })
             .map(|vm| vm.name.clone())
             .collect();
         v.sort();
@@ -2452,6 +2580,35 @@ impl VmManager {
         Ok(Some(path.to_string_lossy().into_owned()))
     }
 
+    /// This node's copies of a VM's kernel image, checked to exist:
+    /// `(kernel, initramfs)`, like [`Self::firmware_binding`]. `None`
+    /// without a kernel image.
+    pub(crate) fn kernel_binding(
+        &self,
+        vm: &Vm,
+    ) -> Result<Option<(String, Option<String>)>, VmManagerError> {
+        let Some(id) = vm.config().kernel_image.as_deref() else {
+            return Ok(None);
+        };
+        let img = self.images.get_image(id)?;
+        let kernel = self.images.kernel_path(id);
+        let initrd = img
+            .initrd
+            .is_some()
+            .then(|| self.images.kernel_initrd_path(id));
+        if !kernel.exists() || initrd.as_ref().is_some_and(|p| !p.exists()) {
+            return Err(ImageError::NotReady(format!(
+                "kernel {} has not been copied to this node yet",
+                img.name
+            ))
+            .into());
+        }
+        Ok(Some((
+            kernel.to_string_lossy().into_owned(),
+            initrd.map(|p| p.to_string_lossy().into_owned()),
+        )))
+    }
+
     // ---- desired power state ----------------------------------------------
 
     /// Start a VM, quotas not enforced (embedding and tests); returns at
@@ -2611,7 +2768,39 @@ impl VmManager {
                 config.mem_size_mib = m;
             }
             if let Some(a) = c.kernel_args {
+                check_kernel_args(&a)?;
                 config.kernel_args = a;
+            }
+            if let Some(key) = c.kernel {
+                let Some(old) = config.kernel_image.as_deref() else {
+                    return Err(invalid(
+                        "kernel: only a VM that boots a kernel image can change it",
+                    ));
+                };
+                let k = self.images.get_image(&key)?;
+                Self::check_kernel(&k)?;
+                if let Ok(o) = self.images.get_image(old)
+                    && o.arch != k.arch
+                {
+                    return Err(invalid(format!(
+                        "kernel {} is {}, the VM is {}",
+                        k.name,
+                        k.arch.as_str(),
+                        o.arch.as_str()
+                    )));
+                }
+                config.kernel_image_path = self
+                    .images
+                    .kernel_path(&k.id)
+                    .to_string_lossy()
+                    .into_owned();
+                config.initrd_path = k.initrd.is_some().then(|| {
+                    self.images
+                        .kernel_initrd_path(&k.id)
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                config.kernel_image = Some(k.id);
             }
             if let Some(h) = c.hugepages {
                 config.hugepages = h;
@@ -3134,8 +3323,8 @@ impl VmManager {
 
     /// An image response with the VMs booting through it.
     async fn with_users(&self, mut r: ImageResponse) -> ImageResponse {
-        if r.kind == images::ImageKind::Firmware {
-            r.used_by_vms = Self::firmware_users(&*self.vms.read().await, &r.id);
+        if r.kind != images::ImageKind::Disk {
+            r.used_by_vms = Self::boot_image_users(&*self.vms.read().await, &r.id);
         }
         r.copies = self.image_copies(&r.id);
         r
@@ -3198,8 +3387,8 @@ impl VmManager {
             .iter()
             .map(|i| {
                 let mut r = self.images.image_response(i, false);
-                if i.is_firmware() {
-                    r.used_by_vms = Self::firmware_users(&vms, &i.id);
+                if i.kind != images::ImageKind::Disk {
+                    r.used_by_vms = Self::boot_image_users(&vms, &i.id);
                 }
                 r.copies = self.image_copies(&i.id);
                 r
@@ -3261,7 +3450,26 @@ impl VmManager {
             }
             req.nodes = nodes.into_iter().map(|n| n.meta.id).collect();
         }
+        // A catalog pull brings the image's kernel (spec/kernel-boot.md K10).
+        let with_kernel = req.with_kernel.unwrap_or(req.catalog.is_some());
+        let (name, nodes) = (req.name.clone(), req.nodes.clone());
         let (img, created) = self.images.pull_image(req).await?;
+        if created && img.kind == images::ImageKind::Disk && with_kernel {
+            if !self.images.can_extract(img.arch) {
+                tracing::info!(image = %img.name, "no kernel extracted: no extractor on this host");
+            } else {
+                let kernel_name = name.map(|n| {
+                    let mut k = format!("{n}-kernel");
+                    k.truncate(64);
+                    k
+                });
+                match self.images.pull_kernel_from(&img.id, kernel_name, nodes) {
+                    Ok((k, _)) => self.queue.add(Key::Image(k.id)),
+                    Err(e) => tracing::warn!(image = %img.name, "no kernel extracted: {e}"),
+                }
+            }
+        }
+        self.queue.add(Key::Image(img.id.clone()));
         Ok((self.images.image_response(&img, false), created))
     }
 
@@ -3274,10 +3482,15 @@ impl VmManager {
             // holds the write lock) can't pick it up in between.
             let vms = self.vms.read().await;
             let img = self.images.get_image(key)?;
-            let users = Self::firmware_users(&vms, &img.id);
+            let users = Self::boot_image_users(&vms, &img.id);
             if !users.is_empty() {
                 return Err(ImageError::InUse(format!(
-                    "firmware {} is used by VM(s): {}",
+                    "{} {} is used by VM(s): {}",
+                    if img.is_kernel() {
+                        "kernel"
+                    } else {
+                        "firmware"
+                    },
                     img.name,
                     users.join(", ")
                 ))
@@ -4866,6 +5079,7 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
             ("vars", crate::images::ImageKind::Firmware) => {
                 m.images.firmware_vars_template(&img.id)
             }
+            ("initrd", crate::images::ImageKind::Kernel) => m.images.kernel_initrd_path(&img.id),
             _ => return None,
         };
         p.exists().then_some(p)

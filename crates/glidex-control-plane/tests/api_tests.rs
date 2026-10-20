@@ -1360,3 +1360,79 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     assert_eq!(vm_of(&vm)["node"], "local");
 }
+
+/// Kernel boot admission (spec/kernel-boot.md K0): one boot mode, an
+/// initrd only with a kernel, `kernel_args` limits at create and PATCH.
+#[tokio::test]
+async fn test_kernel_boot_admission() {
+    let (app, _temp_dir) = create_test_app();
+    let create = |extra: Value| {
+        let mut body = json!({
+            "name": "kb", "vcpu_count": 1, "mem_size_mib": 256,
+            "rootfs_path": "/path/to/rootfs.ext4"
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        send(&app, "POST", "/vms".into(), Some(body), &[])
+    };
+    for (extra, message) in [
+        (
+            json!({"kernel_image_path": "/k", "firmware_path": "/fw.fd"}),
+            "not both",
+        ),
+        (
+            json!({"initrd_path": "/i", "firmware_path": "/fw.fd"}),
+            "initrd_path",
+        ),
+        (
+            json!({"kernel_image_path": "/k", "kernel_args": "a".repeat(2048)}),
+            "2047",
+        ),
+        (
+            json!({"kernel_image_path": "/k", "kernel_args": "root=/dev/vda\ninit=/bin/sh"}),
+            "control",
+        ),
+        (
+            json!({"kernel_image_path": "/k", "initrd_path": "/i\"x"}),
+            "initrd_path",
+        ),
+    ] {
+        let (status, body) = create(extra.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{extra}: {body}");
+        assert_eq!(body["error"], "invalid_config", "{extra}: {body}");
+        assert!(
+            body["message"].as_str().unwrap_or("").contains(message),
+            "{extra}: {body}"
+        );
+    }
+
+    let (status, body) = create(json!({
+        "kernel_image_path": "/k", "initrd_path": "/i",
+        "kernel_args": "a".repeat(2047)
+    }))
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = vm_of(&body)["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", id),
+        Some(json!({"change": {"kernel_args": "a".repeat(2048)}})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_config");
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", id),
+        Some(json!({"change": {}, "update_mask": "initrd_path"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_config");
+}

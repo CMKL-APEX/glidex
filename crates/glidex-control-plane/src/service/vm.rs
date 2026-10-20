@@ -195,6 +195,13 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
             })
             .collect(),
         firmware: config.firmware_image.clone(),
+        kernel: config.kernel_image.clone(),
+        boot: if config.firmware_path.is_some() {
+            pb::BootMode::BOOT_MODE_FIRMWARE
+        } else {
+            pb::BootMode::BOOT_MODE_KERNEL
+        }
+        .into(),
         root_disk: config.root_disk.clone(),
         data_disks: config.data_disks.clone(),
         hugepages: config.hugepages.then_some(true),
@@ -502,6 +509,7 @@ fn names_host_path(req: &pb::CreateVmRequest) -> bool {
         || !req.rootfs_path.is_empty()
         || req.cloud_init_path.is_some()
         || req.firmware_path.is_some()
+        || req.initrd_path.is_some()
 }
 
 pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
@@ -549,7 +557,12 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
     if names_host_path(&req) {
         call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
     }
-    for image in req.image.iter().chain(req.firmware.iter()) {
+    for image in req
+        .image
+        .iter()
+        .chain(req.firmware.iter())
+        .chain(req.kernel.iter())
+    {
         let mut es = EntitySet::new();
         es.image(image);
         call.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
@@ -564,6 +577,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         hypervisor_of(req.hypervisor.as_known().unwrap_or_default()).unwrap_or_default();
     let sel = m::DiskSelection {
         firmware: req.firmware.clone(),
+        kernel: req.kernel.clone(),
         image: req.image.clone(),
         root_disk_size_gib: req.root_disk_size_gib.map(u64::from),
         root_disk: req.root_disk.clone(),
@@ -582,13 +596,20 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
         mem_size_mib: req.mem_size_mib,
         kernel_image_path: m::expand_tilde(req.kernel_image_path),
+        initrd_path: req.initrd_path.map(m::expand_tilde),
         firmware_path: req.firmware_path.map(m::expand_tilde),
         cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
         credential: req.credential,
         rootfs_path: m::expand_tilde(req.rootfs_path),
-        kernel_args: req
-            .kernel_args
-            .unwrap_or_else(|| hypervisor.default_kernel_args().to_string()),
+        // With a kernel image, its command line is the default; the
+        // manager fills it in (spec/kernel-boot.md K7).
+        kernel_args: req.kernel_args.unwrap_or_else(|| {
+            if req.kernel.is_some() {
+                String::new()
+            } else {
+                hypervisor.default_kernel_args().to_string()
+            }
+        }),
         hypervisor,
         vfio_devices: req.vfio_devices,
         networks: req.networks.iter().map(attachment_of).collect(),
@@ -600,6 +621,8 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         host_numa_node: None,
         vcpu_pins: Vec::new(),
         firmware_image: None,
+        kernel_image: None,
+        generate_seed: req.generate_seed,
         nic_bindings: Vec::new(),
         root_disk: None,
         data_disks: Vec::new(),
@@ -703,6 +726,7 @@ pub const UPDATABLE: &[&str] = &[
     "vfio_devices",
     "data_disks",
     "networks",
+    "kernel",
 ];
 
 /// `change` and `mask` as the manager's merge patch.
@@ -759,6 +783,15 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                     "data_disks" => c.data_disks = Some(change.data_disks.clone()),
                     "networks" => {
                         c.networks = Some(change.networks.iter().map(attachment_of).collect())
+                    }
+                    "kernel" => {
+                        c.kernel = Some(change.kernel.clone().ok_or_else(|| {
+                            ServiceError::new(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_config",
+                                "kernel: give a kernel image".to_string(),
+                            )
+                        })?)
                     }
                     other => {
                         return Err(ServiceError::new(
@@ -836,6 +869,13 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 .is_some_and(|v| v.as_str() != cur.hugepage_size.as_deref())
             || cp.numa_policy.is_some_and(|v| v != cur.numa_policy)
             || cp.cpu_policy.is_some_and(|v| v != cur.cpu_policy);
+        // A new kernel image (K6): the VM's own change, and the image's read.
+        if let Some(k) = &cp.kernel {
+            update = true;
+            let mut kes = EntitySet::new();
+            kes.image(k);
+            call.require_action("readImage", Ent::Image(k.clone()), kes, &[])?;
+        }
         if let Some(cred) = &cp.credential {
             update = true;
             if let Some(username) = cred.as_str() {

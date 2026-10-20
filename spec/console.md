@@ -34,15 +34,20 @@ close-on-exec), puts the slave in raw mode, passes it as the
 hypervisor's stdin and stdout, puts the hypervisor's stderr on a pipe,
 and keeps the master. The guest device on the other end:
 
-| Hypervisor, boot | Arguments | Guest console |
+| Hypervisor, device | Arguments | Guest console |
 |---|---|---|
-| QEMU, any | `-nodefaults … -serial stdio -display none` | serial port, `ttyS0` |
-| Cloud Hypervisor, firmware | `--console off --serial tty` | serial port, `ttyS0` |
-| Cloud Hypervisor, kernel | `--console tty --serial off` | virtio console, `hvc0` |
+| QEMU, serial | `-nodefaults … -serial stdio -display none` | serial port, `ttyS0` |
+| QEMU, virtio | `-serial none -device virtio-serial-pci,… -chardev stdio,id=con0 -device virtconsole,chardev=con0` | virtio console, `hvc0` |
+| Cloud Hypervisor, serial | `--console off --serial tty` | serial port, `ttyS0` |
+| Cloud Hypervisor, virtio | `--console tty --serial off` | virtio console, `hvc0` |
 
-(`hypervisor/qemu.rs`, `hypervisor/cloud_hypervisor.rs`; why, in
-[hypervisors.md](hypervisors.md#firmware-boot).) There is no second
-console device and no setting that picks one.
+The device is `ConsoleDevice::of(config)` (`hypervisor/mod.rs`): the
+serial port for firmware boots and, by default, for kernel boots; the
+virtio console for a kernel boot whose last `console=` in
+`kernel_args` is `hvc…` ([kernel-boot.md §5.2](kernel-boot.md#52-console-k5);
+why serial for firmware, in [hypervisors.md](hypervisors.md#firmware-boot)).
+There is never a second console device: the kernel arguments pick the
+one there is.
 
 In the child, `pre_exec` calls `setsid()` and `TIOCSCTTY`, making the
 PTY the hypervisor's controlling terminal, and sets `PR_SET_PDEATHSIG =
