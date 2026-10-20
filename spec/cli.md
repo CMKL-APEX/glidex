@@ -102,6 +102,7 @@ name (ids when `/projects` isn't readable).
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
 | `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
+| `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |

@@ -212,6 +212,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add("GET", "/vms/{id}/events", "readVm", get(vms::events))
     .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
+    .add("POST", "/vms/{id}/place", "placeVm", post(vms::place))
     .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
     .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
     .add(

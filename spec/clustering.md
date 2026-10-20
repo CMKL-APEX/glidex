@@ -330,8 +330,9 @@ authenticate; it rejoins with its own identity (§5.7).
 `gxctl node forget <node> --fenced` covers a node that is gone for good.
 The administrator asserts it is powered off and will not come back by
 itself. One write makes it `Forgotten`, deny-lists its certificate and
-marks its VMs `Lost` (records kept: they can be deleted, or re-placed
-once shared storage exists, §18). The cluster-side steps of §5.5 (gateway, Raft,
+marks its VMs `Lost` (records kept: they can be deleted, or placed
+again on another node when their disks are on shared datastores,
+`POST /vms/{id}/place`, spec/storage.md §9). The cluster-side steps of §5.5 (gateway, Raft,
 OVN membership with `cluster/kick`, chassis, and CA rotation for a
 server, whose disk may still hold the key) are applied to it. A dead
 server can only be forgotten while the other voters still form a

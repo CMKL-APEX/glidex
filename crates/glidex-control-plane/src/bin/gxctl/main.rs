@@ -594,6 +594,10 @@ fn print_help() {
     );
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
     println!(
+        "  {} - Place a stopped or lost VM on another node (its disks on shared datastores)",
+        "place <name|id> [--node N]".cyan()
+    );
+    println!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );
@@ -993,6 +997,7 @@ const COMMANDS: &[&str] = &[
     "get",
     "create",
     "start",
+    "place",
     "stop",
     "pause",
     "events",
@@ -1387,6 +1392,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "create" => vm::create(client).await,
         "start" => vm::start(client, &parts[1..]).await,
         "stop" => vm::stop(client, &parts[1..]).await,
+        "place" => vm::place(client, &parts[1..]).await,
         "pause" => vm::pause(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {

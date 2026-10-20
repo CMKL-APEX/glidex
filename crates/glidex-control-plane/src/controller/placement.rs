@@ -118,3 +118,126 @@ impl VmManager {
         }
     }
 }
+
+impl VmManager {
+    /// `POST /vms/{id}/place` (spec/storage.md S10, §9): place a stopped VM
+    /// again, or a lost one (its node forgotten, `--fenced`), on `node` or
+    /// wherever the scheduler finds room. Only what can go with it may be
+    /// on its old node: its disks on shared datastores (a node-local disk
+    /// only if the target is its node), no host-path root, no PCI devices,
+    /// no node networks. Nothing moves by itself (D8).
+    pub async fn place_vm(
+        &self,
+        vm_id: &str,
+        node: Option<&str>,
+        actor: &str,
+    ) -> Result<crate::models::Vm, crate::state::VmManagerError> {
+        use crate::models::{PowerState, VmPhase};
+        use crate::state::VmManagerError;
+        use crate::state::invalid;
+        if self.cluster().is_none() {
+            return Err(invalid(
+                "a standalone host has no other node to place a VM on",
+            ));
+        }
+        let target = node.map(|n| self.resolve_node(n)).transpose()?;
+        {
+            let mut vms = self.vms.write().await;
+            let cur = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?
+                .clone();
+            if cur.deletion_requested_at.is_some() {
+                return Err(VmManagerError::Deleting(cur.name.clone()));
+            }
+            // Lost: its node was forgotten, so it runs nowhere (§5.6).
+            let old = cur.status.placement.as_ref().map(|p| p.node.clone());
+            let lost = old.as_ref().is_some_and(|n| {
+                self.nodes()
+                    .get(n)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|n| n.status.phase.is_tombstone())
+            });
+            let stopped = cur.spec.power == PowerState::Stopped
+                && cur.status.instance.is_none()
+                && matches!(cur.status.phase, VmPhase::Stopped | VmPhase::Failed);
+            if !lost && !stopped {
+                // Only a stopped VM, or one whose node was forgotten.
+                return Err(VmManagerError::InvalidState {
+                    current: cur.state(),
+                    operation: "place (stop it first)".into(),
+                });
+            }
+            let c = cur.config();
+            if c.root_disk.is_none() && !c.rootfs_path.is_empty() {
+                return Err(invalid(format!(
+                    "VM {}'s root is a host path, {}, on its node",
+                    cur.name, c.rootfs_path
+                )));
+            }
+            if !c.vfio_devices.is_empty() {
+                return Err(invalid(format!(
+                    "VM {} passes through PCI devices of its node",
+                    cur.name
+                )));
+            }
+            for a in &c.networks {
+                if let Ok(Some(n)) = self.networks.get(&a.network)
+                    && n.scope == crate::network::NetworkScope::Node
+                {
+                    return Err(invalid(format!(
+                        "network {} exists on one node only: attach the VM to a cluster network",
+                        n.name
+                    )));
+                }
+            }
+            for id in c.root_disk.iter().chain(c.data_disks.iter()) {
+                let d = self.images.get_disk(id)?;
+                if self.images.is_shared(&d) {
+                    continue;
+                }
+                let here = target.is_some() && d.node == target && !lost;
+                if !here {
+                    return Err(invalid(format!(
+                        "disk {} is on node-local datastore {}{}: it can't go with the VM (put it on a shared datastore)",
+                        d.name,
+                        d.datastore,
+                        d.node
+                            .as_deref()
+                            .map(|n| format!(" of node {n}"))
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+            let mut vm = cur;
+            vm.status.placement = None;
+            if lost {
+                // The forgotten node's instance is gone with it.
+                vm.status.instance = None;
+                vm.status.phase = VmPhase::Stopped;
+            }
+            vm.status
+                .conditions
+                .retain(|c| !(c.kind == "Ready" && c.reason == "Lost") && c.kind != "Scheduled");
+            // A pin to the old node would keep it there.
+            vm.spec.node = target.clone();
+            let msg = format!(
+                "to be placed {} (was on {})",
+                target
+                    .as_deref()
+                    .map(|t| format!("on node {t}"))
+                    .unwrap_or_else(|| "where the scheduler finds room".into()),
+                old.as_deref().unwrap_or("no node")
+            );
+            self.spec_write(&mut vms, vm, actor, "Replacing", msg)?;
+        }
+        self.place_pending().await;
+        self.vms
+            .read()
+            .await
+            .get(vm_id)
+            .cloned()
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
+    }
+}

@@ -69,6 +69,16 @@ service VmService {
       rest: "POST /vms/{id}/start"
     };
   }
+  // Place a stopped VM again, or one whose node was forgotten, on `node`
+  // or where the scheduler finds room: its disks must be on shared
+  // datastores (spec/storage.md S10). Nothing moves by itself.
+  rpc PlaceVm(PlaceVmRequest) returns (PlaceVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "placeVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/place"
+    };
+  }
   rpc StopVm(StopVmRequest) returns (StopVmResponse) {
     option (glidex.api.v1.op) = {
       action: "stopVm"
@@ -521,6 +531,15 @@ message StartVmRequest {
 message StartVmResponse {
   Vm vm = 1;
   optional bool settled = 2;
+}
+
+message PlaceVmRequest {
+  string id = 1;
+  // A node id or name; default: where the scheduler finds room.
+  optional string node = 2;
+}
+message PlaceVmResponse {
+  Vm vm = 1;
 }
 
 message StopVmRequest {

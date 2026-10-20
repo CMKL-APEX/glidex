@@ -204,6 +204,17 @@ pub async fn delete_one(
     })
 }
 
+/// `POST /vms/{id}/place {node?}`: place a stopped or lost VM again.
+pub async fn place(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<serde_json::Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::PlaceVmRequest = proto_body(v)?;
+    req.id = id;
+    Ok(Proto(StatusCode::OK, svc::place_vm(&c, req).await?).into_response())
+}
+
 pub async fn start(
     c: Caller,
     Path(id): Path<String>,

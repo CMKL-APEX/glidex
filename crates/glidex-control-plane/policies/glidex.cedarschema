@@ -199,6 +199,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   // updateVm: PATCH of spec fields other than power, devices, disks and
   // networks (spec/reconciliation.md §12.1).
+  // Placing a VM on another node is the cluster operator's (spec/storage.md S10).
+  action placeVm in ["node.drain", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action startVm, stopVm, pauseVm, updateVm in ["vm.operate", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console", "tenant-scoped"]

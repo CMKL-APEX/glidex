@@ -431,7 +431,10 @@ With `manageDatastore` the page also offers:
 - overcommit on or off;
 - **Delete**, disabled while disks are on it.
 
-It follows the `datastore` watch kind. Once there is more than `local`,
+It follows the `datastore` watch kind. On the VM page,
+`components/PlaceVm.tsx` offers "Place on another node" for a stopped VM
+("Place on a live node" for a Lost one) in a cluster to those with
+`placeVm`: a ready node, or "where there is room" (spec/storage.md §9). Once there is more than `local`,
 the Disks page shows a Datastore column, and its create form a Datastore
 select with the default chosen.
 

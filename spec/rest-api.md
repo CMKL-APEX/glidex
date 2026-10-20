@@ -136,6 +136,7 @@ reported as `404`.
 | `PATCH` | `/vms/{id}` | `patch_one` | JSON merge patch of the VM's spec (below) |
 | `DELETE` | `/vms/{id}[?keep_disk=true]` | `delete_one` | Request deletion; the controller stops the VM and cleans up (below) |
 | `POST` | `/vms/{id}/start` | `start` | Desired state `running` (from `paused`: resume) |
+| `POST` | `/vms/{id}/place` | `place` | Body `{node?}`: place a stopped VM, or one whose node was forgotten, again on `node` or where there is room; its disks must be on shared datastores (spec/storage.md §9). `placeVm` |
 | `POST` | `/vms/{id}/stop[?graceful_timeout_secs=N]` | `stop` | Desired state `stopped`; `N` (max 300) is stored as `stop_grace_secs`: press the guest's power button and wait up to `N` s before stopping it hard |
 | `POST` | `/vms/{id}/pause` | `pause` | Desired state `paused` |
 | `GET` | `/vms/{id}/events` | `events` | The VM's last 50 events, oldest first |

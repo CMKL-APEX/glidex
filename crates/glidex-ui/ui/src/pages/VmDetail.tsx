@@ -21,6 +21,7 @@ import {
 import NodeName from "../components/NodeName";
 import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
+import PlaceVm from "../components/PlaceVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
 import { Loading } from "../components/Loading";
@@ -338,6 +339,7 @@ export default function VmDetail() {
                 onAction={handleAction}
                 loading={actionLoading}
               />
+              <PlaceVm vm={vm} stopped={["stopped", "created", "failed"].includes(vmState(vm)) && desiredState(vm) === "stopped"} onDone={fetchVm} />
               {!nodeUnreachable(vm) && (
               <Link
                 to={`/vms/${vm.id}/console`}
