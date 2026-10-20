@@ -1,6 +1,6 @@
 # Datastores
 
-Status: **design (draft)**. Implemented so far:
+Status: **S0–S5 implemented; S6–S7 design.** Implemented:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
@@ -11,16 +11,15 @@ Status: **design (draft)**. Implemented so far:
 - S4, placing a stopped or lost VM again (§9);
 - S5, moving a disk between datastores (§8.3).
 
-S6 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
-and the host checks in §19 settle most of the first draft's questions;
-the one still open is in §17. The edits this
-document needs in other specs are listed in §18. They are **not applied
-yet**.
+S6 and everything after it is still design. The milestones are S0–S7
+(§16). Decisions S13–S16 and the host checks in §19 settle the first
+draft's questions (§17). The edits this document needed in other specs
+are applied (§18).
 
-Today every managed image and disk is a file in one of two directories
-on the node that uses it ([images.md](images.md) §2). A disk is bound to
-one node, and its VM is pinned to that node
-([clustering.md](clustering.md) D6). The specs mark shared storage as a
+Before datastores, every managed image and disk was a file in one of two
+directories on the node that used it ([images.md](images.md) §2). A disk
+was bound to one node, and its VM was pinned to that node
+([clustering.md](clustering.md) D6). The specs marked shared storage as a
 non-goal (images.md §1) and as later work (clustering.md §18: "shared
 storage classes", "a shared image store", "moving resources between
 hosts").
@@ -282,6 +281,13 @@ topology `Shared`):
 - **Re-probing:** a node probes again when another node's row changes,
   so the rest find the marker at once rather than a minute later.
 - The probe also makes `.locks/`.
+- **Mount warnings** (§17): a node that reaches a shared datastore
+  looks up its mount in `/proc/self/mountinfo`. On NFS it warns, in the
+  row's `warnings`, about `soft`/`softerr` (a server outage fails the
+  guests' disk writes) and about locks kept on the node (`nolock`,
+  `local_lock=` other than `none`), with which the volume locks (S16)
+  no longer keep two nodes off one disk. The datastore stays reachable;
+  gxctl `datastore show` and the Datastores page show the warnings.
 
 **Disks** (S6):
 - A disk on a shared datastore has no `node` (pinning one is `400`) and
@@ -300,7 +306,7 @@ topology `Shared`):
   - shared disk records go to every node, so a former worker hears it
     no longer is.
 - The proto `Disk` gains `worker` and `worker_name`; the UI's Node
-  column shows "shared · <worker>".
+  column shows `shared · <worker>`.
 - **Scheduler:** the existing `disk_reach` (§4.3) covers shared disks,
   since they are always unbound: a VM goes to a node whose row
   reaches the datastore.
@@ -1072,16 +1078,27 @@ Settled:
 
 - **Worker hand-over window** (§8.1): closed by the volume lock (S16).
 
-Open:
+- **NFS client options:** the probe warns on `soft` mounts and on
+  node-local locks (§4.4, mount warnings). It doesn't warn on `actimeo`:
+  the marker is written once, before other nodes look for it; image
+  copies are checked against their digest; disk records come from the
+  cluster store, not the filesystem; and a disk's data is opened by one
+  hypervisor at a time under the volume lock, which NFS's close-to-open
+  consistency covers. glidex doesn't mount, so `cache.direct` (QEMU,
+  `O_DIRECT`) stays the operator's mount choice.
 
-1. **NFS client options.**
-   - glidex doesn't mount, but QEMU `cache.direct` on NFS needs `O_DIRECT`
-     support.
-   - qcow2 on NFS wants `hard` mounts.
-   - Should the node probe warn on `soft` mounts, and on `actimeo` large
-     enough to hide another node's writes to the marker?
+Open: none.
 
-## 18. Edits to other documents (not applied)
+## 18. Edits to other documents (applied)
+
+Applied once S5 was in, as the list below says, except:
+- reconciliation.md got no `Moving` phase: a move is the disk's
+  `moving` field, and the phase stays `Ready` (§8.3);
+- the hardening note went to security.md §9 (process and host
+  hardening), not §10;
+- metering.md records that disks are sampled by their node or worker,
+  and that `group_by=datastore` and metering datastore image copies
+  are later work.
 
 - **README.md:** add `storage.md` to the contents table (done with this
   draft) and a "shared storage" line under non-goals until S3 lands.

@@ -59,6 +59,8 @@ journalctl -u glidex-control-plane -b
 - [Host networking](host-networking.md): Open vSwitch, bridges, uplinks
   and NAT on a host.
 - [PCI passthrough](pci-passthrough.md): giving VMs host devices.
+- [Datastores](datastores.md): where disks live; shared storage (NFS,
+  CephFS) that lets VMs move between nodes.
 - [Clusters](clusters.md): creating a cluster, joining, draining and
   removing nodes, cluster networks.
 - [Maintenance](maintenance.md): upgrades, backups and recovery.

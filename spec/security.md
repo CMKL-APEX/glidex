@@ -556,6 +556,7 @@ namespace Glidex {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project> };
+  entity Datastore in [Cluster];   // storage.md §13
 
   // Roles are action groups. A role includes every role listed under it.
   action "role.system-admin";
@@ -677,7 +678,7 @@ Rules for the schema:
 | `vm.operate` | project | Start, stop, pause; other spec edits (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel args, hugepages, credential) |
 | `vm.console` | project | Console tickets / WebSocket |
 | `vm.write` | project | Create and delete VMs; attach and detach disks, devices and networks; use project disks and credentials |
-| `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root |
+| `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root, move to another datastore (`moveDisk`, storage.md §8.3) |
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |
 | `project.members` | project | Role links and service-account tokens in the project |
@@ -690,6 +691,8 @@ Rules for the schema:
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
 | `host.paths` | host | Boot and disk paths outside managed directories (§7.4) |
 | `image.manage` | host | Pull and delete images |
+| `datastore.manage` | host | Register, change and delete datastores (`manageDatastore`, storage.md §13). Reading them (`readDatastore`) and putting disks on them (`useDatastore`, policy `base.use-datastore`; a site policy can forbid a datastore to some) are open to every user |
+| `node.drain` | host | Place a stopped or Lost VM again on another node (`placeVm`, storage.md §9) |
 | `policy.read` · `policy.write` | host | List, validate and simulate policies · create, update and delete site policies (step-up) |
 | `quota.exceed` | host | Go over a project quota (§6.3) |
 | `system.identity` · `system.projects` · `system.audit` | host | Users, identities, teams, auth settings · projects, quotas, links in any project · `GET /audit` |
@@ -1106,12 +1109,19 @@ may ask it for what.
 
 | Unit | Changes |
 |---|---|
-| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed` (no device), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
-| `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
+| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex` (datastores, storage.md S11), `DevicePolicy=closed` (no device), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
+| `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
 | `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
+- **Datastores under `/srv/glidex`** (storage.md S11). Both units may
+  write there, so an operator mounts datastores below it, owned by
+  `glidex`. A mount made after a unit started is writable inside it
+  **even outside every `ReadWritePaths` entry**: `ProtectSystem=strict`
+  only makes read-only what was mounted at start (storage.md §19, H1).
+  For late mounts, file ownership and modes are the boundary, not the
+  sandbox; mount only what `glidex` may write.
 - **The sandbox split.** Under the systemd runner hypervisors are
   children of their `glidex-vm@<id>` unit, not of the control plane, so
   the VM unit carries what a hypervisor needs (devices, writable

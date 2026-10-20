@@ -87,7 +87,7 @@ crates/glidex-api/
 │   ├── glidex/directory/v1/connectors.proto # T1: ConnectorService
 │   ├── glidex/auth/v1/login.proto    # LoginService (public)
 │   ├── glidex/common/v1/common.proto # shared: Arch, Hypervisor, Condition, Event
-│   ├── glidex/storage/v1/storage.proto # G2: CredentialService, ImageService, DiskService
+│   ├── glidex/storage/v1/storage.proto # G2: CredentialService, ImageService, DiskService; DatastoreService (storage.md §13)
 │   ├── glidex/vm/v1/vm.proto         # G2: VmService
 │   ├── glidex/usage/v1/usage.proto   # G2: UsageService, MetricsService
 │   ├── glidex/access/v1/access.proto # G2: Project, User, Team, Token, SystemBinding, Policy, Audit, Authz services

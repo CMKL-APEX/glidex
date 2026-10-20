@@ -471,10 +471,19 @@ the node has them to spare (its memory plus a quarter, at least
 256 MiB), and ordinary memory otherwise. The VM's `page_kib` says which:
 4 for ordinary memory, else the hugepage size in KiB.
 
-A VM stays on its node for its whole life: Glidex doesn't move it, and
-doesn't restart it elsewhere if the node fails. If no node can take the
-VM, it is still created and waits for one; its page says **Waiting for a
-node** with each node's reason.
+A VM stays on its node: Glidex doesn't move it, and doesn't restart it
+elsewhere if the node fails. If no node can take the VM, it is still
+created and waits for one; its page says **Waiting for a node** with
+each node's reason.
+
+A VM whose disks are on shared datastores (see
+[Where a disk lives](images-and-disks.md#where-a-disk-lives)) can be
+placed on another node by an administrator: when it is stopped, or when
+its node was lost and forgotten. On the VM's page it is **Place on
+another node** (**Place on a live node** for a lost VM), with a node or
+**Where there is room**; with gxctl, `gxctl place <vm> [--node N]`. A
+VM with a disk on one node's own storage, a host-path root, PCI devices
+or a node network can't move.
 
 In the web UI's create form, **Placement** shows **Automatic (now:
 &lt;node&gt;)** and each node with its free vCPUs and memory, or why it

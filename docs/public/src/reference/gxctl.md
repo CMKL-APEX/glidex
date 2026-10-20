@@ -84,12 +84,13 @@ See [Logging in](../user-guide/logging-in.md).
 | `pause <vm> [--no-wait]` | Pause |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
+| `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; administrators) |
 | `events <vm>` | What happened to the VM: starts, exits, restarts |
 | `connect <vm>`, `console`, `attach` | Serial console; `Ctrl+]` detaches |
 | `log <vm>`, `logs` | The console log (last 1 MiB) |
 | `attach-device <vm> <path>` | Attach a PCI device (`/sys/bus/pci/devices/<address>` or the bare address) |
 | `detach-device <vm> <path>` | Detach a PCI device |
-| `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy` |
+| `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy`, `datastores` |
 
 `start`, `stop`, `pause` and `delete` wait for the controller and print
 where the VM ended up; `--no-wait` returns at once. See
@@ -125,12 +126,19 @@ Private key files are refused before anything is sent. See
 | `image rm <image>` | Delete an image |
 | `disk list`, `disks` | List disks |
 | `disk show <disk>` | Details and partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: where it lives (default: the default datastore) |
 | `disk resize <disk> <GiB> [--no-extend]` | Grow or shrink |
 | `disk extend-root <disk> [--on-boot]` | Grow the root partition now (offline) or at next boot |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | Copy a disk no running VM uses to another datastore, waiting up to 5 minutes. `--flatten`: a linked disk becomes a full copy |
 | `disk rm <disk>` | Delete after confirmation |
+| `datastore list`, `datastores` | Datastores, how many nodes reach each, and free space |
+| `datastore show <datastore>` | Paths, nodes, and each node's view: free space, why it can't reach it, or mount warnings |
+| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`). `--shared`: one filesystem every node mounts |
+| `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change one |
+| `datastore rm <datastore>` | Delete one no disk is on; its files stay |
 
-See [Images and disks](../user-guide/images-and-disks.md).
+See [Images and disks](../user-guide/images-and-disks.md) and
+[Datastores](../operator-guide/datastores.md).
 
 ## Networks
 

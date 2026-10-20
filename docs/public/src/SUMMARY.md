@@ -26,6 +26,7 @@
 - [Access control](operator-guide/access-control.md)
 - [Host networking](operator-guide/host-networking.md)
 - [PCI passthrough](operator-guide/pci-passthrough.md)
+- [Datastores](operator-guide/datastores.md)
 - [Clusters](operator-guide/clusters.md)
 - [Maintenance](operator-guide/maintenance.md)
 - [Troubleshooting](operator-guide/troubleshooting.md)

@@ -49,8 +49,9 @@ Non-goals:
 - Shrinking filesystems. Shrinking only gives back space that no partition
   uses (see [§6.3](#63-shrink)).
 - Disk snapshots, export/import, and image building or customization.
-- Remote or shared storage (NFS, Ceph, iSCSI). Images and disks live on the
-  local filesystem.
+- Block storage (Ceph RBD, iSCSI, LVM). Disks are files: on the node's
+  own filesystem, or on a filesystem every node mounts (NFS, CephFS), as
+  [datastores](storage.md).
 - Non-Linux guests, and images that are not cloud images (installer ISOs).
 - Live resize of a disk attached to a running VM. This is v1; see
   [§11](#11-future-work).
@@ -77,6 +78,14 @@ them. Both are created `0700` at startup. Raw disks are `<disk-id>.raw`.
 Operations write temporaries as dot-files (`.<id>.create.qcow2`,
 `.<id>.shrink.qcow2`, `.gx-edit*/`) in the same directory, so the final
 rename never crosses filesystems.
+
+These two directories are the built-in datastore `local`
+([storage.md](storage.md) §4): every node has its own. A disk on another
+datastore lives in that datastore's directory instead,
+`<path>/disks/<disk-id>.qcow2`; a linked disk on a shared datastore
+overlays the datastore's copy of its image, `<path>/images/<image-id>.qcow2`
+([storage.md](storage.md) §4.5). Images themselves stay in each node's
+`images/`.
 
 **Invariant.** Files under `images/` and `disks/` are named only by id. The
 user-chosen name exists only in the database. Why: renaming a record never
@@ -163,6 +172,11 @@ pub struct Disk {
     pub owner: Option<String>,      // VM the disk was made for
     pub deletion_requested_at: Option<u64>,
     pub conditions: Vec<Condition>, // `Ready`
+    // Where it lives (storage.md §4.2):
+    pub datastore: String,          // datastore id; "local" (left out) by default
+    pub node: Option<String>,       // node-local datastore: the node holding the file
+    pub worker: Option<String>,     // shared datastore: the node acting on it now
+    pub moving: Option<MoveSpec>,   // a move asked for (storage.md §8.3)
 }
 
 pub enum DiskOrigin {
@@ -427,8 +441,13 @@ controller applies it (`controller/disk.rs`, [reconciliation.md
   renames it into place, so a crash leaves the old disk intact.
 
 Each step is recorded as a disk event (`Created`, `Resized`,
-`RootExtended`, `ExtendRootFailed`, `FileMissing`, `Released`, …), read
-with `GET /disks/{id}/events`.
+`RootExtended`, `ExtendRootFailed`, `FileMissing`, `Released`, `Moved`,
+…), read with `GET /disks/{id}/events`.
+
+In a cluster these operations run on the node holding the disk: its
+`node` on a node-local datastore, its `worker` on a shared one
+([storage.md](storage.md) §8.1). Moving a disk to another datastore is
+`POST /disks/{id}/move` ([storage.md](storage.md) §8.3).
 
 ### 6.1 Create
 
@@ -873,6 +892,7 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
 - Periodic catalog refresh: pull a newer build and offer to rebase linked
   disks onto it (`qemu-img rebase`).
 - Disk snapshots (`qemu-img snapshot`) and export.
+- Block datastores and a CSI adapter: [storage.md](storage.md) §11, §12.
 
 ## 12. Testing
 
