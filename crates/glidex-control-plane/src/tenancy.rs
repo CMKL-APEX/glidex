@@ -8,6 +8,7 @@
 use crate::store::Db;
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -77,6 +78,10 @@ pub struct Quotas {
     /// Addresses of the site's external pool, one per VPC router with a gateway.
     #[serde(default = "default_router_quota")]
     pub external_ips: Option<u64>,
+    /// Devices of each PCI pool, by pool name; a pool not named is
+    /// unlimited (spec/host-topology.md §11).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, u64>,
 }
 
 fn default_network_quota() -> Option<u64> {
@@ -110,12 +115,33 @@ pub struct Usage {
     pub networks: u64,
     pub routers: u64,
     pub external_ips: u64,
+    /// Pool devices the project's VMs ask for, by pool.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, u64>,
+}
+
+impl Usage {
+    /// Add `other`'s use, as a tenant cap counts all its projects.
+    pub fn add(&mut self, other: &Usage) {
+        self.vms += other.vms;
+        self.vcpus += other.vcpus;
+        self.memory_mib += other.memory_mib;
+        self.disk_gib += other.disk_gib;
+        self.running_vms += other.running_vms;
+        self.networks += other.networks;
+        self.routers += other.routers;
+        self.external_ips += other.external_ips;
+        for (pool, n) in &other.devices {
+            *self.devices.entry(pool.clone()).or_default() += n;
+        }
+    }
 }
 
 /// One limit that a request would go over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QuotaOverrun {
-    pub resource: &'static str,
+    /// `vcpus`, ..., or `devices.<pool>`.
+    pub resource: String,
     pub limit: u64,
     pub used: u64,
     pub requested: u64,
@@ -140,7 +166,7 @@ pub enum QuotaMode {
 }
 
 /// What a request adds to a project's use.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Delta {
     pub vms: u64,
     pub vcpus: u64,
@@ -150,18 +176,22 @@ pub struct Delta {
     pub networks: u64,
     pub routers: u64,
     pub external_ips: u64,
+    /// Pool devices, by pool.
+    pub devices: BTreeMap<String, u64>,
+    /// Devices asked of each tenant pool (spec/host-topology.md §9.1a).
+    pub tenant_pools: BTreeMap<String, u64>,
 }
 
 /// Limits `delta` would exceed on top of `usage`.
 pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverrun> {
     let mut out = Vec::new();
-    let mut check = |resource: &'static str, limit: Option<u64>, used: u64, requested: u64| {
+    let mut check = |resource: &str, limit: Option<u64>, used: u64, requested: u64| {
         if let Some(limit) = limit
             && requested > 0
             && used + requested > limit
         {
             out.push(QuotaOverrun {
-                resource,
+                resource: resource.to_string(),
                 limit,
                 used,
                 requested,
@@ -191,6 +221,14 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
         usage.external_ips,
         delta.external_ips,
     );
+    for (pool, &n) in &delta.devices {
+        check(
+            &format!("devices.{pool}"),
+            quotas.devices.get(pool).copied(),
+            usage.devices.get(pool).copied().unwrap_or(0),
+            n,
+        );
+    }
     out
 }
 
@@ -502,6 +540,48 @@ mod tests {
     }
 
     #[test]
+    fn pool_quotas_count_devices_per_pool() {
+        let q = Quotas {
+            devices: [("a100".to_string(), 4)].into(),
+            ..Default::default()
+        };
+        let u = Usage {
+            devices: [("a100".to_string(), 3)].into(),
+            ..Default::default()
+        };
+        let ask = |pool: &str, n| Delta {
+            devices: [(pool.to_string(), n)].into(),
+            ..Default::default()
+        };
+        assert!(overruns(&q, &u, &ask("a100", 1)).is_empty());
+        let o = overruns(&q, &u, &ask("a100", 2));
+        assert_eq!(
+            (
+                o[0].resource.as_str(),
+                o[0].limit,
+                o[0].used,
+                o[0].requested
+            ),
+            ("devices.a100", 4, 3, 2)
+        );
+        // A pool without a quota is unlimited.
+        assert!(overruns(&q, &u, &ask("nic", 99)).is_empty());
+        // Written as a map; left out when empty.
+        let j = serde_json::to_value(&q).unwrap();
+        assert_eq!(j["devices"]["a100"], 4);
+        assert!(
+            serde_json::to_value(Quotas::default())
+                .unwrap()
+                .get("devices")
+                .is_none()
+        );
+        let mut total = Usage::default();
+        total.add(&u);
+        total.add(&u);
+        assert_eq!(total.devices["a100"], 6);
+    }
+
+    #[test]
     fn router_quotas_default_to_one_each() {
         let q = Quotas::new_project();
         assert_eq!((q.routers, q.external_ips), (Some(1), Some(1)));
@@ -520,7 +600,7 @@ mod tests {
             },
         );
         assert_eq!(
-            o.iter().map(|o| o.resource).collect::<Vec<_>>(),
+            o.iter().map(|o| o.resource.as_str()).collect::<Vec<_>>(),
             ["routers", "external_ips"]
         );
         // An internal router counts only against `routers`.

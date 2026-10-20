@@ -104,11 +104,65 @@ fn cap_line(q: Option<&Quotas>) -> String {
     }
 }
 
+/// The tenant's pools with `name` set to `(from, max, projects)`, or
+/// left out; the others as they are.
+pub(crate) fn edit_device_pools(
+    cur: Vec<TenantDevicePool>,
+    name: &str,
+    set: Option<(&str, u32, Vec<String>)>,
+) -> Vec<TenantDevicePool> {
+    let mut out: Vec<TenantDevicePool> = cur
+        .into_iter()
+        .filter(|p| p.name != name)
+        .map(|p| TenantDevicePool {
+            name: p.name,
+            from: p.from,
+            max: p.max,
+            projects: p.projects,
+            ..Default::default()
+        })
+        .collect();
+    if let Some((from, max, projects)) = set {
+        out.push(TenantDevicePool {
+            name: name.to_string(),
+            from: from.to_string(),
+            max,
+            projects,
+            ..Default::default()
+        });
+    }
+    out
+}
+
+fn device_pool_line(p: &TenantDevicePool) -> String {
+    format!(
+        "  {:<20} from {}  {}/{} held  {} free in {}{}  projects: {}",
+        p.name.cyan(),
+        p.from,
+        p.used,
+        p.max,
+        p.free,
+        p.from,
+        if p.ungranted {
+            "  (ungranted)".red().to_string()
+        } else {
+            String::new()
+        },
+        if p.projects.is_empty() {
+            "none".into()
+        } else {
+            p.projects.join(", ")
+        }
+    )
+}
+
 pub async fn tenant(client: &ApiClient, args: &[&str]) {
     let u = "Usage: tenant list | show <t> | create <slug> [--name TEXT] [--operator] | rename <t> <name> \
              | suspend <t> | resume <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
-             | unbind <t> <link>";
+             | unbind <t> <link> | device-pools <t> \
+             | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
+             | device-pool remove <t> <name>";
     let Some(t) = transport(client).await else {
         return;
     };
@@ -298,6 +352,84 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
             };
             match r {
                 Ok(()) => println!("{}", "Done.".green()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "device-pools" => {
+            let Some(id) = id(1) else { return usage(u) };
+            match svc
+                .list_device_pools(ListDevicePoolsRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) if r.pools.is_empty() => println!("No tenant pools on this cluster."),
+                Ok(r) => {
+                    for p in &r.pools {
+                        println!("{}", device_pool_line(p));
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "device-pool" => {
+            let (Some(op), Some(id), Some(name)) = (id(1), id(2), id(3)) else {
+                return usage(u);
+            };
+            let cur = match svc
+                .list_device_pools(ListDevicePoolsRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(r) => r.into_owned().pools,
+                Err(e) => return err(rpc_err(e)),
+            };
+            let new = match op.as_str() {
+                "set" => {
+                    let (Some(from), Some(max)) =
+                        (flag_value(args, "--from"), flag_value(args, "--max"))
+                    else {
+                        return usage(u);
+                    };
+                    let Ok(max) = max.parse::<u32>() else {
+                        return err("--max is a number");
+                    };
+                    let projects = flag_value(args, "--projects")
+                        .map(|p| {
+                            p.split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    edit_device_pools(cur, &name, Some((from, max, projects)))
+                }
+                "remove" | "rm" => {
+                    if !cur.iter().any(|p| p.name == name) {
+                        return err(format!("no tenant pool {name}"));
+                    }
+                    edit_device_pools(cur, &name, None)
+                }
+                _ => return usage(u),
+            };
+            match svc
+                .set_device_pools(SetDevicePoolsRequest {
+                    id,
+                    pools: new,
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    for p in &r.pools {
+                        println!("{}", device_pool_line(p));
+                    }
+                }
                 Err(e) => err(rpc_err(e)),
             }
         }
@@ -513,5 +645,32 @@ pub async fn admission(client: &ApiClient, args: &[&str]) {
             }
         }
         _ => usage(u),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_pool_edits_replace_one_and_keep_the_rest() {
+        let pool = |name: &str, max: u32| TenantDevicePool {
+            name: name.into(),
+            from: "a100".into(),
+            max,
+            used: 3,
+            ..Default::default()
+        };
+        let cur = vec![pool("a", 1), pool("b", 2)];
+        let out = edit_device_pools(cur.clone(), "a", Some(("h100", 4, vec!["p1".into()])));
+        let names: Vec<_> = out
+            .iter()
+            .map(|p| (p.name.as_str(), p.from.as_str(), p.max))
+            .collect();
+        assert_eq!(names, [("b", "a100", 2), ("a", "h100", 4)]);
+        assert_eq!(out[0].used, 0, "answer-only fields aren't sent back");
+        let out = edit_device_pools(cur, "b", None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "a");
     }
 }

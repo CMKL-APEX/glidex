@@ -120,21 +120,26 @@ fn pci_details(dev: &PciDevice) -> Vec<String> {
 
 /// `pci pools`: each pool with its devices per node, holders and what is
 /// free (spec/host-topology.md §9.1).
-async fn pci_pools(client: &ApiClient) {
+async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     use glidex_api::proto::glidex::cluster::v1::ListPciPoolsRequest;
     let s = match crate::cluster::node_rpc(client).await {
         Ok(s) => s,
         Err(e) => return err(e),
     };
-    let r = match s.list_pci_pools(ListPciPoolsRequest::default()).await {
+    let req = ListPciPoolsRequest {
+        project: project.map(String::from),
+        ..Default::default()
+    };
+    let r = match s.list_pci_pools(req).await {
         Ok(r) => r.into_owned(),
         Err(e) => return err(rpc_err(e)),
     };
     if r.pools.is_empty() {
-        println!(
-            "{}",
-            "No device pools (pci.pools in control-plane.json)".yellow()
-        );
+        let none = match project {
+            Some(p) => format!("No device pools project {p} may use"),
+            None => "No device pools (pci.pools in control-plane.json)".into(),
+        };
+        println!("{}", none.yellow());
     }
     for p in &r.pools {
         println!(
@@ -169,10 +174,10 @@ async fn pci_pools(client: &ApiClient) {
     }
 }
 
-/// `pci`, `pci <address>`, `pci pools`
+/// `pci`, `pci <address>`, `pci pools [--project P]`
 pub async fn pci(client: &ApiClient, args: &[&str]) {
     if args.first() == Some(&"pools") {
-        return pci_pools(client).await;
+        return pci_pools(client, flag_value(args, "--project")).await;
     }
     let devices = match list_pci_devices(client).await {
         Ok(d) => d,

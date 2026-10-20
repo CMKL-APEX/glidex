@@ -92,6 +92,7 @@ Records store integers in the base unit. Hour figures such as
 | `cpu.alloc` | gauge × time | VM | vCPU·s | vCPU-hours | `launch.json` `vcpu_count` × running time |
 | `mem.used` | gauge × time | VM | MiB·s | MiB-hours | cgroup `memory.current` (+ hugepages, §5.1) |
 | `mem.alloc` | gauge × time | VM | MiB·s | MiB-hours | `launch.json` `mem_size_mib` × live time |
+| `device.alloc.<pool>` | gauge × time | VM | device·s | device-hours | `status.placement.pool_devices` of the pool × live time ([host-topology.md §9.4](host-topology.md#94-metering)) |
 | `mem.peak` | max | VM | MiB | MiB | max of `memory.current` samples in the hour |
 | `cpu.cores_peak` | max | VM | cores ×1000 | cores | max CPU rate over one sample interval, `Δcpu.used / Δt` (M4, §8.7) |
 | `disk.alloc` | gauge × time | disk | MiB·s | GiB-hours | `Disk.size_bytes` (provisioned) |
@@ -1885,9 +1886,10 @@ spec change:
 - **Prometheus `/metrics`.** Expose cumulative counters (not the
   ledger) for sites that already run Prometheus. It would need its own
   auth story, because it is a scrape endpoint.
-- **GPU / VFIO devices.** Meter `device-hours` per VFIO device claim,
-  using the same allocation model as `cpu.alloc`. Utilization would
-  need vendor tools.
+- **GPU / VFIO devices.** Pool devices are metered as
+  `device.alloc.<pool>` (host-topology.md §9.4). Devices named by
+  address (`vfio_devices`) are not yet; utilization would need vendor
+  tools.
 - **Port security.** Add OVS rules that let a VM port send only from
   its own MAC and reserved IP. That makes NAT external attribution
   spoof-proof (§5.5) and is worth having for isolation anyway.

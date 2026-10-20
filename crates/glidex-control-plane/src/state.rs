@@ -2153,6 +2153,8 @@ impl VmManager {
             memory_mib: config.mem_size_mib as u64,
             disk_gib: sel.root_disk_size_gib.unwrap_or(0),
             running_vms: u64::from(power != PowerState::Stopped),
+            devices: pool_counts(&config.devices),
+            tenant_pools: tenant_pool_counts(&config.devices),
             ..Default::default()
         };
         let usage = self.usage_locked(project, &vms)?;
@@ -2863,6 +2865,18 @@ impl VmManager {
                 config.cpu_policy = p;
             }
             if let Some(d) = c.devices {
+                let more = |old: BTreeMap<String, u64>, new: BTreeMap<String, u64>| {
+                    new.into_iter()
+                        .map(|(pool, n)| {
+                            let more = n.saturating_sub(old.get(&pool).copied().unwrap_or(0));
+                            (pool, more)
+                        })
+                        .filter(|&(_, more)| more > 0)
+                        .collect()
+                };
+                delta.devices = more(pool_counts(&config.devices), pool_counts(&d));
+                delta.tenant_pools =
+                    more(tenant_pool_counts(&config.devices), tenant_pool_counts(&d));
                 config.devices = d;
             }
             match c.hugepage_size {
@@ -2976,7 +2990,7 @@ impl VmManager {
             return Ok((cur, Vec::new()));
         }
         let mut bypassed = Vec::new();
-        if delta.running_vms + delta.vcpus + delta.memory_mib > 0
+        if (delta.running_vms + delta.vcpus + delta.memory_mib > 0 || !delta.devices.is_empty())
             && let Some(p) = self.projects.get(&project)?
         {
             let usage = self.usage_locked(&project, &vms)?;
@@ -3975,6 +3989,46 @@ impl VmManager {
             .or_else(crate::topology::read)
             .unwrap_or_default();
         crate::topology::read_tree(summary, self.dpdk_uplink_bdfs())
+    }
+
+    /// Bind this node's devices of `prepare: true` pools that aren't
+    /// ready to `vfio-pci` (spec/host-topology.md §5.3, §9.1), then
+    /// report. A device netd refuses stays not ready; the pool is short of
+    /// it and the warning says why.
+    pub fn prepare_pools(&self) {
+        let me = self.local_node_id();
+        let name = self
+            .nodes
+            .get(&me)
+            .ok()
+            .flatten()
+            .map(|n| n.spec.name)
+            .unwrap_or_default();
+        let pools: Vec<_> = self
+            .pci_pools()
+            .iter()
+            .filter(|p| p.prepare)
+            .filter(|p| p.nodes.is_empty() || p.nodes.iter().any(|n| *n == me || *n == name))
+            .cloned()
+            .collect();
+        if pools.is_empty() {
+            return;
+        }
+        let mut prepared = 0;
+        for address in self.local_topology().to_prepare(&pools) {
+            match device_op_on(&self.netd, &address, "prepare") {
+                Ok(_) => {
+                    tracing::info!("prepared {address} for its pool");
+                    prepared += 1;
+                }
+                Err(e) => tracing::warn!("preparing {address} for its pool: {e}"),
+            }
+        }
+        if prepared > 0
+            && let Err(e) = self.report_self()
+        {
+            tracing::warn!("reporting this node after preparing pool devices: {e}");
+        }
     }
 
     /// `prepare` or `release` this host's PCI device `address` through
@@ -4989,6 +5043,9 @@ impl VmManager {
             if vm.spec.power != PowerState::Stopped {
                 u.running_vms += 1;
             }
+            for d in &vm.config().devices {
+                *u.devices.entry(d.pool.clone()).or_default() += d.count as u64;
+            }
         }
         u.disk_gib = self
             .images
@@ -5054,6 +5111,7 @@ impl VmManager {
         vms: &HashMap<String, Vm>,
     ) -> Result<(), VmManagerError> {
         Self::apply_quota(&p.quotas, usage, delta, mode, bypassed)?;
+        self.apply_tenant_pools(p, delta, mode, bypassed, vms)?;
         let Some(admission) = self
             .tenants
             .admission(&p.tenant_id)
@@ -5068,15 +5126,7 @@ impl VmManager {
             .iter()
             .filter(|o| o.tenant_id == p.tenant_id)
         {
-            let u = self.usage_locked(&other.id, vms)?;
-            total.vms += u.vms;
-            total.vcpus += u.vcpus;
-            total.memory_mib += u.memory_mib;
-            total.disk_gib += u.disk_gib;
-            total.running_vms += u.running_vms;
-            total.networks += u.networks;
-            total.routers += u.routers;
-            total.external_ips += u.external_ips;
+            total.add(&self.usage_locked(&other.id, vms)?);
         }
         let over = tenancy::overruns(&admission.cap, &total, delta);
         if over.is_empty() {
@@ -5089,6 +5139,83 @@ impl VmManager {
                 Ok(())
             }
         }
+    }
+
+    /// The `max` of each tenant pool `delta` asks of, over the VMs of all
+    /// the tenant's projects (spec/host-topology.md §9.1a).
+    fn apply_tenant_pools(
+        &self,
+        p: &tenancy::Project,
+        delta: &Delta,
+        mode: QuotaMode,
+        bypassed: &mut Vec<QuotaOverrun>,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<(), VmManagerError> {
+        if delta.tenant_pools.is_empty() {
+            return Ok(());
+        }
+        let storage = |e: crate::tenants::TenantError| {
+            VmManagerError::Tenancy(TenancyError::Storage(e.to_string()))
+        };
+        let used = self.tenant_pool_use(&p.tenant_id, vms)?;
+        let mut over = Vec::new();
+        for (name, &n) in &delta.tenant_pools {
+            let tp = self
+                .tenants
+                .device_pool(&p.tenant_id, name)
+                .map_err(storage)?
+                .ok_or_else(|| invalid(format!("no device pool {name}")))?;
+            let used = used.get(name).copied().unwrap_or(0);
+            if used + n > tp.max as u64 {
+                over.push(QuotaOverrun {
+                    resource: format!("tenant_pool.{name}"),
+                    limit: tp.max as u64,
+                    used,
+                    requested: n,
+                });
+            }
+        }
+        if over.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            QuotaMode::Enforce => Err(VmManagerError::TenantQuotaExceeded(over)),
+            QuotaMode::MayExceed => {
+                bypassed.extend(over);
+                Ok(())
+            }
+        }
+    }
+
+    /// Devices asked of each of `tenant`'s tenant pools by its VMs.
+    fn tenant_pool_use(
+        &self,
+        tenant: &str,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<BTreeMap<String, u64>, VmManagerError> {
+        let projects: std::collections::HashSet<String> = self
+            .projects
+            .list()?
+            .into_iter()
+            .filter(|o| o.tenant_id == tenant)
+            .map(|o| o.id)
+            .collect();
+        let mut out = BTreeMap::new();
+        for vm in vms.values().filter(|vm| projects.contains(&vm.project)) {
+            for (name, n) in tenant_pool_counts(&vm.config().devices) {
+                *out.entry(name).or_default() += n;
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Self::tenant_pool_use`], for the tenant pool listing.
+    pub async fn tenant_pools_used(
+        &self,
+        tenant: &str,
+    ) -> Result<BTreeMap<String, u64>, VmManagerError> {
+        let vms = self.vms.read().await;
+        self.tenant_pool_use(tenant, &vms)
     }
 
     /// Whether a project still owns anything (it can't be deleted then).
@@ -5159,6 +5286,26 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// Size in GiB, rounded up.
+/// Devices asked of each tenant pool.
+fn tenant_pool_counts(devices: &[crate::models::DeviceRequest]) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for d in devices {
+        if let Some(t) = &d.tenant_pool {
+            *out.entry(t.clone()).or_default() += d.count as u64;
+        }
+    }
+    out
+}
+
+/// Devices asked of each pool.
+fn pool_counts(devices: &[crate::models::DeviceRequest]) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for d in devices {
+        *out.entry(d.pool.clone()).or_default() += d.count as u64;
+    }
+    out
+}
+
 fn gib_ceil(bytes: u64) -> u64 {
     bytes.div_ceil(1 << 30)
 }

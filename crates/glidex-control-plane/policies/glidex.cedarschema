@@ -158,6 +158,12 @@ namespace Glidex {
   // to those who may invite.
   action readTenantInvitations, manageTenantInvitations in ["tenant.members", "directory.tenants", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // Tenant pools (spec/host-topology.md §9.1a): a tenant's share of a
+  // cluster device pool, split among its projects.
+  action readTenantDevicePools in ["tenant.read", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  action manageTenantDevicePools in ["tenant.projects", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
   action listConnectors, readConnector in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };

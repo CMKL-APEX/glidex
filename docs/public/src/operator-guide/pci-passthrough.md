@@ -242,7 +242,8 @@ devices from a pool, and the scheduler picks them. Pools are defined in
   "pci": {
     "pools": [
       { "name": "a100", "class": "gpu",
-        "match": { "vendor_id": "0x10de", "device_id": "0x20b0" } },
+        "match": { "vendor_id": "0x10de", "device_id": "0x20b0" },
+        "prepare": true },
       { "name": "cx7", "class": "nic",
         "match": { "vendor_id": "0x15b3", "device_id": "0x1021" },
         "nodes": ["gpu-01", "gpu-02"] }
@@ -258,6 +259,12 @@ devices from a pool, and the scheduler picks them. Pools are defined in
 - `match` takes `vendor_id`, `device_id`, `class_code` (or its start,
   `0x0302`) and `addresses`; every key given must match. `nodes` limits
   the pool to some nodes.
+- With `prepare: true`, each node binds its devices of the pool that
+  aren't ready to `vfio-pci` when glidex starts, as `gxctl node
+  prepare-device` does (a device with host addresses or an OVS-DPDK
+  uplink is refused and stays not ready; the log says why). Use it only
+  for devices the host itself doesn't need: a GPU on `nvidia` loses its
+  host driver.
 - A grant with `pool` lets a project or tenant ask for that pool's
   devices (`usePciPool`); `net-admin` and `system-admin` may use any.
 - A VM asks with `devices`: `[{"pool": "a100", "count": 2,
@@ -267,7 +274,27 @@ devices from a pool, and the scheduler picks them. Pools are defined in
   under one PCIe switch. The VM shows them as `pool_devices`, and gets
   them at its next start.
 - `gxctl pci pools` (`GET /pci-pools`, a host role) lists each pool's
-  devices per node, who holds them, and how many are free.
+  devices per node, who holds them, and how many are free. A project's
+  members see the pools it may use and how many are free with `gxctl
+  pci pools --project <p>` (`GET /pci-pools?project=<p>`), without
+  devices or holders; the UI's VM form offers those pools.
+- A project quota `devices.<pool>` limits the devices a project's VMs
+  ask of that pool (`gxctl project quota <p> devices.a100=2`; the
+  `quota_exceeded` resource is `devices.a100`), and a tenant's cap
+  limits it over all its projects. A pool without one is unlimited.
+- A tenant granted a pool can split its share among its projects with
+  **tenant pools**: its tenant admin sets `gxctl tenant device-pool set
+  acme team-a-gpus --from a100 --max 4 --projects team-a,team-a-ci`
+  (`PUT /tenants/{id}/device-pools`, or the tenant's page). A VM of one
+  of those projects asks for `{"pool": "team-a-gpus"}`; it gets devices
+  of `a100`, and the tenant pool's projects together hold at most 4
+  (`tenant_quota_exceeded`, resource `tenant_pool.team-a-gpus`). The
+  VM's request shows `"pool": "a100", "tenant_pool": "team-a-gpus"`.
+  The tenant's cap and the project quota on `a100` still apply. If the
+  tenant loses its grant, the tenant pool shows `ungranted` and gives
+  nothing new; VMs holding devices keep them.
+- Metering counts `device.alloc.<pool>`: devices held, in device-hours,
+  from the VM's start to its exit (paused too).
 
 ## Device health and cordoning
 

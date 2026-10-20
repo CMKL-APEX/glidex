@@ -88,6 +88,8 @@ message ProjectUsage {
   uint32 networks = 6;
   uint32 routers = 7;
   uint32 external_ips = 8 [json_name = "external_ips"];
+  // Pool devices the project's VMs ask for, by pool.
+  map<string, uint32> devices = 9;
 }
 
 message Project {
