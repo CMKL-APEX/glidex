@@ -373,8 +373,9 @@ difference:
 - **First login.** It is matched to the pulled user by Google's account
   id (the subject of Google's login), never by email address. Someone
   the pull didn't bring in is refused (`login_not_allowed`).
-  Invitations can't be taken through the connector. `--mfa` and
-  `--trust-2sv` still apply.
+  Invitations can't be taken through the connector, and nobody can add
+  it to their account as a sign-in method. `--mfa` and `--trust-2sv`
+  still apply.
 - **Changes** in Google (name, primary email) reach Glidex at the next
   run.
 - **Leaving.** Someone suspended or archived in Google, deleted there,
@@ -386,7 +387,10 @@ difference:
   then only an administrator enables it again.
 - **Users who logged in before the pull** through the same connector
   are adopted: the pull takes over the user they already have, with its
-  roles, rather than making a second one.
+  roles, rather than making a second one. So are users who added the
+  connector as a sign-in method before Glidex refused that; the audit
+  log's `oidc-link` entries show who did, and removing that sign-in
+  method before the next run keeps their account out of the pull.
 - **What Google owns.** A pulled user's name, email and whether it is
   enabled are Google's, and the pulled teams' names and memberships
   too: see [Users an IdP

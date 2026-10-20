@@ -88,9 +88,8 @@ local password and a Google account; each gives the same roles.
 
 - Under *Add a way to sign in*, pick one of the site's single sign-on
   providers and sign in there; it is added to you. This needs a recent
-  login. A provider that provisions its users (SCIM) can't be added:
-  its sign-ins belong to the accounts it manages.
-  <!-- TODO(verify): the server refuses adding a SCIM connector's sign-in but not a directory-sync (pull) connector's; confirm the intended behaviour before documenting it either way. -->
+  login. A provider that provisions its users, by SCIM or a directory
+  sync, can't be added: its sign-ins belong to the accounts it manages.
 - **Remove** takes one away. You can't remove your last one.
 
 Signing in a second way without adding it first makes a second, separate
