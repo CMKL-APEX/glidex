@@ -8,7 +8,9 @@
 //! asks the policy engine; a personal token that has links of its own is
 //! allowed only what both it and its owner are allowed.
 
+pub mod passkeys;
 pub mod store;
+pub mod webauthn;
 
 use crate::authz::{
     self, AuthContext, Decision, Engine, Ent, EntitySet, Link, PolicySource, Query, SiteSource,
@@ -68,6 +70,8 @@ pub enum Method {
     Peer,
     Pam,
     Oidc,
+    /// A passkey (spec/passkeys.md): user-verified, so multi-factor.
+    Passkey,
     Token,
     Disabled,
 }
@@ -78,6 +82,7 @@ impl Method {
             Method::Peer => "peer",
             Method::Pam => "pam",
             Method::Oidc => "oidc",
+            Method::Passkey => "passkey",
             Method::Token => "token",
             Method::Disabled => "disabled",
         }
@@ -259,6 +264,9 @@ pub struct AuthService {
     pub sync_status: crate::directory::sync::SyncStatusStore,
     /// Workload federations (spec/tenancy.md §9).
     pub federations: crate::directory::federation::FederationStore,
+    /// Passkeys (spec/passkeys.md), and their ceremonies in progress.
+    pub passkeys: passkeys::PasskeyStore,
+    pub ceremonies: passkeys::Ceremonies,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -390,6 +398,8 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
+            passkeys: passkeys::PasskeyStore::new(db.clone()),
+            ceremonies: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -431,6 +441,8 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
+            passkeys: passkeys::PasskeyStore::new(db.clone()),
+            ceremonies: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -1045,10 +1057,10 @@ impl AuthService {
             self.store.put_session(&hash, &s)?;
         }
         let teams = self.store.teams_of(&user.id)?;
-        let method = if s.method == "oidc" {
-            Method::Oidc
-        } else {
-            Method::Pam
+        let method = match s.method.as_str() {
+            "oidc" => Method::Oidc,
+            "passkey" => Method::Passkey,
+            _ => Method::Pam,
         };
         Ok(Some(Principal {
             user: Some(user),

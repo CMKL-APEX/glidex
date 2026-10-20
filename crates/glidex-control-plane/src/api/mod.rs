@@ -18,6 +18,7 @@ pub mod gate;
 mod invitations;
 mod net;
 pub(crate) mod nodes;
+mod passkeys;
 mod rates;
 pub mod relay;
 mod rpc;
@@ -820,6 +821,31 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     // Workload federation (spec/tenancy.md §9): a CI job's JWT for a
     // short-lived token; the JWT is the credential.
     .add("POST", "/auth/exchange", PUBLIC, post(exchange::exchange))
+    // Passkeys (spec/passkeys.md): the browser's ceremonies.
+    .add(
+        "POST",
+        "/auth/passkeys/login/start",
+        PUBLIC,
+        post(passkeys::login_start),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/login/finish",
+        PUBLIC,
+        post(passkeys::login_finish),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/register/start",
+        AUTHENTICATED,
+        post(passkeys::register_start),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/register/finish",
+        AUTHENTICATED,
+        post(passkeys::register_finish),
+    )
     .add(
         "GET",
         "/auth/c/{id}/start",
@@ -932,6 +958,24 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/users/{id}/identities/{key}",
         "manageUsers",
         delete(access::unlink_identity),
+    )
+    .add(
+        "GET",
+        "/users/{id}/passkeys",
+        "listUsers",
+        get(access::list_passkeys),
+    )
+    .add(
+        "PATCH",
+        "/users/{id}/passkeys/{passkey}",
+        "manageUsers",
+        axum::routing::patch(access::rename_passkey),
+    )
+    .add(
+        "DELETE",
+        "/users/{id}/passkeys/{passkey}",
+        "manageUsers",
+        delete(access::delete_passkey),
     )
     .add("GET", "/teams", "listTeams", get(access::list_teams))
     .add("POST", "/teams", "manageTeams", post(access::create_team))
@@ -1911,7 +1955,7 @@ impl Caller {
     pub fn allowed_after_reauth(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
         if !matches!(
             self.p.method,
-            crate::auth::Method::Pam | crate::auth::Method::Oidc
+            crate::auth::Method::Pam | crate::auth::Method::Oidc | crate::auth::Method::Passkey
         ) {
             return false;
         }
@@ -2308,6 +2352,8 @@ mod tests {
                 "/auth/oidc/device/poll",
                 "/auth/discover",
                 "/auth/exchange",
+                "/auth/passkeys/login/start",
+                "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",
                 "/auth/c/{id}/start",
                 "/auth/invitation",

@@ -123,6 +123,8 @@ pub struct AuthConfig {
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
+    /// Passkeys (spec/passkeys.md).
+    pub passkeys: PasskeyConfig,
     /// File holding the host's secrets key (spec/tenancy.md §13); the
     /// systemd credential `secrets-kek` wins when present. The control
     /// plane defaults it to `secrets.kek` beside its database.
@@ -216,6 +218,28 @@ impl Default for PamConfig {
             group_teams: HashMap::new(),
             authd_socket: PathBuf::from("/run/glidex-authd/auth.sock"),
             service: "glidex".into(),
+        }
+    }
+}
+
+/// Passkeys (spec/passkeys.md P2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PasskeyConfig {
+    pub enabled: bool,
+    /// The relying-party id (a domain): passkeys made under it work on
+    /// every web UI name under it. Unset: each request's UI host name.
+    pub rp_id: Option<String>,
+    /// What the browser shows as the site's name.
+    pub rp_name: String,
+}
+
+impl Default for PasskeyConfig {
+    fn default() -> Self {
+        PasskeyConfig {
+            enabled: true,
+            rp_id: None,
+            rp_name: "glidex".into(),
         }
     }
 }

@@ -28,6 +28,9 @@ pub async fn methods(State(app): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "pam": app.auth.pam_connector(None).is_ok(),
         "oidc": app.auth.oidc_enabled(),
+        // spec/passkeys.md: whether they are on, and their domain when set.
+        "passkeys": app.auth.config.auth.passkeys.enabled,
+        "passkeys_rp_id": app.auth.config.auth.passkeys.rp_id,
         "disabled": app.auth.is_disabled(),
         "connectors": svc::discover(&app, Default::default()).connectors,
     }))
@@ -856,6 +859,41 @@ pub async fn unlink_identity(
         ..Default::default()
     };
     acc::unlink_identity(&c, req)?;
+    Ok(super::proto_no_content())
+}
+
+/// `GET /users/{id}/passkeys`.
+pub async fn list_passkeys(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListPasskeysRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::list_passkeys(&c, req)?))
+}
+
+/// `PATCH /users/{id}/passkeys/{passkey} {name}`.
+pub async fn rename_passkey(
+    c: Caller,
+    Path((id, passkey)): Path<(String, String)>,
+    Json(v): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let mut req: pb::RenamePasskeyRequest = proto_body(v)?;
+    req.id = id;
+    req.passkey = passkey;
+    Ok(Proto(StatusCode::OK, acc::rename_passkey(&c, req)?))
+}
+
+/// `DELETE /users/{id}/passkeys/{passkey}`.
+pub async fn delete_passkey(
+    c: Caller,
+    Path((id, passkey)): Path<(String, String)>,
+) -> Result<Response, ApiErr> {
+    let req = pb::DeletePasskeyRequest {
+        id,
+        passkey,
+        ..Default::default()
+    };
+    acc::delete_passkey(&c, req)?;
     Ok(super::proto_no_content())
 }
 

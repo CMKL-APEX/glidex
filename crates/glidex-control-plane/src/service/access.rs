@@ -925,6 +925,10 @@ pub fn delete_user(
         .delete_user(&req.id)
         .map_err(store_err)?
         .ok_or_else(|| not_found("user"))?;
+    call.auth()
+        .passkeys
+        .forget_user(&req.id)
+        .map_err(passkey_err)?;
     let n = |x: usize| x.min(u32::MAX as usize) as u32;
     Ok(pb::DeleteUserResponse {
         identities: n(d.identities),
@@ -959,28 +963,174 @@ pub fn unlink_identity(
     let Some(i) = found else {
         return Err(not_found("identity"));
     };
-    // A user may have many sign-in methods, but not none, unless it is
-    // disabled (it can't sign in anyway): then its last one can go, to be
-    // added to the user its person really is.
     let disabled = s
         .user(&req.id)
         .map_err(store_err)?
         .is_some_and(|u| u.disabled);
-    if all.len() <= 1 && !disabled {
-        return Err(ServiceError::new(
-            StatusCode::CONFLICT,
-            "last_identity",
-            "this is the user's only way to sign in: add another first, or disable the user to take it away",
-        ));
-    }
+    keeps_a_way_in(&all, i, disabled)?;
     call.detail("identity", serde_json::json!(req.key));
     s.remove_identity(&i.provider, &i.subject)
         .map_err(store_err)?;
+    if i.provider == crate::auth::passkeys::PROVIDER {
+        call.auth()
+            .passkeys
+            .delete(&i.subject)
+            .map_err(passkey_err)?;
+    }
     if req.end_sessions == Some(true) && !own {
         let n = s.remove_sessions_of(&req.id).map_err(store_err)?;
         call.detail("sessions_ended", serde_json::json!(n));
     }
     Ok(pb::UnlinkIdentityResponse::default())
+}
+
+/// A user may have many sign-in methods, but not none, unless it is
+/// disabled (it can't sign in anyway): then its last one can go, to be
+/// added to the user its person really is. Passkeys alone are enough only
+/// when there are two (spec/passkeys.md P4): one lost device isn't a
+/// lock-out.
+fn keeps_a_way_in(all: &[Identity], removing: &Identity, disabled: bool) -> ServiceResult<()> {
+    if disabled {
+        return Ok(());
+    }
+    let left: Vec<&Identity> = all
+        .iter()
+        .filter(|i| !(i.provider == removing.provider && i.subject == removing.subject))
+        .collect();
+    let only_one_passkey = left.len() == 1 && left[0].provider == crate::auth::passkeys::PROVIDER;
+    if left.is_empty() || only_one_passkey {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "last_identity",
+            if left.is_empty() {
+                "this is the user's only way to sign in: add another first, or disable the user to take it away"
+            } else {
+                "that would leave one passkey as the only way to sign in: add another sign-in method or a second passkey first"
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn passkey_err(e: crate::auth::passkeys::PasskeyError) -> ServiceError {
+    use crate::auth::passkeys::PasskeyError as E;
+    match e {
+        E::NotFound => not_found("passkey"),
+        E::Invalid(m) => ServiceError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid", m),
+        E::Refused(m) => ServiceError::new(StatusCode::UNAUTHORIZED, "passkey_refused", m),
+        E::Storage(m) => ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+fn passkey_pb(p: &crate::auth::passkeys::Passkey) -> pb::Passkey {
+    pb::Passkey {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        algorithm: match p.alg {
+            crate::auth::webauthn::ES256 => "ES256",
+            crate::auth::webauthn::EDDSA => "EdDSA",
+            crate::auth::webauthn::RS256 => "RS256",
+            _ => "?",
+        }
+        .into(),
+        backed_up: Some(p.backed_up),
+        created_at: ts(p.created_at).into(),
+        last_used_at: p.last_used_at.map(ts).into(),
+        ..Default::default()
+    }
+}
+
+/// One's own (`manageOwnSignIns`), or anyone's with `admin_action`.
+fn own_or(call: &Call, user: &str, admin_action: &'static str) -> ServiceResult<bool> {
+    let own = call.p.user_id() == Some(user);
+    if own {
+        let (e, es) = self_entities(call);
+        call.require_action("manageOwnSignIns", e, es, &[])?;
+    } else {
+        call.with_action(admin_action)
+            .require(directory_ent(), EntitySet::new())?;
+    }
+    call.set_target(format!("user:{user}"));
+    Ok(own)
+}
+
+pub fn list_passkeys(
+    call: &Call,
+    req: pb::ListPasskeysRequest,
+) -> ServiceResult<pb::ListPasskeysResponse> {
+    let own = call.p.user_id() == Some(req.id.as_str());
+    if !own {
+        call.require(directory_ent(), EntitySet::new())?;
+    }
+    let list = call.auth().passkeys.list(&req.id).map_err(passkey_err)?;
+    Ok(pb::ListPasskeysResponse {
+        passkeys: list.iter().map(passkey_pb).collect(),
+        rp_id: call.auth().config.auth.passkeys.rp_id.clone(),
+        ..Default::default()
+    })
+}
+
+pub fn rename_passkey(
+    call: &Call,
+    req: pb::RenamePasskeyRequest,
+) -> ServiceResult<pb::RenamePasskeyResponse> {
+    if call.p.user_id() != Some(req.id.as_str()) {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only its user renames a passkey",
+        ));
+    }
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(bad("a passkey's name is 1-64 printable characters"));
+    }
+    let mut p = call
+        .auth()
+        .passkeys
+        .get(&req.passkey)
+        .map_err(passkey_err)?
+        .filter(|p| p.user_id == req.id)
+        .ok_or_else(|| not_found("passkey"))?;
+    p.name = name.to_string();
+    call.auth().passkeys.put(&p).map_err(passkey_err)?;
+    Ok(pb::RenamePasskeyResponse {
+        passkey: passkey_pb(&p).into(),
+        ..Default::default()
+    })
+}
+
+pub fn delete_passkey(
+    call: &Call,
+    req: pb::DeletePasskeyRequest,
+) -> ServiceResult<pb::DeletePasskeyResponse> {
+    own_or(call, &req.id, "manageUsers")?;
+    let p = call
+        .auth()
+        .passkeys
+        .get(&req.passkey)
+        .map_err(passkey_err)?
+        .filter(|p| p.user_id == req.id)
+        .ok_or_else(|| not_found("passkey"))?;
+    let s = &call.auth().store;
+    let all = s.identities_of(&req.id).map_err(store_err)?;
+    let disabled = s
+        .user(&req.id)
+        .map_err(store_err)?
+        .is_some_and(|u| u.disabled);
+    let me = Identity {
+        provider: crate::auth::passkeys::PROVIDER.into(),
+        subject: p.id.clone(),
+        user_id: req.id.clone(),
+        email: None,
+        created_at: 0,
+    };
+    keeps_a_way_in(&all, &me, disabled)?;
+    call.detail("passkey", serde_json::json!({ "id": p.id, "name": p.name }));
+    s.remove_identity(crate::auth::passkeys::PROVIDER, &p.id)
+        .map_err(store_err)?;
+    call.auth().passkeys.delete(&p.id).map_err(passkey_err)?;
+    Ok(pb::DeletePasskeyResponse::default())
 }
 
 pub fn update_me(call: &Call, req: pb::UpdateMeRequest) -> ServiceResult<pb::UpdateMeResponse> {
