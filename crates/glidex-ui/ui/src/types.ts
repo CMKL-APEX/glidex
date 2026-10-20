@@ -979,6 +979,9 @@ export interface AuthMethods {
   disabled: boolean;
   /** The directory's enabled connectors (absent from older servers). */
   connectors?: LoginConnector[];
+  /** Passkeys are on (spec/passkeys.md), and their domain when set. */
+  passkeys?: boolean;
+  passkeys_rp_id?: string | null;
 }
 
 // The access routes (projects, bindings, users, teams, tokens, policies,

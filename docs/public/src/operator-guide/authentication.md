@@ -481,6 +481,43 @@ history or scripts. Revoke a token you no longer need, and any token
 that may have been exposed. `gxctl token list` shows when each was last
 used.
 
+## Passkeys
+
+Users can sign in with a **passkey**: their device's fingerprint, face or
+PIN (or a security key) instead of a password. A passkey is one more
+sign-in method of the same user; it counts as multi-factor, and it can
+answer the re-authentication a sensitive action asks for.
+
+- Each user adds their own on the **Account** page (**Add a passkey**),
+  after a recent sign-in. Nobody, administrators included, can add a
+  passkey to someone else's account; administrators can remove one.
+- The login page then offers **Sign in with a passkey**, with no user
+  name to type.
+- A user keeps another sign-in method, or a second passkey: glidex
+  refuses to remove the method that would leave a single passkey as the
+  only way in, so losing one device isn't a lock-out.
+
+Passkeys belong to a domain. Set it to the domain your web UI's names
+share, so that a passkey made on one name works on the others (and on a
+cluster's other servers):
+
+```json
+{
+  "auth": {
+    "passkeys": { "rp_id": "example.com" }
+  }
+}
+```
+
+in `/etc/glidex/control-plane.json` (here for a web UI at
+`https://glidex.example.com:5173`; on a tailnet, the tailnet's
+`<tailnet>.ts.net`). Without it, each web UI name has its own passkeys,
+and the Account page says so. `"enabled": false` turns passkeys off.
+Changing `rp_id` later makes existing passkeys stop working: their users
+add new ones.
+
+gxctl doesn't sign in with passkeys; it keeps tokens, PAM and OIDC.
+
 ## Workload federation (CI without stored tokens)
 
 A CI job usually needs a service account's token to deploy. With
