@@ -60,7 +60,8 @@ cat >"$e2e_home/control-plane.json" <<EOF
     "allowed_origins": [
       "http://localhost:$ui_port", "http://127.0.0.1:$ui_port",
       "http://localhost:$ui_server_port", "http://127.0.0.1:$ui_server_port"
-    ]
+    ],
+    "federation": { "allow_private_issuers": true }
   },
   "authz": { "policy_files_dir": "$e2e_home/policies" }
 }

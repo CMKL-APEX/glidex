@@ -731,3 +731,237 @@ pub async fn invite(client: &ApiClient, args: &[&str]) {
         _ => usage(INVITE_USAGE),
     }
 }
+
+// ---- workload federations (spec/tenancy.md §9) ----------------------------
+
+const FEDERATION_USAGE: &str = "Usage: federation list <tenant> | show <tenant> <id> \
+    | add <tenant> <id> --issuer URL --audience AUD [--name TEXT] \
+      (--match CLAIM=VALUE... --service-account TOKEN-ID [--ttl SECS] | --rules-file FILE) \
+    | enable <tenant> <id> | disable <tenant> <id> | remove <tenant> <id>\n\
+    A rule matches exact claim values and names repository, project_path or sub; \
+    --rules-file holds a JSON list of {match, service_account, ttl_secs}.";
+
+/// Service accounts the caller can see: token id → `name (project)`. A
+/// rule names its service account by its public token id; this shows
+/// which one that is.
+async fn service_accounts(t: &crate::client::RpcTransport) -> HashMap<String, String> {
+    use glidex_api::proto::glidex::access::v1::{ListTokensRequest, TokenServiceClient};
+    let svc = TokenServiceClient::new(t.clone(), t.config());
+    match svc.list_tokens(ListTokensRequest::default()).await {
+        Ok(r) => r
+            .into_owned()
+            .tokens
+            .into_iter()
+            .map(|k| {
+                let label = match k.project.as_deref() {
+                    Some(p) if !p.is_empty() => format!("{} (project {p})", k.name),
+                    _ => k.name.clone(),
+                };
+                (k.id, label)
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn print_federation(f: &Federation, accounts: &HashMap<String, String>) {
+    let state = if f.enabled == Some(true) {
+        "enabled".green()
+    } else {
+        "disabled".red()
+    };
+    println!("  {} {}  {}", f.id.cyan(), f.display_name, state);
+    println!("    issuer {}  audience {}", f.issuer, f.audience);
+    for (i, r) in f.rules.iter().enumerate() {
+        let mut claims: Vec<String> = r.r#match.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        claims.sort();
+        let who = accounts
+            .get(&r.service_account)
+            .map(String::as_str)
+            .unwrap_or("a service account you can't list");
+        println!(
+            "    rule {}: {} -> {} ({} s)",
+            i + 1,
+            claims.join(", "),
+            who,
+            r.ttl_secs.unwrap_or(900)
+        );
+    }
+}
+
+fn rules_from(args: &[&str]) -> Result<Vec<FederationRule>, String> {
+    if let Some(path) = flag_value(args, "--rules-file") {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let v: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| format!("{path}: not a JSON list: {e}"))?;
+        return v
+            .into_iter()
+            .map(|r| {
+                let claims = r
+                    .get("match")
+                    .and_then(|m| m.as_object())
+                    .ok_or_else(|| format!("{path}: a rule without match"))?;
+                Ok(FederationRule {
+                    r#match: claims
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                        .collect(),
+                    service_account: r
+                        .get("service_account")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .into(),
+                    ttl_secs: r.get("ttl_secs").and_then(|t| t.as_u64()).map(|t| t as u32),
+                    ..Default::default()
+                })
+            })
+            .collect();
+    }
+    let matches = flag_values(args, "--match");
+    if matches.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut m = HashMap::new();
+    for kv in matches {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("--match takes CLAIM=VALUE, not {kv}"))?;
+        m.insert(k.to_string(), v.to_string());
+    }
+    let sa =
+        flag_value(args, "--service-account").ok_or("--match needs --service-account TOKEN-ID")?;
+    let ttl = match flag_value(args, "--ttl") {
+        Some(t) => Some(
+            t.parse()
+                .map_err(|_| format!("--ttl takes seconds, not {t}"))?,
+        ),
+        None => None,
+    };
+    Ok(vec![FederationRule {
+        r#match: m.into_iter().collect(),
+        service_account: sa.into(),
+        ttl_secs: ttl,
+        ..Default::default()
+    }])
+}
+
+pub async fn federation(client: &ApiClient, args: &[&str]) {
+    let Some(t) = transport(client).await else {
+        return;
+    };
+    let svc = FederationServiceClient::new(t.clone(), t.config());
+    let (Some(sub), Some(tenant)) = (args.first().copied(), args.get(1).map(|s| s.to_string()))
+    else {
+        return usage(FEDERATION_USAGE);
+    };
+    let id = args.get(2).map(|s| s.to_string());
+    match (sub, id) {
+        ("list" | "ls", _) => match svc
+            .list_federations(ListFederationsRequest {
+                tenant,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) if r.federations.is_empty() => println!("No federations"),
+            Ok(r) => {
+                let accounts = service_accounts(&t).await;
+                r.federations
+                    .iter()
+                    .for_each(|f| print_federation(f, &accounts));
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        ("show", Some(id)) => match svc
+            .get_federation(GetFederationRequest {
+                tenant,
+                federation: id,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => {
+                let accounts = service_accounts(&t).await;
+                print_federation(
+                    &r.federation.as_option().cloned().unwrap_or_default(),
+                    &accounts,
+                )
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        ("add" | "create", Some(id)) => {
+            let (Some(issuer), Some(audience)) =
+                (flag_value(args, "--issuer"), flag_value(args, "--audience"))
+            else {
+                return usage(FEDERATION_USAGE);
+            };
+            let rules = match rules_from(args) {
+                Ok(r) => r,
+                Err(e) => return err(e),
+            };
+            let f = Federation {
+                id,
+                display_name: flag_value(args, "--name").unwrap_or("").into(),
+                issuer: issuer.into(),
+                audience: audience.into(),
+                enabled: Some(true),
+                rules,
+                ..Default::default()
+            };
+            match svc
+                .create_federation(CreateFederationRequest {
+                    tenant,
+                    federation: f.into(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    println!("{}", "Federation added:".green());
+                    let accounts = service_accounts(&t).await;
+                    print_federation(
+                        &r.federation.as_option().cloned().unwrap_or_default(),
+                        &accounts,
+                    );
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        (on @ ("enable" | "disable"), Some(id)) => {
+            let req = UpdateFederationRequest {
+                tenant,
+                federation: id.clone(),
+                changes: Federation {
+                    enabled: Some(on == "enable"),
+                    ..Default::default()
+                }
+                .into(),
+                update_mask: buffa_types::google::protobuf::FieldMask {
+                    paths: vec!["enabled".into()],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            };
+            match svc.update_federation(req).await {
+                Ok(_) => println!("{} {id} {on}d", "Federation".green()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        ("remove" | "rm" | "delete", Some(id)) => match svc
+            .delete_federation(DeleteFederationRequest {
+                tenant,
+                federation: id.clone(),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => println!("{} {id}", "Federation removed:".green()),
+            Err(e) => err(rpc_err(e)),
+        },
+        _ => usage(FEDERATION_USAGE),
+    }
+}

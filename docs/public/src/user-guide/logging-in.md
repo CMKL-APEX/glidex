@@ -4,7 +4,7 @@ How you prove who you are depends on where you connect from:
 
 | From | How |
 |------|-----|
-| The web UI | Your account's password (PAM) or single sign-on (OIDC), whichever the site enables |
+| The web UI | Your account's password (PAM) or single sign-on (OIDC, Google, JumpCloud), whichever the site enables |
 | `gxctl` on a Glidex host | Nothing: the local socket knows your Unix account |
 | `gxctl` on another machine | `gxctl auth login` once; it saves a token in a login profile |
 | Scripts and the API | An API token, sent as `Authorization: Bearer <token>` |
@@ -21,15 +21,40 @@ sign-in page shows what the site enables:
   host, or of the site's PAM setup. By default the account must be in the
   `glidex-users` group.
 - **Sign in with &lt;provider&gt;** (or **Sign in with SSO**): your
-  organisation's single sign-on.
+  organisation's single sign-on, one button per provider the site
+  offers, such as its Google Workspace or JumpCloud.
 
 If the page says *No login method is enabled on this host*, ask an
 administrator, or use `gxctl` on the host.
 
+Some single sign-on providers create your Glidex account for you ahead
+of time (*provisioning*): the identity provider pushes it over SCIM, or
+Glidex reads it from your organisation's Google Workspace (a *directory
+sync*). Through such a provider:
+
+- only people it provisioned can sign in; anyone else is refused
+  (`login_not_allowed`), even with an invitation. With a directory sync,
+  that is the members of the Google groups your operator chose;
+- your first sign-in is matched to the account it made, by your
+  provider's id or, over SCIM, your verified email address;
+- your name and email come from the provider, and if the provider
+  deactivates you, you can't sign in until it reactivates you. With a
+  directory sync, being suspended in Google or taken out of the groups
+  counts as deactivated. An administrator may also disable you in
+  Glidex; then only an administrator can enable you again.
+
+A directory sync reads Google every 15 minutes unless the operator chose
+otherwise, so after you are added to a group (or come back), it can take
+that long before you can sign in.
+
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
 browser shows with the one your operator gives you before you accept it
-(see [TLS](../operator-guide/tls.md)).
+(see [TLS](../operator-guide/tls.md)). If the host is on a Tailscale
+tailnet and your operator turned on its Tailscale certificate, open the
+UI at its `https://<node>.<tailnet>.ts.net:5173` address instead: the
+browser trusts that one, with no warning (see
+[Tailscale certificates](../operator-guide/tls.md#tailscale-certificates)).
 
 A browser session ends after 30 minutes without activity and after 12
 hours at most, unless the operator changed these. **Log out**, in the
@@ -39,6 +64,37 @@ the cluster) need a recent login: the UI then asks you to sign in again
 
 The header also shows who you are and the project you are working in;
 see [Projects](projects.md#choosing-a-project).
+
+### Invitations
+
+An administrator may let you in with an invitation: a link of the form
+`https://<host>:5173/invite/<id>#<secret>`. Open it in your browser. The
+page says which tenant and role it is for, and which address and
+provider to sign in with; **Sign in with &lt;provider&gt;** takes you
+there. Sign in with that address: another account doesn't take the
+invitation.
+
+- A link works once, for one person, and expires (after 7 days unless
+  the administrator chose otherwise).
+- Keep it to yourself until you have used it: it works like a password.
+- If the page says the invitation was already used, revoked or has
+  expired, ask for a new one.
+
+### Your account
+
+Click your name in the header for **Your account**. Its **Sign-in
+methods** card lists the ways you can sign in as yourself, for example a
+local password and a Google account; each gives the same roles.
+
+- Under *Add a way to sign in*, pick one of the site's single sign-on
+  providers and sign in there; it is added to you. This needs a recent
+  login. A provider that provisions its users, by SCIM or a directory
+  sync, can't be added: its sign-ins belong to the accounts it manages.
+- **Remove** takes one away. You can't remove your last one.
+
+Signing in a second way without adding it first makes a second, separate
+user. If a sign-in already belongs to another user, an administrator
+must remove it from that user before you can add it.
 
 ## gxctl on a Glidex host
 
@@ -77,7 +133,9 @@ gxctl auth login --url https://host.example.org:8841 --profile lab --oidc
 gxctl auth login --url https://host.example.org:8841 --profile ci --token < token.txt
 ```
 
-- `--connector <id>` picks one of several sign-in providers.
+- `--connector <id>` picks one of several sign-in providers. A Google
+  provider works with `--oidc` only if the operator set it up for
+  device logins; otherwise it answers `device_flow_unsupported`.
 - `--name <name>` names the token it creates (default `gxctl@<profile>`),
   so you can tell your machines apart in `gxctl token list`.
 - `--days N` asks for a shorter or longer `--pam-user` token, within the

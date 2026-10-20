@@ -13,6 +13,7 @@ pub mod access;
 pub mod cluster;
 pub mod common;
 pub mod directory;
+pub mod federations;
 pub mod host;
 pub mod invitations;
 pub mod login;

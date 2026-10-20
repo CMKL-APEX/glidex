@@ -11,6 +11,8 @@
 //! Every login, whichever connector, ends in one [`ExternalIdentity`],
 //! which `AuthService::external_login` turns into a user (§6).
 
+pub mod exchange;
+pub mod federation;
 pub mod google_directory;
 pub mod invitations;
 pub mod oidc;

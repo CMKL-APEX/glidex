@@ -16,7 +16,8 @@ Everything in this guide can be done in at least one of these:
 
 - **Web UI**, at `https://<host>:5173` by default. Sign in with your
   account; the header has a project selector and a page per resource
-  (VMs, Images, Disks, Credentials, Networking, Projects, Usage).
+  (VMs, Images, Disks, Credentials, Networking, Projects, Usage). Pages
+  follow changes as they happen, without reloading.
 - **`gxctl`**, the command-line client. Run `gxctl` for an interactive
   shell (`gxctl>` prompt, Tab completion, `help` lists every command), or
   `gxctl <command>` to run one command and exit:
@@ -39,8 +40,9 @@ API example where it helps. The full command list is in the
 
 ## Pages
 
-- [Logging in](logging-in.md): the web UI, `gxctl` on the host and from
-  another machine, login profiles, API tokens, `whoami`.
+- [Logging in](logging-in.md): the web UI, invitations, your sign-in
+  methods, `gxctl` on the host and from another machine, login profiles,
+  API tokens, `whoami`.
 - [Projects](projects.md): what a project holds, members and roles,
   teams, quotas, choosing the project you work in.
 - [Images and disks](images-and-disks.md): the image catalog, pulling

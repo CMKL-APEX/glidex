@@ -8,11 +8,20 @@ Glidex has one API with two transports:
   from the protos. See [RPC API](rpc.md).
 
 Both run the same operation, with the same authorization, quotas and
-audit entry. Most operations exist on both. Some are REST only: the
-console WebSocket, the `/watch` event stream, browser and OIDC login
-redirects, CSV exports, cluster and node management, and `/health`.
-The gRPC health service has no REST twin. The web UI and `gxctl` use
-this same API.
+audit entry, and almost every operation exists on both. The streams do
+too: `GET /watch` (server-sent events) is `WatchService.Watch`, and the
+console WebSocket is `VmService.Console`.
+
+- **Only on REST**: `/health`, `/auth/methods`, browser login and
+  logout, OIDC and connector login redirects, CSV exports, the cluster
+  snapshot, `/system/reconcile`, and the [SCIM
+  endpoints](rest.md#scim-20-for-identity-providers) identity providers
+  call.
+- **Only on RPC**: the gRPC health service, server reflection (on
+  `api.sock`) and `WatchService.WatchEvents` (one object's events as
+  they happen).
+
+The web UI and `gxctl` use this same API.
 
 ## Which one to use
 
@@ -20,19 +29,21 @@ this same API.
 |---|---|
 | A quick call from a shell, or a script in any language | REST |
 | A typed client (Go, TypeScript, Python, Rust, …) with compatibility checks | RPC |
-| The serial console, or live change events | REST (WebSocket, server-sent events) |
-| Cluster and node management | REST, or [`gxctl`](../reference/gxctl.md) |
+| Live change events | Either: server-sent events, or a server stream |
+| The serial console | A WebSocket from a browser; `VmService.Console` from any HTTP/2 client |
+| Cluster and node management | Either, or [`gxctl`](../reference/gxctl.md) |
 
 Where an operation exists on both, its request and response are the same
 message: the REST body is the proto3 JSON form of the RPC message, with
-`snake_case` field names.
+`snake_case` field names, and REST errors carry the same codes as RPC
+errors.
 
 ## Endpoints
 
 | Listener | Address | Serves | Credential |
 |---|---|---|---|
 | HTTPS | `https://host.example.org:8841` (every address of the host by default) | REST, gRPC, Connect | Bearer token |
-| Unix socket | `/run/glidex-cp/api.sock` | REST, gRPC, Connect | Your Unix user |
+| Unix socket | `/run/glidex-cp/api.sock` | REST, gRPC, Connect, gRPC server reflection | Your Unix user |
 | Web UI | `https://host.example.org:5173` | The browser app, which proxies its own API calls | Session cookie |
 
 Port 8842 is the cluster port, used between nodes over mutual TLS; it is
@@ -60,7 +71,8 @@ once), with `gxctl auth login`, or from the web UI. See
 [Authentication](../operator-guide/authentication.md).
 
 A few operations need no credential: `GET /health`, `GET /auth/methods`,
-`GET /auth/server-info` and the login endpoints. Everything else is
+`GET /auth/server-info` and the login endpoints. The SCIM endpoints take
+only their connector's SCIM token. Everything else is
 authorized against the caller's roles and the site's Cedar policies
 ([Access control](../operator-guide/access-control.md)). A missing
 permission is `403 forbidden`; a resource in a project you can't read

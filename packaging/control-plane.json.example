@@ -27,7 +27,8 @@
       "allowed_domains": [],
       "required_groups": [],
       "group_teams": {}
-    }
+    },
+    "federation": { "allow_private_issuers": false }
   },
   "authz": { "policy_files_dir": "/etc/glidex/policies", "policy_history": 50 },
   "quotas": {

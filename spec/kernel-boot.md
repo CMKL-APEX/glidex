@@ -356,7 +356,11 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
   a **Kernel** choice: *A kernel image* lists ready kernel images of the
   root image's architecture, the one `for_image` the chosen image first
   ("— from this image"), with an *Extract it from the image* button when
-  there is none (`kernel_from`, then it waits for the image); *Kernel
+  there is none (`kernel_from`, then it waits for the image). Only the
+  image's own kernel is preselected (gxctl: the default): another
+  image's initramfs waits for that image's root (`root=LABEL=…`) and its
+  modules aren't on the disk, so picking one is deliberate and warned
+  about ("— from `<image>`"); *Kernel
   files on the host* (administrators, `host.paths`) shows kernel and
   initramfs path fields. The arguments field's placeholder is the
   kernel image's `cmdline`, used when left empty. *Follow the guest's

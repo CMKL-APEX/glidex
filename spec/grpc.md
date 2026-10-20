@@ -202,7 +202,6 @@ the layer as for REST and are returned in `x-request-id`.
 | `unsupported_on_host` (422) | `FAILED_PRECONDITION` |
 | `too_large` (413) | `RESOURCE_EXHAUSTED` |
 | `rate_limited`, `slow_down` (429) | `RESOURCE_EXHAUSTED` (with `RetryInfo`) |
-| `authorization_pending` (202, device poll) | `FAILED_PRECONDITION` (the RFC 8628 meaning, as `reason`) |
 | `not_leader`, `use_a_server` (421) | `UNAVAILABLE` (client retries on another server) |
 | `cluster_unavailable`, `leader_changed`, `unavailable`, `too_many_watchers`, `netd_unavailable`, … (503) | `UNAVAILABLE` |
 | `idp_error`, `node_unreachable`, `netd_error`, `bad_gateway` (502) | `UNAVAILABLE` |
@@ -333,14 +332,12 @@ a client that stops sending (half-close) ends the call.
   (binary protobuf) through `client::RpcTransport`, which sends them over
   gxctl's own HTTP/1.1 connection: Connect's unary calls are plain POSTs,
   so `api.sock` with peer identity, the TLS trust ladder and pins, and the
-  token all work unchanged. Streaming families will need gRPC over
-  HTTP/2 (G4). The profile file, the TLS trust ladder, fingerprint pins and
+  token all work unchanged. The console, a bidi stream, gets an HTTP/2
+  connection of its own, made the same way (TLS offers only `h2`). The profile file, the TLS trust ladder, fingerprint pins and
   `token_command` ([gxctl-auth.md](gxctl-auth.md)) are unchanged: the
   gRPC channel is built from the same `glidex_tls::ClientTls`.
-- Local `gxctl` talks gRPC over `api.sock` (h2c), so peer identity works
-  as it does for REST.
-- `GLIDEX_TRANSPORT=rest` forces REST, for debugging and mixed-version
-  clusters.
+- Local `gxctl` uses the same Connect transport over `api.sock`, so peer
+  identity works as it does for REST.
 
 ## 11. Browser
 
