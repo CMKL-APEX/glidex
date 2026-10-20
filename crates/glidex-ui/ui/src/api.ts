@@ -594,14 +594,8 @@ export const pauseVm = (id: string) =>
  * next start (spec/kernel-boot.md K6, K11). Setting `kernel` without
  * `follow` turns following off. */
 export function setVmKernel(id: string, change: { kernel?: string; follow?: boolean }) {
-  const paths = [change.kernel !== undefined && "kernel", change.follow !== undefined && "kernel_from_disk"].filter(Boolean);
-  return vmWrite(
-    rpc(VmService.method.updateVm, {
-      id,
-      change: { kernel: change.kernel, kernel_from_disk: change.follow },
-      update_mask: paths.join(","),
-    }) as Promise<VmWriteResponse>,
-  );
+  const vm = { kernel: change.kernel, kernel_from_disk: change.follow };
+  return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
 }
 
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
