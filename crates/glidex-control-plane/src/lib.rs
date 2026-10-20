@@ -7,6 +7,7 @@ pub mod config;
 pub mod controller;
 pub mod credentials;
 pub mod datastore;
+pub mod devaccess;
 pub mod directory;
 pub mod hypervisor;
 pub mod images;

@@ -794,13 +794,7 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
     let groups: BTreeSet<String> = raw.iter().filter_map(|r| r.iommu_group.clone()).collect();
     let closed_groups = groups
         .into_iter()
-        .filter(|g| {
-            nix::unistd::access(
-                format!("/dev/vfio/{g}").as_str(),
-                nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK,
-            )
-            .is_err()
-        })
+        .filter(|g| !crate::devaccess::vm_can_open(std::path::Path::new(&format!("/dev/vfio/{g}"))))
         .collect();
     let ctx = ReadyContext {
         iommu: std::path::Path::new("/sys/kernel/iommu_groups/0").exists(),
@@ -813,6 +807,7 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use glidex_ovs::tuning::{Cpu, Topology};
 
     /// Two nodes of two cores with two threads each: node 0 CPUs 0,1 and
