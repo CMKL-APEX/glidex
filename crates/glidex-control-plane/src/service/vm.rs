@@ -1422,17 +1422,18 @@ pub async fn console_connect(
 pub async fn extract_vm_kernel(
     call: &Call,
     req: glidex_api::proto::glidex::storage::v1::ExtractVmKernelRequest,
-) -> ServiceResult<glidex_api::proto::glidex::storage::v1::PullImageResponse> {
+) -> ServiceResult<glidex_api::proto::glidex::storage::v1::ExtractVmKernelResponse> {
     let (vm, e, es) = visible_vm(call, &req.id).await?;
     call.require_action("updateVm", e, es, &[])?;
     let m = call.manager();
     let img = m.extract_vm_kernel(&vm.id).await.map_err(manager_err)?;
     let r = m.images.image_response(&img, false);
-    Ok(glidex_api::proto::glidex::storage::v1::PullImageResponse {
-        image: crate::service::storage::image_pb(&r).into(),
-        created: Some(true),
-        ..Default::default()
-    })
+    Ok(
+        glidex_api::proto::glidex::storage::v1::ExtractVmKernelResponse {
+            image: crate::service::storage::image_pb(&r).into(),
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(test)]

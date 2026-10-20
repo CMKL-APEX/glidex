@@ -141,7 +141,7 @@ impl ImageService for Svc {
         &self,
         ctx: RequestContext,
         req: ServiceRequest<'_, ExtractVmKernelRequest>,
-    ) -> ServiceResult<PullImageResponse> {
+    ) -> ServiceResult<ExtractVmKernelResponse> {
         op_async!(self, ctx, req, crate::service::vm::extract_vm_kernel)
     }
 

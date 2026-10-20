@@ -164,7 +164,7 @@ service ImageService {
   }
   // Extract the kernel on a stopped VM's root disk as a kernel image the
   // VM owns (spec/kernel-boot.md §10.5); then PATCH the VM's `kernel`.
-  rpc ExtractVmKernel(ExtractVmKernelRequest) returns (PullImageResponse) {
+  rpc ExtractVmKernel(ExtractVmKernelRequest) returns (ExtractVmKernelResponse) {
     option (glidex.api.v1.op) = {
       action: "updateVm"
       kind: KIND_WRITE
@@ -433,6 +433,10 @@ message PullImageRequest {
 message ExtractVmKernelRequest {
   // VM id.
   string id = 1;
+}
+message ExtractVmKernelResponse {
+  // The new kernel image, extracting.
+  Image image = 1;
 }
 
 message PullImageResponse {
