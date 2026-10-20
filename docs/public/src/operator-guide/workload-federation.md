@@ -131,16 +131,24 @@ issuer's `<issuer>/.well-known/openid-configuration` and the keys at its
   be `https`;
 - redirects aren't followed, and each read has 10 seconds;
 - the keys are kept for an hour, and read again sooner when a token is
-  signed with a key they don't have (at most once a minute).
+  signed with a key they don't have (at most once a minute);
+- only public addresses are read: the issuer's and the keys' host names
+  must resolve to public addresses, and a URL naming a loopback,
+  private, link-local or unique-local address is refused
+  (`422 issuer_unreachable`, *has no public address*).
 
-So the control plane needs outbound HTTPS to the issuer.
+So the control plane needs outbound HTTPS to the issuer. For an issuer
+on your own network (a self-hosted GitLab, an internal Kubernetes API),
+an operator sets `auth.federation.allow_private_issuers` to `true` in
+the [configuration](configuration.md); that lets every tenant
+administrator use internal addresses, so turn it on only when needed.
 Common issuers:
 
 | Platform | `issuer` | Claims to pin |
 |---|---|---|
 | GitHub Actions | `https://token.actions.githubusercontent.com` | `repository`, with `ref` or `environment`; or `sub` (`repo:<owner>/<repo>:ref:refs/heads/main`, `repo:<owner>/<repo>:environment:<name>`) |
 | GitLab CI (gitlab.com) | `https://gitlab.com` | `project_path`, with `ref` and `ref_type` |
-| Kubernetes | The cluster's service account issuer, reachable from Glidex | `sub` (`system:serviceaccount:<namespace>:<name>`) |
+| Kubernetes | The cluster's service account issuer, reachable from Glidex (on a private address, with `allow_private_issuers`) | `sub` (`system:serviceaccount:<namespace>:<name>`) |
 
 <!-- TODO(verify): only the GitHub issuer and a mock issuer are exercised in tests; confirm GitLab and Kubernetes end to end, including whether GitLab ID tokens (which may live as long as the job's timeout) stay within the one-hour limit. -->
 
