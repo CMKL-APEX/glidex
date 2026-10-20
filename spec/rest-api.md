@@ -5,7 +5,8 @@ The control plane serves HTTPS on every address, `0.0.0.0:8841` and
 self-signed certificate unless one is configured; plain HTTP only on
 loopback — [security.md](security.md) §5.1), and on its Unix sockets.
 All request and
-response bodies are JSON except for the console WebSocket.
+response bodies are JSON except the console WebSocket, the console
+log (raw bytes) and `GET /watch` (server-sent events).
 
 ## Authentication and authorization
 
@@ -28,8 +29,7 @@ served in the proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8)
 full and RFC 3339 times. A body that is JSON but not the message (an
 unknown enum value, a wrong type) is `422 invalid`, as before; so is a
 `POST /vms` without `name`, `vcpu_count` or `mem_size_mib` (proto3 has
-no required fields, so the REST twin checks them). The families not
-ported yet keep their shapes.
+no required fields, so the REST twin checks them).
 
 The usage family (`/usage…`, the `/…/bandwidth`, `/…/io` and
 `/…/compute` series, and `/…/stats`) is served in the proto shape too:

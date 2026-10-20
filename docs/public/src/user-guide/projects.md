@@ -107,7 +107,8 @@ Over the API: `GET`/`POST /projects/{id}/bindings` and
 
 A team is a named group of users; binding a team to a project gives every
 member of it that role. Administrators create teams and manage their
-members (**Access** in the web UI, `gxctl team …`):
+members (the **Directory** page's **Users & roles** tab in the web UI,
+`gxctl team …`):
 
 ```bash
 gxctl team list
@@ -122,7 +123,14 @@ Teams can also come from outside Glidex:
   `unix:<group>`, so `team:unix:lab-users` grants a role to that group's
   members when they use `gxctl` on the host;
 - the operator can map groups from the site's PAM or single sign-on setup
-  to teams.
+  to teams;
+- an identity provider that provisions users over SCIM can push its
+  groups as teams, and a directory sync from Google Workspace makes
+  teams of the Google groups it reads. Such a team shows *from
+  &lt;connector&gt;*: its name and the members the IdP put in it change
+  at the IdP (in Google, for a directory sync), not in Glidex (Glidex
+  refuses with `409 managed_by_connector`). Administrators can still add
+  members by hand.
 
 `gxctl whoami` lists the teams you are in.
 
@@ -140,6 +148,7 @@ A project's quotas cap what it may hold. Each is a number or unlimited:
 | `networks` | Project networks (2 by default) |
 | `routers` | Project routers (1 by default) |
 | `external_ips` | Outside addresses of routers (1 by default) |
+| `devices.<pool>` | Devices VMs ask for from a [device pool](vms.md#devices-from-a-pool), per pool (for example `devices.a100`) |
 
 A request that would go over a quota is refused with the limit, what is
 in use and what was asked for. Administrators may go over a quota; that
@@ -148,22 +157,48 @@ quotas: unless the operator changed them, only the last three are
 limited.
 
 **Web UI:** the **Projects** list and the project's **Quotas and usage**
-card show use against each limit. **Edit quotas** (shown if you may
-change them) takes a number per quota; an empty field is unlimited.
+card show use against each limit, with **Devices: &lt;pool&gt;** for each
+pool that has a limit or is in use. **Edit quotas** (shown if you may
+change them) takes a number per quota, and one per device pool the
+project may use; an empty field is unlimited.
 
 **gxctl:**
 
 ```bash
 gxctl project quota lab                       # show use/limit
 gxctl project quota lab vms=10 memory_mib=none
+gxctl project quota lab devices.a100=2
 ```
 
 `none` (or `unlimited`) removes a limit; keys you don't name keep their
-value. `gxctl` sets the first six quotas in the table; `routers` and
-`external_ips` are set in the web UI or the API.
+value. `gxctl` sets the first six quotas in the table and
+`devices.<pool>`; `routers` and `external_ips` are set in the web UI or
+the API.
+
+A pool's devices count when a VM asks for them, whether it runs or not,
+like `vcpus`. Over the limit, the request is refused with
+`quota_exceeded` and resource `devices.<pool>`.
 
 Changing quotas is an administrator's task, as is creating and deleting
 projects.
+
+## Device pools
+
+GPUs and other host devices are handed out from **device pools** that an
+administrator grants to projects or tenants. To see the pools your
+project may use and how many devices of each are free:
+
+```bash
+gxctl pci pools --project lab
+```
+
+Anyone with a role in the project may look. The list includes the
+project's **tenant pools**: shares of a cluster pool that the tenant's
+administrator gave to some of its projects, each with a maximum
+(`from`, `max` and `used` in the API's `GET /pci-pools?project=lab`).
+The web UI's create form offers the same pools under **Device Pools**.
+How a VM asks for devices is in
+[Devices from a pool](vms.md#devices-from-a-pool).
 
 ## Creating and deleting projects
 

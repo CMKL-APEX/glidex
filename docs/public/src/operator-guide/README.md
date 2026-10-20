@@ -51,7 +51,8 @@ journalctl -u glidex-control-plane -b
 - [Configuration](configuration.md): `/etc/glidex/control-plane.json`,
   secrets, file locations and environment variables.
 - [TLS certificates](tls.md): self-signed certificates and their
-  fingerprints, your own certificate, client trust.
+  fingerprints, your own certificate, Tailscale certificates, client
+  trust.
 - [Authentication](authentication.md): the local socket, local accounts,
   single sign-on, login connectors, access tokens and sessions.
 - [Access control](access-control.md): roles, bindings, teams, tenants,

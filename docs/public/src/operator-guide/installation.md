@@ -19,6 +19,9 @@ changes what is missing or outdated.
 - Internet access to the distribution's package mirrors and to GitHub
   (Cloud Hypervisor, its firmware, Bun). Every download that isn't a
   distribution package is checked against a pinned SHA-256 before use.
+  Once running, Glidex itself also connects out for image downloads,
+  logins and, if you use them, directory sync and kernel extraction:
+  see [Outbound connections](configuration.md#outbound-connections).
 
 If `/dev/kvm` is missing, the installer says how to enable it (CPU
 virtualization in the firmware setup, then `modprobe kvm_intel` or
@@ -58,7 +61,10 @@ fingerprints of their certificates:
 ```
 
 Compare these with what your browser shows before you accept the
-certificate warning (see [TLS certificates](tls.md)).
+certificate warning (see [TLS certificates](tls.md)). With
+`--tailscale-cert`, the summary also gives the
+`https://<node>.<tailnet>.ts.net:5173` address, and says whether the
+UI already serves the Tailscale certificate there.
 
 The installer added you to `glidex-users` and `glidex-admin`. Log out and
 back in so your session has the new groups, then check:
@@ -87,15 +93,27 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-qemu` | Skip QEMU and OVMF (Cloud Hypervisor only). |
 | `--no-networking` | Skip Open vSwitch, `glidex-netd` and the host network settings. VMs then have no NICs. |
 | `--no-services` | Don't install the systemd units, users and groups. You run `glidex-control-plane` and `glidex-ui` yourself. |
-| `--ovs-profile kernel\|dpdk` | Open vSwitch datapath. `kernel` (default) needs nothing special; `dpdk` reserves hugepages and PMD cores. |
+| `--ovs-profile kernel\|dpdk` | Open vSwitch datapath. `kernel` (default) needs nothing special, and turns off DPDK an earlier `dpdk` profile left on; `dpdk` reserves hugepages and PMD cores. See [Back to the kernel profile](host-networking.md#back-to-the-kernel-profile). |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask, in hex. `auto` clears it. |
-| `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic). Not saved. |
+| `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic), also to turn DPDK off under the kernel profile. Not saved. |
+| `--release-hugepages` | Kernel profile only: give back the hugepages an earlier `dpdk` profile reserved, once DPDK is off. Kept by default. Not saved. |
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
-| `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
-| `--no-tailscale-cert` | Turn it off: removes the installer's two drop-ins. |
+| `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
+| `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
+| `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
+| `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
+| `--datastore-default` | Make the first of these datastores the default for new disks. Not saved. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |
+
+Without `--datastore` or `--local-datastore`, an interactive run
+offers each filesystem mounted directly under `/srv/glidex` that isn't
+a datastore yet: register it as a shared datastore named after its
+directory (default no), and make it the default for new disks (default
+no). Datastores are registered only when the services are installed
+(not with `--no-services`); if that fails, the installer warns and goes
+on.
 
 Options for joining or leaving a cluster (`--join`, `--role`,
 `--token-file`, `--advertise`, `--node-name`, `--import`, `--rejoin`,
@@ -121,8 +139,9 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 | `/etc/glidex/policies/` | Site policy files (`root:glidex`, mode 0750), empty. |
 | `/etc/glidex/install.conf` | The installer's saved choices. |
 | `/etc/pam.d/glidex` | The PAM service for web logins with local passwords. |
-| `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages`. The previous values are recorded for the uninstaller. |
+| `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages` (kept after going back to the kernel profile unless `--release-hugepages`). The previous values are recorded for the uninstaller. |
 | `/etc/modules-load.d/glidex.conf` | Loads `vfio-pci` at boot, with `--ovs-profile dpdk`. |
+| `/srv/glidex/` | The datastore root (`root:root`, mode 0755), empty: mount or create [datastores](datastores.md) under it. |
 | `/var/lib/glidex-control-plane/` | The `glidex` user's home. Its `.glidex/` holds the database, images, disks, firmware and the self-signed certificate. |
 
 The installer also puts a copy of the Cloud Hypervisor firmware in your
@@ -165,6 +184,13 @@ Cloud Hypervisor, the binaries and the UI, and restarts the services
 whose binary or unit changed. Running VMs keep running across a control
 plane restart: each runs in its own `glidex-vm@<id>` unit. A running VM
 keeps the Cloud Hypervisor binary it started with until it is restarted.
+Reload web UI tabs that were open before the update to get the new UI.
+
+With the kernel profile saved, the installer also turns off DPDK it
+finds on in `ovs-vswitchd`, for example after `gxctl ovs dpdk-init` or
+a profile switch in the web UI, which don't change the saved profile.
+With bridges it only says so unless you pass `--allow-ovs-restart`. To
+keep DPDK, save the profile once with `--ovs-profile dpdk`.
 
 If something else listens on port 8841 or 5173 (a control plane or UI you
 started by hand), the installer leaves the service stopped and tells you
@@ -185,7 +211,9 @@ networking (uplinks give the host's address back to its NIC, NAT,
 bridges and VM ports are removed); then removes the units, binaries,
 installer-written configuration, runtime directories, the users and the
 groups. Kernel settings the installer changed go back to their previous
-values.
+values. With `--tailscale-cert` on, it also removes the installer's
+`tailscaled` drop-in and restarts `tailscaled`; a `TS_PERMIT_CERT_UID`
+you set yourself stays.
 
 By default it keeps your data and site configuration, and says so:
 
@@ -196,6 +224,9 @@ By default it keeps your data and site configuration, and says so:
 - a locally edited `/etc/pam.d/glidex`;
 - Open vSwitch, its DPDK settings and the hugepages they need, and the
   `cloud-hypervisor` binary.
+
+It never touches `/srv/glidex` and the datastores under it, not even
+with `--purge-user-data`: unmount and remove them yourself.
 
 | Option | Effect |
 |---|---|

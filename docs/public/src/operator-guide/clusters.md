@@ -177,22 +177,27 @@ one step. Its VMs keep running.
 The scheduler picks a node when a VM is created. A node is a candidate
 only if it is `Active`, ready, not draining, has room, and has what the
 VM needs: the hypervisor, the image's architecture, hugepages if asked,
-its PCI devices, the physical networks of its provider networks, a
-userspace `br-int` for vhost-user NICs on cluster networks, an OVN
+its PCI devices (granted to the project on that node, and not
+cordoned), free devices of the pools it asks for, a NUMA node with room
+under its NUMA or CPU policy, the physical networks of its provider
+networks, a userspace `br-int` for vhost-user NICs on cluster networks, an OVN
 version as new as the cluster's, the node of any node-local disk or node
 network it uses, and every datastore its disks are on
 ([Datastores](datastores.md)). Among candidates it picks the least allocated
 (the largest of the CPU, memory and, for a VM in hugepages, hugepage
 shares after placing), then the one with fewest VMs.
 
-A node's hugepages are its own resource: the pool the kernel reserved
-(`vm.nr_hugepages`, and per size under `/sys/kernel/mm/hugepages`), less
-what OVS-DPDK takes for `dpdk-socket-mem`. They don't count as ordinary
-memory, and a node's allocatable memory leaves them out. VMs placed on
-the node hold theirs whether running or not. Before a VM in hugepages
-starts, its node checks that enough of them are free; if not, the start
-fails with the counts. Hugepages used outside Glidex (another process,
-or DPDK beyond `dpdk-socket-mem`) show up that way.
+A node's hugepages are its own resource, per page size: the pool the
+kernel reserved, less what OVS-DPDK takes for `dpdk-socket-mem`. They
+don't count as ordinary memory, and VMs placed on the node hold theirs
+whether running or not. NUMA nodes, dedicated CPUs, hugepages and device
+pools are described in [Host resources](host-resources.md); each node
+reports its topology (`gxctl node topology <node>`), which the
+scheduler uses.
+
+PCI devices and their grants are per node: the same address on two
+nodes is two devices, and a `pci.allow` grant with `node` covers only
+that node's. See [PCI passthrough](pci-passthrough.md#in-a-cluster).
 
 Room is each node's CPUs and memory minus a reserve, times an
 overcommit ratio. The defaults, in `/etc/glidex/control-plane.json`:
@@ -215,18 +220,23 @@ node's reason in its status.
 A VM stays on its node once placed. Glidex doesn't move running VMs.
 A stopped VM whose disks are on shared datastores can be placed on
 another node: `gxctl place <vm> [--node N]`, or **Place on another
-node** on its page.
+node** on its page. A disk on a node's own datastore (`local` or another
+node-local one) keeps its VM on that node; move it to a shared datastore
+first. See
+[Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 
 ## Node lifecycle
 
 Each node has a phase: `Active`, `Draining`, `Departing` (a detach in
 progress), or one of the end states `Departed`, `Removed`, `Forgotten`.
 The Cluster page's **Nodes** card shows phase and readiness; a node's
-page has an **Operations…** menu for everything below.
+page has an **Operations…** menu for everything below. The `gxctl node`
+commands take a node's name or its id.
 
 ### A node is down for a while
 
-Nothing to do. A node that stops reporting for 40 seconds
+Nothing to do. Every node, servers included, reports to the leader
+every 5 seconds. A node that stops reporting for 40 seconds
 (`cluster.node_grace_secs`) becomes not ready, and so do its VMs
 (`NodeUnreachable`). Nothing is restarted elsewhere. The node comes back
 by itself with its identity.
@@ -240,7 +250,8 @@ gxctl node undrain node3
 
 A draining node gets no new VMs. VMs already there keep running; the
 command prints what is still on the node. Stop, delete or move them
-before removing it.
+before removing it: a stopped VM whose disks are on shared datastores
+can be [placed on another node](datastores.md#placing-a-stopped-or-lost-vm-again).
 
 ### Remove an empty node
 
@@ -268,8 +279,11 @@ gxctl node detach node3 --abort         # before the node acknowledged
 The node leaves *with* its VMs, disks and node networks and becomes a
 standalone host that owns them. `--with-access` also carries the
 projects' users, teams and role bindings (never sessions or tokens).
-The node is frozen while the handover runs. The Cluster page shows it
-under **Detaches**.
+The node is frozen while the handover runs. Its disks on node-local
+datastores other than `local` can't leave with the node: the detach is
+refused (`409`) until they are moved to `local`. The Cluster page
+shows it under **Detaches**, with the networks it maps or drops by the names
+they had when it started, even if they are gone since.
 
 If no server can be reached at all, a node can leave on its own:
 
@@ -288,10 +302,15 @@ last synced are lost. Then, on a server, run
    even number of voters). Its VMs stay recorded, marked lost; its
    certificate is refused from now on; a forgotten server is rotated out
    of the CA. Lost VMs whose disks are on shared datastores can be
-   placed on a live node: `gxctl place <vm>`.
+   placed on a live node: `gxctl place <vm>` (or **Place on a live
+   node** on the VM's page), then started. A lost VM with a disk on the
+   node's own datastores (`local` or another node-local one) can't be
+   placed: that disk is on the lost host. See
+   [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 2. When you no longer want its records:
-   `gxctl node purge node3`. This deletes the records of its VMs, disks
-   and networks, not any files.
+   `gxctl node purge node3`. This deletes the records of the VMs still
+   on it (place the ones you keep first), and of its disks and networks,
+   not any files. Disks on shared datastores are not affected.
 
 ### A repaired host comes back as itself
 
@@ -367,7 +386,8 @@ it again.
 Upgrade one node at a time: agents first, then servers. On each host,
 update the checkout and re-run the installer (see
 [Maintenance](maintenance.md#updating)). VMs keep running while the
-control plane restarts.
+control plane restarts. An agent stopped in the middle of reporting a
+status sends that report once it is back.
 
 `gxctl cluster status` shows each node's version and feature level. The
 cluster runs at the lowest feature level any server reports, and uses
@@ -490,11 +510,15 @@ The web UI's **Cluster** page (in the side menu) shows, on a cluster:
   detaches in progress;
 - **Nodes**: role, phase, readiness, address, version and VM count;
   click a node for its page (capacity, versions, KVM / IOMMU / DPDK,
-  `br-int` datapath, physical networks, its VMs and disks, and the
+  `br-int` datapath, physical networks, its VMs and disks, the
+  **Roles on this host** card (see [On one host of a
+  cluster](access-control.md#on-one-host-of-a-cluster)), and the
   **Operations…** menu);
 - **Pending imports** and **Detaches**;
 - **Raft**: state, term, leader, voters and learners;
 - **OVN**: on/off, tunnels, settings;
 - **Certificate authority**, and the **Danger zone**.
 
-On a standalone host it offers **Make this host a cluster**.
+On a standalone host it shows **This host** (name, phase, readiness,
+CPUs, memory and VM count, with a link to the host's own node page) and
+offers **Make this host a cluster**.
