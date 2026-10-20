@@ -198,6 +198,14 @@ impl NodeService for Svc {
         op_async!(self, ctx, req, node::get_node_topology)
     }
 
+    async fn list_pci_pools(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListPciPoolsRequest>,
+    ) -> ServiceResult<ListPciPoolsResponse> {
+        op_async!(self, ctx, req, node::list_pci_pools)
+    }
+
     async fn prepare_device(
         &self,
         ctx: RequestContext,

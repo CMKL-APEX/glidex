@@ -305,6 +305,25 @@ message Vm {
   // (dedicated; vCPU i on cpus[i]).
   optional uint32 numa_node = 33 [json_name = "numa_node"];
   repeated uint32 cpus = 34;
+  // Devices asked for by pool, and those the scheduler picked
+  // (spec/host-topology.md §9).
+  repeated DeviceRequest devices = 35;
+  repeated PoolDevice pool_devices = 36 [json_name = "pool_devices"];
+}
+
+// `count` devices of pool `pool`, all under one PCIe switch with
+// `same_switch` (spec/host-topology.md §6).
+message DeviceRequest {
+  string pool = 1;
+  // Default 1.
+  uint32 count = 2;
+  bool same_switch = 3 [json_name = "same_switch"];
+}
+
+// A device picked for a pool request.
+message PoolDevice {
+  string pool = 1;
+  string address = 2;
 }
 
 message ListVmsRequest {
@@ -346,6 +365,7 @@ message CreateVmRequest {
   optional string hugepage_size = 26 [json_name = "hugepage_size"];
   NumaPolicy numa_policy = 27 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 28 [json_name = "cpu_policy"];
+  repeated DeviceRequest devices = 29;
   // Default: stopped (create, then start).
   PowerState power = 20;
   RestartPolicy restart_policy = 21 [json_name = "restart_policy"];
@@ -382,6 +402,7 @@ message PreviewPlacementRequest {
   optional string hugepage_size = 11 [json_name = "hugepage_size"];
   NumaPolicy numa_policy = 12 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 13 [json_name = "cpu_policy"];
+  repeated DeviceRequest devices = 14;
 }
 message NodeFit {
   string id = 1;
@@ -404,6 +425,7 @@ message NodeFit {
   optional uint32 numa_node = 12 [json_name = "numa_node"];
   repeated uint32 cpus = 13;
   optional bool numa_aligned = 14 [json_name = "numa_aligned"];
+  repeated PoolDevice pool_devices = 15 [json_name = "pool_devices"];
 }
 message PreviewPlacementResponse {
   // The scheduler's choice, when anything fits.
@@ -438,6 +460,7 @@ message VmChange {
   string hugepage_size = 13 [json_name = "hugepage_size"];
   NumaPolicy numa_policy = 14 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 15 [json_name = "cpu_policy"];
+  repeated DeviceRequest devices = 16;
 }
 
 message UpdateVmRequest {

@@ -284,14 +284,22 @@ impl Default for QuotasConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PciConfig {
-    /// PCI devices projects may pass through without `host.devices`.
+    /// PCI devices and pools projects may pass through without
+    /// `host.devices`.
     pub allow: Vec<PciGrant>,
+    /// Named sets of devices a VM asks for by count
+    /// (spec/host-topology.md §9.1).
+    pub pools: Vec<PciPool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PciGrant {
-    pub bdf: String,
+    /// The device's address; or `pool`, a pool's name.
+    #[serde(default)]
+    pub bdf: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
     /// Project ids or names.
     #[serde(default)]
     pub projects: Vec<String>,
@@ -303,6 +311,114 @@ pub struct PciGrant {
     /// that address on every node (spec/host-topology.md §8.5).
     #[serde(default)]
     pub node: Option<String>,
+}
+
+/// A pool of devices (spec/host-topology.md §9.1).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PciPool {
+    pub name: String,
+    /// `gpu`, `nic`, `nvme`, `dpu`, `accelerator`: a label for people and
+    /// metering.
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(rename = "match")]
+    pub matches: PoolMatch,
+    /// Node ids or names the pool is on; empty: every node.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
+
+/// Which devices are a pool's: every key given must match.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolMatch {
+    #[serde(default)]
+    pub vendor_id: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// A PCI class code or its start (`0x0302`).
+    #[serde(default)]
+    pub class_code: Option<String>,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+}
+
+fn hex_id(s: &str) -> String {
+    s.trim().trim_start_matches("0x").to_ascii_lowercase()
+}
+
+impl PoolMatch {
+    pub fn is_empty(&self) -> bool {
+        self.vendor_id.is_none()
+            && self.device_id.is_none()
+            && self.class_code.is_none()
+            && self.addresses.is_empty()
+    }
+
+    /// Whether a device with these ids at `address` is the pool's.
+    pub fn matches(&self, address: &str, vendor_id: &str, device_id: &str, class_id: &str) -> bool {
+        self.vendor_id
+            .as_deref()
+            .is_none_or(|v| hex_id(v) == hex_id(vendor_id))
+            && self
+                .device_id
+                .as_deref()
+                .is_none_or(|d| hex_id(d) == hex_id(device_id))
+            && self
+                .class_code
+                .as_deref()
+                .is_none_or(|c| hex_id(class_id).starts_with(&hex_id(c)))
+            && (self.addresses.is_empty()
+                || self
+                    .addresses
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(address)))
+    }
+}
+
+impl PciConfig {
+    /// Refuse what can't work: unnamed, duplicate or matchless pools, two
+    /// pools matching the same way, and grants naming neither one device
+    /// nor one known pool.
+    pub fn check(&self) -> Result<(), String> {
+        let mut seen = std::collections::BTreeSet::new();
+        for p in &self.pools {
+            if p.name.is_empty() || !seen.insert(p.name.as_str()) {
+                return Err(format!(
+                    "pci.pools: pool names must be set and unique ({:?})",
+                    p.name
+                ));
+            }
+            if p.matches.is_empty() {
+                return Err(format!(
+                    "pci.pools: pool {} matches every device; give it a match",
+                    p.name
+                ));
+            }
+            if let Some(o) = self.pools.iter().find(|o| {
+                o.name != p.name
+                    && o.matches == p.matches
+                    && (o.nodes.is_empty()
+                        || p.nodes.is_empty()
+                        || o.nodes.iter().any(|n| p.nodes.contains(n)))
+            }) {
+                return Err(format!(
+                    "pci.pools: pools {} and {} match the same devices",
+                    o.name, p.name
+                ));
+            }
+        }
+        for g in &self.allow {
+            match (&g.bdf, &g.pool) {
+                (Some(_), None) => {}
+                (None, Some(p)) if seen.contains(p.as_str()) => {}
+                (None, Some(p)) => return Err(format!("pci.allow: no pool {p}")),
+                _ => return Err("pci.allow: each grant names one bdf or one pool".into()),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -459,6 +575,7 @@ impl Config {
 
     /// Refuse values that parse but make no sense.
     pub fn check(&self) -> Result<(), String> {
+        self.pci.check()?;
         if !self.authz.policy_files_dir.as_os_str().is_empty() {
             crate::paths::checked_path(&self.authz.policy_files_dir)
                 .map_err(|e| format!("authz.policy_files_dir {e}"))?;
@@ -521,6 +638,62 @@ pub fn credential(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pools_are_checked_and_match_by_ids_class_and_address() {
+        let pool = |name: &str, vendor: Option<&str>| PciPool {
+            name: name.into(),
+            class: None,
+            matches: PoolMatch {
+                vendor_id: vendor.map(Into::into),
+                device_id: None,
+                class_code: Some("0x0302".into()),
+                addresses: vec![],
+            },
+            nodes: vec![],
+        };
+        let mut c = PciConfig {
+            pools: vec![pool("a100", Some("0x10de"))],
+            allow: vec![],
+        };
+        assert!(c.check().is_ok());
+        let m = &c.pools[0].matches;
+        assert!(m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x030200"));
+        assert!(!m.matches("0000:87:00.0", "0x15b3", "0x20b0", "0x030200"));
+        assert!(!m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x020000"));
+        c.pools.push(pool("again", Some("10DE")));
+        assert!(
+            c.check().is_ok(),
+            "a different spelling is a different match"
+        );
+        c.pools.push(pool("a100", None));
+        assert!(c.check().unwrap_err().contains("unique"));
+        c.pools.pop();
+        c.pools.push(PciPool {
+            matches: PoolMatch::default(),
+            ..pool("all", None)
+        });
+        assert!(c.check().unwrap_err().contains("matches every device"));
+        c.pools.pop();
+        c.pools.push(pool("same", Some("0x10de")));
+        assert!(c.check().unwrap_err().contains("match the same devices"));
+        c.pools.pop();
+        let grant = |bdf: Option<&str>, pool: Option<&str>| PciGrant {
+            bdf: bdf.map(Into::into),
+            pool: pool.map(Into::into),
+            projects: vec!["p".into()],
+            tenants: vec![],
+            node: None,
+        };
+        c.allow = vec![grant(None, Some("a100")), grant(Some("0000:41:00.0"), None)];
+        assert!(c.check().is_ok());
+        c.allow.push(grant(None, Some("nope")));
+        assert!(c.check().unwrap_err().contains("no pool nope"));
+        c.allow.pop();
+        c.allow.push(grant(Some("0000:41:00.0"), Some("a100")));
+        assert!(c.check().unwrap_err().contains("one bdf or one pool"));
+    }
+
     use super::*;
 
     #[test]

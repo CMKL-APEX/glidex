@@ -39,6 +39,13 @@ pub async fn topology(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     ))
 }
 
+pub async fn pci_pools(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Proto(
+        StatusCode::OK,
+        svc::list_pci_pools(&c, Default::default()).await?,
+    ))
+}
+
 pub async fn prepare_device(
     c: Caller,
     Path((id, address)): Path<(String, String)>,

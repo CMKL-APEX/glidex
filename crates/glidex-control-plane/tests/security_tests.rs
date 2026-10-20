@@ -2257,7 +2257,8 @@ async fn pci_grants_name_the_node() {
         .trim()
         .to_string();
     let grant = |bdf: &str, node: Option<&str>| glidex_control_plane::config::PciGrant {
-        bdf: bdf.into(),
+        bdf: Some(bdf.into()),
+        pool: None,
         projects: vec!["pa".into()],
         tenants: vec![],
         node: node.map(Into::into),
@@ -2378,4 +2379,109 @@ async fn devices_are_cordoned_and_prepared_by_net_admins() {
         .call("POST", "/nodes/local/devices/not-a-bdf/prepare", None, &n)
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// spec/host-topology.md §9: a pool granted to a project gives its VMs
+/// devices by count; other projects are refused; the listing shows who
+/// holds what.
+#[tokio::test]
+async fn pools_are_granted_and_hand_out_devices() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let pools = vec![PciPool {
+        name: "a100".into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x10de".into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+    }];
+    let h = harness_with(|c| {
+        c.pci.pools = pools.clone();
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec!["pa".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    // The manager has the pools from the same file (main.rs configures it).
+    let mut cfg = Config::default();
+    cfg.pci.pools = pools;
+    h.app.manager.configure(&cfg);
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let gpu = |a: &str| SummaryDevice {
+        address: a.into(),
+        vendor_id: "0x10de".into(),
+        device_id: "0x20b0".into(),
+        class_id: "0x030200".into(),
+        ready: true,
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![gpu("0000:87:00.0"), gpu("0000:90:00.0")],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+    let (pa, pb) = (h.project("pa"), h.project("pb"));
+    let (alice, bob, aud) = (h.user("alice"), h.user("bob"), h.user("aud"));
+    for (u, p) in [(&alice, &pa), (&bob, &pb)] {
+        h.link("role.owner", Ent::User(u.clone()), Ent::Project(p.clone()));
+        h.link("grant.host-paths", Ent::User(u.clone()), Ent::Cluster);
+    }
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
+    let (a, b, u) = (
+        As::Bearer(h.token(&alice)),
+        As::Bearer(h.token(&bob)),
+        As::Bearer(h.token(&aud)),
+    );
+    let with = |name: &str, project: &str, pool: &str| {
+        let mut body = vm_body(name, project);
+        body["devices"] = json!([{ "pool": pool, "count": 1 }]);
+        body
+    };
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v1", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["pool_devices"][0]["address"], "0000:87:00.0", "{v}");
+    assert_eq!(v["vm"]["devices"][0]["pool"], "a100", "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v2", "pb", "a100")), &b)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v3", "pa", "nope")), &a)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // The next VM of pa gets the other GPU.
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v4", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["pool_devices"][0]["address"], "0000:90:00.0", "{v}");
+    // Listing: a host role sees holders and what is free.
+    let (s, _, _) = h.call("GET", "/pci-pools", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v, _) = h.call("GET", "/pci-pools", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let pool = &v["pools"][0];
+    assert_eq!(
+        (&pool["name"], pool.get("free")),
+        (&json!("a100"), None),
+        "none free: {v}"
+    );
+    let devs = pool["nodes"][0]["devices"].as_array().unwrap();
+    assert_eq!(devs[0]["holder"], "v1", "{v}");
+    assert_eq!(devs[1]["holder"], "v4", "{v}");
+    // A third finds none left.
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v5", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("pool a100: 0 of 1 free"), "{v}");
 }

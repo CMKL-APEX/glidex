@@ -309,6 +309,24 @@ export default function VmDetail() {
             </div>
           )}
 
+          {(vm.devices ?? []).length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">Device Pools</h3>
+              <ul className="space-y-1 text-sm text-gray-700">
+                {(vm.devices ?? []).map((r) => {
+                  const got = (vm.pool_devices ?? []).filter((d) => d.pool === r.pool).map((d) => d.address);
+                  return (
+                    <li key={r.pool}>
+                      {r.count ?? 1} × <span className="font-medium">{r.pool}</span>
+                      {r.same_switch ? " (one switch)" : ""}:{" "}
+                      <span className="font-mono">{got.length > 0 ? got.join(", ") : "not placed yet"}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           <div className="pt-6 border-t border-gray-100">
             <h3 className="text-sm font-medium text-gray-500 mb-3">Actions</h3>
             <div className="flex items-center gap-3 flex-wrap">

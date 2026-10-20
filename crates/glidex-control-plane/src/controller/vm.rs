@@ -1109,6 +1109,18 @@ impl VmManager {
             .map(|p| (p.numa_node, p.cpus.clone()))
             .unwrap_or_default();
         config.host_numa_node = numa;
+        // The devices picked for its pool requests (spec/host-topology.md §9).
+        for d in vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+        {
+            let path = format!("/sys/bus/pci/devices/{}", d.address);
+            if !config.vfio_devices.contains(&path) {
+                config.vfio_devices.push(path);
+            }
+        }
         let (cpu_affinity, launch_pins) = if held.is_empty() {
             (self.local_shared_pool().await, Vec::new())
         } else {
@@ -1187,7 +1199,7 @@ impl VmManager {
                 .chain(c.data_disks.iter())
                 .cloned()
                 .collect(),
-            vfio_devices: c.vfio_devices.clone(),
+            vfio_devices: config.vfio_devices.clone(),
             shim_pid: None,
             shim_starttime: None,
             hypervisor_pid: None,
@@ -1196,7 +1208,7 @@ impl VmManager {
             growpart_disk,
             growpart_seq,
             cpu_affinity,
-            device_errors: device_errors_now(&c.vfio_devices),
+            device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
         let ev = Event::new(
@@ -1477,7 +1489,19 @@ impl VmManager {
         }
 
         // VFIO: hot-plug what the spec has and the guest lacks, and back.
-        let wanted: Vec<String> = vm.config().vfio_devices.clone();
+        // What the spec names and what its pool requests got.
+        let mut wanted: Vec<String> = vm.config().vfio_devices.clone();
+        for d in vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+        {
+            let path = format!("/sys/bus/pci/devices/{}", d.address);
+            if !wanted.contains(&path) {
+                wanted.push(path);
+            }
+        }
         let have: Vec<String> = observed
             .device_ids
             .iter()

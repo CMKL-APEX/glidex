@@ -147,6 +147,7 @@ reported as `404`.
 | `DELETE` | `/vms/{id}/devices` | `detach_device` | Remove a VFIO PCI device from the spec (hot-unplugged while running) |
 | `GET` | `/system/reconcile` | `system_reconcile` | Controller status: runner, bus, netd, queue, orphans, unknown VMs |
 | `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices, with NUMA node and readiness (host-topology.md §5.1) |
+| `GET` | `/pci-pools` | `nodes::pci_pools` | Device pools (host-topology.md §9.1, action `listPciPools`) |
 | `GET` | `/host/topology` | `host_topology` | This host's topology tree (host-topology.md §3.2, action `readHostTopology`) |
 | `GET` | `/credentials` | `list_credentials` | List stored guest logins (no hashes) |
 | `POST` | `/credentials` | `create_credential` | Create a login; password is hashed on arrival |

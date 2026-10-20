@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2 and HT3 implemented** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented** (§15). §17 records
 where the implementation differs from the design. Extends
 [clustering.md](clustering.md) §9.1 (scheduler),
 [hypervisors.md](hypervisors.md) (command lines),
@@ -960,4 +960,20 @@ Where HT2 differs from the design above, and why:
   way: `glidex_ovs::nic::pci_netdevs` read a `net_names` file sysfs
   doesn't have, so netd's host-NIC check before a DPDK bind never saw a
   NIC; it reads the device's `net/` directory now.
+- **HT4** (§9): pools are `pci.pools` of each server's control-plane.json,
+  like `pci.allow`, not a replicated setting; overlap is refused for two
+  pools with the same match on shared nodes (a device two different
+  matches cover goes to the first pool listed). `match.labels` is not
+  done (there are no device labels yet). Nodes report their assignable
+  devices with ids, NUMA node, switch and readiness in
+  `status.topology.devices`, refreshed after a prepare or release. Pool
+  grants are a `PciPool` Cedar entity under the cluster with
+  `usePciPool` (in `host.devices` and `shared`); a pool request checks
+  the pool, not each device. Picked devices are
+  `status.placement.pool_devices`, claims like named devices, added to
+  the VM's VFIO devices at launch and in device drift. `GET /pci-pools`
+  (`listPciPools`, `host.read`) needs a host role, so projects don't see
+  free counts yet. Not done yet: `devices.<pool>` quotas (§9.3),
+  `device.alloc` metering (§9.4), `prepare: true`, a UI form for pool
+  requests, and tenant pools (HT4b).
 

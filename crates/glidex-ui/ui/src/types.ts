@@ -93,6 +93,9 @@ export interface VmResponse {
   /** Read with `vmHypervisor`. */
   hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
+  /** Devices asked for by pool, and those the scheduler picked (spec/host-topology.md §9). */
+  devices?: { pool: string; count?: number; same_switch?: boolean }[];
+  pool_devices?: { pool: string; address: string }[];
   credential?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */

@@ -44,6 +44,7 @@ impl VmManager {
                         page_kib: Some(choice.page_kib),
                         numa_node: choice.numa_node,
                         cpus: choice.cpus,
+                        pool_devices: choice.pool_devices,
                     });
                     let policy =
                         !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();

@@ -25,6 +25,44 @@ pub struct TopologySummary {
     /// devices whose firmware gives none (`-1`) are left out (H4).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub device_numa: BTreeMap<String, u32>,
+    /// The devices a VM could be given, for pools (§9): ids, place and
+    /// readiness.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<SummaryDevice>,
+}
+
+/// A device a VM could be given, as the scheduler needs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryDevice {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numa_node: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ready: bool,
+}
+
+impl TopologyTree {
+    /// The assignable devices, for the summary.
+    pub fn summary_devices(&self) -> Vec<SummaryDevice> {
+        self.devices
+            .iter()
+            .filter(|d| d.assignable)
+            .map(|d| SummaryDevice {
+                address: d.address.clone(),
+                vendor_id: d.vendor_id.clone(),
+                device_id: d.device_id.clone(),
+                class_id: d.class_id.clone(),
+                numa_node: d.numa_node,
+                switch: d.switch.clone(),
+                ready: d.ready,
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -118,8 +118,62 @@ fn pci_details(dev: &PciDevice) -> Vec<String> {
     ]
 }
 
-/// `pci`, `pci <address>`
+/// `pci pools`: each pool with its devices per node, holders and what is
+/// free (spec/host-topology.md §9.1).
+async fn pci_pools(client: &ApiClient) {
+    use glidex_api::proto::glidex::cluster::v1::ListPciPoolsRequest;
+    let s = match crate::cluster::node_rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let r = match s.list_pci_pools(ListPciPoolsRequest::default()).await {
+        Ok(r) => r.into_owned(),
+        Err(e) => return err(rpc_err(e)),
+    };
+    if r.pools.is_empty() {
+        println!(
+            "{}",
+            "No device pools (pci.pools in control-plane.json)".yellow()
+        );
+    }
+    for p in &r.pools {
+        println!(
+            "{} {}{}: {} free",
+            "pool".bold(),
+            p.name,
+            p.class
+                .as_deref()
+                .map(|c| format!(" ({c})"))
+                .unwrap_or_default(),
+            p.free
+        );
+        for n in &p.nodes {
+            println!("  {} ({} free)", n.node_name, n.free);
+            for d in &n.devices {
+                let state = match (&d.holder, d.cordoned, d.ready) {
+                    (Some(vm), _, _) => format!("held by {vm}"),
+                    (None, true, _) => "cordoned".into(),
+                    (None, false, false) => "not ready".into(),
+                    (None, false, true) => "free".green().to_string(),
+                };
+                println!(
+                    "    {}{}  {}",
+                    d.address,
+                    d.numa_node
+                        .map(|n| format!("  numa {n}"))
+                        .unwrap_or_default(),
+                    state
+                );
+            }
+        }
+    }
+}
+
+/// `pci`, `pci <address>`, `pci pools`
 pub async fn pci(client: &ApiClient, args: &[&str]) {
+    if args.first() == Some(&"pools") {
+        return pci_pools(client).await;
+    }
     let devices = match list_pci_devices(client).await {
         Ok(d) => d,
         Err(e) => return err(e),

@@ -51,6 +51,8 @@ namespace Glidex {
     tenant_grants: Set<Tenant>,
   };
   entity PciDevice in [Host] { grants: Set<Project>, tenant_grants: Set<Tenant> };
+  // A pool of devices, asked for by count (spec/host-topology.md §9).
+  entity PciPool in [Cluster] { grants: Set<Project>, tenant_grants: Set<Tenant> };
 
   // Marker groups (spec/tenancy.md §10): every concrete action is in
   // exactly one of these; base.cedar bounds who can ever pass each.
@@ -205,6 +207,8 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
   action prepareDevice, releaseDevice, cordonDevice in ["host.devices", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action usePciPool in ["host.devices", "shared"]
+    appliesTo { principal: [User, Token], resource: [PciPool], context: ProjectCtx };
   action usePciDevice in ["host.devices", "shared"]
     appliesTo { principal: [User, Token], resource: [PciDevice], context: ProjectCtx };
   action useHostPath in ["host.paths", "shared"]
@@ -253,7 +257,7 @@ namespace Glidex {
 
   // ---- host --------------------------------------------------------------
   // readSystemStatus: GET /system/reconcile (spec/reconciliation.md §12.5).
-  action readOvsStatus, listBridges, listUplinks, listPciDevices, readHostTopology, readSystemStatus in ["host.read", "host-scoped"]
+  action readOvsStatus, listBridges, listUplinks, listPciDevices, listPciPools, readHostTopology, readSystemStatus in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };

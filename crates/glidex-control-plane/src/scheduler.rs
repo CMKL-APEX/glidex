@@ -37,6 +37,8 @@ pub struct Request {
     pub vfio: Vec<String>,
     /// The nodes where the project may use them; `None`: any.
     pub device_nodes: Option<Vec<String>>,
+    /// Devices asked for by pool (spec/host-topology.md §9).
+    pub pools: Vec<PoolRequest>,
     /// Physical networks (provider networks) the VM's NICs sit on.
     pub physnets: Vec<String>,
     /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
@@ -170,6 +172,110 @@ pub fn page_kib(n: &Node, load: &Load, req: &Request) -> Result<u64, String> {
     Ok(SMALL_PAGE_KIB)
 }
 
+/// `count` devices of a pool, as the scheduler sees the request.
+#[derive(Debug, Clone)]
+pub struct PoolRequest {
+    pub pool: crate::config::PciPool,
+    pub count: u32,
+    pub same_switch: bool,
+}
+
+/// The devices `req`'s pool requests get on `n` (spec/host-topology.md
+/// §8.2 4, §8.3): of each pool's devices there that are ready, not
+/// cordoned, and not claimed (with their IOMMU groups), those on the NUMA
+/// node of the VM's other devices first, then by address; with
+/// `same_switch`, all under one switch, the one shared with the VM's other
+/// devices first.
+pub fn pick_pool_devices(
+    n: &Node,
+    load: &Load,
+    req: &Request,
+) -> Result<Vec<crate::models::PoolDevice>, String> {
+    if req.pools.is_empty() {
+        return Ok(Vec::new());
+    }
+    let t = n
+        .status
+        .topology
+        .as_ref()
+        .ok_or_else(|| "it reports no topology".to_string())?;
+    let mut taken: Vec<String> = req.vfio.iter().map(|d| pci_address(d)).collect();
+    let mut numa = taken.iter().find_map(|a| t.device_numa.get(a).copied());
+    let mut switches: Vec<String> = t
+        .devices
+        .iter()
+        .filter(|d| taken.contains(&d.address))
+        .filter_map(|d| d.switch.clone())
+        .collect();
+    let mut out = Vec::new();
+    for r in &req.pools {
+        let p = &r.pool;
+        if !(p.nodes.is_empty() || p.nodes.iter().any(|x| *x == n.meta.id || *x == n.spec.name)) {
+            return Err(format!("pool {} is not on this node", p.name));
+        }
+        let mut free: Vec<&crate::topology::SummaryDevice> = t
+            .devices
+            .iter()
+            .filter(|d| {
+                p.matches
+                    .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
+            })
+            .filter(|d| {
+                d.ready
+                    && !n.spec.cordoned_devices.contains(&d.address)
+                    && !taken.contains(&d.address)
+                    && device_taken(&n.status.pci_groups, &load.devices, &d.address).is_none()
+            })
+            .collect();
+        free.sort_by_key(|d| (numa.is_some() && d.numa_node != numa, d.address.clone()));
+        let need = r.count as usize;
+        if free.len() < need {
+            return Err(format!("pool {}: {} of {} free", p.name, free.len(), need));
+        }
+        let picked: Vec<&crate::topology::SummaryDevice> = if r.same_switch {
+            let mut groups: BTreeMap<String, Vec<&crate::topology::SummaryDevice>> =
+                BTreeMap::new();
+            for d in &free {
+                if let Some(s) = &d.switch {
+                    groups.entry(s.clone()).or_default().push(d);
+                }
+            }
+            let mut fits: Vec<(String, Vec<&crate::topology::SummaryDevice>)> = groups
+                .into_iter()
+                .filter(|(_, g)| g.len() >= need)
+                .collect();
+            fits.sort_by_key(|(s, g)| {
+                (
+                    !switches.contains(s),
+                    numa.is_some() && g[0].numa_node != numa,
+                    g[0].address.clone(),
+                )
+            });
+            let Some((_, g)) = fits.into_iter().next() else {
+                return Err(format!(
+                    "pool {}: no {need} free devices under one PCIe switch",
+                    p.name
+                ));
+            };
+            g.into_iter().take(need).collect()
+        } else {
+            free.into_iter().take(need).collect()
+        };
+        for d in picked {
+            numa = numa.or(d.numa_node);
+            if let Some(s) = &d.switch {
+                switches.push(s.clone());
+            }
+            taken.push(d.address.clone());
+            out.push(crate::models::PoolDevice {
+                pool: p.name.clone(),
+                address: d.address.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Where on a node a VM goes (spec/host-topology.md §8.2–8.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fit {
@@ -181,6 +287,8 @@ pub struct Fit {
     pub cpus: Vec<u32>,
     /// `false`: a `preferred` VM that no single NUMA node could take.
     pub numa_aligned: bool,
+    /// The devices picked for its pool requests.
+    pub pool_devices: Vec<crate::models::PoolDevice>,
 }
 
 /// The NUMA policy that applies: dedicated CPUs imply `preferred`.
@@ -435,6 +543,7 @@ pub fn numa_fit(
             numa_node: Some(k),
             cpus,
             numa_aligned: true,
+            pool_devices: Vec::new(),
         });
     }
     if policy == NumaPolicy::Strict {
@@ -460,7 +569,35 @@ pub fn numa_fit(
         numa_node: None,
         cpus,
         numa_aligned: false,
+        pool_devices: Vec::new(),
     })
+}
+
+/// Where on `n` a VM of `req` goes once `n` passed the node filters: its
+/// pool devices, then the NUMA fit with them as the VM's devices
+/// (spec/host-topology.md §8.2). Also what a standalone host and a change
+/// to a placed VM run.
+pub fn place_on(
+    n: &Node,
+    load: &Load,
+    req: &Request,
+    cfg: &SchedulerConfig,
+    page: u64,
+) -> Result<Fit, String> {
+    let pool_devices = pick_pool_devices(n, load, req)?;
+    let with_pools;
+    let req = if pool_devices.is_empty() {
+        req
+    } else {
+        let mut r = req.clone();
+        r.vfio
+            .extend(pool_devices.iter().map(|d| d.address.clone()));
+        with_pools = r;
+        &with_pools
+    };
+    let mut fit = numa_fit(n, load, req, cfg, page)?;
+    fit.pool_devices = pool_devices;
+    Ok(fit)
 }
 
 /// The page size `req` gets on `n`, or why it can't go there.
@@ -571,7 +708,7 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
             return Err("a network exists on another node".into());
         }
     }
-    let fit = numa_fit(n, load, req, cfg, page)?;
+    let fit = place_on(n, load, req, cfg, page)?;
     // Implicit hugepages the NUMA node lacked: ordinary memory after all.
     if fit.page_kib == SMALL_PAGE_KIB
         && page != SMALL_PAGE_KIB
@@ -622,6 +759,7 @@ pub struct NodeFit {
     pub numa_node: Option<u32>,
     pub cpus: Vec<u32>,
     pub numa_aligned: bool,
+    pub pool_devices: Vec<crate::models::PoolDevice>,
     /// `max(cpu share, memory share, hugepage share)` after placing: lower
     /// is preferred.
     #[serde(skip)]
@@ -670,6 +808,7 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
                 numa_node: fit.numa_node,
                 cpus: fit.cpus,
                 numa_aligned: fit.numa_aligned,
+                pool_devices: fit.pool_devices,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
                 mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit)
@@ -707,6 +846,7 @@ pub struct Choice {
     pub numa_node: Option<u32>,
     pub cpus: Vec<u32>,
     pub numa_aligned: bool,
+    pub pool_devices: Vec<crate::models::PoolDevice>,
 }
 
 /// The node a VM goes to, or why each node refused it (the first of
@@ -724,6 +864,7 @@ pub fn schedule(
             numa_node: f.numa_node,
             cpus: f.cpus.clone(),
             numa_aligned: f.numa_aligned,
+            pool_devices: f.pool_devices.clone(),
         }),
         _ => {
             let mut refused: Vec<(String, String)> = all
@@ -1467,6 +1608,121 @@ mod tests {
         r.vfio = vec!["/sys/bus/pci/devices/0000:41:00.0".into()];
         let err = schedule(&r, &[(n, Load::default())], &cfg()).unwrap_err();
         assert_eq!(err[0].1, "PCI device 0000:41:00.0 is cordoned");
+    }
+
+    /// A node with four GPUs: two under switch s1 on NUMA node 0, one under
+    /// s2 on node 1, one under s3 on node 1; and a NIC.
+    fn pool_node() -> Node {
+        let mut n = numa_node();
+        let gpu = |a: &str, numa: u32, sw: &str| crate::topology::SummaryDevice {
+            address: a.into(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: "0x030200".into(),
+            numa_node: Some(numa),
+            switch: Some(sw.into()),
+            ready: true,
+        };
+        let t = n.status.topology.as_mut().unwrap();
+        t.devices = vec![
+            gpu("0000:07:00.0", 0, "s1"),
+            gpu("0000:08:00.0", 0, "s1"),
+            gpu("0000:47:00.0", 1, "s2"),
+            gpu("0000:4e:00.0", 1, "s3"),
+            crate::topology::SummaryDevice {
+                address: "0000:41:00.0".into(),
+                vendor_id: "0x15b3".into(),
+                device_id: "0x101b".into(),
+                class_id: "0x020700".into(),
+                numa_node: Some(1),
+                switch: Some("s2".into()),
+                ready: true,
+            },
+        ];
+        for d in t.devices.clone() {
+            if let Some(k) = d.numa_node {
+                t.device_numa.insert(d.address.clone(), k);
+            }
+        }
+        n
+    }
+
+    fn gpus(count: u32, same_switch: bool) -> PoolRequest {
+        PoolRequest {
+            pool: crate::config::PciPool {
+                name: "a100".into(),
+                class: Some("gpu".into()),
+                matches: crate::config::PoolMatch {
+                    vendor_id: Some("0x10de".into()),
+                    device_id: Some("0x20b0".into()),
+                    ..Default::default()
+                },
+                nodes: vec![],
+            },
+            count,
+            same_switch,
+        }
+    }
+
+    fn picked(c: &Choice) -> Vec<&str> {
+        c.pool_devices.iter().map(|d| d.address.as_str()).collect()
+    }
+
+    #[test]
+    fn pools_give_devices_near_each_other() {
+        let n = pool_node();
+        // Two GPUs, lowest addresses: both on NUMA node 0.
+        let mut r = req(2, 1024);
+        r.pools = vec![gpus(2, false)];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(picked(&c), ["0000:07:00.0", "0000:08:00.0"]);
+        // Next to the NIC the VM names: the GPUs on its NUMA node first.
+        r.vfio = vec!["0000:41:00.0".into()];
+        r.pools = vec![gpus(1, false)];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(picked(&c), ["0000:47:00.0"]);
+        // One switch: s2 has the NIC and one GPU, so two GPUs need s1.
+        r.pools = vec![gpus(2, true)];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(picked(&c), ["0000:07:00.0", "0000:08:00.0"]);
+        // Held and cordoned devices are no one else's.
+        let held = loads([Placed {
+            node: "numa".into(),
+            name: "other".into(),
+            devices: vec!["0000:07:00.0".into()],
+            page_kib: SMALL_PAGE_KIB,
+            ..Default::default()
+        }])
+        .remove("numa")
+        .unwrap();
+        let mut cordoned = n.clone();
+        cordoned.spec.cordoned_devices = ["0000:08:00.0".to_string()].into();
+        let mut r = req(2, 1024);
+        r.pools = vec![gpus(3, false)];
+        let err = schedule(&r, &[(cordoned.clone(), held.clone())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "pool a100: 2 of 3 free");
+        r.pools = vec![gpus(2, true)];
+        let err = schedule(&r, &[(cordoned, held)], &cfg()).unwrap_err();
+        assert_eq!(
+            err[0].1,
+            "pool a100: no 2 free devices under one PCIe switch"
+        );
+        // A pool limited to other nodes.
+        let mut p = gpus(1, false);
+        p.pool.nodes = vec!["elsewhere".into()];
+        r.pools = vec![p];
+        let err = schedule(&r, &[(n, Load::default())], &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "pool a100 is not on this node");
+    }
+
+    #[test]
+    fn a_strict_vm_gets_its_pool_devices_and_memory_on_one_numa_node() {
+        let n = pool_node();
+        let mut r = numa_req(2, 1024, NumaPolicy::Strict, CpuPolicy::Shared);
+        r.vfio = vec!["0000:41:00.0".into()];
+        r.pools = vec![gpus(1, false)];
+        let c = schedule(&r, &[(n, Load::default())], &cfg()).unwrap();
+        assert_eq!((c.numa_node, picked(&c)), (Some(1), vec!["0000:47:00.0"]));
     }
 
     #[test]
