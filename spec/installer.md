@@ -546,6 +546,11 @@ To register datastores once the services are up:
 - `--datastore-default` makes the first of them the default for new
   disks.
 
+For LVM-thin datastores (spec/storage.md §11.1) the installer installs
+`glidex-stord` with the services. `--stord-allow-vg VG` adds a volume
+group to `/etc/glidex/stord.json`'s `allowed_vgs`; without it stord may
+use none. The volume group and its thin pool are the operator's to make.
+
 None of these are saved. Without them, an interactive run offers each
 mount point directly under `/srv/glidex` that isn't a datastore yet (it
 has no marker), and asks whether it becomes the default; the suggested

@@ -1719,6 +1719,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-stord"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "glidex-tls"
 version = "0.1.0"
 dependencies = [

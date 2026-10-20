@@ -6,6 +6,7 @@ members = [
     "crates/glidex-ovn",
     "crates/glidex-install",
     "crates/glidex-netd",
+    "crates/glidex-stord",
     "crates/glidex-authd",
     "crates/glidex-ui",
     "crates/glidex-hv-client",
