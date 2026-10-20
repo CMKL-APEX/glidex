@@ -126,6 +126,8 @@ tables! {
     TenantDevicePools = 51 => "tenant_device_pools",
     // Workload federations (spec/tenancy.md §9).
     Federations = 52 => "federations",
+    // The tokens exchanges gave, and the workload tokens they used (§9, D48).
+    FederatedTokens = 53 => "federated_tokens",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -145,9 +147,8 @@ impl TableId {
         match self {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
-            | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations => {
-                Scope::Directory
-            }
+            | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
+            | FederatedTokens => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

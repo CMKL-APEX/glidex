@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const FEDERATIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("federations");
+const FEDERATED_TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("federated_tokens");
 
 pub const MAX_PER_TENANT: usize = 20;
 pub const MAX_RULES: usize = 50;
@@ -73,6 +74,14 @@ pub struct Rule {
 impl Rule {
     pub fn ttl_secs(&self) -> u32 {
         self.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)
+    }
+
+    /// Names the rule as it is: a token it gave lives only while the
+    /// federation still has a rule with this fingerprint (D48).
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest;
+        let v = serde_json::json!({"match": self.claims, "service_account": self.service_account});
+        crate::cluster::pki::hex(&sha2::Sha256::digest(v.to_string().as_bytes()))[..32].to_string()
     }
 
     /// Whether `claims` (a token's) has every value this rule asks for.
@@ -286,6 +295,90 @@ impl FederationStore {
         }
         txn.commit()?;
         Ok(f)
+    }
+}
+
+// ---- the tokens an exchange gave (D48) ----------------------------------
+
+/// A federated token: it acts as `service_account` while the federation
+/// and its rule are as they were. Kept by the secret's SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederatedToken {
+    pub id: String,
+    /// `<tenant id>/<federation id>`.
+    pub federation: String,
+    /// [`Rule::fingerprint`] of the rule that matched.
+    pub rule: String,
+    pub service_account: String,
+    /// The workload: its `sub`, and `repository` / `ref` / `environment`
+    /// when it had them (for audit).
+    pub subject: String,
+    #[serde(default)]
+    pub claims: BTreeMap<String, String>,
+    /// The workload token's `jti`, or its hash: exchanged once (D48).
+    pub replay_key: String,
+    /// The workload token's expiry: how long `replay_key` is kept.
+    pub subject_expires_at: u64,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+/// The tokens exchanges gave, and the workload tokens already used.
+pub struct FederatedTokens {
+    db: Arc<Db>,
+}
+
+impl FederatedTokens {
+    pub fn new(db: Arc<Db>) -> Self {
+        Self { db }
+    }
+
+    pub fn by_hash(&self, hash: &str) -> Result<Option<FederatedToken>, FederationError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_table(FEDERATED_TOKENS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(match table.get(hash)? {
+            Some(v) => Some(serde_json::from_slice(v.value())?),
+            None => None,
+        })
+    }
+
+    /// Keep `t` under `hash`, unless its workload token was exchanged
+    /// already (`Conflict`). Drops records whose token and workload token
+    /// have both expired.
+    pub fn mint(&self, hash: &str, t: &FederatedToken) -> Result<(), FederationError> {
+        let now = crate::tenancy::now();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut table = txn.open_table(FEDERATED_TOKENS)?;
+            let mut stale = Vec::new();
+            let mut used = false;
+            for e in table.iter()? {
+                let (k, v) = e?;
+                let Ok(x) = serde_json::from_slice::<FederatedToken>(v.value()) else {
+                    continue;
+                };
+                if x.expires_at <= now && x.subject_expires_at + 60 <= now {
+                    stale.push(k.value().to_string());
+                } else if x.replay_key == t.replay_key && x.federation == t.federation {
+                    used = true;
+                }
+            }
+            for k in stale {
+                table.remove(k.as_str())?;
+            }
+            if used {
+                return Err(FederationError::Conflict(
+                    "this token was exchanged already".into(),
+                ));
+            }
+            table.insert(hash, serde_json::to_vec(t)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 }
 

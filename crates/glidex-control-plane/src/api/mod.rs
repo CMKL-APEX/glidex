@@ -12,6 +12,7 @@ mod access;
 mod cluster;
 mod connectors;
 pub(crate) mod errors;
+mod exchange;
 mod federations;
 pub mod gate;
 mod invitations;
@@ -816,6 +817,9 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     // Directory connectors (spec/tenancy.md §6): discovery and each
     // connector's own login routes.
     .add("POST", "/auth/discover", PUBLIC, post(access::discover))
+    // Workload federation (spec/tenancy.md §9): a CI job's JWT for a
+    // short-lived token; the JWT is the credential.
+    .add("POST", "/auth/exchange", PUBLIC, post(exchange::exchange))
     .add(
         "GET",
         "/auth/c/{id}/start",
@@ -2303,6 +2307,7 @@ mod tests {
                 "/auth/oidc/device",
                 "/auth/oidc/device/poll",
                 "/auth/discover",
+                "/auth/exchange",
                 "/auth/c/{id}/start",
                 "/auth/c/{id}/start",
                 "/auth/invitation",
