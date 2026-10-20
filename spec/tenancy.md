@@ -1,6 +1,6 @@
 # Tenants, directories and operators (design)
 
-Status: **design**; T0–T4 are implemented on one directory and one
+Status: **design**; T0–T5 are implemented on one directory and one
 cluster (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
@@ -1468,8 +1468,8 @@ T6–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T4 are implemented; T5 is in progress (its tasks in §18); T2b, T4b,
-T6 and T7 are not started. What
+T0–T5 are implemented (T5: kind `jwt`); T2b, T4b, T6 and T7 are not
+started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1685,7 +1685,9 @@ Task 5, docs and the UI e2e:
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
 | UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
 
-**T5** (workload federation) is in progress. Task 2, federations:
+**T5** (workload federation, kind `jwt`) is implemented: tasks 1–4 of
+§18. The GitHub Actions check of [idp-checks.md](idp-checks.md) is the
+operator's to run. Task 2, federations:
 
 | Spec | Code |
 |---|---|
@@ -1704,6 +1706,15 @@ Task 3, the exchange:
 | D50 | the first rule whose exact claims hold; its service account still the tenant's and live; every refusal the same `400 invalid_grant`, the reason in the audit (`system:federation:<slug>/<id>`, `exchangeToken`) |
 | D48 | `FederatedTokens::mint` refuses a `jti` (or the token's hash) already exchanged; `AuthService::federated_principal`: the service account's `Token` as principal, while the federated token, the service account, the enabled federation and the rule's fingerprint hold; `Principal.federated` in audit; TTL the rule's, never past the service account's expiry |
 | Tests | `connector_tests.rs::a_workload_token_is_exchanged_once_for_its_service_account` against the mock issuer |
+
+Task 4, UI and docs:
+
+| Spec | Code |
+|---|---|
+| UI | `components/FederationsCard.tsx` on the tenant's page: the federations with their rules, enable / disable / delete; adding one (GitHub Actions and GitLab presets, the audience, rules of exact claims, the tenant's service accounts to pick from, the lifetime); how a job uses it (the exchange, for GitHub with its OIDC request) |
+| Operator guide | `operator-guide/authentication.md`, "Workload federation": what it gives and when it ends, gxctl, the exchange, and GitHub Actions, GitLab CI and Kubernetes examples |
+| Real check | [idp-checks.md](idp-checks.md) "GitHub Actions workload federation", through a tunnel that publishes only the exchange and `whoami` |
+| UI e2e | `federation.spec.ts`: a federation made on the page against an issuer the test serves, a job's JWT exchanged and used, another job refused, and the token ended by disabling it |
 
 **T4** (pull sync from Google Workspace) is implemented: tasks 1–5 of
 §18. The checks of [idp-checks.md](idp-checks.md) against a real

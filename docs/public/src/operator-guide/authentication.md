@@ -481,6 +481,85 @@ history or scripts. Revoke a token you no longer need, and any token
 that may have been exposed. `gxctl token list` shows when each was last
 used.
 
+## Workload federation (CI without stored tokens)
+
+A CI job usually needs a service account's token to deploy. With
+**workload federation** it needs none: the job asks its CI platform for
+an OIDC token (GitHub Actions, GitLab CI and Kubernetes give one to every
+job), and trades it at glidex for a short-lived token that acts as a
+service account of the tenant. Nothing secret is stored in the CI system.
+
+- A tenant trusts an **issuer** and an **audience**, with **rules**:
+  each rule names exact claim values (the repository, and usually the
+  branch or environment) and the service account a matching job acts
+  as. The first rule that matches wins; there are no wildcards.
+- The token glidex gives lasts the rule's lifetime (15 minutes by
+  default, at most an hour), isn't renewable, and has exactly the
+  service account's roles. Each CI token is exchanged once.
+- Disabling or deleting the federation, changing the rule, or revoking
+  the service account ends the tokens it gave at once.
+- Tenant administrators manage their tenant's federations on the
+  tenant's page (**Workload federation**) or with `gxctl federation`;
+  making one needs a recent login.
+
+```bash
+# A service account with the roles the job needs, in one of the tenant's projects:
+gxctl token create deployer --service-account --project web --role operator
+gxctl federation add acme github --issuer https://token.actions.githubusercontent.com \
+  --audience glidex --match repository=acme/infra --match ref=refs/heads/main \
+  --service-account <token id>
+```
+
+The job exchanges its token at `POST /api/auth/exchange` (RFC 8693),
+naming the federation as `<tenant slug>/<federation id>`, and gets
+`{access_token, expires_in}`. A refused exchange always answers
+`invalid_grant`; why is in the audit log (`system:federation:<id>`).
+
+**GitHub Actions:**
+
+```yaml
+permissions:
+  id-token: write          # lets the job ask GitHub for an OIDC token
+steps:
+  - name: glidex token
+    run: |
+      JWT=$(curl -sfH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=glidex" | jq -r .value)
+      TOKEN=$(curl -sf https://glidex.example.com/api/auth/exchange \
+        -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+        -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+        -d federation=acme/github -d subject_token="$JWT" | jq -r .access_token)
+      echo "::add-mask::$TOKEN"
+      echo "GLIDEX_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+  - run: curl -sf -H "Authorization: Bearer $GLIDEX_TOKEN" https://glidex.example.com/api/vms
+```
+
+Rules for GitHub match `repository`, `ref` and `environment` (or the
+whole `sub`, such as `repo:acme/infra:environment:production`).
+
+**GitLab CI** (issuer `https://gitlab.com`, or your instance's URL):
+
+```yaml
+deploy:
+  id_tokens:
+    GLIDEX_JWT:
+      aud: glidex
+  script:
+    - >
+      TOKEN=$(curl -sf https://glidex.example.com/api/auth/exchange
+      -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+      -d subject_token_type=urn:ietf:params:oauth:token-type:jwt
+      -d federation=acme/gitlab -d subject_token="$GLIDEX_JWT" | jq -r .access_token)
+```
+
+Rules for GitLab match `project_path` and `ref` (or `environment`).
+
+**Kubernetes:** use the cluster's service account issuer (its
+discovery must be reachable by glidex, for example published with
+`--service-account-issuer` and `--service-account-jwks-uri`), a
+projected token with audience `glidex`, and rules on `sub`
+(`system:serviceaccount:<namespace>:<name>`).
+
 ## Sessions and re-authentication
 
 A web UI login starts a session, kept in a cookie. It ends after

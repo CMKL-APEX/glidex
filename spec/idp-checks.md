@@ -1,4 +1,4 @@
-# Real-IdP checks (spec/tenancy.md §17, T2 and T3)
+# Real-IdP checks (spec/tenancy.md §17, T2–T5)
 
 The connector presets are tested in CI against a mock IdP
 (`tests/connector_tests.rs`). What a mock can't show — how the real
@@ -38,6 +38,28 @@ and build, never with account names or tokens.
 3. With `--no-jit`: a new account is refused; an invitation for its
    address lets it in once; a second use of the link is refused; the
    invitation of another address doesn't take it.
+
+## GitHub Actions workload federation (T5)
+
+A GitHub-hosted runner reaches glidex through a tunnel (as for the SCIM
+check) that publishes **only** `/api/auth/exchange` and the one read the
+job makes (`/api/auth/whoami`), and nothing else of the web UI or the
+API. The repository's workflow needs `permissions: id-token: write`; it
+stores no glidex secret. Turn the tunnel off after the checks.
+
+1. A federation on a test tenant: issuer
+   `https://token.actions.githubusercontent.com`, audience `glidex`, one
+   rule `repository=<owner>/<repo>`, `ref=refs/heads/main`, mapped to a
+   test service account. Making it reads GitHub's discovery and keys.
+2. A workflow on `main` asks GitHub for its OIDC token with that
+   audience, exchanges it, and calls `/api/auth/whoami` with the token:
+   it answers as the service account.
+3. The same workflow on another branch is refused (`invalid_grant`); the
+   audit log says no rule matched.
+4. A second exchange of the same GitHub token is refused.
+5. Disabling the federation makes the job's token fail at once.
+6. The audit log has the exchanges as `system:federation:<tenant>/<id>`
+   with the repository and ref, and no token.
 
 ## Google Workspace directory sync (`provisioning: pull`, T4)
 
