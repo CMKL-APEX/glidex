@@ -278,9 +278,9 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/auth/discover` | Which login connectors to offer for a tenant slug or email (`{hint}`) |
 | `POST` | `/auth/login` | Password login for the browser: sets a session cookie |
 | `POST` | `/auth/token` | Password login for tools: `{issued: {token, token_id, expires_at, user_id, display_name}}` |
-| `GET` | `/auth/oidc/start`, `/auth/oidc/callback` | OIDC browser login (redirects) |
+| `GET` | `/auth/oidc/start`, `/auth/oidc/callback` | OIDC browser login (redirects); `?reauth=1` (or `true`) asks the IdP for a fresh login, for a recent-login step-up |
 | `POST` | `/auth/oidc/device`, `/auth/oidc/device/poll` | OIDC device flow for CLIs: start, then poll: `202 {pending: true}` until the user is done, then `200 {issued: …}` |
-| `GET` | `/auth/c/{id}/start`, `/auth/c/{id}/callback` | Browser login through connector `{id}` |
+| `GET` | `/auth/c/{id}/start`, `/auth/c/{id}/callback` | Browser login through connector `{id}`; `?reauth=1` as above |
 | `POST` | `/auth/c/{id}/start` | Browser login that takes an invitation: `{invitation}` in the body, answers `{redirect}`; `404` for an invitation that isn't open or is for another connector; no credential |
 | `POST` | `/auth/invitation` | What an invitation is for (tenant, connector, address, role, expiry): `{invitation: "<id>.<secret>"}`, from the link; `404` unless it is open; no credential |
 | `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}`. The callback returns to `return_to` with `?linked=<id>` or `?link_error=taken\|not_allowed\|not_signed_in`; a provisioned connector (SCIM or directory sync) is always `not_allowed` |

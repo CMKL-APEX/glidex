@@ -26,8 +26,11 @@ the CI system's secrets.
 Trusting an issuer gives its jobs a service account's rights in the
 tenant: treat it like handing out that service account's token.
 
-There is no web UI page for federations yet: use `gxctl` or the
-[API](../api/rest.md#tenants-and-login-connectors).
+In the web UI, a tenant's page has a **Workload federation** card (for
+those who may read the tenant's federations): it lists them, and tenant
+administrators can **Add federation**, **Enable** or **Disable** one,
+**Delete** it, and copy a ready-made exchange snippet. `gxctl` and the
+[API](../api/rest.md#tenants-and-login-connectors) do the same.
 
 ## Setting one up
 

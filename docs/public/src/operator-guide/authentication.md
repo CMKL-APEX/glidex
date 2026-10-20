@@ -809,7 +809,10 @@ Some actions need a login in the last 10 minutes:
   CA and secrets key rotation, OVN settings).
 
 In the web UI, such an action opens a "This action needs a recent login"
-dialog; after signing in again the request goes through. On the local
+dialog; after signing in again the request goes through. A user who
+signs in with single sign-on picks their provider there, and is asked
+to sign in at it again even if it still has a session (Glidex sends
+`prompt=login` and `max_age=0`). On the local
 socket a request always counts as fresh. A personal token acting only
 as its owner never does: run those actions from the web UI, from the
 host's socket, or with a token that has its own roles.
