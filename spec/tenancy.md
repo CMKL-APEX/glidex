@@ -100,7 +100,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D23 | PAM and peer | Unix accounts exist on one cluster's hosts. A `pam` connector belongs to a directory **hosted on that same control plane** and checks that cluster's accounts; PAM and peer logins give sessions valid on that cluster only. Root and `glidex-admin` resolve to the operator tenant. `glidex-authd`'s `allowed_groups` stays the outer fence. | Host accounts can't be a credential for other clusters, or for an organization whose directory lives elsewhere. |
 | D24 | Names | In a directory: tenant slugs, and per tenant the names of projects, service accounts and guest credentials. In a cluster: VM names per project, disk and project network names per tenant. Ids stay global UUIDs; flat REST paths stay (security.md decision 8). | No cross-tenant existence oracles; no id-based path changes. |
 | D25 | Grants | Operators grant host networks and PCI devices on their cluster to a **tenant** (`tenant_grants`) or to projects. Project networks are shared only between projects of one tenant, within one cluster. | One grant per customer; cross-tenant L2 sharing stays an operator decision. |
-| D26 | Machine identity | **Workload federation** at the directory: a tenant trusts an external JWT issuer (GitHub Actions, GitLab CI, any OIDC workload issuer) or AWS STS and maps matching claims to a service account; `POST /auth/exchange` returns short-lived (≤ 1 h) tokens for the clusters named. | CI uses the identity it already has. |
+| D26 | Machine identity | **Workload federation** at the directory: a tenant trusts an external JWT issuer (GitHub Actions, GitLab CI, any OIDC workload issuer) or AWS STS and maps matching claims to a service account; `POST /auth/exchange` returns short-lived (≤ 1 h) tokens (D48–D51; one cluster until T6). | CI uses the identity it already has. |
 | D27 | Hosted directories | A control plane can host several directories, and operators can offer that as a service. Each has its own issuer URL (`https://<host>/d/<directory>`), signing keys, secrets key, connectors and audit, and none sees another's records. The host's operator can read what it hosts; an organization that won't accept that runs its own directory. | Small organizations shouldn't need to run a server to have an account; larger ones keep full control by self-hosting. |
 | D28 | No tenant-authored Cedar | Site policies belong to operators (per cluster) and directory owners (per directory). | Tenant-authored Cedar would need per-tenant validation scopes and lock-out rules. |
 | D29 | Two transports | Every operation is served over REST/JSON and gRPC from one service function (§14.1, [grpc.md](grpc.md)); only protocol-fixed endpoints (OIDC/OAuth, SCIM) are HTTP-only. | Built on the service layer from the start. |
@@ -122,6 +122,10 @@ organizations that **operate** it, and lets each keep its own identity.
 | D45 | Leaving, in a pull | A managed user no longer in the groups, or **suspended** or **archived** in Google, or deleted there, is disabled (D20, `disabled_reason: sync`) and stays managed. One back in the groups and active is enabled again, unless an administrator disabled it. | A pull sees only the current state, so leaving and a group change look alike; staying managed lets the person come back without an administrator, while D20 closes the access at once. |
 | D46 | A pull that fails or would remove many | An error from Google (or one it can't read) changes nothing: the run is recorded as failed and the next one tries again. A run that would disable more than `sync.max_disable` of the managed users (default 10 %, at least 5) applies nothing else either and sets the connector `blocked` until a directory administrator confirms (`POST /connectors/{id}/sync {confirm: true}`, a step-up action): that runs once more, reading the directory again, without the stop. | An outage, a renamed group or an expired key must never read as "everyone left". |
 | D47 | Google credentials | A **service account** with **domain-wide delegation**, granted only the read-only scopes `admin.directory.user.readonly` and `admin.directory.group.readonly`, impersonating `sync.admin_email` (a Workspace administrator, or a delegated admin with directory read). Its JSON key is the connector's write-only secret `service_account_key`, sealed like the client secret (§13); access tokens are kept in memory only. | The Directory API is read only through an administrator's delegated identity. Keyless workload identity federation needs glidex to be an issuer Google trusts (T5, T6). |
+| D48 | What an exchange gives | `POST /auth/exchange` turns a workload's JWT into a **federated token** that acts **as one service account** (the Cedar principal is that service account's `Token`, so only its role links count): at most the rule's `ttl_secs` (default 900, at most 3600), not renewable, no refresh token. Revoking the service account, or deleting the federation or the rule, ends the tokens it gave at once. Each workload token is exchanged **once** (its `jti`, or its hash without one, is remembered until it expires). | Rights stay in one place, the service account's links, and a leaked exchanged token is short-lived and tied to one job. |
+| D49 | Trusting an issuer | A federation of kind `jwt` names an `https` issuer (discovery and JWKS, as for OIDC logins) and one **audience**, which the workload asks its issuer for (GitHub's `audience` input, GitLab's `id_tokens.aud`). The token must be signed (RS256 or ES256) by the issuer's current keys, carry that issuer and that audience, and be valid now (60 s leeway, at most 1 h long). | Without the audience check, a token GitHub minted for another service would be accepted. |
+| D50 | Rules | A federation's rules are ordered; the **first** whose `match` holds maps the token. A rule matches **exact** string claim values only (no wildcards) and must name at least one of `repository`, `project_path` or `sub`; each rule names one service account of a project of the federation's tenant. A token that matches no rule, or fails any check, gets the same `400 invalid_grant` whatever the reason; the reason goes to the audit log. | An exact repository (and usually a branch or environment) is what a CI system vouches for; prefix matching has let other repositories in elsewhere. |
+| D51 | Who manages federations | A federation belongs to a tenant (D1). Tenant administrators manage their tenant's (`manageTenantFederations`, step-up), directory administrators any; tenant auditors read them. A federation is disabled or deleted at once. | Trusting a CI system is giving its jobs the service account's rights in the tenant. |
 
 ## 3. Threat model additions
 
@@ -549,28 +553,50 @@ detaches them.
 
 ## 9. Workload federation (at the directory)
 
+A tenant trusts a CI or workload issuer: a job that has a JWT from it
+trades it for a short-lived glidex token, and stores no glidex secret.
+T5 implements kind `jwt`; `aws` (a presigned `sts:GetCallerIdentity`)
+is later.
+
 ```json
 {
-  "id": "…", "tenant_id": "…", "kind": "jwt",
+  "id": "gh-infra", "tenant_id": "…", "kind": "jwt",
+  "display_name": "GitHub Actions",
   "issuer": "https://token.actions.githubusercontent.com",
-  "audience": "<directory issuer>",
+  "audience": "glidex",
+  "enabled": true,
   "rules": [
     { "match": { "repository": "acme/infra", "ref": "refs/heads/main" },
-      "service_account": "<token id>", "clusters": ["<cluster id>"], "ttl_secs": 900 }
+      "service_account": "<token id>", "ttl_secs": 900 }
   ]
 }
 ```
 
-- Kinds: `jwt` (GitHub Actions, GitLab, Kubernetes service-account
-  issuers, Azure managed identity, Google service-account ID tokens)
-  and `aws` (a presigned `sts:GetCallerIdentity`, verified by calling
-  STS; match on account and role ARN).
-- `POST /auth/exchange` (RFC 8693 shape) → access tokens (§7.2) as the
-  mapped service account, for the rule's clusters, at most `ttl_secs`
-  (≤ 3600), not renewable, audited with the rule and external subject.
-- Rules match exact claim values only and must name at least one of
-  `repository`/`project_path`/`sub`/role ARN. The service account
-  belongs to the federation's tenant.
+- **Federations** (D51): per tenant, `GET/POST /tenants/{id}/federations`,
+  `GET/PATCH/DELETE …/{federation}` (`FederationService` on both
+  transports), gxctl `federation list|add|update|remove`, and a card on
+  the tenant's page. `issuer` is `https` (a loopback URL for a test
+  mock); it is read at once (discovery, JWKS) and refused if it can't
+  be. Rules follow D50; their service accounts must be in the tenant's
+  projects. At most 20 federations per tenant, 50 rules each.
+- **Exchange** (RFC 8693's shape): `POST /auth/exchange`, public, form
+  or JSON:
+  `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+  `subject_token=<the JWT>`,
+  `subject_token_type=urn:ietf:params:oauth:token-type:jwt`, and
+  `federation=<tenant slug>/<federation id>` (which federation to try,
+  so one issuer can serve several tenants). It answers `{access_token,
+  issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+  token_type: "Bearer", expires_in}`, and errors as RFC 6749 does
+  (`400 invalid_request`, `400 invalid_grant`). 30 exchanges a minute
+  per federation.
+- **The token** (D48): a `gxt_` token of kind `federated`, recording
+  the federation, the rule, the service account and the external
+  subject (`sub`, and `repository` / `ref` / `environment` when
+  present) for audit. It authenticates as the service account. Listed
+  under the service account while it lives; revocable like any token.
+- **Audit:** every exchange, granted or not, as `system:federation:<id>`
+  with the external subject and claims it matched on, never the JWT.
 
 ## 10. Authorization (security.md §7)
 
@@ -1195,8 +1221,12 @@ one login for both (D3). Nothing a user does today changes.
   real Workspace: idp-checks.md.
 - **Secrets:** no read or feed contains secret bytes; a hosted
   directory can't decrypt another's (different data keys).
-- **Federation:** wrong repository, `aud`, expiry, unpinned rules are
-  refused; tokens work only on the rule's clusters.
+- **Federation:** a wrong issuer, audience, signature, repository or
+  branch, an expired or too-long token, a rule without a pinned claim,
+  and a second exchange of the same token are all refused with the same
+  answer; the token acts as its service account only, ends with it, and
+  isn't renewable. Real check: a GitHub Actions job exchanges its OIDC
+  token (idp-checks.md).
 - **Trust (T6),** two directories and two clusters in process:
   - an offer token redeemed by the wrong tenant, the wrong directory,
     twice, or after expiry is refused;
@@ -1250,7 +1280,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T3** SCIM | §8.1, managed users and teams, D20, field ownership | SCIM fixtures; deprovision-revokes test. |
 | **T4** pull sync and attributes | §8.2 for Google Workspace (D44–D47): runs, the safety stop, status; SSH keys from Google | Pull tests against a mock Directory API; manual checks against a real Workspace. |
 | **T4b** more sources | LDAP (login and pull; AD, FreeIPA, OpenLDAP, JumpCloud LDAP), Microsoft Graph and GitHub (after T2b), on T4's runs | LDAP against OpenLDAP in CI. |
-| **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds | Federation tests; a GitHub Actions workflow deploys without a stored token. |
+| **T5** workload federation | §9 and D48–D51, kind `jwt`: federations per tenant, `POST /auth/exchange`, federated tokens; `aws` later | Federation tests against a mock issuer; a GitHub Actions job exchanges its OIDC token and calls glidex without a stored token. |
 | **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider, access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, standby and promote, gxctl `auth login --directory`, `trust`, UI | §17 trust tests; a check with two organizations' directories and two clusters across a real WAN link. Can start once T1 has landed. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 
@@ -1347,7 +1377,24 @@ Each milestone ships its API, CLI, UI and tests together and leaves
    `<schema>.<field>`, multi-valued) kept on the managed user, offered
    by "my SSH keys" when the host has no local login for the user.
 
-T5–T7 get their own task lists when they start; per-protocol code under
+**T5 tasks** (one PR each, in order):
+1. This spec (D48–D51, §9).
+2. Federations: `federations` (directory scope), validation (the issuer
+   read at once, D50's rules, service accounts of the tenant),
+   `FederationService` on both transports, actions
+   `readTenantFederations` and `manageTenantFederations`, gxctl
+   `federation`.
+3. The exchange: `POST /auth/exchange`, the JWT checks (discovery and
+   JWKS cached per issuer, D49), the first matching rule, replay
+   (D48), `TokenKind::Federated` acting as its service account and
+   ending with it, the limit, the audit; tests against a mock issuer.
+4. UI and docs: the tenant page's Workload federation card (issuer,
+   audience, rules, the service accounts to pick from); the operator
+   guide with GitHub Actions, GitLab CI and Kubernetes examples;
+   idp-checks.md's GitHub Actions check (through a tunnel that
+   publishes only the exchange and what the job calls); UI e2e.
+
+T6–T7 get their own task lists when they start; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
 ## 19. Out of scope
@@ -1418,7 +1465,8 @@ T5–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T4 are implemented; T2b, T4b and T5–T7 are not started. What
+T0–T4 are implemented; T5 is in progress (its tasks in §18); T2b, T4b,
+T6 and T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
