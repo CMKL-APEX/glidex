@@ -62,6 +62,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `auth status [--profile P]` | Target, cluster, trust mode, token and expiry |
 | `auth use <profile\|->` | Set the current profile (`-` clears it) |
 | `auth profiles [--all]` | List profiles |
+| `auth profiles remove <name> [--forget-token]` | Delete a profile from the config file. One that still holds a token is refused: revoke it first with `auth logout --profile <name> --revoke`, or `--forget-token` drops it unrevoked |
 | `auth trust list \| fetch \| remove <pin> \| remove --all [--yes]` | A profile's pinned certificate fingerprints; `fetch` shows what the server claims, sending nothing else |
 | `auth token …`, `auth whoami` | Same as `token …`, `whoami` |
 | `login --oidc [--connector ID] \| --token` | Older form: log in over HTTPS and save the token file. Not needed on the socket |

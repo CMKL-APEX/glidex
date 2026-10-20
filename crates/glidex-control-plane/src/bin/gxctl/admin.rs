@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -930,6 +930,29 @@ fn auth_profiles(args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
+    if args.first() == Some(&"remove") {
+        let Some(name) = args.get(1).filter(|n| !n.starts_with("--")) else {
+            return usage("Usage: auth profiles remove <name> [--forget-token]");
+        };
+        let Some(mut c) = cfg else {
+            return err("no config file yet: there is no profile to remove");
+        };
+        let was_current = c.current.as_deref() == Some(*name);
+        if let Err(e) = c.remove_profile(name, has_flag(args, "--forget-token")) {
+            return err(e);
+        }
+        if let Err(e) = config::save(&c) {
+            return err(e);
+        }
+        println!("{} profile '{name}' removed", "OK:".green());
+        if was_current {
+            println!(
+                "{} no profile is current now: gxctl auth use <profile>",
+                "Info:".cyan()
+            );
+        }
+        return;
+    }
     let Some(c) = cfg.as_ref() else {
         return println!(
             "no config file yet (log in first: gxctl auth login --url … --profile P --save)"
