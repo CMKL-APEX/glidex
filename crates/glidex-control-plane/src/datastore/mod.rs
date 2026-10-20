@@ -102,6 +102,18 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
         prepare: Prepare<'_>,
     ) -> Result<(), ImageError>;
 
+    /// Make `disk`'s volume a copy of the file `from` (another datastore's
+    /// volume), standalone with `flatten`; `prepare` runs on the copy, then
+    /// it becomes the disk's (spec/storage.md §8.3). Nothing is left
+    /// behind if either fails.
+    fn copy_in(
+        &self,
+        disk: &Disk,
+        from: &Path,
+        flatten: bool,
+        prepare: Prepare<'_>,
+    ) -> Result<(), ImageError>;
+
     /// Remove `disk`'s volume; one already gone is not an error.
     fn delete_volume(&self, disk: &Disk) -> Result<(), ImageError>;
 

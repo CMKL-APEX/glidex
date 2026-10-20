@@ -574,3 +574,144 @@ async fn a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy() {
     }
     assert!(!copy.exists(), "the datastore's copy goes with the image");
 }
+
+/// Moving disks between datastores (spec/storage.md §8.3): a blank disk to
+/// a shared datastore and back; a linked one as an overlay on the shared
+/// datastore's copy of its image, then flattened.
+#[tokio::test(flavor = "multi_thread")]
+async fn disks_move_between_datastores() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let h = harness();
+    let t = h.admin("root");
+    let nfs = place("nfs-mv");
+    let ssd = place("ssd-mv");
+    for (name, dir, driver) in [
+        ("nfs-mv", &nfs, "DATASTORE_DRIVER_SHARED_DIR"),
+        ("ssd-mv", &ssd, "DATASTORE_DRIVER_DIR"),
+    ] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/datastores",
+                Some(json!({"name": name, "path": dir, "driver": driver})),
+                &t,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        h.probed(name, &t).await;
+    }
+    let do_move = |name: String, to: &'static str, flatten: bool| {
+        let h = &h;
+        let t = t.clone();
+        async move {
+            h.rest(
+                "POST",
+                &format!("/disks/{name}/move"),
+                Some(json!({ "datastore": to, "flatten": flatten, "wait_secs": 60 })),
+                &t,
+            )
+            .await
+        }
+    };
+
+    // A blank disk: local → nfs-mv → local.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "mb", "size_gib": 1})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let before = h.ready_disk("mb", &t).await;
+    let old = PathBuf::from(before["path"].as_str().unwrap());
+    let (s, v) = do_move("mb".into(), "nfs-mv", false).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let d = &v["disk"];
+    assert!(d["moving_to"].is_null(), "settled: {v}");
+    let now = PathBuf::from(d["path"].as_str().unwrap());
+    assert_eq!(now.parent().unwrap(), nfs.join("disks"), "{v}");
+    assert!(
+        now.exists() && !old.exists(),
+        "copied, then the old file removed"
+    );
+    let (s, v) = do_move("mb".into(), "local", false).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disk"]["datastore"], "local", "{v}");
+    assert!(!now.exists());
+    // Refused: where it is already, a datastore that doesn't exist.
+    let (s, v) = do_move("mb".into(), "local", false).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = do_move("mb".into(), "nowhere", false).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+
+    // A linked disk: an overlay on nfs-mv's copy of its image, by a relative path.
+    let id = "img-mv";
+    let images = h.app.manager.images();
+    let base = images.image_path(id);
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    assert!(
+        std::process::Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2"])
+            .arg(&base)
+            .arg("64M")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sha = glidex_control_plane::images::download::sha256_path(&base).unwrap();
+    let size = std::fs::metadata(&base).unwrap().len();
+    let img = json!({
+        "id": id, "name": "base-mv", "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 64 << 20, "file_size_bytes": size, "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(id, img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    images.sync_keys(TableId::Images, &[id.to_string()]);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "ml", "image": id})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    h.ready_disk("ml", &t).await;
+    let (s, v) = do_move("ml".into(), "nfs-mv", false).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, detail) = h.rest("GET", "/disks/ml", None, &t).await;
+    assert_eq!(detail["disk"]["datastore"], v["disk"]["datastore"]);
+    assert_eq!(
+        detail["disk"]["info"]["backing_filename"],
+        format!("../images/{id}.qcow2"),
+        "{detail}"
+    );
+    assert!(nfs.join("images").join(format!("{id}.qcow2")).exists());
+    // Flattened onto ssd-mv: standalone, full.
+    let (s, v) = do_move("ml".into(), "ssd-mv", true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["disk"]["origin"]["image"]["mode"], "CLONE_MODE_FULL",
+        "{v}"
+    );
+    let (_, detail) = h.rest("GET", "/disks/ml", None, &t).await;
+    assert!(
+        detail["disk"]["info"]["backing_filename"].is_null(),
+        "{detail}"
+    );
+    let path = PathBuf::from(detail["disk"]["path"].as_str().unwrap());
+    assert_eq!(path.parent().unwrap(), ssd.join("disks"));
+}

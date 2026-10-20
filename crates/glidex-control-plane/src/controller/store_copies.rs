@@ -97,16 +97,25 @@ impl VmManager {
         let mut out: Vec<Datastore> = Vec::new();
         for d in self.images.list_disks() {
             let linked = matches!(&d.origin, DiskOrigin::Image { image_id, mode: CloneMode::Linked } if *image_id == img.id);
+            // Being made there, or moved there as an overlay (§8.3).
+            let target = match &d.moving {
+                Some(m) if !m.flatten => m.datastore.clone(),
+                Some(_) => continue,
+                None if matches!(d.phase, DiskPhase::Pending | DiskPhase::Creating) => {
+                    d.datastore.clone()
+                }
+                None => continue,
+            };
             if !linked
-                || !matches!(d.phase, DiskPhase::Pending | DiskPhase::Creating)
-                || ready.contains(&d.datastore)
-                || out.iter().any(|o| o.id == d.datastore)
-                || !self.images.is_shared(&d)
+                || ready.contains(&target)
+                || out.iter().any(|o| o.id == target)
                 || !self.is_local_disk(&d)
             {
                 continue;
             }
-            if let Ok(Some(ds)) = record::find(&db, &d.datastore) {
+            if let Ok(Some(ds)) = record::find(&db, &target)
+                && ds.is_shared()
+            {
                 out.push(ds);
             }
         }

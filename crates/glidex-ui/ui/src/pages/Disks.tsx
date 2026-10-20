@@ -50,6 +50,7 @@ function DiskStatus({ d }: { d: DiskInfo }) {
         <span className="ml-1 text-sky-700">· {formatBytes(d.pending_size_bytes)} once its VM stops</span>
       )}
       {d.pending_growpart && <span className="ml-1 text-sky-700">· grows on boot</span>}
+      {d.moving_to && <span className="ml-1 text-sky-700">· moving</span>}
       {why && d.status !== "ready" && <div className="text-gray-500 truncate max-w-xs">{why.message || why.reason}</div>}
     </div>
   );
@@ -183,6 +184,71 @@ function CreateDiskForm({
   );
 }
 
+function MoveForm({
+  disk,
+  datastores,
+  onDone,
+  onCancel,
+}: {
+  disk: DiskInfo;
+  datastores: Datastore[];
+  onDone: (d: DiskInfo | undefined) => void;
+  onCancel: () => void;
+}) {
+  const others = datastores.filter((d) => d.id !== (disk.datastore ?? "local"));
+  const [to, setTo] = useState(others[0]?.id ?? "");
+  const [flatten, setFlatten] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const linked = disk.origin?.image?.mode === "CLONE_MODE_LINKED";
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      onDone((await api.moveDisk(disk.id, to, flatten)).disk);
+    } catch (err) {
+      setError(errorText(err));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <p className="text-sm text-gray-600">
+        The node that has the disk copies it to the new datastore, then removes the old file. Its VM must be stopped. To
+        go between two nodes' own datastores, move it to a shared one first.
+      </p>
+      <div>
+        <label className="block text-sm font-medium text-gray-700">Datastore</label>
+        <select className={`${inputClass} bg-white`} value={to} onChange={(e) => setTo(e.target.value)}>
+          {others.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {linked && (
+        <label className="flex items-center space-x-2 text-sm">
+          <input type="checkbox" checked={flatten} onChange={(e) => setFlatten(e.target.checked)} />
+          <span>Flatten: a standalone copy instead of an overlay on the image there</span>
+        </label>
+      )}
+      <div className="flex justify-end space-x-3 pt-2">
+        <button type="button" className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" disabled={submitting || !to} className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
+          {submitting ? "Moving…" : "Move"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: DiskInfo | undefined) => void; onCancel: () => void }) {
   const [size, setSize] = useState(String(Math.ceil(num(disk.size_bytes) / GIB)));
   const [extend, setExtend] = useState(!!disk.origin?.image);
@@ -244,6 +310,7 @@ export default function Disks() {
   const [notes, setNotes] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [resizing, setResizing] = useState<DiskInfo | null>(null);
+  const [moving, setMoving] = useState<DiskInfo | null>(null);
   const [detail, setDetail] = useState<DiskInfo | null>(null);
 
   const refresh = useCallback(() => {
@@ -272,6 +339,7 @@ export default function Disks() {
     setNotes(resultNotes(d));
     setCreating(false);
     setResizing(null);
+    setMoving(null);
     refresh();
   };
 
@@ -377,11 +445,20 @@ export default function Disks() {
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                      disabled={diskPhase(d) !== "ready" || !!d.deleting}
+                      disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
                       onClick={() => setResizing(d)}
                     >
                       Resize
                     </button>
+                    {manyStores && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                        disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
+                        onClick={() => setMoving(d)}
+                      >
+                        Move
+                      </button>
+                    )}
                     {d.origin?.image && (
                       <button
                         className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
@@ -410,6 +487,11 @@ export default function Disks() {
       {creating && (
         <Modal title="Create Disk" onClose={() => setCreating(false)}>
           <CreateDiskForm images={images} datastores={datastores} onCancel={() => setCreating(false)} onDone={done} />
+        </Modal>
+      )}
+      {moving && (
+        <Modal title={`Move ${moving.name}`} onClose={() => setMoving(null)}>
+          <MoveForm disk={moving} datastores={datastores} onCancel={() => setMoving(null)} onDone={done} />
         </Modal>
       )}
       {resizing && (

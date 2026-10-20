@@ -787,6 +787,9 @@ export const createDatastore = ({ shared, ...req }: DatastoreInput) =>
 export const updateDatastore = (id: string, req: DatastoreInput) =>
   rpc(DatastoreService.method.updateDatastore, { id, ...req, update_mask: maskOf(req) }).then((r) => r.datastore as Datastore);
 export const deleteDatastore = (id: string) => rpc(DatastoreService.method.deleteDatastore, { id }).then(() => undefined);
+/** Move a disk to another datastore, offline (spec/storage.md §8.3). */
+export const moveDisk = (id: string, datastore: string, flatten?: boolean) =>
+  diskWrite(rpc(DiskService.method.moveDisk, { id, datastore, flatten: flatten || undefined, wait_secs: WAIT_SECS }));
 export const listDisks = (project?: string | null) =>
   rpc(DiskService.method.listDisks, { project: project || undefined }).then((r) => (r.disks ?? []) as DiskInfo[]);
 /** By id, or by name (unique per tenant; a name two of the caller's tenants share answers 409 `ambiguous`). */

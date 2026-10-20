@@ -291,6 +291,7 @@ pub fn disk_pb(d: &DiskResponse) -> pb::Disk {
         datastore: d.datastore.clone(),
         worker: d.worker.clone(),
         worker_name: d.worker_name.clone(),
+        moving_to: d.moving_to.clone(),
         ..Default::default()
     }
 }
@@ -832,6 +833,23 @@ pub async fn resize_disk(call: &Call, req: pb::ResizeDiskRequest) -> ServiceResu
         .map_err(manager_err)?;
     call.note_overruns(&over);
     disk_reply(call, &disk.id, req.wait_secs).await
+}
+
+/// `POST /disks/{id}/move` (spec/storage.md §8.3); the destination must be
+/// one the caller may put disks on.
+pub async fn move_disk(call: &Call, req: pb::MoveDiskRequest) -> ServiceResult<DiskReply> {
+    let d = visible_disk(call, &req.id).await?;
+    let datastore = disk_datastore(call, Some(&req.datastore))?;
+    call.manager()
+        .move_disk(
+            &d.id,
+            &datastore,
+            req.node.as_deref(),
+            req.flatten.unwrap_or(false),
+        )
+        .await
+        .map_err(manager_err)?;
+    disk_reply(call, &d.id, req.wait_secs).await
 }
 
 pub async fn extend_root(call: &Call, req: pb::ExtendRootRequest) -> ServiceResult<DiskReply> {

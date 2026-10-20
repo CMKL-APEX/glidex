@@ -436,7 +436,9 @@ It follows the `datastore` watch kind. On the VM page,
 ("Place on a live node" for a Lost one) in a cluster to those with
 `placeVm`: a ready node, or "where there is room" (spec/storage.md §9). Once there is more than `local`,
 the Disks page shows a Datastore column, and its create form a Datastore
-select with the default chosen.
+select with the default chosen. Each disk then has a **Move** form (another
+datastore; for a linked disk, a Flatten box), disabled with Resize while
+the disk moves; its status shows "· moving".
 
 ## Footer
 

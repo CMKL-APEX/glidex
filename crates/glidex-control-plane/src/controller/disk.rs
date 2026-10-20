@@ -81,6 +81,7 @@ impl VmManager {
         };
         // A shared disk's worker is the leader's to choose (S6).
         if disk.node.is_none()
+            && disk.moving.is_none()
             && self.cluster().is_some()
             && self.store.database().can_write()
             && self.images.is_shared(&disk)
@@ -132,11 +133,97 @@ impl VmManager {
             return Ok(None);
         }
 
+        // A move to another datastore, by its mover (spec/storage.md §8.3).
+        if let Some(spec) = disk.moving.clone()
+            && disk.phase == DiskPhase::Ready
+        {
+            return self.move_round(disk, spec).await;
+        }
+
         match disk.phase {
             DiskPhase::Pending | DiskPhase::Creating => self.create_round(disk).await,
             DiskPhase::Failed => Ok(None),
             DiskPhase::Ready | DiskPhase::Resizing | DiskPhase::Missing => {
                 self.ready_round(disk).await
+            }
+        }
+    }
+
+    /// Copy the disk to its new datastore, record it there, remove the old
+    /// file. Waits while a VM has it open or its image's copy isn't there
+    /// yet; a copy that fails for good ends the move, the disk unchanged.
+    async fn move_round(&self, disk: Disk, spec: crate::images::MoveSpec) -> Next {
+        if self.cluster().is_some() && spec.mover != self.local_node_id() {
+            return Ok(None);
+        }
+        let (d, guard) = match self.begin_disk_op(&disk.id, "move").await {
+            Ok(x) => x,
+            Err(_) => return Ok(Some(Duration::from_secs(5))),
+        };
+        let dst = self.images.moved_record(&d, &spec);
+        let (mgr, src, to, flatten) = (self.images.clone(), d.clone(), dst.clone(), spec.flatten);
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            mgr.move_volume(&src, &to, flatten)
+        })
+        .await
+        .map_err(|e| ImageError::Io(e.to_string()))?;
+        let latest = self.images.get_disk(&disk.id)?;
+        if latest.moving.as_ref() != Some(&spec) {
+            // Changed meanwhile; the next round sees what is asked now.
+            return Ok(Some(Duration::from_secs(1)));
+        }
+        match result {
+            Ok(()) => {
+                let mut moved = self.images.moved_record(&latest, &spec);
+                moved
+                    .conditions
+                    .retain(|c| !(c.kind == "Ready" && c.reason == "MovePending"));
+                let msg = format!("now on datastore {}", spec.datastore);
+                self.put_disk_with_event(
+                    &moved,
+                    Some(Event::new("controller", EventKind::Normal, "Moved", msg)),
+                )?;
+                // The old file, on the old datastore.
+                self.images.remove_disk_file(&d);
+                tracing::info!(disk = %d.name, from = %d.datastore, to = %spec.datastore, "disk moved");
+                Ok(None)
+            }
+            Err(e @ (ImageError::NotReady(_) | ImageError::Busy(_))) => {
+                if let (ImageError::NotReady(_), DiskOrigin::Image { image_id, .. }) =
+                    (&e, &latest.origin)
+                {
+                    self.queue.add(Key::Image(image_id.clone()));
+                }
+                let mut w = latest;
+                set_cond(
+                    &mut w.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "MovePending",
+                    e.to_string(),
+                );
+                if w.conditions != disk.conditions {
+                    self.images.put_disk(&w)?;
+                }
+                Ok(Some(Duration::from_secs(5)))
+            }
+            Err(e) => {
+                tracing::warn!(disk = %d.name, "moving the disk: {}", e);
+                let mut w = latest;
+                w.moving = None;
+                w.conditions
+                    .retain(|c| !(c.kind == "Ready" && c.reason == "MovePending"));
+                self.put_disk_with_event(
+                    &w,
+                    Some(Event::new(
+                        "controller",
+                        EventKind::Warning,
+                        "MoveFailed",
+                        format!("it stays on datastore {}: {}", w.datastore, e),
+                    )),
+                )?;
+                Ok(None)
             }
         }
     }

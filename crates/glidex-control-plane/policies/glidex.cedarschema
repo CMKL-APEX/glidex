@@ -224,7 +224,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
   action createDisk in ["disk.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
-  action deleteDisk, resizeDisk, extendRoot in ["disk.write", "tenant-scoped"]
+  action deleteDisk, resizeDisk, extendRoot, moveDisk in ["disk.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
   action listCredentials in ["credential.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };

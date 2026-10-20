@@ -620,7 +620,7 @@ fn print_written(d: Option<&Disk>, name: &str) {
 
 /// `disk …`
 pub async fn disk(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
+    let u = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D] | resize <disk> <GiB> [--no-extend] | move <disk> --datastore D [--node N] [--flatten] | extend-root <disk> [--on-boot] | rm <disk>";
     let gib = |s: &str| {
         s.parse::<u64>()
             .map_err(|_| format!("{} is not a whole number of GiB", s))
@@ -743,6 +743,38 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
             match svc.create_disk(req).await.map(|r| r.into_owned()) {
                 Ok(r) => {
                     println!("{}", "Disk created:".green());
+                    print_written(r.disk.as_option(), name);
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "move" => {
+            let (Some(name), Some(ds)) = (
+                args.get(1).filter(|a| !a.starts_with("--")),
+                flag_value(args, "--datastore"),
+            ) else {
+                return usage(u);
+            };
+            let req = MoveDiskRequest {
+                id: name.to_string(),
+                datastore: ds.to_string(),
+                node: flag_value(args, "--node").map(String::from),
+                flatten: has_flag(args, "--flatten").then_some(true),
+                // A copy of the whole disk: allow it time.
+                wait_secs: Some(300),
+                ..Default::default()
+            };
+            match svc.move_disk(req).await.map(|r| r.into_owned()) {
+                Ok(r) if r.settled == Some(false) => {
+                    println!(
+                        "{} {} is still moving (watch it with 'disk show {}')",
+                        "Moving:".yellow(),
+                        name,
+                        name
+                    );
+                }
+                Ok(r) => {
+                    println!("{}", "Disk moved:".green());
                     print_written(r.disk.as_option(), name);
                 }
                 Err(e) => err(rpc_err(e)),

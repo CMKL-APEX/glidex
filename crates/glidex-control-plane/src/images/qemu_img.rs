@@ -380,6 +380,18 @@ pub fn copy_sparse(src: &Path, dst: &Path) -> Result<(), ImageError> {
     run(&CP, cmd).map(|_| ())
 }
 
+/// `qemu-img rebase -u`: name another file, with the same content, as the
+/// qcow2 overlay's backing file. Unsafe mode writes only the header; right
+/// only when the new backing file is a copy of the old (a disk moved with
+/// its image, spec/storage.md §8.3).
+pub fn rebase_unsafe(path: &Path, backing: &Path) -> Result<(), ImageError> {
+    let mut cmd = QEMU_IMG.command()?;
+    cmd.args(["rebase", "-q", "-u", "-f", "qcow2", "-F", "qcow2", "-b"])
+        .arg(backing)
+        .arg(path);
+    run(&QEMU_IMG, cmd).map(|_| ())
+}
+
 /// `sgdisk -e`: move the GPT backup header to the end of the disk.
 pub fn sgdisk_relocate_backup(path: &Path) -> Result<(), ImageError> {
     let mut cmd = SGDISK.command()?;

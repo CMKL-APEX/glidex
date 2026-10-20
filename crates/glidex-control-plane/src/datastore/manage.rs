@@ -239,3 +239,153 @@ impl VmManager {
         Ok(())
     }
 }
+
+impl VmManager {
+    /// `POST /disks/{id}/move` (spec/storage.md §8.3): ask for disk `id` to
+    /// go to `datastore`. One node, the mover, makes the move: the one that
+    /// holds the file now and reaches the destination. A node-local
+    /// destination is on the mover's node, so a disk moves between two
+    /// nodes' own datastores in two steps, through a shared one.
+    pub async fn move_disk(
+        &self,
+        id: &str,
+        datastore: &str,
+        node: Option<&str>,
+        flatten: bool,
+    ) -> Result<crate::images::DiskResponse, VmManagerError> {
+        use crate::images::{DiskPhase, ImageError, MoveSpec};
+        let invalid = |m: String| -> VmManagerError { ImageError::invalid_disk(m).into() };
+        self.require_datastores()?;
+        let db = self.database();
+        let vms = self.vms.write().await;
+        let mut disk = self.images.get_disk(id)?;
+        if disk.deletion_requested_at.is_some() {
+            return Err(ImageError::InUse(format!("disk {} is being deleted", disk.name)).into());
+        }
+        if let Some(m) = &disk.moving {
+            return Err(ImageError::InUse(format!(
+                "disk {} is already moving to datastore {}",
+                disk.name, m.datastore
+            ))
+            .into());
+        }
+        if disk.phase != DiskPhase::Ready {
+            return Err(
+                ImageError::NotReady(format!("disk {} is {:?}", disk.name, disk.phase)).into(),
+            );
+        }
+        if let Some(vm) = Self::disk_in_use(&vms, &disk.id) {
+            return Err(ImageError::InUse(format!(
+                "disk {} is in use by VM {vm}; stop it first",
+                disk.name
+            ))
+            .into());
+        }
+        let dst = record::find(&db, datastore)?
+            .ok_or_else(|| DatastoreError::NotFound(datastore.to_string()))?;
+        if dst.id == disk.datastore {
+            return Err(invalid(format!(
+                "disk {} is on datastore {} already",
+                disk.name, dst.name
+            )));
+        }
+        let me = self.local_node_id();
+        let rows = |ds: &str| record::rows(&db, ds).unwrap_or_default();
+        let reaches = |ds: &Datastore, n: &str| {
+            ds.is_builtin() || (ds.on_node(n) && rows(&ds.id).get(n).is_some_and(|r| r.reachable))
+        };
+        let shared_src = self.images.is_shared(&disk);
+        let vm_node = disk.attached_to.as_ref().and_then(|v| {
+            vms.get(v)
+                .and_then(|v| v.status.placement.as_ref().map(|p| p.node.clone()))
+        });
+        // Who holds the file now.
+        let holder = if shared_src {
+            disk.worker.clone()
+        } else {
+            disk.node.clone()
+        };
+        let mover = match (holder, self.cluster().is_some()) {
+            (_, false) => me.clone(),
+            (Some(h), true) if !shared_src || reaches(&dst, &h) => h,
+            // A shared disk: any node reaching both, its VM's if placed.
+            (_, true) if shared_src => {
+                let src = record::find(&db, &disk.datastore)?
+                    .ok_or_else(|| DatastoreError::NotFound(disk.datastore.clone()))?;
+                let mut ok: Vec<String> = rows(&src.id)
+                    .into_keys()
+                    .filter(|n| reaches(&src, n) && reaches(&dst, n))
+                    .collect();
+                ok.sort();
+                match &vm_node {
+                    Some(p) => ok.into_iter().find(|n| n == p),
+                    None => ok.into_iter().next(),
+                }
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "no node reaches both datastore {} and {}",
+                        disk.datastore, dst.name
+                    ))
+                })?
+            }
+            _ => return Err(invalid(format!("disk {} is on no node", disk.name))),
+        };
+        if !reaches(&dst, &mover) {
+            return Err(invalid(format!(
+                "node {mover}, which has disk {}, doesn't reach datastore {}",
+                disk.name, dst.name
+            )));
+        }
+        let dest_node = (!dst.is_shared()).then(|| mover.clone());
+        if let Some(want) = node {
+            let want = self.resolve_node(want)?;
+            if dest_node.as_ref() != Some(&want) {
+                return Err(invalid(format!(
+                    "disk {} can only be moved by node {mover}, which has it: move it to a shared datastore first, then from there",
+                    disk.name
+                )));
+            }
+        }
+        // Its VM must reach it where it goes.
+        if let Some(p) = &vm_node {
+            let ok = match &dest_node {
+                Some(n) => n == p,
+                None => reaches(&dst, p),
+            };
+            if !ok {
+                return Err(invalid(format!(
+                    "disk {}'s VM is on node {p}, which wouldn't reach it on datastore {}",
+                    disk.name, dst.name
+                )));
+            }
+        }
+        if !dst.overcommit {
+            let need = self.images.estimated_size(&disk);
+            let free = rows(&dst.id).get(&mover).map(|r| r.free_bytes).unwrap_or(0);
+            if need > free {
+                return Err(ImageError::InsufficientStorage {
+                    message: format!(
+                        "datastore {} has {free} bytes free on node {mover}, and disk {} needs {need}",
+                        dst.name, disk.name
+                    ),
+                    details: serde_json::json!({ "free_bytes": free, "needed_bytes": need }),
+                }
+                .into());
+            }
+        }
+        if shared_src {
+            disk.worker = Some(mover.clone());
+        }
+        disk.moving = Some(MoveSpec {
+            datastore: dst.id.clone(),
+            node: dest_node,
+            mover,
+            flatten,
+        });
+        drop(vms);
+        self.images.put_disk(&disk)?;
+        self.queue
+            .add(crate::controller::queue::Key::Disk(disk.id.clone()));
+        Ok(self.images.disk_response(&disk, false))
+    }
+}

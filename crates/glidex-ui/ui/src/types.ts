@@ -627,6 +627,8 @@ export interface DiskInfo {
   /** On a shared datastore (no `node`): the node acting on it, its VM's when placed. */
   worker?: string;
   worker_name?: string;
+  /** A move asked for and not done yet: the datastore it goes to (spec/storage.md §8.3). */
+  moving_to?: string;
 }
 
 /** A disk's phase without its prefix: `ready`, `creating`, … (`""` when unset). */

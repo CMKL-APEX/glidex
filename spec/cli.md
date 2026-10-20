@@ -129,6 +129,7 @@ name (ids when `/projects` isn't readable).
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
 | `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | `POST /disks?wait=300` (it may wait for its image to download); `--datastore`: where it goes, else the default for disks (spec/storage.md S13) |
 | `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize?wait=120`; a refused shrink prints the minimum |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | `MoveDisk`, waiting up to 300 s: to another datastore (spec/storage.md §8.3); prints the disk, or that it is still moving |
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
 | `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |

@@ -124,6 +124,27 @@ impl StorageDriver for FileDriver {
         std::fs::rename(tmp.keep(), self.path(disk)).map_err(|e| ImageError::Io(e.to_string()))
     }
 
+    fn copy_in(
+        &self,
+        disk: &Disk,
+        from: &Path,
+        flatten: bool,
+        prepare: Prepare<'_>,
+    ) -> Result<(), ImageError> {
+        let tmp = self.temp(disk, "move");
+        if flatten {
+            qemu_img::convert(from, DiskFormat::Qcow2, tmp.path(), disk.format)?;
+        } else {
+            qemu_img::copy_sparse(from, tmp.path())?;
+        }
+        prepare(&self.file(tmp.path(), disk))?;
+        if disk.format == DiskFormat::Qcow2 {
+            qemu_img::check(tmp.path(), disk.format)?;
+        }
+        set_mode(tmp.path(), 0o600)?;
+        std::fs::rename(tmp.keep(), self.path(disk)).map_err(|e| ImageError::Io(e.to_string()))
+    }
+
     fn delete_volume(&self, disk: &Disk) -> Result<(), ImageError> {
         let path = self.path(disk);
         match std::fs::remove_file(&path) {

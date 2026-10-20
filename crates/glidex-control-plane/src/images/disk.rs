@@ -608,3 +608,77 @@ impl ImageManager {
         }
     }
 }
+
+impl ImageManager {
+    /// The record a disk has once moved as `spec` says (spec/storage.md
+    /// §8.3): on its new datastore, bound or worked by the mover, standalone
+    /// when flattened.
+    pub fn moved_record(&self, disk: &Disk, spec: &super::MoveSpec) -> Disk {
+        let mut d = disk.clone();
+        d.datastore = spec.datastore.clone();
+        d.node = spec.node.clone();
+        d.worker = spec.node.is_none().then(|| spec.mover.clone());
+        d.moving = None;
+        if spec.flatten
+            && let DiskOrigin::Image { mode, .. } = &mut d.origin
+        {
+            *mode = CloneMode::Full;
+        }
+        d
+    }
+
+    /// Copy `src`'s volume to where `dst` (its moved record) says, holding
+    /// both volumes' locks: a linked disk rebased onto the destination's
+    /// copy of its image, or flattened. A copy already in place (a crash
+    /// after the rename) is taken as made. The old volume stays: the caller
+    /// removes it once the move is recorded.
+    pub fn move_volume(&self, src: &Disk, dst: &Disk, flatten: bool) -> Result<(), ImageError> {
+        let (from, to) = (self.driver(src)?, self.driver(dst)?);
+        let _src_lock = from.lock(src)?;
+        let _dst_lock = to.lock(dst)?;
+        let path = from.stage(src)?.path().to_path_buf();
+        if to.exists(dst) {
+            return Ok(());
+        }
+        let backing = match &src.origin {
+            DiskOrigin::Image {
+                image_id,
+                mode: CloneMode::Linked,
+            } if !flatten => Some(self.image_for_move(dst, image_id)?),
+            _ => None,
+        };
+        to.copy_in(dst, &path, flatten, &mut |made| {
+            if let Some(b) = &backing {
+                let dir = made.path().parent().unwrap_or(Path::new("."));
+                let rel = crate::paths::relative_to(b, dir).unwrap_or_else(|| b.clone());
+                qemu_img::rebase_unsafe(made.path(), &rel)?;
+            }
+            Ok(())
+        })?;
+        tracing::info!(disk = %src.name, from = %src.datastore, to = %dst.datastore, "disk copied to its new datastore");
+        Ok(())
+    }
+
+    /// The image file a linked disk moved to `dst`'s datastore overlays:
+    /// a shared datastore's own copy, else this node's (S8).
+    fn image_for_move(&self, dst: &Disk, image_id: &str) -> Result<std::path::PathBuf, ImageError> {
+        let img = self.get_image(image_id)?;
+        let ds = crate::datastore::record::find(&self.db, &dst.datastore)
+            .map_err(|e| ImageError::Io(e.to_string()))?
+            .filter(|ds| ds.is_shared());
+        let path = match &ds {
+            Some(ds) => ds.image_copy_path(&self.node_id.load(), image_id),
+            None => self.image_path(image_id),
+        };
+        if !path.exists() {
+            return Err(ImageError::NotReady(match ds {
+                Some(ds) => format!(
+                    "image {} has not been copied into datastore {} yet",
+                    img.name, ds.name
+                ),
+                None => format!("image {} has not been copied to this node yet", img.name),
+            }));
+        }
+        Ok(path)
+    }
+}
