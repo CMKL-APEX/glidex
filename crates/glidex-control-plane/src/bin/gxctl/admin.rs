@@ -262,6 +262,28 @@ async fn tofu_verdict(urls: &[String]) -> String {
     }
 }
 
+/// The name `auth login --save` gives a new profile: a host name's first
+/// label (`gpu-dev2.example.net` → `gpu-dev2`), or the whole of an address,
+/// its dots or colons as dashes (`172.19.36.18` → `172-19-36-18`).
+fn profile_name_for(host: &str) -> String {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return bare
+            .split(['.', ':'])
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+    }
+    let n: String = host
+        .chars()
+        .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+        .collect();
+    match n.trim_matches('-') {
+        "" => host.to_string(),
+        n => n.to_string(),
+    }
+}
+
 async fn auth_login(session: &ApiClient, args: &[&str]) {
     let mut urls: Vec<String> = flag_values(args, "--url")
         .into_iter()
@@ -332,16 +354,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                         "which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host",
                     );
                 }
-                let host = config::url_host(&urls[0]);
-                let mut n: String = host
-                    .chars()
-                    .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
-                    .collect();
-                n = n.trim_matches('-').to_string();
-                if n.is_empty() {
-                    n = host;
-                }
-                name = Some(n);
+                name = Some(profile_name_for(&config::url_host(&urls[0])));
                 None
             }
         }
@@ -1170,6 +1183,19 @@ pub fn ui() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_profiles_are_named_for_their_host() {
+        assert_eq!(
+            profile_name_for("gpu-dev2.cloudforest-cloud.ts.net"),
+            "gpu-dev2"
+        );
+        assert_eq!(profile_name_for("prism1"), "prism1");
+        // An address is named whole, not cut at its first dot.
+        assert_eq!(profile_name_for("172.19.36.18"), "172-19-36-18");
+        assert_eq!(profile_name_for("[fd00::1]"), "fd00-1");
+        assert_eq!(profile_name_for("fd00::1"), "fd00-1");
+    }
 
     #[test]
     fn positional_arguments_skip_flags_and_their_values() {

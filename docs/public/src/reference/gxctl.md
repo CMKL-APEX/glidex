@@ -57,7 +57,7 @@ See [Logging in](../user-guide/logging-in.md).
 
 | Command | Effect |
 |---|---|
-| `auth login [--url U]… [--profile P] [--oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host), `--non-interactive` |
+| `auth login [--url U]… [--profile P] [--oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes, `172-19-36-18`), `--non-interactive` |
 | `auth logout [--profile P] [--revoke] [--keep-token]` | Drop a profile's credential; `--revoke` also revokes the token on the server |
 | `auth status [--profile P]` | Target, cluster, trust mode, token and expiry |
 | `auth use <profile\|->` | Set the current profile (`-` clears it) |
