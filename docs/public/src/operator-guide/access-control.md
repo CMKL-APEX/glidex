@@ -107,8 +107,8 @@ on [one host](#on-one-host-of-a-cluster) instead). Only members of the
 
 | Role | May |
 |---|---|
-| `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members, bindings and [tenant pools](host-resources.md#tenant-pools). Includes `owner` on its projects. |
-| `tenant-auditor` | Read the tenant, its members, bindings and tenant pools, and its projects. |
+| `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members, bindings, [tenant pools](host-resources.md#tenant-pools) and [workload federations](workload-federation.md). Includes `owner` on its projects. |
+| `tenant-auditor` | Read the tenant, its members, bindings, tenant pools and workload federations, and its projects. |
 
 ## Giving roles
 
@@ -425,6 +425,20 @@ Actions of these features, and who has them out of the box:
 same address on two nodes is two devices, and a role on one host covers
 that host's devices. A site policy that names devices by their address
 alone no longer matches them: name the node too.
+
+### Workload federation actions
+
+| Action | Resource | Who |
+|---|---|---|
+| `readTenantFederations` | `Glidex::Tenant` | `tenant-auditor`, `tenant-admin`, `directory-auditor`, `directory-admin`. |
+| `manageTenantFederations` | `Glidex::Tenant` | `tenant-admin`, `directory-admin`, with a recent login. |
+
+A token from a [workload federation](workload-federation.md) has no
+roles of its own: it is its rule's service account (`Glidex::Token`)
+and has exactly the roles bound to that service account. To change what
+a CI job may do, change the service account's bindings, or point the
+rule at another service account. Site policies see the service
+account's token as the principal, with `context.auth.method` `token`.
 
 ### Applying it
 

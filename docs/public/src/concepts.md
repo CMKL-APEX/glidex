@@ -316,6 +316,13 @@ The secret is shown once, when you create the token. Create tokens with
 `gxctl token create` or on the web UI's **Tokens** page; revoke them the
 same way. See [Logging in](user-guide/logging-in.md).
 
+A **workload federation** lets CI jobs and other workloads (GitHub
+Actions, GitLab CI, Kubernetes) use the API without a stored token. A
+tenant trusts their issuer and maps tokens whose claims match a rule to
+one of its service accounts; a job exchanges its platform's token for a
+short-lived Glidex token acting as that service account. See [Workload
+federation](operator-guide/workload-federation.md).
+
 ## Policies and the audit log
 
 Every request is authorized by **Cedar policies**: built-in ones that

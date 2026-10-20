@@ -25,6 +25,7 @@
 - [TLS](operator-guide/tls.md)
 - [Authentication](operator-guide/authentication.md)
 - [Access control](operator-guide/access-control.md)
+- [Workload federation](operator-guide/workload-federation.md)
 - [Host networking](operator-guide/host-networking.md)
 - [Datastores](operator-guide/datastores.md)
 - [PCI passthrough](operator-guide/pci-passthrough.md)

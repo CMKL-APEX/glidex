@@ -79,7 +79,7 @@ details:
 | `ambiguous` | A name matches more than one thing. | Use the id. |
 | `invalid_state` | The VM can't do that now (start a running VM, attach what's already attached). | Check its state with `gxctl get <vm>`. |
 | `invalid_config`, `invalid`, `invalid_network`, `invalid_image`, `invalid_disk` | A bad request: wrong path, out-of-range value, unknown network. | The message says which field. |
-| `invalid_datastore` | A datastore name or path that isn't allowed: the path must be a directory under `/srv/glidex`. | See [Datastores](datastores.md#preparing-the-directory). |
+| `invalid_datastore` | A datastore name or path that isn't allowed: the path must be a directory under `/srv/glidex`. | See [Datastores](datastores.md#mount-it-under-srvglidex). |
 | `insufficient_storage` (`507`) | A datastore without overcommit lacks the space for a new or moved disk; `details` has `free_bytes` and `needed_bytes`. | Free space, pick another datastore, or allow overcommit; see [Overcommit and capacity](datastores.md#overcommit-and-capacity). |
 | `quota_exceeded`, `tenant_quota_exceeded` | The project or tenant would go over a quota. | Raise it (`gxctl project quota`) or free resources. |
 | `device_flow_unsupported` | `gxctl auth login --oidc` through a `google` connector that has no device client. | Add a *TVs and Limited Input devices* client to the connector (`--device-client-id`, then `connector secret set <id> device_client_secret`); see [Google](authentication.md#google). |
@@ -90,6 +90,8 @@ details:
 | `not_provisioned` | Making a SCIM token for a connector that isn't provisioned by SCIM. | `gxctl connector update <id> --no-jit --provisioning scim` first. |
 | `not_pulled`, `no_source` | Running a directory sync of a connector that isn't `--provisioning pull`, or isn't a Google Workspace connector. | See [Directory sync from Google Workspace](authentication.md#directory-sync-from-google-workspace). |
 | `sync_running` | A run of that connector's directory sync is already going. | Wait, then `gxctl connector show <id>`. |
+| `invalid_federation` | A workload federation's settings were refused: a rule that pins none of `repository`, `project_path`, `sub`, a `*` in a value, a service account that isn't one of the tenant's (or no longer exists), `--ttl` outside 60–3600, or over 20 federations or 50 rules. | The message names the rule; see [Workload federation](workload-federation.md#the-federation). |
+| `issuer_unreachable` | Glidex couldn't read the issuer's discovery document or keys when the federation was added or its issuer changed. | Check the issuer URL is exactly the tokens' `iss`, served over `https` without redirects, and that the control plane can reach it; see [The issuer](workload-federation.md#the-issuer). |
 | `login_not_allowed` | The connector's rules refused the login. Through a SCIM connector or a directory sync: the person wasn't provisioned (pulled), or their account is disabled. | Check the user is assigned to the application at the IdP and was pushed; see [Provisioning with SCIM](authentication.md#provisioning-with-scim). |
 | `precondition_failed` | Someone changed the resource since you read it. | Read it again and retry. |
 | `hypervisor_unavailable` | The VM's hypervisor isn't installed on this host. | Re-run the installer (without `--no-qemu` for QEMU). |
@@ -124,6 +126,17 @@ its test or logs show the endpoint's answer:
 
 Every SCIM write is in the audit log as `system:scim:<connector-id>`:
 `gxctl audit --limit 50`.
+
+## Workload federation
+
+When a CI job can't get a token from `POST /auth/exchange`:
+
+| Answer | Cause and fix |
+| --- | --- |
+| `400 invalid_request` | The request is malformed: check `grant_type`, `subject_token_type` and `federation` (`<tenant slug>/<federation id>`); see [The exchange](workload-federation.md#the-exchange). |
+| `400 invalid_grant` | The same answer for every refusal. The reason is in the audit log: `gxctl audit --limit 50`, entries `exchangeToken` by `system:federation:<tenant>/<id>`. Common ones: the federation is disabled or misnamed; the job asked for another audience; no rule matches (the branch, environment or repository differs; claims match exactly); the token was already exchanged (get a new one per exchange); the rule's service account was revoked or expired. |
+| `429 slow_down` | Over 30 exchanges a minute for the federation. Exchange once per job and reuse the token while it lives. |
+| `401 unauthenticated` on later calls | The Glidex token expired (`expires_in`), or the federation was disabled or removed, its rule changed, or the service account revoked. |
 
 ## Certificate fingerprints
 
@@ -233,11 +246,12 @@ dedicated CPUs, device pools and cordoned devices.
 
 | Symptom | Cause and fix |
 | --- | --- |
-| A node doesn't reach a datastore (`NODES OK` below the node count) | `gxctl datastore show <ds>` gives each node's reason (`OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`, `NoMarker`, `ForeignMarker`, `NotEmpty`); see [Each node's status](datastores.md#each-nodes-status). |
+| A node doesn't reach a datastore (`NODES OK` below the node count) | `gxctl datastore show <ds>` gives each node's reason (`OutsideRoot`, `Missing`, `NotADirectory`, `ReadOnly`, `NoMarker`, `ForeignMarker`, `NotEmpty`); see [What "reachable" means](datastores.md#what-reachable-means). |
+| A node shows *reachable, with warnings* (`warning:` lines under it in `gxctl datastore show`) | The shared datastore is mounted over NFS with risky options: `soft`/`softerr` (*mounted soft: …*: an NFS server outage fails the guests' disk writes), or node-local locks, `nolock` or `local_lock=` other than `none` (*NFS locks are local to this node …*: [volume locks](datastores.md#volume-locks) no longer keep other nodes off a disk). The datastore stays usable. Remount it `hard` with NFS locking on; the warning goes at the node's next check. See [Mount warnings](datastores.md#mount-warnings). |
 | A VM waits for a node: `datastore … is not reachable here` | Its disks are on a datastore that node doesn't reach. Fix the datastore on the nodes it should be on. |
 | A VM doesn't start: `disk … is in use elsewhere (… is locked)` (condition reason `DiskBusy`) | Another node holds the disk's [volume lock](datastores.md#volume-locks), for example a node that seemed gone still runs the VM. Find and stop it there; the VM starts once the lock is free. |
-| A disk shows `Ready` `False`, reason `MovePending`, or *· moving* | A move is going on. The disk's events say `Moved` when it is done, or `MoveFailed` with the reason; it then stays where it was. While it moves it can't be attached or resized (`409 conflict`), and its VM doesn't start (*disk … is moving to datastore …*). |
-| A linked disk waits: `image … has not been copied into datastore … yet` | The disk's worker copies the image into the shared datastore first; it carries on by itself. See [Images in shared datastores](datastores.md#images-in-shared-datastores). |
+| A disk shows *· moving*, or `Ready` `False` with reason `MovePending` | A move is going on (`MovePending`: it waits, for example for a VM to let go of the disk or for the image's copy). The disk's events say `Moved` when it is done, or `MoveFailed` with the reason; it then stays where it was. While it moves, resizing it is refused (`409 conflict`), adding it to a VM is refused (`400 invalid_config`), and its VM waits to start (reason `DiskNotReady`: *disk … is moving to datastore …*). |
+| A linked disk waits: `image … has not been copied into datastore … yet` | The disk's worker copies the image into the shared datastore first; it carries on by itself. See [Images on a shared datastore](datastores.md#images-on-a-shared-datastore). |
 | `place` answers *Not placed yet* | No node can take the VM yet; the reason follows. The VM's events record `Replacing`. See [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again). |
 | A datastore can't be changed or deleted (`409 conflict`) | The message gives the reason: it is `local`, disks are still on it, a running VM with a disk open on a node whose path changes, or a node a disk is bound to. See [Changing and deleting](datastores.md#changing-and-deleting). |
 
@@ -247,6 +261,7 @@ dedicated CPUs, device pools and cordoned devices.
 | --- | --- |
 | A kernel image stays `failed` | The extraction failed: its message says why. `gxctl image retry <image>` (or **Retry**) runs it again. The image's events (`GET /images/{id}/events`) record `Retrying` and, once done, `Extracted`. |
 | `kernel_from` refused with `400 invalid_image`, or catalog pulls bring no kernel | Extraction is off on this host (`GLIDEX_KERNEL_EXTRACTION=off`), the host isn't x86_64, or it has no Cloud Hypervisor or QEMU. See [Configuration](configuration.md#environment-variables). |
+| Extraction fails with *the extractor did not start: systemd refused (is the glidex polkit rule installed?)* | The host's polkit rule predates kernel extraction and lets the control plane start only VM units. Re-run the installer (`cargo run -p glidex-install`) to update it, then **Retry** the kernel image. |
 | The first extraction fails to download | It fetches pinned Debian packages over HTTPS from `snapshot.debian.org` once; allow that, or add kernel images from a URL or host files. |
 | A VM's `KernelExtracted` condition is `False` (reason `ExtractFailed`, event `KernelExtractFailed`) | Following the guest's kernel failed; the VM boots the kernel it has, and the next start tries again. See [Following the guest's kernel](../user-guide/kernel-boot.md#following-the-guests-kernel). |
 | A VM doesn't start: `Ready` `False`, reason `KernelNotExtracted` | A VM that follows its guest's kernel has no kernel to boot yet. Fix the cause in the message, or set `kernel` to a ready kernel image. |

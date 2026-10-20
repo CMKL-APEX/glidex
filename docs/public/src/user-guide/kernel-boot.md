@@ -192,16 +192,20 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   `False` (*kernel &lt;name&gt; has not been copied to this node yet*).
 
 **Web UI:** **Create VM**, **Boot Mode** **Direct kernel boot**. The
-**Kernel** choice replaces **UEFI Firmware**: pick a kernel image (the
-chosen image's own kernel comes first; **Extract it from the image**
-makes one when it has none). **Kernel Arguments** show and default to
+**Kernel** choice replaces **UEFI Firmware**: pick a kernel image. Only
+the chosen image's own kernel is preselected; when it has none, the
+choice stays empty and **Extract it from the image** makes one. Other
+kernels are listed as *— from &lt;image&gt;*, and picking one shows a
+warning: another distribution's initramfs usually can't find this
+image's root. **Kernel Arguments** show and default to
 the kernel image's command line. **Follow the guest's kernel** turns on
 [following](#following-the-guests-kernel). The boot disk and login
 credential work as with firmware.
 
 **gxctl:** in `gxctl create`, answer `kernel` at *UEFI firmware*, then
-pick the kernel image at *Kernel* (the boot image's kernel is the
-default), and answer *Follow the guest's kernel*. *Kernel arguments*
+pick the kernel image at *Kernel* (the default is only the boot image's
+own kernel; another image's kernel prints a warning), and answer
+*Follow the guest's kernel*. *Kernel arguments*
 default to the kernel image's command line.
 
 ### Host paths
@@ -323,7 +327,7 @@ gxctl> kernel my-vm --extract
 ```
 
 which waits until the new kernel image is ready and prints how to use
-it (`kernel my-vm --set <kernel image>`). Over the API,
+it (`kernel my-vm --set <kernel-image>`). Over the API,
 `POST /vms/<id>/extract-kernel` answers `202` with the new kernel image,
 *extracting*; wait for it to be ready (`GET /images/<image-id>`), then
 set it as the VM's `kernel` with `PATCH`.

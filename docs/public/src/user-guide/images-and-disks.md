@@ -92,7 +92,7 @@ it from there when they need it. When pulling in the web UI you can pick
 **Copy to nodes** to have copies ready sooner; the **Images** page shows
 each node's copy and can copy an image to another node or let a copy go.
 
-Linked disks on a [shared datastore](#datastores) use a copy of the
+Linked disks on a [shared datastore](#where-a-disk-lives) use a copy of the
 image kept in that datastore. The **Images** page lists these copies
 apart from the node copies (*in 1 shared datastore*); they go when the
 image is deleted.
@@ -210,9 +210,9 @@ a root disk independent of any one VM.
   smaller than the image.
 - **Format**: `qcow2` (default) or `raw`.
 - **Clone** (from an image): **Linked** or **Full copy**.
-- **Datastore**: where the disk lives (see [Datastores](#datastores)).
-  Shown once the operator has added a datastore besides `local`; the
-  default is chosen.
+- **Datastore**: where the disk lives, shown once the operator has
+  registered more than `local` ([Datastores](../operator-guide/datastores.md)).
+  The default is preselected.
 
 **gxctl:**
 
@@ -220,7 +220,7 @@ a root disk independent of any one VM.
 gxctl disk create data1 --size-gib 50                    # blank qcow2
 gxctl disk create web-root --image ubuntu-24.04 --size-gib 20
 gxctl disk create web-root2 --image ubuntu-24.04 --full --raw
-gxctl disk create data2 --size-gib 50 --datastore shared1
+gxctl disk create data2 --size-gib 50 --datastore nfs1   # on a datastore other than the default
 ```
 
 When a disk is made from an image and given more space than the image
@@ -249,10 +249,8 @@ gxctl disk show web-root      # size, format, partitions, free space at the end
 
 `disk list` shows the disks of the selected project (see
 [Choosing a project](projects.md#choosing-a-project)), with their size,
-format, origin, status and the VM each is attached to. `disk show` also
-gives the disk's datastore (`local`, or the datastore's id). In the web
-UI, click a disk's name for its details and partitions; with more than
-one datastore, the **Disks** page has a *Datastore* column.
+format, origin, status and the VM each is attached to. In the web UI,
+click a disk's name for its details and partitions.
 
 ### Attaching a disk to a VM
 
@@ -323,60 +321,74 @@ attached to a VM can't be deleted: detach it or delete the VM first. A
 root disk that was created along with a VM is deleted with the VM,
 unless you delete the VM with `--keep-disk`.
 
-### Datastores
+### Where a disk lives
 
-Every disk is on a **datastore**, a place the operator set up for disks
-(see [Datastores](../operator-guide/datastores.md)). `local` is built
-in and is where disks go unless the operator chose another default.
-The **Datastores** page, and `gxctl datastore list`, show every
-datastore, the default, and how much space is free.
+A disk lives on a datastore. On the built-in `local`, or another
+datastore each node has its own of, it lives on one node: the node of
+the first VM that uses it, and its VMs run there. On a **shared**
+datastore (one filesystem every node mounts), it is tied to no node, and
+its VM can run on any node that reaches the datastore; disk access then
+goes over the network. The **Disks** page has a *Datastore* column once
+there is more than `local`; `gxctl disk show` names it too (`local`, or
+the datastore's id). The **Datastores** page, and `gxctl datastore
+list`, show every datastore, the default, and how much space is free.
 
-| Datastore | In a cluster |
-|---|---|
-| `local`, or another node-local one | The disk is on one node. It is bound to the node of the first VM that uses it, and its VMs run there. |
-| Shared (NFS and the like) | The disk is on no node in particular. Its VM can run on any node that reaches the datastore, and an operator can move the stopped VM to another node. Disk access goes over the network. |
-
-The web UI's **Disks** page shows, in a cluster, a disk's node, or
+In a cluster, the **Disks** page's *Node* column shows a disk's node, or
 `shared · <node>` for a disk on a shared datastore (the node currently
 working on it).
 
-Over the API, `node` (a node's name or id) binds a new disk to a node
-when it is created; an unknown node is refused with
-`400 invalid_config`, and a disk on a shared datastore can't be bound to
-a node (`400`).
+Over the API, `node` (a node's name or id) binds a new disk on a
+node-local datastore to that node when it is created; an unknown node is
+refused with `400 invalid_config`, and a disk on a shared datastore
+can't be bound to a node (`400 invalid_disk`).
 
 A VM's root disk made along with the VM goes to the default datastore.
 To put it on another, create the disk first with `--datastore` (or the
 **Datastore** field) and create the VM from that disk.
 
-### Moving a disk to another datastore
+### Moving a disk
 
-A disk can move to another datastore while no running VM uses it:
-stop the VM first, or detach the disk.
+A disk can move to another datastore while no running VM uses it (stop
+the VM first, or detach the disk). Its data is copied and checked, then
+the old file is removed; if the move fails, the disk stays where it was.
 
-**Web UI:** **Disks**, **Move** (shown when there is more than one
-datastore): pick the **Datastore**. For a linked disk, **Flatten** makes
-it an independent copy instead of an overlay on the image. The disk
-shows *· moving* until it is done; **Resize** and **Move** are
-disabled meanwhile.
+**Web UI:** **Disks**, **Move** on the disk's row (shown when there is
+more than one datastore): pick the datastore. For a linked disk,
+**Flatten** makes it a full copy instead of an overlay on the image
+there.
 
 **gxctl:**
 
 ```bash
-gxctl disk move data1 --datastore shared1
-gxctl disk move web-root --datastore local --flatten
+gxctl disk move data1 --datastore nfs1
+gxctl disk move web-root --datastore fast --flatten
 ```
 
-It waits up to 5 minutes for the copy, then tells you the disk is still
-moving; check it with `gxctl disk show`. Its data stays where it was
-until the copy is complete and checked; if the move fails, the disk
-stays on its old datastore.
+It waits up to five minutes and prints the disk, or that it is still
+moving; follow it with `gxctl disk show`. A linked disk moved to a
+shared datastore waits for the image to be copied there first.
 
-Moving needs the `editor` role in the disk's project. It is refused
-for a disk that is being deleted, already moving or not ready, for a
-disk a running VM uses, and for a datastore the disk's node, or its
-VM's node, doesn't reach. A disk can't go straight from one node's
-datastore to another node's: move it to a shared datastore first.
+While a disk moves, the **Disks** page shows it *· moving*, with
+**Resize** and **Move** disabled. Resizing it is refused
+(`409 conflict`), adding it to a VM's data disks is refused
+(`400 invalid_config`), and a VM using it waits to start (condition
+`DisksReady` `False`, reason `DiskNotReady`) until the move is done.
+
+Moving needs the `editor` role in the disk's project, and the right to
+use the destination datastore. It is refused:
+
+- for a disk that is being deleted, already moving, not ready, or used
+  by a running VM (`409 conflict`);
+- for the datastore the disk is already on, or one that the node with
+  the disk, or its VM's node, doesn't reach (`400 invalid_disk`);
+- for an unknown datastore (`404 not_found`);
+- when the destination has overcommit off and lacks the space
+  (`507 insufficient_storage`).
+
+Moving a disk from one node's own storage to another node's isn't
+possible directly: move it to a shared datastore, then from there. A
+disk on a shared datastore lets its VM move between nodes (see
+[Placement on a cluster](vms.md#placement-on-a-cluster)).
 
 ### Over the API
 
@@ -384,9 +396,9 @@ datastore to another node's: move it to a shared datastore first.
 api() { curl --cacert host.crt -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' "$@"; }
 api -X POST https://host.example.org:8841/images -d '{"catalog": "ubuntu-24.04"}'
 api -X POST https://host.example.org:8841/disks -d '{"name": "data1", "project": "lab", "size_gib": 50}'
-api -X POST https://host.example.org:8841/disks -d '{"name": "data2", "project": "lab", "size_gib": 50, "datastore": "shared1"}'
+api -X POST https://host.example.org:8841/disks -d '{"name": "data2", "project": "lab", "size_gib": 50, "datastore": "nfs1"}'
 api -X POST https://host.example.org:8841/disks/data1/resize -d '{"size_gib": 100}'
-api -X POST https://host.example.org:8841/disks/data1/move -d '{"datastore": "shared1"}'
+api -X POST https://host.example.org:8841/disks/data1/move -d '{"datastore": "nfs1", "wait_secs": 300}'
 api -X DELETE https://host.example.org:8841/disks/data1
 ```
 

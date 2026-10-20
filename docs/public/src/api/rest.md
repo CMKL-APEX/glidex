@@ -57,7 +57,8 @@ VM's credential.
 Plain JSON bodies of their own: `/health`, `/auth/methods`,
 `/auth/login`, `/auth/logout`, the OIDC and connector redirects, and
 `/system/reconcile`. The [SCIM endpoints](#scim-20-for-identity-providers)
-speak SCIM 2.0 JSON instead.
+speak SCIM 2.0 JSON instead, and the [token
+exchange](#token-exchange-for-workloads) OAuth's form or JSON.
 
 ### Authentication
 
@@ -66,6 +67,8 @@ speak SCIM 2.0 JSON instead.
 | HTTPS `:8841` | `Authorization: Bearer <token>` |
 | `api.sock` | Nothing; you are your Unix user |
 
+A token from a [workload federation's
+exchange](#token-exchange-for-workloads) is sent the same way.
 Without a credential, protected endpoints answer `401 unauthenticated`.
 A request from a browser `Origin` the site doesn't allow is
 `403 origin_not_allowed` on writes and WebSocket upgrades; through the
@@ -114,6 +117,7 @@ Branch on `error`, never on `message`. Common codes:
 | 421 | `not_leader`, `use_a_server` | Ask a cluster server (clients retry another) |
 | 422 | `invalid` | The body isn't the expected message (unknown field, wrong type, unknown enum value) |
 | 422 | `invalid_policy`, `invalid_connector`, `unsupported_on_host` | Rejected policy text or connector settings; a feature this host can't do |
+| 422 | `invalid_federation`, `issuer_unreachable` | Rejected workload federation settings (a rule without a pinned claim, a wildcard, a service account that isn't the tenant's, a TTL out of range, over 20 federations or 50 rules); an issuer whose discovery or keys can't be read |
 | 429 | `rate_limited`, `slow_down` | Back off and retry |
 | 502 | `netd_error`, `node_unreachable`, `idp_error` | A helper, node or identity provider failed |
 | 503 | `cluster_unavailable`, `netd_unavailable`, `hypervisor_unavailable`, `tool_unavailable`, `too_many_watchers`, `unavailable` | Try again later, or fix the host |
@@ -281,6 +285,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/auth/invitation` | What an invitation is for (tenant, connector, address, role, expiry): `{invitation: "<id>.<secret>"}`, from the link; `404` unless it is open; no credential |
 | `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}`. The callback returns to `return_to` with `?linked=<id>` or `?link_error=taken\|not_allowed\|not_signed_in`; a provisioned connector (SCIM or directory sync) is always `not_allowed` |
 | `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way; `400 device_flow_unsupported` for a `google` connector without a device client |
+| `POST` | `/auth/exchange` | Exchange a workload's JWT for a short-lived token, through a workload federation; no credential (see [Token exchange](#token-exchange-for-workloads)) |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |
 | `POST` | `/authz/check` | Would these actions be allowed? One answer per check |
@@ -492,9 +497,11 @@ them to the node being managed).
 | `DELETE` | `/tenants/{id}` | Delete a tenant (`409 tenant_in_use` while it has projects) |
 | `POST` | `/tenants/{id}/suspend` | Suspend a tenant |
 | `POST` | `/tenants/{id}/resume` | Resume a tenant |
-| `GET` | `/tenants/{id}/federations` | The tenant's workload federations (CI issuers it trusts) |
-| `POST` | `/tenants/{id}/federations` | Trust a CI or workload issuer: its audience, and rules mapping its tokens to service accounts |
-| `GET` / `PATCH` / `DELETE` | `/tenants/{id}/federations/{federation}` | Read, change (enable, disable) or remove a federation |
+| `GET` | `/tenants/{id}/federations` | The tenant's [workload federations](../operator-guide/workload-federation.md) (CI issuers it trusts) |
+| `POST` | `/tenants/{id}/federations` | Trust a CI or workload issuer: `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}` → `201`. Needs a recent login. The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub` with exact values and name service-account token ids of the tenant's projects (`422 invalid_federation`) |
+| `GET` | `/tenants/{id}/federations/{federation}` | Get a federation |
+| `PATCH` | `/tenants/{id}/federations/{federation}` | Change `display_name`, `issuer`, `audience`, `enabled` or `rules` (`{changes: {…}, update_mask?}`; `rules` replaces them all). Needs a recent login |
+| `DELETE` | `/tenants/{id}/federations/{federation}` | Remove a federation; the tokens it gave stop working. Needs a recent login |
 | `GET` | `/tenants/{id}/members` | List explicit members |
 | `POST` | `/tenants/{id}/members` | Add a member |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |
@@ -579,6 +586,47 @@ SCIM](../operator-guide/authentication.md#provisioning-with-scim)):
 
 Every write is in the [audit log](../operator-guide/access-control.md#audit-log)
 as `system:scim:<connector-id>`, never with the token.
+
+### Token exchange, for workloads
+
+`POST /auth/exchange` takes a workload's JWT (from GitHub Actions,
+GitLab CI, Kubernetes or another OIDC issuer) and answers a Glidex token
+acting as a service account, through one of a tenant's [workload
+federations](../operator-guide/workload-federation.md). It needs no
+other credential: the JWT is the credential. The shape is RFC 8693's,
+as `application/x-www-form-urlencoded` or JSON:
+
+| Field | Value |
+|---|---|
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt` |
+| `subject_token` | The workload's JWT (at most 16 KiB) |
+| `federation` | `<tenant slug>/<federation id>` |
+
+```bash
+curl --fail-with-body --cacert tls.crt https://host.example.org:8841/auth/exchange \
+  --data-urlencode grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  --data-urlencode subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+  --data-urlencode subject_token=<oidc-token> \
+  --data-urlencode federation=acme/github
+# {"access_token": "<token>", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+#  "token_type": "Bearer", "expires_in": 900}
+```
+
+Answers carry `Cache-Control: no-store`. Errors are OAuth error bodies
+(`{"error": "invalid_grant", "error_description": "..."}`), not Glidex
+errors:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 400 | `invalid_request` | A wrong `grant_type` or `subject_token_type`, no `subject_token`, or `federation` not `<tenant>/<id>`; a body that isn't a form or a JSON object |
+| 400 | `invalid_grant` | The token can't be exchanged: the same answer for every reason (an unknown or disabled federation, a bad signature, a wrong issuer or audience, an expired or over-long token, no matching rule, a token already exchanged, a gone service account). The reason is in the audit log |
+| 429 | `slow_down` | Over 30 exchanges a minute for this federation |
+
+Each workload token is exchanged once. Every exchange is in the
+[audit log](../operator-guide/access-control.md#audit-log) as
+`exchangeToken` by `system:federation:<tenant>/<id>`, never with the
+JWT.
 
 ### Cluster and nodes
 

@@ -80,12 +80,11 @@ See [Logging in](../user-guide/logging-in.md).
 | `get <vm>` | VM details, and why it isn't ready yet if it isn't; a `Pool:` line per device pool request with the devices it got |
 | `create` | Create a VM, asking for name, size, hypervisor, firmware, image or disk, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments |
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
-| `place <vm> [--node N]` | Place a stopped or lost VM again, on node `N` or where the scheduler finds room; prints the node, or *Not placed yet* with the reason it waits (`system-admin`) |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
-| `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; administrators) |
+| `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; `system-admin`). Prints the node, or *Not placed yet* with the reason it waits |
 | `events <vm>` | What happened to the VM: starts, exits, restarts |
 | `connect <vm>`, `console`, `attach` | Serial console; `Ctrl+]` detaches |
 | `log <vm>`, `logs` | The console log (last 1 MiB) |
@@ -128,35 +127,21 @@ Private key files are refused before anything is sent. See
 | `image rm <image>` | Delete an image; refused (`409`) while a disk uses it, or a VM boots or keeps a kernel image |
 | `disk list`, `disks` | List disks |
 | `disk show <disk>` | Details, datastore and partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: on this datastore instead of the default |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: where it lives (default: the default datastore) |
 | `disk resize <disk> <GiB> [--no-extend]` | Grow or shrink |
-| `disk move <disk> --datastore D [--node N] [--flatten]` | Move a disk no running VM uses to another datastore; waits up to 5 minutes. `--node`: for a node-local destination, the node that has the disk; `--flatten`: a linked disk becomes a standalone copy |
 | `disk extend-root <disk> [--on-boot]` | Grow the root partition now (offline) or at next boot |
-| `disk move <disk> --datastore D [--node N] [--flatten]` | Copy a disk no running VM uses to another datastore, waiting up to 5 minutes. `--flatten`: a linked disk becomes a full copy |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | Copy a disk no running VM uses to another datastore, waiting up to 5 minutes. `--node`: for a node-local destination, the node that has the disk; `--flatten`: a linked disk becomes a full copy |
 | `disk rm <disk>` | Delete after confirmation |
-| `datastore list`, `datastores` | Datastores, how many nodes reach each, and free space |
-| `datastore show <datastore>` | Paths, nodes, and each node's view: free space, why it can't reach it, or mount warnings |
-| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`). `--shared`: one filesystem every node mounts |
-| `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change one |
-| `datastore rm <datastore>` | Delete one no disk is on; its files stay |
+| `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` |
+| `datastore show <datastore>`, `get` | Id, paths, nodes, overcommit, disks, and each node's view: free space, why it can't reach it, or mount warnings |
+| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore under `/srv/glidex` (`system-admin`). `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path; `--default`: the default for new disks |
+| `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit (`system-admin`) |
+| `datastore rm <datastore>`, `delete` | Delete one no disk is on, without confirmation; its files stay (`system-admin`) |
 
-See [Images and disks](../user-guide/images-and-disks.md) and
-[Kernel boot](../user-guide/kernel-boot.md).
-
-## Datastores
-
-`<ds>` is a datastore's name or id. Everyone can list them; the other
-commands need `system-admin`.
-
-| Command | Effect |
-|---|---|
-| `datastore list`, `datastores`, `datastore ls` | Datastores: `NAME`, `DEFAULT` (`*`), `NODES OK` (nodes that reach it, such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` |
-| `datastore show <ds>`, `get` | One datastore: id, path, each node's own path, nodes, overcommit, disks, and each node's status and free space |
-| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a directory under `/srv/glidex`: node-local, or with `--shared` one filesystem every node mounts. `--nodes`: only these nodes; `--node-path`: a node's own path; `--default`: the default for new disks |
-| `datastore set <ds> [--node-path NODE=P]… [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit |
-| `datastore rm <ds>`, `delete` | Delete a datastore no disk is on, without confirmation; its files stay |
-
-See [Datastores](../operator-guide/datastores.md).
+A datastore is named by its name or id. See
+[Images and disks](../user-guide/images-and-disks.md),
+[Kernel boot](../user-guide/kernel-boot.md) and
+[Datastores](../operator-guide/datastores.md).
 
 ## Networks
 
@@ -275,6 +260,9 @@ and [Access control](../operator-guide/access-control.md).
 | `invite list <tenant>` | A tenant's invitations: open, taken or expired |
 | `invite create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` | Invite an email address into a tenant; prints the link once. `--role` defaults to `member`, `--days` to 7 (at most 30) |
 | `invite revoke <id>` | Delete an invitation |
+| `federation list <tenant>`, `show <tenant> <id>` | A tenant's workload federations: issuer, audience, enabled, and each rule's claims, service account and token lifetime |
+| `federation add <tenant> <id> --issuer URL --audience AUD [--name TEXT] (--match CLAIM=VALUE… --service-account TOKEN-ID [--ttl SECS] \| --rules-file FILE)` | Trust a workload issuer. `--match` (repeated) and `--service-account` make one rule; `--rules-file` is a JSON list of `{match, service_account, ttl_secs}`. A rule names `repository`, `project_path` or `sub`, exact values only; `--ttl` 60–3600 (default 900). Needs a recent login |
+| `federation enable <tenant> <id>`, `disable <tenant> <id>`, `remove <tenant> <id>` | Enable, disable or remove a federation; disabling or removing it stops the tokens it gave |
 
 Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 `--mfa` / `--no-mfa`, `--team GROUP=TEAM`…, `--default-tenant T`,
@@ -293,7 +281,8 @@ settings: repeat the ones you keep.
 See [Authentication](../operator-guide/authentication.md),
 [Provisioning with SCIM](../operator-guide/authentication.md#provisioning-with-scim),
 [Directory sync from Google Workspace](../operator-guide/authentication.md#directory-sync-from-google-workspace)
-and [Invitations](../operator-guide/authentication.md#invitations).
+[Invitations](../operator-guide/authentication.md#invitations) and
+[Workload federation](../operator-guide/workload-federation.md).
 
 ## Cluster and nodes
 

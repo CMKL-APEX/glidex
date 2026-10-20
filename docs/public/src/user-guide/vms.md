@@ -148,7 +148,7 @@ fixed list take their full names, as in the table below
 | On host boot | `on_host_boot` | `HOST_BOOT_POLICY_RESUME` (default) or `HOST_BOOT_POLICY_STOP`. Changeable. |
 | Stop grace | `stop_grace_secs` | Seconds a stop waits after the power button; 0 (default) stops at once; at most 300. Changeable. |
 | Initial power | `power` | `POWER_STATE_STOPPED` (default), `POWER_STATE_RUNNING` or `POWER_STATE_PAUSED`. |
-| Node | `node` | Clusters: pin the VM to a node (name or id). Fixed, except by [placing the VM again](#placing-a-vm-again). |
+| Node | `node` | Clusters: pin the VM to a node (name or id). Fixed, except by [placing the VM again](#placement-on-a-cluster). |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
 | NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
@@ -163,9 +163,10 @@ Give exactly one of:
   (named `<vm>-root`) on the default
   [datastore](../operator-guide/datastores.md), grows it to
   `root_disk_size_gib`, and extends the guest's root partition at first
-  boot. To put it on another datastore, create the disk first
-  (`gxctl disk create … --datastore`) and give it as `root_disk`. The disk belongs to the VM and
-  is deleted with it, unless you delete with `--keep-disk`.
+  boot. The disk belongs to the VM and is deleted with it, unless you
+  delete with `--keep-disk`. To put it on another datastore, create the
+  disk first (`gxctl disk create … --datastore`) and give it as
+  `root_disk`.
 - `root_disk`: an existing, unattached disk of the project (name or
   id). It is not deleted with the VM.
 - `rootfs_path`: a disk image file on the host, used as is.
@@ -344,7 +345,7 @@ from and `tenant_pool`. Devices from pools are metered
 | Graceful stop | **Shut down** | `stop <vm> --graceful [secs]` | `POST /vms/{id}/stop?graceful_timeout_secs=60` |
 | Immediate stop | **Stop** | `stop <vm>` | `POST /vms/{id}/stop` |
 | Delete | **Delete** | `delete <vm> [--keep-disk]` | `DELETE /vms/{id}` |
-| Place a stopped or lost VM on another node | **Place on another node** | `place <vm> [--node N]` | `POST /vms/{id}/place` |
+| Place a stopped or lost VM on another node (`system-admin`) | **Place on another node** | `place <vm> [--node N]` | `POST /vms/{id}/place` |
 
 `gxctl` waits up to 60 seconds for the VM to get there (longer for a
 graceful stop) and prints the state it reached; `--no-wait` returns at
@@ -618,11 +619,28 @@ project has no grant for it, are skipped too (`PCI device … is
 cordoned`, `its PCI devices are not granted to the project on this
 node`).
 
-A VM stays on the node it was placed on: Glidex doesn't move it by
-itself, and doesn't restart it elsewhere if the node fails. An
-administrator can place it again (see below). If no node can take the
-VM, it is still created and waits for one; its page says **Waiting for a
-node** with each node's reason.
+A VM stays on its node: Glidex doesn't move it, and doesn't restart it
+elsewhere if the node fails. If no node can take the VM, it is still
+created and waits for one; its page says **Waiting for a node** with
+each node's reason.
+
+A VM whose disks are on shared datastores (see
+[Where a disk lives](images-and-disks.md#where-a-disk-lives)) can be
+placed on another node by an administrator (`system-admin`): when it is
+stopped, or when its node was lost and forgotten. On the VM's page it is
+**Place on another node** (**Place on a live node** for a lost VM), with
+a node or **Where there is room**; with gxctl, `gxctl place <vm> [--node
+N]`; over the API, `POST /vms/{id}/place` with an optional `node`. A
+VM with a disk on a node's own storage can go only to that node, and
+nowhere once the node is lost; a VM with a host-path root, PCI devices
+or a node network can't move.
+
+With a node, the VM is pinned there; without one, its old pin goes.
+Start it again afterwards. A QEMU VM's UEFI variables stay on the old
+node: it starts with fresh ones from its firmware. See [Placing a
+stopped or lost VM
+again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again)
+for what is refused.
 
 In the web UI's create form, **Placement** shows **Automatic (now:
 &lt;node&gt;)** and each node with its free vCPUs and memory, or why it
@@ -642,25 +660,5 @@ The answer has the node it would pick (`pick`) and every node's fit
 The VM's node shows in `gxctl list` and on its page. If the node stops
 reporting, the page shows the VM's last known state; the VM may still be
 running there.
-
-### Placing a VM again
-
-A **stopped** VM, or a **lost** one whose node was forgotten, can be
-placed again on another node, if its disks can go there: disks on
-shared datastores always can, a disk on a node-local datastore only to
-its own node. It needs the `system-admin` role.
-
-- **Web UI:** the VM's page, **Place on another node** (**Place on a
-  live node** for a lost VM).
-- **gxctl:** `place <vm> --node <node>`, or `place <vm>` for wherever
-  the scheduler finds room.
-- **API:** `POST /vms/{id}/place` with an optional `node`.
-
-With a node, the VM is pinned there; without one, its old pin goes.
-Start it again afterwards. A QEMU VM's UEFI variables stay on the old
-node: it starts with fresh ones from its firmware. See [Placing a
-stopped or lost VM
-again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again)
-for what can go along and what is refused.
 
 See [Clusters](../operator-guide/clusters.md) for nodes and draining.

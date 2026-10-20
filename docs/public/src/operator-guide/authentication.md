@@ -8,6 +8,7 @@ How depends on where it comes from:
 | `gxctl` on the host, on `/run/glidex-cp/api.sock` | The caller's Unix account, from the socket. No login. |
 | Web UI | A browser session, after a login with a local password or single sign-on. |
 | `gxctl` from another machine, scripts, API clients | An access token (`Authorization: Bearer …`). |
+| CI jobs and other workloads | A short-lived token, exchanged for the workload's own signed token through a [workload federation](workload-federation.md). |
 
 What an authenticated user may then do is decided by roles and policies:
 see [Access control](access-control.md).
@@ -784,6 +785,9 @@ GitLab on the LAN, an internal Kubernetes API) is refused with
 lets every tenant administrator point a federation at internal
 addresses, so turn it on only when you need it.
 
+Every field, limit, issuer requirement and error is on the
+[Workload federation](workload-federation.md) page.
+
 ## Sessions and re-authentication
 
 A web UI login starts a session, kept in a cookie. It ends after
@@ -798,6 +802,7 @@ Some actions need a login in the last 10 minutes:
   their SCIM tokens, and applying a [blocked directory
   sync](#the-safety-stop);
 - managing admissions and deleting tenants;
+- adding, changing and removing [workload federations](workload-federation.md);
 - host network changes that can cut the host off (installing Open
   vSwitch, DPDK, committing or removing uplinks, deleting bridges);
 - cluster membership and recovery (joining, join tokens, removing nodes,

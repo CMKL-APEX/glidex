@@ -33,6 +33,10 @@ Session cookies are refused on RPCs outside the web UI
 methods (`SystemService.GetServerInfo` and the `LoginService` methods)
 need no credential. See [API overview](README.md#authentication).
 
+A token from a workload federation's exchange is sent the same way. The
+exchange itself, `POST /auth/exchange`, is REST only: it has no RPC
+([Token exchange](rest.md#token-exchange-for-workloads)).
+
 Optional metadata:
 
 - `x-glidex-consistency: local`: in a cluster, read from the server you
@@ -69,7 +73,7 @@ is the encoded `ErrorInfo`):
 | `NOT_FOUND` | `not_found`, `oidc_disabled` |
 | `ABORTED` | `conflict` (a name taken, a concurrent change): read again and retry |
 | `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, `managed_by_connector`, `not_provisioned`, `not_pulled`, `no_source`, `sync_running`, …), `unsupported_on_host` |
-| `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*` |
+| `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*`, `issuer_unreachable` |
 | `UNAVAILABLE` | `not_leader`, `use_a_server`, `leader_changed`, `cluster_unavailable`, and `502`/`503` codes (`netd_unavailable`, `node_unreachable`, `too_many_watchers`, `console_unavailable`, …) |
 | `INTERNAL` | `internal`, `persistence_error` and other `500` codes. The message is generic and names the request id; the details are in the server log |
 | `UNIMPLEMENTED` | A method this server doesn't have (an older version during an upgrade) |
