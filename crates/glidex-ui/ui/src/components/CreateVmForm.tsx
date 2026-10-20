@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, type FormEvent } from "react";
-import { listCredentials, listDisks, listImages, listNetworks } from "../api";
+import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPools } from "../api";
+import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
 import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isDiskImage, networkModeLabel, networkUsableBy } from "../types";
@@ -42,6 +43,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [rootfsPath, setRootfsPath] = useState("");
   const [kernelArgs, setKernelArgs] = useState("");
   const [vfioDevices, setVfioDevices] = useState("");
+  const [pools, setPools] = useState<PciPoolJson[]>([]);
+  /** Devices asked of each pool, and whether under one PCIe switch. */
+  const [poolAsks, setPoolAsks] = useState<Record<string, { count: number; sameSwitch: boolean }>>({});
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [firmwareImages, setFirmwareImages] = useState<ImageInfo[]>([]);
   const [freeDisks, setFreeDisks] = useState<DiskInfo[]>([]);
@@ -112,7 +116,19 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         if (free.length > 0) setRootDisk(free[0].id);
       })
       .catch(() => setFreeDisks([]));
+    // Only the pools this project may use; none: no section.
+    if (project) {
+      listProjectPciPools(project)
+        .then(setPools)
+        .catch(() => setPools([]));
+    }
   }, [project, me.user?.display_name]);
+
+  const poolRequests = Object.entries(poolAsks)
+    .filter(([, a]) => a.count > 0)
+    .map(([pool, a]) => ({ pool, count: a.count, same_switch: a.sameSwitch && a.count > 1 ? true : undefined }));
+  const askPool = (pool: string, change: Partial<{ count: number; sameSwitch: boolean }>) =>
+    setPoolAsks((cur) => ({ ...cur, [pool]: { ...(cur[pool] ?? { count: 0, sameSwitch: false }), ...change } }));
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -142,6 +158,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
         kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
         vfio_devices: devices.length > 0 ? devices : undefined,
+        devices: poolRequests.length > 0 ? poolRequests : undefined,
         power: startNow ? "POWER_STATE_RUNNING" : undefined,
         restart_policy: restartPolicy === "never" ? "RESTART_POLICY_NEVER" : "RESTART_POLICY_ON_FAILURE",
         on_host_boot: onHostBoot === "stop" ? "HOST_BOOT_POLICY_STOP" : "HOST_BOOT_POLICY_RESUME",
@@ -231,6 +248,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               .split(",")
               .map((d) => d.trim())
               .filter((d) => d.length > 0),
+            devices: poolRequests.length > 0 ? poolRequests : undefined,
             image: firmware && rootSource === "image" && image ? image : undefined,
           }}
           value={node}
@@ -482,6 +500,49 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           <p className="mt-1 text-xs text-gray-500">
             One NIC per selected network, in this order. Manage networks on the
             Networking page.
+          </p>
+        </div>
+      )}
+
+      {pools.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            Device Pools (optional)
+          </label>
+          <div className="mt-1 space-y-2">
+            {pools.map((p) => {
+              const name = p.name ?? "";
+              const ask = poolAsks[name] ?? { count: 0, sameSwitch: false };
+              return (
+                <div key={name} className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="font-mono w-32 truncate" title={name}>{name}</span>
+                  {p.class && <span className="text-xs text-gray-500">{p.class}</span>}
+                  <span className="text-xs text-gray-500">{p.free ?? 0} free</span>
+                  <input
+                    type="number"
+                    min="0"
+                    aria-label={`Devices from ${name}`}
+                    className="w-20 px-2 py-1 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+                    value={ask.count}
+                    onChange={(e) => askPool(name, { count: Math.max(0, Number(e.target.value)) })}
+                  />
+                  {ask.count > 1 && (
+                    <label className="flex items-center gap-1 text-xs text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={ask.sameSwitch}
+                        onChange={(e) => askPool(name, { sameSwitch: e.target.checked })}
+                      />
+                      Under one PCIe switch
+                    </label>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            How many devices to take from each pool; the scheduler picks which,
+            near each other and the VM&apos;s memory.
           </p>
         </div>
       )}

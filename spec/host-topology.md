@@ -972,8 +972,19 @@ Where HT2 differs from the design above, and why:
   the pool, not each device. Picked devices are
   `status.placement.pool_devices`, claims like named devices, added to
   the VM's VFIO devices at launch and in device drift. `GET /pci-pools`
-  (`listPciPools`, `host.read`) needs a host role, so projects don't see
-  free counts yet. Not done yet: `devices.<pool>` quotas (§9.3),
-  `device.alloc` metering (§9.4), `prepare: true`, a UI form for pool
-  requests, and tenant pools (HT4b).
+  (`listPciPools`, `host.read`) needs a host role.
+- **HT4 follow-up**: `GET /pci-pools?project=` lists the pools a
+  project may use (`usePciPool`), with free counts and no devices, for
+  anyone who can read the project (`readProject`); the UI's VM form
+  offers them. `devices.<pool>` quotas (§9.3) are `Quotas.devices` (a
+  map; a pool not named is unlimited), counted over the project's VMs'
+  `devices` requests whether running or not, like `vcpus`, and summed
+  over a tenant's projects for its cap; the overrun's resource is
+  `devices.<pool>`. Metering (§9.4) is one meter per pool,
+  `device.alloc.<pool>`, from the placement's `pool_devices`, held while
+  paused (the devices stay the VM's). `prepare: true` runs once when the
+  node's controller starts, for devices not ready for a reason a
+  `vfio-pci` bind can fix (not for no IOMMU group or an OVS-DPDK
+  uplink); failures are logged, not reported in the node record. Not
+  done yet: tenant pools (HT4b).
 

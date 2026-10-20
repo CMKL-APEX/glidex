@@ -280,6 +280,8 @@ export interface CreateVmRequest {
   kernel_args?: string;
   hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
+  /** Devices asked for by pool; the scheduler picks them (spec/host-topology.md §9). */
+  devices?: { pool: string; count?: number; same_switch?: boolean }[];
   /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
   power?: ProtoPowerState;
   /** After a crash: restart (default) or leave it stopped. */
@@ -1010,11 +1012,16 @@ export interface WhoAmI {
 export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";
 
 /** Limits (glidex.tenancy.v1.Quotas): an absent one is unlimited. VPC routers,
- * and those with an external address, are spec/clustering.md §11.2a. */
-export type Quotas = Partial<Record<QuotaKey, number>>;
+ * and those with an external address, are spec/clustering.md §11.2a;
+ * `devices` is a limit per device pool (spec/host-topology.md §9.3). */
+export type Quotas = Partial<Record<QuotaKey, number>> & { devices?: Record<string, number> };
 
 /** What a project uses; a count of zero is left out. */
-export type Usage = Partial<Record<QuotaKey, number>>;
+export type Usage = Partial<Record<QuotaKey, number>> & { devices?: Record<string, number> };
+
+/** Pools named by a quota or a usage, by name. */
+export const quotaPools = (q?: Quotas, u?: Usage): string[] =>
+  [...new Set([...Object.keys(q?.devices ?? {}), ...Object.keys(u?.devices ?? {})])].sort();
 
 export const QUOTA_KEYS: QuotaKey[] = ["vms", "running_vms", "vcpus", "memory_mib", "disk_gib", "networks", "routers", "external_ips"];
 

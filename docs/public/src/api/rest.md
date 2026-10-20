@@ -324,7 +324,7 @@ them to the node being managed).
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
 | `GET` | `/pci-devices` | List the host's PCI devices |
-| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts |
+| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts; `?project=` the pools that project may use, free counts only |
 | `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
 ### Usage and metrics
