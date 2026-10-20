@@ -416,6 +416,8 @@ export interface ImageSource {
   firmware?: CatalogSource;
   /** A kernel copied from host files. */
   host?: { path?: string };
+  /** A kernel extracted from a disk image. */
+  extracted?: { image_id?: string; image_sha256?: string; path?: string };
 }
 
 /** `IMAGE_KIND_DISK`: a cloud image disks are cloned from; `IMAGE_KIND_FIRMWARE`: UEFI firmware VMs boot through;
@@ -469,6 +471,8 @@ export interface ImageInfo {
   used_by_vms?: string[];
   /** A kernel image's release, command line and initramfs. */
   kernel?: { release?: string; cmdline?: string; initrd?: { sha256?: string; size_bytes?: U64 } };
+  /** The disk image a kernel image was extracted from. */
+  for_image?: string;
   /** Each node's copy (spec/clustering.md §9.2.2, spec/clustering-ui.md §5.3). */
   copies?: ImageCopy[];
   info?: ImgInfo;
@@ -651,7 +655,7 @@ export function diskWaiting(d: DiskInfo): boolean {
   return !d.deleting && diskPhase(d) === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
 }
 
-/** A deletion, a download or its verification in progress. */
+/** A deletion, a download, its verification or a kernel extraction in progress. */
 export function imageActivity(i: ImageInfo): string | null {
   if (i.deleting) return "Deleting";
   const state = imageState(i);
@@ -659,7 +663,7 @@ export function imageActivity(i: ImageInfo): string | null {
     const total = num(i.status?.total_bytes);
     return total ? `Downloading ${Math.floor((num(i.status?.received_bytes) * 100) / total)}%` : "Downloading";
   }
-  return state === "verifying" ? "Verifying" : null;
+  return state === "verifying" ? "Verifying" : state === "extracting" ? "Extracting" : null;
 }
 
 /** A network deletion in progress (it waits for netd, or for a VM to leave). */

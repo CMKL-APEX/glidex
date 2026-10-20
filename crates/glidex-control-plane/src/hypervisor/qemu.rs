@@ -559,6 +559,60 @@ impl HypervisorDriver for QemuDriver {
     }
 }
 
+/// The kernel extractor's run (spec/kernel-boot.md §10.2), as
+/// [`super::cloud_hypervisor::extractor_args`]: `-no-reboot`, so the
+/// appliance's power-off ends QEMU.
+pub(crate) fn extractor_args(
+    bin: &str,
+    (kernel, initrd): (&str, &str),
+    (disk, format): (&str, ImageType),
+    out: &str,
+) -> Vec<String> {
+    let blockdev = |node: &str, path: &str, driver: &str, read_only: bool| {
+        let mut b = serde_json::json!({
+            "driver": driver, "node-name": node, "read-only": read_only,
+            "file": {"driver": "file", "filename": path, "read-only": read_only},
+        });
+        // Never a backing file a qcow2 header names (as for VM disks).
+        if driver == "qcow2" {
+            b["backing"] = serde_json::Value::Null;
+        }
+        b.to_string()
+    };
+    [
+        bin,
+        "-nodefaults",
+        "-no-user-config",
+        "-enable-kvm",
+        "-machine",
+        "q35",
+        "-m",
+        "1024M",
+        "-smp",
+        "1",
+        "-kernel",
+        kernel,
+        "-initrd",
+        initrd,
+        "-append",
+        crate::images::extractor::CMDLINE,
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        "-blockdev".into(),
+        blockdev("src", disk, format.qemu_format(), true),
+        "-device".into(),
+        "virtio-blk-pci,drive=src".into(),
+        "-blockdev".into(),
+        blockdev("out", out, "raw", false),
+        "-device".into(),
+        "virtio-blk-pci,drive=out".into(),
+    ])
+    .chain(["-serial", "stdio", "-display", "none", "-no-reboot"].map(String::from))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +665,32 @@ mod tests {
             queue_pairs,
             mtu,
         }
+    }
+
+    #[test]
+    fn kernel_extractor_command_line() {
+        let a = extractor_args(
+            "/usr/bin/qemu-system-x86_64",
+            ("/x/kernel", "/x/initrd"),
+            ("/i/a.qcow2", ImageType::Qcow2),
+            "/i/.k.extract.raw",
+        );
+        assert_eq!(values(&a, "-kernel"), ["/x/kernel"]);
+        assert_eq!(values(&a, "-initrd"), ["/x/initrd"]);
+        assert_eq!(values(&a, "-append"), [crate::images::extractor::CMDLINE]);
+        let bd: Vec<serde_json::Value> = values(&a, "-blockdev")
+            .iter()
+            .map(|b| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(bd[0]["read-only"], true);
+        assert_eq!(bd[0]["driver"], "qcow2");
+        assert!(bd[0]["backing"].is_null() && bd[0].get("backing").is_some());
+        assert_eq!(
+            (bd[1]["driver"].as_str(), bd[1]["read-only"].as_bool()),
+            (Some("raw"), Some(false))
+        );
+        assert!(a.contains(&"-no-reboot".to_string()));
+        assert!(!a.iter().any(|x| x.starts_with("-netdev") || x == "-qmp"));
     }
 
     #[test]

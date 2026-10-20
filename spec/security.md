@@ -857,7 +857,11 @@ Managed disks are named with `image`, `root_disk` and `data_disks`
 instead, firmware with `firmware` and kernels with `kernel` (a firmware or
 kernel image, `readImage`). Pulling a kernel image from host files
 (`POST /images` with `kernel_path` or `initrd_path`) needs `useHostPath`
-too; VMs then boot it with `readImage` only. Paths into the disk or image directories are not
+too; VMs then boot it with `readImage` only. Kernels extracted from a
+disk image (`kernel_from`, and catalog pulls) are read by a network-less
+extractor VM in a `glidex-vm@` unit, never by the control plane: the
+host only parses the extractor's length-checked output stream
+([kernel-boot.md](kernel-boot.md) K9, §10). Paths into the disk or image directories are not
 treated as managed: they would reach other projects' disks, or let a VM
 write to a shared base image.
 

@@ -120,6 +120,7 @@ pub struct Image {
     pub initrd: Option<FileMeta>,   // {sha256, size_bytes} of `<id>.initrd`
     pub cmdline: Option<String>,    // default `kernel_args`
     pub kernel_release: Option<String>, // from the kernel's header
+    pub for_image: Option<String>,  // the disk image it was extracted from
 }
 
 pub enum ImageSource {
@@ -127,11 +128,13 @@ pub enum ImageSource {
     Url { url: String, expected_sha256: Option<String> },
     Firmware { key: String, url: String, version: String }, // url: download, or host file copied
     Host { path: String },          // a kernel copied from host files
+    Extracted { image_id: String, image_sha256: String, path: String, verified: bool },
 }
 
 pub enum ImageStatus {
     Downloading { received_bytes: u64, total_bytes: Option<u64> },
     Verifying,
+    Extracting,                     // a kernel image being extracted (kernel-boot.md §10)
     Ready,
     Failed { reason: String },
     Missing,
@@ -731,7 +734,7 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images/catalog` | Catalog entries for this host's arch, each with `downloaded_image_id` if one exists |
 | `GET` | `/images/firmware-catalog` | Firmware catalog entries (§4.1), each with `available`, `hint` and `downloaded_image_id` |
 | `GET` | `/images` | List images |
-| `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}`, `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`, a kernel `{url, kind: IMAGE_KIND_KERNEL, sha256?, initrd_url?, initrd_sha256?, cmdline?}` or `{kernel_path, initrd_path?, cmdline?}` (`useHostPath`; ready at once, kernel-boot.md §4.2). Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
+| `POST` | `/images` | `{catalog, name?, with_kernel?}` (a catalog pull also extracts the image's kernel by default, kernel-boot.md K10), `{kernel_from, name?}` (extract a disk image's kernel, §10 there), `{firmware, name?}`, `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`, a kernel `{url, kind: IMAGE_KIND_KERNEL, sha256?, initrd_url?, initrd_sha256?, cmdline?}` or `{kernel_path, initrd_path?, cmdline?}` (`useHostPath`; ready at once, kernel-boot.md §4.2). Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
 | `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204` once gone (with `wait`, if it went in time), else `202` with the image while the controller finishes. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |

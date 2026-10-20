@@ -219,6 +219,8 @@ mod tests {
             allow_private_urls: false,
             max_kernel_size: super::super::kernel::MAX_KERNEL_SIZE,
             max_initrd_size: super::super::kernel::MAX_INITRD_SIZE,
+            max_extractions: 1,
+            kernel_extraction: false,
         };
         ImageManager::new(db, settings).unwrap()
     }
