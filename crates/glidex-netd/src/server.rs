@@ -1387,7 +1387,7 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
                 tracing::info!(
                     uid = peer.uid,
                     op = req.op.name(),
-                    args = %serde_json::to_string(&req.op).unwrap_or_default(),
+                    args = %req.op.log_args(),
                     on_behalf_of = %req.on_behalf_of.as_ref().and_then(|o| serde_json::to_string(o).ok()).unwrap_or_else(|| "-".into()),
                     "request"
                 );

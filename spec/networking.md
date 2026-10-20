@@ -472,8 +472,11 @@ release FAQ's pairing.
 - The **status socket** accepts any local user but only `hello` and
   `probe`; anything else returns `permission_denied`.
 - Every mutating request is logged to the journal: peer uid, op,
-  arguments (the protocol carries no secrets), and the request's
-  `on_behalf_of` (or `-`). Denied requests are logged with uid and op.
+  arguments, and the request's `on_behalf_of` (or `-`). Arguments that
+  are secrets are written as `[REDACTED]`: the OVN chassis and central
+  ops carry the node's private key (`*_pem` fields), and fields named
+  `token`, `password`, `secret` or `private_key` are left out too.
+  Denied requests are logged with uid and op.
 
 ### 7.3 Protocol
 
