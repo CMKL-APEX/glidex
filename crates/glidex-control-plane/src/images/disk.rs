@@ -647,6 +647,9 @@ impl ImageManager {
         {
             *mode = CloneMode::Full;
         }
+        if spec.raw {
+            d.format = DiskFormat::Raw;
+        }
         d
     }
 
@@ -670,7 +673,7 @@ impl ImageManager {
             } if !flatten => Some(self.image_for_move(dst, image_id)?),
             _ => None,
         };
-        to.copy_in(dst, &path, flatten, &mut |made| {
+        to.copy_in(dst, &path, src.format, flatten, &mut |made| {
             if let Some(b) = &backing {
                 let dir = made.path().parent().unwrap_or(Path::new("."));
                 let rel = crate::paths::relative_to(b, dir).unwrap_or_else(|| b.clone());

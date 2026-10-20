@@ -198,8 +198,11 @@ What is different from a directory:
   volume on that node, made from the image the first time;
 - disks grow but never shrink;
 - each VM's unit may open exactly its own volumes;
-- when the pool's metadata is 80% full, the datastore shows a warning:
-  extend it with `lvextend --poolmetadatasize`.
+- moving a disk onto or off it always makes a full copy, raw on it;
+- when the pool's data or metadata is 80% full, the datastore shows a
+  warning. Extend it (`lvextend -L +100G vg-glidex/pool`, or
+  `--poolmetadatasize` for metadata) before it fills: a full thin pool
+  stops every guest on it at its next write.
 
 | Reason | Meaning |
 |---|---|

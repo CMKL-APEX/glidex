@@ -598,6 +598,7 @@ fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> 
         if new["node"] != cur["node"]
             || new["worker"] != cur["worker"]
             || new["origin"] != cur["origin"]
+            || new["format"] != cur["format"]
         {
             return Err("a move that didn't happen changes nothing".into());
         }
@@ -621,6 +622,11 @@ fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> 
             return Err("only a flattened move makes a disk full".into());
         }
     }
+    // A move onto block volumes makes it raw, and nothing else changes the
+    // format (spec/storage.md §11.1).
+    if new["format"] != cur["format"] && (m["raw"] != true || new["format"] != "raw") {
+        return Err("only a move onto block volumes makes a disk raw".into());
+    }
     Ok(())
 }
 
@@ -640,7 +646,7 @@ fn check_disk_status_only(cur: &Value, new: &Value, node: &str) -> Result<(), St
     let m = &cur["moving"];
     let mover = !m.is_null() && m["mover"] == node;
     if mover {
-        allowed.extend(["moving", "datastore", "node", "worker", "origin"]);
+        allowed.extend(["moving", "datastore", "node", "worker", "origin", "format"]);
     }
     same_except(cur, new, &allowed)?;
     if mover {
@@ -704,6 +710,37 @@ mod tests {
             key: key.as_bytes().to_vec(),
             value: v.to_string().into_bytes(),
         }
+    }
+
+    /// The mover records exactly the move it was asked for (spec/storage.md
+    /// §8.3): onto block volumes that makes the disk raw and full.
+    #[test]
+    fn a_mover_records_only_its_move() {
+        let cur = serde_json::json!({
+            "name": "d", "format": "qcow2", "datastore": "local", "node": "n1",
+            "origin": {"kind": "image", "image_id": "i", "mode": "linked"},
+            "moving": {"datastore": "thin", "node": "n1", "mover": "n1", "flatten": true, "raw": true},
+        });
+        let mut done = cur.clone();
+        done["datastore"] = "thin".into();
+        done["moving"] = Value::Null;
+        done["origin"]["mode"] = "full".into();
+        done["format"] = "raw".into();
+        assert_eq!(check_disk_status_only(&cur, &done, "n1"), Ok(()));
+        // Not raw: no format change.
+        let mut not_raw = cur.clone();
+        not_raw["moving"]["raw"] = false.into();
+        assert!(check_disk_status_only(&not_raw, &done, "n1").is_err());
+        // Another node, or another datastore.
+        assert!(check_disk_status_only(&cur, &done, "n2").is_err());
+        let mut elsewhere = done.clone();
+        elsewhere["datastore"] = "other".into();
+        assert!(check_disk_status_only(&cur, &elsewhere, "n1").is_err());
+        // A move that didn't happen keeps the format.
+        let mut ended = cur.clone();
+        ended["moving"] = Value::Null;
+        ended["format"] = "raw".into();
+        assert!(check_disk_status_only(&cur, &ended, "n1").is_err());
     }
 
     #[test]

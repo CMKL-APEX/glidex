@@ -504,6 +504,10 @@ pub struct MoveSpec {
     /// the destination's copy of its image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flatten: bool,
+    /// The copy is raw: the destination keeps block volumes (spec/
+    /// storage.md §11.1). Moves to or from one are always flattened.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
 }
 
 fn local_datastore() -> String {
@@ -1301,6 +1305,11 @@ impl ImageManager {
     /// datastore's driver ([`Self::driver`]). A disk on a datastore this
     /// node can't reach gets the path it would have in `local`, which
     /// doesn't exist.
+    /// Bytes `d`'s volume takes (metering's `disk.stored`). Blocks.
+    pub fn stored_bytes(&self, d: &Disk) -> Option<u64> {
+        self.driver(d).ok()?.stored_bytes(d)
+    }
+
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
         self.driver(d)
             .map(|dr| dr.binding(d).path().to_path_buf())

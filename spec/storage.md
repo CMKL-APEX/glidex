@@ -1,6 +1,6 @@
 # Datastores
 
-Status: **S0–S5 implemented; S6 in progress (S6a, S6b built); S7 design.** Implemented:
+Status: **S0–S6 implemented; S7 design.** Implemented:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
@@ -13,7 +13,9 @@ Status: **S0–S5 implemented; S6 in progress (S6a, S6b built); S7 design.** Imp
 - S6a, `glidex-stord` (§11.1), its unit and the installer's
   `--stord-allow-vg`;
 - S6b, `lvm` datastores: the driver, block bindings and device access
-  (§11.1 as built).
+  (§11.1 as built);
+- S6c, moves to and from `lvm`, metering of volumes, and VMs booted from
+  them (§11.1 as built).
 
 S6 and everything after it is still design. The milestones are S0–S7
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
@@ -964,17 +966,33 @@ Linked disks keep the image from being deleted (images.md §3).
   (S18).
 - **Probe:** a node's row path is `<vg>/<pool>`; free space is the
   pool's; a pool whose metadata is 80% full gets a warning.
-- **Not yet:** moves to and from `lvm` (the driver's `copy_in` is there,
-  but the move's record still keeps the source's format), metering's
-  `disk.stored` for volumes, and a VM booted from a volume under the
-  systemd runner on a host install (the pieces were checked one by one,
-  §19 H5–H6). Those are S6c.
+- **Not checked:** a VM booted from a volume under the systemd runner of
+  a host install (its drop-in and the hypervisors on LVs were checked
+  apart, §19 H5–H6; the boot tests below use the process runner).
 - **Tests:** API `lvm_datastores_name_a_volume_group_and_keep_raw_disks`;
   ignored `lvm_disks_on_a_real_pool` (with a running stord and a VG: a
   blank volume grown and not shrunk, a linked disk as a snapshot with
   its root partition extended through the shadow file, both removed and
   the image volume with the image) and stord's `real_lvm`, both passed
   on a loop-device VG; hypervisor argument tests for block disks.
+
+**As built (S6c):**
+- **Moves** (§8.3) onto or off an `lvm` datastore are always flattened
+  (a raw volume has no backing file), and onto one make the disk raw:
+  `MoveSpec.raw`, which the mover's status write may apply and nothing
+  else (`check_move_write`). `copy_in` takes the source's format.
+- **Metering:** `StorageDriver::stored_bytes` gives `disk.stored`; for a
+  volume it is the pool's blocks it holds (stord's `data_percent` × its
+  size), for a file still `qemu-img`'s actual size.
+- **Probe:** a pool 80% full gets a warning too: a full thin pool stalls
+  every guest on it at its next write (seen when two test runs shared a
+  3 GiB pool).
+- **Tests:** `lvm_disks_on_a_real_pool` also moves a qcow2 disk from
+  `local` onto the volume group and back (raw both times, partitions
+  intact); `lvm_root_disk_boots` and `qemu_lvm_root_disk_boots` boot a
+  cloud image from a linked volume grown to 6 GiB, log in, see all of
+  it, and remove the disk, then the image's volume with the image. All
+  passed on the loop-device VG.
 
 ## 12. CSI
 
@@ -1186,7 +1204,7 @@ described below; fix 5 is part of S2.
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **Implemented** (§4.4, §4.5), as S3a (driver, workers, locks) and S3b (images in shared datastores, installer). | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced`. **Implemented** (§9 as built). | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores). **Implemented** (§8.3 as built); between nodes goes through a shared datastore. | S3 |
-| S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer) and S6b the `lvm` datastore, block bindings and device access, **implemented**; S6c moves to and from `lvm`, metering, and a VM booted from a volume on a host install. Then `shared-lvm` and `rbd` | S2 |
+| S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer), S6b the `lvm` datastore, block bindings and device access, S6c moves, metering and VM boots from volumes. **Implemented** (§11.1 as built). Then `shared-lvm` and `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 

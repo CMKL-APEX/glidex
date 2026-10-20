@@ -385,11 +385,16 @@ impl VmManager {
         if shared_src {
             disk.worker = Some(mover.clone());
         }
+        // Onto or off block volumes the copy is standalone, and onto them
+        // raw (spec/storage.md §11.1).
+        let src_block = record::find(&db, &disk.datastore)?.is_some_and(|d| d.driver.is_block());
+        let raw = dst.driver.is_block();
         disk.moving = Some(MoveSpec {
             datastore: dst.id.clone(),
             node: dest_node,
             mover,
-            flatten,
+            flatten: flatten || raw || src_block,
+            raw,
         });
         drop(vms);
         self.images.put_disk(&disk)?;

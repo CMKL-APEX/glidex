@@ -921,8 +921,70 @@ async fn lvm_disks_on_a_real_pool() {
         .unwrap_or_else(|| panic!("a snapshot of {image_vol}: {vols:?}"));
     assert!(lvl.name.starts_with("gx-d-"));
 
+    // Moves (§8.3): a qcow2 disk onto the volume group becomes a raw
+    // volume, and back a raw file; a linked one is flattened.
+    let mv = |name: &'static str, to: &'static str| {
+        let h = &h;
+        let t = t.clone();
+        async move {
+            let (s, v) = h
+                .rest(
+                    "POST",
+                    &format!("/disks/{name}/move"),
+                    Some(json!({"datastore": to, "wait_secs": 120})),
+                    &t,
+                )
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            assert!(v["disk"]["moving_to"].is_null(), "settled: {v}");
+            v["disk"].clone()
+        }
+    };
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "lvq", "image": img_id, "size_bytes": 96 << 20})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let local = h.ready_disk("lvq", &t).await;
+    assert_eq!(local["format"], "DISK_FORMAT_QCOW2", "{local}");
+    let old = PathBuf::from(local["path"].as_str().unwrap());
+    let on_lvm = mv("lvq", "real-thin").await;
+    assert_eq!(on_lvm["format"], "DISK_FORMAT_RAW", "{on_lvm}");
+    assert_eq!(
+        on_lvm["origin"]["image"]["mode"], "CLONE_MODE_FULL",
+        "{on_lvm}"
+    );
+    assert!(
+        on_lvm["path"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("/dev/{vg}/")),
+        "{on_lvm}"
+    );
+    assert!(!old.exists(), "the qcow2 file went");
+    let (_, v) = h.rest("GET", "/disks/lvq", None, &t).await;
+    assert!(
+        num(&v["disk"]["partition_table"]["partitions"][0]["size_bytes"]) > 0,
+        "the data came along: {v}"
+    );
+    let back = mv("lvq", "local").await;
+    assert_eq!(back["format"], "DISK_FORMAT_RAW", "{back}");
+    assert!(
+        PathBuf::from(back["path"].as_str().unwrap()).exists(),
+        "{back}"
+    );
+    let (_, v) = h.rest("GET", "/disks/lvq", None, &t).await;
+    assert!(
+        num(&v["disk"]["partition_table"]["partitions"][0]["size_bytes"]) > 0,
+        "and back: {v}"
+    );
+
     // Gone with the disks; the image volume with the image.
-    for name in ["lvb", "lvl"] {
+    for name in ["lvb", "lvl", "lvq"] {
         let (s, v) = h.rest("DELETE", &format!("/disks/{name}"), None, &t).await;
         assert!(s.is_success(), "{v}");
     }
