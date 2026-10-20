@@ -361,4 +361,9 @@ unary. REST paths and RPC requests take the same ids and names.
 |  | `ListScimTokens` | `GET /connectors/{id}/scim-tokens` |
 |  | `CreateScimToken` | `POST /connectors/{id}/scim-tokens` |
 |  | `RevokeScimToken` | `DELETE /connectors/{id}/scim-tokens/{token}` |
+| `FederationService` | `ListFederations` | `GET /tenants/{id}/federations` |
+|  | `GetFederation` | `GET /tenants/{id}/federations/{federation}` |
+|  | `CreateFederation` | `POST /tenants/{id}/federations` |
+|  | `UpdateFederation` | `PATCH /tenants/{id}/federations/{federation}` |
+|  | `DeleteFederation` | `DELETE /tenants/{id}/federations/{federation}` |
 
