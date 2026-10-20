@@ -114,6 +114,7 @@ Rate limit: 10 sign-in attempts a minute per client address.
 | §2 ceremonies | `/auth/passkeys/register/{start,finish}` (signed in, `manageOwnSignIns`, step-up, at most 10) and `/auth/passkeys/login/{start,finish}` (public; 10 attempts a minute per client); challenges single use, 5 minutes, bound by the `glidex_webauthn` cookie (`Ceremonies`) |
 | P3 | `Method::Passkey`, a session with `mfa`; one `401 passkey_refused` for every failure (an unknown passkey, another origin, no UV, a counter going backwards, a replay, a disabled user), the reason in the audit log |
 | P4 | `UserService.{ListPasskeys, RenamePasskey, DeletePasskey}` (`/users/{id}/passkeys…`); `keeps_a_way_in` for them and `UnlinkIdentity`: never no method, never one passkey alone; deleting a user forgets its passkeys |
-| Tests | `webauthn.rs` unit tests; `tests/passkey_tests.rs` with a software authenticator || UI (§4) | `components/PasskeyButton.tsx` (the login page and the re-authentication dialog), `components/PasskeysCard.tsx` on the Account page (add, rename, remove, the RP id note), "Passkey" among sign-in methods; `api.ts` converts WebAuthn's binary fields |
+| Tests | `webauthn.rs` unit tests; `tests/passkey_tests.rs` with a software authenticator |
+| UI (§4) | `components/PasskeyButton.tsx` (the login page and the re-authentication dialog), `components/PasskeysCard.tsx` on the Account page (add, rename, remove, the RP id note), "Passkey" among sign-in methods; `api.ts` converts WebAuthn's binary fields |
 | Docs | the operator guide's "Passkeys" (`auth.passkeys.rp_id`) |
 | UI e2e | `passkeys.spec.ts`: a passkey added on the Account page with Chromium's virtual authenticator, then a sign-in with it |
