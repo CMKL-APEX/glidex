@@ -741,7 +741,30 @@ const FEDERATION_USAGE: &str = "Usage: federation list <tenant> | show <tenant> 
     A rule matches exact claim values and names repository, project_path or sub; \
     --rules-file holds a JSON list of {match, service_account, ttl_secs}.";
 
-fn print_federation(f: &Federation) {
+/// Service accounts the caller can see: token id → `name (project)`. A
+/// rule names its service account by its public token id; this shows
+/// which one that is.
+async fn service_accounts(t: &crate::client::RpcTransport) -> HashMap<String, String> {
+    use glidex_api::proto::glidex::access::v1::{ListTokensRequest, TokenServiceClient};
+    let svc = TokenServiceClient::new(t.clone(), t.config());
+    match svc.list_tokens(ListTokensRequest::default()).await {
+        Ok(r) => r
+            .into_owned()
+            .tokens
+            .into_iter()
+            .map(|k| {
+                let label = match k.project.as_deref() {
+                    Some(p) if !p.is_empty() => format!("{} (project {p})", k.name),
+                    _ => k.name.clone(),
+                };
+                (k.id, label)
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn print_federation(f: &Federation, accounts: &HashMap<String, String>) {
     let state = if f.enabled == Some(true) {
         "enabled".green()
     } else {
@@ -752,11 +775,15 @@ fn print_federation(f: &Federation) {
     for (i, r) in f.rules.iter().enumerate() {
         let mut claims: Vec<String> = r.r#match.iter().map(|(k, v)| format!("{k}={v}")).collect();
         claims.sort();
+        let who = accounts
+            .get(&r.service_account)
+            .map(String::as_str)
+            .unwrap_or("a service account you can't list");
         println!(
-            "    rule {}: {} -> service account {} ({} s)",
+            "    rule {}: {} -> {} ({} s)",
             i + 1,
             claims.join(", "),
-            r.service_account,
+            who,
             r.ttl_secs.unwrap_or(900)
         );
     }
@@ -838,7 +865,12 @@ pub async fn federation(client: &ApiClient, args: &[&str]) {
             .map(|r| r.into_owned())
         {
             Ok(r) if r.federations.is_empty() => println!("No federations"),
-            Ok(r) => r.federations.iter().for_each(print_federation),
+            Ok(r) => {
+                let accounts = service_accounts(&t).await;
+                r.federations
+                    .iter()
+                    .for_each(|f| print_federation(f, &accounts));
+            }
             Err(e) => err(rpc_err(e)),
         },
         ("show", Some(id)) => match svc
@@ -850,7 +882,13 @@ pub async fn federation(client: &ApiClient, args: &[&str]) {
             .await
             .map(|r| r.into_owned())
         {
-            Ok(r) => print_federation(&r.federation.as_option().cloned().unwrap_or_default()),
+            Ok(r) => {
+                let accounts = service_accounts(&t).await;
+                print_federation(
+                    &r.federation.as_option().cloned().unwrap_or_default(),
+                    &accounts,
+                )
+            }
             Err(e) => err(rpc_err(e)),
         },
         ("add" | "create", Some(id)) => {
@@ -883,7 +921,11 @@ pub async fn federation(client: &ApiClient, args: &[&str]) {
             {
                 Ok(r) => {
                     println!("{}", "Federation added:".green());
-                    print_federation(&r.federation.as_option().cloned().unwrap_or_default());
+                    let accounts = service_accounts(&t).await;
+                    print_federation(
+                        &r.federation.as_option().cloned().unwrap_or_default(),
+                        &accounts,
+                    );
                 }
                 Err(e) => err(rpc_err(e)),
             }
