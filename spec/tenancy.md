@@ -369,6 +369,8 @@ Without linking, one person signing in two ways is two users.
   can't sign in anyway): then an administrator may take its last one, so
   that its person can add it to the user they really are (a Google login
   that made a second user before linking existed).
+- **Passkeys** are sign-in methods too ([passkeys.md](passkeys.md)):
+  identities of provider `passkey`, added only by their user.
 - **Labels:** `pam` is a host account's password ("Local password"),
   `unix` the host's local socket ("Host socket": gxctl on the host, no
   password), `conn:<id>` a connector by its display name. An
