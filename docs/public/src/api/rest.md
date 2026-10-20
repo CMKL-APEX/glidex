@@ -405,6 +405,8 @@ them to the node being managed).
 | `GET` | `/tenants/{id}/bindings` | Tenant role bindings |
 | `POST` | `/tenants/{id}/bindings` | Grant a tenant role |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | Remove a tenant role binding |
+| `GET` | `/tenants/{id}/device-pools` | The tenant's pools on this cluster, with what they hold |
+| `PUT` | `/tenants/{id}/device-pools` | Replace the tenant's pools: `{pools: [{name, from, max, projects}]}` |
 | `GET` | `/admissions` | Tenants admitted on this site, with their caps |
 | `PUT` | `/admissions/{tenant}` | Admit a tenant or change its cap |
 | `DELETE` | `/admissions/{tenant}` | Remove an admission |

@@ -223,6 +223,8 @@ and [Access control](../operator-guide/access-control.md).
 | `tenant suspend <t>`, `resume <t>`, `delete <t>` | Suspend, resume or delete |
 | `tenant members <t>`, `add-member <t> <principal>`, `remove-member <t> <principal>` | Explicit members (`user:<id>`, `team:<id>`) |
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
+| `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |
+| `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips` |
 | `admission remove <tenant>` | Remove an admission |

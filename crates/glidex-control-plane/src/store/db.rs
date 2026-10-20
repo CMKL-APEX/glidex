@@ -122,6 +122,8 @@ tables! {
     // Datastores and what each node finds at them (spec/storage.md §4.1).
     Datastores = 49 => "datastores",
     DatastoreNodes = 50 => "datastore_nodes",
+    // Tenants' shares of cluster device pools (spec/host-topology.md §9.1a).
+    TenantDevicePools = 51 => "tenant_device_pools",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they

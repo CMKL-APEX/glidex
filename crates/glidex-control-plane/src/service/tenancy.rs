@@ -618,3 +618,169 @@ pub fn remove_admission(
     store.remove_admission(&t.id).map_err(tenant_error)?;
     Ok(pb::RemoveAdmissionResponse::default())
 }
+
+// ---- tenant pools (spec/host-topology.md §9.1a) ----------------------------
+
+/// The tenant's pools as answered: with what its projects ask of each,
+/// the cluster pool's free count, and whether the tenant is still granted
+/// it. `cluster` is [`crate::service::node::cluster_pools`].
+pub(crate) async fn tenant_pools_pb(
+    call: &Call,
+    m: &crate::state::VmManager,
+    tenant: &str,
+    cluster: &[glidex_api::proto::glidex::cluster::v1::PciPool],
+) -> ServiceResult<Vec<pb::TenantDevicePool>> {
+    let pools = call
+        .auth()
+        .tenants
+        .device_pools(tenant)
+        .map_err(tenant_error)?;
+    let used = m
+        .tenant_pools_used(tenant)
+        .await
+        .map_err(crate::service::host::manager_err)?;
+    Ok(pools
+        .into_iter()
+        .map(|p| pb::TenantDevicePool {
+            used: used.get(&p.name).copied().unwrap_or(0).min(u32::MAX as u64) as u32,
+            free: cluster
+                .iter()
+                .find(|c| c.name == p.from)
+                .map_or(0, |c| c.free),
+            ungranted: !crate::api::vms::pool_tenant_grants(call, &p.from).contains(&p.tenant_id),
+            name: p.name,
+            from: p.from,
+            max: p.max,
+            projects: p.projects,
+            by: p.by,
+            at: ts(p.at).into(),
+            ..Default::default()
+        })
+        .collect())
+}
+
+pub async fn list_device_pools(
+    call: &Call,
+    req: pb::ListDevicePoolsRequest,
+) -> ServiceResult<pb::ListDevicePoolsResponse> {
+    let t = visible(call, &req.id)?;
+    call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
+    let m = call.manager();
+    let cluster = crate::service::node::cluster_pools(m).await;
+    Ok(pb::ListDevicePoolsResponse {
+        pools: tenant_pools_pb(call, m, &t.id, &cluster).await?,
+        ..Default::default()
+    })
+}
+
+/// Replace the tenant's pools: each names a cluster pool the tenant is
+/// granted, a `max` of at least 1, and projects of the tenant. VMs that
+/// hold devices of a pool left out keep them.
+pub async fn set_device_pools(
+    call: &Call,
+    req: pb::SetDevicePoolsRequest,
+) -> ServiceResult<pb::SetDevicePoolsResponse> {
+    let t = visible(call, &req.id)?;
+    call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
+    let bad = |m: String| ServiceError::new(StatusCode::BAD_REQUEST, "invalid", m);
+    let m = call.manager();
+    let cluster = m.pci_pools();
+    let by = call.p.user_id().unwrap_or("-").to_string();
+    let at = crate::auth::store::now();
+    let mut out: Vec<tenants::TenantPool> = Vec::new();
+    for p in &req.pools {
+        let name = p.name.trim();
+        if name.is_empty()
+            || name.len() > 63
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(bad(format!(
+                "tenant pool name '{name}': 1-63 lowercase letters, digits and dashes"
+            )));
+        }
+        if out.iter().any(|o| o.name == name) {
+            return Err(bad(format!("tenant pool {name} is named twice")));
+        }
+        if cluster.iter().any(|c| c.name == name) {
+            return Err(bad(format!("{name} is a cluster pool's name")));
+        }
+        if !cluster.iter().any(|c| c.name == p.from) {
+            return Err(bad(format!(
+                "tenant pool {name}: no cluster pool {}",
+                p.from
+            )));
+        }
+        if !crate::api::vms::pool_tenant_grants(call, &p.from).contains(&t.id) {
+            return Err(ServiceError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!(
+                    "tenant pool {name}: the tenant isn't granted pool {}",
+                    p.from
+                ),
+            ));
+        }
+        if p.max == 0 {
+            return Err(bad(format!("tenant pool {name}: max must be at least 1")));
+        }
+        let mut projects = Vec::new();
+        for key in &p.projects {
+            // By id, or by name (unique in the tenant).
+            let projects_store = m.projects();
+            let pr = projects_store
+                .get(key)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    projects_store
+                        .list()
+                        .ok()?
+                        .into_iter()
+                        .find(|pr| pr.name == *key && pr.tenant_id == t.id)
+                })
+                .filter(|pr| pr.tenant_id == t.id)
+                .ok_or_else(|| {
+                    bad(format!(
+                        "tenant pool {name}: no project {key} in this tenant"
+                    ))
+                })?;
+            if !projects.contains(&pr.id) {
+                projects.push(pr.id);
+            }
+        }
+        // Unchanged pools keep who set them and when.
+        let old = call
+            .auth()
+            .tenants
+            .device_pool(&t.id, name)
+            .map_err(tenant_error)?;
+        let (by, at) = match old {
+            Some(o) if o.from == p.from && o.max == p.max && o.projects == projects => (o.by, o.at),
+            _ => (by.clone(), at),
+        };
+        out.push(tenants::TenantPool {
+            tenant_id: t.id.clone(),
+            name: name.to_string(),
+            from: p.from.clone(),
+            max: p.max,
+            projects,
+            by,
+            at,
+        });
+    }
+    call.detail(
+        "pools",
+        serde_json::json!(out.iter().map(|p| &p.name).collect::<Vec<_>>()),
+    );
+    call.auth()
+        .tenants
+        .set_device_pools(&t.id, out)
+        .map_err(tenant_error)?;
+    let all = crate::service::node::cluster_pools(m).await;
+    Ok(pb::SetDevicePoolsResponse {
+        pools: tenant_pools_pb(call, m, &t.id, &all).await?,
+        ..Default::default()
+    })
+}

@@ -282,6 +282,17 @@ devices from a pool, and the scheduler picks them. Pools are defined in
   ask of that pool (`gxctl project quota <p> devices.a100=2`; the
   `quota_exceeded` resource is `devices.a100`), and a tenant's cap
   limits it over all its projects. A pool without one is unlimited.
+- A tenant granted a pool can split its share among its projects with
+  **tenant pools**: its tenant admin sets `gxctl tenant device-pool set
+  acme team-a-gpus --from a100 --max 4 --projects team-a,team-a-ci`
+  (`PUT /tenants/{id}/device-pools`, or the tenant's page). A VM of one
+  of those projects asks for `{"pool": "team-a-gpus"}`; it gets devices
+  of `a100`, and the tenant pool's projects together hold at most 4
+  (`tenant_quota_exceeded`, resource `tenant_pool.team-a-gpus`). The
+  VM's request shows `"pool": "a100", "tenant_pool": "team-a-gpus"`.
+  The tenant's cap and the project quota on `a100` still apply. If the
+  tenant loses its grant, the tenant pool shows `ungranted` and gives
+  nothing new; VMs holding devices keep them.
 - Metering counts `device.alloc.<pool>`: devices held, in device-hours,
   from the VM's start to its exit (paused too).
 

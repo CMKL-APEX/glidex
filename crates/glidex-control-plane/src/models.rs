@@ -308,6 +308,10 @@ pub struct DeviceRequest {
     /// All of them under one PCIe switch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub same_switch: bool,
+    /// The tenant pool asked for, `pool` being its cluster pool
+    /// (spec/host-topology.md §9.1a).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_pool: Option<String>,
 }
 
 fn one() -> u32 {

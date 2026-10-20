@@ -374,27 +374,34 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
 /// the config (`pci.allow` entries with `pool`).
 pub(crate) fn pci_pool_entities(c: &Caller, name: &str) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
-    let allow: Vec<_> = c
-        .auth()
+    let grants: Vec<String> = pool_grants(c, name)
+        .flat_map(|g| g.projects.iter())
+        .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
+        .collect();
+    let tenants = pool_tenant_grants(c, name);
+    let mut es = EntitySet::new();
+    es.pci_pool(name, &grants, &tenants);
+    (Ent::PciPool(name.to_string()), es)
+}
+
+fn pool_grants<'a>(
+    c: &'a Caller,
+    name: &'a str,
+) -> impl Iterator<Item = &'a crate::config::PciGrant> + 'a {
+    c.auth()
         .config
         .pci
         .allow
         .iter()
-        .filter(|g| g.pool.as_deref() == Some(name))
-        .collect();
-    let grants: Vec<String> = allow
-        .iter()
-        .flat_map(|g| g.projects.iter())
-        .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
-        .collect();
-    let tenants: Vec<String> = allow
-        .iter()
+        .filter(move |g| g.pool.as_deref() == Some(name))
+}
+
+/// Tenant ids granted cluster pool `name` (`pci.allow` with `tenants`).
+pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
+    pool_grants(c, name)
         .flat_map(|g| g.tenants.iter())
         .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
-        .collect();
-    let mut es = EntitySet::new();
-    es.pci_pool(name, &grants, &tenants);
-    (Ent::PciPool(name.to_string()), es)
+        .collect()
 }
 
 /// Node `node`'s PCI device `bdf` as an entity, with the projects and

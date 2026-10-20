@@ -985,6 +985,22 @@ Where HT2 differs from the design above, and why:
   paused (the devices stay the VM's). `prepare: true` runs once when the
   node's controller starts, for devices not ready for a reason a
   `vfio-pci` bind can fix (not for no IOMMU group or an OVS-DPDK
-  uplink); failures are logged, not reported in the node record. Not
-  done yet: tenant pools (HT4b).
+  uplink); failures are logged, not reported in the node record.
+- **HT4b** (§9.1a): tenant pools are a cluster-scoped table
+  (`tenant_device_pools`, by `<tenant>/<name>`), set as a whole with
+  `PUT /tenants/{id}/device-pools` (`manageTenantDevicePools` in
+  `tenant.projects`, so tenant admins; `readTenantDevicePools` in
+  `tenant.read`). A name may not be a cluster pool's; `from` must be a
+  cluster pool granted to the tenant (`pci.allow` with `tenants`).
+  Admission resolves a request naming a tenant pool to its cluster pool
+  and records both (`DeviceRequest.tenant_pool`); the project must be
+  one of the pool's and the tenant still granted. `max` counts the
+  requests of all the tenant's VMs naming the pool, running or not
+  (like quotas), checked under the VM lock with the quotas, as
+  `tenant_quota_exceeded` / `tenant_pool.<name>`; `exceedQuota` may go
+  over. `GET /pci-pools?project=` lists the project's tenant pools too,
+  with `from`, `max`, `used` and `free` = what it may still take. Not
+  done: `max` on `tenant_grants` (a tenant's grant has no size yet, so a
+  tenant pool can't be checked against one); the `devices.<pool>` cap
+  is the bound.
 
