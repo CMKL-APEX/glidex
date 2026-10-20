@@ -412,7 +412,7 @@ Actions of these features, and who has them out of the box:
 | `moveDisk` | `Glidex::Disk` | `editor` of the disk's project, with `useDatastore` on the destination. |
 | `placeVm` | `Glidex::Vm` | `system-admin`. |
 | `readHostTopology`, `listPciPools` | the host | `auditor`, `net-admin`. |
-| `prepareDevice`, `releaseDevice`, `cordonDevice` (also uncordons) | the host | `net-admin`, on the cluster or that host. |
+| `prepareDevice`, `releaseDevice`, `cordonDevice` (also uncordons), `setSriovVfs` | the host | `net-admin`, on the cluster or that host. |
 | `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow` (base policy `base.pci-pool-grant`). |
 | `readTenantDevicePools` | `Glidex::Tenant` | `tenant-auditor`, `tenant-admin`. |
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |

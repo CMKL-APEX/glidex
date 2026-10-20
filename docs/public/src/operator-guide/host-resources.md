@@ -219,7 +219,7 @@ pool, and Glidex picks them. Pools are defined in
 | --- | --- |
 | `name` | The pool's name. Unique. |
 | `class` | A label for people and usage reports: `gpu`, `nic`, `nvme`, `dpu`, `accelerator`. |
-| `match` | `vendor_id`, `device_id`, `class_code` (or its start, `0x0302`) and `addresses`. Every key given must match. A pool must have a match. |
+| `match` | `vendor_id`, `device_id`, `class_code` (or its start, `0x0302`) and `addresses`. Every key given must match. A pool must have a match. With `vf_of` (itself a match of physical functions), the pool takes those functions' SR-IOV virtual functions; see [SR-IOV virtual functions](pci-passthrough.md#sr-iov-virtual-functions). |
 | `nodes` | Node names or ids the pool is on. Default: every node. |
 | `prepare` | Each node binds its devices of the pool to `vfio-pci` when glidex starts (see [Prepare devices](#prepare-devices)). |
 

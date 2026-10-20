@@ -492,6 +492,7 @@ same ids and names.
 |  | `ReleaseDevice` | `POST /nodes/{id}/devices/{address}/release` |
 |  | `CordonDevice` | `POST /nodes/{id}/devices/{address}/cordon` |
 |  | `UncordonDevice` | `POST /nodes/{id}/devices/{address}/uncordon` |
+|  | `SetSriovVfs` | `POST /nodes/{id}/devices/{address}/sriov` |
 |  | `ListPciPools` | `GET /pci-pools` |
 | `ImportService` | `ListImports` | `GET /imports` |
 |  | `GetImport` | `GET /imports/{plan}` |
