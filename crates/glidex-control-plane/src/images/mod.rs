@@ -165,7 +165,12 @@ pub enum ImageSource {
     /// (`vda13:/vmlinuz-…`; empty until extracted), and whether that image
     /// was verified.
     Extracted {
+        /// Empty when extracted from a VM's disk (`disk_id`).
+        #[serde(default)]
         image_id: String,
+        /// The VM disk it was extracted from (§10.5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disk_id: Option<String>,
         #[serde(default)]
         image_sha256: String,
         #[serde(default)]
@@ -295,6 +300,10 @@ pub struct Image {
     /// The disk image (id) a kernel image was extracted from (K3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub for_image: Option<String>,
+    /// The VM a kernel extracted from its own disk belongs to (K12): such a
+    /// kernel is deleted once no VM uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -746,6 +755,9 @@ pub struct ImageResponse {
     /// The disk image a kernel image was extracted from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub for_image: Option<String>,
+    /// The VM a kernel extracted from its disk belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
     /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1591,6 +1603,7 @@ impl ImageManager {
                 initrd: img.initrd.clone(),
             }),
             for_image: img.for_image.clone(),
+            owner: img.owner.clone(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -1925,6 +1938,7 @@ mod tests {
             cmdline: None,
             kernel_release: None,
             for_image: None,
+            owner: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");

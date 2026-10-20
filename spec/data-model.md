@@ -65,6 +65,11 @@ The guest configuration the hypervisor needs to boot:
   kernel image or managed root disk, unless `cloud_init_path` is given).
   Absent in older records, where it means firmware boot.
   `VmConfig::generates_seed()` is the rule.
+- `kernel_from_disk: bool` — boot the kernel the guest installed:
+  extracted from the root disk before a launch when that changed
+  ([kernel-boot.md](kernel-boot.md) §10.5). What it boots is
+  `VmStatus.disk_kernel` (`{image, previous, disk_stamp}`), never the
+  spec. Changeable (next launch).
 - `cloud_init_path: Option<String>` — NoCloud seed disk. `None` when
   `generates_seed()` → the VM controller regenerates a default seed
   (`cloud_init.rs`) at `Vm::default_cloud_init_path()` before every

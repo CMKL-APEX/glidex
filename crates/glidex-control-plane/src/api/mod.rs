@@ -216,6 +216,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
     .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
     .add(
+        "POST",
+        "/vms/{id}/extract-kernel",
+        "updateVm",
+        post(storage::extract_vm_kernel),
+    )
+    .add(
         "GET",
         "/vms/{id}/console",
         "getConsoleInfo",

@@ -568,7 +568,7 @@ impl HypervisorDriver for QemuDriver {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
-    (disk, format): (&str, ImageType),
+    (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
     let blockdev = |node: &str, path: &str, driver: &str, read_only: bool| {
@@ -576,8 +576,9 @@ pub(crate) fn extractor_args(
             "driver": driver, "node-name": node, "read-only": read_only,
             "file": {"driver": "file", "filename": path, "read-only": read_only},
         });
-        // Never a backing file a qcow2 header names (as for VM disks).
-        if driver == "qcow2" {
+        // Never a backing file a qcow2 header names, unless glidex made
+        // the disk linked (as for VM disks).
+        if driver == "qcow2" && !backing_files {
             b["backing"] = serde_json::Value::Null;
         }
         b.to_string()
@@ -675,7 +676,7 @@ mod tests {
         let a = extractor_args(
             "/usr/bin/qemu-system-x86_64",
             ("/x/kernel", "/x/initrd"),
-            ("/i/a.qcow2", ImageType::Qcow2),
+            ("/i/a.qcow2", ImageType::Qcow2, false),
             "/i/.k.extract.raw",
         );
         assert_eq!(values(&a, "-kernel"), ["/x/kernel"]);

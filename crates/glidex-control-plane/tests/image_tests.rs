@@ -2006,3 +2006,130 @@ async fn kernel_extraction_requests() {
         "{all}"
     );
 }
+
+/// `kernel_from_disk` and `POST /vms/{id}/extract-kernel` (spec/kernel-boot.md
+/// K11, §10.5) on a host where extraction is off: the admission rules, a
+/// manual `kernel` turning following off, and clear refusals.
+#[tokio::test]
+async fn kernel_from_disk_requests() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_kernel(&app, &base, "vmlinuz-6.8.0-1-generic", "k1").await;
+    pull_kernel(&app, &base, "vmlinuz-6.9.0-2-generic", "k2").await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+
+    let vm = |extra: Value| {
+        let mut b = json!({"name": "f", "vcpu_count": 1, "mem_size_mib": 512});
+        b.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        b
+    };
+    for (body, why) in [
+        (
+            vm(json!({"image": "base", "kernel_from_disk": true})),
+            "no kernel image",
+        ),
+        (
+            vm(json!({"rootfs_path": "/r.img", "kernel": "k1", "kernel_from_disk": true})),
+            "no managed disk",
+        ),
+    ] {
+        let (status, err) = request(&app, "POST", "/vms", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {err}");
+        assert!(
+            err["message"]
+                .as_str()
+                .unwrap()
+                .contains("kernel_from_disk"),
+            "{err}"
+        );
+    }
+    let (status, v) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(vm(json!({
+            "image": "base", "root_disk_size_gib": 1, "kernel": "k1", "kernel_from_disk": true
+        }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["kernel_from_disk"], true, "{v}");
+    let id = id_of(&v);
+
+    // Choosing a kernel by hand stops following the guest's.
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({
+            "change": {"kernel": "k2"}, "update_mask": "kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(vm_of(&body)["kernel_from_disk"].is_null(), "{body}");
+    // And back on, with both in the mask keeping it.
+    let (status, body) = request(&app, "PATCH", &format!("/vms/{id}"), Some(json!({
+        "change": {"kernel": "k1", "kernel_from_disk": true}, "update_mask": "kernel,kernel_from_disk"
+    }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(vm_of(&body)["kernel_from_disk"], true, "{body}");
+    assert!(
+        manager
+            .get_vm(&id)
+            .await
+            .unwrap()
+            .spec
+            .config
+            .kernel_from_disk
+    );
+
+    // Extracting now: off on this host; a firmware VM can't at all.
+    let (status, err) = request(&app, "POST", &format!("/vms/{id}/extract-kernel"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("can't be extracted"),
+        "{err}"
+    );
+    let (status, fw) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(vm(json!({
+            "name": "fw", "image": "base", "root_disk_size_gib": 1
+        }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{fw}");
+    let (status, err) = request(
+        &app,
+        "POST",
+        &format!("/vms/{}/extract-kernel", id_of(&fw)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, err) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{}", id_of(&fw)),
+        Some(json!({
+            "change": {"kernel_from_disk": true}, "update_mask": "kernel_from_disk"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, _) = request(&app, "POST", "/vms/nope/extract-kernel", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

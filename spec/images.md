@@ -121,6 +121,7 @@ pub struct Image {
     pub cmdline: Option<String>,    // default `kernel_args`
     pub kernel_release: Option<String>, // from the kernel's header
     pub for_image: Option<String>,  // the disk image it was extracted from
+    pub owner: Option<String>,      // the VM whose disk it came from (kernel-boot.md K12)
 }
 
 pub enum ImageSource {

@@ -111,11 +111,13 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
         })),
         img::ImageSource::Extracted {
             image_id,
+            disk_id,
             image_sha256,
             path,
             ..
         } => Source::Extracted(Box::new(pb::ExtractedSource {
             image_id: image_id.clone(),
+            disk_id: disk_id.clone(),
             image_sha256: image_sha256.clone(),
             path: path.clone(),
             ..Default::default()
@@ -193,6 +195,7 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
         info: i.info.as_ref().map(info_pb).into(),
         deleting: i.deleting.then_some(true),
         for_image: i.for_image.clone(),
+        owner: i.owner.clone(),
         kernel: i
             .kernel
             .as_ref()

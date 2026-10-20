@@ -196,6 +196,13 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
             .collect(),
         firmware: config.firmware_image.clone(),
         kernel: config.kernel_image.clone(),
+        kernel_from_disk: config.kernel_from_disk.then_some(true),
+        booted_kernel: vm.status.disk_kernel.as_ref().map(|k| k.image.clone()),
+        previous_kernel: vm
+            .status
+            .disk_kernel
+            .as_ref()
+            .and_then(|k| k.previous.clone()),
         boot: if config.firmware_path.is_some() {
             pb::BootMode::BOOT_MODE_FIRMWARE
         } else {
@@ -695,6 +702,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         firmware_image: None,
         kernel_image: None,
         generate_seed: req.generate_seed,
+        kernel_from_disk: req.kernel_from_disk.unwrap_or(false),
         nic_bindings: Vec::new(),
         root_disk: None,
         data_disks: Vec::new(),
@@ -813,6 +821,7 @@ pub const UPDATABLE: &[&str] = &[
     "data_disks",
     "networks",
     "kernel",
+    "kernel_from_disk",
 ];
 
 /// `change` and `mask` as the manager's merge patch.
@@ -869,6 +878,9 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                     "data_disks" => c.data_disks = Some(change.data_disks.clone()),
                     "networks" => {
                         c.networks = Some(change.networks.iter().map(attachment_of).collect())
+                    }
+                    "kernel_from_disk" => {
+                        c.kernel_from_disk = Some(change.kernel_from_disk.unwrap_or(false))
                     }
                     "kernel" => {
                         c.kernel = Some(change.kernel.clone().ok_or_else(|| {
@@ -959,6 +971,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             || cp.numa_policy.is_some_and(|v| v != cur.numa_policy)
             || cp.cpu_policy.is_some_and(|v| v != cur.cpu_policy);
         // A new kernel image (K6): the VM's own change, and the image's read.
+        update |= cp
+            .kernel_from_disk
+            .is_some_and(|v| v != cur.kernel_from_disk);
         if let Some(k) = &cp.kernel {
             update = true;
             let mut kes = EntitySet::new();
@@ -1399,6 +1414,25 @@ pub async fn console_connect(
                 .map_err(|e| format!("the VM's node can't be reached: {e}"))
         }
     }
+}
+
+/// `POST /vms/{id}/extract-kernel` (spec/kernel-boot.md §10.5): the VM's
+/// own change (`updateVm`), extracting the kernel on its root disk as a
+/// kernel image it owns.
+pub async fn extract_vm_kernel(
+    call: &Call,
+    req: glidex_api::proto::glidex::storage::v1::ExtractVmKernelRequest,
+) -> ServiceResult<glidex_api::proto::glidex::storage::v1::PullImageResponse> {
+    let (vm, e, es) = visible_vm(call, &req.id).await?;
+    call.require_action("updateVm", e, es, &[])?;
+    let m = call.manager();
+    let img = m.extract_vm_kernel(&vm.id).await.map_err(manager_err)?;
+    let r = m.images.image_response(&img, false);
+    Ok(glidex_api::proto::glidex::storage::v1::PullImageResponse {
+        image: crate::service::storage::image_pb(&r).into(),
+        created: Some(true),
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]

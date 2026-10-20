@@ -161,6 +161,16 @@ administrator copies one from host files (`kernel_path`, `initrd_path`).
 It should be the kernel the cloud image was built with: its modules are
 on the image's disk.
 
+**Following the guest's kernel.** With `"kernel_from_disk": true` (a
+VM booting a kernel image from a managed disk), glidex takes the kernel
+out of the VM's disk again before a start whenever the disk changed, so
+a kernel the guest installed (`apt upgrade`) boots next time. The VM
+shows `booted_kernel` and `previous_kernel`; if extraction fails, it
+boots the kernel it has and says so (`KernelExtracted`). To go back,
+set `kernel` (to the `previous_kernel`, say), which turns following off.
+`POST /vms/<id>/extract-kernel` does one extraction on demand, for a
+stopped VM, as a new kernel image you can then set as `kernel`.
+
 An administrator can also give host paths: `kernel_image_path` (and a
 root filesystem in `rootfs_path`), plus `initrd_path` if the kernel
 needs an initramfs (distro kernels do). The default kernel arguments are

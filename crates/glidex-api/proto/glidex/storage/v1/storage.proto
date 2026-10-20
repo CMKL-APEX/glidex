@@ -162,6 +162,15 @@ service ImageService {
       rest: "POST /images/{id}/retry"
     };
   }
+  // Extract the kernel on a stopped VM's root disk as a kernel image the
+  // VM owns (spec/kernel-boot.md §10.5); then PATCH the VM's `kernel`.
+  rpc ExtractVmKernel(ExtractVmKernelRequest) returns (PullImageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/extract-kernel"
+    };
+  }
   // Keep a copy on a node ahead of need (spec/clustering.md §9.2.2).
   rpc AddImageCopy(AddImageCopyRequest) returns (AddImageCopyResponse) {
     option (glidex.api.v1.op) = {
@@ -245,6 +254,8 @@ message ExtractedSource {
   string image_sha256 = 2 [json_name = "image_sha256"];
   // Where the kernel was in it (`vda13:/vmlinuz-…`); empty until extracted.
   string path = 3;
+  // A VM's disk it was extracted from instead (`image_id` empty).
+  optional string disk_id = 4 [json_name = "disk_id"];
 }
 message CatalogSource {
   string key = 1;
@@ -315,6 +326,8 @@ message Image {
   KernelInfo kernel = 21;
   // The disk image a kernel image was extracted from.
   optional string for_image = 22 [json_name = "for_image"];
+  // The VM a kernel extracted from its own disk belongs to.
+  optional string owner = 23;
 }
 
 message KernelInfo {
@@ -417,6 +430,11 @@ message PullImageRequest {
   // catalog pull when this host can, off for a URL).
   optional bool with_kernel = 19 [json_name = "with_kernel"];
 }
+message ExtractVmKernelRequest {
+  // VM id.
+  string id = 1;
+}
+
 message PullImageResponse {
   Image image = 1;
   // A new download (REST: `202`); else the one already in flight (`200`).

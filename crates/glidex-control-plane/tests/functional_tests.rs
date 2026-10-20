@@ -837,6 +837,176 @@ async fn qemu_extracted_kernel_boots_its_image() {
     extracted_kernel_e2e("qemu").await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "downloads a catalog image and the kernel extractor, boots a real VM twice; needs KVM and cloud-hypervisor"]
+async fn guest_kernel_updates_are_followed() {
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+    let (app, manager, _tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"catalog": "ubuntu-26.04"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let image_id = img["image"]["id"].as_str().unwrap().to_string();
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    let k = all["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["for_image"] == image_id.as_str())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        settled_image(&app, &image_id, Duration::from_secs(900)).await["status"]["state"],
+        "IMAGE_STATE_READY"
+    );
+    let kimg = settled_image(&app, &k, Duration::from_secs(600)).await;
+    assert_eq!(kimg["status"]["state"], "IMAGE_STATE_READY", "{kimg}");
+
+    let username = "gxfollow";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let hostname = "gx-follow";
+    let (status, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "image": image_id,
+            "root_disk_size_gib": 12, "kernel": k, "kernel_from_disk": true, "credential": username,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let id = vm_id(&vm);
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+
+    // Logs in on a fresh console (skipping the replay) and runs `cmd`,
+    // expecting `marker` in its output.
+    let session = |cmd: String, marker: String, wait: Duration| {
+        let (path, user, pass) = (console_path.clone(), username.to_string(), password.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut console = Console::connect(&path);
+            console.skip_history();
+            for attempt in 0..12 {
+                std::thread::sleep(Duration::from_secs(if attempt == 0 { 2 } else { 10 }));
+                console.send("\r");
+                if !console.try_expect("login: ", Duration::from_secs(60)) {
+                    continue;
+                }
+                console.send(&format!("{user}\r"));
+                if !console.try_expect("Password: ", Duration::from_secs(20)) {
+                    continue;
+                }
+                console.send(&format!("{pass}\r"));
+                std::thread::sleep(Duration::from_secs(3));
+                console.send(&format!("{cmd}\r"));
+                if console.try_expect(&marker, wait) {
+                    return;
+                }
+            }
+            panic!("could not log in and see {marker}");
+        })
+    };
+
+    // First launch: the disk's kernel is the image's, so `k` itself.
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=600"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(vm_of(&body)["booted_kernel"], k.as_str(), "{body}");
+    assert!(vm_of(&body)["previous_kernel"].is_null(), "{body}");
+    // The guest rebuilds its initramfs, as a kernel update would.
+    session(
+        "sudo update-initramfs -u -k all >/dev/null 2>&1; echo GX_REBUILT_$?".into(),
+        "GX_REBUILT_0".into(),
+        Duration::from_secs(300),
+    )
+    .await
+    .unwrap();
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Second launch: the disk changed, so its new kernel is extracted.
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=600"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let booted = vm_of(&body)["booted_kernel"].as_str().unwrap().to_string();
+    assert_ne!(booted, k, "a new kernel image: {body}");
+    assert_eq!(vm_of(&body)["previous_kernel"], k.as_str(), "{body}");
+    let (_, newk) = request(&app, "GET", &format!("/images/{booted}"), None).await;
+    let newk = &newk["image"];
+    assert_eq!(newk["owner"], id.as_str(), "{newk}");
+    assert_eq!(
+        newk["kernel"]["release"], kimg["kernel"]["release"],
+        "{newk}"
+    );
+    assert_ne!(
+        newk["kernel"]["initrd"]["sha256"], kimg["kernel"]["initrd"]["sha256"],
+        "{newk}"
+    );
+    let (_, ev) = request(&app, "GET", &format!("/vms/{id}/events"), None).await;
+    assert!(ev.to_string().contains("KernelUpdated"), "{ev}");
+    session(
+        "echo GX_UP_$(uname -r)".into(),
+        "GX_UP_".into(),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    let (status, _) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Back to the image's kernel by hand: following stops.
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({
+            "change": {"kernel": k}, "update_mask": "kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=600"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(vm_of(&body)["kernel_from_disk"].is_null(), "{body}");
+    assert!(vm_of(&body)["booted_kernel"].is_null(), "{body}");
+    session(
+        "echo GX_BACK_ok".into(),
+        "GX_BACK_ok".into(),
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    let (status, _) = request(&app, "POST", &format!("/vms/{id}/stop?wait=200"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
 /// Wait for image `id` to leave downloading, verifying and extracting.
 async fn settled_image(app: &Router, id: &str, timeout: Duration) -> Value {
     let deadline = Instant::now() + timeout;

@@ -281,6 +281,10 @@ pub struct ConfigPatch {
     /// Kernel image id or name (spec/kernel-boot.md K6); next launch.
     #[serde(default)]
     pub kernel: Option<String>,
+    /// Follow the guest's kernels (K11); next launch. A `kernel` change
+    /// without it turns it off.
+    #[serde(default)]
+    pub kernel_from_disk: Option<bool>,
     // Immutable (§7.3): present only to be refused.
     #[serde(default)]
     pub hypervisor: Option<serde_json::Value>,
@@ -401,6 +405,17 @@ fn root_disk_name(vm_name: &str) -> String {
     let mut name = format!("{}-root", base);
     name.truncate(64);
     name
+}
+
+/// `kernel_from_disk` (spec/kernel-boot.md K11) needs a kernel image to
+/// start from and fall back to, and a managed root disk to extract from.
+fn check_kernel_from_disk(c: &VmConfig) -> Result<(), VmManagerError> {
+    if c.kernel_image.is_none() || c.root_disk.is_none() {
+        return Err(invalid(
+            "kernel_from_disk needs a kernel image (kernel) and a managed root disk (image or root_disk)",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn invalid(msg: impl Into<String>) -> VmManagerError {
@@ -2122,6 +2137,12 @@ impl VmManager {
             });
             config.kernel_image = Some(k.id);
         }
+        // The root disk is attached below; `managed_root` says it will be.
+        if config.kernel_from_disk && (config.kernel_image.is_none() || !managed_root) {
+            return Err(invalid(
+                "kernel_from_disk needs a kernel image (kernel) and a managed root disk (image or root_disk)",
+            ));
+        }
         // Who generates the seed is fixed now (spec/kernel-boot.md K4):
         // firmware boot, and kernel boot of a managed kernel or root disk.
         config.generate_seed = Some(config.generate_seed.unwrap_or(
@@ -2426,10 +2447,7 @@ impl VmManager {
     fn boot_image_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
         let mut v: Vec<String> = vms
             .values()
-            .filter(|vm| {
-                let c = vm.config();
-                c.firmware_image.as_deref() == Some(id) || c.kernel_image.as_deref() == Some(id)
-            })
+            .filter(|vm| vm.uses_boot_image(id))
             .map(|vm| vm.name.clone())
             .collect();
         v.sort();
@@ -2640,7 +2658,7 @@ impl VmManager {
         &self,
         vm: &Vm,
     ) -> Result<Option<(String, Option<String>)>, VmManagerError> {
-        let Some(id) = vm.config().kernel_image.as_deref() else {
+        let Some(id) = vm.boot_kernel() else {
             return Ok(None);
         };
         let img = self.images.get_image(id)?;
@@ -2854,6 +2872,17 @@ impl VmManager {
                         .into_owned()
                 });
                 config.kernel_image = Some(k.id);
+                // Going to a kernel by hand stops following the guest's
+                // (else the next launch would extract again, K12).
+                if c.kernel_from_disk.is_none() {
+                    config.kernel_from_disk = false;
+                }
+            }
+            if let Some(f) = c.kernel_from_disk {
+                if f {
+                    check_kernel_from_disk(config)?;
+                }
+                config.kernel_from_disk = f;
             }
             if let Some(h) = c.hugepages {
                 config.hugepages = h;

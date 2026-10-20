@@ -587,6 +587,7 @@ impl ImageManager {
             cmdline: req.cmdline.clone(),
             kernel_release: None,
             for_image: None,
+            owner: None,
         };
         if let Some((kernel_file, initrd_file)) = kernel_import {
             // Copied before the record exists, so a failure leaves nothing.
