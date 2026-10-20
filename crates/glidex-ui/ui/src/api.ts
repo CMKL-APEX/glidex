@@ -112,6 +112,7 @@ import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
 import { AdmissionService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
+import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
 import {
@@ -1117,6 +1118,27 @@ export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenan
 // ---- invitations (spec/tenancy.md §6.1) -----------------------------------
 
 export type Invitation = InvitationJson;
+// ---- workload federations (spec/tenancy.md §9) --------------------------------
+
+/** A tenant's trust in a CI or workload issuer (glidex.directory.v1.Federation). */
+export type Federation = FederationJson & {
+  id: string;
+  issuer: string;
+  audience: string;
+  rules?: { match?: Record<string, string>; service_account: string; ttl_secs?: number }[];
+};
+export const listFederations = (tenant: string) =>
+  rpc(FederationService.method.listFederations, { tenant }).then((r) => (r.federations ?? []) as Federation[]);
+export const createFederation = (tenant: string, federation: FederationJson) =>
+  rpc(FederationService.method.createFederation, { tenant, federation }).then((r) => r.federation as Federation);
+/** Sets the fields of `changes` that `fields` names. */
+export const updateFederation = (tenant: string, federation: string, changes: FederationJson, fields: string[]) =>
+  rpc(FederationService.method.updateFederation, { tenant, federation, changes, update_mask: fields.join(",") }).then(
+    (r) => r.federation as Federation,
+  );
+export const deleteFederation = (tenant: string, federation: string) =>
+  rpc(FederationService.method.deleteFederation, { tenant, federation }).then(none);
+
 export const listInvitations = (tenant: string) =>
   rpc(InvitationService.method.listInvitations, { tenant }).then((r) => (r.invitations ?? []) as Invitation[]);
 /** The link is answered once; it carries the secret in its fragment. */
