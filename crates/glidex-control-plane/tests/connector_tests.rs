@@ -3863,3 +3863,165 @@ async fn a_google_pull_reads_the_directory_api() {
     assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED", "{v}");
     assert!(!h.app.auth.store.user(&ada.id).unwrap().unwrap().disabled);
 }
+
+/// A service account of the default tenant's default project.
+fn service_account(h: &H, by: &str) -> String {
+    let p = h.app.manager.projects().resolve("default").unwrap();
+    h.app
+        .auth
+        .create_token(
+            "ci",
+            TokenKind::ServiceAccount { project: p.id },
+            by,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .1
+        .id
+}
+
+/// spec/tenancy.md §9, D49–D51: a tenant's federations, their checks, and
+/// who may manage them.
+#[tokio::test]
+async fn federations_are_a_tenants_and_checked_when_made() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("fed-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let fed = |rules: Value| {
+        json!({"federation": {"id": "gh", "display_name": "GitHub Actions", "issuer": mock.base,
+            "audience": "glidex", "rules": rules}})
+    };
+    let good = json!([{"match": {"repository": "acme/infra", "ref": "refs/heads/main"}, "service_account": sa}]);
+    // Each refusal says why.
+    for (rules, why) in [
+        (
+            json!([{"match": {"ref": "refs/heads/main"}, "service_account": sa}]),
+            "no pinned claim",
+        ),
+        (
+            json!([{"match": {"repository": "acme/*"}, "service_account": sa}]),
+            "a wildcard",
+        ),
+        (
+            json!([{"match": {"repository": "acme/infra"}, "service_account": "nope"}]),
+            "no such service account",
+        ),
+        (
+            json!([{"match": {"repository": "acme/infra"}, "service_account": sa, "ttl_secs": 9000}]),
+            "too long",
+        ),
+    ] {
+        let (st, v) = h
+            .rest("POST", "/tenants/default/federations", Some(fed(rules)), &s)
+            .await;
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+            "{why}: {v}"
+        );
+    }
+    // The issuer is read at once.
+    let mut bad = fed(good.clone());
+    bad["federation"]["issuer"] = json!("http://127.0.0.1:9");
+    let (st, v) = h
+        .rest("POST", "/tenants/default/federations", Some(bad), &s)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("issuer_unreachable")),
+        "{v}"
+    );
+    // Managing is a step-up action.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &h.token(&admin),
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("reauth_required")),
+        "{v}"
+    );
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["federation"]["rules"][0]["match"]["repository"],
+        "acme/infra"
+    );
+    assert_eq!(v["federation"]["kind"], "jwt");
+    let (st, _) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // Another tenant's service account isn't this tenant's to give.
+    let (st, v) = h
+        .rest("POST", "/tenants", Some(json!({"slug": "other"})), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let mut other = fed(good.clone());
+    other["federation"]["id"] = json!("gh2");
+    let (st, _) = h
+        .rest("POST", "/tenants/other/federations", Some(other), &s)
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Update: what is named changes; disable; delete.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": false, "audience": "glidex-ci"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (
+            v["federation"]["enabled"].as_bool(),
+            v["federation"]["audience"].as_str()
+        ),
+        (Some(false), Some("glidex-ci"))
+    );
+    assert_eq!(v["federation"]["issuer"], mock.base.as_str());
+    let (_, v) = h
+        .rest("GET", "/tenants/default/federations", None, &s)
+        .await;
+    assert_eq!(v["federations"].as_array().unwrap().len(), 1);
+    // Somebody outside the tenant reads nothing.
+    let bob = h.user("bob");
+    let (st, _) = h
+        .rest("GET", "/tenants/default/federations", None, &h.token(&bob))
+        .await;
+    assert!(
+        st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND,
+        "{st}"
+    );
+    let (st, _) = h
+        .rest("DELETE", "/tenants/default/federations/gh", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, _) = h
+        .rest("GET", "/tenants/default/federations/gh", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}

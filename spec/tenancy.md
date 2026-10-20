@@ -1683,6 +1683,16 @@ Task 5, docs and the UI e2e:
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
 | UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
 
+**T5** (workload federation) is in progress. Task 2, federations:
+
+| Spec | Code |
+|---|---|
+| Records (§9, D50) | `directory/federation.rs`: `Federation`, `Rule` (exact claims, pinned to `repository` / `project_path` / `sub`, no `*`, `ttl_secs` 60–3600), `FederationStore` (table `federations`, directory scope; 20 per tenant, 50 rules each) |
+| D49's issuer | `federation::Issuers`: discovery (its `issuer` must be the federation's) and JWKS, `https` (a loopback mock in tests), cached an hour, read again for an unknown key id at most once a minute; a federation is refused when its issuer can't be read |
+| API (D51) | `glidex/directory/v1/federations.proto`, `FederationService` on both transports (`service/federations.rs`, `api/federations.rs`), `/tenants/{id}/federations…`; actions `readTenantFederations` (tenant auditors, tenant admins, directory readers) and `manageTenantFederations` (tenant admins, directory admins; step-up); rules' service accounts must be the tenant's |
+| gxctl | `federation list|show|add|enable|disable|remove` (`--match`… `--service-account`, or `--rules-file`) |
+| Tests | `federation.rs` unit tests; `connector_tests.rs::federations_are_a_tenants_and_checked_when_made` |
+
 **T4** (pull sync from Google Workspace) is implemented: tasks 1–5 of
 §18. The checks of [idp-checks.md](idp-checks.md) against a real
 Workspace are the operator's to run. Task 2, the runs:

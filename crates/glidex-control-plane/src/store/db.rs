@@ -124,6 +124,8 @@ tables! {
     DatastoreNodes = 50 => "datastore_nodes",
     // Tenants' shares of cluster device pools (spec/host-topology.md §9.1a).
     TenantDevicePools = 51 => "tenant_device_pools",
+    // Workload federations (spec/tenancy.md §9).
+    Federations = 52 => "federations",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -143,7 +145,9 @@ impl TableId {
         match self {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
-            | Invitations | ScimTokens | ScimGroups | ConnectorSync => Scope::Directory,
+            | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations => {
+                Scope::Directory
+            }
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

@@ -2,12 +2,13 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::{directory, invitations};
+use crate::service::{directory, federations, invitations};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::directory::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = ConnectorServiceExt::register(Svc::new(app), router);
+    let router = FederationServiceExt::register(Svc::new(app), router);
     InvitationServiceExt::register(Svc::new(app), router)
 }
 
@@ -145,5 +146,56 @@ impl InvitationService for Svc {
         req: ServiceRequest<'_, RevokeInvitationRequest>,
     ) -> ServiceResult<RevokeInvitationResponse> {
         op!(self, ctx, req, invitations::revoke_invitation)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl FederationService for Svc {
+    async fn list_federations(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListFederationsRequest>,
+    ) -> ServiceResult<ListFederationsResponse> {
+        op!(self, ctx, req, federations::list_federations)
+    }
+
+    async fn get_federation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetFederationRequest>,
+    ) -> ServiceResult<GetFederationResponse> {
+        op!(self, ctx, req, federations::get_federation)
+    }
+
+    async fn create_federation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateFederationRequest>,
+    ) -> ServiceResult<CreateFederationResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            federations::create_federation(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
+    async fn update_federation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateFederationRequest>,
+    ) -> ServiceResult<UpdateFederationResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            federations::update_federation(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
+    async fn delete_federation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteFederationRequest>,
+    ) -> ServiceResult<DeleteFederationResponse> {
+        op!(self, ctx, req, federations::delete_federation)
     }
 }

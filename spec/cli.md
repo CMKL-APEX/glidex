@@ -173,6 +173,7 @@ name (ids when `/projects` isn't readable).
 | `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
 | `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([tenancy.md](tenancy.md) §6.1); `create` prints the link once |
+| `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([tenancy.md](tenancy.md) §9) |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
 | `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |

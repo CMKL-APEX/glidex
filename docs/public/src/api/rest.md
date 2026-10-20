@@ -399,6 +399,9 @@ them to the node being managed).
 | `DELETE` | `/tenants/{id}` | Delete a tenant (`409 tenant_in_use` while it has projects) |
 | `POST` | `/tenants/{id}/suspend` | Suspend a tenant |
 | `POST` | `/tenants/{id}/resume` | Resume a tenant |
+| `GET` | `/tenants/{id}/federations` | The tenant's workload federations (CI issuers it trusts) |
+| `POST` | `/tenants/{id}/federations` | Trust a CI or workload issuer: its audience, and rules mapping its tokens to service accounts |
+| `GET` / `PATCH` / `DELETE` | `/tenants/{id}/federations/{federation}` | Read, change (enable, disable) or remove a federation |
 | `GET` | `/tenants/{id}/members` | List explicit members |
 | `POST` | `/tenants/{id}/members` | Add a member |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |

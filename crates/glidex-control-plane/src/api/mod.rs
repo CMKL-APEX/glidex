@@ -12,6 +12,7 @@ mod access;
 mod cluster;
 mod connectors;
 pub(crate) mod errors;
+mod federations;
 pub mod gate;
 mod invitations;
 mod net;
@@ -1031,6 +1032,36 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         delete(tenants::remove_binding),
     )
     // ---- invitations (spec/tenancy.md §6.1)
+    .add(
+        "GET",
+        "/tenants/{id}/federations",
+        "readTenantFederations",
+        get(federations::list),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/federations",
+        "manageTenantFederations",
+        post(federations::create),
+    )
+    .add(
+        "GET",
+        "/tenants/{id}/federations/{federation}",
+        "readTenantFederations",
+        get(federations::get),
+    )
+    .add(
+        "PATCH",
+        "/tenants/{id}/federations/{federation}",
+        "manageTenantFederations",
+        axum::routing::patch(federations::update),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}/federations/{federation}",
+        "manageTenantFederations",
+        delete(federations::delete),
+    )
     .add(
         "GET",
         "/tenants/{id}/invitations",

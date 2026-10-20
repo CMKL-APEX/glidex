@@ -252,6 +252,10 @@ pub struct AuthService {
     pub scim_tokens: crate::directory::scim_tokens::ScimTokenStore,
     /// Each pulled connector's last run (spec/tenancy.md §8.2).
     pub sync_status: crate::directory::sync::SyncStatusStore,
+    /// Workload federations (spec/tenancy.md §9).
+    pub federations: crate::directory::federation::FederationStore,
+    /// Their issuers' keys, cached.
+    pub issuers: crate::directory::federation::Issuers,
     /// Tests: the source every pull reads instead of its IdP.
     sync_source: Mutex<Option<Arc<dyn crate::directory::sync::Source>>>,
     /// One OIDC client per connector, rebuilt when its record changes.
@@ -378,6 +382,8 @@ impl AuthService {
             scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
+            federations: crate::directory::federation::FederationStore::new(db.clone()),
+            issuers: Default::default(),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
@@ -414,6 +420,8 @@ impl AuthService {
             scim_tokens: crate::directory::scim_tokens::ScimTokenStore::new(db.clone()),
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
+            federations: crate::directory::federation::FederationStore::new(db.clone()),
+            issuers: Default::default(),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,

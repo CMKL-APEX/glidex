@@ -97,7 +97,7 @@ namespace Glidex {
   action "host.paths", "quota.exceed", "cluster.admissions" in ["role.system-admin"];
   // Tenants and directories (spec/tenancy.md §10.5).
   action "tenant.read" in ["role.tenant-auditor"];
-  action "tenant.members", "tenant.projects" in ["role.tenant-admin"];
+  action "tenant.members", "tenant.projects", "tenant.federations" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
   action "directory.users", "directory.tenants", "directory.connectors" in ["role.directory-admin"];
 
@@ -163,6 +163,12 @@ namespace Glidex {
   action readTenantDevicePools in ["tenant.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantDevicePools in ["tenant.projects", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // Workload federations (spec/tenancy.md §9, D51): trusting a CI system
+  // gives its jobs a service account's rights in the tenant.
+  action readTenantFederations in ["tenant.read", "tenant.federations", "directory.read", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  action manageTenantFederations in ["tenant.federations", "directory.tenants", "step-up", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
   action listConnectors, readConnector in ["directory.read", "directory-scoped"]
