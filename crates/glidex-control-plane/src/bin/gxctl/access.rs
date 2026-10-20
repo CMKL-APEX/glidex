@@ -324,9 +324,24 @@ pub fn apply_quota_edits(quotas: &mut Quotas, edits: &[&str]) -> Result<(), Stri
         let (k, v) = e
             .split_once('=')
             .ok_or_else(|| format!("'{}': write quotas as key=value", e))?;
+        // `devices.<pool>`: a pool's devices; `none` drops the limit.
+        if let Some(pool) = k.strip_prefix("devices.").filter(|p| !p.is_empty()) {
+            match v {
+                "none" | "null" | "unlimited" | "-" => {
+                    quotas.devices.remove(pool);
+                }
+                n => {
+                    let n = n
+                        .parse::<u32>()
+                        .map_err(|_| format!("'{}': a quota is a number or 'none'", e))?;
+                    quotas.devices.insert(pool.to_string(), n);
+                }
+            }
+            continue;
+        }
         let Some(slot) = quota_slot(quotas, k) else {
             return Err(format!(
-                "unknown quota '{}'; one of {}",
+                "unknown quota '{}'; one of {}, devices.<pool>",
                 k,
                 QUOTA_KEYS.join(", ")
             ));
@@ -344,19 +359,32 @@ pub fn apply_quota_edits(quotas: &mut Quotas, edits: &[&str]) -> Result<(), Stri
 
 fn quota_line(q: Option<&Quotas>, usage: Option<&ProjectUsage>) -> String {
     let q = q.cloned().unwrap_or_default();
-    QUOTA_KEYS
+    let show = |k: &str, limit: Option<u32>, used: Option<u32>| {
+        let limit = limit.map(|v| v.to_string()).unwrap_or_else(|| "∞".into());
+        match used {
+            Some(n) => format!("{} {}/{}", k, n, limit),
+            None => format!("{} {}", k, limit),
+        }
+    };
+    let mut out: Vec<String> = QUOTA_KEYS
         .iter()
-        .map(|k| {
-            let limit = quota_of(&q, k)
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "∞".into());
-            match usage {
-                Some(u) => format!("{} {}/{}", k, usage_of(u, k), limit),
-                None => format!("{} {}", k, limit),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  ")
+        .map(|k| show(k, quota_of(&q, k), usage.map(|u| usage_of(u, k))))
+        .collect();
+    // Pools with a limit or in use, by name.
+    let mut pools: Vec<&String> = q.devices.keys().collect();
+    if let Some(u) = usage {
+        pools.extend(u.devices.keys());
+    }
+    pools.sort();
+    pools.dedup();
+    for p in pools {
+        out.push(show(
+            &format!("devices.{p}"),
+            q.devices.get(p).copied(),
+            usage.map(|u| u.devices.get(p).copied().unwrap_or(0)),
+        ));
+    }
+    out.join("  ")
 }
 
 async fn get_project(
@@ -1244,6 +1272,12 @@ mod tests {
         assert!(apply_quota_edits(&mut q, &["cpus=1"]).is_err());
         assert!(apply_quota_edits(&mut q, &["vms"]).is_err());
         assert!(apply_quota_edits(&mut q, &["vms=lots"]).is_err());
+        // A pool's devices, by name.
+        apply_quota_edits(&mut q, &["devices.a100=2", "devices.nic=4"]).unwrap();
+        assert_eq!(q.devices.get("a100"), Some(&2));
+        apply_quota_edits(&mut q, &["devices.nic=none"]).unwrap();
+        assert!(!q.devices.contains_key("nic"));
+        assert!(apply_quota_edits(&mut q, &["devices.=1"]).is_err());
     }
 
     #[test]
@@ -1260,5 +1294,20 @@ mod tests {
         assert!(line.starts_with("vms 1/4  vcpus 0/∞"), "{line}");
         let line = quota_line(Some(&q), None);
         assert!(line.starts_with("vms 4  vcpus ∞"), "{line}");
+        let q = Quotas {
+            devices: [("a100".to_string(), 2)].into_iter().collect(),
+            ..Default::default()
+        };
+        let used = ProjectUsage {
+            devices: [("a100".to_string(), 1), ("nic".to_string(), 3)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let line = quota_line(Some(&q), Some(&used));
+        assert!(
+            line.ends_with("devices.a100 1/2  devices.nic 3/∞"),
+            "{line}"
+        );
     }
 }

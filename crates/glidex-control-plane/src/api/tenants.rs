@@ -194,3 +194,23 @@ pub async fn remove_admission(c: Caller, Path(tenant): Path<String>) -> Result<S
     )?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub async fn list_device_pools(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<pb::ListDevicePoolsResponse>, ApiErr> {
+    let req = pb::ListDevicePoolsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Json(svc::list_device_pools(&c, req).await?))
+}
+
+pub async fn set_device_pools(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(mut req): Json<pb::SetDevicePoolsRequest>,
+) -> Result<Json<pb::SetDevicePoolsResponse>, ApiErr> {
+    req.id = id;
+    Ok(Json(svc::set_device_pools(&c, req).await?))
+}

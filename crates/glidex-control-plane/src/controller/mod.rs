@@ -115,6 +115,11 @@ impl VmManager {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
         }));
+        // Pools with `prepare: true`: their devices here, once at start.
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || m.prepare_pools()).await;
+        }));
         // What this node reports about itself, refreshed every two minutes.
         let m = me.clone();
         tasks.push(tokio::spawn(async move {

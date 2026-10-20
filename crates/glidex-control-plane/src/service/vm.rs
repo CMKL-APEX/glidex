@@ -233,6 +233,7 @@ fn device_request_pb(r: &m::DeviceRequest) -> pb::DeviceRequest {
         pool: r.pool.clone(),
         count: r.count,
         same_switch: r.same_switch,
+        tenant_pool: r.tenant_pool.clone(),
         ..Default::default()
     }
 }
@@ -252,8 +253,76 @@ fn device_requests_of(rs: &[pb::DeviceRequest]) -> Vec<m::DeviceRequest> {
             pool: r.pool.clone(),
             count: r.count.max(1),
             same_switch: r.same_switch,
+            tenant_pool: r.tenant_pool.clone().filter(|t| !t.is_empty()),
         })
         .collect()
+}
+
+/// Requests naming a tenant pool of the project's tenant become requests
+/// of its cluster pool, remembering the tenant pool (spec/host-topology.md
+/// §9.1a). The project must be one of the tenant pool's, and the tenant
+/// still granted the cluster pool; its `max` is checked with the quotas.
+fn resolve_tenant_pools(
+    call: &Call,
+    project: &str,
+    rs: &mut [m::DeviceRequest],
+) -> ServiceResult<()> {
+    let cluster = call.manager().pci_pools();
+    let tenant = || -> ServiceResult<String> {
+        let p = call
+            .manager()
+            .projects()
+            .get(project)
+            .map_err(|e| {
+                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+            })?
+            .ok_or_else(|| {
+                ServiceError::new(StatusCode::NOT_FOUND, "not_found", "project not found")
+            })?;
+        Ok(p.tenant_id)
+    };
+    for r in rs.iter_mut() {
+        let name = match &r.tenant_pool {
+            Some(t) => t.clone(),
+            None if cluster.iter().any(|p| p.name == r.pool) => continue,
+            None => r.pool.clone(),
+        };
+        let tid = tenant()?;
+        let tp = call
+            .auth()
+            .tenants
+            .device_pool(&tid, &name)
+            .map_err(|e| {
+                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+            })?
+            .ok_or_else(|| {
+                ServiceError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_config",
+                    format!("no device pool {name}"),
+                )
+            })?;
+        if !tp.projects.iter().any(|p| p == project) {
+            return Err(ServiceError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!("this project is not one of tenant pool {name}'s"),
+            ));
+        }
+        if !crate::api::vms::pool_tenant_grants(call, &tp.from).contains(&tid) {
+            return Err(ServiceError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!(
+                    "tenant pool {name}: the tenant is no longer granted pool {}",
+                    tp.from
+                ),
+            ));
+        }
+        r.pool = tp.from;
+        r.tenant_pool = Some(name);
+    }
+    Ok(())
 }
 
 /// Each requested pool exists, and the caller may use it for `project`
@@ -441,6 +510,8 @@ pub async fn preview_placement(
         &[],
     )?;
     let hypervisor = hypervisor_of(req.hypervisor.as_known().unwrap_or_default());
+    let mut pool_requests = device_requests_of(&req.devices);
+    resolve_tenant_pools(call, &project, &mut pool_requests)?;
     let mut cfg = serde_json::json!({
         "vcpu_count": req.vcpu_count.min(u32::from(u8::MAX)), "mem_size_mib": req.mem_size_mib,
         "rootfs_path": "", "kernel_args": "", "hugepages": req.hugepages.unwrap_or(false),
@@ -449,7 +520,7 @@ pub async fn preview_placement(
         "hugepage_size": req.hugepage_size,
         "numa_policy": numa_of(req.numa_policy.as_known().unwrap_or_default()).unwrap_or_default(),
         "cpu_policy": cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
-        "devices": device_requests_of(&req.devices),
+        "devices": pool_requests,
     });
     if let Some(h) = hypervisor {
         cfg["hypervisor"] = serde_json::json!(h);
@@ -552,7 +623,8 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
             .map_or_else(|| n.to_string(), |x| x.meta.id)
     });
     let device_nodes = device_nodes(call, &project, &req.vfio_devices, pin)?;
-    let pool_requests = device_requests_of(&req.devices);
+    let mut pool_requests = device_requests_of(&req.devices);
+    resolve_tenant_pools(call, &project, &mut pool_requests)?;
     check_pools(call, &project, &pool_requests)?;
     if names_host_path(&req) {
         call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
@@ -832,6 +904,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
     let project = vm.project.clone();
     let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.clone()))];
     let mut update = false;
+    if let Some(rs) = patch.config.as_mut().and_then(|c| c.devices.as_mut()) {
+        resolve_tenant_pools(call, &project, rs)?;
+    }
     if let Some(p) = patch.power
         && p != vm.spec.power
     {

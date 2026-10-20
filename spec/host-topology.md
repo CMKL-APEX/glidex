@@ -972,8 +972,35 @@ Where HT2 differs from the design above, and why:
   the pool, not each device. Picked devices are
   `status.placement.pool_devices`, claims like named devices, added to
   the VM's VFIO devices at launch and in device drift. `GET /pci-pools`
-  (`listPciPools`, `host.read`) needs a host role, so projects don't see
-  free counts yet. Not done yet: `devices.<pool>` quotas (§9.3),
-  `device.alloc` metering (§9.4), `prepare: true`, a UI form for pool
-  requests, and tenant pools (HT4b).
+  (`listPciPools`, `host.read`) needs a host role.
+- **HT4 follow-up**: `GET /pci-pools?project=` lists the pools a
+  project may use (`usePciPool`), with free counts and no devices, for
+  anyone who can read the project (`readProject`); the UI's VM form
+  offers them. `devices.<pool>` quotas (§9.3) are `Quotas.devices` (a
+  map; a pool not named is unlimited), counted over the project's VMs'
+  `devices` requests whether running or not, like `vcpus`, and summed
+  over a tenant's projects for its cap; the overrun's resource is
+  `devices.<pool>`. Metering (§9.4) is one meter per pool,
+  `device.alloc.<pool>`, from the placement's `pool_devices`, held while
+  paused (the devices stay the VM's). `prepare: true` runs once when the
+  node's controller starts, for devices not ready for a reason a
+  `vfio-pci` bind can fix (not for no IOMMU group or an OVS-DPDK
+  uplink); failures are logged, not reported in the node record.
+- **HT4b** (§9.1a): tenant pools are a cluster-scoped table
+  (`tenant_device_pools`, by `<tenant>/<name>`), set as a whole with
+  `PUT /tenants/{id}/device-pools` (`manageTenantDevicePools` in
+  `tenant.projects`, so tenant admins; `readTenantDevicePools` in
+  `tenant.read`). A name may not be a cluster pool's; `from` must be a
+  cluster pool granted to the tenant (`pci.allow` with `tenants`).
+  Admission resolves a request naming a tenant pool to its cluster pool
+  and records both (`DeviceRequest.tenant_pool`); the project must be
+  one of the pool's and the tenant still granted. `max` counts the
+  requests of all the tenant's VMs naming the pool, running or not
+  (like quotas), checked under the VM lock with the quotas, as
+  `tenant_quota_exceeded` / `tenant_pool.<name>`; `exceedQuota` may go
+  over. `GET /pci-pools?project=` lists the project's tenant pools too,
+  with `from`, `max`, `used` and `free` = what it may still take. Not
+  done: `max` on `tenant_grants` (a tenant's grant has no size yet, so a
+  tenant pool can't be checked against one); the `devices.<pool>` cap
+  is the bound.
 

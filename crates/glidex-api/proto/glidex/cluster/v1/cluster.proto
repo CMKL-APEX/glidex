@@ -628,7 +628,8 @@ service NodeService {
     };
   }
   // The device pools, their devices on each node, and what is free
-  // (spec/host-topology.md §9.1).
+  // (spec/host-topology.md §9.1). With `project`: the pools that project
+  // may use and how many are free, for anyone who can read the project.
   rpc ListPciPools(ListPciPoolsRequest) returns (ListPciPoolsResponse) {
     option (glidex.api.v1.op) = {
       action: "listPciPools"
@@ -853,7 +854,11 @@ message GetNodeResponse {
   Node node = 1;
 }
 
-message ListPciPoolsRequest {}
+message ListPciPoolsRequest {
+  // The pools this project may use, with free counts only (no devices):
+  // for its members, who need no host role.
+  optional string project = 1;
+}
 message ListPciPoolsResponse {
   repeated PciPool pools = 1;
 }
@@ -863,6 +868,12 @@ message PciPool {
   // Ready, unclaimed, uncordoned devices over its nodes.
   uint32 free = 3;
   repeated PciPoolNode nodes = 4;
+  // A tenant pool (with `?project=`, those the project is one of): its
+  // cluster pool, its `max` and what its projects hold; `free` is then
+  // what of the cluster pool's free devices it may still take.
+  optional string from = 5;
+  optional uint32 max = 6;
+  optional uint32 used = 7;
 }
 message PciPoolNode {
   string node = 1;

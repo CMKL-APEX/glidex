@@ -340,6 +340,8 @@ unary. REST paths and RPC requests take the same ids and names.
 |  | `ListBindings` | `GET /tenants/{id}/bindings` |
 |  | `AddBinding` | `POST /tenants/{id}/bindings` |
 |  | `RemoveBinding` | `DELETE /tenants/{id}/bindings/{link}` |
+|  | `ListDevicePools` | `GET /tenants/{id}/device-pools` |
+|  | `SetDevicePools` | `PUT /tenants/{id}/device-pools` |
 | `AdmissionService` | `ListAdmissions` | `GET /admissions` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |

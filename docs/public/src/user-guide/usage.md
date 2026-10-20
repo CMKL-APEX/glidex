@@ -41,6 +41,7 @@ Administrators can change these.
 | `cpu.used` | VM | core-hours | CPU time the VM actually used, the hypervisor's own included. |
 | `cpu.cores_peak` | VM | cores | Highest CPU rate over one sample interval. |
 | `mem.alloc` | VM | MiB-hours | Memory size × time running or paused. |
+| `device.alloc.<pool>` | VM | device-hours | Devices of a pool the VM holds × time running or paused. |
 | `mem.used` | VM | MiB-hours | Memory the VM's processes held × time. |
 | `mem.peak` | VM | MiB | Most memory held in the hour. |
 | `vmio.read_bytes`, `vmio.write_bytes` | VM | GiB | Disk I/O on the host side, after the host's page cache. |

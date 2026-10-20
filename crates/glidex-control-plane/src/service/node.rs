@@ -69,18 +69,11 @@ pub async fn get_node_topology(
     })
 }
 
-/// `GET /pci-pools` (spec/host-topology.md §9.1): each pool's devices on
-/// each node it is on, whether ready, cordoned or held and by what VM,
-/// and how many are free.
-pub async fn list_pci_pools(
-    call: &Call,
-    _req: pb::ListPciPoolsRequest,
-) -> ServiceResult<pb::ListPciPoolsResponse> {
-    call.require(Ent::Host, EntitySet::new())?;
-    let m = call.manager();
+/// Every cluster pool with its devices per node and free counts.
+pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPool> {
     let loads = m.loads_by_node().await;
-    let pools = m
-        .pci_pools()
+    let configured = m.pci_pools();
+    configured
         .iter()
         .map(|p| {
             let nodes: Vec<pb::PciPoolNode> = loads
@@ -141,11 +134,96 @@ pub async fn list_pci_pools(
                 ..Default::default()
             }
         })
-        .collect();
+        .collect()
+}
+
+/// `GET /pci-pools` (spec/host-topology.md §9.1): each pool's devices on
+/// each node it is on, whether ready, cordoned or held and by what VM,
+/// and how many are free. `?project=`: the pools that project may use,
+/// with free counts and no devices, for anyone who can read the project.
+pub async fn list_pci_pools(
+    call: &Call,
+    req: pb::ListPciPoolsRequest,
+) -> ServiceResult<pb::ListPciPoolsResponse> {
+    let project = match req.project.as_deref().filter(|p| !p.is_empty()) {
+        Some(key) => {
+            let pid = call.target_project(Some(key))?;
+            call.set_project(&pid);
+            call.require_readable(
+                "readProject",
+                Ent::Project(pid.clone()),
+                crate::api::project_entities(&pid),
+                "project",
+            )?;
+            Some(pid)
+        }
+        None => {
+            call.require(Ent::Host, EntitySet::new())?;
+            None
+        }
+    };
+    let m = call.manager();
+    let all = cluster_pools(m).await;
+    let pools = all.clone().into_iter();
+    let pools = match &project {
+        None => pools.collect(),
+        // Only pools it may use, and no addresses or holders.
+        Some(pid) => {
+            let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(pid.clone()))];
+            pools
+                .filter(|p| {
+                    let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
+                    es.project(pid);
+                    call.allowed_action("usePciPool", e, es, with_project)
+                })
+                .map(|mut p| {
+                    for n in &mut p.nodes {
+                        n.devices.clear();
+                    }
+                    p
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    // With a project: also the tenant pools it is one of (§9.1a).
+    let mut pools = pools;
+    if let Some(pid) = &project {
+        pools.extend(
+            crate::service::tenancy::tenant_pools_pb(call, m, pid_tenant(m, pid)?.as_str(), &all)
+                .await?
+                .into_iter()
+                .filter(|t| t.projects.contains(pid))
+                .map(|t| pb::PciPool {
+                    name: t.name,
+                    class: all
+                        .iter()
+                        .find(|c| c.name == t.from)
+                        .and_then(|c| c.class.clone()),
+                    free: if t.ungranted {
+                        0
+                    } else {
+                        t.free.min(t.max.saturating_sub(t.used))
+                    },
+                    from: Some(t.from),
+                    max: Some(t.max),
+                    used: Some(t.used),
+                    ..Default::default()
+                }),
+        );
+    }
     Ok(pb::ListPciPoolsResponse {
         pools,
         ..Default::default()
     })
+}
+
+fn pid_tenant(m: &crate::state::VmManager, pid: &str) -> ServiceResult<String> {
+    m.projects()
+        .get(pid)
+        .ok()
+        .flatten()
+        .map(|p| p.tenant_id)
+        .ok_or_else(|| ServiceError::new(StatusCode::NOT_FOUND, "not_found", "project not found"))
 }
 
 /// The node and device a device operation names, authorized for the

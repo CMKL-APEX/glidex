@@ -7,7 +7,7 @@ use crate::api::cluster::body;
 use crate::service::node as svc;
 use axum::{
     Json,
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -39,11 +39,21 @@ pub async fn topology(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     ))
 }
 
-pub async fn pci_pools(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    Ok(Proto(
-        StatusCode::OK,
-        svc::list_pci_pools(&c, Default::default()).await?,
-    ))
+#[derive(serde::Deserialize)]
+pub struct PoolsQuery {
+    #[serde(default)]
+    project: Option<String>,
+}
+
+pub async fn pci_pools(
+    c: Caller,
+    Query(q): Query<PoolsQuery>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListPciPoolsRequest {
+        project: q.project,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::list_pci_pools(&c, req).await?))
 }
 
 pub async fn prepare_device(

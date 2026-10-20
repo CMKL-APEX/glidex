@@ -1658,6 +1658,7 @@ mod tests {
                     ..Default::default()
                 },
                 nodes: vec![],
+                prepare: false,
             },
             count,
             same_switch,

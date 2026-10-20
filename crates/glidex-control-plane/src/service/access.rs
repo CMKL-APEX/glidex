@@ -141,6 +141,7 @@ fn usage_pb(u: &crate::tenancy::Usage) -> pb::ProjectUsage {
         networks: c(u.networks),
         routers: c(u.routers),
         external_ips: c(u.external_ips),
+        devices: u.devices.iter().map(|(k, &v)| (k.clone(), c(v))).collect(),
         ..Default::default()
     }
 }
