@@ -1013,6 +1013,52 @@ async fn oidc_login_through_an_api_connector() {
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
+/// The web UI's step-up (spec/web-ui.md): `reauth=1` on a connector's
+/// start sends the browser to a fresh login at the IdP.
+#[tokio::test]
+async fn a_step_up_through_a_connector_asks_the_idp_for_a_fresh_login() {
+    let mock = idp::start().await;
+    let h = harness();
+    h.oidc_connector(&mock, "corp", json!({"default_tenant": "default"}))
+        .await;
+    for (q, fresh) in [
+        ("reauth=1", true),
+        ("reauth=true", true),
+        ("reauth=0", false),
+        ("", false),
+    ] {
+        let (s, v, headers) = h
+            .send(
+                Request::get(format!("/auth/c/corp/start?return_to=/nodes&{q}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(s, StatusCode::SEE_OTHER, "{q}: {v}");
+        let loc =
+            reqwest::Url::parse(headers.get(header::LOCATION).unwrap().to_str().unwrap()).unwrap();
+        let p: std::collections::HashMap<_, _> = loc.query_pairs().into_owned().collect();
+        assert_eq!(
+            p.get("prompt").map(String::as_str) == Some("login"),
+            fresh,
+            "{q}: {loc}"
+        );
+        assert_eq!(
+            p.get("max_age").map(String::as_str) == Some("0"),
+            fresh,
+            "{q}: {loc}"
+        );
+    }
+    let (s, _, _) = h
+        .send(
+            Request::get("/auth/c/corp/start?reauth=maybe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn require_mfa_checks_amr_and_acr() {
     let mock = idp::start().await;
