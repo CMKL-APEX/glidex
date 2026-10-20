@@ -1558,11 +1558,32 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
     true
 }
 
+/// Commands that never use the local session: on a cluster agent, which
+/// has no API of its own, they run anyway; `auth login` is how one gets a
+/// server to talk to.
+fn needs_no_session(words: &[String]) -> bool {
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    matches!(
+        w.as_slice(),
+        ["auth", "login" | "use" | "profiles" | "trust", ..]
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let client = match build_client(&cli) {
         Ok(c) => c,
+        // The session isn't used: any client will do.
+        Err(e) if e == client::AGENT_HINT && needs_no_session(&cli.command) => {
+            match ApiClient::tcp(client::DEFAULT_URL, None) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red(), e);
+                    std::process::exit(2);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("{} {}", "Error:".red(), e);
             std::process::exit(2);
@@ -1660,6 +1681,20 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_login_runs_without_a_local_session() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(needs_no_session(&w(
+            "auth login --url https://192.0.2.1:8841"
+        )));
+        assert!(needs_no_session(&w("auth use prod")));
+        assert!(needs_no_session(&w("auth profiles")));
+        assert!(!needs_no_session(&w("auth status")));
+        assert!(!needs_no_session(&w("node list")));
+        assert!(!needs_no_session(&[]));
+        assert!(client::AGENT_HINT.contains("auth login --url https://"));
+    }
 
     #[test]
     fn credential_choice_defaults_to_mine() {
