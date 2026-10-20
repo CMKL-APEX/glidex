@@ -1092,6 +1092,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "bindings",
             "bind",
             "unbind",
+            "device-pools",
+            "device-pool",
         ],
     ),
     ("admission", &["list", "set", "remove"]),

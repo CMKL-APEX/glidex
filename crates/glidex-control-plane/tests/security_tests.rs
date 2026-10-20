@@ -2396,6 +2396,7 @@ async fn pools_are_granted_and_hand_out_devices() {
             ..Default::default()
         },
         nodes: vec![],
+        prepare: false,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2478,10 +2479,42 @@ async fn pools_are_granted_and_hand_out_devices() {
     let devs = pool["nodes"][0]["devices"].as_array().unwrap();
     assert_eq!(devs[0]["holder"], "v1", "{v}");
     assert_eq!(devs[1]["holder"], "v4", "{v}");
+    // A project's members see the pools it may use and what is free,
+    // without devices; no project, or another's, is refused.
+    let (s, v, _) = h.call("GET", "/pci-pools?project=pa", None, &a).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["pools"][0]["name"], "a100", "{v}");
+    assert_eq!(v["pools"][0]["nodes"][0].get("devices"), None, "{v}");
+    let (s, v, _) = h.call("GET", "/pci-pools?project=pb", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({}), "pb may use no pool: {v}");
+    let (s, _, _) = h.call("GET", "/pci-pools?project=pa", None, &b).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     // A third finds none left.
     let (s, v, _) = h
         .call("POST", "/vms", Some(with("v5", "pa", "a100")), &a)
         .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v.to_string().contains("pool a100: 0 of 1 free"), "{v}");
+    // `devices.<pool>` quotas: pa holds 2 and may have 2.
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    let ad = As::Bearer(h.token(&admin));
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &format!("/projects/{pa}"),
+            Some(json!({"quotas": {"devices": {"a100": 2}}})),
+            &ad,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["project"]["quotas"]["devices"]["a100"], 2, "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v6", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["details"]["quota"][0]["resource"], "devices.a100", "{v}");
+    let (_, v, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
+    assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
 }

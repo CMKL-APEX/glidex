@@ -47,6 +47,27 @@ pub struct SummaryDevice {
 }
 
 impl TopologyTree {
+    /// Devices of `pools` that binding to `vfio-pci` would make ready:
+    /// not ready, in an IOMMU group, and not an OVS-DPDK uplink.
+    pub fn to_prepare(&self, pools: &[crate::config::PciPool]) -> Vec<String> {
+        self.devices
+            .iter()
+            .filter(|d| d.assignable && !d.ready)
+            .filter(|d| {
+                !d.not_ready
+                    .iter()
+                    .any(|w| w.starts_with("no IOMMU group") || w.contains("OVS-DPDK uplink"))
+            })
+            .filter(|d| {
+                pools.iter().any(|p| {
+                    p.matches
+                        .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
+                })
+            })
+            .map(|d| d.address.clone())
+            .collect()
+    }
+
     /// The assignable devices, for the summary.
     pub fn summary_devices(&self) -> Vec<SummaryDevice> {
         self.devices
@@ -1036,6 +1057,34 @@ mod tests {
             vec!["/dev/vfio/31 can't be opened by this user".to_string()]
         );
         assert!(!func(&t, "0000:88:00.0").ready, "the NIC is on mlx5_core");
+    }
+
+    #[test]
+    fn a_prepare_pool_takes_its_devices_that_binding_makes_ready() {
+        let t = tree();
+        let gpus = crate::config::PciPool {
+            name: "a100".into(),
+            class: None,
+            matches: crate::config::PoolMatch {
+                class_code: Some("0x0302".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: true,
+        };
+        // 87:00.0 is ready; the NIC isn't the pool's.
+        assert_eq!(
+            t.to_prepare(std::slice::from_ref(&gpus)),
+            ["0000:07:00.0", "0000:09:00.0"]
+        );
+        assert!(t.to_prepare(&[]).is_empty());
+        // Without an IOMMU there is nothing binding can fix.
+        let mut off = t.clone();
+        for d in &mut off.devices {
+            d.not_ready = vec!["no IOMMU group (the IOMMU is off)".into()];
+            d.ready = false;
+        }
+        assert!(off.to_prepare(std::slice::from_ref(&gpus)).is_empty());
     }
 
     #[test]

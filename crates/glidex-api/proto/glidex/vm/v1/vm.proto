@@ -340,6 +340,9 @@ message DeviceRequest {
   // Default 1.
   uint32 count = 2;
   bool same_switch = 3 [json_name = "same_switch"];
+  // Set by the server when `pool` named a tenant pool: that tenant pool,
+  // with `pool` its cluster pool (spec/host-topology.md §9.1a).
+  optional string tenant_pool = 4 [json_name = "tenant_pool"];
 }
 
 // A device picked for a pool request.

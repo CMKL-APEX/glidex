@@ -327,6 +327,10 @@ pub struct PciPool {
     /// Node ids or names the pool is on; empty: every node.
     #[serde(default)]
     pub nodes: Vec<String>,
+    /// Each node binds its devices of the pool to `vfio-pci` at start
+    /// (spec/host-topology.md §5.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepare: bool,
 }
 
 /// Which devices are a pool's: every key given must match.
@@ -651,6 +655,7 @@ mod tests {
                 addresses: vec![],
             },
             nodes: vec![],
+            prepare: false,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],

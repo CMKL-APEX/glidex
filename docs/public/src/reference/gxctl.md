@@ -161,7 +161,7 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-reapply <bridge> <name>` | Set up again an uplink rolled back at start |
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
-| `pci pools` | The device pools: their devices per node, holders, and how many are free |
+| `pci pools [--project P]` | The device pools: their devices per node, holders, and how many are free; with `--project`, the pools that project may use and how many are free |
 | `pci <address>` | One device in detail |
 
 See [Host networking](../operator-guide/host-networking.md) and
@@ -189,7 +189,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `project show <p>` | Quotas and usage |
 | `project create <name> [--description TEXT]` | Create a project |
 | `project delete <p>` | Delete after confirmation |
-| `project quota <p> [key=value…]` | Show, or set limits: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`; `none` means unlimited |
+| `project quota <p> [key=value…]` | Show, or set limits: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `devices.<pool>`; `none` means unlimited |
 | `project use <p>` | Set your default project (`-` or `none` clears it) |
 | `binding list <p>` | A project's role bindings |
 | `binding add <p> <role> user:<id>\|team:<id>\|token:<id>` | Grant a role on a project |
@@ -223,6 +223,8 @@ and [Access control](../operator-guide/access-control.md).
 | `tenant suspend <t>`, `resume <t>`, `delete <t>` | Suspend, resume or delete |
 | `tenant members <t>`, `add-member <t> <principal>`, `remove-member <t> <principal>` | Explicit members (`user:<id>`, `team:<id>`) |
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
+| `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |
+| `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips` |
 | `admission remove <tenant>` | Remove an admission |

@@ -148,7 +148,7 @@ reported as `404`.
 | `DELETE` | `/vms/{id}/devices` | `detach_device` | Remove a VFIO PCI device from the spec (hot-unplugged while running) |
 | `GET` | `/system/reconcile` | `system_reconcile` | Controller status: runner, bus, netd, queue, orphans, unknown VMs |
 | `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices, with NUMA node and readiness (host-topology.md §5.1) |
-| `GET` | `/pci-pools` | `nodes::pci_pools` | Device pools (host-topology.md §9.1, action `listPciPools`) |
+| `GET` | `/pci-pools` | `nodes::pci_pools` | Device pools (host-topology.md §9.1, action `listPciPools`); `?project=`: the pools that project may use (`usePciPool`), free counts only, for anyone who can read the project (`readProject`) |
 | `GET` | `/host/topology` | `host_topology` | This host's topology tree (host-topology.md §3.2, action `readHostTopology`) |
 | `GET` | `/credentials` | `list_credentials` | List stored guest logins (no hashes) |
 | `POST` | `/credentials` | `create_credential` | Create a login; password is hashed on arrival |
@@ -213,6 +213,7 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/tenants/{id}/members/{user:<id>\|team:<id>}` | `RemoveMember` | |
 | `GET` / `POST` | `/tenants/{id}/bindings` | `ListBindings` / `AddBinding` | Tenant roles: `role.tenant-admin`, `role.tenant-auditor` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
+| `GET` / `PUT` | `/tenants/{id}/device-pools` | `ListDevicePools` / `SetDevicePools` | Tenant pools on this cluster ([host-topology.md](host-topology.md) §9.1a): `{pools: [{name, from, max, projects}]}` replaces them all; answered with `used`, the cluster pool's `free` and `ungranted`. Actions `readTenantDevicePools` (tenant-auditor) and `manageTenantDevicePools` (tenant-admin) |
 | `GET` / `POST` | `/tenants/{id}/invitations` | `InvitationService.ListInvitations` / `CreateInvitation` | Invitations ([tenancy.md](tenancy.md) §6.1): `{email, role, connector, days?}` (`role`: `member` or a tenant role; `connector`: an `oidc` or `google` one; 1-30 days, default 7) → `201 {invitation, link}`, the link (`…/invite/<id>#<secret>`) answered once; listed without secrets, open ones and taken or expired ones for 30 days |
 | `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |

@@ -22,6 +22,8 @@ const DIRECTORIES: TableDefinition<&str, &[u8]> = TableDefinition::new("director
 const TENANTS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenants");
 const ADMISSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("admissions");
 const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_members");
+/// Tenant pools on this cluster, by `<tenant>/<name>` (spec/host-topology.md §9.1a).
+const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
@@ -115,6 +117,22 @@ pub struct Admission {
     /// The tenant's limits on this cluster; `None` fields are unlimited.
     pub cap: Quotas,
     pub status: AdmissionStatus,
+    pub by: String,
+    pub at: u64,
+}
+
+/// A tenant's share of a cluster device pool, split among some of its
+/// projects (spec/host-topology.md §9.1a, H17).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantPool {
+    pub tenant_id: String,
+    pub name: String,
+    /// The cluster pool (`pci.pools`) its devices come from.
+    pub from: String,
+    /// Devices its projects' VMs ask for at once, in all.
+    pub max: u32,
+    /// Project ids that may ask for it.
+    pub projects: Vec<String>,
     pub by: String,
     pub at: u64,
 }
@@ -503,6 +521,7 @@ impl TenantStore {
             return Err(TenantError::NotFound(id.into()));
         }
         self.remove(ADMISSIONS, id)?;
+        self.set_device_pools(id, Vec::new())?;
         for m in self.members(id)? {
             self.remove(MEMBERS, &member_key(id, &m.principal))?;
         }
@@ -560,6 +579,50 @@ impl TenantStore {
         };
         self.put(MEMBERS, &member_key(tenant, &m.principal), &m)?;
         Ok(m)
+    }
+
+    /// The tenant's pools on this cluster, by name.
+    pub fn device_pools(&self, tenant: &str) -> Result<Vec<TenantPool>, TenantError> {
+        Ok(self
+            .read_all::<TenantPool>(DEVICE_POOLS)?
+            .into_iter()
+            .filter(|p| p.tenant_id == tenant)
+            .collect())
+    }
+
+    pub fn device_pool(&self, tenant: &str, name: &str) -> Result<Option<TenantPool>, TenantError> {
+        Ok(self
+            .device_pools(tenant)?
+            .into_iter()
+            .find(|p| p.name == name))
+    }
+
+    /// Replace the tenant's pools with `pools`, in one write.
+    pub fn set_device_pools(
+        &self,
+        tenant: &str,
+        pools: Vec<TenantPool>,
+    ) -> Result<(), TenantError> {
+        let prefix = format!("{tenant}/");
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut t = txn.open_table(DEVICE_POOLS)?;
+            let old: Vec<String> = t
+                .iter()?
+                .filter_map(|e| e.ok())
+                .map(|(k, _)| k.value().to_string())
+                .filter(|k| k.starts_with(&prefix))
+                .collect();
+            for k in old {
+                t.remove(k.as_str())?;
+            }
+            for p in &pools {
+                let key = format!("{prefix}{}", p.name);
+                t.insert(key.as_str(), serde_json::to_vec(p)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     pub fn remove_member(&self, tenant: &str, principal: &Ent) -> Result<(), TenantError> {
@@ -622,5 +685,38 @@ mod tests {
         assert!(s.delete(DEFAULT_TENANT).is_err());
         s.delete(&t.id).unwrap();
         assert!(s.admission(&t.id).unwrap().is_none() && s.members(&t.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tenant_pools_are_replaced_as_a_set_and_go_with_the_tenant() {
+        let (s, _d) = store();
+        let t = s.create("acme", String::new(), false).unwrap();
+        let other = s.create("beta", String::new(), false).unwrap();
+        let pool = |tenant: &str, name: &str| TenantPool {
+            tenant_id: tenant.into(),
+            name: name.into(),
+            from: "a100".into(),
+            max: 2,
+            projects: vec![],
+            by: "test".into(),
+            at: 0,
+        };
+        s.set_device_pools(&t.id, vec![pool(&t.id, "x"), pool(&t.id, "y")])
+            .unwrap();
+        s.set_device_pools(&other.id, vec![pool(&other.id, "x")])
+            .unwrap();
+        s.set_device_pools(&t.id, vec![pool(&t.id, "y")]).unwrap();
+        let names = |id: &str| -> Vec<String> {
+            s.device_pools(id)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.name)
+                .collect()
+        };
+        assert_eq!(names(&t.id), ["y"]);
+        assert_eq!(names(&other.id), ["x"], "another tenant's stay");
+        assert!(s.device_pool(&t.id, "x").unwrap().is_none());
+        s.delete(&t.id).unwrap();
+        assert!(names(&t.id).is_empty());
     }
 }

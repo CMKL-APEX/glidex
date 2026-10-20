@@ -30,6 +30,10 @@ struct H {
 }
 
 fn harness() -> H {
+    harness_with(|_| {})
+}
+
+fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
@@ -37,6 +41,9 @@ fn harness() -> H {
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
+    f(&mut cfg);
+    // The manager has the pools from the same file (main.rs configures it).
+    manager.configure(&cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     H {
@@ -692,6 +699,183 @@ async fn allocation_needs_an_admission_and_the_tenant_cap_binds() {
     assert_eq!(s, StatusCode::OK);
     let (s, _) = h.rest("GET", &format!("/vms/{vm}"), None, &o).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "base.tenant-suspended");
+}
+
+#[tokio::test]
+async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+        }];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec![],
+            tenants: vec!["acme".into()],
+            node: None,
+        }];
+    });
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let gpu = |a: &str| SummaryDevice {
+        address: a.into(),
+        vendor_id: "0x10de".into(),
+        device_id: "0x20b0".into(),
+        class_id: "0x030200".into(),
+        ready: true,
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![gpu("0000:87:00.0"), gpu("0000:90:00.0")],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+
+    let at = h.session(&h.admin("ada"));
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "acme" })), &at)
+        .await;
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (s, _) = h
+        .rest("PUT", "/admissions/acme", Some(json!({})), &at)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (owner, tom) = (h.user("olivia"), h.user("tom"));
+    h.app
+        .auth
+        .add_link(
+            "grant.host-paths",
+            Ent::User(owner.clone()),
+            Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{acme}/bindings"),
+            Some(
+                json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": tom } }),
+            ),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (o, t) = (h.token(&owner), h.token(&tom));
+    let mut ids = std::collections::HashMap::new();
+    for name in ["p1", "p2", "p3"] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": acme, "owners": [owner] })),
+                &t,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.insert(name, v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let path = format!("/tenants/{acme}/device-pools");
+
+    // The tenant admin splits its share; bad pools are refused.
+    let pool = |name: &str, from: &str| json!({ "pools": [{ "name": name, "from": from, "max": 1, "projects": ["p1", "p2"] }] });
+    for (body, why) in [
+        (pool("a100", "a100"), "a cluster pool's name"),
+        (pool("team-gpus", "nope"), "no such cluster pool"),
+        (pool("Team", "a100"), "the name's form"),
+    ] {
+        let (s, v) = h.rest("PUT", &path, Some(body), &t).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{why}: {v}");
+    }
+    let (s, _) = h
+        .rest("PUT", &path, Some(pool("team-gpus", "a100")), &o)
+        .await;
+    assert!(
+        s == StatusCode::FORBIDDEN || s == StatusCode::NOT_FOUND,
+        "{s}"
+    );
+    let (s, v) = h
+        .rest("PUT", &path, Some(pool("team-gpus", "a100")), &t)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let tp = &v["pools"][0];
+    assert_eq!(
+        (tp["max"].as_u64(), tp["free"].as_u64()),
+        (Some(1), Some(2)),
+        "{v}"
+    );
+    assert_eq!(tp["projects"], json!([ids["p1"], ids["p2"]]), "{v}");
+
+    // p1's members see it, with what they may still take.
+    let (s, v) = h
+        .rest(
+            "GET",
+            &format!("/pci-pools?project={}", ids["p1"]),
+            None,
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mine = v["pools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "team-gpus")
+        .unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(
+        (mine["from"].as_str(), mine["free"].as_u64()),
+        (Some("a100"), Some(1))
+    );
+
+    let with = |name: &str, project: &str| {
+        let mut b = vm_body(name, project);
+        b["devices"] = json!([{ "pool": "team-gpus" }]);
+        b
+    };
+    let (s, v) = h
+        .rest("POST", "/vms", Some(with("v1", &ids["p1"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = &vm_of(&v)["devices"][0];
+    assert_eq!(
+        (d["pool"].as_str(), d["tenant_pool"].as_str()),
+        (Some("a100"), Some("team-gpus")),
+        "{v}"
+    );
+    assert!(vm_of(&v)["pool_devices"][0]["address"].is_string(), "{v}");
+    // The tenant pool's max is shared by its projects.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(with("v2", &ids["p2"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["error"], "tenant_quota_exceeded", "{v}");
+    assert_eq!(
+        v["details"]["quota"][0]["resource"], "tenant_pool.team-gpus",
+        "{v}"
+    );
+    // p3 isn't one of its projects.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(with("v3", &ids["p3"])), &o)
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden")),
+        "{v}"
+    );
+
+    let (s, v) = h.rest("GET", &path, None, &t).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["pools"][0]["used"], 1, "{v}");
 }
 
 #[tokio::test]
