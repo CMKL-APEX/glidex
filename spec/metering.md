@@ -414,7 +414,8 @@ New calls in `glidex-hv-client`:
 - **Datastores** ([storage.md](storage.md)). A disk is sampled by the
   node acting on it: its `node` on a node-local datastore, its `worker`
   on a shared one (`VmManager::is_local_disk`), so a shared disk is
-  counted once. A shared datastore's copy of an image
+  counted once. Its driver measures it (`StorageDriver::stored_bytes`):
+  a file's actual size, or an LVM volume's blocks in its thin pool. A shared datastore's copy of an image
   (`<path>/images/<id>.qcow2`, storage.md §4.5) is not metered yet,
   and usage can't be grouped by datastore yet (`group_by=datastore`,
   later).

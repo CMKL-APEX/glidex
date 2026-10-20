@@ -243,17 +243,17 @@ impl StorageDriver for LvmDriver {
         &self,
         disk: &Disk,
         from: &Path,
+        from_format: DiskFormat,
         _flatten: bool,
         prepare: Prepare<'_>,
     ) -> Result<(), ImageError> {
-        // Always a standalone copy: a raw volume has no backing file. The
-        // source is a disk glidex made, so its format may be probed.
-        let info = qemu_img::info(from, None)?;
+        // Always a standalone copy: a raw volume has no backing file.
+        let info = qemu_img::info(from, Some(from_format))?;
         self.build(
             disk,
             |t| {
                 let a = self.create(t, info.virtual_size)?;
-                qemu_img::convert_to_device(from, None, Path::new(&a.path))
+                qemu_img::convert_to_device(from, Some(from_format), Path::new(&a.path))
             },
             prepare,
         )
@@ -277,6 +277,17 @@ impl StorageDriver for LvmDriver {
             "disk {} is an LVM volume, which can't be made smaller",
             disk.name
         )))
+    }
+
+    fn stored_bytes(&self, disk: &Disk) -> Option<u64> {
+        // The pool's blocks it has, not the device's size (qemu-img can't
+        // tell on a block device).
+        let name = volume_name(disk);
+        self.volumes()
+            .ok()?
+            .into_iter()
+            .find(|v| v.name == name)
+            .map(|v| v.used_bytes)
     }
 
     fn stage(&self, disk: &Disk) -> Result<VolumeBinding, ImageError> {
@@ -315,6 +326,13 @@ pub fn probe(vg: &str, pool: &str, socket: &Path, now: u64) -> super::record::No
             row.reachable = true;
             row.total_bytes = st.size_bytes;
             row.free_bytes = st.size_bytes.saturating_sub(st.used_bytes);
+            // A full thin pool stops every guest on it at its next write.
+            let data = st.used_bytes as f64 * 100.0 / st.size_bytes.max(1) as f64;
+            if data >= 80.0 {
+                row.warnings.push(format!(
+                    "the thin pool is {data:.0}% full: extend it (lvextend), or guests stall when it fills"
+                ));
+            }
             if st.metadata_percent >= 80.0 {
                 row.warnings.push(format!(
                     "the thin pool's metadata is {:.0}% full: extend it (lvextend --poolmetadatasize)",

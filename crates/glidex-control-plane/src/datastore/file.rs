@@ -128,12 +128,13 @@ impl StorageDriver for FileDriver {
         &self,
         disk: &Disk,
         from: &Path,
+        from_format: DiskFormat,
         flatten: bool,
         prepare: Prepare<'_>,
     ) -> Result<(), ImageError> {
         let tmp = self.temp(disk, "move");
         if flatten {
-            qemu_img::convert(from, DiskFormat::Qcow2, tmp.path(), disk.format)?;
+            qemu_img::convert(from, from_format, tmp.path(), disk.format)?;
         } else {
             qemu_img::copy_sparse(from, tmp.path())?;
         }

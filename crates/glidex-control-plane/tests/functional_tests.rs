@@ -2844,3 +2844,197 @@ async fn numa_e2e(hypervisor: &str) {
         assert_eq!(status, StatusCode::NO_CONTENT);
     }
 }
+
+/// A cloud image booted from an LVM-thin volume (spec/storage.md §11.1):
+/// a linked disk, a thin snapshot of the node's image volume, its root
+/// partition grown, opened by the hypervisor as a raw block device. Needs,
+/// besides KVM and a qcow2 cloud image (`GLIDEX_TEST_LVM_IMAGE`), a running
+/// glidex-stord that allows the volume group and hands devices to this
+/// test's user:
+///
+/// ```sh
+/// GLIDEX_TEST_LVM_IMAGE=~/images/resolute-server-cloudimg-amd64.img \
+///   GLIDEX_STORD_SOCKET=/run/gx-s6-test/stord/stord.sock GLIDEX_STORD_VG=gx-test \
+///   GLIDEX_STORD_POOL=pool cargo test -p glidex-control-plane --test functional_tests \
+///   lvm_root_disk_boots -- --ignored --nocapture
+/// ```
+async fn lvm_root_disk_e2e(hypervisor: &str) {
+    use glidex_control_plane::store::{Origin, TableId};
+    let source = env_path("GLIDEX_TEST_LVM_IMAGE", None);
+    let vg = std::env::var("GLIDEX_STORD_VG").expect("GLIDEX_STORD_VG");
+    let pool = std::env::var("GLIDEX_STORD_POOL").expect("GLIDEX_STORD_POOL");
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+    let (app, manager, _tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let firmware = pull_firmware_image(&app, hypervisor).await;
+
+    // The cloud image as a ready image record.
+    let images = manager.images();
+    let img_id = format!("lvm-boot-{}", uuid::Uuid::new_v4().simple());
+    let file = images.image_path(&img_id);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source)
+            .arg(&file),
+    );
+    let info: Value = serde_json::from_str(&run_ok(
+        Command::new("qemu-img")
+            .args(["info", "--output=json"])
+            .arg(&file),
+    ))
+    .unwrap();
+    assert_eq!(
+        info["format"], "qcow2",
+        "GLIDEX_TEST_LVM_IMAGE must be qcow2"
+    );
+    let size = info["virtual-size"].as_u64().unwrap();
+    let sha = glidex_control_plane::images::download::sha256_path(&file).unwrap();
+    let rec = json!({
+        "id": img_id, "name": img_id, "kind": "disk",
+        "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": size,
+        "file_size_bytes": std::fs::metadata(&file).unwrap().len(), "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(img_id.as_str(), rec.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    images.sync_keys(TableId::Images, std::slice::from_ref(&img_id));
+
+    let (s, v) = request(
+        &app,
+        "POST",
+        "/datastores",
+        Some(
+            json!({"name": "boot-thin", "driver": "DATASTORE_DRIVER_LVM",
+                    "volume_group": vg, "thin_pool": pool}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let username = "gxtester";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (s, v) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, v) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({"name": "lvm-root", "image": img_id, "size_gib": 6, "datastore": "boot-thin"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        let (_, d) = request(&app, "GET", "/disks/lvm-root", None).await;
+        match d["disk"]["status"].as_str() {
+            Some("ready") => break,
+            Some("failed") => panic!("{d}"),
+            _ => assert!(Instant::now() < deadline, "disk never ready: {d}"),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    let hostname = "gx-lvmtest";
+    let (s, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
+            "hypervisor": hypervisor_pb(hypervisor), "firmware": firmware,
+            "root_disk": "lvm-root", "credential": username,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_id(&vm);
+    let (s, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    tokio::task::spawn_blocking(move || {
+        let mut console = Console::connect(&console_path);
+        console.expect(&format!("{hostname} login: "), Duration::from_secs(300));
+        console.send(&format!("{username}\r"));
+        console.expect("Password: ", Duration::from_secs(30));
+        console.send(&format!("{password}\r"));
+        console.expect(
+            &format!("{username}@{hostname}:~$ "),
+            Duration::from_secs(60),
+        );
+        // The guest sees the 6 GiB volume, and its root grew into it.
+        console.send(
+            "echo GX_$(cat /sys/block/vda/size)_$(df --output=size -BG / | tail -1 | tr -d ' G')\r",
+        );
+        console.expect("GX_12582912_", Duration::from_secs(30));
+    })
+    .await
+    .unwrap();
+    assert!(
+        manager
+            .images()
+            .stored_bytes(&manager.images().get_disk("lvm-root").unwrap())
+            .unwrap()
+            > 0,
+        "metering sees the volume's blocks"
+    );
+    let (s, body) = request(&app, "POST", &format!("/vms/{id}/stop?wait=120"), None).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (s, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, v) = request(&app, "DELETE", "/disks/lvm-root", None).await;
+    assert!(s.is_success(), "{v}");
+    // The image volume goes with the image.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (s, v) = request(&app, "DELETE", &format!("/images/{img_id}"), None).await;
+        if s.is_success() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{v}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let mut c = glidex_stord::client::Client::connect(Path::new(
+        &std::env::var("GLIDEX_STORD_SOCKET").unwrap(),
+    ))
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let vols: Vec<glidex_stord::proto::Volume> = c
+            .call(glidex_stord::proto::Op::ListVolumes { vg: vg.clone() })
+            .unwrap();
+        if !vols.iter().any(|v| v.name.contains(&img_id)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "image volume left: {vols:?}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM from an LVM volume; needs KVM, cloud-hypervisor, a running glidex-stord and a VG"]
+async fn lvm_root_disk_boots() {
+    lvm_root_disk_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM from an LVM volume; needs KVM, QEMU, a running glidex-stord and a VG"]
+async fn qemu_lvm_root_disk_boots() {
+    lvm_root_disk_e2e("qemu").await;
+}

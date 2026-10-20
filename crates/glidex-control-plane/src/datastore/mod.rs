@@ -112,14 +112,15 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
         prepare: Prepare<'_>,
     ) -> Result<(), ImageError>;
 
-    /// Make `disk`'s volume a copy of the file `from` (another datastore's
-    /// volume), standalone with `flatten`; `prepare` runs on the copy, then
+    /// Make `disk`'s volume a copy of `from` (another datastore's volume, of
+    /// `from_format`), standalone with `flatten`; `prepare` runs on the copy, then
     /// it becomes the disk's (spec/storage.md §8.3). Nothing is left
     /// behind if either fails.
     fn copy_in(
         &self,
         disk: &Disk,
         from: &Path,
+        from_format: DiskFormat,
         flatten: bool,
         prepare: Prepare<'_>,
     ) -> Result<(), ImageError>;
@@ -150,6 +151,14 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
             ))),
             Err(e) => Err(ImageError::Io(format!("{path}: {e}"))),
         }
+    }
+
+    /// Bytes `disk`'s volume takes where it lives (metering's
+    /// `disk.stored`); `None` when it can't be told.
+    fn stored_bytes(&self, disk: &Disk) -> Option<u64> {
+        crate::images::qemu_img::info(self.binding(disk).path(), Some(disk.format))
+            .ok()
+            .map(|i| i.actual_size)
     }
 
     /// `disk`'s volume, ready to be opened on this node.
