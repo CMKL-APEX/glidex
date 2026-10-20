@@ -510,7 +510,9 @@ path: files are kept in memory or written under the image's id.
 
 ### 10.5 From a VM's own disk
 
-Both forms read the VM's managed root disk on the node that holds it:
+Both forms read the VM's managed root disk on a node that reaches it
+(its node on a node-local datastore; any node on a shared one,
+[storage.md](storage.md) §5), never while it is being moved (S5):
 read-only, with `backing_files=on` (or QEMU's qcow2 backing) for a
 linked disk glidex made, and the disk busy for the run, so the VM can't
 start meanwhile. The result is a kernel image the VM owns (`owner`,
@@ -521,8 +523,9 @@ that disk.
 `ImageService.ExtractVmKernel`) answers `202` with a new kernel image,
 `extracting`; poll it, then PATCH the VM's `kernel` to it. The VM must
 be stopped (`409` otherwise), boot a kernel image and have a managed
-root disk (`400`); in a cluster, the disk's node must answer (`409`
-names the disk otherwise). The image is kept even if it duplicates a
+root disk (`400`); in a cluster, a server on a node that reaches the
+disk must answer (`409` names the disk otherwise), and a disk being moved
+is `409` too. The image is kept even if it duplicates a
 stored one: the caller holds its id.
 
 **Every launch (K11, opt-in).** `VmConfig.kernel_from_disk` (default

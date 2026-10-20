@@ -270,13 +270,23 @@ impl VmManager {
             .into());
         }
         let disk = self.images.get_disk(&disk_id)?;
+        // On a node-local datastore, the disk's node reads it; on a shared
+        // one, any node that reaches the datastore (spec/storage.md §5).
         if disk
             .node
             .as_deref()
             .is_some_and(|n| n != self.local_node_id())
+            || self.images.driver(&disk).is_err()
         {
             return Err(ImageError::InUse(format!(
-                "disk {} is on another node: ask that node's server",
+                "disk {} is not reachable from this node: ask a server on a node that has it",
+                disk.name
+            ))
+            .into());
+        }
+        if disk.moving.is_some() {
+            return Err(ImageError::Busy(format!(
+                "disk {} is being moved to another datastore",
                 disk.name
             ))
             .into());
@@ -310,9 +320,11 @@ impl VmManager {
             return Ok(());
         };
         let disk = self.images.get_disk(&disk_id)?;
-        // Not made yet, or busy: the disk check that follows holds the
-        // launch; extract once it is ready.
-        if disk.phase != crate::images::DiskPhase::Ready || self.images.busy_op(&disk.id).is_some()
+        // Not made yet, busy, or moving (spec/storage.md §8.3): the disk
+        // check that follows holds the launch; extract once it is ready.
+        if disk.phase != crate::images::DiskPhase::Ready
+            || self.images.busy_op(&disk.id).is_some()
+            || disk.moving.is_some()
         {
             return Ok(());
         }
