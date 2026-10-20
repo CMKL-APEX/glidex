@@ -9,6 +9,18 @@ scripts/dev/ui-e2e.sh -H ch       # or -H qemu: the ui project plus one hypervis
 scripts/dev/ui-e2e.sh -- --headed -g "create form"   # extra Playwright arguments
 ```
 
+For the whole suite, with nothing skipped (it fails if a test skips):
+
+```bash
+scripts/dev/ui-e2e-full.sh -i ~/images/resolute-server-cloudimg-amd64.img -H ch
+```
+
+It checks the image, `/dev/kvm` and glidex-netd's socket first. If you
+aren't in the socket's group (`glidex`), which full netd access needs, it
+runs the suite with that group as your primary group for that run only
+(`sudo setpriv`), and you stay the scratch control plane's admin
+(`GLIDEX_E2E_GROUP`). Other options go to `ui-e2e.sh`.
+
 The script installs the UI's and the suite's dependencies and
 Playwright's Chromium (into `~/.cache/ms-playwright`) when missing,
 refuses to start if `:8851` / `:5174` / `:5175` are taken, and passes everything
@@ -51,6 +63,12 @@ rights. No PAM or IdP is needed.
 
 It never attaches to an already running control plane
 (`reuseExistingServer: false`), so a real glidex on `:8841` is left alone.
+One run at a time per machine: `scripts/start-control-plane.sh` takes
+`/tmp/glidex-ui-e2e.lock` (`GLIDEX_E2E_LOCK`) before it wipes the scratch
+home, and the control plane holds it until the suite ends, so a second
+run, `playwright test` run directly included, fails at once saying which
+run holds it, instead of breaking the first. Runs share the host's
+glidex-netd and Open vSwitch even with their own ports and home.
 It does use the host's glidex-netd and Open vSwitch: the scratch control
 plane registers its own `default` network on the existing `gxbr-nat`
 bridge (netd treats that as a no-op), and the boot tests create and
@@ -63,6 +81,7 @@ delete `ui-ch` / `ui-qemu` networks.
 | | `auth.spec.ts`: the login page without a session, `401` from the API, the signed-in header, the CSRF header on writes (and `403 csrf_failed` without it), logout, the console through a single-use ticket (dev server and glidex-ui) and refused without one, `421` for a foreign `Host` and the security headers from glidex-ui, the built app under its CSP | nothing beyond the servers |
 | | `access.spec.ts`: projects (create, add/remove a member, quotas, delete), tokens (secret shown once, revoke), site policies (validate, simulate, save, `409` on a stale version, history, delete), the audit log | nothing beyond the servers |
 | | `cluster.spec.ts`: cluster operations against a mocked two-node cluster (spec/clustering-ui.md §11): the Cluster page, removing a node (typed name, `--force` offered only after the server asks, the request bodies), a join token shown once and in no storage or URL, an import checked before it can be approved, a retried leader change and the no-leader banner with local reads | nothing beyond the servers |
+| | `datastores.spec.ts`: the built-in `local`, adding a directory datastore under the scratch root (`GLIDEX_DATASTORE_ROOT`, set by `start-control-plane.sh`), the node finding it, making it the default for disks, and the disk form choosing it | nothing beyond the servers |
 | `cloudhypervisor`, `qemu` | `create-form.spec.ts`: boot mode, default firmware per hypervisor, credential and network pickers, the request the form sends | nothing beyond the servers |
 | | `vm-lifecycle.spec.ts`: credential and network created on their pages, VM created with firmware boot, started (NIC address shown), console login checked against that address, pause/resume, **Shut down** (clean guest poweroff), delete | KVM, the hypervisor (and OVMF for QEMU), glidex-netd with full access, OVS, `GLIDEX_TEST_IMAGE` |
 

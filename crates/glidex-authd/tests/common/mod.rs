@@ -9,8 +9,8 @@ use glidex_authd::config::Config;
 use glidex_authd::server::{self, Authd};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -38,7 +38,10 @@ pub struct FakeKeys;
 
 impl glidex_authd::keys::KeyReader for FakeKeys {
     fn public_keys(&self, user: &str) -> Result<Vec<String>, String> {
-        Ok(vec![format!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@host", user)])
+        Ok(vec![format!(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@host",
+            user
+        )])
     }
 }
 
@@ -105,7 +108,13 @@ pub fn start_with(config: Config, service_uid: Option<u32>) -> Harness {
     let socket = dir.path().join("auth.sock");
     let listener = server::bind(&socket, 0o660, None).unwrap();
     let authd = Arc::new(
-        Authd::new(config, service_uid, pam.clone(), Arc::new(FakeAccounts(accounts))).with_key_reader(Arc::new(FakeKeys)),
+        Authd::new(
+            config,
+            service_uid,
+            pam.clone(),
+            Arc::new(FakeAccounts(accounts)),
+        )
+        .with_key_reader(Arc::new(FakeKeys)),
     );
     std::thread::spawn(move || authd.serve(listener));
     Harness { dir, socket, pam }

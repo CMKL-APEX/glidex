@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/glidex-api",
     "crates/glidex-control-plane",
     "crates/glidex-ovs",
     "crates/glidex-ovn",
@@ -16,13 +17,14 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 thiserror = "1"
 axum = "0.8"
 reqwest = { version = "0.12", features = ["json"] }

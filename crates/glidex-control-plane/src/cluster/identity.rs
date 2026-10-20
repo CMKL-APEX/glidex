@@ -33,7 +33,9 @@ pub struct Files {
 impl Files {
     /// `<db dir>/cluster`.
     pub fn beside(db_path: &Path) -> Files {
-        Files { dir: db_path.parent().unwrap_or(Path::new(".")).join("cluster") }
+        Files {
+            dir: db_path.parent().unwrap_or(Path::new(".")).join("cluster"),
+        }
     }
 
     pub fn identity(&self) -> PathBuf {
@@ -63,39 +65,56 @@ impl Files {
 
     pub fn load_identity(&self) -> Result<Option<Identity>, PkiError> {
         match std::fs::read(self.identity()) {
-            Ok(b) => Ok(Some(serde_json::from_slice(&b).map_err(|e| PkiError::Invalid(format!("{}: {e}", self.identity().display())))?)),
+            Ok(b) => Ok(Some(serde_json::from_slice(&b).map_err(|e| {
+                PkiError::Invalid(format!("{}: {e}", self.identity().display()))
+            })?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     pub fn save_identity(&self, id: &Identity) -> Result<(), PkiError> {
-        pki::write_private(&self.identity(), &serde_json::to_vec_pretty(id).expect("identity serializes"))
+        pki::write_private(
+            &self.identity(),
+            &serde_json::to_vec_pretty(id).expect("identity serializes"),
+        )
     }
 
-    pub fn save_node_cert(&self, cert_pem: &str, key_pem: &str, trust_pem: &str) -> Result<(), PkiError> {
+    pub fn save_node_cert(
+        &self,
+        cert_pem: &str,
+        key_pem: &str,
+        trust_pem: &str,
+    ) -> Result<(), PkiError> {
         pki::write_private(&self.key(), key_pem.as_bytes())?;
         pki::write_private(&self.cert(), cert_pem.as_bytes())?;
         pki::write_private(&self.trust(), trust_pem.as_bytes())
     }
 
     pub fn read(&self, p: PathBuf) -> Result<String, PkiError> {
-        Ok(std::fs::read_to_string(crate::paths::checked_path(&p).map_err(PkiError::Invalid)?)?)
+        Ok(std::fs::read_to_string(
+            crate::paths::checked_path(&p).map_err(PkiError::Invalid)?,
+        )?)
     }
 
     /// The CA key, from a systemd credential when the installer provides one
     /// (`$CREDENTIALS_DIRECTORY/cluster-ca-key`), else the state directory.
     pub fn load_ca(&self) -> Result<Option<Ca>, PkiError> {
-        let key = crate::config::credential("cluster-ca-key").filter(|p| p.exists()).unwrap_or_else(|| self.ca_key());
-        match (std::fs::read_to_string(&key), std::fs::read_to_string(self.trust())) {
+        let key = crate::config::credential("cluster-ca-key")
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| self.ca_key());
+        match (
+            std::fs::read_to_string(&key),
+            std::fs::read_to_string(self.trust()),
+        ) {
             (Ok(k), Ok(t)) => {
                 // The trust bundle may hold the old CA too (during a rotation);
                 // the signing CA is the one whose key this is.
                 for der_pem in split_pem(&t) {
-                    if let Ok(ca) = Ca::from_pem(&der_pem, &k) {
-                        if ca_matches_key(&ca) {
-                            return Ok(Some(ca));
-                        }
+                    if let Ok(ca) = Ca::from_pem(&der_pem, &k)
+                        && ca_matches_key(&ca)
+                    {
+                        return Ok(Some(ca));
                     }
                 }
                 Ok(None)
@@ -147,7 +166,9 @@ mod tests {
     #[test]
     fn identity_round_trips_and_the_signing_ca_is_found_in_a_bundle() {
         let dir = tempfile::tempdir().unwrap();
-        let files = Files { dir: dir.path().join("cluster") };
+        let files = Files {
+            dir: dir.path().join("cluster"),
+        };
         assert!(!files.exists());
         let id = Identity {
             cluster_id: "c".into(),
@@ -163,11 +184,23 @@ mod tests {
         files.save_identity(&id).unwrap();
         assert_eq!(files.load_identity().unwrap(), Some(id));
         let (old, new) = (Ca::generate("c").unwrap(), Ca::generate("c").unwrap());
-        files.save_node_cert("x", "y", &format!("{}{}", old.cert_pem, new.cert_pem)).unwrap();
+        files
+            .save_node_cert("x", "y", &format!("{}{}", old.cert_pem, new.cert_pem))
+            .unwrap();
         files.save_ca_key(new.key_pem()).unwrap();
         let found = files.load_ca().unwrap().unwrap();
-        assert_eq!(found.public_key_fingerprint().unwrap(), new.public_key_fingerprint().unwrap());
+        assert_eq!(
+            found.public_key_fingerprint().unwrap(),
+            new.public_key_fingerprint().unwrap()
+        );
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(files.ca_key()).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(files.ca_key())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }

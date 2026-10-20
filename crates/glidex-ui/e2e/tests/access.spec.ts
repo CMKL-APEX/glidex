@@ -8,11 +8,11 @@ test.use({ ignoredConsoleErrors: /status of 4\d\d/ });
 const PROJECT = "e2e-proj";
 
 async function cleanup() {
-  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
-  for (const t of (await api<any[]>("/tokens")).filter((t) => t.name.startsWith("e2e-"))) await del(`/tokens/${t.id}`);
+  for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name.startsWith("e2e-"))) await del(`/tokens/${t.id}`);
   const policies = await api("/authz/policies");
-  for (const s of policies.site.filter((s: any) => s.id.startsWith("site.e2e"))) {
+  for (const s of (policies.site ?? []).filter((s: any) => s.id.startsWith("site.e2e"))) {
     await del(`/authz/policies/${s.id}?version=${s.version}`);
   }
 }
@@ -47,7 +47,7 @@ test("projects: create, members, quotas, delete", async ({ page }) => {
   await page.locator("#quota-vms").fill("5");
   await page.getByRole("button", { name: "Save quotas" }).click();
   await expect(page.getByText("/ 5")).toBeVisible();
-  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   expect(p.quotas.vms).toBe(5);
 
   await page.getByRole("button", { name: "Delete project" }).click();
@@ -90,7 +90,7 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.getByText("Valid against the schema.")).toBeVisible();
 
-  const projects: any[] = await api("/projects");
+  const projects: any[] = (await api("/projects")).projects ?? [];
   const dflt = projects.find((p) => p.name === "default");
   const sim = page.locator("section", { has: page.getByRole("heading", { name: "Simulate" }) });
   await sim.locator("input[list=policy-actions]").fill("createVm");
@@ -105,7 +105,7 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText(/Saved as version 1/)).toBeVisible();
   const listing = await api("/authz/policies");
-  expect(listing.site.map((s: any) => s.id)).toContain(id);
+  expect((listing.site ?? []).map((s: any) => s.id)).toContain(id);
 
   // A stale version is refused with a conflict.
   const stale = await page.evaluate(
@@ -126,7 +126,7 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await page.getByRole("button", { name: "Load into editor" }).click();
 
   await page.getByRole("button", { name: "Delete" }).click();
-  await expect.poll(async () => (await api("/authz/policies")).site.map((s: any) => s.id)).not.toContain(id);
+  await expect.poll(async () => ((await api("/authz/policies")).site ?? []).map((s: any) => s.id)).not.toContain(id);
 });
 
 test("audit: lists recent writes", async ({ page }) => {
@@ -134,4 +134,31 @@ test("audit: lists recent writes", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
   // Earlier tests created and deleted things.
   await expect(page.locator("td", { hasText: /^createProject$|^writePolicy$|^manageTeams$/ }).first()).toBeVisible();
+});
+
+test("system roles: grant and remove; no host scope on a standalone host", async ({ page }) => {
+  const me = await api("/auth/whoami");
+  const auditor = async () =>
+    ((await api<{ bindings?: any[] }>("/system/bindings")).bindings ?? []).filter(
+      (b) => b.role === "role.auditor" && b.principal?.id === me.user.id,
+    );
+  for (const b of await auditor()) await del(`/system/bindings/${b.id}`);
+
+  await page.goto("/directory/access");
+  const card = page.locator("section", { has: page.getByRole("heading", { name: "System roles" }) });
+  await expect(card.locator("tbody")).toBeVisible();
+  // One host: every role is host-wide, so there is nothing to scope.
+  await expect(card.getByLabel("Scope")).toHaveCount(0);
+  await expect(card.getByRole("columnheader", { name: "Scope" })).toHaveCount(0);
+  await card.locator("select").nth(0).selectOption("role.auditor");
+  await card.locator("select").nth(2).selectOption(me.user.id);
+  await card.getByRole("button", { name: "Add role" }).click();
+  const row = card.locator("tbody tr", { hasText: "auditor" });
+  await expect(row).toHaveCount(1);
+  const [b] = await auditor();
+  expect(b.resource.type).toBe("Cluster");
+
+  await row.getByRole("button", { name: "Remove" }).click();
+  await expect(row).toHaveCount(0);
+  expect(await auditor()).toHaveLength(0);
 });

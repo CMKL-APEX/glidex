@@ -129,7 +129,11 @@ fn main() {
     let report = netd.reconcile_startup();
     if let Some(gid) = group_gid {
         // reconcile_startup created the vhost dir; hand it to the group.
-        let _ = nix::unistd::chown(&config.run_dir.join("vhost"), None, Some(nix::unistd::Gid::from_raw(gid)));
+        let _ = nix::unistd::chown(
+            &config.run_dir.join("vhost"),
+            None,
+            Some(nix::unistd::Gid::from_raw(gid)),
+        );
     }
     tracing::info!(report = %server::status_json(&report), "startup reconciliation");
 
@@ -167,9 +171,11 @@ fn main() {
         std::thread::spawn(move || server::serve(admin_netd, admin, Access::Admin, admin_gid));
     }
     let expiry_netd = netd.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        expiry_netd.expire_pending();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            expiry_netd.expire_pending();
+        }
     });
     let status_netd = netd.clone();
     std::thread::spawn(move || server::serve(status_netd, status, Access::Status, None));

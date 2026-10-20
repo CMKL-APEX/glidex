@@ -3,18 +3,19 @@
 //! step-up, CSRF/Origin, tokens, site policies, break-glass, audit, PAM
 //! login through an in-process glidex-authd, and OIDC against a mock IdP.
 
+mod common;
+
 use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
     Router,
+    body::Body,
+    http::{Request, StatusCode, header},
 };
 use glidex_control_plane::api::{self, App, AppState, Listener, PeerUid};
-use glidex_control_plane::auth::{self, store::TokenKind, AuthService, Method};
+use glidex_control_plane::auth::{self, AuthService, Method, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
-use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -29,15 +30,20 @@ struct H {
 
 fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     f(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
-    H { router: api::router(app.clone()), app, _dir: dir }
+    H {
+        router: api::router(app.clone()),
+        app,
+        _dir: dir,
+    }
 }
 
 fn harness() -> H {
@@ -55,11 +61,28 @@ enum As {
 
 impl H {
     fn user(&self, name: &str) -> String {
-        self.app.auth.store.user_for_identity("pam", name, name, None, true).unwrap().unwrap().id
+        self.app
+            .auth
+            .store
+            .user_for_identity("pam", name, name, None, true)
+            .unwrap()
+            .unwrap()
+            .id
     }
 
     fn token(&self, user: &str) -> String {
-        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None, None, None).unwrap().0
+        self.app
+            .auth
+            .create_token(
+                "t",
+                TokenKind::Personal { owner: user.into() },
+                user,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .0
     }
 
     fn session(&self, user: &str) -> As {
@@ -69,14 +92,50 @@ impl H {
     }
 
     fn link(&self, role: &str, principal: Ent, resource: Ent) {
-        self.app.auth.add_link(role, principal, resource, "test").unwrap();
+        // As the API and the migration do (spec/tenancy.md D4, §16): host
+        // roles go to members of the operator tenant, and a system admin of
+        // a host that is its own directory also administers the directory
+        // and both tenants.
+        if matches!(resource, Ent::Cluster | Ent::Host | Ent::Node(_)) && role != "grant.host-paths"
+        {
+            self.app
+                .auth
+                .tenants
+                .add_member(
+                    glidex_control_plane::tenants::ADMIN_TENANT,
+                    principal.clone(),
+                    "test",
+                )
+                .unwrap();
+        }
+        if role == "role.system-admin" {
+            self.app
+                .auth
+                .make_administrator(&principal, "test")
+                .unwrap();
+        }
+        self.app
+            .auth
+            .add_link(role, principal, resource, "test")
+            .unwrap();
     }
 
     fn project(&self, name: &str) -> String {
-        self.app.manager.projects().create(name, String::new(), None).unwrap().id
+        self.app
+            .manager
+            .projects()
+            .create(name, String::new(), None)
+            .unwrap()
+            .id
     }
 
-    async fn call(&self, method: &str, path: &str, body: Option<Value>, who: &As) -> (StatusCode, Value, axum::http::HeaderMap) {
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        who: &As,
+    ) -> (StatusCode, Value, axum::http::HeaderMap) {
         let mut b = Request::builder().method(method).uri(path);
         match who {
             As::Nobody => {}
@@ -93,7 +152,10 @@ impl H {
             As::Peer(uid) => b = b.extension(Listener::Api).extension(PeerUid(*uid)),
         }
         let req = match body {
-            Some(v) => b.header(header::CONTENT_TYPE, "application/json").body(Body::from(v.to_string())).unwrap(),
+            Some(v) => b
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(v.to_string()))
+                .unwrap(),
             None => b.body(Body::empty()).unwrap(),
         };
         let resp = self.router.clone().oneshot(req).await.unwrap();
@@ -103,6 +165,13 @@ impl H {
         let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, v, headers)
     }
+}
+
+/// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
+/// (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
 }
 
 fn vm_body(name: &str, project: &str) -> Value {
@@ -118,11 +187,20 @@ async fn unauthenticated_requests_get_401_and_health_is_public() {
     let (s, _, headers) = h.call("GET", "/health", None, &As::Nobody).await;
     assert_eq!(s, StatusCode::OK);
     assert!(headers.contains_key("x-request-id"));
-    for path in ["/vms", "/disks", "/credentials", "/projects", "/auth/whoami", "/audit"] {
+    for path in [
+        "/vms",
+        "/disks",
+        "/credentials",
+        "/projects",
+        "/auth/whoami",
+        "/audit",
+    ] {
         let (s, v, _) = h.call("GET", path, None, &As::Nobody).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}: {v}");
     }
-    let (s, _, _) = h.call("GET", "/vms", None, &As::Bearer("gxt_nope".into())).await;
+    let (s, _, _) = h
+        .call("GET", "/vms", None, &As::Bearer("gxt_nope".into()))
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
@@ -131,23 +209,49 @@ async fn project_isolation_and_not_found() {
     let h = harness();
     let (pa, pb) = (h.project("pa"), h.project("pb"));
     let (alice, bob, carol) = (h.user("alice"), h.user("bob"), h.user("carol"));
-    h.link("role.editor", Ent::User(alice.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.editor",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
     h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
-    h.link("role.editor", Ent::User(bob.clone()), Ent::Project(pb.clone()));
-    h.link("role.viewer", Ent::User(carol.clone()), Ent::Project(pa.clone()));
-    let (a, b, c) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&bob)), As::Bearer(h.token(&carol)));
+    h.link(
+        "role.editor",
+        Ent::User(bob.clone()),
+        Ent::Project(pb.clone()),
+    );
+    h.link(
+        "role.viewer",
+        Ent::User(carol.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let (a, b, c) = (
+        As::Bearer(h.token(&alice)),
+        As::Bearer(h.token(&bob)),
+        As::Bearer(h.token(&carol)),
+    );
 
     let (s, vm, _) = h.call("POST", "/vms", Some(vm_body("v1", "pa")), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm);
     assert_eq!(vm["project"], pa);
     let id = vm["id"].as_str().unwrap();
 
     // The stored record (host paths, PIDs) is for host readers only.
-    let (s, _, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &c).await;
+    let (s, _, _) = h
+        .call("GET", &format!("/vms/{id}?view=full"), None, &c)
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let aud = h.user("aud");
     h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
-    let (s, full, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &As::Bearer(h.token(&aud))).await;
+    let (s, full, _) = h
+        .call(
+            "GET",
+            &format!("/vms/{id}?view=full"),
+            None,
+            &As::Bearer(h.token(&aud)),
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{full}");
     assert_eq!(full["spec"]["power"], "stopped", "{full}");
 
@@ -156,8 +260,11 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _, _) = h.call("POST", &format!("/vms/{id}/start"), None, &b).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, list, _) = h.call("GET", "/vms", None, &b).await;
-    assert_eq!(list.as_array().unwrap().len(), 0);
+    let (s, list, _) = h.call("GET", "/vms", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    // `{vms: [...]}`; proto3 JSON leaves an empty list out.
+    assert!(list.is_object(), "{list}");
+    assert_eq!(list["vms"].as_array().map_or(0, |l| l.len()), 0, "{list}");
     // Nor create in a project it has no role in.
     let (s, _, _) = h.call("POST", "/vms", Some(vm_body("v2", "pa")), &b).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -167,7 +274,9 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::OK);
     let (s, v, _) = h.call("POST", &format!("/vms/{id}/start"), None, &c).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
-    let (s, _, _) = h.call("POST", &format!("/vms/{id}/console/ticket"), None, &c).await;
+    let (s, _, _) = h
+        .call("POST", &format!("/vms/{id}/console/ticket"), None, &c)
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 
     // Same VM name is fine in another project.
@@ -181,8 +290,15 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let (s, _, _) = h.call("GET", "/credentials/ops?project=pa", None, &b).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, list, _) = h.call("GET", "/credentials", None, &b).await;
-    assert_eq!(list.as_array().unwrap().len(), 0);
+    let (s, list, _) = h.call("GET", "/credentials", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    // `{credentials: [...]}`; proto3 JSON leaves an empty list out.
+    assert!(list.is_object(), "{list}");
+    assert_eq!(
+        list["credentials"].as_array().map_or(0, |l| l.len()),
+        0,
+        "{list}"
+    );
     // A VM can't use another project's credential.
     let mut body = vm_body("v3", "pb");
     body["credential"] = json!("ops");
@@ -197,25 +313,43 @@ async fn project_members_are_listed_with_names() {
     let h = harness();
     let pa = h.project("pa");
     let (alice, bob) = (h.user("alice"), h.user("bob"));
-    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa.clone()));
-    h.link("role.viewer", Ent::User(bob.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.owner",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.viewer",
+        Ent::User(bob.clone()),
+        Ent::Project(pa.clone()),
+    );
     let v = As::Bearer(h.token(&bob));
     let (s, _, _) = h.call("GET", "/users", None, &v).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "a viewer can't list users");
-    let (s, body, _) = h.call("GET", &format!("/projects/{pa}/bindings"), None, &v).await;
+    let (s, body, _) = h
+        .call("GET", &format!("/projects/{pa}/bindings"), None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
-    let mut names: Vec<(String, String)> = body
+    let mut names: Vec<(String, String)> = body["bindings"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|b| (b["principal"]["id"].as_str().unwrap().to_string(), b["principal_name"].as_str().unwrap_or("-").to_string()))
+        .map(|b| {
+            (
+                b["principal"]["id"].as_str().unwrap().to_string(),
+                b["principal_name"].as_str().unwrap_or("-").to_string(),
+            )
+        })
         .collect();
     names.sort();
     let mut want = vec![(alice, "alice".to_string()), (bob, "bob".to_string())];
     want.sort();
     assert_eq!(names, want);
     // Nothing else about the user comes with the link.
-    assert!(body[0].get("email").is_none() && body[0]["principal"].get("email").is_none(), "{body}");
+    assert!(
+        body[0].get("email").is_none() && body[0]["principal"].get("email").is_none(),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -223,11 +357,18 @@ async fn host_paths_need_a_grant() {
     let h = harness();
     let pa = h.project("pa");
     let alice = h.user("alice");
-    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.owner",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
     let a = As::Bearer(h.token(&alice));
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v", "pa")), &a).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
-    assert!(v["message"].as_str().unwrap().contains("useHostPath"), "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("useHostPath"),
+        "{v}"
+    );
     // VFIO paths must be PCI devices, and need a grant.
     let mut body = vm_body("v", "pa");
     body["vfio_devices"] = json!(["/dev/sda"]);
@@ -244,14 +385,32 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
     let h = harness();
     let pa = h.project("pa");
     let (owner, admin) = (h.user("owner"), h.user("admin"));
-    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.owner",
+        Ent::User(owner.clone()),
+        Ent::Project(pa.clone()),
+    );
     h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
     h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let (o, a) = (As::Bearer(h.token(&owner)), As::Bearer(h.token(&admin)));
 
-    let (s, _, _) = h.call("PATCH", &format!("/projects/{pa}"), Some(json!({"quotas": {"vms": 1}})), &o).await;
+    let (s, _, _) = h
+        .call(
+            "PATCH",
+            &format!("/projects/{pa}"),
+            Some(json!({"quotas": {"vms": 1}})),
+            &o,
+        )
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "owners don't set quotas");
-    let (s, v, _) = h.call("PATCH", &format!("/projects/{pa}"), Some(json!({"quotas": {"vms": 1}})), &a).await;
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &format!("/projects/{pa}"),
+            Some(json!({"quotas": {"vms": 1}})),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
 
     let (s, _, _) = h.call("POST", "/vms", Some(vm_body("v1", "pa")), &o).await;
@@ -264,10 +423,20 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v3", "pa")), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let (_, project, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
-    assert_eq!(project["usage"]["vms"], 2);
+    assert_eq!(project["project"]["usage"]["vms"], 2);
     // The overrun is audited.
-    let entries = h.app.auth.store.audit(0, 100, |e| e.action == "createVm").unwrap();
-    assert!(entries.iter().any(|e| e.details.get("quota_exceeded").is_some()), "{entries:#?}");
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "createVm")
+        .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.details.get("quota_exceeded").is_some()),
+        "{entries:#?}"
+    );
 }
 
 #[tokio::test]
@@ -276,14 +445,18 @@ async fn host_network_changes_need_a_recent_login() {
     let n = h.user("net");
     h.link("role.net-admin", Ent::User(n.clone()), Ent::Cluster);
     let fresh = h.session(&n);
-    let As::Cookie(cookie, csrf, origin) = fresh.clone() else { unreachable!() };
+    let As::Cookie(cookie, csrf, origin) = fresh.clone() else {
+        unreachable!()
+    };
     let hash = auth::sha256_hex(cookie.as_bytes());
     let mut s = h.app.auth.store.session(&hash).unwrap().unwrap();
     s.authenticated_at -= 700;
     h.app.auth.store.put_session(&hash, &s).unwrap();
     let stale = As::Cookie(cookie, csrf, origin);
-    let body = json!({"profile": "kernel"});
-    let (st, v, _) = h.call("POST", "/ovs/install", Some(body.clone()), &stale).await;
+    let body = json!({"profile": "OVS_PROFILE_KERNEL"});
+    let (st, v, _) = h
+        .call("POST", "/ovs/install", Some(body.clone()), &stale)
+        .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "{v}");
     assert_eq!(v["error"], "reauth_required");
     // Non-critical host-network reads don't need it.
@@ -292,7 +465,131 @@ async fn host_network_changes_need_a_recent_login() {
     // A fresh login passes authorization (netd itself isn't running here).
     let fresh = h.session(&n);
     let (st, v, _) = h.call("POST", "/ovs/install", Some(body), &fresh).await;
-    assert!(st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN, "{st} {v}");
+    assert!(
+        st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+        "{st} {v}"
+    );
+}
+
+/// From glidex-ui on ui.sock, an Origin equal to `https://` +
+/// `X-Forwarded-Host` passes without being listed: the UI already checked
+/// that Host (spec/tailscale-tls.md T7). Over TCP, from another peer, over
+/// plain HTTP or for a different host it doesn't.
+#[tokio::test]
+async fn ui_peer_same_origin_from_forwarded_host() {
+    let me = nix::unistd::getuid().as_raw();
+    let h = harness_with(|c| {
+        c.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap()
+            .name;
+    });
+    h.project("pa");
+    let u = h.user("u");
+    h.link(
+        "role.editor",
+        Ent::User(u.clone()),
+        Ent::Project(h.project("pb")),
+    );
+    let As::Cookie(cookie, Some(csrf), _) = h.session(&u) else {
+        unreachable!()
+    };
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    let post = |ui: Option<u32>, origin: &str, host: &str, proto: &str| {
+        let i = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/credentials")
+            .header(
+                header::COOKIE,
+                format!("{}={}", auth::SESSION_COOKIE, cookie),
+            )
+            .header(auth::CSRF_HEADER, &csrf)
+            .header(header::ORIGIN, origin)
+            .header("x-forwarded-host", host)
+            .header("x-forwarded-proto", proto)
+            .header("x-forwarded-for", "100.64.0.7")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(uid) = ui {
+            b = b.extension(Listener::Ui).extension(PeerUid(uid));
+        }
+        let req = b
+            .body(Body::from(
+                json!({"username": format!("c{i}"), "project": "pb", "password": "long-enough-password"})
+                    .to_string(),
+            ))
+            .unwrap();
+        let router = h.router.clone();
+        async move {
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            (status, v["error"].as_str().map(String::from))
+        }
+    };
+    const TS: &str = "https://node.tail.ts.net:5173";
+    let (s, e) = post(Some(me), TS, "node.tail.ts.net:5173", "https").await;
+    assert_eq!(s, StatusCode::CREATED, "{e:?}");
+    let (s, e) = post(
+        Some(me),
+        "https://NODE.tail.ts.net:5173",
+        "node.tail.ts.net:5173",
+        "https",
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{e:?}");
+
+    let refused = Some("origin_not_allowed".to_string());
+    // A different host than the one the UI checked.
+    assert_eq!(
+        post(
+            Some(me),
+            "https://evil.example:5173",
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Another port.
+    assert_eq!(
+        post(
+            Some(me),
+            "https://node.tail.ts.net:5174",
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Plain HTTP at the UI.
+    assert_eq!(
+        post(
+            Some(me),
+            "http://node.tail.ts.net:5173",
+            "node.tail.ts.net:5173",
+            "http"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Over TCP the forwarded headers mean nothing.
+    assert_eq!(
+        post(None, TS, "node.tail.ts.net:5173", "https").await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // ui.sock, but not the UI's user.
+    assert_eq!(
+        post(
+            Some(me.wrapping_add(1)),
+            TS,
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused)
+    );
 }
 
 #[tokio::test]
@@ -300,26 +597,86 @@ async fn cookie_writes_need_csrf_and_origin() {
     let h = harness();
     let pa = h.project("pa");
     let u = h.user("u");
-    h.link("role.editor", Ent::User(u.clone()), Ent::Project(pa.clone()));
-    let As::Cookie(cookie, csrf, _) = h.session(&u) else { unreachable!() };
-    let cred = |n: &str| json!({"username": n, "project": "pa", "password": "long-enough-password"});
+    h.link(
+        "role.editor",
+        Ent::User(u.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let As::Cookie(cookie, csrf, _) = h.session(&u) else {
+        unreachable!()
+    };
+    let cred =
+        |n: &str| json!({"username": n, "project": "pa", "password": "long-enough-password"});
 
-    let (s, v, _) = h.call("POST", "/credentials", Some(cred("a")), &As::Cookie(cookie.clone(), None, Some(ORIGIN))).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::FORBIDDEN, Some("csrf_failed")));
-    let (s, _, _) = h.call("POST", "/credentials", Some(cred("a")), &As::Cookie(cookie.clone(), csrf.clone(), None)).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("a")),
+            &As::Cookie(cookie.clone(), None, Some(ORIGIN)),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("csrf_failed"))
+    );
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("a")),
+            &As::Cookie(cookie.clone(), csrf.clone(), None),
+        )
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "a cookie write needs an Origin");
-    let (s, v, _) = h.call("POST", "/credentials", Some(cred("a")), &As::Cookie(cookie.clone(), Some("wrong".into()), Some(ORIGIN))).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::FORBIDDEN, Some("csrf_failed")));
-    let (s, v, _) = h.call("POST", "/credentials", Some(cred("a")), &As::Cookie(cookie.clone(), csrf.clone(), Some("https://evil.example"))).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::FORBIDDEN, Some("origin_not_allowed")));
-    let (s, v, _) = h.call("POST", "/credentials", Some(cred("a")), &As::Cookie(cookie.clone(), csrf.clone(), Some(ORIGIN))).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("a")),
+            &As::Cookie(cookie.clone(), Some("wrong".into()), Some(ORIGIN)),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("csrf_failed"))
+    );
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("a")),
+            &As::Cookie(cookie.clone(), csrf.clone(), Some("https://evil.example")),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("origin_not_allowed"))
+    );
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("a")),
+            &As::Cookie(cookie.clone(), csrf.clone(), Some(ORIGIN)),
+        )
+        .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     // Reads need neither.
-    let (s, _, _) = h.call("GET", "/credentials", None, &As::Cookie(cookie, None, None)).await;
+    let (s, _, _) = h
+        .call("GET", "/credentials", None, &As::Cookie(cookie, None, None))
+        .await;
     assert_eq!(s, StatusCode::OK);
     // A foreign Origin is refused for bearer writes too; no Origin is fine.
     let t = h.token(&u);
-    let (s, _, _) = h.call("POST", "/credentials", Some(cred("b")), &As::Bearer(t.clone())).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(cred("b")),
+            &As::Bearer(t.clone()),
+        )
+        .await;
     assert_eq!(s, StatusCode::CREATED);
 }
 
@@ -328,10 +685,19 @@ async fn tokens_are_capped_by_their_links_and_owner() {
     let h = harness();
     let pa = h.project("pa");
     let u = h.user("u");
-    h.link("role.editor", Ent::User(u.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.editor",
+        Ent::User(u.clone()),
+        Ent::Project(pa.clone()),
+    );
     let session = h.session(&u);
     let (s, v, _) = h
-        .call("POST", "/tokens", Some(json!({"name": "ro", "roles": [{"role": "role.viewer", "project": "pa"}]})), &session)
+        .call(
+            "POST",
+            "/tokens",
+            Some(json!({"name": "ro", "roles": [{"role": "role.viewer", "project": "pa"}]})),
+            &session,
+        )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let secret = v["token"].as_str().unwrap().to_string();
@@ -339,26 +705,44 @@ async fn tokens_are_capped_by_their_links_and_owner() {
     let ro = As::Bearer(secret.clone());
     let (s, _, _) = h.call("GET", "/credentials?project=pa", None, &ro).await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _, _) = h.call("POST", "/credentials", Some(json!({"username": "x", "project": "pa", "password": "long-enough-password"})), &ro).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/credentials",
+            Some(json!({"username": "x", "project": "pa", "password": "long-enough-password"})),
+            &ro,
+        )
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     // Tokens don't mint tokens.
-    let (s, _, _) = h.call("POST", "/tokens", Some(json!({"name": "x"})), &ro).await;
+    let (s, _, _) = h
+        .call("POST", "/tokens", Some(json!({"name": "x"})), &ro)
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     // Listed (without the secret), then revoked.
     let (_, list, _) = h.call("GET", "/tokens", None, &session).await;
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list["tokens"].as_array().unwrap().len(), 1);
     assert!(!list.to_string().contains(&secret));
-    let id = list[0]["id"].as_str().unwrap();
-    let (s, _, _) = h.call("DELETE", &format!("/tokens/{id}"), None, &session).await;
+    let id = list["tokens"][0]["id"].as_str().unwrap();
+    let (s, _, _) = h
+        .call("DELETE", &format!("/tokens/{id}"), None, &session)
+        .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _, _) = h.call("GET", "/credentials?project=pa", None, &ro).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     // Service accounts need project.members.
-    let (s, _, _) = h.call("POST", "/tokens", Some(json!({"name": "ci", "kind": "service_account", "project": "pa"})), &session).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/tokens",
+            Some(json!({"name": "ci", "kind": "TOKEN_KIND_SERVICE_ACCOUNT", "project": "pa"})),
+            &session,
+        )
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     h.link("role.owner", Ent::User(u.clone()), Ent::Project(pa.clone()));
     let (s, v, _) = h
-        .call("POST", "/tokens", Some(json!({"name": "ci", "kind": "service_account", "project": "pa", "roles": [{"role": "role.operator"}]})), &session)
+        .call("POST", "/tokens", Some(json!({"name": "ci", "kind": "TOKEN_KIND_SERVICE_ACCOUNT", "project": "pa", "roles": [{"role": "role.operator"}]})), &session)
         .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let sa = As::Bearer(v["token"].as_str().unwrap().into());
@@ -367,7 +751,10 @@ async fn tokens_are_capped_by_their_links_and_owner() {
 }
 
 fn my_group() -> String {
-    nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name
+    nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name
 }
 
 #[tokio::test]
@@ -380,15 +767,30 @@ async fn site_policies_api_and_break_glass() {
     let pa = h.project("pa");
     let (admin, alice) = (h.user("admin"), h.user("alice"));
     h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
-    h.link("role.viewer", Ent::User(alice.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.viewer",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
     let a = h.session(&admin);
     let al = As::Bearer(h.token(&alice));
 
     let forbid_read = "@id(\"site.no-read\")\nforbid (principal, action == Glidex::Action::\"readProject\", resource);";
-    let (s, v, _) = h.call("PUT", "/authz/policies/site.no-read", Some(json!({"text": forbid_read, "version": 1})), &a).await;
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/authz/policies/site.no-read",
+            Some(json!({"text": forbid_read, "version": 1})),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::CONFLICT, "creating needs version 0: {v}");
     let (s, v, _) = h.call("PUT", "/authz/policies/site.no-read", Some(json!({"text": "@id(\"site.no-read\") permit(principal, action == Glidex::Action::\"nope\", resource);", "version": 0})), &a).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_policy")), "{v}");
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_policy")),
+        "{v}"
+    );
     let (s, _, _) = h.call("PUT", "/authz/policies/base.mine", Some(json!({"text": "@id(\"base.mine\") permit(principal, action, resource);", "version": 0})), &a).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -401,20 +803,49 @@ async fn site_policies_api_and_break_glass() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["results"][0]["current"]["allowed"], true);
     assert_eq!(v["results"][0]["candidate"]["allowed"], false);
-    assert!(v["results"][0]["candidate"]["policies"].to_string().contains("site.no-read"));
+    assert!(
+        v["results"][0]["candidate"]["policies"]
+            .to_string()
+            .contains("site.no-read")
+    );
 
-    let (s, v, _) = h.call("PUT", "/authz/policies/site.no-read", Some(json!({"text": forbid_read, "version": 0})), &a).await;
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/authz/policies/site.no-read",
+            Some(json!({"text": forbid_read, "version": 0})),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["policy"]["version"], "1", "64-bit: a string");
     let (s, _, _) = h.call("GET", &format!("/projects/{pa}"), None, &al).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "the site forbid applies");
-    let (s, _, _) = h.call("PUT", "/authz/policies/site.no-read", Some(json!({"text": forbid_read, "version": 0})), &a).await;
+    let (s, _, _) = h
+        .call(
+            "PUT",
+            "/authz/policies/site.no-read",
+            Some(json!({"text": forbid_read, "version": 0})),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::CONFLICT, "stale version");
 
     // A policy that would stop the admin from managing policies is refused.
     let lockout = "@id(\"site.lockout\")\nforbid (principal, action == Glidex::Action::\"writePolicy\", resource);";
-    let (s, v, _) = h.call("PUT", "/authz/policies/site.lockout", Some(json!({"text": lockout, "version": 0})), &a).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::CONFLICT, Some("would_lock_out")), "{v}");
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/authz/policies/site.lockout",
+            Some(json!({"text": lockout, "version": 0})),
+            &a,
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("would_lock_out")),
+        "{v}"
+    );
 
     // Break-glass on api.sock ignores site policies, so it can recover.
     let me = nix::unistd::getuid().as_raw();
@@ -422,11 +853,27 @@ async fn site_policies_api_and_break_glass() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["break_glass"], true);
     assert_eq!(v["method"], "peer");
-    let (s, _, _) = h.call("GET", &format!("/projects/{pa}"), None, &As::Peer(me)).await;
+    let (s, _, _) = h
+        .call("GET", &format!("/projects/{pa}"), None, &As::Peer(me))
+        .await;
     assert_eq!(s, StatusCode::OK);
-    let (_, hist, _) = h.call("GET", "/authz/policies/site.no-read/versions", None, &As::Peer(me)).await;
-    assert_eq!(hist.as_array().unwrap().len(), 1);
-    let (s, _, _) = h.call("DELETE", "/authz/policies/site.no-read?version=1", None, &As::Peer(me)).await;
+    let (_, hist, _) = h
+        .call(
+            "GET",
+            "/authz/policies/site.no-read/versions",
+            None,
+            &As::Peer(me),
+        )
+        .await;
+    assert_eq!(hist["versions"].as_array().unwrap().len(), 1);
+    let (s, _, _) = h
+        .call(
+            "DELETE",
+            "/authz/policies/site.no-read?version=1",
+            None,
+            &As::Peer(me),
+        )
+        .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _, _) = h.call("GET", &format!("/projects/{pa}"), None, &al).await;
     assert_eq!(s, StatusCode::OK);
@@ -465,22 +912,54 @@ async fn audit_records_decisions_without_secrets() {
     let h = harness();
     let pa = h.project("pa");
     let (u, aud) = (h.user("u"), h.user("aud"));
-    h.link("role.editor", Ent::User(u.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.editor",
+        Ent::User(u.clone()),
+        Ent::Project(pa.clone()),
+    );
     h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let t = h.token(&u);
     let ut = As::Bearer(t.clone());
     let pw = "super-secret-password-123";
-    h.call("POST", "/credentials", Some(json!({"username": "x", "project": "pa", "password": pw})), &ut).await;
-    h.call("DELETE", &format!("/projects/{pa}"), None, &ut).await;
-    let (s, v, _) = h.call("GET", "/audit", None, &As::Bearer(h.token(&aud))).await;
+    h.call(
+        "POST",
+        "/credentials",
+        Some(json!({"username": "x", "project": "pa", "password": pw})),
+        &ut,
+    )
+    .await;
+    h.call("DELETE", &format!("/projects/{pa}"), None, &ut)
+        .await;
+    let (s, v, _) = h
+        .call("GET", "/audit", None, &As::Bearer(h.token(&aud)))
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let text = v.to_string();
-    assert!(!text.contains(pw) && !text.contains(&t), "no secrets in the audit log");
-    let created = v.as_array().unwrap().iter().find(|e| e["action"] == "createCredential").unwrap();
+    assert!(
+        !text.contains(pw) && !text.contains(&t),
+        "no secrets in the audit log"
+    );
+    let created = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "createCredential")
+        .unwrap();
     assert_eq!(created["result"], "ok");
     assert_eq!(created["project"], pa);
-    assert!(created["policies"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().starts_with("link.")));
-    let denied = v.as_array().unwrap().iter().find(|e| e["action"] == "deleteProject").unwrap();
+    assert!(
+        created["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().starts_with("link."))
+    );
+    let denied = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "deleteProject")
+        .unwrap();
     assert_eq!(denied["result"], "denied");
     // An editor can't read the audit log.
     let (s, _, _) = h.call("GET", "/audit", None, &ut).await;
@@ -494,39 +973,83 @@ async fn audit_records_decisions_without_secrets() {
 async fn usage_is_project_scoped_and_exports_are_audited() {
     use glidex_control_plane::metering::{Origin, Subject, SubjectKind};
     let h = harness();
-    h.app.manager.start_metering(&Config::default().metering).unwrap();
+    h.app
+        .manager
+        .start_metering(&Config::default().metering)
+        .unwrap();
     let (pa, pb) = (h.project("pa"), h.project("pb"));
     let meter = h.app.manager.meter().unwrap();
     let now = glidex_control_plane::metering::now_ms();
     let mut r = meter.ledger().begin_round(now).unwrap();
     for (p, id) in [(&pa, "vm-a"), (&pb, "vm-b")] {
         let s = Subject::new(SubjectKind::Vm, id, id, Some(p.clone()));
-        r.counter(&s, "cpu.used", "i1", 0, now - 60_000, Origin::Unknown).unwrap();
-        r.counter(&s, "cpu.used", "i1", 3_600_000_000, now - 30_000, Origin::Unknown).unwrap();
+        r.counter(&s, "cpu.used", "i1", 0, now - 60_000, Origin::Unknown)
+            .unwrap();
+        r.counter(
+            &s,
+            "cpu.used",
+            "i1",
+            3_600_000_000,
+            now - 30_000,
+            Origin::Unknown,
+        )
+        .unwrap();
     }
     meter.ledger().commit(r).unwrap();
 
     let (viewer, aud, nobody) = (h.user("viewer"), h.user("aud"), h.user("nobody"));
-    h.link("role.viewer", Ent::User(viewer.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.viewer",
+        Ent::User(viewer.clone()),
+        Ent::Project(pa.clone()),
+    );
     h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
-    let (v, a, n) = (As::Bearer(h.token(&viewer)), As::Bearer(h.token(&aud)), As::Bearer(h.token(&nobody)));
+    let (v, a, n) = (
+        As::Bearer(h.token(&viewer)),
+        As::Bearer(h.token(&aud)),
+        As::Bearer(h.token(&nobody)),
+    );
 
     let ids = |body: &Value| -> Vec<String> {
-        body["rows"].as_array().unwrap().iter().map(|r| r["project"]["id"].as_str().unwrap().to_string()).collect()
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["project"]["id"].as_str().unwrap().to_string())
+            .collect()
     };
-    let (s, body, _) = h.call("GET", "/usage?project=pa&granularity=month", None, &v).await;
+    let (s, body, _) = h
+        .call("GET", "/usage?project=pa&granularity=month", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(ids(&body), vec![pa.clone()]);
     assert_eq!(body["rows"][0]["project"]["name"], "pa");
+    // The proto shape (spec/grpc.md §9.1): enums by name, uint64 as strings.
+    assert_eq!(body["granularity"], "GRANULARITY_MONTH", "{body}");
+    assert_eq!(body["group_by"], json!(["GROUP_KEY_PROJECT"]), "{body}");
+    assert_eq!(body["rows"][0]["meters"]["cpu.used"]["raw"], "3600000000");
     assert_eq!(body["rows"][0]["meters"]["cpu.used"]["value"], 1.0);
     assert_eq!(body["rows"][0]["meters"]["cpu.used"]["unit"], "core-hours");
+    // The proto enum names are accepted in the query too.
+    let (s, body, _) = h
+        .call(
+            "GET",
+            "/usage?project=pa&granularity=GRANULARITY_MONTH&group_by=GROUP_KEY_VM",
+            None,
+            &v,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["rows"][0]["vm"]["id"], "vm-a", "{body}");
     // Without ?project: only the caller's own.
     let (_, body, _) = h.call("GET", "/usage", None, &v).await;
     assert_eq!(ids(&body), vec![pa.clone()]);
     // Another project: not found, by both routes.
     let (s, _, _) = h.call("GET", "/usage?project=pb", None, &v).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (s, _, _) = h.call("GET", &format!("/projects/{pb}/usage"), None, &v).await;
+    let (s, _, _) = h
+        .call("GET", &format!("/projects/{pb}/usage"), None, &v)
+        .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     // No links at all: forbidden.
     let (s, _, _) = h.call("GET", "/usage", None, &n).await;
@@ -540,36 +1063,83 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     want.sort();
     assert_eq!(all, want);
     // CSV: raw values, and an audit entry for the export.
-    let (s, _, headers) = h.call("GET", "/usage?project=pa&format=csv", None, &v).await;
+    let (s, _, headers) = h
+        .call("GET", "/usage?project=pa&format=csv", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/csv"));
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
     let (_, log, _) = h.call("GET", "/audit", None, &a).await;
+    // `{entries}` once the access family is ported, a bare list before.
+    let log = if log["entries"].is_array() {
+        log["entries"].clone()
+    } else {
+        log
+    };
     let export = log
         .as_array()
         .unwrap()
         .iter()
         .find(|e| e["action"] == "readUsage" && e["details"]["export"] == "csv")
         .expect("export audited");
-    assert_eq!((export["result"].as_str(), export["project"].as_str()), (Some("ok"), Some(pa.as_str())));
+    assert_eq!(
+        (export["result"].as_str(), export["project"].as_str()),
+        (Some("ok"), Some(pa.as_str()))
+    );
     // The denied request of the user without links is audited too.
-    assert!(log.as_array().unwrap().iter().any(|e| e["action"] == "readUsage" && e["result"] == "denied"));
+    assert!(
+        log.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "readUsage" && e["result"] == "denied")
+    );
     // Bad ranges.
-    let (s, body, _) = h.call("GET", "/usage?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", None, &a).await;
-    assert_eq!((s, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("range_too_large")));
+    let (s, body, _) = h
+        .call(
+            "GET",
+            "/usage?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z",
+            None,
+            &a,
+        )
+        .await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("range_too_large"))
+    );
 
     // Bandwidth (§9.3): 10 Mbps for 10 minutes on a NIC in each project.
     let t0 = now / 300_000 * 300_000 - 900_000;
     let mut r = meter.ledger().begin_round(t0 + 600_000).unwrap();
     for (p, id) in [(&pa, "vm-a"), (&pb, "vm-b")] {
-        let mut nic = Subject::new(SubjectKind::Nic, format!("{id}.0"), format!("{id}/nic0"), Some(p.clone()));
+        let mut nic = Subject::new(
+            SubjectKind::Nic,
+            format!("{id}.0"),
+            format!("{id}/nic0"),
+            Some(p.clone()),
+        );
         nic.vm_id = Some(id.to_string());
-        r.counter(&nic, "net.rx_bytes", "port", 0, t0, Origin::Unknown).unwrap();
+        r.counter(&nic, "net.rx_bytes", "port", 0, t0, Origin::Unknown)
+            .unwrap();
         for i in 1..=20u64 {
-            r.counter(&nic, "net.rx_bytes", "port", i * 37_500_000, t0 + i * 30_000, Origin::Unknown).unwrap();
+            r.counter(
+                &nic,
+                "net.rx_bytes",
+                "port",
+                i * 37_500_000,
+                t0 + i * 30_000,
+                Origin::Unknown,
+            )
+            .unwrap();
         }
     }
     meter.ledger().commit(r).unwrap();
-    let (s, body, _) = h.call("GET", "/usage/bandwidth?project=pa&group_by=vm", None, &v).await;
+    let (s, body, _) = h
+        .call("GET", "/usage/bandwidth?project=pa&group_by=vm", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
     let rows = body["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{body}");
@@ -578,34 +1148,67 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     assert_eq!(rows[0]["slots"]["counted"], 2);
     let (s, _, _) = h.call("GET", "/usage/bandwidth?project=pb", None, &v).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, body, _) = h.call("GET", "/usage/bandwidth?group_by=project", None, &a).await;
-    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "auditor sees both projects");
-    let (s, _, headers) = h.call("GET", "/usage/bandwidth?project=pa&format=csv", None, &v).await;
+    let (_, body, _) = h
+        .call("GET", "/usage/bandwidth?group_by=project", None, &a)
+        .await;
+    assert_eq!(
+        body["rows"].as_array().unwrap().len(),
+        2,
+        "auditor sees both projects"
+    );
+    let (s, _, headers) = h
+        .call("GET", "/usage/bandwidth?project=pa&format=csv", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/csv"));
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
     let (s, body, _) = h.call("GET", "/usage/disk-io?group_by=nic", None, &a).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
     // Months in another whole-hour zone (`tz=`, §15.6); half-hour zones are refused.
-    let (s, body, _) = h.call("GET", "/usage/bandwidth?project=pa&tz=%2B07:00", None, &v).await;
+    let (s, body, _) = h
+        .call("GET", "/usage/bandwidth?project=pa&tz=%2B07:00", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
-    let (s, body, _) = h.call("GET", "/usage/disk-io?project=pa&tz=%2B05:30", None, &v).await;
+    let (s, body, _) = h
+        .call("GET", "/usage/disk-io?project=pa&tz=%2B05:30", None, &v)
+        .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
 
     // CPU and memory (§8.7), from the VMs' cpu.used slots above.
-    let (s, body, _) = h.call("GET", "/usage/compute?project=pa&group_by=vm", None, &v).await;
+    let (s, body, _) = h
+        .call("GET", "/usage/compute?project=pa&group_by=vm", None, &v)
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
     let rows = body["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{body}");
     assert_eq!(rows[0]["vm"]["id"], "vm-a");
-    assert!(rows[0]["p95"]["cpu_cores"].as_f64().unwrap() > 0.0, "{body}");
-    assert!(rows[0]["p95"]["cpu_percent"].is_null(), "no allocation recorded: no utilization");
+    assert!(
+        rows[0]["p95"]["cpu_cores"].as_f64().unwrap() > 0.0,
+        "{body}"
+    );
+    assert!(
+        rows[0]["p95"]["cpu_percent"].is_null(),
+        "no allocation recorded: no utilization"
+    );
     let (s, _, _) = h.call("GET", "/usage/compute?project=pb", None, &v).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, body, _) = h.call("GET", "/usage/compute?group_by=project", None, &a).await;
-    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "auditor sees both projects");
+    let (_, body, _) = h
+        .call("GET", "/usage/compute?group_by=project", None, &a)
+        .await;
+    assert_eq!(
+        body["rows"].as_array().unwrap().len(),
+        2,
+        "auditor sees both projects"
+    );
     let (s, _, _) = h.call("GET", "/usage/compute", None, &n).await;
     assert_ne!(s, StatusCode::OK, "no role, no usage");
-    let (s, body, _) = h.call("GET", "/usage/compute?group_by=disk", None, &a).await;
+    let (s, body, _) = h
+        .call("GET", "/usage/compute?group_by=disk", None, &a)
+        .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
 }
 
@@ -617,7 +1220,12 @@ mod pam {
 
     pub struct FakePam;
     impl Authenticator for FakePam {
-        fn authenticate(&self, _service: &str, user: &str, password: &str) -> Result<(), AuthFailure> {
+        fn authenticate(
+            &self,
+            _service: &str,
+            user: &str,
+            password: &str,
+        ) -> Result<(), AuthFailure> {
             if password == format!("{}-password", user) {
                 Ok(())
             } else {
@@ -629,7 +1237,10 @@ mod pam {
     pub struct FakeKeys;
     impl glidex_authd::keys::KeyReader for FakeKeys {
         fn public_keys(&self, user: &str) -> Result<Vec<String>, String> {
-            Ok(vec![format!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@laptop", user)])
+            Ok(vec![format!(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@laptop",
+                user
+            )])
         }
     }
 
@@ -651,9 +1262,20 @@ async fn pam_login_provisions_on_first_login() {
         ("mallory", vec!["mallory", "staff"]),
     ]
     .into_iter()
-    .map(|(n, g)| (n.to_string(), Account { uid: 1000, groups: g.into_iter().map(String::from).collect() }))
+    .map(|(n, g)| {
+        (
+            n.to_string(),
+            Account {
+                uid: 1000,
+                groups: g.into_iter().map(String::from).collect(),
+            },
+        )
+    })
     .collect();
-    let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
+    let cfg = glidex_authd::config::Config {
+        failure_delay: std::time::Duration::from_millis(1),
+        ..Default::default()
+    };
     let authd = Arc::new(
         glidex_authd::server::Authd::new(
             cfg,
@@ -668,19 +1290,71 @@ async fn pam_login_provisions_on_first_login() {
 
     let h = harness_with(|c| {
         c.auth.pam.authd_socket = sock.clone();
-        c.auth.pam.group_teams.insert("lab-unix".into(), "lab".into());
+        c.auth
+            .pam
+            .group_teams
+            .insert("lab-unix".into(), "lab".into());
     });
-    h.app.auth.store.put_team(&auth::store::Team { id: "team-lab".into(), name: "lab".into(), members: vec![], created_at: 0 }).unwrap();
+    h.app
+        .auth
+        .store
+        .put_team(&auth::store::Team {
+            id: "team-lab".into(),
+            name: "lab".into(),
+            members: vec![],
+            created_at: 0,
+            managed: None,
+        })
+        .unwrap();
     let login = |u: &str, p: &str| json!({"method": "pam", "username": u, "password": p});
-    let (s, v, _) = h.call("POST", "/auth/login", Some(login("alice", "wrong")), &As::Nobody).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("login_failed")));
-    let (s, _, _) = h.call("POST", "/auth/login", Some(login("mallory", "mallory-password")), &As::Nobody).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/auth/login",
+            Some(login("alice", "wrong")),
+            &As::Nobody,
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("login_failed"))
+    );
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/auth/login",
+            Some(login("mallory", "mallory-password")),
+            &As::Nobody,
+        )
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "not in glidex-users");
-    let (s, v, headers) = h.call("POST", "/auth/login", Some(login("alice", "alice-password")), &As::Nobody).await;
+    let (s, v, headers) = h
+        .call(
+            "POST",
+            "/auth/login",
+            Some(login("alice", "alice-password")),
+            &As::Nobody,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
-    assert!(set_cookie.contains("HttpOnly") && set_cookie.contains("SameSite=Strict"), "{set_cookie}");
-    let cookie = set_cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_string();
+    let set_cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        set_cookie.contains("HttpOnly") && set_cookie.contains("SameSite=Strict"),
+        "{set_cookie}"
+    );
+    let cookie = set_cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once('=')
+        .unwrap()
+        .1
+        .to_string();
     let csrf = v["csrf"].as_str().unwrap().to_string();
     let me = As::Cookie(cookie.clone(), Some(csrf.clone()), Some(ORIGIN));
     let (_, who, _) = h.call("GET", "/auth/whoami", None, &me).await;
@@ -691,24 +1365,51 @@ async fn pam_login_provisions_on_first_login() {
     assert_eq!(s, StatusCode::OK, "{keys}");
     assert_eq!(keys["available"], true);
     assert_eq!(keys["username"], "alice");
-    assert_eq!(keys["keys"], json!(["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq alice@laptop"]));
+    assert_eq!(
+        keys["keys"],
+        json!(["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq alice@laptop"])
+    );
     // A user without a local account (e.g. SSO only) gets a reason instead.
-    let sso = h.app.auth.store.user_for_identity("oidc:https://idp", "s1", "Sam", None, true).unwrap().unwrap();
-    let (_, keys, _) = h.call("GET", "/users/me/ssh-keys", None, &As::Bearer(h.token(&sso.id))).await;
+    let sso = h
+        .app
+        .auth
+        .store
+        .user_for_identity("oidc:https://idp", "s1", "Sam", None, true)
+        .unwrap()
+        .unwrap();
+    let (_, keys, _) = h
+        .call(
+            "GET",
+            "/users/me/ssh-keys",
+            None,
+            &As::Bearer(h.token(&sso.id)),
+        )
+        .await;
     assert_eq!(keys["available"], false);
     assert!(keys["reason"].as_str().unwrap().contains("paste"));
     // New users have no rights yet.
     let (_, projects, _) = h.call("GET", "/projects", None, &me).await;
-    assert_eq!(projects.as_array().unwrap().len(), 0);
+    assert!(projects.get("projects").is_none(), "{projects}");
     // Logout ends the session.
     let (s, _, _) = h.call("POST", "/auth/logout", None, &me).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _, _) = h.call("GET", "/auth/whoami", None, &me).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     // Login events are audited, never with the password.
-    let entries = h.app.auth.store.audit(0, 100, |e| e.action == "login").unwrap();
-    assert!(entries.iter().any(|e| e.result == "ok") && entries.iter().any(|e| e.result == "denied"));
-    assert!(!serde_json::to_string(&entries).unwrap().contains("alice-password"));
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "login")
+        .unwrap();
+    assert!(
+        entries.iter().any(|e| e.result == "ok") && entries.iter().any(|e| e.result == "denied")
+    );
+    assert!(
+        !serde_json::to_string(&entries)
+            .unwrap()
+            .contains("alice-password")
+    );
 }
 
 #[tokio::test]
@@ -716,9 +1417,25 @@ async fn pam_login_without_jit_needs_a_provisioned_user() {
     use glidex_authd::authenticator::Account;
     let dir = TempDir::new().unwrap();
     let sock = dir.path().join("auth.sock");
-    let accounts = [("bob".to_string(), Account { uid: 1, groups: vec!["glidex-users".into()] })].into_iter().collect();
-    let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
-    let authd = Arc::new(glidex_authd::server::Authd::new(cfg, Some(nix::unistd::getuid().as_raw()), Arc::new(pam::FakePam), Arc::new(pam::FakeAccounts(accounts))));
+    let accounts = [(
+        "bob".to_string(),
+        Account {
+            uid: 1,
+            groups: vec!["glidex-users".into()],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let cfg = glidex_authd::config::Config {
+        failure_delay: std::time::Duration::from_millis(1),
+        ..Default::default()
+    };
+    let authd = Arc::new(glidex_authd::server::Authd::new(
+        cfg,
+        Some(nix::unistd::getuid().as_raw()),
+        Arc::new(pam::FakePam),
+        Arc::new(pam::FakeAccounts(accounts)),
+    ));
     let l = glidex_authd::server::bind(&sock, 0o600, None).unwrap();
     std::thread::spawn(move || authd.serve(l));
     let h = harness_with(|c| {
@@ -726,7 +1443,9 @@ async fn pam_login_without_jit_needs_a_provisioned_user() {
         c.auth.pam.jit = false;
     });
     let body = json!({"username": "bob", "password": "bob-password"});
-    let (s, _, _) = h.call("POST", "/auth/login", Some(body.clone()), &As::Nobody).await;
+    let (s, _, _) = h
+        .call("POST", "/auth/login", Some(body.clone()), &As::Nobody)
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     h.user("bob");
     let (s, _, _) = h.call("POST", "/auth/login", Some(body), &As::Nobody).await;
@@ -736,9 +1455,25 @@ async fn pam_login_without_jit_needs_a_provisioned_user() {
 fn fake_authd(dir: &TempDir) -> std::path::PathBuf {
     use glidex_authd::authenticator::Account;
     let sock = dir.path().join("auth.sock");
-    let accounts = [("bob".to_string(), Account { uid: 1, groups: vec!["glidex-users".into()] })].into_iter().collect();
-    let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
-    let authd = Arc::new(glidex_authd::server::Authd::new(cfg, Some(nix::unistd::getuid().as_raw()), Arc::new(pam::FakePam), Arc::new(pam::FakeAccounts(accounts))));
+    let accounts = [(
+        "bob".to_string(),
+        Account {
+            uid: 1,
+            groups: vec!["glidex-users".into()],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let cfg = glidex_authd::config::Config {
+        failure_delay: std::time::Duration::from_millis(1),
+        ..Default::default()
+    };
+    let authd = Arc::new(glidex_authd::server::Authd::new(
+        cfg,
+        Some(nix::unistd::getuid().as_raw()),
+        Arc::new(pam::FakePam),
+        Arc::new(pam::FakeAccounts(accounts)),
+    ));
     let l = glidex_authd::server::bind(&sock, 0o600, None).unwrap();
     std::thread::spawn(move || authd.serve(l));
     sock
@@ -758,22 +1493,40 @@ async fn pam_token_exchanges_credentials_for_a_personal_token() {
     let body = json!({"username": "bob", "password": "bob-password", "token_name": "gxctl@lab", "device": "laptop-7", "client": "gxctl/1.0"});
     let (s, v, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let secret = v["token"].as_str().unwrap().to_string();
+    let secret = v["issued"]["token"].as_str().unwrap().to_string();
     assert!(secret.starts_with("gxt_"), "a gxt_ token");
     // The token acts as bob and carries the claimed device strings (display only).
-    let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret.clone())).await;
+    let (_, who, _) = h
+        .call("GET", "/auth/whoami", None, &As::Bearer(secret.clone()))
+        .await;
     assert_eq!(who["user"]["display_name"], "bob");
     assert_eq!(who["token"]["name"], "gxctl@lab");
     assert_eq!(who["token"]["device"], "laptop-7");
     // Revocation takes it down.
-    let id = v["token_id"].as_str().unwrap().to_string();
+    let id = v["issued"]["token_id"].as_str().unwrap().to_string();
     h.app.auth.revoke_token(&id).unwrap();
-    let (s, _, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret)).await;
+    let (s, _, _) = h
+        .call("GET", "/auth/whoami", None, &As::Bearer(secret))
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     // The login is audited without the secret.
-    let entries = h.app.auth.store.audit(0, 100, |e| e.action == "login").unwrap();
-    assert!(entries.iter().any(|e| e.result == "ok" && e.details["method"] == "pam-token"), "{entries:?}");
-    assert!(!serde_json::to_string(&entries).unwrap().contains("bob-password"));
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "login")
+        .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.result == "ok" && e.details["method"] == "pam-token"),
+        "{entries:?}"
+    );
+    assert!(
+        !serde_json::to_string(&entries)
+            .unwrap()
+            .contains("bob-password")
+    );
 }
 
 #[tokio::test]
@@ -781,9 +1534,19 @@ async fn pam_token_needs_pam_enabled() {
     let h = harness_with(|c| {
         c.auth.pam.enabled = false;
     });
-    let (s, v, _) = h.call("POST", "/auth/token", Some(json!({"username": "bob", "password": "x"})), &As::Nobody).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/auth/token",
+            Some(json!({"username": "bob", "password": "x"})),
+            &As::Nobody,
+        )
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    assert!(v["message"].as_str().unwrap().contains("auth.pam.enabled"), "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("auth.pam.enabled"),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -807,7 +1570,7 @@ async fn server_info_is_public_and_describes_the_host() {
 // ---- OIDC against a mock IdP ---------------------------------------------
 
 mod idp {
-    use axum::{extract::State, routing::get, routing::post, Json, Router};
+    use axum::{Json, Router, extract::State, routing::get, routing::post};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header};
     use rsa::pkcs1::EncodeRsaPrivateKey;
@@ -826,7 +1589,10 @@ mod idp {
             let k = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
             let b = |v: Vec<u8>| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
             Key {
-                pem: k.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).unwrap().to_string(),
+                pem: k
+                    .to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
+                    .unwrap()
+                    .to_string(),
                 n: b(k.n().to_bytes_be()),
                 e: b(k.e().to_bytes_be()),
             }
@@ -844,13 +1610,21 @@ mod idp {
     pub fn sign(claims: serde_json::Value, kid: &str) -> String {
         let mut h = Header::new(jsonwebtoken::Algorithm::RS256);
         h.kid = Some(kid.into());
-        jsonwebtoken::encode(&h, &claims, &EncodingKey::from_rsa_pem(key().pem.as_bytes()).unwrap()).unwrap()
+        jsonwebtoken::encode(
+            &h,
+            &claims,
+            &EncodingKey::from_rsa_pem(key().pem.as_bytes()).unwrap(),
+        )
+        .unwrap()
     }
 
     pub async fn start() -> Arc<Mock> {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
-        let mock = Arc::new(Mock { base: base.clone(), ..Default::default() });
+        let mock = Arc::new(Mock {
+            base: base.clone(),
+            ..Default::default()
+        });
         let app = Router::new()
             .route(
                 "/.well-known/openid-configuration",
@@ -898,43 +1672,84 @@ mod idp {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
-async fn oidc_harness(mock: &idp::Mock, f: impl FnOnce(&mut Config)) -> (H, TempDir) {
-    let secret_dir = TempDir::new().unwrap();
-    let secret = secret_dir.path().join("secret");
-    std::fs::write(&secret, "test-client-secret\n").unwrap();
-    std::env::set_var("GLIDEX_OIDC_CLIENT_SECRET_FILE", &secret);
+/// The client secret file, one for the whole run: the variable naming it is
+/// process-wide, and a test's own file would vanish under the others.
+fn oidc_secret_file() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let d = TempDir::new().unwrap();
+        std::fs::write(d.path().join("secret"), "test-client-secret\n").unwrap();
+        // SAFETY: test-only; set once, to the same value for every test.
+        unsafe { std::env::set_var("GLIDEX_OIDC_CLIENT_SECRET_FILE", d.path().join("secret")) };
+        d
+    });
+    dir.path()
+}
+
+async fn oidc_harness(mock: &idp::Mock, f: impl FnOnce(&mut Config)) -> H {
+    oidc_secret_file();
     let base = mock.base.clone();
-    let h = harness_with(move |c| {
+    harness_with(move |c| {
         c.auth.oidc.enabled = true;
         c.auth.oidc.issuer = base;
         c.auth.oidc.client_id = "glidex".into();
-        c.auth.oidc.group_teams.insert("lab-staff".into(), "lab".into());
+        c.auth
+            .oidc
+            .group_teams
+            .insert("lab-staff".into(), "lab".into());
         f(c);
-    });
-    (h, secret_dir)
+    })
 }
 
 /// Start a browser login; returns (state, nonce, code_challenge, browser cookie).
 async fn oidc_begin(h: &H) -> (String, String, String, String) {
-    let (s, _, headers) = h.call("GET", "/auth/oidc/start?return_to=/vms", None, &As::Nobody).await;
+    let (s, _, headers) = h
+        .call("GET", "/auth/oidc/start?return_to=/vms", None, &As::Nobody)
+        .await;
     assert_eq!(s, StatusCode::SEE_OTHER);
-    let loc = reqwest::Url::parse(headers.get(header::LOCATION).unwrap().to_str().unwrap()).unwrap();
+    let loc =
+        reqwest::Url::parse(headers.get(header::LOCATION).unwrap().to_str().unwrap()).unwrap();
     let q: std::collections::HashMap<_, _> = loc.query_pairs().into_owned().collect();
     assert_eq!(q["code_challenge_method"], "S256");
     assert_eq!(q["response_type"], "code");
-    let browser = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    (q["state"].clone(), q["nonce"].clone(), q["code_challenge"].clone(), browser)
+    let browser = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    (
+        q["state"].clone(),
+        q["nonce"].clone(),
+        q["code_challenge"].clone(),
+        browser,
+    )
 }
 
-async fn oidc_finish(h: &H, state: &str, browser: Option<&str>) -> (StatusCode, axum::http::HeaderMap) {
+async fn oidc_finish(
+    h: &H,
+    state: &str,
+    browser: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap) {
     let mut b = Request::builder().uri(format!("/auth/oidc/callback?code=c1&state={state}"));
     if let Some(c) = browser {
         b = b.header(header::COOKIE, c);
     }
-    let resp = h.router.clone().oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+    let resp = h
+        .router
+        .clone()
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     (resp.status(), resp.headers().clone())
 }
 
@@ -948,8 +1763,18 @@ fn claims(mock: &idp::Mock, nonce: &str) -> Value {
 #[tokio::test]
 async fn oidc_code_flow_with_pkce() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
-    h.app.auth.store.put_team(&auth::store::Team { id: "team-lab".into(), name: "lab".into(), members: vec![], created_at: 0 }).unwrap();
+    let h = oidc_harness(&mock, |_| {}).await;
+    h.app
+        .auth
+        .store
+        .put_team(&auth::store::Team {
+            id: "team-lab".into(),
+            name: "lab".into(),
+            members: vec![],
+            created_at: 0,
+            managed: None,
+        })
+        .unwrap();
     let (s, v, _) = h.call("GET", "/auth/methods", None, &As::Nobody).await;
     assert_eq!((s, v["oidc"].as_bool()), (StatusCode::OK, Some(true)));
 
@@ -961,10 +1786,17 @@ async fn oidc_code_flow_with_pkce() {
     // The token request carried the client secret and a verifier for the challenge.
     let req = mock.token_requests.lock().unwrap().last().cloned().unwrap();
     assert!(req.starts_with("Basic "), "{req}");
-    let verifier = req.split("code_verifier=").nth(1).unwrap().split('&').next().unwrap();
-    use sha2::Digest;
+    let verifier = req
+        .split("code_verifier=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap();
     use base64::Engine as _;
-    let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
+    use sha2::Digest;
+    let expect = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
     assert_eq!(expect, challenge);
     let session = headers
         .get_all(header::SET_COOKIE)
@@ -979,7 +1811,14 @@ async fn oidc_code_flow_with_pkce() {
         .unwrap()
         .1
         .to_string();
-    let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Cookie(session, None, None)).await;
+    let (_, who, _) = h
+        .call(
+            "GET",
+            "/auth/whoami",
+            None,
+            &As::Cookie(session, None, None),
+        )
+        .await;
     assert_eq!(who["user"]["display_name"], "Alice");
     assert_eq!(who["method"], "oidc");
     assert_eq!(who["teams"], json!(["team-lab"]));
@@ -992,21 +1831,74 @@ async fn oidc_code_flow_with_pkce() {
 #[tokio::test]
 async fn oidc_rejects_bad_tokens() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
+    let h = oidc_harness(&mock, |_| {}).await;
     type MakeToken<'a> = Box<dyn Fn(&str) -> String + 'a>;
     let cases: Vec<(&str, MakeToken)> = vec![
-        ("wrong nonce", Box::new(|_n| idp::sign(claims(&mock, "other"), "k1"))),
-        ("wrong audience", Box::new(|n| { let mut c = claims(&mock, n); c["aud"] = json!("someone-else"); idp::sign(c, "k1") })),
-        ("wrong issuer", Box::new(|n| { let mut c = claims(&mock, n); c["iss"] = json!("https://evil.example"); idp::sign(c, "k1") })),
-        ("expired", Box::new(|n| { let mut c = claims(&mock, n); c["exp"] = json!(now() - 600); idp::sign(c, "k1") })),
-        ("issued in the future", Box::new(|n| { let mut c = claims(&mock, n); c["iat"] = json!(now() + 3600); idp::sign(c, "k1") })),
-        ("unknown key", Box::new(|n| idp::sign(claims(&mock, n), "k2"))),
-        ("HS256", Box::new(|n| jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims(&mock, n), &jsonwebtoken::EncodingKey::from_secret(b"test-client-secret")).unwrap())),
-        ("alg none", Box::new(|n| {
-            use base64::Engine as _;
-            let b = |v: &Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
-            format!("{}.{}.", b(&json!({"alg": "none", "typ": "JWT"})), b(&claims(&mock, n)))
-        })),
+        (
+            "wrong nonce",
+            Box::new(|_n| idp::sign(claims(&mock, "other"), "k1")),
+        ),
+        (
+            "wrong audience",
+            Box::new(|n| {
+                let mut c = claims(&mock, n);
+                c["aud"] = json!("someone-else");
+                idp::sign(c, "k1")
+            }),
+        ),
+        (
+            "wrong issuer",
+            Box::new(|n| {
+                let mut c = claims(&mock, n);
+                c["iss"] = json!("https://evil.example");
+                idp::sign(c, "k1")
+            }),
+        ),
+        (
+            "expired",
+            Box::new(|n| {
+                let mut c = claims(&mock, n);
+                c["exp"] = json!(now() - 600);
+                idp::sign(c, "k1")
+            }),
+        ),
+        (
+            "issued in the future",
+            Box::new(|n| {
+                let mut c = claims(&mock, n);
+                c["iat"] = json!(now() + 3600);
+                idp::sign(c, "k1")
+            }),
+        ),
+        (
+            "unknown key",
+            Box::new(|n| idp::sign(claims(&mock, n), "k2")),
+        ),
+        (
+            "HS256",
+            Box::new(|n| {
+                jsonwebtoken::encode(
+                    &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+                    &claims(&mock, n),
+                    &jsonwebtoken::EncodingKey::from_secret(b"test-client-secret"),
+                )
+                .unwrap()
+            }),
+        ),
+        (
+            "alg none",
+            Box::new(|n| {
+                use base64::Engine as _;
+                let b = |v: &Value| {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+                };
+                format!(
+                    "{}.{}.",
+                    b(&json!({"alg": "none", "typ": "JWT"})),
+                    b(&claims(&mock, n))
+                )
+            }),
+        ),
     ];
     for (name, make) in cases {
         let (state, nonce, _, browser) = oidc_begin(&h).await;
@@ -1024,7 +1916,7 @@ async fn oidc_rejects_bad_tokens() {
 #[tokio::test]
 async fn oidc_login_rules_and_device_grant() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |c| {
+    let h = oidc_harness(&mock, |c| {
         c.auth.oidc.required_groups = vec!["glidex".into()];
     })
     .await;
@@ -1033,7 +1925,7 @@ async fn oidc_login_rules_and_device_grant() {
     let (s, _) = oidc_finish(&h, &state, Some(&browser)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "not in a required group");
 
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
+    let h = oidc_harness(&mock, |_| {}).await;
     let (s, v, _) = h.call("POST", "/auth/oidc/device", None, &As::Nobody).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["user_code"], "ABCD-EFGH");
@@ -1041,12 +1933,26 @@ async fn oidc_login_rules_and_device_grant() {
     c.as_object_mut().unwrap().remove("nonce");
     *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
     let poll = json!({"device_code": "dev-1"});
-    let (s, v, _) = h.call("POST", "/auth/oidc/device/poll", Some(poll.clone()), &As::Nobody).await;
-    assert_eq!((s, v["status"].as_str()), (StatusCode::ACCEPTED, Some("pending")));
-    let (s, v, _) = h.call("POST", "/auth/oidc/device/poll", Some(poll), &As::Nobody).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/auth/oidc/device/poll",
+            Some(poll.clone()),
+            &As::Nobody,
+        )
+        .await;
+    assert_eq!(
+        (s, v["pending"].as_bool()),
+        (StatusCode::ACCEPTED, Some(true))
+    );
+    let (s, v, _) = h
+        .call("POST", "/auth/oidc/device/poll", Some(poll), &As::Nobody)
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let token = v["token"].as_str().unwrap().to_string();
-    let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(token)).await;
+    let token = v["issued"]["token"].as_str().unwrap().to_string();
+    let (_, who, _) = h
+        .call("GET", "/auth/whoami", None, &As::Bearer(token))
+        .await;
     assert_eq!(who["user"]["display_name"], "Alice");
 }
 
@@ -1055,8 +1961,16 @@ async fn console_tickets_need_vm_console() {
     let h = harness();
     let pa = h.project("pa");
     let (op, viewer) = (h.user("op"), h.user("viewer"));
-    h.link("role.operator", Ent::User(op.clone()), Ent::Project(pa.clone()));
-    h.link("role.viewer", Ent::User(viewer.clone()), Ent::Project(pa.clone()));
+    h.link(
+        "role.operator",
+        Ent::User(op.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.viewer",
+        Ent::User(viewer.clone()),
+        Ent::Project(pa.clone()),
+    );
     let vm = h
         .app
         .manager
@@ -1070,14 +1984,46 @@ async fn console_tickets_need_vm_console() {
         .await
         .unwrap()
         .0;
-    let (s, v, _) = h.call("POST", &format!("/vms/{}/console/ticket", vm.id), None, &h.session(&op)).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/vms/{}/console/ticket", vm.id),
+            None,
+            &h.session(&op),
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["ticket"].as_str().unwrap().len() > 20);
-    let (s, _, _) = h.call("POST", &format!("/vms/{}/console/ticket", vm.id), None, &h.session(&viewer)).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            &format!("/vms/{}/console/ticket", vm.id),
+            None,
+            &h.session(&viewer),
+        )
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _, _) = h.call("GET", &format!("/vms/{}/console/log", vm.id), None, &As::Bearer(h.token(&viewer))).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "the console log is console output");
-    let (s, _, _) = h.call("GET", &format!("/vms/{}/console/log", vm.id), None, &As::Bearer(h.token(&op))).await;
+    let (s, _, _) = h
+        .call(
+            "GET",
+            &format!("/vms/{}/console/log", vm.id),
+            None,
+            &As::Bearer(h.token(&viewer)),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "the console log is console output"
+    );
+    let (s, _, _) = h
+        .call(
+            "GET",
+            &format!("/vms/{}/console/log", vm.id),
+            None,
+            &As::Bearer(h.token(&op)),
+        )
+        .await;
     assert_eq!(s, StatusCode::OK);
 }
 
@@ -1086,33 +2032,70 @@ async fn console_tickets_need_vm_console() {
 #[tokio::test]
 async fn site_default_quotas_apply_to_new_projects() {
     use glidex_control_plane::tenancy::Quotas;
-    let h = harness_with(|c| c.quotas.default = Quotas { vms: Some(1), networks: Some(2), ..Default::default() });
+    let h = harness_with(|c| {
+        c.quotas.default = Quotas {
+            vms: Some(1),
+            networks: Some(2),
+            ..Default::default()
+        }
+    });
     let admin = h.user("admin");
     h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let a = As::Bearer(h.token(&admin));
 
     // No quotas in the request: the site default.
-    let (s, p, _) = h.call("POST", "/projects", Some(json!({"name": "lab"})), &a).await;
+    let (s, p, _) = h
+        .call("POST", "/projects", Some(json!({"name": "lab"})), &a)
+        .await;
     assert_eq!(s, StatusCode::CREATED, "{p}");
-    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2, "routers": null, "external_ips": null}));
+    // Unlimited (absent) limits are left out.
+    assert_eq!(p["project"]["quotas"], json!({"vms": 1, "networks": 2}));
     // Explicit quotas win.
-    let (s, q, _) = h.call("POST", "/projects", Some(json!({"name": "big", "quotas": {"vms": 10}})), &a).await;
+    let (s, q, _) = h
+        .call(
+            "POST",
+            "/projects",
+            Some(json!({"name": "big", "quotas": {"vms": 10}})),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::CREATED, "{q}");
-    assert_eq!((q["quotas"]["vms"].as_u64(), q["quotas"]["networks"].as_u64()), (Some(10), Some(2)));
+    assert_eq!(
+        (
+            q["project"]["quotas"]["vms"].as_u64(),
+            q["project"]["quotas"]["networks"].as_u64()
+        ),
+        (Some(10), Some(2))
+    );
     // A typo in a quota name is refused, not ignored.
-    let (s, _, _) = h.call("POST", "/projects", Some(json!({"name": "typo", "quotas": {"vm": 10}})), &a).await;
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/projects",
+            Some(json!({"name": "typo", "quotas": {"vm": 10}})),
+            &a,
+        )
+        .await;
     assert!(s.is_client_error());
 
     // The default is enforced for the project's members.
-    let lab = p["id"].as_str().unwrap().to_string();
+    let lab = p["project"]["id"].as_str().unwrap().to_string();
     let owner = h.user("owner");
-    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(lab.clone()));
+    h.link(
+        "role.owner",
+        Ent::User(owner.clone()),
+        Ent::Project(lab.clone()),
+    );
     h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
     let o = As::Bearer(h.token(&owner));
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "lab")), &o).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v2", "lab")), &o).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::FORBIDDEN, Some("quota_exceeded")), "{v}");
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("quota_exceeded")),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -1130,21 +2113,33 @@ async fn control_plane_json_drives_the_service() {
         .to_string(),
     )
     .unwrap();
-    std::env::set_var("GLIDEX_CONFIG", &cfg_path);
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_CONFIG", &cfg_path) };
     let cfg = Config::load().unwrap();
-    std::env::remove_var("GLIDEX_CONFIG");
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::remove_var("GLIDEX_CONFIG") };
     assert_eq!(cfg.quotas.default.vms, Some(4));
     assert_eq!(cfg.quotas.default.networks, None, "null means unlimited");
 
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     // The default project takes the site default once (main.rs does this
     // at startup).
-    assert!(manager.projects().adopt_default_quotas(&cfg.quotas.default).unwrap());
-    assert_eq!(manager.projects().resolve("default").unwrap().quotas, cfg.quotas.default);
+    assert!(
+        manager
+            .projects()
+            .adopt_default_quotas(&cfg.quotas.default)
+            .unwrap()
+    );
+    assert_eq!(
+        manager.projects().resolve("default").unwrap().quotas,
+        cfg.quotas.default
+    );
     let auth = AuthService::new(manager.database(), cfg.clone()).unwrap();
     // policy_history reaches the store.
     for v in 0..5 {
-        auth.store.write_site_policy("site.x", v, Some(("t", "", true)), "u").unwrap();
+        auth.store
+            .write_site_policy("site.x", v, Some(("t", "", true)), "u")
+            .unwrap();
     }
     assert_eq!(auth.store.site_policy_versions("site.x").unwrap().len(), 3);
 
@@ -1153,7 +2148,10 @@ async fn control_plane_json_drives_the_service() {
     bad.authz.policy_history = 0;
     assert!(AuthService::new(manager.database(), bad).is_err());
     std::fs::write(&cfg_path, r#"{"quotas": {"default": {"network": 4}}}"#).unwrap();
-    assert!(Config::load_from(&cfg_path).is_err(), "typos stop the control plane");
+    assert!(
+        Config::load_from(&cfg_path).is_err(),
+        "typos stop the control plane"
+    );
 }
 
 #[tokio::test]
@@ -1164,37 +2162,457 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
     let plain = h.user("pat");
     let p = h.project("p1");
     let actions = json!(["createProject", "drainNode", "createVm", "listNodes"]);
-    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }]);
+    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }, { "type": "Tenant", "id": "default" }]);
     let body = json!({ "actions": actions, "resources": resources });
 
     let a = h.session(&admin);
-    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body.clone()), &a).await;
+    let (s, v, _) = h
+        .call("POST", "/authz/allowed", Some(body.clone()), &a)
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let allowed = v["allowed"].as_array().unwrap();
-    let names = |i: usize| -> Vec<String> { allowed[i].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() };
-    assert_eq!(names(0), ["createProject", "listNodes"], "only actions that apply to Cluster");
+    // Each resource's `{actions}`; an empty list is left out.
+    let names = |i: usize| -> Vec<String> {
+        allowed[i]["actions"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        names(0),
+        ["listNodes"],
+        "only actions that apply to Cluster"
+    );
     assert_eq!(names(1), ["drainNode"], "this host");
     // Another node's host sits under the cluster too, so a cluster-wide
     // grant covers it.
     assert_eq!(names(2), ["drainNode"], "another node");
     assert_eq!(names(3), ["createVm"]);
+    // Projects are created in a tenant (spec/tenancy.md D1).
+    assert_eq!(names(4), ["createProject"]);
 
     // Item by item, the same answers as /authz/check.
     for (ri, r) in resources.as_array().unwrap().iter().enumerate() {
         for act in actions.as_array().unwrap() {
-            let (_, c, _) = h.call("POST", "/authz/check", Some(json!({ "checks": [{ "action": act, "resource": r }] })), &a).await;
+            let (_, c, _) = h
+                .call(
+                    "POST",
+                    "/authz/check",
+                    Some(json!({ "checks": [{ "action": act, "resource": r }] })),
+                    &a,
+                )
+                .await;
             let one = c["results"][0]["allowed"].as_bool().unwrap();
-            assert_eq!(one, names(ri).iter().any(|n| n == act.as_str().unwrap()), "{act} on {r}");
+            assert_eq!(
+                one,
+                names(ri).iter().any(|n| n == act.as_str().unwrap()),
+                "{act} on {r}"
+            );
         }
     }
 
-    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body), &h.session(&plain)).await;
+    let (s, v, _) = h
+        .call("POST", "/authz/allowed", Some(body), &h.session(&plain))
+        .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(v["allowed"].as_array().unwrap().iter().all(|x| x.as_array().unwrap().is_empty()), "{v}");
+    assert!(
+        v["allowed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x.get("actions").is_none()),
+        "{v}"
+    );
 
-    let (s, v, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["noSuchAction"], "resources": [] })), &a).await;
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/authz/allowed",
+            Some(json!({ "actions": ["noSuchAction"], "resources": [] })),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-    let many: Vec<Value> = (0..501).map(|i| json!({ "type": "Vm", "id": i.to_string() })).collect();
-    let (s, _, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["readVm"], "resources": many })), &a).await;
+    let many: Vec<Value> = (0..501)
+        .map(|i| json!({ "type": "Vm", "id": i.to_string() }))
+        .collect();
+    let (s, _, _) = h
+        .call(
+            "POST",
+            "/authz/allowed",
+            Some(json!({ "actions": ["readVm"], "resources": many })),
+            &a,
+        )
+        .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// spec/host-topology.md §8.5: a `pci.allow` grant names the device on one
+/// node (by id or name), or the address on every node; the device is
+/// `PciDevice::"<node>/<address>"` in that node's host.
+#[tokio::test]
+async fn pci_grants_name_the_node() {
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    let grant = |bdf: &str, node: Option<&str>| glidex_control_plane::config::PciGrant {
+        bdf: Some(bdf.into()),
+        pool: None,
+        projects: vec!["pa".into()],
+        tenants: vec![],
+        node: node.map(Into::into),
+    };
+    let h = harness_with(|c| {
+        c.pci.allow = vec![
+            grant("0000:41:00.0", Some("local")),
+            grant("0000:42:00.0", Some(&host)),
+            grant("0000:43:00.0", Some("elsewhere")),
+            grant("0000:44:00.0", None),
+        ];
+    });
+    h.app.manager.report_self().unwrap();
+    let pa = h.project("pa");
+    let alice = h.user("alice");
+    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    let a = As::Bearer(h.token(&alice));
+    for (i, (bdf, want)) in [
+        ("0000:41:00.0", StatusCode::CREATED),
+        ("0000:42:00.0", StatusCode::CREATED),
+        ("0000:43:00.0", StatusCode::FORBIDDEN),
+        ("0000:44:00.0", StatusCode::CREATED),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut body = vm_body(&format!("v{i}"), "pa");
+        body["vfio_devices"] = json!([format!("/sys/bus/pci/devices/{bdf}")]);
+        let (s, v, _) = h.call("POST", "/vms", Some(body), &a).await;
+        assert_eq!(s, want, "{bdf}: {v}");
+    }
+}
+
+/// spec/host-topology.md H13: a host's topology takes a host role.
+#[tokio::test]
+async fn host_topology_needs_a_host_role() {
+    let h = harness();
+    h.app.manager.report_self().unwrap();
+    let (alice, aud) = (h.user("alice"), h.user("aud"));
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
+    let (a, u) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&aud)));
+    let (s, _, _) = h.call("GET", "/host/topology", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v, _) = h.call("GET", "/host/topology", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        !v["topology"]["summary"]["numa_nodes"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{v}"
+    );
+    let (s, v, _) = h.call("GET", "/nodes/local/topology", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, _) = h.call("GET", "/nodes/local/topology", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// spec/host-topology.md §5.3–5.4: preparing, releasing and cordoning a
+/// device take a host role (net-admin); a cordoned device is refused to a
+/// new VM until it is uncordoned.
+#[tokio::test]
+async fn devices_are_cordoned_and_prepared_by_net_admins() {
+    let h = harness();
+    h.app.manager.report_self().unwrap();
+    let pa = h.project("pa");
+    let (owner, net) = (h.user("owner"), h.user("net"));
+    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    h.link("role.net-admin", Ent::User(net.clone()), Ent::Cluster);
+    let (o, n) = (As::Bearer(h.token(&owner)), As::Bearer(h.token(&net)));
+    let dev = "0000:41:00.0";
+    for op in ["prepare", "release", "cordon", "uncordon"] {
+        let (s, v, _) = h
+            .call(
+                "POST",
+                &format!("/nodes/local/devices/{dev}/{op}"),
+                None,
+                &o,
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{op}: {v}");
+    }
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/nodes/local/devices/{dev}/cordon"),
+            None,
+            &n,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["cordoned"], json!([dev]), "{v}");
+    let mut body = vm_body("v", "pa");
+    body["vfio_devices"] = json!([format!("/sys/bus/pci/devices/{dev}")]);
+    h.link("role.net-admin", Ent::User(owner.clone()), Ent::Cluster);
+    let (s, v, _) = h.call("POST", "/vms", Some(body.clone()), &o).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("is cordoned"), "{v}");
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/nodes/local/devices/{dev}/uncordon"),
+            None,
+            &n,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        v.get("cordoned").is_none(),
+        "nothing cordoned (an empty list is left out): {v}"
+    );
+    let (s, v, _) = h.call("POST", "/vms", Some(body), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    // A bad address is refused before netd is asked.
+    let (s, _, _) = h
+        .call("POST", "/nodes/local/devices/not-a-bdf/prepare", None, &n)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// spec/host-topology.md §9: a pool granted to a project gives its VMs
+/// devices by count; other projects are refused; the listing shows who
+/// holds what.
+#[tokio::test]
+async fn pools_are_granted_and_hand_out_devices() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let pools = vec![PciPool {
+        name: "a100".into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x10de".into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+    }];
+    let h = harness_with(|c| {
+        c.pci.pools = pools.clone();
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec!["pa".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    // The manager has the pools from the same file (main.rs configures it).
+    let mut cfg = Config::default();
+    cfg.pci.pools = pools;
+    h.app.manager.configure(&cfg);
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let gpu = |a: &str| SummaryDevice {
+        address: a.into(),
+        vendor_id: "0x10de".into(),
+        device_id: "0x20b0".into(),
+        class_id: "0x030200".into(),
+        ready: true,
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![gpu("0000:87:00.0"), gpu("0000:90:00.0")],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+    let (pa, pb) = (h.project("pa"), h.project("pb"));
+    let (alice, bob, aud) = (h.user("alice"), h.user("bob"), h.user("aud"));
+    for (u, p) in [(&alice, &pa), (&bob, &pb)] {
+        h.link("role.owner", Ent::User(u.clone()), Ent::Project(p.clone()));
+        h.link("grant.host-paths", Ent::User(u.clone()), Ent::Cluster);
+    }
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
+    let (a, b, u) = (
+        As::Bearer(h.token(&alice)),
+        As::Bearer(h.token(&bob)),
+        As::Bearer(h.token(&aud)),
+    );
+    let with = |name: &str, project: &str, pool: &str| {
+        let mut body = vm_body(name, project);
+        body["devices"] = json!([{ "pool": pool, "count": 1 }]);
+        body
+    };
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v1", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["pool_devices"][0]["address"], "0000:87:00.0", "{v}");
+    assert_eq!(v["vm"]["devices"][0]["pool"], "a100", "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v2", "pb", "a100")), &b)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v3", "pa", "nope")), &a)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // The next VM of pa gets the other GPU.
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v4", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["pool_devices"][0]["address"], "0000:90:00.0", "{v}");
+    // Listing: a host role sees holders and what is free.
+    let (s, _, _) = h.call("GET", "/pci-pools", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v, _) = h.call("GET", "/pci-pools", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let pool = &v["pools"][0];
+    assert_eq!(
+        (&pool["name"], pool.get("free")),
+        (&json!("a100"), None),
+        "none free: {v}"
+    );
+    let devs = pool["nodes"][0]["devices"].as_array().unwrap();
+    assert_eq!(devs[0]["holder"], "v1", "{v}");
+    assert_eq!(devs[1]["holder"], "v4", "{v}");
+    // A project's members see the pools it may use and what is free,
+    // without devices; no project, or another's, is refused.
+    let (s, v, _) = h.call("GET", "/pci-pools?project=pa", None, &a).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["pools"][0]["name"], "a100", "{v}");
+    assert_eq!(v["pools"][0]["nodes"][0].get("devices"), None, "{v}");
+    let (s, v, _) = h.call("GET", "/pci-pools?project=pb", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({}), "pb may use no pool: {v}");
+    let (s, _, _) = h.call("GET", "/pci-pools?project=pa", None, &b).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A third finds none left.
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v5", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("pool a100: 0 of 1 free"), "{v}");
+    // `devices.<pool>` quotas: pa holds 2 and may have 2.
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    let ad = As::Bearer(h.token(&admin));
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &format!("/projects/{pa}"),
+            Some(json!({"quotas": {"devices": {"a100": 2}}})),
+            &ad,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["project"]["quotas"]["devices"]["a100"], 2, "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v6", "pa", "a100")), &a)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["details"]["quota"][0]["resource"], "devices.a100", "{v}");
+    let (_, v, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
+    assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
+}
+
+/// spec/host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
+/// and the PF's VF count can't change while a VM holds one of them; only
+/// net-admins may change it.
+#[tokio::test]
+async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{PhysFn, Sriov, SummaryDevice, TopologySummary};
+    let pools = vec![PciPool {
+        name: "cx7-vfs".into(),
+        class: Some("nic".into()),
+        matches: PoolMatch {
+            vf_of: Some(Box::new(PoolMatch {
+                vendor_id: Some("0x15b3".into()),
+                device_id: Some("0x1021".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+    }];
+    let h = harness_with(|c| {
+        c.pci.pools = pools.clone();
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("cx7-vfs".into()),
+            projects: vec!["pa".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    let mut cfg = Config::default();
+    cfg.pci.pools = pools;
+    h.app.manager.configure(&cfg);
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let pf = SummaryDevice {
+        address: "0000:61:00.0".into(),
+        vendor_id: "0x15b3".into(),
+        device_id: "0x1021".into(),
+        class_id: "0x020000".into(),
+        sriov: Some(Sriov {
+            total_vfs: 16,
+            enabled_vfs: 1,
+            ready_vfs: 1,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let vf = SummaryDevice {
+        address: "0000:61:00.2".into(),
+        vendor_id: "0x15b3".into(),
+        device_id: "0x101e".into(),
+        class_id: "0x020000".into(),
+        ready: true,
+        physfn: Some(PhysFn {
+            address: pf.address.clone(),
+            vendor_id: pf.vendor_id.clone(),
+            device_id: pf.device_id.clone(),
+            class_id: pf.class_id.clone(),
+        }),
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![pf, vf],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+    let pa = h.project("pa");
+    let (alice, net) = (h.user("alice"), h.user("net"));
+    h.link(
+        "role.owner",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    h.link("role.net-admin", Ent::User(net.clone()), Ent::Cluster);
+    let (a, na) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&net)));
+    let mut body = vm_body("v1", "pa");
+    body["devices"] = json!([{ "pool": "cx7-vfs" }]);
+    let (s, v, _) = h.call("POST", "/vms", Some(body), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["vm"]["pool_devices"][0]["address"], "0000:61:00.2",
+        "the VF, not the PF: {v}"
+    );
+    let path = "/nodes/local/devices/0000:61:00.0/sriov";
+    let (s, _, _) = h.call("POST", path, Some(json!({ "vfs": 0 })), &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "owners don't change VFs");
+    let (s, v, _) = h.call("POST", path, Some(json!({ "vfs": 0 })), &na).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.to_string().contains("0000:61:00.2 is held by VM v1"),
+        "{v}"
+    );
 }

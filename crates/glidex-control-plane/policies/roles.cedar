@@ -29,3 +29,17 @@ permit (principal in ?principal, action in Glidex::Action::"role.system-admin", 
 
 @id("grant.host-paths")
 permit (principal in ?principal, action in Glidex::Action::"host.paths", resource in ?resource);
+
+// Tenant roles link to a Tenant, directory roles to a Directory
+// (spec/tenancy.md §10.5).
+@id("role.tenant-admin")
+permit (principal in ?principal, action in Glidex::Action::"role.tenant-admin", resource in ?resource);
+
+@id("role.tenant-auditor")
+permit (principal in ?principal, action in Glidex::Action::"role.tenant-auditor", resource in ?resource);
+
+@id("role.directory-admin")
+permit (principal in ?principal, action in Glidex::Action::"role.directory-admin", resource in ?resource);
+
+@id("role.directory-auditor")
+permit (principal in ?principal, action in Glidex::Action::"role.directory-auditor", resource in ?resource);

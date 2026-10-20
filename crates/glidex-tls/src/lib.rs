@@ -5,6 +5,9 @@
 //! - Self-signed certificates (§5.1.1): generated once, kept until they
 //!   are missing, unreadable or near expiry, so their fingerprint stays
 //!   stable for clients that trust them.
+//! - Serving certificates that can change while running
+//!   (spec/tailscale-tls.md §4.1): a slot per certificate, chosen per
+//!   handshake by SNI, and certificate files re-read when they change.
 //! - The local names of this host: certificate SANs, the UI's `Host`
 //!   allowlist and the control plane's default `Origin`s.
 //! - Client trust for gxctl and the UI's TCP fallback: the system store,
@@ -19,7 +22,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_rustls::rustls;
+use tokio_rustls::rustls::sign::CertifiedKey;
 
 pub use tokio_rustls;
 
@@ -35,7 +40,10 @@ const RENEW_DAYS: i64 = 30;
 
 /// The default listeners: every IPv4 and every IPv6 address on `port`.
 pub fn all_addresses(port: u16) -> Vec<SocketAddr> {
-    vec![SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))]
+    vec![
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+    ]
 }
 
 /// Parse a comma-separated list of `addr:port`.
@@ -44,7 +52,10 @@ pub fn parse_addresses(list: &str, what: &str) -> Result<Vec<SocketAddr>, String
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|a| a.parse::<SocketAddr>().map_err(|e| format!("{} {}: {}", what, a, e)))
+        .map(|a| {
+            a.parse::<SocketAddr>()
+                .map_err(|e| format!("{} {}: {}", what, a, e))
+        })
         .collect::<Result<_, _>>()?;
     if v.is_empty() {
         return Err(format!("{} is empty", what));
@@ -60,7 +71,11 @@ pub fn all_loopback(addrs: &[SocketAddr]) -> bool {
 /// `0.0.0.0` can share a port whatever `net.ipv6.bindv6only` says.
 pub fn bind(addr: SocketAddr) -> io::Result<tokio::net::TcpListener> {
     use socket2::{Domain, Socket, Type};
-    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let domain = if addr.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
     let s = Socket::new(domain, Type::STREAM, None)?;
     if addr.is_ipv6() {
         s.set_only_v6(true)?;
@@ -77,7 +92,10 @@ pub fn bind(addr: SocketAddr) -> io::Result<tokio::net::TcpListener> {
 pub fn ipv6_unavailable(addr: &SocketAddr, e: &io::Error) -> bool {
     addr.is_ipv6()
         && addr.ip().is_unspecified()
-        && matches!(e.raw_os_error(), Some(libc::EAFNOSUPPORT) | Some(libc::EADDRNOTAVAIL) | Some(libc::EPROTONOSUPPORT))
+        && matches!(
+            e.raw_os_error(),
+            Some(libc::EAFNOSUPPORT) | Some(libc::EADDRNOTAVAIL) | Some(libc::EPROTONOSUPPORT)
+        )
 }
 
 // ---- local names ------------------------------------------------------------
@@ -93,14 +111,20 @@ pub struct LocalNames {
 
 /// The host name as the kernel knows it; `None` when there is none.
 pub fn hostname() -> Option<String> {
-    nix::unistd::gethostname().ok().and_then(|h| h.into_string().ok()).filter(|h| !h.is_empty())
+    nix::unistd::gethostname()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .filter(|h| !h.is_empty())
 }
 
 impl LocalNames {
     /// Read them now. Never fails: what can't be found is left out.
     pub fn discover() -> Self {
         let mut n = LocalNames::default();
-        let host = nix::unistd::gethostname().ok().and_then(|h| h.into_string().ok()).unwrap_or_default();
+        let host = nix::unistd::gethostname()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_default();
         if !host.is_empty() {
             if let Some(f) = canonical_name(&host) {
                 n.add_dns(&f);
@@ -151,7 +175,10 @@ impl LocalNames {
 
     /// `https://<host>:<port>` for every host.
     pub fn origins(&self, port: u16) -> Vec<String> {
-        self.hosts().into_iter().map(|h| format!("https://{}:{}", h, port)).collect()
+        self.hosts()
+            .into_iter()
+            .map(|h| format!("https://{}:{}", h, port))
+            .collect()
     }
 }
 
@@ -199,13 +226,18 @@ fn canonical_name(host: &str) -> Option<String> {
         hints.ai_flags = libc::AI_CANONNAME;
         hints.ai_socktype = libc::SOCK_STREAM;
         let mut res: *mut libc::addrinfo = std::ptr::null_mut();
-        if libc::getaddrinfo(c_host.as_ptr(), std::ptr::null(), &hints, &mut res) != 0 || res.is_null() {
+        if libc::getaddrinfo(c_host.as_ptr(), std::ptr::null(), &hints, &mut res) != 0
+            || res.is_null()
+        {
             return None;
         }
         let name = if (*res).ai_canonname.is_null() {
             None
         } else {
-            std::ffi::CStr::from_ptr((*res).ai_canonname).to_str().ok().map(String::from)
+            std::ffi::CStr::from_ptr((*res).ai_canonname)
+                .to_str()
+                .ok()
+                .map(String::from)
         };
         libc::freeaddrinfo(res);
         name
@@ -227,7 +259,11 @@ pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
 
 /// SHA-256 of a DER certificate, as browsers show it (`AB:CD:…`).
 pub fn fingerprint_der(der: &[u8]) -> String {
-    Sha256::digest(der).iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":")
+    Sha256::digest(der)
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Fingerprint of the first certificate in PEM text.
@@ -242,18 +278,234 @@ pub fn fingerprint(cert: &Path) -> Result<String, String> {
 }
 
 /// A server config from a PEM chain and key, offering `alpn`.
-pub fn server_config(cert: &Path, key: &Path, alpn: &[&[u8]]) -> Result<Arc<rustls::ServerConfig>, String> {
-    let certs = load_certs(cert)?;
-    let key = PrivateKeyDer::from_pem_file(key).map_err(|e| format!("{}: {}", key.display(), e))?;
+pub fn server_config(
+    cert: &Path,
+    key: &Path,
+    alpn: &[&[u8]],
+) -> Result<Arc<rustls::ServerConfig>, String> {
+    let slot = CertSlot::new(certified_key(cert, key)?);
+    resolver_config(Resolver::new(slot), alpn)
+}
+
+/// A server config whose certificate `resolver` picks per handshake,
+/// offering `alpn`.
+pub fn resolver_config(
+    resolver: Arc<Resolver>,
+    alpn: &[&[u8]],
+) -> Result<Arc<rustls::ServerConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
         .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TLS: {}", e))?;
+        .with_cert_resolver(resolver);
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(Arc::new(cfg))
+}
+
+/// A PEM chain (leaf first) and its key, refused unless the key belongs
+/// to the leaf.
+pub fn certified_key(cert: &Path, key: &Path) -> Result<Arc<CertifiedKey>, String> {
+    let certs = load_certs(cert)?;
+    let der = PrivateKeyDer::from_pem_file(key).map_err(|e| format!("{}: {}", key.display(), e))?;
+    CertifiedKey::from_der(certs, der, &rustls::crypto::ring::default_provider())
+        .map(Arc::new)
+        .map_err(|e| format!("{} with key {}: {}", cert.display(), key.display(), e))
+}
+
+/// A key and its chain from one PEM buffer, in any order (`tailscaled`
+/// sends the key first), refused unless the key belongs to the leaf.
+pub fn certified_key_pem(pem: &[u8]) -> Result<Arc<CertifiedKey>, String> {
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("certificate: {e}"))?;
+    if certs.is_empty() {
+        return Err("no certificate".into());
+    }
+    let key = PrivateKeyDer::from_pem_slice(pem).map_err(|e| format!("key: {e}"))?;
+    CertifiedKey::from_der(certs, key, &rustls::crypto::ring::default_provider())
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+}
+
+/// The leaf's DNS names (lowercase) and its expiry (Unix seconds).
+pub fn leaf_names(key: &CertifiedKey) -> Result<(Vec<String>, i64), String> {
+    let der = key.cert.first().ok_or("no certificate")?;
+    let (_, c) = x509_parser::parse_x509_certificate(der).map_err(|e| e.to_string())?;
+    let names = match c.subject_alternative_name() {
+        Ok(Some(san)) => san
+            .value
+            .general_names
+            .iter()
+            .filter_map(|n| match n {
+                x509_parser::extensions::GeneralName::DNSName(d) => Some(d.to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect(),
+        Ok(None) => vec![],
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok((names, c.validity().not_after.timestamp()))
+}
+
+/// Fingerprint of a serving certificate's leaf.
+pub fn fingerprint_certified(key: &CertifiedKey) -> String {
+    key.cert
+        .first()
+        .map(|c| fingerprint_der(c))
+        .unwrap_or_default()
+}
+
+// ---- reloadable certificates (spec/tailscale-tls.md §4.1) --------------------
+
+/// One certificate being served, replaceable while running. A swap is
+/// seen by the next handshake; established connections keep theirs.
+#[derive(Debug)]
+pub struct CertSlot(arc_swap::ArcSwap<CertifiedKey>);
+
+impl CertSlot {
+    pub fn new(key: Arc<CertifiedKey>) -> Arc<Self> {
+        Arc::new(CertSlot(arc_swap::ArcSwap::new(key)))
+    }
+
+    pub fn get(&self) -> Arc<CertifiedKey> {
+        self.0.load_full()
+    }
+
+    pub fn set(&self, key: Arc<CertifiedKey>) {
+        self.0.store(key);
+    }
+}
+
+/// Picks the certificate for a handshake: the slot named by the client's
+/// SNI (exact, ASCII case-insensitive), else the default. No SNI (an IP
+/// address in the URL) gets the default.
+#[derive(Debug)]
+pub struct Resolver {
+    default: Arc<CertSlot>,
+    named: arc_swap::ArcSwap<Vec<(String, Arc<CertSlot>)>>,
+}
+
+impl Resolver {
+    pub fn new(default: Arc<CertSlot>) -> Arc<Self> {
+        Arc::new(Resolver {
+            default,
+            named: Default::default(),
+        })
+    }
+
+    /// Serve `slot` to clients asking for `name`; `None` stops.
+    pub fn set_named(&self, name: &str, slot: Option<Arc<CertSlot>>) {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        self.named.rcu(|cur| {
+            let mut v: Vec<_> = cur.iter().filter(|(n, _)| *n != name).cloned().collect();
+            if let Some(s) = &slot {
+                v.push((name.clone(), s.clone()));
+            }
+            v
+        });
+    }
+
+    /// The certificate a handshake naming `sni` gets.
+    pub fn pick(&self, sni: Option<&str>) -> Arc<CertifiedKey> {
+        let named = self.named.load();
+        sni.and_then(|h| named.iter().find(|(n, _)| n.eq_ignore_ascii_case(h)))
+            .map(|(_, s)| s.get())
+            .unwrap_or_else(|| self.default.get())
+    }
+}
+
+impl rustls::server::ResolvesServerCert for Resolver {
+    fn resolve(&self, hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.pick(hello.server_name()))
+    }
+}
+
+/// What a file looked like: changes when it is rewritten or replaced.
+type Stamp = Option<(u64, u64, u64, i64, i64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino(), m.size(), m.mtime(), m.mtime_nsec()))
+}
+
+/// A slot backed by a certificate and a key file, re-read when either
+/// changes (spec/tailscale-tls.md §4.1).
+#[derive(Debug)]
+pub struct FileCert {
+    pub slot: Arc<CertSlot>,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    seen: (Stamp, Stamp),
+}
+
+impl FileCert {
+    pub fn load(cert: &Path, key: &Path) -> Result<FileCert, String> {
+        // Looked at before reading, so a change during the read is
+        // caught by the next poll rather than missed.
+        let seen = (stamp(cert), stamp(key));
+        Ok(FileCert {
+            slot: CertSlot::new(certified_key(cert, key)?),
+            cert: cert.to_path_buf(),
+            key: key.to_path_buf(),
+            seen,
+        })
+    }
+
+    /// Re-read the files if they changed since the last look. `Ok(true)`:
+    /// the slot now holds them. On error the slot keeps its pair, and the
+    /// same files aren't retried until one of them changes again (a
+    /// certificate written before its key is picked up once the key is).
+    pub fn poll(&mut self) -> Result<bool, String> {
+        let now = (stamp(&self.cert), stamp(&self.key));
+        if now == self.seen {
+            return Ok(false);
+        }
+        self.seen = now;
+        let key = certified_key(&self.cert, &self.key).map_err(|e| {
+            if is_credential(&self.key) {
+                format!(
+                    "{e} (the key is a systemd credential, copied when the service starts: restart it to load a new key)"
+                )
+            } else {
+                e
+            }
+        })?;
+        self.slot.set(key);
+        Ok(true)
+    }
+
+    /// Poll every `every` in the background; `on_change` runs after each
+    /// swap. Errors are logged and the current pair kept.
+    pub fn watch<F>(mut self, every: Duration, on_change: F) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(&FileCert) + Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match self.poll() {
+                    Ok(true) => on_change(&self),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(
+                        "TLS certificate not reloaded, keeping the current one: {}",
+                        e
+                    ),
+                }
+            }
+        })
+    }
+}
+
+/// How often certificate files are checked for changes.
+pub const RELOAD_EVERY: Duration = Duration::from_secs(60);
+
+/// A file under systemd's `$CREDENTIALS_DIRECTORY`.
+fn is_credential(path: &Path) -> bool {
+    std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|d| path.starts_with(d))
 }
 
 /// A self-signed certificate and its key.
@@ -269,11 +521,19 @@ pub struct SelfSigned {
 /// are valid for more than 30 days; otherwise (re)generated for `names`.
 /// `dir` is created `0700`; the key is written `0600` before the
 /// certificate, each to a temporary file renamed into place.
-pub fn ensure_self_signed(dir: &Path, stem: &str, names: &LocalNames) -> Result<SelfSigned, String> {
+pub fn ensure_self_signed(
+    dir: &Path,
+    stem: &str,
+    names: &LocalNames,
+) -> Result<SelfSigned, String> {
     let cert = dir.join(format!("{}.crt", stem));
     let key = dir.join(format!("{}.key", stem));
     if reusable(&cert, &key) {
-        return Ok(SelfSigned { cert, key, generated: false });
+        return Ok(SelfSigned {
+            cert,
+            key,
+            generated: false,
+        });
     }
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -284,11 +544,17 @@ pub fn ensure_self_signed(dir: &Path, stem: &str, names: &LocalNames) -> Result<
     let (cert_pem, key_pem) = generate(names)?;
     write_file(&key, key_pem.as_bytes(), 0o600)?;
     write_file(&cert, cert_pem.as_bytes(), 0o644)?;
-    Ok(SelfSigned { cert, key, generated: true })
+    Ok(SelfSigned {
+        cert,
+        key,
+        generated: true,
+    })
 }
 
 fn reusable(cert: &Path, key: &Path) -> bool {
-    let Ok(certs) = load_certs(cert) else { return false };
+    let Ok(certs) = load_certs(cert) else {
+        return false;
+    };
     if server_config(cert, key, &[]).is_err() {
         return false;
     }
@@ -303,25 +569,34 @@ fn reusable(cert: &Path, key: &Path) -> bool {
 
 /// A certificate for `names` (ECDSA P-256), as PEM certificate and key.
 pub fn generate(names: &LocalNames) -> Result<(String, String), String> {
-    use rcgen::{CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair, SanType};
+    use rcgen::{
+        CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair, SanType,
+    };
     let key = KeyPair::generate().map_err(|e| format!("key generation: {}", e))?;
     let mut params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
     dn.push(DnType::OrganizationName, "glidex (self-signed)");
-    dn.push(DnType::CommonName, names.dns.first().map(String::as_str).unwrap_or("localhost"));
+    dn.push(
+        DnType::CommonName,
+        names.dns.first().map(String::as_str).unwrap_or("localhost"),
+    );
     params.distinguished_name = dn;
     for d in &names.dns {
         if let Ok(n) = d.as_str().try_into() {
             params.subject_alt_names.push(SanType::DnsName(n));
         }
     }
-    params.subject_alt_names.extend(names.ips.iter().map(|ip| SanType::IpAddress(*ip)));
+    params
+        .subject_alt_names
+        .extend(names.ips.iter().map(|ip| SanType::IpAddress(*ip)));
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let now = time::OffsetDateTime::now_utc();
     // A day of slack for clients whose clock is behind.
     params.not_before = now - time::Duration::days(1);
     params.not_after = now + time::Duration::days(VALID_DAYS);
-    let cert = params.self_signed(&key).map_err(|e| format!("certificate: {}", e))?;
+    let cert = params
+        .self_signed(&key)
+        .map_err(|e| format!("certificate: {}", e))?;
     Ok((cert.pem(), key.serialize_pem()))
 }
 
@@ -330,7 +605,11 @@ fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let res = (|| {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
@@ -379,7 +658,10 @@ pub fn published_candidates(xdg_runtime_dir: Option<&str>, euid: u32) -> Vec<Pat
 pub fn published_certs() -> Vec<PathBuf> {
     let euid = nix::unistd::geteuid().as_raw();
     let xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-    let glidex = nix::unistd::User::from_name("glidex").ok().flatten().map(|u| u.uid.as_raw());
+    let glidex = nix::unistd::User::from_name("glidex")
+        .ok()
+        .flatten()
+        .map(|u| u.uid.as_raw());
     published_candidates(xdg.as_deref(), euid)
         .into_iter()
         .filter(|p| trustworthy(p, euid, glidex))
@@ -397,7 +679,9 @@ pub fn trustworthy(path: &Path, euid: u32, glidex_uid: Option<u32>) -> bool {
         }
         Err(_) => false,
     };
-    let is_file = std::fs::symlink_metadata(path).map(|m| m.is_file()).unwrap_or(false);
+    let is_file = std::fs::symlink_metadata(path)
+        .map(|m| m.is_file())
+        .unwrap_or(false);
     is_file && ok(path) && path.parent().is_some_and(ok)
 }
 
@@ -469,7 +753,14 @@ impl ClientTls {
     /// Trust the system store plus every certificate in `extra` (PEM
     /// files), offering `alpn`.
     pub fn new(extra: &[PathBuf], alpn: &[&[u8]]) -> Result<Self, String> {
-        Self::with_trust(&Trust { ca_files: extra.to_vec(), verify_host: true, ..Default::default() }, alpn)
+        Self::with_trust(
+            &Trust {
+                ca_files: extra.to_vec(),
+                verify_host: true,
+                ..Default::default()
+            },
+            alpn,
+        )
     }
 
     /// gxctl's trust ladder (spec/gxctl-auth.md §5.1), one rung stricter
@@ -501,19 +792,24 @@ impl ClientTls {
         }
         for p in &t.ca_files {
             for c in load_certs(p)? {
-                roots.add(c.clone()).map_err(|e| format!("{}: {}", p.display(), e))?;
+                roots
+                    .add(c.clone())
+                    .map_err(|e| format!("{}: {}", p.display(), e))?;
                 list.push(c);
             }
         }
         if let Some(pem) = &t.ca_pem {
-            let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem.as_bytes())
-                .collect::<Result<_, _>>()
-                .map_err(|e| format!("tls.ca_pem: {e}"))?;
+            let certs: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_slice_iter(pem.as_bytes())
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| format!("tls.ca_pem: {e}"))?;
             if certs.is_empty() {
                 return Err("tls.ca_pem: no certificate".into());
             }
             for c in certs {
-                roots.add(c.clone()).map_err(|e| format!("tls.ca_pem: {e}"))?;
+                roots
+                    .add(c.clone())
+                    .map_err(|e| format!("tls.ca_pem: {e}"))?;
                 list.push(c);
             }
         }
@@ -521,15 +817,22 @@ impl ClientTls {
             return Err("no trusted CA certificates found (install the system CA bundle or give a certificate file)".into());
         }
         let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-            .build()
-            .map_err(|e| e.to_string())?;
+        let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            provider.clone(),
+        )
+        .build()
+        .map_err(|e| e.to_string())?;
         let rejected = Arc::new(Mutex::new(None));
         let accepted = Arc::new(Mutex::new(None));
         let verifier = Arc::new(Ladder {
             inner,
             roots: list,
-            pins: t.pins.iter().filter_map(|p| Trust::normalize_pin(p)).collect(),
+            pins: t
+                .pins
+                .iter()
+                .filter_map(|p| Trust::normalize_pin(p))
+                .collect(),
             verify_host: t.verify_host,
             insecure: t.insecure,
             rejected: rejected.clone(),
@@ -542,7 +845,11 @@ impl ClientTls {
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
         cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-        Ok(ClientTls { config: Arc::new(cfg), rejected, accepted })
+        Ok(ClientTls {
+            config: Arc::new(cfg),
+            rejected,
+            accepted,
+        })
     }
 
     /// Fingerprint of the last certificate that failed verification.
@@ -601,10 +908,15 @@ impl Ladder {
         }
         store
             .add(CertificateDer::from(end_entity.to_vec()))
-            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
-        let one_shot = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(store), Arc::new(rustls::crypto::ring::default_provider()))
-            .build()
-            .map_err(|e| rustls::Error::General(format!("pinned verifier: {e}")))?;
+            .map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+        let one_shot = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(store),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .map_err(|e| rustls::Error::General(format!("pinned verifier: {e}")))?;
         one_shot.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
     }
 }
@@ -643,7 +955,13 @@ impl rustls::client::danger::ServerCertVerifier for Ladder {
         let attempt = if pinned {
             self.verify_pinned(end_entity, intermediates, server_name, ocsp_response, now)
         } else {
-            self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+            self.inner.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            )
         };
         match attempt {
             Ok(v) => {
@@ -684,11 +1002,14 @@ impl rustls::client::danger::ServerCertVerifier for Ladder {
 /// rather than by chain: the one thing WebPKI is skipped for together
 /// with the name, so it is checked directly (gxctl-auth.md A4).
 fn check_validity(der: &CertificateDer<'_>, now: UnixTime) -> Result<(), rustls::Error> {
-    let (_, x) = x509_parser::parse_x509_certificate(der).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+    let (_, x) = x509_parser::parse_x509_certificate(der)
+        .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
     let v = x.validity();
     let now = now.as_secs() as i64;
     if v.not_before.timestamp() > now || v.not_after.timestamp() < now {
-        return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::Expired));
+        return Err(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::Expired,
+        ));
     }
     Ok(())
 }
@@ -698,7 +1019,13 @@ mod tests {
     use super::*;
 
     fn names() -> LocalNames {
-        LocalNames { dns: vec!["glidex.test".into(), "localhost".into()], ips: vec![IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)] }
+        LocalNames {
+            dns: vec!["glidex.test".into(), "localhost".into()],
+            ips: vec![
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ],
+        }
     }
 
     #[test]
@@ -738,7 +1065,10 @@ mod tests {
         assert_eq!(std::fs::metadata(&a.cert).unwrap().mode() & 0o777, 0o644);
         let fp = fingerprint(&a.cert).unwrap();
         assert_eq!(fp.len(), 32 * 3 - 1);
-        assert_eq!(fingerprint_pem(&std::fs::read(&a.cert).unwrap()), Some(fp.clone()));
+        assert_eq!(
+            fingerprint_pem(&std::fs::read(&a.cert).unwrap()),
+            Some(fp.clone())
+        );
         assert_eq!(fingerprint_pem(b"nope"), None);
 
         // Reused: the fingerprint is stable across restarts.
@@ -756,7 +1086,10 @@ mod tests {
         let der = &load_certs(&c.cert).unwrap()[0];
         let (_, x) = x509_parser::parse_x509_certificate(der).unwrap();
         let san = format!("{:?}", x.subject_alternative_name().unwrap().unwrap().value);
-        assert!(san.contains("glidex.test") && san.contains("localhost"), "{san}");
+        assert!(
+            san.contains("glidex.test") && san.contains("localhost"),
+            "{san}"
+        );
     }
 
     #[test]
@@ -778,18 +1111,163 @@ mod tests {
         assert!(!p.exists());
         assert_eq!(
             published_candidates(Some("/run/user/7"), 7),
-            [PathBuf::from("/run/glidex-cp/tls.crt"), "/run/user/7/glidex/tls.crt".into(), "/tmp/glidex-7/tls.crt".into()]
+            [
+                PathBuf::from("/run/glidex-cp/tls.crt"),
+                "/run/user/7/glidex/tls.crt".into(),
+                "/tmp/glidex-7/tls.crt".into()
+            ]
         );
     }
 
     #[test]
     fn addresses() {
-        assert_eq!(all_addresses(8841).iter().map(|a| a.to_string()).collect::<Vec<_>>(), ["0.0.0.0:8841", "[::]:8841"]);
+        assert_eq!(
+            all_addresses(8841)
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>(),
+            ["0.0.0.0:8841", "[::]:8841"]
+        );
         assert!(!all_loopback(&all_addresses(1)));
         let l = parse_addresses("127.0.0.1:1, [::1]:2", "X").unwrap();
         assert!(all_loopback(&l));
         assert!(parse_addresses(" ,", "X").is_err());
         assert!(parse_addresses("nope", "X").is_err());
+    }
+
+    /// A certificate for one DNS name, written as `<dir>/<stem>.{crt,key}`.
+    fn cert_for(dir: &Path, stem: &str, name: &str) -> (PathBuf, PathBuf) {
+        let n = LocalNames {
+            dns: vec![name.into()],
+            ips: vec![],
+        };
+        let (c, k) = generate(&n).unwrap();
+        let (cert, key) = (
+            dir.join(format!("{stem}.crt")),
+            dir.join(format!("{stem}.key")),
+        );
+        write_file(&key, k.as_bytes(), 0o600).unwrap();
+        write_file(&cert, c.as_bytes(), 0o644).unwrap();
+        (cert, key)
+    }
+
+    /// The leaf a handshake for `name` was served, by a client trusting
+    /// `trust`. The connection is returned too, to show it outlives a swap.
+    async fn served(
+        cfg: &Arc<rustls::ServerConfig>,
+        trust: &[PathBuf],
+        name: &str,
+    ) -> (
+        String,
+        tokio_rustls::client::TlsStream<tokio::io::DuplexStream>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (c, s) = tokio::io::duplex(1 << 16);
+        let acceptor = tokio_rustls::TlsAcceptor::from(cfg.clone());
+        tokio::spawn(async move {
+            let mut t = acceptor.accept(s).await.unwrap();
+            let mut b = [0u8; 4];
+            while let Ok(n @ 1..) = t.read(&mut b).await {
+                t.write_all(&b[..n]).await.unwrap();
+            }
+        });
+        let tls = ClientTls::new(trust, &[]).unwrap();
+        let t = tokio_rustls::TlsConnector::from(tls.config.clone())
+            .connect(ServerName::try_from(name.to_string()).unwrap(), c)
+            .await
+            .unwrap();
+        let fp = fingerprint_der(&t.get_ref().1.peer_certificates().unwrap()[0]);
+        (fp, t)
+    }
+
+    /// SNI picks the named slot (any case, trailing dot in the name), and
+    /// everything else gets the default. A swap is seen by the next
+    /// handshake only (spec/tailscale-tls.md §4.1).
+    #[tokio::test]
+    async fn resolver_picks_by_sni_and_swaps() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (a, ak) = cert_for(tmp.path(), "a", "a.example");
+        let (b, bk) = cert_for(tmp.path(), "b", "b.example");
+        let (a2, a2k) = cert_for(tmp.path(), "a2", "a.example");
+        let fp = |p: &PathBuf| fingerprint(p).unwrap();
+        let default = CertSlot::new(certified_key(&a, &ak).unwrap());
+        let r = Resolver::new(default.clone());
+        r.set_named(
+            "B.Example.",
+            Some(CertSlot::new(certified_key(&b, &bk).unwrap())),
+        );
+        assert_eq!(fingerprint_certified(&r.pick(Some("b.example"))), fp(&b));
+        assert_eq!(fingerprint_certified(&r.pick(Some("B.EXAMPLE"))), fp(&b));
+        assert_eq!(fingerprint_certified(&r.pick(Some("c.example"))), fp(&a));
+        assert_eq!(fingerprint_certified(&r.pick(None)), fp(&a));
+
+        let cfg = resolver_config(r.clone(), &[]).unwrap();
+        let trust = [a.clone(), b.clone(), a2.clone()];
+        assert_eq!(served(&cfg, &trust, "b.example").await.0, fp(&b));
+        let (got, mut open) = served(&cfg, &trust, "a.example").await;
+        assert_eq!(got, fp(&a));
+
+        default.set(certified_key(&a2, &a2k).unwrap());
+        assert_eq!(served(&cfg, &trust, "a.example").await.0, fp(&a2));
+        r.set_named("b.example", None);
+        assert_eq!(served(&cfg, &trust, "a.example").await.0, fp(&a2));
+        assert_eq!(fingerprint_certified(&r.pick(Some("b.example"))), fp(&a2));
+        // The connection made before the swaps still works, on its
+        // original certificate.
+        open.write_all(b"ping").await.unwrap();
+        let mut echo = [0u8; 4];
+        open.read_exact(&mut echo).await.unwrap();
+        assert_eq!(&echo, b"ping");
+        assert_eq!(
+            fingerprint_der(&open.get_ref().1.peer_certificates().unwrap()[0]),
+            fp(&a)
+        );
+    }
+
+    /// File-backed slots: unchanged files aren't re-read, a replaced pair
+    /// is, a bad or half-written pair keeps the old one, and a key that
+    /// arrives after its certificate completes the swap.
+    #[test]
+    fn file_cert_reloads_on_change_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path();
+        let (cert, key) = cert_for(d, "live", "a.example");
+        let fp0 = fingerprint(&cert).unwrap();
+        let mut f = FileCert::load(&cert, &key).unwrap();
+        assert_eq!(f.poll(), Ok(false));
+
+        let (b, bk) = cert_for(d, "b", "a.example");
+        std::fs::rename(&bk, &key).unwrap();
+        std::fs::rename(&b, &cert).unwrap();
+        assert_eq!(f.poll(), Ok(true));
+        let fp1 = fingerprint_certified(&f.slot.get());
+        assert_ne!(fp1, fp0);
+        assert_eq!(fp1, fingerprint(&cert).unwrap());
+        assert_eq!(f.poll(), Ok(false));
+
+        // Garbage: refused, the slot keeps serving, not retried until the
+        // files change again.
+        write_file(&cert, b"not a certificate", 0o644).unwrap();
+        assert!(f.poll().is_err());
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp1);
+        assert_eq!(f.poll(), Ok(false));
+
+        // The new certificate lands before its key: mismatch, kept...
+        let (c, ck) = cert_for(d, "c", "a.example");
+        std::fs::rename(&c, &cert).unwrap();
+        let err = f.poll().unwrap_err();
+        assert!(err.contains("key"), "{err}");
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp1);
+        // ...until the key follows.
+        std::fs::rename(&ck, &key).unwrap();
+        assert_eq!(f.poll(), Ok(true));
+        assert_eq!(
+            fingerprint_certified(&f.slot.get()),
+            fingerprint(&cert).unwrap()
+        );
+
+        assert!(FileCert::load(&d.join("missing.crt"), &key).is_err());
     }
 
     /// End to end: a server with a self-signed certificate is verified by
@@ -803,9 +1281,13 @@ mod tests {
         let v4 = bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = v4.local_addr().unwrap().port();
         if let Err(e) = bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))) {
-            assert!(ipv6_unavailable(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)), &e), "{e}");
+            assert!(
+                ipv6_unavailable(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)), &e),
+                "{e}"
+            );
         }
-        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
         tokio::spawn(async move {
             loop {
                 let (tcp, _) = v4.accept().await.unwrap();
@@ -819,9 +1301,13 @@ mod tests {
             }
         });
         let connect = |tls: ClientTls| async move {
-            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
             let name = ServerName::try_from("localhost").unwrap();
-            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone()).connect(name, tcp).await?;
+            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone())
+                .connect(name, tcp)
+                .await?;
             let mut out = String::new();
             t.read_to_string(&mut out).await?;
             Ok::<_, io::Error>(out)
@@ -833,7 +1319,10 @@ mod tests {
         let o = ensure_self_signed(&other, "x", &names()).unwrap();
         let untrusted = ClientTls::new(&[o.cert], &[]).unwrap();
         assert!(connect(untrusted.clone()).await.is_err());
-        assert_eq!(untrusted.rejected_fingerprint(), Some(fingerprint(&s.cert).unwrap()));
+        assert_eq!(
+            untrusted.rejected_fingerprint(),
+            Some(fingerprint(&s.cert).unwrap())
+        );
     }
 
     /// A server nobody trusts until once: the fingerprint the owner
@@ -847,7 +1336,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let s = ensure_self_signed(&tmp.path().join("tls"), "cp", &names()).unwrap();
         let fp = fingerprint(&s.cert).unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
         let v4 = bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = v4.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -863,20 +1353,39 @@ mod tests {
             }
         });
         let connect = |tls: ClientTls| async move {
-            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
             let name = ServerName::try_from("localhost").unwrap();
-            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone()).connect(name, tcp).await?;
+            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone())
+                .connect(name, tcp)
+                .await?;
             let mut out = String::new();
             t.read_to_string(&mut out).await?;
             Ok::<_, io::Error>(out)
         };
         // Pasted the way a browser shows it, tag and all.
-        let pinned = ClientTls::with_trust(&Trust { pins: vec![format!("SHA256/{fp}")], verify_host: true, ..Default::default() }, &[]).unwrap();
+        let pinned = ClientTls::with_trust(
+            &Trust {
+                pins: vec![format!("SHA256/{fp}")],
+                verify_host: true,
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
         assert_eq!(connect(pinned.clone()).await.unwrap(), "hi");
         assert_eq!(pinned.accepted_fingerprint(), Some(fp.clone()));
         // Without the pin the same server is still untrusted: the pin, not
         // convenience, is what decides.
-        let bare = ClientTls::with_trust(&Trust { ca_files: vec![], verify_host: true, ..Default::default() }, &[]);
+        let bare = ClientTls::with_trust(
+            &Trust {
+                ca_files: vec![],
+                verify_host: true,
+                ..Default::default()
+            },
+            &[],
+        );
         if let Ok(bare) = bare {
             // (a host with a populated system store still won't know this
             // certificate; the assertion below holds either way)
@@ -885,9 +1394,21 @@ mod tests {
         }
         // A pin for a different certificate rescues nothing.
         let o = ensure_self_signed(&tmp.path().join("other"), "x", &names()).unwrap();
-        let wrong = ClientTls::with_trust(&Trust { pins: vec![fingerprint(&o.cert).unwrap()], verify_host: true, ..Default::default() }, &[]).unwrap();
+        let wrong = ClientTls::with_trust(
+            &Trust {
+                pins: vec![fingerprint(&o.cert).unwrap()],
+                verify_host: true,
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
         assert!(connect(wrong.clone()).await.is_err());
-        assert_eq!(wrong.rejected_fingerprint(), Some(fp), "the prompt needs the observed fingerprint");
+        assert_eq!(
+            wrong.rejected_fingerprint(),
+            Some(fp),
+            "the prompt needs the observed fingerprint"
+        );
     }
 
     /// The name check runs on pinned certificates too, and only the
@@ -899,7 +1420,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let s = ensure_self_signed(&tmp.path().join("tls"), "cp", &names()).unwrap();
         let fp = fingerprint(&s.cert).unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
         let v4 = bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = v4.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -915,21 +1437,52 @@ mod tests {
             }
         });
         let connect = |tls: ClientTls, name: &'static str| async move {
-            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
             let name = ServerName::try_from(name).unwrap();
-            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone()).connect(name, tcp).await?;
+            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone())
+                .connect(name, tcp)
+                .await?;
             let mut out = String::new();
             t.read_to_string(&mut out).await?;
             Ok::<_, io::Error>(out)
         };
-        let pin = Trust { pins: vec![fp.clone()], verify_host: true, ..Default::default() };
+        let pin = Trust {
+            pins: vec![fp.clone()],
+            verify_host: true,
+            ..Default::default()
+        };
         let strict = ClientTls::with_trust(&pin, &[]).unwrap();
-        assert!(connect(strict.clone(), "nope.example").await.is_err(), "a pin is not a name");
+        assert!(
+            connect(strict.clone(), "nope.example").await.is_err(),
+            "a pin is not a name"
+        );
         assert_eq!(strict.rejected_fingerprint(), Some(fp.clone()));
-        let waived = ClientTls::with_trust(&Trust { verify_host: false, ..pin.clone() }, &[]).unwrap();
-        assert_eq!(connect(waived, "nope.example").await.unwrap(), "hi", "the waiver is the profile's, and only with a pin");
+        let waived = ClientTls::with_trust(
+            &Trust {
+                verify_host: false,
+                ..pin.clone()
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            connect(waived, "nope.example").await.unwrap(),
+            "hi",
+            "the waiver is the profile's, and only with a pin"
+        );
         // Without the pin, waiving the name is refused at construction.
-        assert!(ClientTls::with_trust(&Trust { verify_host: false, ..Default::default() }, &[]).is_err());
+        assert!(
+            ClientTls::with_trust(
+                &Trust {
+                    verify_host: false,
+                    ..Default::default()
+                },
+                &[]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -937,7 +1490,10 @@ mod tests {
         let upper = "A1B2C3D4".repeat(8);
         let hex = upper.to_lowercase();
         let colons = "a1:b2:c3:d4:".repeat(8);
-        assert_eq!(Trust::normalize_pin(&format!("SHA256/{colons}")), Some(hex.clone()));
+        assert_eq!(
+            Trust::normalize_pin(&format!("SHA256/{colons}")),
+            Some(hex.clone())
+        );
         assert_eq!(Trust::normalize_pin(&colons), Some(hex.clone()));
         assert_eq!(Trust::normalize_pin(&format!("{hex}  ")), Some(hex.clone()));
         assert_eq!(Trust::normalize_pin("sha256/deadbeef"), None);

@@ -40,7 +40,7 @@ pub enum GuestState {
 }
 
 /// The guest's state and the ids of the devices it has (VFIO ids are
-/// `_vfio_…`, spec hypervisors.md).
+/// `vfio_…`, `_vfio_…` from guests launched before; spec hypervisors.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
     pub guest: GuestState,
@@ -52,7 +52,8 @@ pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connect to a Unix socket, mapping every failure to `Connect`.
 pub(crate) fn connect(path: &str) -> Result<std::os::unix::net::UnixStream, HvError> {
-    let stream = std::os::unix::net::UnixStream::connect(path).map_err(|e| HvError::Connect(format!("{}: {}", path, e)))?;
+    let stream = std::os::unix::net::UnixStream::connect(path)
+        .map_err(|e| HvError::Connect(format!("{}: {}", path, e)))?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     Ok(stream)

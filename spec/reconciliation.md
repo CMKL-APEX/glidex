@@ -410,8 +410,8 @@ Phases:
 |---|---|
 | `power`, `stop_grace_secs`, `restart_policy`, `on_host_boot` | at once |
 | `config.vfio_devices` | hot-plugged/unplugged while the guest is observed `Running`; while `Paused`, pending (`DevicesPending`) |
-| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `hugepages` | next launch; `RestartRequired=True` meanwhile |
-| `hypervisor`, `kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
+| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `kernel` (a kernel image, kernel-boot.md K6), `kernel_from_disk` (K11), `hugepages` | next launch; `RestartRequired=True` meanwhile |
+| `hypervisor`, `kernel_image_path`, `initrd_path`, `generate_seed`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
 
 `RestartRequired` compares the spec at `generation` with the spec at
 `instance.launched_generation`, ignoring the "at once" and hot-plug
@@ -426,7 +426,9 @@ same holds for VFIO devices (`attach_device` / create on another VM).
 
 ### 7.4 Defaults and API projection
 
-`VmResponse` keeps every current field; `state` is derived:
+`VmResponse` keeps every current field; `state` is derived. (Since the
+gRPC port the API shows it as the `glidex.vm.v1.Vm` message, with the
+values below as `VM_STATE_*` names; [rest-api.md](rest-api.md#vm).)
 
 | `phase` | `state` |
 |---|---|
@@ -522,6 +524,12 @@ the intent record:
   run by the shim: if the hypervisor exits before its socket answers and
   its captured output contains one of the strings (case-insensitive),
   the shim runs `fallback.argv` once.
+- `job` (default `false`): a one-shot run, not a VM
+  ([kernel-boot.md §10.2](kernel-boot.md#102-run), the kernel
+  extractor). The shim reports `Running` as soon as the hypervisor
+  starts, without waiting for `api_socket`, and records its exit as for
+  a VM (`clean_exit` on status 0). Such instances are named `extract-…`
+  and are no VM's; startup's orphan scan leaves them alone.
 - The environment is not configurable: the shim starts the hypervisor
   with `LC_ALL=C`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and nothing else.
 - No secret is ever in `argv` (it is visible in `/proc`): credentials
@@ -538,15 +546,15 @@ Built by `cloud_hypervisor.rs` from the same inputs as today's
 | `cpus {boot_vcpus, max_vcpus}` | `--cpus boot=<n>,max=<n>` |
 | `memory {size, shared, hugepages}` | `--memory size=<mib>M[,shared=on][,hugepages=on]` |
 | `payload.firmware` | `--firmware <path>` |
-| `payload.kernel`, `payload.cmdline` | `--kernel <path> --cmdline <args>` (a separate argv element; not split) |
+| `payload.kernel`, `payload.initramfs`, `payload.cmdline` | `--kernel <path> [--initramfs <path>] --cmdline <args>` (a separate argv element; not split) |
 | `disks[]` (`[root, data…, seed]`) | one `--disk path=<q>[,readonly=on][,image_type=<t>][,backing_files=on]` each |
 | `net[]` | one `--net id=net<i>,mac=<mac>,num_queues=<2·qp>[,mtu=<m>]` plus `tap=<if>` or `vhost_user=on,socket=<q>,vhost_mode=server` |
-| `devices[]` (VFIO) | one `--device path=<q>,id=_vfio_…` each |
-| `console`, `serial` (boot-mode table, hypervisors.md) | `--console tty --serial off` (kernel boot) or `--console off --serial tty` (firmware boot) |
+| `devices[]` (VFIO) | one `--device path=<q>,id=vfio_…` each |
+| `console`, `serial` (boot-mode table, hypervisors.md) | `--console off --serial tty` (serial port: firmware boot, and kernel boot by default) or `--console tty --serial off` (kernel boot whose last `console=` is `hvc…`) |
 
 `<q>` is a path written as `"<path>"` when it contains `,` (F2).
 **Admission rule (new):** every path that reaches a hypervisor command
-line (`kernel_image_path`, `firmware_path`, `rootfs_path`,
+line (`kernel_image_path`, `initrd_path`, `firmware_path`, `rootfs_path`,
 `cloud_init_path`, managed disk files, VFIO sysfs paths) must not
 contain `"`, a control character or a newline: `400 invalid_config`.
 QEMU's `-blockdev` JSON already needs no escaping; its `-drive`/`-kernel`
@@ -919,6 +927,19 @@ Creating | Ready | Resizing | Missing | Failed`), `actual_size_bytes`,
   controller treats a busy disk as `DisksReady=False/DiskBusy` and
   requeues.
 - **File gone** → `Missing`, never recreated.
+- **Where it runs** (storage.md §8.1). A disk on a node-local datastore
+  is reconciled on its `node`; one on a shared datastore on its
+  `worker`, which the leader moves to the node of the disk's VM when it
+  is placed. Both nodes' QEMU and glidex volume locks keep two
+  hypervisors off one file (storage.md §10).
+- **Move** (storage.md §8.3). `POST /disks/{id}/move` writes
+  `moving = {datastore, node, mover, flatten}`; the phase stays `Ready`
+  (no `Moving` phase). The mover copies under the busy guard and both
+  volume locks, then one write switches `datastore`, `node` and
+  `worker` and clears `moving` (event `Moved`), and the old file is
+  removed. A destination image copy still being made →
+  `Ready=False/MovePending`, retried; a failed copy clears `moving`
+  (event `MoveFailed`).
 
 ### 10.2 Image
 
@@ -972,7 +993,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
-| `DELETE /images/{id}[?wait]`, `DELETE /networks/{name}[?wait]` | deletion request (§6.3) | `deleteImage`; `deleteNetwork` / `deleteProjectNetwork` (unchanged) |
+| `DELETE /images/{id}[?wait]`, `DELETE /networks/{id}[?wait]` | deletion request (§6.3) | `deleteImage`; `deleteNetwork` / `deleteProjectNetwork` (unchanged) |
 | `GET /watch[?kinds=…][&project=…]` (new) | live stream (§12.6) | any authenticated caller; each kind filtered as its list endpoint |
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
@@ -1058,7 +1079,8 @@ A live stream of the objects the caller may list, as server-sent events
   (data `{}`). Then `added`, `modified`, `deleted` as objects change.
   Data is `{"kind": "vm"|"disk"|"image"|"network", "id": "…", "object":
   {…}}`, where `object` is exactly what the list endpoint returns for it
-  (`VmResponse`, `DiskResponse`, `ImageResponse`, the network view);
+  (the `Vm`, `Disk` and `Image` messages in their proto JSON shape since
+  the gRPC port, and the network view);
   `deleted` carries no `object`. A keep-alive comment every 15 s.
 
 ```
@@ -1145,11 +1167,13 @@ the service user):
 
 ```js
 // glidex: the control plane may start, stop and kill its own VM units
-// (spec/reconciliation.md §13.2), and nothing else.
+// (glidex-vm@<uuid>.service) and kernel extraction jobs
+// (glidex-vm@extract-<image uuid>.service, spec/kernel-boot.md §10.2),
+// and nothing else (spec/reconciliation.md §13.2).
 polkit.addRule(function (action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
       subject.user == "@USER@" &&
-      /^glidex-vm@[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.service$/
+      /^glidex-vm@(extract-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.service$/
         .test(action.lookup("unit") || "") &&
       ["start", "stop", "kill"].indexOf(action.lookup("verb")) >= 0) {
     return polkit.Result.YES;
@@ -1310,7 +1334,7 @@ Differences from §10:
   running VM. netd `sync_vms` is sent only when some VM uses networks,
   at startup and when netd restarted (socket inode changed).
 - Events: `GET /{disks,images}/{id}/events` and
-  `GET /networks/{name}/events`; `POST /images/{id}/retry`.
+  `GET /networks/{id}/events`; `POST /images/{id}/retry`.
 
 **M1 — Detached instances (imperative API unchanged).**
 `glidex-hv-client`, `glidex-vm-shim`, both runners, `launch.json` /

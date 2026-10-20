@@ -1,0 +1,14 @@
+# buf lint / breaking for the glidex API (spec/grpc.md G-D9).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  # The vendored google.rpc.ErrorInfo keeps upstream's style; it is still
+  # generated for the UI and checked for breaking changes.
+  ignore:
+    - proto/google
+breaking:
+  use:
+    - FILE

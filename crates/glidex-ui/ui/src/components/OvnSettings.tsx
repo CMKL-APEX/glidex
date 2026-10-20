@@ -1,13 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import type { OvnEdge, OvnSettings, OvnSettingsView } from "../types";
-import { formatTime } from "../types";
+import type { OvnEdge, OvnSettingsView, PutOvnSettings } from "../types";
+import { formatTimestamp, nodeRoleLabel, ovnSourceLabel } from "../types";
 import { useSession } from "../session";
 import ConfirmDialog from "./ConfirmDialog";
 import Modal from "./Modal";
 import { Badge, Card, ErrorBanner, errorMessage, inputClass, primaryButton, secondaryButton } from "./ui";
 
-const emptyEdge: OvnEdge = { physnet: "", external_cidr: "", gateway: "", external_ip: "", external_pool: "", gateway_nodes: [] };
+/** The edge as the form edits it: every field there (the API leaves empty ones out). */
+type EdgeForm = Required<OvnEdge>;
+
+const emptyEdge: EdgeForm = { physnet: "", external_cidr: "", gateway: "", external_ip: "", external_pool: "", gateway_nodes: [] };
+
+/** Nodes whose ovn-controller is older than the cluster's ovn-northd: they
+ * can't run its logical flows, so VMs on cluster networks aren't placed
+ * there (spec/clustering-ui.md §8a). */
+export function OvnOutdated({ view }: { view: OvnSettingsView }) {
+  const outdated = (view.nodes ?? []).filter((n) => n.outdated);
+  if (!outdated.length) return null;
+  return (
+    <div role="alert" className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+      <p className="font-medium">OVN is out of date on {outdated.map((n) => n.name).join(", ")}</p>
+      <ul className="list-disc pl-5 mt-1 space-y-0.5">
+        {outdated.map((n) => (
+          <li key={n.id}>{n.outdated}</li>
+        ))}
+      </ul>
+      <p className="mt-1 text-xs">VMs on cluster networks aren't placed there until it is upgraded; the installer fetches the matching OVN.</p>
+    </div>
+  );
+}
 
 /** OVN while it is off (spec/clustering-ui.md §8a): which nodes are ready
  * for it, and the button that turns it on for the whole cluster. */
@@ -42,13 +64,22 @@ export function OvnOff({ view, onDone }: { view: OvnSettingsView; onDone: () => 
           {nodes.map((n) => (
             <tr key={n.id} className="border-t border-gray-100">
               <td className="py-1.5">
-                {n.name} <span className="text-gray-400">({n.role})</span>
+                {n.name} <span className="text-gray-400">({nodeRoleLabel(n.role)})</span>
               </td>
-              <td>{n.missing ? <span className="text-amber-700">{n.missing}</span> : <Badge kind="ok">{n.ovn_version} ready</Badge>}</td>
+              <td>
+                {n.missing ? (
+                  <span className="text-amber-700">{n.missing}</span>
+                ) : n.outdated ? (
+                  <Badge kind="warn">{n.ovn_version} outdated</Badge>
+                ) : (
+                  <Badge kind="ok">{n.ovn_version} ready</Badge>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      <OvnOutdated view={view} />
       {missing.length > 0 && (
         <p className="mt-2 text-xs text-gray-600">
           Install it on {missing.map((n) => n.name).join(", ")} with <code>sudo glidex-install --ovn</code>; nodes report it within two minutes.
@@ -79,9 +110,9 @@ export function OvnOff({ view, onDone }: { view: OvnSettingsView; onDone: () => 
 
 /** The cluster's OVN options, and turning it off (§8a). */
 export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettingsView; onClose: () => void; onDone: () => void }) {
-  const s = view.settings ?? { enabled: true };
+  const s = view.settings ?? {};
   const [edgeOn, setEdgeOn] = useState(!!s.edge);
-  const [edge, setEdge] = useState<OvnEdge>(s.edge ?? emptyEdge);
+  const [edge, setEdge] = useState<EdgeForm>({ ...emptyEdge, ...s.edge });
   const edgeRef = useRef(edge);
   edgeRef.current = edge;
   const [dns, setDns] = useState((s.dns_servers ?? []).join(", "));
@@ -99,11 +130,12 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
       const d = await api.getEdgeDefaults();
       const filled: string[] = [];
       const cur = edgeRef.current;
-      const pick = <K extends keyof OvnEdge>(k: K): OvnEdge[K] => {
+      const suggested: EdgeForm = { ...emptyEdge, ...d.edge };
+      const pick = <K extends keyof EdgeForm>(k: K): EdgeForm[K] => {
         const mine = cur[k];
-        const empty = mine === undefined || mine === null || mine === "" || (Array.isArray(mine) && mine.length === 0);
+        const empty = mine === "" || (Array.isArray(mine) && mine.length === 0);
         if (!(overwrite || empty)) return mine;
-        const v = d.edge[k];
+        const v = suggested[k];
         if (typeof v === "string" && v) filled.push(v);
         return v;
       };
@@ -112,11 +144,12 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
         external_cidr: pick("external_cidr"),
         gateway: pick("gateway"),
         external_ip: pick("external_ip"),
-        external_pool: pick("external_pool") ?? "",
+        external_pool: pick("external_pool"),
         gateway_nodes: pick("gateway_nodes"),
       });
       // Only what concerns a value filled in now (an existing edge keeps its own).
-      setNotes(overwrite ? d.notes : d.notes.filter((n) => filled.some((v) => n.includes(v))));
+      const notes = d.notes ?? [];
+      setNotes(overwrite ? notes : notes.filter((n) => filled.some((v) => n.includes(v))));
     } catch (e) {
       setNotes([`No suggestions: ${errorMessage(e)}`]);
     }
@@ -126,18 +159,20 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
   useEffect(() => {
     if (edgeOn) suggest(false);
   }, [edgeOn, suggest]);
-  const networks = view.cluster_networks ?? [];
+  // Cluster networks are named by id; show their names.
+  const networks = (view.cluster_networks ?? []).map((n) => n.name || n.id);
 
-  const body = (enabled: boolean): Omit<OvnSettings, "updated_by" | "updated_at"> => ({
+  // Absent fields: none, or the default (proto JSON leaves them out).
+  const body = (enabled: boolean): PutOvnSettings => ({
     enabled,
-    underlay_mtu: mtu ? Number(mtu) : null,
-    nat_supernet: supernet.trim() || null,
-    snat_ct_zones: s.snat_ct_zones ?? null,
+    underlay_mtu: mtu ? Number(mtu) : undefined,
+    nat_supernet: supernet.trim() || undefined,
+    snat_ct_zones: s.snat_ct_zones?.length ? s.snat_ct_zones : undefined,
     dns_servers: dns
       .split(/[\s,]+/)
       .map((x) => x.trim())
       .filter(Boolean),
-    edge: edgeOn ? { ...edge, external_pool: edge.external_pool?.trim() || null } : null,
+    edge: edgeOn ? { ...edge, external_pool: edge.external_pool.trim() || undefined } : undefined,
   });
 
   const save = async () => {
@@ -165,8 +200,8 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
     <Modal title="OVN settings" onClose={onClose}>
       <div className="space-y-4 text-sm">
         <p className="text-gray-600">
-          For the whole cluster{s.updated_by ? `; last changed by ${s.updated_by}${s.updated_at ? ` ${formatTime(s.updated_at)}` : ""}` : ""}.
-          {view.source === "file" && " Now taken from a server's control-plane.json; saving here makes it the cluster's setting."}
+          For the whole cluster{s.updated_by ? `; last changed by ${s.updated_by}${s.updated_at ? ` ${formatTimestamp(s.updated_at)}` : ""}` : ""}.
+          {ovnSourceLabel(view.source) === "file" && " Now taken from a server's control-plane.json; saving here makes it the cluster's setting."}
         </p>
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
         <div className="grid grid-cols-3 gap-3">
@@ -199,7 +234,7 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
             {field("External network", edge.external_cidr, (v) => setEdge({ ...edge, external_cidr: v }), "192.0.2.0/24")}
             {field("Gateway", edge.gateway, (v) => setEdge({ ...edge, gateway: v }), "192.0.2.1")}
             {field("Edge address", edge.external_ip, (v) => setEdge({ ...edge, external_ip: v }), "192.0.2.50")}
-            {field("Pool for VPC routers (optional)", edge.external_pool ?? "", (v) => setEdge({ ...edge, external_pool: v }), "192.0.2.64/26")}
+            {field("Pool for VPC routers (optional)", edge.external_pool, (v) => setEdge({ ...edge, external_pool: v }), "192.0.2.64/26")}
             <div>
               <label className="block text-xs text-gray-500">Gateway nodes, by priority</label>
               <div className="flex flex-wrap gap-2 mt-1">

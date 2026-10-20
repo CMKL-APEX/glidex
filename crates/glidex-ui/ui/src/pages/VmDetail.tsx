@@ -2,12 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
-import { describeExit, settled, nodeUnreachable, notReadyReason, unscheduledReason, vmActivity, HYPERVISOR_LABELS } from "../types";
+import {
+  describeExit,
+  desiredState,
+  generationBehind,
+  nicNetworkLabel,
+  num,
+  settled,
+  nodeUnreachable,
+  notReadyReason,
+  tsSecs,
+  unscheduledReason,
+  vmActivity,
+  vmHypervisor,
+  vmState,
+  HYPERVISOR_LABELS,
+} from "../types";
 import NodeName from "../components/NodeName";
 import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
+import PlaceVm from "../components/PlaceVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
+import VmKernel from "../components/VmKernel";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -74,10 +91,13 @@ export default function VmDetail() {
     if (!vm?.firmware) return;
     api.getImage(vm.firmware).then((i) => setFirmwareName(i.name)).catch(() => setFirmwareName(null));
   }, [vm?.firmware]);
+  // Its history, as it happens (`WatchEvents`).
   useEffect(() => {
     if (!id) return;
-    api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));
-  }, [id, vm?.state, vm?.observed_generation]);
+    const abort = new AbortController();
+    void api.followEvents("vm", id, setEvents, abort.signal);
+    return () => abort.abort();
+  }, [id]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
     if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;
@@ -154,10 +174,10 @@ export default function VmDetail() {
           {vmActivity(vm) && (
             <div className="mb-6 p-3 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800">
               <span className="font-medium">In progress:</span> {vmActivity(vm)}
-              {vm.desired_state && !vm.deleting && <> (desired state: {vm.desired_state})</>}. This page follows it.
-              {vm.generation !== undefined && vm.observed_generation !== undefined && vm.observed_generation < vm.generation && (
+              {desiredState(vm) && !vm.deleting && <> (desired state: {desiredState(vm)})</>}. This page follows it.
+              {generationBehind(vm) && (
                 <span className="block text-xs text-sky-700 mt-1">
-                  Spec generation {vm.generation}; the controller has acted on {vm.observed_generation}.
+                  Spec generation {num(vm.generation)}; the controller has acted on {num(vm.observed_generation)}.
                 </span>
               )}
             </div>
@@ -191,7 +211,7 @@ export default function VmDetail() {
                   Hypervisor
                 </h3>
                 <p className="text-lg font-semibold text-gray-900">
-                  {HYPERVISOR_LABELS[vm.hypervisor] ?? vm.hypervisor}
+                  {HYPERVISOR_LABELS[vmHypervisor(vm)]}
                 </p>
               </div>
               {vm.node && (
@@ -222,7 +242,7 @@ export default function VmDetail() {
                   <ul className="mt-1 space-y-1 text-sm">
                     {vm.nics.map((nic, i) => (
                       <li key={i} className="font-mono">
-                        <span className="text-gray-900">{nic.network}</span>{" "}
+                        <span className="text-gray-900" title={nic.network}>{nicNetworkLabel(nic)}</span>{" "}
                         <span className="text-gray-500">{nic.mac}</span>{" "}
                         <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>
                           {nic.ipv4 ?? "no address"}
@@ -252,6 +272,13 @@ export default function VmDetail() {
                   </p>
                 </div>
               )}
+              {vm.kernel && <VmKernel vm={vm} onChanged={fetchVm} />}
+              {vm.boot === "BOOT_MODE_KERNEL" && !vm.kernel && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Kernel</h3>
+                  <p className="text-sm text-gray-700">Kernel files on the host</p>
+                </div>
+              )}
               {vm.root_disk && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>
@@ -262,8 +289,8 @@ export default function VmDetail() {
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">If it stops on its own</h3>
                   <p className="text-sm text-gray-700">
-                    {vm.restart_policy === "on_failure" ? "Restarted after a crash" : "Left stopped"}
-                    {vm.on_host_boot && <>; after a host reboot: {vm.on_host_boot === "resume" ? "started again" : "left stopped"}</>}
+                    {vm.restart_policy === "RESTART_POLICY_ON_FAILURE" ? "Restarted after a crash" : "Left stopped"}
+                    {vm.on_host_boot && <>; after a host reboot: {vm.on_host_boot === "HOST_BOOT_POLICY_RESUME" ? "started again" : "left stopped"}</>}
                   </p>
                 </div>
               )}
@@ -291,17 +318,36 @@ export default function VmDetail() {
             </div>
           )}
 
+          {(vm.devices ?? []).length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">Device Pools</h3>
+              <ul className="space-y-1 text-sm text-gray-700">
+                {(vm.devices ?? []).map((r) => {
+                  const got = (vm.pool_devices ?? []).filter((d) => d.pool === r.pool).map((d) => d.address);
+                  return (
+                    <li key={r.pool}>
+                      {r.count ?? 1} × <span className="font-medium">{r.pool}</span>
+                      {r.same_switch ? " (one switch)" : ""}:{" "}
+                      <span className="font-mono">{got.length > 0 ? got.join(", ") : "not placed yet"}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           <div className="pt-6 border-t border-gray-100">
             <h3 className="text-sm font-medium text-gray-500 mb-3">Actions</h3>
             <div className="flex items-center gap-3 flex-wrap">
               <VmActions
                 vmId={vm.id}
-                state={vm.state}
-                desired={vm.desired_state}
+                state={vmState(vm)}
+                desired={desiredState(vm)}
                 deleting={vm.deleting}
                 onAction={handleAction}
                 loading={actionLoading}
               />
+              <PlaceVm vm={vm} stopped={["stopped", "created", "failed"].includes(vmState(vm)) && desiredState(vm) === "stopped"} onDone={fetchVm} />
               {!nodeUnreachable(vm) && (
               <Link
                 to={`/vms/${vm.id}/console`}
@@ -328,7 +374,7 @@ export default function VmDetail() {
 
           <div className="pt-6 mt-6 border-t border-gray-100">
             <h3 className="text-sm font-medium text-gray-500 mb-3">Usage</h3>
-            <VmUsage vmId={vm.id} hypervisor={vm.hypervisor} />
+            <VmUsage vmId={vm.id} hypervisor={vmHypervisor(vm)} />
           </div>
 
           {events.length > 0 && (
@@ -338,9 +384,9 @@ export default function VmDetail() {
                 {[...events].reverse().map((e, i) => (
                   <li key={i} className="flex gap-3">
                     <span className="text-gray-400 font-mono shrink-0">
-                      {new Date(e.at * 1000).toLocaleString()}
+                      {new Date(tsSecs(e.at) * 1000).toLocaleString()}
                     </span>
-                    <span className={e.kind === "warning" ? "text-amber-700 font-medium shrink-0" : "text-gray-700 font-medium shrink-0"}>
+                    <span className={e.kind === "EVENT_KIND_WARNING" ? "text-amber-700 font-medium shrink-0" : "text-gray-700 font-medium shrink-0"}>
                       {e.reason}
                     </span>
                     <span className="text-gray-600 break-all">{e.message}</span>

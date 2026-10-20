@@ -13,12 +13,12 @@
 //! (`/cluster/v1/host/…`, a server certificate), which runs it with that one
 //! decision (`PreAuthorized`).
 
-use super::{err, ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction};
+use super::{ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction, err};
 use crate::auth::Principal;
 use crate::authz::{Ent, EntitySet};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -50,7 +50,14 @@ const PASS_REQUEST: [&str; 13] = [
 ];
 
 /// Extra request headers of a WebSocket upgrade.
-const PASS_UPGRADE: [&str; 6] = ["upgrade", "connection", "sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions"];
+const PASS_UPGRADE: [&str; 6] = [
+    "upgrade",
+    "connection",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-protocol",
+    "sec-websocket-extensions",
+];
 
 /// Response headers that describe the answer (hop-by-hop ones are left out).
 const PASS_RESPONSE: [&str; 12] = [
@@ -72,7 +79,14 @@ const PASS_RESPONSE: [&str; 12] = [
 /// (`/system/bindings` are the cluster's role links, not the host's.)
 pub fn is_remote_host_path(path: &str) -> bool {
     // `leave` is this host leaving, not the server it is relayed to.
-    path.starts_with("/ovs/") || path == "/pci-devices" || path == "/system/reconcile" || path == "/cluster/leave"
+    path.starts_with("/ovs/")
+        // The host family's RPCs (spec/grpc.md §8).
+        || path.starts_with("/glidex.host.v1.")
+        || path == "/pci-devices"
+        || path == "/host/topology"
+        || path == "/system/reconcile"
+        || path == "/cluster/leave"
+        || path == "/glidex.cluster.v1.ClusterService/LeaveCluster"
 }
 
 fn copy_headers(from: &HeaderMap, names: &[&'static str]) -> Vec<(&'static str, String)> {
@@ -98,30 +112,64 @@ fn respond_headers(resp: &mut Response, from: &HeaderMap) {
 
 /// Global layer, outermost: on an agent, the UI socket's requests go to a server.
 pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> Response {
-    let listener = req.extensions().get::<Listener>().copied().unwrap_or(Listener::Tcp);
-    let Some(cluster) = app.manager.cluster() else { return next.run(req).await };
+    let listener = req
+        .extensions()
+        .get::<Listener>()
+        .copied()
+        .unwrap_or(Listener::Tcp);
+    let Some(cluster) = app.manager.cluster() else {
+        return next.run(req).await;
+    };
     // Servers serve their UI themselves.
     if listener != Listener::Ui || cluster.node.is_some() {
         return next.run(req).await;
     }
     if !super::ui_peer_ok(&app, req.extensions().get::<super::PeerUid>()) {
-        return super::plain_error(StatusCode::FORBIDDEN, "forbidden", "only glidex-ui may use this socket");
+        return super::plain_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only glidex-ui may use this socket",
+        );
     }
-    let servers = app.manager.node_link().map(|l| l.servers()).unwrap_or_default();
+    let servers = app
+        .manager
+        .node_link()
+        .map(|l| l.servers())
+        .unwrap_or_default();
     let server_list = || servers.join(", ");
     if !app.auth.config.cluster.ui_relay {
-        return err(StatusCode::MISDIRECTED_REQUEST, "use_a_server", format!("this node doesn't serve the UI; use a server: {}", server_list())).into_response();
+        return err(
+            StatusCode::MISDIRECTED_REQUEST,
+            "use_a_server",
+            format!(
+                "this node doesn't serve the UI; use a server: {}",
+                server_list()
+            ),
+        )
+        .into_response();
     }
     // The Origin is checked here, where the browser connected (the server
     // trusts the relay for it, as for a forwarded request).
     let websocket = req.headers().get(header::UPGRADE).is_some();
-    if let Some(o) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if (!super::is_safe(req.method()) || websocket) && !app.auth.config.auth.origin_allowed(o) {
-            return super::plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
-        }
+    if let Some(o) = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        && (!super::is_safe(req.method()) || websocket)
+        && !app.auth.config.auth.origin_allowed(o)
+    {
+        return super::plain_error(
+            StatusCode::FORBIDDEN,
+            "origin_not_allowed",
+            "this origin may not use the API",
+        );
     }
     let path = req.uri().path().to_string();
-    let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| path.clone());
+    let pq = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
     let target = format!("/cluster/v1/ui{pq}");
     let me = cluster.identity.node_id.clone();
     let mut headers = copy_headers(req.headers(), &PASS_REQUEST);
@@ -129,21 +177,43 @@ pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> 
     if is_remote_host_path(&path) {
         headers.push((TARGET_NODE_HEADER, me.clone()));
     }
-    let unreachable = || err(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable", format!("this node can't reach a server; log in on a server: {}", server_list())).into_response();
+    let unreachable = || {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cluster_unavailable",
+            format!(
+                "this node can't reach a server; log in on a server: {}",
+                server_list()
+            ),
+        )
+        .into_response()
+    };
 
     if websocket {
         headers.extend(copy_headers(req.headers(), &PASS_UPGRADE));
         let (mut parts, _) = req.into_parts();
         let Some(on) = parts.extensions.remove::<hyper::upgrade::OnUpgrade>() else {
-            return err(StatusCode::BAD_REQUEST, "bad_request", "upgrade without a connection to upgrade").into_response();
+            return err(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "upgrade without a connection to upgrade",
+            )
+            .into_response();
         };
         for addr in &servers {
-            let Ok((status, rh, body, up)) = cluster.client.upgrade_with(addr, parts.method.clone(), &target, &headers).await else { continue };
+            let Ok((status, rh, body, up)) = cluster
+                .client
+                .upgrade_with(addr, parts.method.clone(), &target, &headers)
+                .await
+            else {
+                continue;
+            };
             let mut resp = Response::new(Body::from(body));
             *resp.status_mut() = status;
             respond_headers(&mut resp, &rh);
             if let Some(mut server) = up {
-                resp.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
+                resp.headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
                 if let Some(u) = rh.get(header::UPGRADE) {
                     resp.headers_mut().insert(header::UPGRADE, u.clone());
                 }
@@ -161,10 +231,23 @@ pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> 
     let (parts, body) = req.into_parts();
     let body: Bytes = match axum::body::to_bytes(body, MAX_RELAYED_BODY).await {
         Ok(b) => b,
-        Err(_) => return err(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "request body too large").into_response(),
+        Err(_) => {
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                "request body too large",
+            )
+            .into_response();
+        }
     };
     for addr in &servers {
-        let Ok(r) = cluster.client.request_stream(addr, parts.method.clone(), &target, &headers, body.clone()).await else { continue };
+        let Ok(r) = cluster
+            .client
+            .request_stream(addr, parts.method.clone(), &target, &headers, body.clone())
+            .await
+        else {
+            continue;
+        };
         let (rp, incoming) = r.into_parts();
         let mut resp = Response::new(Body::new(incoming.map_err(axum::Error::new)));
         *resp.status_mut() = rp.status;
@@ -178,19 +261,46 @@ pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> 
 /// for another node's host is authorized here, on that node's `Host`, and
 /// then run there.
 pub async fn remote_host(State(app): State<AppState>, req: Request, next: Next) -> Response {
-    let Some(RemoteHost(node)) = req.extensions().get::<RemoteHost>().cloned() else { return next.run(req).await };
-    let Some(action) = req.extensions().get::<RouteAction>().map(|a| a.0) else { return next.run(req).await };
+    let Some(RemoteHost(node)) = req.extensions().get::<RemoteHost>().cloned() else {
+        return next.run(req).await;
+    };
+    // A REST route's action, or an RPC's from the operation table.
+    let action = req
+        .extensions()
+        .get::<RouteAction>()
+        .map(|a| a.0)
+        .or_else(|| glidex_api::operation(req.uri().path()).map(|o| o.action));
+    let Some(action) = action else {
+        return next.run(req).await;
+    };
     match run_on_host(&app, &node, action, req).await {
         Ok(r) => r,
         Err(e) => e.into_response(),
     }
 }
 
-async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Request) -> Result<Response, ApiErr> {
-    let p = req.extensions().get::<Principal>().cloned().ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required"))?;
+async fn run_on_host(
+    app: &AppState,
+    node: &str,
+    action: &'static str,
+    req: Request,
+) -> Result<Response, ApiErr> {
+    let p = req
+        .extensions()
+        .get::<Principal>()
+        .cloned()
+        .ok_or_else(|| {
+            err(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "authentication required",
+            )
+        })?;
     let mut es = EntitySet::new();
     es.host(node);
-    let d = app.auth.authorize(&p, action, Ent::host_of(node), es.clone(), &[]);
+    let d = app
+        .auth
+        .authorize(&p, action, Ent::host_of(node), es.clone(), &[]);
     if let Some(slot) = req.extensions().get::<super::AuditSlot>() {
         let mut a = slot.0.lock().unwrap();
         a.policies.extend(d.policies.iter().cloned());
@@ -200,7 +310,13 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
     if !d.allowed {
         return Err(super::deny_response(action, &d));
     }
-    let cluster = app.manager.cluster().ok_or_else(|| err(StatusCode::CONFLICT, "not_clustered", "this host is not part of a cluster"))?;
+    let cluster = app.manager.cluster().ok_or_else(|| {
+        err(
+            StatusCode::CONFLICT,
+            "not_clustered",
+            "this host is not part of a cluster",
+        )
+    })?;
     let addr = app
         .manager
         .nodes()
@@ -209,16 +325,44 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
         .flatten()
         .and_then(|n| n.status.advertise)
         .map(|a| a.to_string())
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {node} has no address")))?;
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("node {node} has no address"),
+            )
+        })?;
     let (parts, body) = req.into_parts();
-    let body = axum::body::to_bytes(body, MAX_RELAYED_BODY).await.map_err(|_| err(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "request body too large"))?;
-    let pq = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| parts.uri.path().to_string());
+    let body = axum::body::to_bytes(body, MAX_RELAYED_BODY)
+        .await
+        .map_err(|_| {
+            err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                "request body too large",
+            )
+        })?;
+    let pq = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| parts.uri.path().to_string());
     let mut headers = copy_headers(&parts.headers, &["content-type", "accept", "x-request-id"]);
+    if glidex_api::operation(parts.uri.path()).is_some() {
+        headers.extend(copy_headers(
+            &parts.headers,
+            super::gate::RPC_REQUEST_HEADERS,
+        ));
+    }
     // Some handlers ask for a second action on the host (a confirmed uplink
     // moves its IP: `confirmUplink`); pass those the caller holds as well.
     let mut authorized = vec![action.to_string()];
     for extra in related_actions(action) {
-        if app.auth.authorize(&p, extra, Ent::host_of(node), es.clone(), &[]).allowed {
+        if app
+            .auth
+            .authorize(&p, extra, Ent::host_of(node), es.clone(), &[])
+            .allowed
+        {
             authorized.push(extra.to_string());
         }
     }
@@ -228,9 +372,21 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
     }
     let r = cluster
         .client
-        .request(&addr, parts.method.clone(), &format!("/cluster/v1/host{pq}"), &headers, body)
+        .request(
+            &addr,
+            parts.method.clone(),
+            &format!("/cluster/v1/host{pq}"),
+            &headers,
+            body,
+        )
         .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, "node_unreachable", format!("node {node}: {e}")))?;
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_GATEWAY,
+                "node_unreachable",
+                format!("node {node}: {e}"),
+            )
+        })?;
     let mut resp = Response::new(Body::from(r.body));
     *resp.status_mut() = r.status;
     respond_headers(&mut resp, &r.headers);
@@ -250,17 +406,38 @@ fn related_actions(action: &str) -> &'static [&'static str] {
 pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Result<(), Response> {
     // A relay can't vouch for anyone.
     if req.headers().contains_key(super::gate::PRINCIPAL_HEADER) {
-        return Err(err(StatusCode::FORBIDDEN, "forbidden", "a relayed request may not carry a principal").into_response());
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "a relayed request may not carry a principal",
+        )
+        .into_response());
     }
-    let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
-    let Some(rest) = pq.strip_prefix("/cluster/v1/ui") else { return Err(err(StatusCode::NOT_FOUND, "not_found", "no such route").into_response()) };
-    let rest = if rest.is_empty() { "/".to_string() } else { rest.to_string() };
-    *req.uri_mut() = rest.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "bad_request", "bad path").into_response())?;
+    let pq = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    let Some(rest) = pq.strip_prefix("/cluster/v1/ui") else {
+        return Err(err(StatusCode::NOT_FOUND, "not_found", "no such route").into_response());
+    };
+    let rest = if rest.is_empty() {
+        "/".to_string()
+    } else {
+        rest.to_string()
+    };
+    *req.uri_mut() = rest
+        .parse()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "bad_request", "bad path").into_response())?;
     // Which node relayed it is what its certificate says.
     if let Ok(v) = HeaderValue::from_str(peer_node) {
         req.headers_mut().insert(VIA_NODE_HEADER, v);
     }
-    let target = req.headers().get(TARGET_NODE_HEADER).and_then(|v| v.to_str().ok()).map(String::from);
+    let target = req
+        .headers()
+        .get(TARGET_NODE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     req.headers_mut().remove(TARGET_NODE_HEADER);
     if let Some(t) = target {
         // A node may only ask for its own host.
@@ -269,25 +446,56 @@ pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Re
         }
     }
     req.extensions_mut().insert(Listener::Relay);
-    req.extensions_mut().insert(super::RelayedBy(peer_node.to_string()));
+    req.extensions_mut()
+        .insert(super::RelayedBy(peer_node.to_string()));
     Ok(())
 }
 
 /// On an agent, `/cluster/v1/host/<path>` from a server: a host-local
 /// request it authorized for this host.
 pub fn accept_authorized(req: &mut Request) -> Result<(), Response> {
-    let Some(action) = req.headers().get(AUTHORIZED_HEADER).and_then(|v| v.to_str().ok()).map(String::from) else {
-        return Err(err(StatusCode::BAD_REQUEST, "bad_request", "no authorized action").into_response());
+    let Some(action) = req
+        .headers()
+        .get(AUTHORIZED_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+    else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "no authorized action",
+        )
+        .into_response());
     };
-    let pq = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
-    let Some(rest) = pq.strip_prefix("/cluster/v1/host") else { return Err(err(StatusCode::NOT_FOUND, "not_found", "no such route").into_response()) };
-    let uri: axum::http::Uri = rest.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "bad_request", "bad path").into_response())?;
+    let pq = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    let Some(rest) = pq.strip_prefix("/cluster/v1/host") else {
+        return Err(err(StatusCode::NOT_FOUND, "not_found", "no such route").into_response());
+    };
+    let uri: axum::http::Uri = rest
+        .parse()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "bad_request", "bad path").into_response())?;
     if !is_remote_host_path(uri.path()) {
-        return Err(err(StatusCode::FORBIDDEN, "forbidden", "only host-local paths may be sent here").into_response());
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only host-local paths may be sent here",
+        )
+        .into_response());
     }
     *req.uri_mut() = uri;
     req.extensions_mut().insert(Listener::Cluster);
-    req.extensions_mut().insert(PreAuthorized(action.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()));
+    req.extensions_mut().insert(PreAuthorized(
+        action
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(String::from)
+            .collect(),
+    ));
     Ok(())
 }
 
@@ -297,10 +505,25 @@ mod tests {
 
     #[test]
     fn host_paths_are_the_hosts_own_and_role_links_are_the_clusters() {
-        for p in ["/ovs/status", "/ovs/bridges/br0/uplinks", "/pci-devices", "/system/reconcile", "/cluster/leave"] {
+        for p in [
+            "/ovs/status",
+            "/ovs/bridges/br0/uplinks",
+            "/pci-devices",
+            "/system/reconcile",
+            "/cluster/leave",
+            "/glidex.host.v1.HostNetworkService/ListBridges",
+            "/glidex.host.v1.PciService/ListPciDevices",
+        ] {
             assert!(is_remote_host_path(p), "{p}");
         }
-        for p in ["/system/bindings", "/vms", "/cluster/status", "/cluster/dissolve", "/ovsx"] {
+        for p in [
+            "/system/bindings",
+            "/vms",
+            "/cluster/status",
+            "/cluster/dissolve",
+            "/ovsx",
+            "/glidex.network.v1.NetworkService/ListNetworks",
+        ] {
             assert!(!is_remote_host_path(p), "{p}");
         }
     }

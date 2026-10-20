@@ -10,12 +10,12 @@
 use super::pki;
 use super::runtime::Cluster;
 use crate::models::Tristate;
-use crate::node::{Node, NodePhase, NodeRole, NodeStore, LOCAL_NODE};
+use crate::node::{LOCAL_NODE, Node, NodePhase, NodeRole, NodeStore};
 use crate::state::VmManager;
 use crate::store::{Db, Origin, TableId};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -73,7 +73,9 @@ pub struct Bundle {
 
 impl Bundle {
     pub fn sha256(&self) -> String {
-        pki::hex(&Sha256::digest(serde_json::to_vec(self).expect("bundle serializes")))
+        pki::hex(&Sha256::digest(
+            serde_json::to_vec(self).expect("bundle serializes"),
+        ))
     }
 }
 
@@ -94,7 +96,11 @@ impl Receipt {
     }
 
     pub fn verify(&self, trust_pem: &str) -> bool {
-        pki::verify_bytes(trust_pem, &Self::payload(&self.plan, &self.node, &self.bundle_sha256, self.revision), &self.signature)
+        pki::verify_bytes(
+            trust_pem,
+            &Self::payload(&self.plan, &self.node, &self.bundle_sha256, self.revision),
+            &self.signature,
+        )
     }
 }
 
@@ -109,6 +115,11 @@ pub struct Plan {
     pub state: String,
     #[serde(default)]
     pub receipt: Option<Receipt>,
+    /// The names of the networks the plan names (`map_networks`, the
+    /// dropped ones), as they were when it started: a network can be gone
+    /// by the time the plan is read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub network_names: BTreeMap<String, String>,
 }
 
 const PLAN_PREFIX: &str = "departure/";
@@ -124,27 +135,56 @@ pub fn read_plan(db: &Db, plan: &str) -> Option<Plan> {
 }
 
 pub fn plans(db: &Db) -> Vec<Plan> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(t) = txn.open_table(TableId::Meta.definition()) else { return Vec::new() };
-    let Ok(it) = t.range(PLAN_PREFIX..) else { return Vec::new() };
-    it.flatten().take_while(|(k, _)| k.value().starts_with(PLAN_PREFIX)).filter_map(|(_, v)| serde_json::from_slice(v.value()).ok()).collect()
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(t) = txn.open_table(TableId::Meta.definition()) else {
+        return Vec::new();
+    };
+    let Ok(it) = t.range(PLAN_PREFIX..) else {
+        return Vec::new();
+    };
+    it.flatten()
+        .take_while(|(k, _)| k.value().starts_with(PLAN_PREFIX))
+        .filter_map(|(_, v)| serde_json::from_slice(v.value()).ok())
+        .collect()
 }
 
 fn write_plan(tx: &crate::store::Tx<'_>, p: &Plan) -> Result<(), crate::store::StoreError> {
-    tx.open_table(TableId::Meta.definition())?.insert(plan_key(&p.plan).as_str(), serde_json::to_vec(p).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+    tx.open_table(TableId::Meta.definition())?.insert(
+        plan_key(&p.plan).as_str(),
+        serde_json::to_vec(p)
+            .map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?
+            .as_slice(),
+    )?;
     Ok(())
 }
 
 /// Every row of `table` as JSON.
 fn rows_of(db: &Db, table: TableId) -> Vec<(String, Value)> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(t) = txn.open_table(table.definition()) else { return Vec::new() };
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(t) = txn.open_table(table.definition()) else {
+        return Vec::new();
+    };
     let Ok(it) = t.iter() else { return Vec::new() };
-    it.flatten().filter_map(|(k, v)| Some((k.value().to_string(), serde_json::from_slice::<Value>(v.value()).ok()?))).collect()
+    it.flatten()
+        .filter_map(|(k, v)| {
+            Some((
+                k.value().to_string(),
+                serde_json::from_slice::<Value>(v.value()).ok()?,
+            ))
+        })
+        .collect()
 }
 
 fn row(table: TableId, key: &str, v: &Value) -> Row {
-    Row { table: table as u16, key: key.to_string(), value: v.to_string() }
+    Row {
+        table: table as u16,
+        key: key.to_string(),
+        value: v.to_string(),
+    }
 }
 
 fn mentions(hay: &str, needle: &str) -> bool {
@@ -155,7 +195,11 @@ fn mentions(hay: &str, needle: &str) -> bool {
 /// node's own cache when offline). Pure: nothing is written.
 pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bundle {
     let nets = rows_of(db, TableId::Networks);
-    let cluster_nets: BTreeSet<String> = nets.iter().filter(|(_, n)| n["scope"] == "cluster").map(|(k, _)| k.clone()).collect();
+    let cluster_nets: BTreeSet<String> = nets
+        .iter()
+        .filter(|(_, n)| n["scope"] == "cluster")
+        .map(|(k, _)| k.clone())
+        .collect();
     let mut out: Vec<Row> = Vec::new();
     let (mut vm_ids, mut disk_ids) = (Vec::new(), Vec::new());
     let mut projects: BTreeSet<String> = BTreeSet::new();
@@ -163,12 +207,19 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
     let (mut mapped, mut dropped) = (BTreeMap::new(), BTreeSet::new());
 
     for (id, mut vm) in rows_of(db, TableId::Vms) {
-        if vm.pointer("/status/placement/node").and_then(|x| x.as_str()) != Some(node) {
+        if vm
+            .pointer("/status/placement/node")
+            .and_then(|x| x.as_str())
+            != Some(node)
+        {
             continue;
         }
         vm["status"]["placement"]["node"] = LOCAL_NODE.into();
         let mut changed = false;
-        if let Some(list) = vm.pointer_mut("/spec/config/networks").and_then(|l| l.as_array_mut()) {
+        if let Some(list) = vm
+            .pointer_mut("/spec/config/networks")
+            .and_then(|l| l.as_array_mut())
+        {
             let mut kept = Vec::new();
             for att in list.drain(..) {
                 let name = att["network"].as_str().unwrap_or("").to_string();
@@ -190,8 +241,14 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
         if changed {
             let now = crate::tenancy::now();
             vm["meta"]["generation"] = json!(vm["meta"]["generation"].as_u64().unwrap_or(0) + 1);
-            let conds = vm["status"]["conditions"].as_array().cloned().unwrap_or_default();
-            let mut conds: Vec<Value> = conds.into_iter().filter(|c| c["kind"] != "RestartRequired").collect();
+            let conds = vm["status"]["conditions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let mut conds: Vec<Value> = conds
+                .into_iter()
+                .filter(|c| c["kind"] != "RestartRequired")
+                .collect();
             conds.push(json!({ "kind": "RestartRequired", "status": "True", "reason": "NetworkRemoved", "message": "its cluster network stays behind; the NIC goes at the next restart", "last_transition_at": now }));
             vm["status"]["conditions"] = Value::Array(conds);
         }
@@ -203,10 +260,10 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
         vm_ids.push(id);
     }
     for (id, ring) in rows_of(db, TableId::Events) {
-        if let Some(v) = id.strip_prefix("vm/") {
-            if vm_ids.iter().any(|x| x == v) {
-                out.push(row(TableId::Events, &id, &ring));
-            }
+        if let Some(v) = id.strip_prefix("vm/")
+            && vm_ids.iter().any(|x| x == v)
+        {
+            out.push(row(TableId::Events, &id, &ring));
         }
     }
     for (id, mut d) in rows_of(db, TableId::Disks) {
@@ -247,7 +304,13 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
     let used: BTreeSet<String> = vm_ids
         .iter()
         .filter_map(|id| rows_of_one(db, TableId::Vms, id))
-        .filter_map(|vm| Some(format!("{}/{}", vm["meta"]["project"].as_str()?, vm.pointer("/spec/config/credential")?.as_str()?)))
+        .filter_map(|vm| {
+            Some(format!(
+                "{}/{}",
+                vm["meta"]["project"].as_str()?,
+                vm.pointer("/spec/config/credential")?.as_str()?
+            ))
+        })
         .collect();
     for (k, c) in rows_of(db, TableId::Credentials) {
         if used.contains(&k) {
@@ -285,7 +348,16 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
     }
     out.sort();
     out.dedup();
-    Bundle { plan: plan.to_string(), node: node.to_string(), rows: out, vm_ids, disk_ids, image_ids, mapped, dropped_networks: dropped.into_iter().collect() }
+    Bundle {
+        plan: plan.to_string(),
+        node: node.to_string(),
+        rows: out,
+        vm_ids,
+        disk_ids,
+        image_ids,
+        mapped,
+        dropped_networks: dropped.into_iter().collect(),
+    }
 }
 
 fn rows_of_one(db: &Db, table: TableId, key: &str) -> Option<Value> {
@@ -301,17 +373,28 @@ pub fn write_standalone_db(path: &Path, bundle: &Bundle) -> Result<(), Departure
     // startup migrates it (schema, the `local` node, the default project).
     let store = crate::store::VmStore::open(path).map_err(failed)?;
     let db = store.database();
-    db.write(Origin::Migration, |tx| -> Result<(), crate::store::StoreError> {
-        for r in &bundle.rows {
-            let table = TableId::from_id(r.table).ok_or_else(|| crate::store::StoreError::Io(std::io::Error::other(format!("unknown table {}", r.table))))?;
-            tx.open_table(table.definition())?.insert(r.key.as_str(), r.value.as_bytes())?;
-        }
-        Ok(())
-    })
+    db.write(
+        Origin::Migration,
+        |tx| -> Result<(), crate::store::StoreError> {
+            for r in &bundle.rows {
+                let table = TableId::from_id(r.table).ok_or_else(|| {
+                    crate::store::StoreError::Io(std::io::Error::other(format!(
+                        "unknown table {}",
+                        r.table
+                    )))
+                })?;
+                tx.open_table(table.definition())?
+                    .insert(r.key.as_str(), r.value.as_bytes())?;
+            }
+            Ok(())
+        },
+    )
     .map_err(failed)?;
     drop(db);
     drop(store);
-    std::fs::File::open(path).and_then(|f| f.sync_all()).map_err(failed)?;
+    std::fs::File::open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(failed)?;
     Ok(())
 }
 
@@ -338,23 +421,40 @@ fn discard_pending(state_dir: &Path) {
 
 impl Cluster {
     fn state_dir(&self) -> PathBuf {
-        self.files.dir.parent().unwrap_or(Path::new(".")).to_path_buf()
+        self.files
+            .dir
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
     }
 
     /// Whether `node`'s plan says its objects are frozen.
     pub fn departing_plan(&self, node: &str) -> Option<Plan> {
-        plans(&self.db).into_iter().find(|p| p.node == node && p.state == "frozen")
+        plans(&self.db)
+            .into_iter()
+            .find(|p| p.node == node && p.state == "frozen")
     }
 
     /// Phase 3 (leader): the node holds the bundle it was sent, so the cluster
     /// lets go of its objects and signs the receipt, all in one write.
-    pub async fn commit_departure(self: &Arc<Self>, plan_id: &str, sha: &str) -> Result<Receipt, DepartureError> {
-        let plan = read_plan(&self.db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
+    pub async fn commit_departure(
+        self: &Arc<Self>,
+        plan_id: &str,
+        sha: &str,
+    ) -> Result<Receipt, DepartureError> {
+        let plan =
+            read_plan(&self.db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
         if plan.state == "committed" {
-            return plan.receipt.ok_or_else(|| failed("committed without a receipt"));
+            return plan
+                .receipt
+                .ok_or_else(|| failed("committed without a receipt"));
         }
-        let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
-        let leaving = NodeStore::new(self.db.clone()).get(&plan.node).map_err(failed)?;
+        let ca = self
+            .signing_ca()
+            .ok_or_else(|| failed("this server holds no CA key"))?;
+        let leaving = NodeStore::new(self.db.clone())
+            .get(&plan.node)
+            .map_err(failed)?;
         let node_id = plan.node.clone();
         // Everything is checked inside the write: no other write lands between
         // the checks and the commit (an abort, an expiry, a status write).
@@ -463,7 +563,10 @@ impl Cluster {
         // Whatever this node's phase looks like from here: once the cluster has
         // committed, its certificate is revoked and its cache stops following,
         // so the plan, not the phase, says whether there is anything to do.
-        let Some(plan) = plans(&self.db).into_iter().find(|p| &p.node == me && p.state != "aborted") else {
+        let Some(plan) = plans(&self.db)
+            .into_iter()
+            .find(|p| &p.node == me && p.state != "aborted")
+        else {
             discard_pending(&state_dir);
             return None;
         };
@@ -475,22 +578,40 @@ impl Cluster {
             return None;
         }
         let v: Value = serde_json::from_slice(&reply.body).ok()?;
-        if let Some(r) = v.get("receipt").filter(|r| !r.is_null()).and_then(|r| serde_json::from_value::<Receipt>(r.clone()).ok()) {
+        if let Some(r) = v
+            .get("receipt")
+            .filter(|r| !r.is_null())
+            .and_then(|r| serde_json::from_value::<Receipt>(r.clone()).ok())
+        {
             return self.keep_receipt(&state_dir, r);
         }
         let bundle: Bundle = serde_json::from_value(v.get("bundle")?.clone()).ok()?;
         let sha = bundle.sha256();
         // The file on disk is always the bundle being acknowledged.
-        if std::fs::read_to_string(pending_sha_file(&state_dir)).ok().as_deref() != Some(sha.as_str()) || !pending_db(&state_dir).exists() {
+        if std::fs::read_to_string(pending_sha_file(&state_dir))
+            .ok()
+            .as_deref()
+            != Some(sha.as_str())
+            || !pending_db(&state_dir).exists()
+        {
             if let Err(e) = write_standalone_db(&pending_db(&state_dir), &bundle) {
                 tracing::warn!("writing the departure bundle: {}", e);
                 return None;
             }
             pki::write_private(&pending_sha_file(&state_dir), sha.as_bytes()).ok()?;
         }
-        let r = self.post_any(&format!("{path}/ack"), json!({ "sha256": sha }).to_string().into()).await.ok()?;
+        let r = self
+            .post_any(
+                &format!("{path}/ack"),
+                json!({ "sha256": sha }).to_string().into(),
+            )
+            .await
+            .ok()?;
         if !r.status.is_success() {
-            tracing::warn!("the cluster did not commit the departure: {}", String::from_utf8_lossy(&r.body));
+            tracing::warn!(
+                "the cluster did not commit the departure: {}",
+                String::from_utf8_lossy(&r.body)
+            );
             return None;
         }
         let receipt: Receipt = serde_json::from_slice(&r.body).ok()?;
@@ -500,7 +621,9 @@ impl Cluster {
     fn keep_receipt(&self, state_dir: &Path, r: Receipt) -> Option<Receipt> {
         let trust = self.files.read(self.files.trust()).ok()?;
         if !r.verify(&trust) {
-            tracing::error!("the departure receipt does not verify against the cluster CA: ignoring it");
+            tracing::error!(
+                "the departure receipt does not verify against the cluster CA: ignoring it"
+            );
             return None;
         }
         pki::write_private(&receipt_file(state_dir), &serde_json::to_vec(&r).ok()?).ok()?;
@@ -508,17 +631,43 @@ impl Cluster {
     }
 
     /// GET from the leader, or from a seed on a node with no Raft member.
-    pub async fn get_any(&self, path: &str) -> Result<super::net::Reply, super::runtime::ClusterError> {
+    pub async fn get_any(
+        &self,
+        path: &str,
+    ) -> Result<super::net::Reply, super::runtime::ClusterError> {
         let mut addrs: Vec<String> = self.leader_addr().into_iter().collect();
         addrs.extend(self.identity.seeds.clone());
         let mut last = super::runtime::ClusterError::Other("no server to ask".into());
         for a in addrs {
-            match self.client.request_timeout(&a, hyper::Method::GET, path, &[], bytes::Bytes::new(), Duration::from_secs(30)).await {
+            match self
+                .client
+                .request_timeout(
+                    &a,
+                    hyper::Method::GET,
+                    path,
+                    &[],
+                    bytes::Bytes::new(),
+                    Duration::from_secs(30),
+                )
+                .await
+            {
                 Ok(r) if r.status == hyper::StatusCode::MISDIRECTED_REQUEST => {
-                    if let Some(l) = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
-                        if let Ok(r) = self.client.request_timeout(&l, hyper::Method::GET, path, &[], bytes::Bytes::new(), Duration::from_secs(30)).await {
-                            return Ok(r);
-                        }
+                    if let Some(l) = serde_json::from_slice::<Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v["leader"].as_str().map(String::from))
+                        && let Ok(r) = self
+                            .client
+                            .request_timeout(
+                                &l,
+                                hyper::Method::GET,
+                                path,
+                                &[],
+                                bytes::Bytes::new(),
+                                Duration::from_secs(30),
+                            )
+                            .await
+                    {
+                        return Ok(r);
                     }
                 }
                 Ok(r) => return Ok(r),
@@ -531,7 +680,10 @@ impl Cluster {
     /// Leader: abort plans past their deadline (§5.8.2).
     pub fn expire_departures(&self) {
         let now = crate::tenancy::now();
-        for p in plans(&self.db).into_iter().filter(|p| p.state == "frozen" && p.deadline < now) {
+        for p in plans(&self.db)
+            .into_iter()
+            .filter(|p| p.state == "frozen" && p.deadline < now)
+        {
             if let Err(e) = abort_plan(&self.db, &p.plan) {
                 tracing::warn!("expiring a departure plan: {}", e);
             }
@@ -541,130 +693,263 @@ impl Cluster {
 
 /// Return a frozen node to `Active` and drop the plan.
 pub fn abort_plan(db: &Db, plan_id: &str) -> Result<(), DepartureError> {
-    let mut plan = read_plan(db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
+    let mut plan =
+        read_plan(db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
     if plan.state == "committed" {
-        return Err(DepartureError::Conflict("the departure already committed".into()));
+        return Err(DepartureError::Conflict(
+            "the departure already committed".into(),
+        ));
     }
     plan.state = "aborted".into();
     let committed = std::cell::Cell::new(false);
     let r = db.write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
         // Re-read inside the write: a commit may have landed since.
-        let now: Option<Plan> = tx.open_table(TableId::Meta.definition())?.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok());
+        let now: Option<Plan> = tx
+            .open_table(TableId::Meta.definition())?
+            .get(plan_key(plan_id).as_str())?
+            .and_then(|v| serde_json::from_slice(v.value()).ok());
         if now.as_ref().is_some_and(|p| p.state == "committed") {
             committed.set(true);
             return Ok(());
         }
         write_plan(tx, &plan)?;
         let mut nodes = tx.open_table(TableId::Nodes.definition())?;
-        let cur = nodes.get(plan.node.as_str())?.and_then(|v| serde_json::from_slice::<Node>(v.value()).ok());
-        if let Some(mut n) = cur {
-            if n.status.phase == NodePhase::Departing {
-                n.status.phase = NodePhase::Active;
-                n.spec.unschedulable = false;
-                n.meta.resource_version += 1;
-                nodes.insert(plan.node.as_str(), serde_json::to_vec(&n).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
-            }
+        let cur = nodes
+            .get(plan.node.as_str())?
+            .and_then(|v| serde_json::from_slice::<Node>(v.value()).ok());
+        if let Some(mut n) = cur
+            && n.status.phase == NodePhase::Departing
+        {
+            n.status.phase = NodePhase::Active;
+            n.spec.unschedulable = false;
+            n.meta.resource_version += 1;
+            nodes.insert(
+                plan.node.as_str(),
+                serde_json::to_vec(&n)
+                    .map_err(|e| {
+                        crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                    })?
+                    .as_slice(),
+            )?;
         }
         Ok(())
     });
     r.map_err(failed)?;
     if committed.get() {
-        return Err(DepartureError::Conflict("the departure already committed".into()));
+        return Err(DepartureError::Conflict(
+            "the departure already committed".into(),
+        ));
     }
     Ok(())
 }
 
 impl Cluster {
-    pub fn deny_certs_pub(tx: &crate::store::Tx<'_>, node: &str, why: &str) -> Result<usize, crate::store::StoreError> {
+    pub fn deny_certs_pub(
+        tx: &crate::store::Tx<'_>,
+        node: &str,
+        why: &str,
+    ) -> Result<usize, crate::store::StoreError> {
         Cluster::deny_certs(tx, node, why)
     }
 }
 
 impl VmManager {
     /// §5.8.2 step 1 (leader): freeze the node and record the plan.
-    pub async fn start_detach(&self, key: &str, opts: DetachOptions, timeout_secs: Option<u64>) -> Result<Value, DepartureError> {
-        let c = self.cluster().ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
+    pub async fn start_detach(
+        &self,
+        key: &str,
+        mut opts: DetachOptions,
+        timeout_secs: Option<u64>,
+    ) -> Result<Value, DepartureError> {
+        let c = self
+            .cluster()
+            .ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
         if !c.is_leader() {
             return Err(DepartureError::Conflict("this is not the leader".into()));
         }
         let nodes = NodeStore::new(self.database()).list().map_err(failed)?;
-        let n = nodes.iter().find(|n| n.meta.id == key || (n.spec.name == key && !n.status.phase.is_tombstone())).cloned().ok_or_else(|| DepartureError::NotFound(key.into()))?;
+        let n = nodes
+            .iter()
+            .find(|n| n.meta.id == key || (n.spec.name == key && !n.status.phase.is_tombstone()))
+            .cloned()
+            .ok_or_else(|| DepartureError::NotFound(key.into()))?;
         if !matches!(n.status.phase, NodePhase::Active | NodePhase::Draining) {
-            return Err(DepartureError::Conflict(format!("the node is {:?}", n.status.phase)));
+            return Err(DepartureError::Conflict(format!(
+                "the node is {:?}",
+                n.status.phase
+            )));
         }
         if n.meta.id == c.identity.node_id {
             return Err(DepartureError::Conflict("a server can't detach itself online: run this on another server, or detach offline".into()));
         }
         if n.status.ready != Tristate::True {
-            return Err(DepartureError::Conflict("the node is not reporting; use `forget --departed` if it already left".into()));
+            return Err(DepartureError::Conflict(
+                "the node is not reporting; use `forget --departed` if it already left".into(),
+            ));
         }
         if let Some(why) = self.gateway_blocker(&n) {
             return Err(DepartureError::Conflict(why));
         }
+        // The other cluster has no record of a registered datastore
+        // (spec/storage.md §14).
+        let mut elsewhere: Vec<String> = self
+            .images
+            .list_disks()
+            .into_iter()
+            .filter(|d| {
+                d.node.as_deref() == Some(n.meta.id.as_str())
+                    && d.datastore != crate::datastore::LOCAL
+            })
+            .map(|d| format!("{} (datastore {})", d.name, d.datastore))
+            .collect();
+        if !elsewhere.is_empty() {
+            elsewhere.sort();
+            return Err(DepartureError::Conflict(format!(
+                "disks on registered datastores can't leave with the node: {}; move them to local first",
+                elsewhere.join(", ")
+            )));
+        }
         if let Some(rid) = n.status.raft_id {
-            c.check_voter_leaves(rid, false).map_err(|e| DepartureError::Conflict(e.to_string()))?;
+            c.check_voter_leaves(rid, false)
+                .map_err(|e| DepartureError::Conflict(e.to_string()))?;
         }
-        let known: BTreeSet<String> = self.networks.list().unwrap_or_default().into_iter().filter(|x| x.scope == crate::network::NetworkScope::Cluster).map(|x| x.name).collect();
-        let mine: BTreeSet<String> = self.networks.list().unwrap_or_default().into_iter().filter(|x| x.node.as_deref() == Some(n.meta.id.as_str())).map(|x| x.name).collect();
+        // Networks are named by id or name (unique among those that fit); the
+        // plan keeps ids, as the NICs do (spec/tenancy.md D24).
+        let nets = self.networks.list().unwrap_or_default();
+        let pick = |key: &str, fits: &dyn Fn(&crate::network::Network) -> bool| {
+            let mut m = nets
+                .iter()
+                .filter(|x| fits(x) && (x.id == key || x.name == key));
+            match (m.next(), m.next()) {
+                (Some(x), None) => Ok(Some(x.id.clone())),
+                (Some(_), Some(_)) => Err(DepartureError::Invalid(format!(
+                    "more than one network is named {key}: give its id"
+                ))),
+                (None, _) => Ok(None),
+            }
+        };
+        let mut mapped = BTreeMap::new();
         for (from, to) in &opts.map_networks {
-            if !known.contains(from) {
-                return Err(DepartureError::Invalid(format!("{from} is not a cluster network")));
-            }
-            if !mine.contains(to) {
-                return Err(DepartureError::Invalid(format!("{to} is not a node network of {}", n.spec.name)));
-            }
+            let Some(from_id) = pick(from, &|x| x.scope == crate::network::NetworkScope::Cluster)?
+            else {
+                return Err(DepartureError::Invalid(format!(
+                    "{from} is not a cluster network"
+                )));
+            };
+            let Some(to_id) = pick(to, &|x| x.node.as_deref() == Some(n.meta.id.as_str()))? else {
+                return Err(DepartureError::Invalid(format!(
+                    "{to} is not a node network of {}",
+                    n.spec.name
+                )));
+            };
+            mapped.insert(from_id, to_id);
         }
+        opts.map_networks = mapped;
         let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let now = crate::tenancy::now();
-        let plan = Plan { plan: id.clone(), node: n.meta.id.clone(), options: opts, started_at: now, deadline: now + timeout_secs.unwrap_or(c.config.detach_freeze_secs), state: "frozen".into(), receipt: None };
+        // What the bundle will hold; the answer gives its counts.
+        let b = build_bundle(&self.database(), &id, &n.meta.id, &opts);
+        let named: std::collections::BTreeSet<&String> = opts
+            .map_networks
+            .iter()
+            .flat_map(|(a, b)| [a, b])
+            .chain(b.dropped_networks.iter())
+            .collect();
+        let network_names = nets
+            .iter()
+            .filter(|x| named.contains(&x.id))
+            .map(|x| (x.id.clone(), x.name.clone()))
+            .collect();
+        let plan = Plan {
+            plan: id.clone(),
+            node: n.meta.id.clone(),
+            options: opts,
+            started_at: now,
+            deadline: now + timeout_secs.unwrap_or(c.config.detach_freeze_secs),
+            state: "frozen".into(),
+            receipt: None,
+            network_names,
+        };
         let nid = n.meta.id.clone();
         self.database()
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
                 write_plan(tx, &plan)?;
                 let mut nodes = tx.open_table(TableId::Nodes.definition())?;
-                let Some(mut cur): Option<Node> = nodes.get(nid.as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) else { return Ok(()) };
+                let Some(mut cur): Option<Node> = nodes
+                    .get(nid.as_str())?
+                    .and_then(|v| serde_json::from_slice(v.value()).ok())
+                else {
+                    return Ok(());
+                };
                 cur.status.phase = NodePhase::Departing;
                 cur.spec.unschedulable = true;
                 cur.meta.resource_version += 1;
-                nodes.insert(nid.as_str(), serde_json::to_vec(&cur).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+                nodes.insert(
+                    nid.as_str(),
+                    serde_json::to_vec(&cur)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
                 Ok(())
             })
             .map_err(failed)?;
-        let b = build_bundle(&self.database(), &id, &n.meta.id, &plan.options);
-        Ok(json!({ "plan": id, "node": n.spec.name, "deadline": plan.deadline, "vms": b.vm_ids.len(), "disks": b.disk_ids.len(), "images": b.image_ids.len(), "mapped": b.mapped, "dropped_networks": b.dropped_networks }))
+        Ok(
+            json!({ "plan": id, "node": n.spec.name, "deadline": plan.deadline, "vms": b.vm_ids.len(), "disks": b.disk_ids.len(), "images": b.image_ids.len(), "mapped": b.mapped, "dropped_networks": b.dropped_networks, "network_names": plan.network_names }),
+        )
     }
 
     /// `forget --departed` (§5.8.3): the node left on its own (offline detach).
     /// Its objects go from the cluster, it becomes `Departed`, and a server
     /// that left rotates the CA.
     pub async fn forget_departed(&self, key: &str) -> Result<Value, DepartureError> {
-        let c = self.cluster().ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
+        let c = self
+            .cluster()
+            .ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
         if !c.is_leader() {
             return Err(DepartureError::Conflict("this is not the leader".into()));
         }
         let nodes = NodeStore::new(self.database()).list().map_err(failed)?;
-        let n = nodes.iter().find(|n| n.meta.id == key || (n.spec.name == key && !n.status.phase.is_tombstone())).cloned().ok_or_else(|| DepartureError::NotFound(key.into()))?;
+        let n = nodes
+            .iter()
+            .find(|n| n.meta.id == key || (n.spec.name == key && !n.status.phase.is_tombstone()))
+            .cloned()
+            .ok_or_else(|| DepartureError::NotFound(key.into()))?;
         if n.status.phase == NodePhase::Departed {
             return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }));
         }
-        if !matches!(n.status.phase, NodePhase::Active | NodePhase::Draining | NodePhase::Departing) {
-            return Err(DepartureError::Conflict(format!("the node is {:?}", n.status.phase)));
+        if !matches!(
+            n.status.phase,
+            NodePhase::Active | NodePhase::Draining | NodePhase::Departing
+        ) {
+            return Err(DepartureError::Conflict(format!(
+                "the node is {:?}",
+                n.status.phase
+            )));
         }
         if n.meta.id == c.identity.node_id {
-            return Err(DepartureError::Conflict("this server can't forget itself".into()));
+            return Err(DepartureError::Conflict(
+                "this server can't forget itself".into(),
+            ));
         }
         if n.status.ready == Tristate::True {
-            return Err(DepartureError::Conflict("the node is still reporting; detach it online instead".into()));
+            return Err(DepartureError::Conflict(
+                "the node is still reporting; detach it online instead".into(),
+            ));
         }
         if let Some(rid) = n.status.raft_id {
-            c.check_voter_leaves(rid, false).map_err(|e| DepartureError::Conflict(e.to_string()))?;
+            c.check_voter_leaves(rid, false)
+                .map_err(|e| DepartureError::Conflict(e.to_string()))?;
         }
         let id = format!("offline-{}", uuid::Uuid::new_v4().simple());
         let bundle = build_bundle(&self.database(), &id, &n.meta.id, &DetachOptions::default());
         let nid = n.meta.id.clone();
         self.database()
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
-                let io = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
+                let io = |e: serde_json::Error| {
+                    crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                };
                 {
                     let mut vms = tx.open_table(TableId::Vms.definition())?;
                     let mut events = tx.open_table(TableId::Events.definition())?;
@@ -677,14 +962,26 @@ impl VmManager {
                         disks.remove(d.as_str())?;
                     }
                     let mut nets = tx.open_table(TableId::Networks.definition())?;
-                    for r in bundle.rows.iter().filter(|r| r.table == TableId::Networks as u16) {
+                    for r in bundle
+                        .rows
+                        .iter()
+                        .filter(|r| r.table == TableId::Networks as u16)
+                    {
                         nets.remove(r.key.as_str())?;
                     }
                     let mut res = tx.open_table(TableId::IpamReservations.definition())?;
                     let stale: Vec<String> = res
                         .iter()?
                         .flatten()
-                        .filter(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok().is_some_and(|r| r["vm_id"].as_str().is_some_and(|x| bundle.vm_ids.iter().any(|v| v == x))))
+                        .filter(|(_, v)| {
+                            serde_json::from_slice::<Value>(v.value())
+                                .ok()
+                                .is_some_and(|r| {
+                                    r["vm_id"]
+                                        .as_str()
+                                        .is_some_and(|x| bundle.vm_ids.iter().any(|v| v == x))
+                                })
+                        })
                         .map(|(k, _)| k.value().to_string())
                         .collect();
                     for k in stale {
@@ -693,14 +990,28 @@ impl VmManager {
                 }
                 {
                     let mut nodes = tx.open_table(TableId::Nodes.definition())?;
-                    let Some(mut cur): Option<Node> = nodes.get(nid.as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) else { return Ok(()) };
+                    let Some(mut cur): Option<Node> = nodes
+                        .get(nid.as_str())?
+                        .and_then(|v| serde_json::from_slice(v.value()).ok())
+                    else {
+                        return Ok(());
+                    };
                     cur.status.phase = NodePhase::Departed;
                     cur.status.ready = Tristate::Unknown;
                     cur.status.ready_reason = Some("Departed".into());
-                    cur.status.departed_ids = bundle.vm_ids.iter().chain(&bundle.disk_ids).chain(&bundle.image_ids).cloned().collect();
+                    cur.status.departed_ids = bundle
+                        .vm_ids
+                        .iter()
+                        .chain(&bundle.disk_ids)
+                        .chain(&bundle.image_ids)
+                        .cloned()
+                        .collect();
                     cur.spec.unschedulable = true;
                     cur.meta.resource_version += 1;
-                    nodes.insert(nid.as_str(), serde_json::to_vec(&cur).map_err(io)?.as_slice())?;
+                    nodes.insert(
+                        nid.as_str(),
+                        serde_json::to_vec(&cur).map_err(io)?.as_slice(),
+                    )?;
                 }
                 Cluster::deny_certs_pub(tx, &nid, "departed")?;
                 Ok(())
@@ -710,7 +1021,9 @@ impl VmManager {
         let _ = c.finish_raft_removals().await;
         // Offline, the cluster can't know the key was destroyed: a server always rotates.
         c.rotate_after_server_left(&n);
-        Ok(json!({ "node": n.spec.name, "phase": NodePhase::Departed, "vms": bundle.vm_ids.len(), "disks": bundle.disk_ids.len() }))
+        Ok(
+            json!({ "node": n.spec.name, "phase": NodePhase::Departed, "vms": bundle.vm_ids.len(), "disks": bundle.disk_ids.len() }),
+        )
     }
 }
 
@@ -723,21 +1036,30 @@ pub fn finish_pending(db_path: &Path) -> Result<bool, DepartureError> {
     if !pending.exists() || !receipt_path.exists() {
         return Ok(false);
     }
-    let r: Receipt = serde_json::from_slice(&std::fs::read(&receipt_path).map_err(failed)?).map_err(failed)?;
+    let r: Receipt =
+        serde_json::from_slice(&std::fs::read(&receipt_path).map_err(failed)?).map_err(failed)?;
     let files = super::identity::Files::beside(db_path);
     let trust = std::fs::read_to_string(files.trust()).map_err(failed)?;
     if !r.verify(&trust) {
-        return Err(DepartureError::Invalid("the departure receipt does not verify".into()));
+        return Err(DepartureError::Invalid(
+            "the departure receipt does not verify".into(),
+        ));
     }
     // The receipt must be for this node and for the very bundle on disk.
-    if let Some(id) = files.load_identity().map_err(failed)? {
-        if id.node_id != r.node {
-            return Err(DepartureError::Invalid("the departure receipt is for another node".into()));
-        }
+    if let Some(id) = files.load_identity().map_err(failed)?
+        && id.node_id != r.node
+    {
+        return Err(DepartureError::Invalid(
+            "the departure receipt is for another node".into(),
+        ));
     }
-    let sha = std::fs::read_to_string(pending_sha_file(&dir)).map_err(|_| DepartureError::Invalid("the pending database has no recorded bundle hash".into()))?;
+    let sha = std::fs::read_to_string(pending_sha_file(&dir)).map_err(|_| {
+        DepartureError::Invalid("the pending database has no recorded bundle hash".into())
+    })?;
     if sha.trim() != r.bundle_sha256 {
-        return Err(DepartureError::Invalid("the pending database is not the bundle the receipt names".into()));
+        return Err(DepartureError::Invalid(
+            "the pending database is not the bundle the receipt names".into(),
+        ));
     }
     switch_to_standalone(db_path, &pending)?;
     let _ = std::fs::remove_file(receipt_path);
@@ -760,7 +1082,10 @@ pub fn switch_to_standalone(db_path: &Path, pending: &Path) -> Result<(), Depart
 /// comes from this node's cache; the private key is destroyed.
 pub fn offline_detach(db_path: &Path) -> Result<Bundle, DepartureError> {
     let files = super::identity::Files::beside(db_path);
-    let identity = files.load_identity().map_err(failed)?.ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
+    let identity = files
+        .load_identity()
+        .map_err(failed)?
+        .ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
     let db = Db::create(db_path).map_err(failed)?;
     let bundle = build_bundle(&db, "offline", &identity.node_id, &DetachOptions::default());
     drop(db);
@@ -777,34 +1102,64 @@ impl Cluster {
     /// the store is kept (0600); the departure is committed by this node itself,
     /// with a receipt signed by its own CA key, and finished at the next start.
     pub async fn dissolve(self: &Arc<Self>) -> Result<Value, DepartureError> {
-        let node = self.node.as_ref().ok_or_else(|| DepartureError::Invalid("only a server can dissolve a cluster".into()))?;
+        let node = self.node.as_ref().ok_or_else(|| {
+            DepartureError::Invalid("only a server can dissolve a cluster".into())
+        })?;
         if !node.is_leader() {
             return Err(DepartureError::Conflict("this is not the leader".into()));
         }
         let nodes = NodeStore::new(self.db.clone()).list().map_err(failed)?;
-        let others: Vec<String> = nodes.iter().filter(|n| n.meta.id != self.identity.node_id && !n.status.phase.is_tombstone()).map(|n| n.spec.name.clone()).collect();
+        let others: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.meta.id != self.identity.node_id && !n.status.phase.is_tombstone())
+            .map(|n| n.spec.name.clone())
+            .collect();
         if !others.is_empty() {
-            return Err(DepartureError::Conflict(format!("other nodes are still members: {}; detach or remove them first", others.join(", "))));
+            return Err(DepartureError::Conflict(format!(
+                "other nodes are still members: {}; detach or remove them first",
+                others.join(", ")
+            )));
         }
         let dir = self.state_dir();
         let snap = dir.join("glidex.db.final-snapshot");
         super::manage::export_snapshot(&self.db, &snap).map_err(failed)?;
         let me = self.identity.node_id.clone();
-        let opts = DetachOptions { map_networks: BTreeMap::new(), with_access: true };
+        let opts = DetachOptions {
+            map_networks: BTreeMap::new(),
+            with_access: true,
+        };
         let bundle = build_bundle(&self.db, "dissolve", &me, &opts);
         write_standalone_db(&pending_db(&dir), &bundle)?;
         pki::write_private(&pending_sha_file(&dir), bundle.sha256().as_bytes()).map_err(failed)?;
-        let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
+        let ca = self
+            .signing_ca()
+            .ok_or_else(|| failed("this server holds no CA key"))?;
         let revision = self.db.revision();
         let sha = bundle.sha256();
-        let signature = ca.sign_bytes(&Receipt::payload("dissolve", &me, &sha, revision)).map_err(failed)?;
-        let receipt = Receipt { plan: "dissolve".into(), node: me.clone(), bundle_sha256: sha, revision, signature };
-        pki::write_private(&receipt_file(&dir), &serde_json::to_vec(&receipt).map_err(failed)?).map_err(failed)?;
-        tracing::warn!("this cluster is dissolved: restart the control plane to continue as a standalone host");
+        let signature = ca
+            .sign_bytes(&Receipt::payload("dissolve", &me, &sha, revision))
+            .map_err(failed)?;
+        let receipt = Receipt {
+            plan: "dissolve".into(),
+            node: me.clone(),
+            bundle_sha256: sha,
+            revision,
+            signature,
+        };
+        pki::write_private(
+            &receipt_file(&dir),
+            &serde_json::to_vec(&receipt).map_err(failed)?,
+        )
+        .map_err(failed)?;
+        tracing::warn!(
+            "this cluster is dissolved: restart the control plane to continue as a standalone host"
+        );
         if let Some(h) = self.handlers.get() {
             h.departed();
         }
-        Ok(json!({ "node": self.identity.name, "vms": bundle.vm_ids.len(), "disks": bundle.disk_ids.len(), "snapshot": snap.display().to_string() }))
+        Ok(
+            json!({ "node": self.identity.name, "vms": bundle.vm_ids.len(), "disks": bundle.disk_ids.len(), "snapshot": snap.display().to_string() }),
+        )
     }
 }
 
@@ -823,7 +1178,9 @@ impl Cluster {
                         me.expire_imports();
                     }
                     if me.departure_tick().await.is_some() {
-                        tracing::warn!("this node's departure committed: restart the control plane to continue as a standalone host");
+                        tracing::warn!(
+                            "this node's departure committed: restart the control plane to continue as a standalone host"
+                        );
                         if let Some(h) = me.handlers.get() {
                             h.departed();
                         }
@@ -837,7 +1194,8 @@ impl Cluster {
 
 /// Set by the daemon: exit once a departure committed, so the service manager
 /// restarts it and startup completes the switch.
-pub static EXIT_ON_DEPARTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static EXIT_ON_DEPARTURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub fn is_server(n: &Node) -> bool {
     n.spec.role == NodeRole::Server

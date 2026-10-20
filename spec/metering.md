@@ -92,6 +92,7 @@ Records store integers in the base unit. Hour figures such as
 | `cpu.alloc` | gauge × time | VM | vCPU·s | vCPU-hours | `launch.json` `vcpu_count` × running time |
 | `mem.used` | gauge × time | VM | MiB·s | MiB-hours | cgroup `memory.current` (+ hugepages, §5.1) |
 | `mem.alloc` | gauge × time | VM | MiB·s | MiB-hours | `launch.json` `mem_size_mib` × live time |
+| `device.alloc.<pool>` | gauge × time | VM | device·s | device-hours | `status.placement.pool_devices` of the pool × live time ([host-topology.md §9.4](host-topology.md#94-metering)) |
 | `mem.peak` | max | VM | MiB | MiB | max of `memory.current` samples in the hour |
 | `cpu.cores_peak` | max | VM | cores ×1000 | cores | max CPU rate over one sample interval, `Δcpu.used / Δt` (M4, §8.7) |
 | `disk.alloc` | gauge × time | disk | MiB·s | GiB-hours | `Disk.size_bytes` (provisioned) |
@@ -410,6 +411,13 @@ New calls in `glidex-hv-client`:
   lag. That error is accepted.
 - Unmanaged `rootfs_path` disks are not metered, just as they are not
   under quota.
+- **Datastores** ([storage.md](storage.md)). A disk is sampled by the
+  node acting on it: its `node` on a node-local datastore, its `worker`
+  on a shared one (`VmManager::is_local_disk`), so a shared disk is
+  counted once. A shared datastore's copy of an image
+  (`<path>/images/<id>.qcow2`, storage.md §4.5) is not metered yet,
+  and usage can't be grouped by datastore yet (`group_by=datastore`,
+  later).
 
 ### 5.4 Network: bridge-port counters
 
@@ -1029,20 +1037,23 @@ to hours, `to` exclusive, maximum span 400 days), `granularity`,
 ```json
 {
   "from": "2026-10-01T00:00:00Z", "to": "2026-10-02T00:00:00Z",
-  "granularity": "day", "group_by": ["project", "vm"],
+  "granularity": "GRANULARITY_DAY", "timezone": "UTC",
+  "group_by": ["GROUP_KEY_PROJECT", "GROUP_KEY_VM"],
   "rows": [
-    { "start": "2026-10-01T00:00:00Z", "project": "p-…", "vm": {"id": "…", "name": "web-1"},
+    { "start": "2026-10-01T00:00:00Z", "end": "2026-10-02T00:00:00Z",
+      "project": {"id": "p-…", "name": "lab"}, "vm": {"id": "…", "name": "web-1"},
       "meters": {
-        "cpu.used":        {"raw": 51840000000, "value": 14.4,  "unit": "core-hours"},
-        "cpu.alloc":       {"raw": 172800,      "value": 48.0,  "unit": "vCPU-hours"},
-        "mem.alloc":       {"raw": 353894400,   "value": 98304, "unit": "MiB-hours"},
-        "net.bytes":         {"raw": 3221225472, "value": 3.0,  "unit": "GiB"},
-        "net.ext_bytes":     {"raw": 2147483648, "value": 2.0,  "unit": "GiB"},
-        "net.internal_bytes":{"raw": 1073741824, "value": 1.0,  "unit": "GiB"}
+        "cpu.used":        {"raw": "51840000000", "value": 14.4,  "unit": "core-hours"},
+        "cpu.alloc":       {"raw": "172800",      "value": 48.0,  "unit": "vCPU-hours"},
+        "mem.alloc":       {"raw": "353894400",   "value": 98304, "unit": "MiB-hours"},
+        "net.bytes":         {"raw": "3221225472", "value": 3.0,  "unit": "GiB"},
+        "net.ext_bytes":     {"raw": "2147483648", "value": 2.0,  "unit": "GiB"},
+        "net.internal_bytes":{"raw": "1073741824", "value": 1.0,  "unit": "GiB"}
       },
       "flags": ["interpolated"] }
   ],
-  "complete_through": "2026-10-04T09:00:00Z"
+  "complete_through": "2026-10-04T09:00:00Z",
+  "metering_started_at": "2026-09-12T00:00:00Z"
 }
 ```
 
@@ -1155,7 +1166,8 @@ network detail page gets the same for its bridge
 added for the UI. It fires on every round, but only for VMs a client
 watches by id.
 
-**As built (M2.4).** Code: `api/rates.rs`. Four differences from the
+**As built (M2.4).** Code: `service/usage.rs` (REST twins
+`api/usage.rs`, `api/rates.rs`; §9.5). Four differences from the
 design:
 - **No `stats` watch kind.** Live stats change every round, and the
   `/watch` stream carries object changes, so the UI polls
@@ -1169,6 +1181,53 @@ design:
   carry the p95 only.
 - **Averages** are over the slots the group was present in (§8.5.1),
   so a VM that ran for a week is not averaged over the whole month.
+
+### 9.5 RPC and the proto shape (G2)
+
+The routes of §9.1–§9.4 are the REST twins of `glidex.usage.v1`
+([grpc.md](grpc.md) §9.1; proto `glidex/usage/v1/usage.proto`), one
+service function each in `service/usage.rs`, RPC adapter
+`api/rpc/usage.rs`:
+
+| RPC | REST twin |
+|---|---|
+| `UsageService.GetUsage`, `GetProjectUsage`, `GetVmUsage`, `GetDiskUsage` | `GET /usage`, `/projects/{id}/usage`, `/vms/{id}/usage`, `/disks/{id}/usage` |
+| `UsageService.GetBandwidthReport`, `GetDiskIoReport`, `GetComputeReport` | `GET /usage/bandwidth`, `/usage/disk-io`, `/usage/compute` |
+| `MetricsService.GetVmBandwidth`, `GetNetworkBandwidth`, `GetVmIo`, `GetDiskIo`, `GetVmCompute` | `GET /vms/{id}/bandwidth`, `/networks/{id}/bandwidth`, `/vms/{id}/io`, `/disks/{id}/io`, `/vms/{id}/compute` |
+| `MetricsService.GetVmStats`, `GetNetworkStats` | `GET /vms/{id}/stats`, `/networks/{id}/stats` |
+
+Requests carry the query as messages: `projects` (ids or names; REST
+`project=a,b`), and `query` (`UsageQuery`: `from`, `to` as timestamps,
+`month`, `granularity`, `group_by`, `meters`, `tz`; `ReportQuery`: `month`,
+`from`, `to`, `group_by`, `tz`; `SeriesQuery`: `month`, `from`, `to`, `tz`,
+`p95`); `GetVmUsageRequest.include_disks` is REST's `include=disks`.
+The REST query parameters are unchanged; `group_by` and `granularity`
+also take the enum names.
+
+Answers are the proto3 JSON of those messages. What changed for REST
+clients:
+- `group_by` is `["GROUP_KEY_PROJECT", …]` and `granularity`
+  `"GRANULARITY_DAY"` (were `["project"]`, `"day"`); a disk-I/O row's
+  `latency_source` is `LATENCY_SOURCE_COUNTER` / `LATENCY_SOURCE_NONE`
+  (was `counter` / `none`).
+- A meter's `raw` is a string (uint64); `value` and `unit` as before.
+- Nothing is `null`: unknown rates (`cpu_percent` without an
+  allocation, a missing p95, `sampled_at` with no sample, a report's
+  `month` for a `from`/`to` range, a NIC's `network`) are left out, as are
+  empty lists and maps (`rows`, `points`, `nics`, `disks`, `flags`,
+  `meters`, `values`) and empty names. `final` and `from_final_figures`
+  are always sent.
+- Report rows carry `slots` at the row (`p95` without it); in series and
+  in a report's stored final figures `p95.slots` is set instead, as
+  before.
+- `GET /vms/{id}/io`'s `disks` maps disk id → `{from, to, points, p95?}`.
+
+`format=csv` stays REST-only and answers the same CSV as before (for the
+reports one column per leaf of the row JSON, with `latency_source` as
+`counter`/`none`); it is still audited as an export. A node relaying
+`/vms/{id}/stats` (§8.4) answers `GetVmStatsResponse` as JSON, which a
+server from before the port also reads (and vice versa: the old JSON has
+the same names).
 
 ## 10. Authorization
 
@@ -1834,9 +1893,10 @@ spec change:
 - **Prometheus `/metrics`.** Expose cumulative counters (not the
   ledger) for sites that already run Prometheus. It would need its own
   auth story, because it is a scrape endpoint.
-- **GPU / VFIO devices.** Meter `device-hours` per VFIO device claim,
-  using the same allocation model as `cpu.alloc`. Utilization would
-  need vendor tools.
+- **GPU / VFIO devices.** Pool devices are metered as
+  `device.alloc.<pool>` (host-topology.md §9.4). Devices named by
+  address (`vfio_devices`) are not yet; utilization would need vendor
+  tools.
 - **Port security.** Add OVS rules that let a VM port send only from
   its own MAC and reserved IP. That makes NAT external attribution
   spoof-proof (§5.5) and is worth having for isolation anyway.

@@ -1,0 +1,1287 @@
+// The cluster: forming, joining and inspecting it, its nodes, imports and
+// departures, and its OVN settings (spec/clustering.md §5–§11,
+// clustering-ui.md). The REST twins answer with these messages as JSON
+// (spec/grpc.md §9.1). `GET /cluster/snapshot` (a binary stream) stays
+// REST-only.
+syntax = "proto3";
+
+package glidex.cluster.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/common/v1/common.proto";
+import "glidex/host/v1/host.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---- the cluster ------------------------------------------------------------------
+
+service ClusterService {
+  // Turn this standalone host into a cluster of one (re-keys every record;
+  // keeps a backup). Acts on the host that receives it.
+  rpc InitCluster(InitClusterRequest) returns (InitClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "initCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/init"
+    };
+  }
+  // Join this host to a cluster with a join token.
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "joinCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/join"
+    };
+  }
+  // Join with this host's resources: the plan waits for an administrator.
+  rpc ImportJoin(ImportJoinRequest) returns (ImportJoinResponse) {
+    option (glidex.api.v1.op) = {
+      action: "importCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/import"
+    };
+  }
+  // Come back as the same node, with a rejoin token.
+  rpc RejoinCluster(RejoinClusterRequest) returns (RejoinClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "rejoinCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/rejoin"
+    };
+  }
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /cluster/status"
+    };
+  }
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createJoinToken"
+      kind: KIND_WRITE
+      rest: "POST /cluster/join-tokens"
+    };
+  }
+  // Make servers voters (1, 3 or 5 in all).
+  rpc PromoteNodes(PromoteNodesRequest) returns (PromoteNodesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "promoteNode"
+      kind: KIND_WRITE
+      rest: "POST /cluster/promote"
+    };
+  }
+  // The last node leaves with everything (keeps a final snapshot).
+  rpc DissolveCluster(DissolveClusterRequest) returns (DissolveClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "dissolveCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/dissolve"
+    };
+  }
+  // This host's node was removed: go back to standalone.
+  rpc LeaveCluster(LeaveClusterRequest) returns (LeaveClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "leaveCluster"
+      kind: KIND_WRITE
+      rest: "POST /cluster/leave"
+    };
+  }
+  rpc RotateCa(RotateCaRequest) returns (RotateCaResponse) {
+    option (glidex.api.v1.op) = {
+      action: "rotateCa"
+      kind: KIND_WRITE
+      rest: "POST /cluster/rotate-ca"
+    };
+  }
+  rpc RotateSecretsKey(RotateSecretsKeyRequest) returns (RotateSecretsKeyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "rotateSecretsKey"
+      kind: KIND_WRITE
+      rest: "POST /cluster/rotate-secrets-key"
+    };
+  }
+  // Whether the cluster runs on OVN (anyone signed in: the network form
+  // needs it); with `readCluster` also the settings and node readiness.
+  rpc GetOvnSettings(GetOvnSettingsRequest) returns (GetOvnSettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /cluster/settings/ovn"
+    };
+  }
+  rpc PutOvnSettings(PutOvnSettingsRequest) returns (PutOvnSettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "configureOvn"
+      kind: KIND_WRITE
+      rest: "PUT /cluster/settings/ovn"
+    };
+  }
+  // A suggested shared edge for this cluster.
+  rpc GetEdgeDefaults(GetEdgeDefaultsRequest) returns (GetEdgeDefaultsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /cluster/settings/ovn/edge-defaults"
+    };
+  }
+  // The OVN databases, chassis and gateways.
+  rpc GetOvnOverview(GetOvnOverviewRequest) returns (GetOvnOverviewResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /cluster/ovn"
+    };
+  }
+  // Each live node's Geneve tunnels, matched to their peers.
+  rpc GetOvnTunnels(GetOvnTunnelsRequest) returns (GetOvnTunnelsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /cluster/ovn/tunnels"
+    };
+  }
+}
+
+enum NodeRole {
+  NODE_ROLE_UNSPECIFIED = 0;
+  // Runs the store (Raft) and the API.
+  NODE_ROLE_SERVER = 1;
+  // Runs VMs only.
+  NODE_ROLE_AGENT = 2;
+}
+
+enum NodePhase {
+  NODE_PHASE_UNSPECIFIED = 0;
+  NODE_PHASE_ACTIVE = 1;
+  NODE_PHASE_DRAINING = 2;
+  NODE_PHASE_DEPARTING = 3;
+  // The last three are tombstones.
+  NODE_PHASE_DEPARTED = 4;
+  NODE_PHASE_REMOVED = 5;
+  NODE_PHASE_FORGOTTEN = 6;
+}
+
+message InitClusterRequest {
+  // `<ip>:<port>` the other nodes reach this one at.
+  optional string advertise = 1;
+  optional string tunnel_ip = 2 [json_name = "tunnel_ip"];
+  // Init re-keys every record and can't be undone but by the backup.
+  bool force = 3;
+}
+message InitClusterResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  string node_id = 2 [json_name = "node_id"];
+  string advertise = 3;
+  // The backup init made (a file path).
+  string backup = 4;
+  string ca_fingerprint = 5 [json_name = "ca_fingerprint"];
+}
+
+message JoinClusterRequest {
+  // `<ip>:<port>` of a cluster node (port 8842).
+  string server = 1;
+  // A join token (a secret).
+  string token = 2 [(glidex.api.v1.secret) = true];
+  // Default: server.
+  NodeRole role = 3;
+  optional string advertise = 4;
+  optional string tunnel_ip = 5 [json_name = "tunnel_ip"];
+  optional string name = 6;
+}
+message JoinClusterResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  string node_id = 2 [json_name = "node_id"];
+  NodeRole role = 3;
+  optional bool promoted = 4;
+  // Set when this host became an agent: its control plane restarts.
+  optional string restart = 5;
+}
+
+message ImportJoinRequest {
+  string server = 1;
+  string token = 2 [(glidex.api.v1.secret) = true];
+  optional string advertise = 3;
+  optional string tunnel_ip = 4 [json_name = "tunnel_ip"];
+  optional string name = 5;
+  // How long to wait for an administrator (default a day).
+  optional uint64 wait_secs = 6 [json_name = "wait_secs"];
+}
+message ImportJoinResponse {
+  optional bool waiting = 1;
+  string message = 2;
+}
+
+message RejoinClusterRequest {
+  string server = 1;
+  string token = 2 [(glidex.api.v1.secret) = true];
+  optional string node_id = 3 [json_name = "node_id"];
+  optional string advertise = 4;
+  optional string tunnel_ip = 5 [json_name = "tunnel_ip"];
+}
+message RejoinClusterResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  string node_id = 2 [json_name = "node_id"];
+  NodeRole role = 3;
+  // Its Raft state was started anew.
+  optional bool raft_fresh = 4 [json_name = "raft_fresh"];
+  optional string restart = 5;
+}
+
+// ---- status -----------------------------------------------------------------------
+
+enum RaftState {
+  RAFT_STATE_UNSPECIFIED = 0;
+  RAFT_STATE_LEADER = 1;
+  RAFT_STATE_FOLLOWER = 2;
+  RAFT_STATE_CANDIDATE = 3;
+  RAFT_STATE_LEARNER = 4;
+  RAFT_STATE_SHUTDOWN = 5;
+}
+
+message RaftMember {
+  uint64 raft_id = 1 [json_name = "raft_id"];
+  optional string name = 2;
+  optional string address = 3;
+}
+
+message Replication {
+  uint64 raft_id = 1 [json_name = "raft_id"];
+  optional string name = 2;
+  optional uint64 matched = 3;
+}
+
+message RaftStatus {
+  uint64 id = 1;
+  RaftState state = 2;
+  uint64 term = 3;
+  RaftMember leader = 4;
+  repeated RaftMember voters = 5;
+  repeated RaftMember learners = 6;
+  optional uint64 last_log_index = 7 [json_name = "last_log_index"];
+  optional uint64 last_applied = 8 [json_name = "last_applied"];
+  optional uint64 purged = 9;
+  // On the leader: how far each follower has the log.
+  repeated Replication replication = 10;
+}
+
+message CaStatus {
+  // The fingerprint of the CA that signs.
+  string signing = 1;
+  repeated string retiring = 2;
+  google.protobuf.Timestamp retire_at = 3 [json_name = "retire_at"];
+  google.protobuf.Timestamp started_at = 4 [json_name = "started_at"];
+  google.protobuf.Timestamp not_after = 5 [json_name = "not_after"];
+}
+
+message CertStatus {
+  // Signed by the CA that signs now.
+  optional bool current_ca = 1 [json_name = "current_ca"];
+  google.protobuf.Timestamp not_after = 2 [json_name = "not_after"];
+}
+
+// A node as the cluster status lists it.
+message NodeSummary {
+  string id = 1;
+  string name = 2;
+  NodeRole role = 3;
+  NodePhase phase = 4;
+  optional string advertise = 5;
+  optional uint64 raft_id = 6 [json_name = "raft_id"];
+  optional string version = 7;
+  optional uint32 feature_level = 8 [json_name = "feature_level"];
+  glidex.common.v1.ConditionStatus ready = 9;
+  CertStatus cert = 10;
+}
+
+message ServedBy {
+  string node_id = 1 [json_name = "node_id"];
+  string name = 2;
+}
+
+message PortCheck {
+  // The node's name.
+  string node = 1;
+  uint32 port = 2;
+  string proto = 3;
+  optional bool reachable = 4;
+}
+
+message GetClusterStatusRequest {
+  // Check that every node's ports answer (opens connections).
+  bool ports = 1;
+}
+message GetClusterStatusResponse {
+  // Always set; false for a standalone host (which lists its one node).
+  optional bool clustered = 1;
+  optional string cluster_id = 2 [json_name = "cluster_id"];
+  // This node (through a node's UI: that node).
+  optional string node_id = 3 [json_name = "node_id"];
+  optional string name = 4;
+  NodeRole role = 5;
+  optional string advertise = 6;
+  optional string ca_fingerprint = 7 [json_name = "ca_fingerprint"];
+  optional uint32 feature_level = 8 [json_name = "feature_level"];
+  CaStatus ca = 9;
+  // Absent on an agent.
+  RaftStatus raft = 10;
+  repeated NodeSummary nodes = 11;
+  // Through a node's UI: the server that answered.
+  ServedBy served_by = 12 [json_name = "served_by"];
+  repeated PortCheck ports = 13;
+}
+
+// ---- tokens, promotion, dissolution, rotation -------------------------------------
+
+message CreateJoinTokenRequest {
+  // Default: agent.
+  NodeRole role = 1;
+  // Default an hour; between a minute and a week.
+  optional uint64 ttl_secs = 2 [json_name = "ttl_secs"];
+  // The joining host may bring its resources (an import).
+  bool allow_import = 3 [json_name = "allow_import"];
+}
+message CreateJoinTokenResponse {
+  // Shown once.
+  string token = 1;
+  NodeRole role = 2;
+  uint64 ttl_secs = 3 [json_name = "ttl_secs"];
+  // The live servers' addresses.
+  repeated string servers = 4;
+  string ca_fingerprint = 5 [json_name = "ca_fingerprint"];
+}
+
+message PromoteNodesRequest {
+  // Names or ids.
+  repeated string nodes = 1;
+  bool force = 2;
+}
+message PromoteNodesResponse {
+  uint32 voters = 1;
+}
+
+message DissolveClusterRequest {
+  bool force = 1;
+}
+message DissolveClusterResponse {
+  string node = 1;
+  uint32 vms = 2;
+  uint32 disks = 3;
+  // The final snapshot (a file path).
+  string snapshot = 4;
+}
+
+message LeaveClusterRequest {}
+message LeaveClusterResponse {
+  // The node's name.
+  string left = 1;
+  string restart = 2;
+}
+
+message RotateCaRequest {
+  // How long the old CA stays trusted.
+  optional uint64 grace_secs = 1 [json_name = "grace_secs"];
+}
+message RotateCaResponse {
+  string signing_ca = 1 [json_name = "signing_ca"];
+  // How many CAs retire.
+  uint32 retiring = 2;
+  google.protobuf.Timestamp retire_at = 3 [json_name = "retire_at"];
+}
+
+message RotateSecretsKeyRequest {}
+message RotateSecretsKeyResponse {
+  string kek_id = 1 [json_name = "kek_id"];
+  uint32 servers = 2;
+  uint32 rewrapped = 3;
+}
+
+// ---- OVN settings and views --------------------------------------------------------
+
+// The shared edge: the cluster's way out (spec/clustering.md §11.2).
+message Edge {
+  string physnet = 1;
+  string external_cidr = 2 [json_name = "external_cidr"];
+  string gateway = 3;
+  string external_ip = 4 [json_name = "external_ip"];
+  // A pool for VPC routers' addresses.
+  optional string external_pool = 5 [json_name = "external_pool"];
+  // Node ids or names, highest priority first.
+  repeated string gateway_nodes = 6 [json_name = "gateway_nodes"];
+}
+
+message OvnSettings {
+  bool enabled = 1;
+  optional uint32 underlay_mtu = 2 [json_name = "underlay_mtu"];
+  optional string nat_supernet = 3 [json_name = "nat_supernet"];
+  Edge edge = 4;
+  // The conntrack zone range for SNAT: `[first, last]`.
+  repeated uint32 snat_ct_zones = 5 [json_name = "snat_ct_zones"];
+  repeated string dns_servers = 6 [json_name = "dns_servers"];
+  string updated_by = 7 [json_name = "updated_by"];
+  google.protobuf.Timestamp updated_at = 8 [json_name = "updated_at"];
+}
+
+enum OvnSettingsSource {
+  OVN_SETTINGS_SOURCE_UNSPECIFIED = 0;
+  OVN_SETTINGS_SOURCE_CLUSTER = 1;
+  OVN_SETTINGS_SOURCE_FILE = 2;
+  OVN_SETTINGS_SOURCE_NONE = 3;
+}
+
+// A node's OVN readiness.
+message OvnNode {
+  string id = 1;
+  string name = 2;
+  NodeRole role = 3;
+  optional string ovn_version = 4 [json_name = "ovn_version"];
+  optional bool ovn_central = 5 [json_name = "ovn_central"];
+  // What it lacks to run OVN.
+  optional string missing = 6;
+  // Why its OVN is older than the cluster's.
+  optional string outdated = 7;
+}
+
+// A cluster network, as the OVN settings list them.
+message ClusterNetworkRef {
+  string id = 1;
+  string name = 2;
+}
+
+message GetOvnSettingsResponse {
+  optional bool enabled = 1;
+  // The shared edge is set.
+  optional bool edge = 2;
+  // It has a pool for VPC routers.
+  optional bool vpc_pool = 3 [json_name = "vpc_pool"];
+  // The rest needs `readCluster`.
+  optional bool clustered = 4;
+  OvnSettingsSource source = 5;
+  OvnSettings settings = 6;
+  repeated OvnNode nodes = 7;
+  repeated ClusterNetworkRef cluster_networks = 8 [json_name = "cluster_networks"];
+}
+
+message GetOvnSettingsRequest {}
+
+message PutOvnSettingsRequest {
+  bool enabled = 1;
+  optional uint32 underlay_mtu = 2 [json_name = "underlay_mtu"];
+  optional string nat_supernet = 3 [json_name = "nat_supernet"];
+  Edge edge = 4;
+  repeated uint32 snat_ct_zones = 5 [json_name = "snat_ct_zones"];
+  repeated string dns_servers = 6 [json_name = "dns_servers"];
+}
+// The settings view as `GetOvnSettings` answers it.
+message PutOvnSettingsResponse {
+  optional bool enabled = 1;
+  optional bool edge = 2;
+  optional bool vpc_pool = 3 [json_name = "vpc_pool"];
+  optional bool clustered = 4;
+  OvnSettingsSource source = 5;
+  OvnSettings settings = 6;
+  repeated OvnNode nodes = 7;
+  repeated ClusterNetworkRef cluster_networks = 8 [json_name = "cluster_networks"];
+}
+
+message GetEdgeDefaultsRequest {}
+message GetEdgeDefaultsResponse {
+  // What could be found (addresses left empty when not).
+  Edge edge = 1;
+  // Every field is filled in.
+  optional bool complete = 2;
+  repeated string notes = 3;
+}
+
+// An OVN chassis with the glidex node it is.
+message ChassisRef {
+  // `node:<id>`.
+  string chassis = 1;
+  optional string node = 2;
+  optional string node_name = 3 [json_name = "node_name"];
+  // Gateway candidates: the HA priority.
+  optional int64 priority = 4;
+}
+
+message OvnServer {
+  // `ssl:<ip>:<port>`.
+  string address = 1;
+  optional bool reachable = 2;
+  optional bool leader = 3;
+}
+
+message Chassis {
+  string chassis = 1;
+  optional string node = 2;
+  optional string node_name = 3 [json_name = "node_name"];
+  string hostname = 4;
+  // `geneve 192.0.2.11`.
+  repeated string encaps = 5;
+  // When its ovn-controller last caught up with the northbound database.
+  google.protobuf.Timestamp nb_cfg_at = 6 [json_name = "nb_cfg_at"];
+}
+
+message Gateway {
+  // `gx-edge` or `gxr-<router id>`.
+  string router = 1;
+  ChassisRef active = 2;
+  repeated ChassisRef candidates = 3;
+}
+
+message GetOvnOverviewRequest {}
+message GetOvnOverviewResponse {
+  optional bool enabled = 1;
+  // Set (0) when no OVN server is known.
+  optional uint32 servers = 2;
+  repeated OvnServer nb = 3;
+  repeated OvnServer sb = 4;
+  repeated Chassis chassis = 5;
+  repeated Gateway gateways = 6;
+}
+
+message NodeRef {
+  string node = 1;
+  optional string node_name = 2 [json_name = "node_name"];
+}
+
+enum TunnelState {
+  TUNNEL_STATE_UNSPECIFIED = 0;
+  TUNNEL_STATE_PRESENT = 1;
+  TUNNEL_STATE_ERROR = 2;
+  TUNNEL_STATE_BFD_DOWN = 3;
+}
+
+message Tunnel {
+  string name = 1;
+  string remote_ip = 2 [json_name = "remote_ip"];
+  optional string error = 3;
+  optional string bfd_state = 4 [json_name = "bfd_state"];
+  optional string bfd_diagnostic = 5 [json_name = "bfd_diagnostic"];
+  uint64 rx_packets = 6 [json_name = "rx_packets"];
+  uint64 tx_packets = 7 [json_name = "tx_packets"];
+  uint64 rx_bytes = 8 [json_name = "rx_bytes"];
+  uint64 tx_bytes = 9 [json_name = "tx_bytes"];
+  TunnelState state = 10;
+  // The node at the other end.
+  NodeRef peer = 11;
+}
+
+message NodeTunnels {
+  string node = 1;
+  string node_name = 2 [json_name = "node_name"];
+  // The node's netd answered.
+  optional bool answered = 3;
+  optional string error = 4;
+  optional string chassis = 5;
+  optional bool controller_running = 6 [json_name = "controller_running"];
+  repeated Tunnel tunnels = 7;
+  // Live nodes it has no tunnel to.
+  repeated NodeRef missing = 8;
+}
+
+message GetOvnTunnelsRequest {}
+message GetOvnTunnelsResponse {
+  optional bool enabled = 1;
+  repeated NodeTunnels nodes = 2;
+}
+
+// ---- nodes ------------------------------------------------------------------------
+
+service NodeService {
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listNodes"
+      kind: KIND_READ
+      rest: "GET /nodes"
+    };
+  }
+  rpc GetNode(GetNodeRequest) returns (GetNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNode"
+      kind: KIND_READ
+      rest: "GET /nodes/{id}"
+    };
+  }
+  // A node's NUMA and PCIe topology, read on that node
+  // (spec/host-topology.md §3.2).
+  rpc GetNodeTopology(GetNodeTopologyRequest) returns (GetNodeTopologyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readHostTopology"
+      kind: KIND_READ
+      rest: "GET /nodes/{id}/topology"
+    };
+  }
+  // Bind a device's IOMMU group to vfio-pci on its node, and give its
+  // group device to the VMs (spec/host-topology.md §5.3).
+  rpc PrepareDevice(PrepareDeviceRequest) returns (PrepareDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "prepareDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/prepare"
+    };
+  }
+  // Set a physical function's SR-IOV virtual functions (spec/host-topology.md
+  // §10.1); 0 removes them. Refused while a VM holds the PF or one of its
+  // VFs.
+  rpc SetSriovVfs(SetSriovVfsRequest) returns (SetSriovVfsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setSriovVfs"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/sriov"
+    };
+  }
+  // Put a prepared device's group back on its drivers.
+  rpc ReleaseDevice(ReleaseDeviceRequest) returns (ReleaseDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "releaseDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/release"
+    };
+  }
+  // The device pools, their devices on each node, and what is free
+  // (spec/host-topology.md §9.1). With `project`: the pools that project
+  // may use and how many are free, for anyone who can read the project.
+  rpc ListPciPools(ListPciPoolsRequest) returns (ListPciPoolsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listPciPools"
+      kind: KIND_READ
+      rest: "GET /pci-pools"
+    };
+  }
+  // No new VM gets the device; the VM holding it keeps it (§5.4).
+  rpc CordonDevice(CordonDeviceRequest) returns (CordonDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "cordonDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/cordon"
+    };
+  }
+  rpc UncordonDevice(UncordonDeviceRequest) returns (UncordonDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "cordonDevice"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/uncordon"
+    };
+  }
+  rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "drainNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/drain"
+    };
+  }
+  rpc UndrainNode(UndrainNodeRequest) returns (UndrainNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "undrainNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/undrain"
+    };
+  }
+  // A node's br-int datapath and physical networks.
+  rpc ConfigureNodeOvn(ConfigureNodeOvnRequest) returns (ConfigureNodeOvnResponse) {
+    option (glidex.api.v1.op) = {
+      action: "configureNode"
+      kind: KIND_WRITE
+      rest: "PUT /nodes/{id}/ovn"
+    };
+  }
+  // The node deletes the unrecorded image files it reported.
+  rpc DeleteSpareImageFiles(DeleteSpareImageFilesRequest) returns (DeleteSpareImageFilesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pullImage"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/spare-image-files/delete"
+    };
+  }
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "removeNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/remove"
+    };
+  }
+  // A node that is gone for good (fenced): its VMs are lost.
+  rpc ForgetNode(ForgetNodeRequest) returns (ForgetNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "forgetNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/forget"
+    };
+  }
+  // Delete a forgotten node's records.
+  rpc PurgeNode(PurgeNodeRequest) returns (PurgeNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "purgeNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/purge"
+    };
+  }
+  rpc CreateRejoinToken(CreateRejoinTokenRequest) returns (CreateRejoinTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createRejoinToken"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/rejoin-token"
+    };
+  }
+  // Freeze the node and start handing it over (spec/clustering.md §5.8.2).
+  rpc DetachNode(DetachNodeRequest) returns (DetachNodeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachNode"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/detach"
+    };
+  }
+  // Return a frozen node to active (REST: `detach` with `abort`).
+  rpc AbortDetach(AbortDetachRequest) returns (AbortDetachResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachNode"
+      kind: KIND_WRITE
+    };
+  }
+  // Record that a node left by itself (REST: `detach` with `departed`).
+  rpc ForgetDeparted(ForgetDepartedRequest) returns (ForgetDepartedResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachNode"
+      kind: KIND_WRITE
+    };
+  }
+  rpc ListDepartures(ListDeparturesRequest) returns (ListDeparturesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /departures"
+    };
+  }
+}
+
+enum BrIntDatapath {
+  BR_INT_DATAPATH_UNSPECIFIED = 0;
+  // The userspace one when OVS runs DPDK, else the kernel's.
+  BR_INT_DATAPATH_AUTO = 1;
+  BR_INT_DATAPATH_SYSTEM = 2;
+  BR_INT_DATAPATH_NETDEV = 3;
+}
+
+message NodeMeta {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3 [json_name = "created_at"];
+  uint64 generation = 4;
+  uint64 resource_version = 5 [json_name = "resource_version"];
+}
+
+message NodeSpec {
+  string name = 1;
+  NodeRole role = 2;
+  bool unschedulable = 3;
+  map<string, string> labels = 4;
+  // Absent: auto.
+  BrIntDatapath br_int_datapath = 5 [json_name = "br_int_datapath"];
+  // physnet → bridge, the node's own (its file's are in the status).
+  map<string, string> bridge_mappings = 6 [json_name = "bridge_mappings"];
+  // The node deletes its spare image files older than this.
+  google.protobuf.Timestamp drop_spare_files_before = 7 [json_name = "drop_spare_files_before"];
+  // PCI devices no new VM gets (spec/host-topology.md §5.4).
+  repeated string cordoned_devices = 8 [json_name = "cordoned_devices"];
+}
+
+message Versions {
+  string glidex = 1;
+  optional string ovs = 2;
+  optional string ovn = 3;
+}
+
+message Resources {
+  uint32 cpus = 1;
+  uint64 memory_mib = 2 [json_name = "memory_mib"];
+  // Page size in KiB → pages.
+  map<string, uint64> hugepages = 3;
+}
+
+message BridgeAddr {
+  // `a.b.c.d/nn`.
+  string address = 1;
+  optional string gateway = 2;
+}
+
+// An image file the node has and no record names.
+message SpareFile {
+  string name = 1;
+  uint64 bytes = 2;
+  google.protobuf.Timestamp mtime = 3;
+}
+
+message NodeFeatures {
+  optional bool kvm = 1;
+  repeated string hypervisors = 2;
+  // `system` or `netdev`, as the node runs br-int now.
+  optional string br_int_datapath = 3 [json_name = "br_int_datapath"];
+  optional bool dpdk = 4;
+  optional bool iommu = 5;
+  // physnet → bridge, all it maps (file and setting).
+  map<string, string> physnets = 6;
+  optional uint32 feature_level = 7 [json_name = "feature_level"];
+  optional bool ovn_central = 8 [json_name = "ovn_central"];
+  map<string, BridgeAddr> bridge_addrs = 9 [json_name = "bridge_addrs"];
+  optional string arch = 10;
+  repeated SpareFile spare_image_files = 11 [json_name = "spare_image_files"];
+}
+
+message NodeStatus {
+  NodePhase phase = 1;
+  // A departed node's resources (they may come back with an import).
+  repeated string departed_ids = 2 [json_name = "departed_ids"];
+  glidex.common.v1.ConditionStatus ready = 3;
+  optional string ready_reason = 4 [json_name = "ready_reason"];
+  uint64 observed_generation = 5 [json_name = "observed_generation"];
+  optional uint64 raft_id = 6 [json_name = "raft_id"];
+  optional string advertise = 7;
+  optional string tunnel_ip = 8 [json_name = "tunnel_ip"];
+  Versions versions = 9;
+  Resources capacity = 10;
+  Resources allocatable = 11;
+  NodeFeatures features = 12;
+  // PCI addresses.
+  repeated string pci_devices = 13 [json_name = "pci_devices"];
+  // When Ready last changed.
+  google.protobuf.Timestamp heartbeat = 14;
+}
+
+message Node {
+  NodeMeta meta = 1;
+  NodeSpec spec = 2;
+  NodeStatus status = 3;
+}
+
+message ListNodesRequest {}
+message ListNodesResponse {
+  repeated Node nodes = 1;
+}
+
+message GetNodeRequest {
+  string id = 1;
+}
+message GetNodeResponse {
+  Node node = 1;
+}
+
+message ListPciPoolsRequest {
+  // The pools this project may use, with free counts only (no devices):
+  // for its members, who need no host role.
+  optional string project = 1;
+}
+message ListPciPoolsResponse {
+  repeated PciPool pools = 1;
+}
+message PciPool {
+  string name = 1;
+  optional string class = 2;
+  // Ready, unclaimed, uncordoned devices over its nodes.
+  uint32 free = 3;
+  repeated PciPoolNode nodes = 4;
+  // A tenant pool (with `?project=`, those the project is one of): its
+  // cluster pool, its `max` and what its projects hold; `free` is then
+  // what of the cluster pool's free devices it may still take.
+  optional string from = 5;
+  optional uint32 max = 6;
+  optional uint32 used = 7;
+}
+message PciPoolNode {
+  string node = 1;
+  string node_name = 2 [json_name = "node_name"];
+  uint32 free = 3;
+  repeated PciPoolDevice devices = 4;
+}
+message PciPoolDevice {
+  string address = 1;
+  optional uint32 numa_node = 2 [json_name = "numa_node"];
+  optional string switch = 3;
+  bool ready = 4;
+  bool cordoned = 5;
+  // The VM that holds it.
+  optional string holder = 6;
+}
+
+message PrepareDeviceRequest {
+  // Node id or name.
+  string id = 1;
+  // PCI address, 0000:41:00.0.
+  string address = 2;
+}
+message PreparedMember {
+  string address = 1;
+  // The driver it had, put back on release.
+  optional string previous_driver = 2 [json_name = "previous_driver"];
+}
+message PrepareDeviceResponse {
+  string address = 1;
+  string iommu_group = 2 [json_name = "iommu_group"];
+  // Every function of the group that was bound.
+  repeated PreparedMember members = 3;
+}
+message SetSriovVfsRequest {
+  // Node id or name.
+  string id = 1;
+  // The physical function's PCI address.
+  string address = 2;
+  uint32 vfs = 3;
+}
+message SetSriovVfsResponse {
+  string address = 1;
+  // VFs it can have, and has now.
+  uint32 total = 2;
+  uint32 enabled = 3;
+  // Their PCI addresses.
+  repeated string vfs = 4;
+}
+message ReleaseDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message ReleaseDeviceResponse {}
+message CordonDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message CordonDeviceResponse {
+  // The node's cordoned devices now.
+  repeated string cordoned = 1;
+}
+message UncordonDeviceRequest {
+  string id = 1;
+  string address = 2;
+}
+message UncordonDeviceResponse {
+  repeated string cordoned = 1;
+}
+
+message GetNodeTopologyRequest {
+  // Node id or name.
+  string id = 1;
+}
+message GetNodeTopologyResponse {
+  glidex.host.v1.Topology topology = 1;
+}
+
+// What still keeps a node from being removed.
+message NodeContents {
+  repeated string vms = 1;
+  repeated string disks = 2;
+  // Network names.
+  repeated string networks = 3;
+}
+
+message DrainNodeRequest {
+  string id = 1;
+}
+message DrainNodeResponse {
+  // The node's name.
+  string node = 1;
+  NodePhase phase = 2;
+  NodeContents remaining = 3;
+}
+
+message UndrainNodeRequest {
+  string id = 1;
+}
+message UndrainNodeResponse {
+  string node = 1;
+  NodePhase phase = 2;
+  NodeContents remaining = 3;
+}
+
+message ConfigureNodeOvnRequest {
+  string id = 1;
+  BrIntDatapath br_int_datapath = 2 [json_name = "br_int_datapath"];
+  // physnet → bridge: replaces the node's own mappings (the file's stay)
+  // when `set_bridge_mappings` (REST: when the key is in the body).
+  map<string, string> bridge_mappings = 3 [json_name = "bridge_mappings"];
+  // Apply `bridge_mappings`; an empty map then clears the node's own.
+  bool set_bridge_mappings = 4 [json_name = "set_bridge_mappings"];
+}
+message ConfigureNodeOvnResponse {
+  string node = 1;
+  BrIntDatapath br_int_datapath = 2 [json_name = "br_int_datapath"];
+  // `system` or `netdev`: what auto means there.
+  string wanted = 3;
+  // What it runs now.
+  optional string current = 4;
+  map<string, string> bridge_mappings = 5 [json_name = "bridge_mappings"];
+  map<string, string> physnets = 6;
+}
+
+message DeleteSpareImageFilesRequest {
+  string id = 1;
+}
+message DeleteSpareImageFilesResponse {
+  string node = 1;
+  uint32 files = 2;
+  uint64 bytes = 3;
+}
+
+message RemoveNodeRequest {
+  // Id or name.
+  string id = 1;
+  bool force = 2;
+}
+message RemoveNodeResponse {
+  string node = 1;
+  NodePhase phase = 2;
+  optional uint32 denied_certificates = 3 [json_name = "denied_certificates"];
+  // It was a server (left the Raft membership).
+  optional bool server = 4;
+  // It was already removed.
+  optional bool already = 5;
+}
+
+message ForgetNodeRequest {
+  string id = 1;
+  // Required: the node is fenced (it can't come back on its own).
+  bool fenced = 2;
+  bool force = 3;
+}
+message ForgetNodeResponse {
+  string node = 1;
+  NodePhase phase = 2;
+  optional uint32 lost_vms = 3 [json_name = "lost_vms"];
+  optional uint32 denied_certificates = 4 [json_name = "denied_certificates"];
+  optional bool already = 5;
+}
+
+message PurgeNodeRequest {
+  string id = 1;
+}
+message PurgeNodeResponse {
+  string node = 1;
+  NodePhase phase = 2;
+  uint32 purged_vms = 3 [json_name = "purged_vms"];
+  uint32 purged_disks = 4 [json_name = "purged_disks"];
+  uint32 purged_networks = 5 [json_name = "purged_networks"];
+}
+
+message CreateRejoinTokenRequest {
+  string id = 1;
+  // Its Raft state is intact (default true): it rejoins without a fresh copy.
+  optional bool raft_intact = 2 [json_name = "raft_intact"];
+  optional uint64 ttl_secs = 3 [json_name = "ttl_secs"];
+}
+message CreateRejoinTokenResponse {
+  string token = 1;
+  string node = 2;
+  string node_id = 3 [json_name = "node_id"];
+  optional bool raft_intact = 4 [json_name = "raft_intact"];
+  uint64 ttl_secs = 5 [json_name = "ttl_secs"];
+}
+
+message DetachNodeRequest {
+  string id = 1;
+  // Cluster network (id or name) → a node network of the node (id or name):
+  // its NICs move there.
+  map<string, string> map_networks = 2 [json_name = "map_networks"];
+  // Take the role links, users and teams of its projects along.
+  bool with_access = 3 [json_name = "with_access"];
+  optional uint64 timeout_secs = 4 [json_name = "timeout_secs"];
+}
+message DetachNodeResponse {
+  string plan = 1;
+  string node = 2;
+  google.protobuf.Timestamp deadline = 3;
+  uint32 vms = 4;
+  uint32 disks = 5;
+  uint32 images = 6;
+  // Cluster network id → node network id.
+  map<string, string> mapped = 7;
+  // Cluster networks whose NICs go.
+  repeated string dropped_networks = 8 [json_name = "dropped_networks"];
+  // Network id → name, for the networks above.
+  map<string, string> network_names = 9 [json_name = "network_names"];
+}
+
+message AbortDetachRequest {
+  string id = 1;
+}
+message AbortDetachResponse {
+  string node = 1;
+  // The plan aborted.
+  string aborted = 2;
+}
+
+message ForgetDepartedRequest {
+  string id = 1;
+}
+message ForgetDepartedResponse {
+  string node = 1;
+  NodePhase phase = 2;
+  optional uint32 vms = 3;
+  optional uint32 disks = 4;
+  optional bool already = 5;
+}
+
+enum DepartureState {
+  DEPARTURE_STATE_UNSPECIFIED = 0;
+  DEPARTURE_STATE_FROZEN = 1;
+  DEPARTURE_STATE_COMMITTED = 2;
+  DEPARTURE_STATE_ABORTED = 3;
+}
+
+message Departure {
+  string plan = 1;
+  // The node's id.
+  string node = 2;
+  optional string node_name = 3 [json_name = "node_name"];
+  DepartureState state = 4;
+  google.protobuf.Timestamp started_at = 5 [json_name = "started_at"];
+  google.protobuf.Timestamp deadline = 6;
+  map<string, string> map_networks = 7 [json_name = "map_networks"];
+  optional bool with_access = 8 [json_name = "with_access"];
+  // The node confirmed it has its bundle.
+  optional bool acknowledged = 9;
+  // Network id → name, for `map_networks` and the networks whose NICs go,
+  // as they were when the detach started.
+  map<string, string> network_names = 10 [json_name = "network_names"];
+}
+
+message ListDeparturesRequest {}
+message ListDeparturesResponse {
+  repeated Departure departures = 1;
+}
+
+// ---- imports ----------------------------------------------------------------------
+
+service ImportService {
+  rpc ListImports(ListImportsRequest) returns (ListImportsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listImports"
+      kind: KIND_READ
+      rest: "GET /imports"
+    };
+  }
+  rpc GetImport(GetImportRequest) returns (GetImportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImport"
+      kind: KIND_READ
+      rest: "GET /imports/{plan}"
+    };
+  }
+  // Approve with mappings (`dry_run` checks only).
+  rpc ApproveImport(ApproveImportRequest) returns (ApproveImportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "approveImport"
+      kind: KIND_WRITE
+      rest: "POST /imports/{plan}/approve"
+    };
+  }
+  rpc RejectImport(RejectImportRequest) returns (RejectImportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "rejectImport"
+      kind: KIND_WRITE
+      rest: "POST /imports/{plan}/reject"
+    };
+  }
+}
+
+enum ImportState {
+  IMPORT_STATE_UNSPECIFIED = 0;
+  IMPORT_STATE_PENDING = 1;
+  IMPORT_STATE_COMMITTED = 2;
+  IMPORT_STATE_REJECTED = 3;
+}
+
+message ImportSummary {
+  uint32 vms = 1;
+  uint32 disks = 2;
+  uint32 images = 3;
+  uint32 networks = 4;
+  uint32 credentials = 5;
+  uint32 projects = 6;
+}
+
+message ImportMappings {
+  // Source project id → an existing project (id or name), or `new:<name>`.
+  map<string, string> projects = 1;
+  // Source node network name → its new name.
+  map<string, string> networks = 2;
+  // `<source project id>/<username>` → its new username.
+  map<string, string> credentials = 3;
+  // Accept the import over the projects' quotas.
+  bool over_quota = 4 [json_name = "over_quota"];
+}
+
+message SourceProject {
+  string id = 1;
+  optional string name = 2;
+}
+
+message SourceNetwork {
+  string id = 1;
+  optional string name = 2;
+  // `nat`, `bridged` or `isolated`.
+  optional string mode = 3;
+}
+
+message SourceCredential {
+  // `<project>/<username>`.
+  string key = 1;
+  optional string project = 2;
+  optional string username = 3;
+}
+
+message SourceVm {
+  string id = 1;
+  optional string name = 2;
+  optional string project = 3;
+}
+
+// What a plan brings that may need a new name here.
+message ImportSources {
+  repeated SourceProject projects = 1;
+  repeated SourceNetwork networks = 2;
+  repeated SourceCredential credentials = 3;
+  repeated SourceVm vms = 4;
+}
+
+message ImportPlan {
+  string plan = 1;
+  ImportState state = 2;
+  // The joining host's name.
+  string node = 3;
+  string node_id = 4 [json_name = "node_id"];
+  string advertise = 5;
+  ImportSummary summary = 6;
+  repeated string problems = 7;
+  ImportMappings mappings = 8;
+  string created_by = 9 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 10 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 11 [json_name = "expires_at"];
+  // One plan's (`GetImport`).
+  ImportSources sources = 12;
+}
+
+message ListImportsRequest {}
+message ListImportsResponse {
+  repeated ImportPlan plans = 1;
+}
+
+message GetImportRequest {
+  string plan = 1;
+}
+message GetImportResponse {
+  ImportPlan plan = 1;
+}
+
+message ApproveImportRequest {
+  string plan = 1;
+  map<string, string> projects = 2;
+  map<string, string> networks = 3;
+  map<string, string> credentials = 4;
+  bool over_quota = 5 [json_name = "over_quota"];
+  // Check the mappings without committing.
+  bool dry_run = 6 [json_name = "dry_run"];
+}
+message ApproveImportResponse {
+  ImportPlan plan = 1;
+}
+
+message RejectImportRequest {
+  string plan = 1;
+}
+message RejectImportResponse {}

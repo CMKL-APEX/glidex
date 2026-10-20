@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
-import type { BridgeRecord, UplinkResult } from "../types";
-import { formatTime } from "../types";
+import type { BridgeRecord, Datapath, UplinkKind, UplinkResult } from "../types";
+import { datapathLabel, formatTimestamp, uplinkKindLabel } from "../types";
 import { useCan } from "../session";
 import ConfirmDialog from "./ConfirmDialog";
 import Modal from "./Modal";
@@ -10,7 +10,7 @@ import { Badge, ErrorBanner, errorMessage, inputClass, primaryButton, secondaryB
 /** Commit a moved address once the API still answers through the new path
  * (networking.md §8.5): netd rolls it back by itself otherwise. */
 async function commitWhenReachable(r: UplinkResult): Promise<string> {
-  if (r.phase !== "pending_commit" || !r.record.pending) return "Added.";
+  if (r.phase !== "UPLINK_PHASE_PENDING_COMMIT" || !r.record.pending) return "Added.";
   // Fresh request through the API: if it answers, the host is reachable.
   await api.healthCheck();
   await api.commitUplink(r.record.spec.bridge, r.record.spec.name, r.record.pending.token);
@@ -22,7 +22,8 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const r = u.record;
-  const nic = "ifname" in r.spec ? r.spec.ifname : r.spec.pci;
+  const nic = r.spec.ifname ?? r.spec.pci;
+  const live = u.live ?? {};
   const held = r.boot_rollback;
   const reapply = async () => {
     setBusy(true);
@@ -38,22 +39,22 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
   };
   return (
     <li className="py-1">
-      <span className="font-mono">{r.spec.name}</span> <span className="text-gray-500">({r.spec.kind}{nic && nic !== r.spec.name ? ` ${nic}` : ""})</span>{" "}
+      <span className="font-mono">{r.spec.name}</span> <span className="text-gray-500">({uplinkKindLabel(r.spec.kind)}{nic && nic !== r.spec.name ? ` ${nic}` : ""})</span>{" "}
       {held ? (
         <Badge kind="denied">held off the bridge</Badge>
-      ) : u.phase === "pending_commit" ? (
+      ) : u.phase === "UPLINK_PHASE_PENDING_COMMIT" ? (
         <Badge kind="warn">waiting for commit</Badge>
       ) : (
-        <Badge kind={u.live.error ? "denied" : "ok"}>{u.live.error ? "error" : (u.live.link_state ?? "active")}</Badge>
+        <Badge kind={live.error ? "denied" : "ok"}>{live.error ? "error" : (live.link_state ?? "active")}</Badge>
       )}
       {r.spec.migrate_ip && <span className="text-xs text-gray-500"> · carries the host's address</span>}
       {held && (
         <p className="text-xs text-red-700 mt-1">
-          At start {formatTime(held.at)} it was rolled back so the host stayed reachable: {held.reason}. Fix the cause, then re-apply.
+          At start {formatTimestamp(held.at)} it was rolled back so the host stayed reachable: {held.reason}. Fix the cause, then re-apply.
         </p>
       )}
-      {u.live.error && <p className="text-xs text-red-700">{u.live.error}</p>}
-      {(u.live.warnings ?? []).map((w) => (
+      {live.error && <p className="text-xs text-red-700">{live.error}</p>}
+      {(live.warnings ?? []).map((w) => (
         <p key={w} className="text-xs text-amber-700">
           {w}
         </p>
@@ -89,7 +90,7 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
 
 /** Add a NIC to a bridge, optionally moving the host's address onto it. */
 function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose: () => void; onDone: () => void }) {
-  const [kind, setKind] = useState<"kernel" | "afxdp" | "dpdk">("kernel");
+  const [kind, setKind] = useState<UplinkKind["kind"]>("UPLINK_KIND_KERNEL");
   const [nic, setNic] = useState("");
   const [port, setPort] = useState("");
   const [migrate, setMigrate] = useState(false);
@@ -102,9 +103,9 @@ function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose:
     setError(null);
     setStep(migrate ? "Moving the host's address to the bridge and checking the gateway…" : "Adding…");
     try {
-      const name = kind === "dpdk" ? port : nic;
-      const k = kind === "dpdk" ? { kind, pci: nic } : { kind, ifname: nic };
-      const r = await api.addUplink(bridge, { name, migrate_ip: migrate, confirm: migrate, accept_dhcp: acceptDhcp, ...k } as Parameters<typeof api.addUplink>[1]);
+      const name = kind === "UPLINK_KIND_DPDK" ? port : nic;
+      const k: UplinkKind = kind === "UPLINK_KIND_DPDK" ? { kind, pci: nic } : { kind, ifname: nic };
+      const r = await api.addUplink(bridge, { name, migrate_ip: migrate, confirm: migrate, accept_dhcp: acceptDhcp, ...k });
       setStep("Checking the host still answers through the bridge, then committing…");
       setDone(await commitWhenReachable(r));
       onDone();
@@ -135,25 +136,25 @@ function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose:
                 Attach as
               </label>
               <select id="uplink-kind" className={selectClass} value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-                <option value="kernel">Kernel NIC</option>
-                <option value="afxdp">AF_XDP (userspace bridge)</option>
-                <option value="dpdk">DPDK (userspace bridge, takes the NIC from the kernel)</option>
+                <option value="UPLINK_KIND_KERNEL">Kernel NIC</option>
+                <option value="UPLINK_KIND_AFXDP">AF_XDP (userspace bridge)</option>
+                <option value="UPLINK_KIND_DPDK">DPDK (userspace bridge, takes the NIC from the kernel)</option>
               </select>
             </div>
             <div>
               <label htmlFor="uplink-nic" className="block text-xs text-gray-500">
-                {kind === "dpdk" ? "PCI address" : "Interface"}
+                {kind === "UPLINK_KIND_DPDK" ? "PCI address" : "Interface"}
               </label>
-              <input id="uplink-nic" className={inputClass} value={nic} placeholder={kind === "dpdk" ? "0000:41:00.0" : "eno1"} onChange={(e) => setNic(e.target.value.trim())} />
+              <input id="uplink-nic" className={inputClass} value={nic} placeholder={kind === "UPLINK_KIND_DPDK" ? "0000:41:00.0" : "eno1"} onChange={(e) => setNic(e.target.value.trim())} />
             </div>
-            {kind === "dpdk" && (
+            {kind === "UPLINK_KIND_DPDK" && (
               <div>
                 <label className="block text-xs text-gray-500">Port name</label>
                 <input aria-label="Port name" className={inputClass} value={port} placeholder="up0" onChange={(e) => setPort(e.target.value.trim())} />
               </div>
             )}
           </div>
-          {kind !== "dpdk" && (
+          {kind !== "UPLINK_KIND_DPDK" && (
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={migrate} onChange={(e) => setMigrate(e.target.checked)} />
               <span>
@@ -179,7 +180,7 @@ function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose:
             <button className={secondaryButton} onClick={onClose} disabled={!!step}>
               Cancel
             </button>
-            <button className={primaryButton} onClick={add} disabled={!!step || !nic || (kind === "dpdk" && !port)}>
+            <button className={primaryButton} onClick={add} disabled={!!step || !nic || (kind === "UPLINK_KIND_DPDK" && !port)}>
               Add uplink
             </button>
           </div>
@@ -195,7 +196,7 @@ export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRec
   const [adding, setAdding] = useState<string | null>(null);
   const [newBridge, setNewBridge] = useState(false);
   const [name, setName] = useState("gxbr-up");
-  const [datapath, setDatapath] = useState<"system" | "netdev">("system");
+  const [datapath, setDatapath] = useState<Datapath>("DATAPATH_SYSTEM");
   const [error, setError] = useState<string | null>(null);
   const caps = useCan([
     { action: "createBridge", resource: { type: "Host" } },
@@ -240,8 +241,8 @@ export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRec
               <span>
                 <span className="font-mono">{b.spec.name}</span>{" "}
                 <span className="text-gray-500">
-                  ({b.spec.datapath}
-                  {b.live ? `, ${b.live.ports.length} ports` : ", missing on host"})
+                  ({datapathLabel(b.spec.datapath)}
+                  {b.live ? `, ${b.live.ports?.length ?? 0} ports` : ", missing on host"})
                 </span>
               </span>
               {canUplink && (
@@ -280,9 +281,9 @@ export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRec
             </div>
             <div>
               <label className="block text-xs text-gray-500">Datapath</label>
-              <select aria-label="Datapath" className={selectClass} value={datapath} onChange={(e) => setDatapath(e.target.value as "system" | "netdev")}>
-                <option value="system">kernel (system)</option>
-                <option value="netdev">userspace (netdev, DPDK)</option>
+              <select aria-label="Datapath" className={selectClass} value={datapath} onChange={(e) => setDatapath(e.target.value as Datapath)}>
+                <option value="DATAPATH_SYSTEM">kernel (system)</option>
+                <option value="DATAPATH_NETDEV">userspace (netdev, DPDK)</option>
               </select>
             </div>
           </div>

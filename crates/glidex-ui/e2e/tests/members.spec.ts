@@ -7,8 +7,8 @@ const PROJECT = "e2e-members";
 const TOKEN = "e2e-members-owner";
 
 async function cleanup() {
-  for (const t of (await api<any[]>("/tokens")).filter((t) => t.name === TOKEN)) await del(`/tokens/${t.id}`);
-  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name === TOKEN)) await del(`/tokens/${t.id}`);
+  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
 }
 
@@ -18,14 +18,14 @@ test.use({ ignoredConsoleErrors: /status of 403/ });
 
 test("members show names to a project owner without host rights", async ({ browser }) => {
   const me = await api("/auth/whoami");
-  const project = await api("/projects", { method: "POST", body: { name: PROJECT } });
+  const project = (await api("/projects", { method: "POST", body: { name: PROJECT } })).project;
   await api(`/projects/${project.id}/bindings`, {
     method: "POST",
     body: { role: "role.owner", principal: { type: "User", id: me.user.id } },
   });
   const t = await api("/tokens", {
     method: "POST",
-    body: { name: TOKEN, kind: "personal", expires_in_days: 1, roles: [{ role: "role.owner", project: project.id }] },
+    body: { name: TOKEN, kind: "TOKEN_KIND_PERSONAL", expires_in_days: 1, roles: [{ role: "role.owner", project: project.id }] },
   });
   const context = await browser.newContext({
     storageState: { cookies: [], origins: [] },

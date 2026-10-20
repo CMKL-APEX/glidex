@@ -123,8 +123,11 @@ pub struct AuthConfig {
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
+    /// File holding the host's secrets key (spec/tenancy.md §13); the
+    /// systemd credential `secrets-kek` wins when present. The control
+    /// plane defaults it to `secrets.kek` beside its database.
+    pub secrets_key: Option<PathBuf>,
 }
-
 
 impl AuthConfig {
     /// Whether a browser `Origin` may use the API.
@@ -136,8 +139,13 @@ impl AuthConfig {
 
 /// The IP address of an `https://<ip>:5173` origin.
 fn ui_origin_ip(origin: &str) -> Option<std::net::IpAddr> {
-    let host = origin.strip_prefix("https://")?.strip_suffix(&format!(":{}", UI_PORT))?;
-    host.trim_start_matches('[').trim_end_matches(']').parse().ok()
+    let host = origin
+        .strip_prefix("https://")?
+        .strip_suffix(&format!(":{}", UI_PORT))?;
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,7 +157,10 @@ pub struct SessionConfig {
 
 impl Default for SessionConfig {
     fn default() -> Self {
-        Self { idle_minutes: 30, absolute_hours: 12 }
+        Self {
+            idle_minutes: 30,
+            absolute_hours: 12,
+        }
     }
 }
 
@@ -162,7 +173,10 @@ pub struct TokenConfig {
 
 impl Default for TokenConfig {
     fn default() -> Self {
-        Self { default_days: 90, max_days: 365 }
+        Self {
+            default_days: 90,
+            max_days: 365,
+        }
     }
 }
 
@@ -217,7 +231,9 @@ impl Default for OidcConfig {
             enabled: false,
             issuer: String::new(),
             client_id: String::new(),
-            scopes: ["openid", "profile", "email", "groups"].map(String::from).to_vec(),
+            scopes: ["openid", "profile", "email", "groups"]
+                .map(String::from)
+                .to_vec(),
             groups_claim: "groups".into(),
             jit: true,
             allowed_domains: Vec::new(),
@@ -239,7 +255,10 @@ pub struct AuthzConfig {
 
 impl Default for AuthzConfig {
     fn default() -> Self {
-        Self { policy_files_dir: PathBuf::from("/etc/glidex/policies"), policy_history: 50 }
+        Self {
+            policy_files_dir: PathBuf::from("/etc/glidex/policies"),
+            policy_history: 50,
+        }
     }
 }
 
@@ -256,24 +275,177 @@ pub struct QuotasConfig {
 
 impl Default for QuotasConfig {
     fn default() -> Self {
-        Self { default: crate::tenancy::Quotas::new_project() }
+        Self {
+            default: crate::tenancy::Quotas::new_project(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PciConfig {
-    /// PCI devices projects may pass through without `host.devices`.
+    /// PCI devices and pools projects may pass through without
+    /// `host.devices`.
     pub allow: Vec<PciGrant>,
+    /// Named sets of devices a VM asks for by count
+    /// (spec/host-topology.md §9.1).
+    pub pools: Vec<PciPool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PciGrant {
-    pub bdf: String,
+    /// The device's address; or `pool`, a pool's name.
+    #[serde(default)]
+    pub bdf: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
     /// Project ids or names.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// Tenant ids or slugs: every project of theirs may use the device
+    /// (spec/tenancy.md D25).
+    #[serde(default)]
+    pub tenants: Vec<String>,
+    /// The node (id or name) whose device this is; absent: the device at
+    /// that address on every node (spec/host-topology.md §8.5).
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
+/// A pool of devices (spec/host-topology.md §9.1).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PciPool {
+    pub name: String,
+    /// `gpu`, `nic`, `nvme`, `dpu`, `accelerator`: a label for people and
+    /// metering.
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(rename = "match")]
+    pub matches: PoolMatch,
+    /// Node ids or names the pool is on; empty: every node.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    /// Each node binds its devices of the pool to `vfio-pci` at start
+    /// (spec/host-topology.md §5.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepare: bool,
+}
+
+/// Which devices are a pool's: every key given must match.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolMatch {
+    #[serde(default)]
+    pub vendor_id: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// A PCI class code or its start (`0x0302`).
+    #[serde(default)]
+    pub class_code: Option<String>,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// Virtual functions of the physical functions this matches
+    /// (spec/host-topology.md §10.1); the other keys then match the VF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vf_of: Option<Box<PoolMatch>>,
+}
+
+fn hex_id(s: &str) -> String {
+    s.trim().trim_start_matches("0x").to_ascii_lowercase()
+}
+
+impl PoolMatch {
+    pub fn is_empty(&self) -> bool {
+        self.vendor_id.is_none()
+            && self.device_id.is_none()
+            && self.class_code.is_none()
+            && self.addresses.is_empty()
+            && self.vf_of.is_none()
+    }
+
+    /// Whether a device of a node's summary is the pool's: its own ids,
+    /// and with `vf_of`, a VF of a matching PF.
+    pub fn matches_device(&self, d: &crate::topology::SummaryDevice) -> bool {
+        self.matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
+            && self.vf_of.as_deref().is_none_or(|pf| {
+                d.physfn.as_ref().is_some_and(|p| {
+                    !pf.is_empty()
+                        && pf.matches(&p.address, &p.vendor_id, &p.device_id, &p.class_id)
+                })
+            })
+    }
+
+    /// Whether a device with these ids at `address` is the pool's.
+    pub fn matches(&self, address: &str, vendor_id: &str, device_id: &str, class_id: &str) -> bool {
+        self.vendor_id
+            .as_deref()
+            .is_none_or(|v| hex_id(v) == hex_id(vendor_id))
+            && self
+                .device_id
+                .as_deref()
+                .is_none_or(|d| hex_id(d) == hex_id(device_id))
+            && self
+                .class_code
+                .as_deref()
+                .is_none_or(|c| hex_id(class_id).starts_with(&hex_id(c)))
+            && (self.addresses.is_empty()
+                || self
+                    .addresses
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(address)))
+    }
+}
+
+impl PciConfig {
+    /// Refuse what can't work: unnamed, duplicate or matchless pools, two
+    /// pools matching the same way, and grants naming neither one device
+    /// nor one known pool.
+    pub fn check(&self) -> Result<(), String> {
+        let mut seen = std::collections::BTreeSet::new();
+        for p in &self.pools {
+            if p.name.is_empty() || !seen.insert(p.name.as_str()) {
+                return Err(format!(
+                    "pci.pools: pool names must be set and unique ({:?})",
+                    p.name
+                ));
+            }
+            if p.matches.is_empty() {
+                return Err(format!(
+                    "pci.pools: pool {} matches every device; give it a match",
+                    p.name
+                ));
+            }
+            if p.matches.vf_of.as_deref().is_some_and(|pf| pf.is_empty()) {
+                return Err(format!(
+                    "pci.pools: pool {}: vf_of matches every PF; give it ids or addresses",
+                    p.name
+                ));
+            }
+            if let Some(o) = self.pools.iter().find(|o| {
+                o.name != p.name
+                    && o.matches == p.matches
+                    && (o.nodes.is_empty()
+                        || p.nodes.is_empty()
+                        || o.nodes.iter().any(|n| p.nodes.contains(n)))
+            }) {
+                return Err(format!(
+                    "pci.pools: pools {} and {} match the same devices",
+                    o.name, p.name
+                ));
+            }
+        }
+        for g in &self.allow {
+            match (&g.bdf, &g.pool) {
+                (Some(_), None) => {}
+                (None, Some(p)) if seen.contains(p.as_str()) => {}
+                (None, Some(p)) => return Err(format!("pci.allow: no pool {p}")),
+                _ => return Err("pci.allow: each grant names one bdf or one pool".into()),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -330,7 +502,9 @@ pub struct ConsoleConfig {
 
 impl Default for ConsoleConfig {
     fn default() -> Self {
-        Self { log_max_bytes: 16 << 20 }
+        Self {
+            log_max_bytes: 16 << 20,
+        }
     }
 }
 
@@ -391,7 +565,8 @@ impl MeteringConfig {
         if !(35..=400).contains(&self.retention_rate_days) {
             return Err("metering.retention_rate_days must be 35-400".into());
         }
-        crate::metering::query::parse_tz(&self.billing_timezone).map_err(|e| format!("metering.billing_timezone: {e}"))?;
+        crate::metering::query::parse_tz(&self.billing_timezone)
+            .map_err(|e| format!("metering.billing_timezone: {e}"))?;
         Ok(())
     }
 }
@@ -417,7 +592,9 @@ impl Config {
 
     pub fn load_from(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {}", path.display(), e)),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| format!("{}: {}", path.display(), e))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("{}: {}", path.display(), e)),
         }
@@ -425,8 +602,10 @@ impl Config {
 
     /// Refuse values that parse but make no sense.
     pub fn check(&self) -> Result<(), String> {
+        self.pci.check()?;
         if !self.authz.policy_files_dir.as_os_str().is_empty() {
-            crate::paths::checked_path(&self.authz.policy_files_dir).map_err(|e| format!("authz.policy_files_dir {e}"))?;
+            crate::paths::checked_path(&self.authz.policy_files_dir)
+                .map_err(|e| format!("authz.policy_files_dir {e}"))?;
         }
         if !(1..=1000).contains(&self.authz.policy_history) {
             return Err("authz.policy_history must be 1-1000".into());
@@ -451,13 +630,13 @@ impl Config {
 
     /// Refuse plain HTTP on a non-loopback listener (spec §5.1).
     pub fn check_listeners(&self) -> Result<(), String> {
-        if !self.tls.enabled() {
-            if let Some(a) = self.listen.iter().find(|a| !a.ip().is_loopback()) {
-                return Err(format!(
-                    "refusing to serve plain HTTP on {}: \"tls\": \"off\" needs every listener on loopback ({})",
-                    a, DEFAULT_CONFIG_PATH
-                ));
-            }
+        if !self.tls.enabled()
+            && let Some(a) = self.listen.iter().find(|a| !a.ip().is_loopback())
+        {
+            return Err(format!(
+                "refusing to serve plain HTTP on {}: \"tls\": \"off\" needs every listener on loopback ({})",
+                a, DEFAULT_CONFIG_PATH
+            ));
         }
         Ok(())
     }
@@ -465,11 +644,15 @@ impl Config {
 
 impl Config {
     pub fn api_socket_path(&self) -> PathBuf {
-        self.api_socket.clone().unwrap_or_else(|| crate::paths::run_dir().join("api.sock"))
+        self.api_socket
+            .clone()
+            .unwrap_or_else(|| crate::paths::run_dir().join("api.sock"))
     }
 
     pub fn ui_socket_path(&self) -> PathBuf {
-        self.ui_socket.clone().unwrap_or_else(|| crate::paths::run_dir().join("ui.sock"))
+        self.ui_socket
+            .clone()
+            .unwrap_or_else(|| crate::paths::run_dir().join("ui.sock"))
     }
 }
 
@@ -482,6 +665,64 @@ pub fn credential(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pools_are_checked_and_match_by_ids_class_and_address() {
+        let pool = |name: &str, vendor: Option<&str>| PciPool {
+            name: name.into(),
+            class: None,
+            matches: PoolMatch {
+                vendor_id: vendor.map(Into::into),
+                device_id: None,
+                class_code: Some("0x0302".into()),
+                addresses: vec![],
+                vf_of: None,
+            },
+            nodes: vec![],
+            prepare: false,
+        };
+        let mut c = PciConfig {
+            pools: vec![pool("a100", Some("0x10de"))],
+            allow: vec![],
+        };
+        assert!(c.check().is_ok());
+        let m = &c.pools[0].matches;
+        assert!(m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x030200"));
+        assert!(!m.matches("0000:87:00.0", "0x15b3", "0x20b0", "0x030200"));
+        assert!(!m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x020000"));
+        c.pools.push(pool("again", Some("10DE")));
+        assert!(
+            c.check().is_ok(),
+            "a different spelling is a different match"
+        );
+        c.pools.push(pool("a100", None));
+        assert!(c.check().unwrap_err().contains("unique"));
+        c.pools.pop();
+        c.pools.push(PciPool {
+            matches: PoolMatch::default(),
+            ..pool("all", None)
+        });
+        assert!(c.check().unwrap_err().contains("matches every device"));
+        c.pools.pop();
+        c.pools.push(pool("same", Some("0x10de")));
+        assert!(c.check().unwrap_err().contains("match the same devices"));
+        c.pools.pop();
+        let grant = |bdf: Option<&str>, pool: Option<&str>| PciGrant {
+            bdf: bdf.map(Into::into),
+            pool: pool.map(Into::into),
+            projects: vec!["p".into()],
+            tenants: vec![],
+            node: None,
+        };
+        c.allow = vec![grant(None, Some("a100")), grant(Some("0000:41:00.0"), None)];
+        assert!(c.check().is_ok());
+        c.allow.push(grant(None, Some("nope")));
+        assert!(c.check().unwrap_err().contains("no pool nope"));
+        c.allow.pop();
+        c.allow.push(grant(Some("0000:41:00.0"), Some("a100")));
+        assert!(c.check().unwrap_err().contains("one bdf or one pool"));
+    }
+
     use super::*;
 
     #[test]
@@ -489,16 +730,42 @@ mod tests {
         let ok = MeteringConfig::default();
         assert!(ok.check().is_ok());
         for bad in [
-            MeteringConfig { sample_secs: 40, ..ok.clone() },  // does not divide 300
-            MeteringConfig { sample_secs: 5, ..ok.clone() },
-            MeteringConfig { close_grace_secs: 10, ..ok.clone() },
-            MeteringConfig { storage_secs: 20, ..ok.clone() },
-            MeteringConfig { retention_rate_days: 10, ..ok.clone() },
-            MeteringConfig { billing_timezone: "+05:30".into(), ..ok.clone() },
+            MeteringConfig {
+                sample_secs: 40,
+                ..ok.clone()
+            }, // does not divide 300
+            MeteringConfig {
+                sample_secs: 5,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                close_grace_secs: 10,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                storage_secs: 20,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                retention_rate_days: 10,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                billing_timezone: "+05:30".into(),
+                ..ok.clone()
+            },
         ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
-        assert!(MeteringConfig { sample_secs: 60, close_grace_secs: 60, ..ok }.check().is_ok());
+        assert!(
+            MeteringConfig {
+                sample_secs: 60,
+                close_grace_secs: 60,
+                ..ok
+            }
+            .check()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -529,10 +796,28 @@ mod tests {
         use crate::tenancy::Quotas;
         // Nothing configured: 2 project networks, 1 router with 1 external address, everything else unlimited.
         let c = parse("{}").unwrap();
-        assert_eq!(c.quotas.default, Quotas { networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
+        assert_eq!(
+            c.quotas.default,
+            Quotas {
+                networks: Some(2),
+                routers: Some(1),
+                external_ips: Some(1),
+                ..Default::default()
+            }
+        );
         // Partial: omitted networks keeps 2.
         let c = parse(r#"{"quotas": {"default": {"vms": 10, "disk_gib": 500}}}"#).unwrap();
-        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
+        assert_eq!(
+            c.quotas.default,
+            Quotas {
+                vms: Some(10),
+                disk_gib: Some(500),
+                networks: Some(2),
+                routers: Some(1),
+                external_ips: Some(1),
+                ..Default::default()
+            }
+        );
         // null is unlimited.
         let c = parse(r#"{"quotas": {"default": {"networks": null}}}"#).unwrap();
         assert_eq!(c.quotas.default.networks, None);
@@ -545,7 +830,13 @@ mod tests {
     #[test]
     fn policy_history_bounds() {
         assert_eq!(parse("{}").unwrap().authz.policy_history, 50);
-        assert_eq!(parse(r#"{"authz": {"policy_history": 10}}"#).unwrap().authz.policy_history, 10);
+        assert_eq!(
+            parse(r#"{"authz": {"policy_history": 10}}"#)
+                .unwrap()
+                .authz
+                .policy_history,
+            10
+        );
         assert!(parse(r#"{"authz": {"policy_history": 0}}"#).is_err());
     }
 
@@ -553,8 +844,13 @@ mod tests {
     /// the spec can't document keys the parser refuses.
     #[test]
     fn spec_example_parses() {
-        let spec = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md")).unwrap();
-        let start = spec.find("`/etc/glidex/control-plane.json` (`root:glidex 0640`").expect("§13 config heading");
+        let spec = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md"),
+        )
+        .unwrap();
+        let start = spec
+            .find("`/etc/glidex/control-plane.json` (`root:glidex 0640`")
+            .expect("§13 config heading");
         let block = &spec[start..];
         let a = block.find("```json\n").unwrap() + "```json\n".len();
         let b = a + block[a..].find("```").unwrap();
@@ -569,11 +865,15 @@ mod tests {
     /// match the defaults.
     #[test]
     fn packaged_example_parses_and_matches_defaults() {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/control-plane.json.example");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/control-plane.json.example");
         let c = Config::load_from(&p).unwrap();
         let d = Config::default();
         assert_eq!(c.listen, d.listen);
-        assert_eq!((&c.ui_user, &c.users_group, &c.admin_group), (&d.ui_user, &d.users_group, &d.admin_group));
+        assert_eq!(
+            (&c.ui_user, &c.users_group, &c.admin_group),
+            (&d.ui_user, &d.users_group, &d.admin_group)
+        );
         assert_eq!(c.auth.allowed_origins, d.auth.allowed_origins);
         assert_eq!(c.auth.pam.allowed_groups, d.auth.pam.allowed_groups);
         assert_eq!(c.auth.pam.authd_socket, d.auth.pam.authd_socket);
@@ -587,17 +887,26 @@ mod tests {
 
     #[test]
     fn plain_http_only_on_loopback() {
-        let mut c = Config { listen: vec!["0.0.0.0:8841".parse().unwrap()], ..Default::default() };
+        let mut c = Config {
+            listen: vec!["0.0.0.0:8841".parse().unwrap()],
+            ..Default::default()
+        };
         assert!(c.check_listeners().is_ok());
         c.tls = TlsSetting::Mode(TlsMode::Off);
         assert!(c.check_listeners().is_err());
-        c.listen = vec!["127.0.0.1:8841".parse().unwrap(), "[::1]:8841".parse().unwrap()];
+        c.listen = vec![
+            "127.0.0.1:8841".parse().unwrap(),
+            "[::1]:8841".parse().unwrap(),
+        ];
         assert!(c.check_listeners().is_ok());
     }
 
     #[test]
     fn origins_from_this_host() {
-        let mut a = AuthConfig { allowed_origins: vec!["https://glidex.example.org:5173".into()], ..Default::default() };
+        let mut a = AuthConfig {
+            allowed_origins: vec!["https://glidex.example.org:5173".into()],
+            ..Default::default()
+        };
         assert!(a.origin_allowed("https://glidex.example.org:5173"));
         assert!(!a.origin_allowed("https://127.0.0.1:5173"));
         a.origins_from_host = true;
@@ -613,12 +922,23 @@ mod tests {
 
     #[test]
     fn tls_settings_parse() {
-        assert_eq!(parse(r#"{"tls": "auto"}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Auto));
+        assert_eq!(
+            parse(r#"{"tls": "auto"}"#).unwrap().tls,
+            TlsSetting::Mode(TlsMode::Auto)
+        );
         assert!(parse(r#"{"tls": "off"}"#).is_err());
-        assert_eq!(parse(r#"{"tls": "off", "listen": ["127.0.0.1:1"]}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Off));
+        assert_eq!(
+            parse(r#"{"tls": "off", "listen": ["127.0.0.1:1"]}"#)
+                .unwrap()
+                .tls,
+            TlsSetting::Mode(TlsMode::Off)
+        );
         assert_eq!(
             parse(r#"{"tls": {"cert": "/c"}}"#).unwrap().tls,
-            TlsSetting::Files(TlsConfig { cert: "/c".into(), key: None })
+            TlsSetting::Files(TlsConfig {
+                cert: "/c".into(),
+                key: None
+            })
         );
         assert!(parse(r#"{"tls": "on"}"#).is_err());
         assert!(parse(r#"{"tls": {"crt": "/c"}}"#).is_err());

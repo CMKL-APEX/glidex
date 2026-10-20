@@ -2,6 +2,7 @@
 name = "glidex-tls"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # HTTPS for the control plane and glidex-ui (spec/security.md §5.1):
 # listeners on every address, self-signed certificates, and the client
@@ -12,6 +13,7 @@ rustls-pki-types = { version = "1", features = ["std"] }
 rustls-native-certs = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 x509-parser = "0.18"
+arc-swap = "1"
 time = "0.3"
 sha2 = "0.10"
 socket2 = { version = "0.6", features = ["all"] }

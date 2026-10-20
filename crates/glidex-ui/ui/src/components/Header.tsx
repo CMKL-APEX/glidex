@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { healthCheck } from "../api";
+import { healthCheck, listTenants } from "../api";
 import { useSession } from "../session";
 import Activity from "./Activity";
 
@@ -20,23 +20,44 @@ export default function Header() {
     return () => clearInterval(id);
   }, []);
 
-  const ownsAProject = me.project_roles.some((r) => r.role === "role.owner");
+  // Directory readers see every tenant; others see the tenants they hold a
+  // role on, so ask whether there are any.
+  const [readsATenant, setReadsATenant] = useState(false);
+  const directoryReader = host.listTenants || host.createTenant;
+  useEffect(() => {
+    if (directoryReader || me.token) return;
+    let live = true;
+    listTenants()
+      .then((t) => live && setReadsATenant(t.length > 0))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [directoryReader, me.token]);
+
+  const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
   const nav = [
     { to: "/", label: "VMs", show: true },
     { to: "/images", label: "Images", show: true },
     { to: "/disks", label: "Disks", show: true },
+    { to: "/datastores", label: "Datastores", show: host.readDatastore },
     { to: "/credentials", label: "Credentials", show: true },
     { to: "/networking", label: "Networking", show: true },
     { to: "/projects", label: "Projects", show: true },
-    { to: "/access", label: "Access", show: host.listUsers || host.listTeams || host.readSystemBindings },
+    // Tenants, users and roles, connectors and policies: the directory's tabs.
+    {
+      to: "/directory",
+      label: "Directory",
+      show: directoryReader || readsATenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
+    },
     { to: "/tokens", label: "Tokens", show: !me.token },
-    { to: "/policies", label: "Policies", show: host.readPolicy },
-    { to: "/usage", label: "Usage", show: host.readUsage || me.project_roles.length > 0 },
+    { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
     { to: "/cluster", label: "Cluster", show: host.readCluster },
+    { to: "/admissions", label: "Admissions", show: host.listAdmissions },
   ].filter((n) => n.show);
 
-  const who = me.user?.display_name ?? me.token?.name ?? "unknown";
+  const who = me.user?.display_name ?? me.token?.name ?? (me.display_name || "unknown");
 
   return (
     <header className="bg-white shadow-sm border-b border-gray-200">
@@ -82,8 +103,14 @@ export default function Header() {
                 ))}
               </select>
             </label>
-            <span className="text-sm text-gray-700" title={me.user?.id ?? me.token?.id}>
-              {who}
+            <span className="text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>
+              {me.user ? (
+                <NavLink to="/account" className="hover:underline" title="Your account: sign-in methods">
+                  {who}
+                </NavLink>
+              ) : (
+                who
+              )}
               {me.break_glass && <span className="ml-1 text-xs text-amber-600">(admin)</span>}
             </span>
             {me.method !== "disabled" && me.method !== "peer" && (

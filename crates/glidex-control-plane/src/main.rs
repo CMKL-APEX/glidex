@@ -7,7 +7,6 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn print_status(msg: &str) {
@@ -35,14 +34,12 @@ fn check_kvm_access() -> Result<(), String> {
     let kvm_path = Path::new("/dev/kvm");
 
     if !kvm_path.exists() {
-        return Err(
-            "/dev/kvm not found. KVM may not be enabled.\n\
+        return Err("/dev/kvm not found. KVM may not be enabled.\n\
              To enable KVM:\n  \
              1. Check if your CPU supports virtualization (Intel VT-x or AMD-V)\n  \
              2. Enable virtualization in BIOS/UEFI\n  \
              3. Load the KVM module: sudo modprobe kvm_intel (or kvm_amd)"
-                .to_string(),
-        );
+            .to_string());
     }
 
     // Check read/write access
@@ -75,7 +72,10 @@ fn no_new_privs() -> Option<()> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     status
         .lines()
-        .any(|l| l.split_once(':').is_some_and(|(k, v)| k == "NoNewPrivs" && v.trim() == "1"))
+        .any(|l| {
+            l.split_once(':')
+                .is_some_and(|(k, v)| k == "NoNewPrivs" && v.trim() == "1")
+        })
         .then_some(())
 }
 
@@ -112,15 +112,29 @@ async fn main() {
     // `--force-new-cluster [--from <snapshot>]` (spec/clustering.md §5.12): recovery, then exit.
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--force-new-cluster") {
-        let from = args.iter().position(|a| a == "--from").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+        let from = args
+            .iter()
+            .position(|a| a == "--from")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from);
         let cfg = config::Config::load().unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
         });
         let db = state::VmManager::default_db_path_pub();
-        match glidex_control_plane::cluster::manage::force_new_cluster(&db, from.as_deref(), &cfg.cluster).await {
+        match glidex_control_plane::cluster::manage::force_new_cluster(
+            &db,
+            from.as_deref(),
+            &cfg.cluster,
+        )
+        .await
+        {
             Ok(()) => {
-                println!("A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.", from.map(|f| f.display().to_string()).unwrap_or_else(|| db.display().to_string()));
+                println!(
+                    "A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.",
+                    from.map(|f| f.display().to_string())
+                        .unwrap_or_else(|| db.display().to_string())
+                );
                 return;
             }
             Err(e) => {
@@ -138,7 +152,9 @@ async fn main() {
         match glidex_control_plane::cluster::manage::leave_removed_offline(&db).await {
             Ok((name, confirmed)) => {
                 leave_ovn();
-                println!("Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone.");
+                println!(
+                    "Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone."
+                );
                 return;
             }
             Err(e) => {
@@ -155,8 +171,14 @@ async fn main() {
         match glidex_control_plane::cluster::departure::offline_detach(&db) {
             Ok(b) => {
                 leave_ovn();
-                println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
-                println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
+                println!(
+                    "Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.",
+                    b.vm_ids.len(),
+                    b.disk_ids.len()
+                );
+                println!(
+                    "Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA)."
+                );
                 return;
             }
             Err(e) => {
@@ -179,7 +201,8 @@ async fn main() {
     };
     println!("OK");
 
-    glidex_control_plane::cluster::departure::EXIT_ON_DEPARTURE.store(true, std::sync::atomic::Ordering::Relaxed);
+    glidex_control_plane::cluster::departure::EXIT_ON_DEPARTURE
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Create VM manager with persistence
     print_status("Opening database");
@@ -209,7 +232,10 @@ async fn main() {
         } else {
             println!("MISSING (/dev/kvm not found; no VM can start until KVM is enabled)");
         }
-    } else if let Err(e) = no_new_privs().map_or(Ok(()), |_| Err(DETACHED_IN_SANDBOX.to_string())).and_then(|_| check_kvm_access()) {
+    } else if let Err(e) = no_new_privs()
+        .map_or(Ok(()), |_| Err(DETACHED_IN_SANDBOX.to_string()))
+        .and_then(|_| check_kvm_access())
+    {
         println!("FAILED");
         eprintln!("\n{}", e);
         std::process::exit(1);
@@ -237,28 +263,44 @@ async fn main() {
     }
     let vms = vm_manager.list_vms().await;
     let running = vms.iter().filter(|v| v.status.instance.is_some()).count();
-    println!("OK ({} VMs, {} running, VM runner: {})", vms.len(), running, vm_manager.runner().kind_name());
+    println!(
+        "OK ({} VMs, {} running, VM runner: {})",
+        vms.len(),
+        running,
+        vm_manager.runner().kind_name()
+    );
 
     // Firmware the installer or the host's packages left: imported as
     // firmware images once, so image VMs boot out of the box.
     for (key, result) in vm_manager.auto_import_firmware().await {
         use images::AutoImport;
         match result {
-            AutoImport::Imported(name) => tracing::info!(firmware = key, image = %name, "imported firmware"),
-            AutoImport::Failed(e) => tracing::warn!(firmware = key, "could not import firmware: {}", e),
+            AutoImport::Imported(name) => {
+                tracing::info!(firmware = key, image = %name, "imported firmware")
+            }
+            AutoImport::Failed(e) => {
+                tracing::warn!(firmware = key, "could not import firmware: {}", e)
+            }
             _ => {}
         }
     }
 
     // Not fatal: kernel-boot VMs don't need it.
     for (ty, label, key) in [
-        (hypervisor::HypervisorType::CloudHypervisor, "Cloud-Hypervisor", "cloudhv-edk2"),
+        (
+            hypervisor::HypervisorType::CloudHypervisor,
+            "Cloud-Hypervisor",
+            "cloudhv-edk2",
+        ),
         (hypervisor::HypervisorType::Qemu, "QEMU", "ovmf"),
     ] {
         print_status(&format!("Checking UEFI firmware ({})", label));
         match vm_manager.default_firmware_name(ty) {
             Some(name) => println!("OK (image {})", name),
-            None => println!("NONE (pull it for firmware boot: gxctl image pull --firmware {})", key),
+            None => println!(
+                "NONE (pull it for firmware boot: gxctl image pull --firmware {})",
+                key
+            ),
         }
     }
 
@@ -286,22 +328,40 @@ async fn main() {
     // (spec/clustering.md §4). Its UI socket relays the web UI's requests to
     // a server, which authenticates them (spec/clustering-ui.md §3.6).
     if vm_manager.node_link().is_some() {
-        println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        println!(
+            "  Agent node: serving VMs for the cluster; node API on {}",
+            vm_manager
+                .cluster()
+                .map(|c| c.identity.advertise.to_string())
+                .unwrap_or_default()
+        );
         // A standalone process before a restart into agent mode left its
         // API socket: gone, so gxctl finds no API here and says where to log in.
         let _ = std::fs::remove_file(cfg.api_socket_path());
         let mut servers = Vec::new();
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-        match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
+        match auth::AuthService::new(vm_manager.database(), with_secrets_key(&cfg, &vm_manager)) {
             Ok(auth) => {
-                let router = api::router(Arc::new(api::App { manager: vm_manager.clone(), auth }));
+                vm_manager.set_secrets_key(auth.clone());
+                let router = api::router(Arc::new(api::App {
+                    manager: vm_manager.clone(),
+                    auth,
+                }));
                 vm_manager.set_api_router(router.clone());
                 let app = router.layer(TraceLayer::new_for_http());
                 let ui_sock = cfg.ui_socket_path();
                 match serve::bind_unix(&ui_sock) {
                     Ok(l) => {
-                        println!("  Listening on {} (Ui, relayed to the servers)", ui_sock.display());
-                        servers.push(tokio::spawn(serve::serve_unix(l, app, api::Listener::Ui, stop_rx.clone())));
+                        println!(
+                            "  Listening on {} (Ui, relayed to the servers)",
+                            ui_sock.display()
+                        );
+                        servers.push(tokio::spawn(serve::serve_unix(
+                            l,
+                            app,
+                            api::Listener::Ui,
+                            stop_rx.clone(),
+                        )));
                     }
                     Err(e) => eprintln!("  Warning: cannot listen on {}: {}", ui_sock.display(), e),
                 }
@@ -318,18 +378,22 @@ async fn main() {
     }
 
     print_status("Loading authorization policies");
-    let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
-        Ok(a) => a,
-        Err(e) => {
-            println!("FAILED");
-            eprintln!("\n{}", e);
-            std::process::exit(1);
-        }
-    };
+    let auth =
+        match auth::AuthService::new(vm_manager.database(), with_secrets_key(&cfg, &vm_manager)) {
+            Ok(a) => a,
+            Err(e) => {
+                println!("FAILED");
+                eprintln!("\n{}", e);
+                std::process::exit(1);
+            }
+        };
     // Only a node that can write does first-start setup; a cluster's other
     // servers find it in the replicated data.
     if vm_manager.database().can_write() {
-        if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
+        if let Err(e) = vm_manager
+            .projects()
+            .adopt_default_quotas(&cfg.quotas.default)
+        {
             println!("WARNING (default project quotas: {})", e);
         }
         match auth.bootstrap(&vm_manager.default_project_id()) {
@@ -341,12 +405,18 @@ async fn main() {
         println!("OK (follower: setup is the leader's)");
     }
     auth.watch_policies();
+    // Pulled connectors' runs, where writes go (spec/tenancy.md §8.2).
+    glidex_control_plane::directory::sync::spawn(auth.clone());
 
-    let router = api::router(Arc::new(api::App { manager: vm_manager.clone(), auth }));
+    vm_manager.set_secrets_key(auth.clone());
+    let router = api::router(Arc::new(api::App {
+        manager: vm_manager.clone(),
+        auth,
+    }));
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());
 
-    let tls = match serve::tls_setup(&cfg.tls) {
+    let mut tls = match serve::tls_setup(&cfg.tls) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("TLS: {}", e);
@@ -370,19 +440,17 @@ async fn main() {
     }
     let api_sock = cfg.api_socket_path();
     let ui_sock = cfg.ui_socket_path();
-    let unix: Vec<(tokio::net::UnixListener, api::Listener, std::path::PathBuf)> = [
-        (api_sock, api::Listener::Api),
-        (ui_sock, api::Listener::Ui),
-    ]
-    .into_iter()
-    .filter_map(|(path, kind)| match serve::bind_unix(&path) {
-        Ok(l) => Some((l, kind, path)),
-        Err(e) => {
-            eprintln!("  Warning: cannot listen on {}: {}", path.display(), e);
-            None
-        }
-    })
-    .collect();
+    let unix: Vec<(tokio::net::UnixListener, api::Listener, std::path::PathBuf)> =
+        [(api_sock, api::Listener::Api), (ui_sock, api::Listener::Ui)]
+            .into_iter()
+            .filter_map(|(path, kind)| match serve::bind_unix(&path) {
+                Ok(l) => Some((l, kind, path)),
+                Err(e) => {
+                    eprintln!("  Warning: cannot listen on {}: {}", path.display(), e);
+                    None
+                }
+            })
+            .collect();
     if tcp.is_empty() && unix.is_empty() {
         eprintln!("No usable listen address");
         std::process::exit(1);
@@ -396,11 +464,27 @@ async fn main() {
         println!(
             "  TLS:       {} ({}{})",
             t.cert.display(),
-            if t.self_signed { "self-signed" } else { "configured" },
+            if t.self_signed {
+                "self-signed"
+            } else {
+                "configured"
+            },
             if t.generated { ", generated now" } else { "" }
         );
         println!("  SHA-256:   {}", t.fingerprint);
         tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
+    }
+    // Replaced certificate files are served without a restart, and
+    // published again for local clients (spec/tailscale-tls.md §4.1).
+    if let Some(files) = tls.as_mut().and_then(|t| t.files.take()) {
+        let run_dir = run_dir.clone();
+        files.watch(glidex_tls::RELOAD_EVERY, move |f| {
+            let fingerprint = glidex_tls::fingerprint_certified(&f.slot.get());
+            tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
+            if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
+                tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
+            }
+        });
     }
     for (_, kind, path) in &unix {
         println!("  Listening on {} ({:?})", path.display(), kind);
@@ -427,8 +511,17 @@ async fn main() {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let servers: Vec<_> = tcp
         .into_iter()
-        .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.as_ref().map(|t| t.acceptor.clone()), stop_rx.clone())))
-        .chain(unix.into_iter().map(|(l, kind, _)| tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))))
+        .map(|l| {
+            tokio::spawn(serve::serve_tcp(
+                l,
+                app.clone(),
+                tls.as_ref().map(|t| t.acceptor.clone()),
+                stop_rx.clone(),
+            ))
+        })
+        .chain(unix.into_iter().map(|(l, kind, _)| {
+            tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))
+        }))
         .collect();
     shutdown_signal().await;
     let _ = stop_tx.send(true);
@@ -477,6 +570,18 @@ fn leave_ovn() {
     let netd = network::Netd::from_env();
     match netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true }) {
         Ok(_) => println!("This host is no longer an OVN chassis."),
-        Err(e) => eprintln!("Warning: still an OVN chassis ({e}); stop ovn-controller once nothing is on br-int."),
+        Err(e) => eprintln!(
+            "Warning: still an OVN chassis ({e}); stop ovn-controller once nothing is on br-int."
+        ),
     }
+}
+
+/// The configuration with the secrets key file defaulted to `secrets.kek`
+/// beside the database (spec/tenancy.md §13).
+fn with_secrets_key(cfg: &config::Config, vm_manager: &state::VmManager) -> config::Config {
+    let mut c = cfg.clone();
+    if c.auth.secrets_key.is_none() {
+        c.auth.secrets_key = vm_manager.db_path().parent().map(|d| d.join("secrets.kek"));
+    }
+    c
 }

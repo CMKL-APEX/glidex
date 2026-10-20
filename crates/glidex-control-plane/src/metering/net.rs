@@ -2,9 +2,9 @@
 //! per VM NIC (`net.*`) and per network (`bridge.*`).
 
 use super::ledger::{Delta, Flag, MeteringError, Origin, Round, Subject, SubjectKind};
+use crate::ipam::Reservation;
 use crate::models::Vm;
 use crate::network::Network;
-use crate::ipam::Reservation;
 use glidex_ovs::ct_meter::CtCounters;
 use glidex_ovs::nat_meter::{Direction, NatCounter};
 use glidex_ovs::stats::{BridgeStats, PortRole, PortStats};
@@ -15,7 +15,12 @@ type Ingress<'a> = (Subject, Vec<(&'a PortStats, Origin)>);
 
 /// The VM NIC subject: `<vm id>.<nic>`.
 pub fn nic_subject(vm: &Vm, nic: u8, network: Option<&str>) -> Subject {
-    let mut s = Subject::new(SubjectKind::Nic, format!("{}.{}", vm.id, nic), format!("{}/nic{}", vm.name, nic), Some(vm.project.clone()));
+    let mut s = Subject::new(
+        SubjectKind::Nic,
+        format!("{}.{}", vm.id, nic),
+        format!("{}/nic{}", vm.name, nic),
+        Some(vm.project.clone()),
+    );
     s.vm_id = Some(vm.id.clone());
     s.nic = Some(nic as u32);
     s.network = network.map(str::to_string);
@@ -29,8 +34,13 @@ pub fn is_provider(n: &Network) -> bool {
 }
 
 fn network_subject(n: &Network) -> Subject {
-    let mut s = Subject::new(SubjectKind::Network, n.name.clone(), n.name.clone(), n.project.clone());
-    s.network = Some(n.name.clone());
+    let mut s = Subject::new(
+        SubjectKind::Network,
+        n.id.clone(),
+        n.name.clone(),
+        n.project.clone(),
+    );
+    s.network = Some(n.id.clone());
     // A cluster network spans the nodes; a node network is on one.
     s.node = n.node.clone();
     s
@@ -39,21 +49,38 @@ fn network_subject(n: &Network) -> Subject {
 /// Traffic on a bridge that no single network owns (a bridge shared by
 /// several VLAN networks: its uplink; or a bridge with no network).
 fn bridge_subject(bridge: &str) -> Subject {
-    Subject::new(SubjectKind::Network, format!("bridge:{bridge}"), bridge.to_string(), None)
+    Subject::new(
+        SubjectKind::Network,
+        format!("bridge:{bridge}"),
+        bridge.to_string(),
+        None,
+    )
 }
 
 /// `(rate per second × factor)` of a sum of deltas over one interval,
 /// or `None` when they don't share it or it spans a gap (§8.5).
 pub(crate) fn summed_rate(deltas: &[Delta], factor: u64) -> Option<u64> {
     let first = deltas.first()?;
-    if deltas.iter().any(|d| d.from != first.from || d.to != first.to) {
+    if deltas
+        .iter()
+        .any(|d| d.from != first.from || d.to != first.to)
+    {
         return None;
     }
-    let sum = Delta { amount: deltas.iter().map(|d| d.amount).sum(), ..*first };
+    let sum = Delta {
+        amount: deltas.iter().map(|d| d.amount).sum(),
+        ..*first
+    };
     sum.rate(factor)
 }
 
-pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], networks: &[Network], now: u64) -> Result<(), MeteringError> {
+pub fn sample_ports(
+    round: &mut Round,
+    bridges: &[BridgeStats],
+    vms: &[Vm],
+    networks: &[Network],
+    now: u64,
+) -> Result<(), MeteringError> {
     let vms: HashMap<&str, &Vm> = vms.iter().map(|v| (v.id.as_str(), v)).collect();
     for b in bridges {
         let nets: Vec<&Network> = networks.iter().filter(|n| n.bridge == b.bridge).collect();
@@ -66,10 +93,17 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
             };
             // A VM port counts from its VM's launch; any other port first
             // seen takes a baseline.
-            let origin = vm.and_then(|v| v.status.instance.as_ref()).map_or(Origin::Unknown, |i| Origin::ZeroAt(i.launched_at * 1000));
+            let origin = vm
+                .and_then(|v| v.status.instance.as_ref())
+                .map_or(Origin::Unknown, |i| Origin::ZeroAt(i.launched_at * 1000));
             let nic_net = match (vm, p.nic) {
                 (Some(vm), Some(nic)) => {
-                    let net = vm.status.nics.iter().find(|n| n.nic_index == nic).map(|n| n.network.as_str());
+                    let net = vm
+                        .status
+                        .nics
+                        .iter()
+                        .find(|n| n.nic_index == nic)
+                        .map(|n| n.network.as_str());
                     sample_nic(round, vm, nic, net, p, origin, now)?;
                     net
                 }
@@ -83,7 +117,11 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
                     None => bridge_subject(&b.bridge),
                 },
             };
-            ingress.entry(owner.id.clone()).or_insert_with(|| (owner, Vec::new())).1.push((p, origin));
+            ingress
+                .entry(owner.id.clone())
+                .or_insert_with(|| (owner, Vec::new()))
+                .1
+                .push((p, origin));
         }
         for (_, (subject, ports)) in ingress {
             // A provider network has no total of its own (§13.2).
@@ -100,12 +138,22 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
 /// External traffic of NAT networks (§5.5): per VM NIC by reserved MAC,
 /// and per network. `boot_id` makes counter handles unique across host
 /// reboots (a recreated table can reuse handle numbers).
-pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networks: &[Network], boot_id: &str, now: u64) -> Result<(), MeteringError> {
+pub fn sample_nat(
+    round: &mut Round,
+    counters: &[NatCounter],
+    vms: &[Vm],
+    networks: &[Network],
+    boot_id: &str,
+    now: u64,
+) -> Result<(), MeteringError> {
     // MAC → (VM, NIC index, network).
     let mut by_mac: HashMap<String, (&Vm, u8, &str)> = HashMap::new();
     for vm in vms {
         for n in &vm.status.nics {
-            by_mac.insert(n.mac.to_ascii_lowercase(), (vm, n.nic_index, n.network.as_str()));
+            by_mac.insert(
+                n.mac.to_ascii_lowercase(),
+                (vm, n.nic_index, n.network.as_str()),
+            );
         }
     }
     for c in counters {
@@ -117,11 +165,31 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
         match &c.mac {
             Some(mac) => {
                 // A reservation whose VM isn't known (deleted): nobody to bill.
-                let Some((vm, nic, net)) = by_mac.get(&mac.to_ascii_lowercase()) else { continue };
+                let Some((vm, nic, net)) = by_mac.get(&mac.to_ascii_lowercase()) else {
+                    continue;
+                };
                 let s = nic_subject(vm, *nic, Some(net));
-                let origin = vm.status.instance.as_ref().map_or(Origin::Unknown, |i| Origin::ZeroAt(i.launched_at * 1000));
-                let d = round.counter(&s, &format!("net.ext_{dir}_bytes"), &reset, c.bytes, now, origin)?;
-                round.counter(&s, &format!("net.ext_{dir}_packets"), &reset, c.packets, now, origin)?;
+                let origin = vm
+                    .status
+                    .instance
+                    .as_ref()
+                    .map_or(Origin::Unknown, |i| Origin::ZeroAt(i.launched_at * 1000));
+                let d = round.counter(
+                    &s,
+                    &format!("net.ext_{dir}_bytes"),
+                    &reset,
+                    c.bytes,
+                    now,
+                    origin,
+                )?;
+                round.counter(
+                    &s,
+                    &format!("net.ext_{dir}_packets"),
+                    &reset,
+                    c.packets,
+                    now,
+                    origin,
+                )?;
                 if let Some(kbps) = d.and_then(|d| d.rate(8)) {
                     round.max(&s, &format!("net.ext_{dir}_kbps_peak"), kbps / 1000, now);
                     round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
@@ -132,8 +200,22 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
                     Some(n) => network_subject(n),
                     None => bridge_subject(&c.bridge),
                 };
-                let d = round.counter(&s, &format!("bridge.ext_{dir}_bytes"), &reset, c.bytes, now, Origin::Unknown)?;
-                round.counter(&s, &format!("bridge.ext_{dir}_packets"), &reset, c.packets, now, Origin::Unknown)?;
+                let d = round.counter(
+                    &s,
+                    &format!("bridge.ext_{dir}_bytes"),
+                    &reset,
+                    c.bytes,
+                    now,
+                    Origin::Unknown,
+                )?;
+                round.counter(
+                    &s,
+                    &format!("bridge.ext_{dir}_packets"),
+                    &reset,
+                    c.packets,
+                    now,
+                    Origin::Unknown,
+                )?;
                 if let Some(kbps) = d.and_then(|d| d.rate(8)) {
                     round.max(&s, &format!("bridge.ext_{dir}_kbps_peak"), kbps / 1000, now);
                     round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
@@ -152,19 +234,53 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
 /// A network's total counts every byte once, where it enters the VMs'
 /// address space: Σ VM-port tx (`sample_ports`, on each VM's node) plus
 /// the external inbound counted here.
-pub fn sample_ct(round: &mut Round, ct: &CtCounters, new_gap: bool, reservations: &[Reservation], vms: &[Vm], networks: &[Network], now: u64) -> Result<(), MeteringError> {
-    let by_ip: HashMap<std::net::Ipv4Addr, &Reservation> = reservations.iter().map(|r| (r.ip, r)).collect();
+pub fn sample_ct(
+    round: &mut Round,
+    ct: &CtCounters,
+    new_gap: bool,
+    reservations: &[Reservation],
+    vms: &[Vm],
+    networks: &[Network],
+    now: u64,
+) -> Result<(), MeteringError> {
+    let by_ip: HashMap<std::net::Ipv4Addr, &Reservation> =
+        reservations.iter().map(|r| (r.ip, r)).collect();
     // `epoch` is the reset key: a collector that lost its totals starts a new run.
     let reset = ct.epoch.to_string();
     for c in &ct.counters {
-        let Some(r) = c.ip.and_then(|ip| by_ip.get(&ip)) else { continue };
-        let part = format!("ct/{}/{}", c.zone, c.ip.map(|i| i.to_string()).unwrap_or_default());
-        let dirs = [("tx", c.tx_bytes, c.tx_packets), ("rx", c.rx_bytes, c.rx_packets)];
+        let Some(r) = c.ip.and_then(|ip| by_ip.get(&ip)) else {
+            continue;
+        };
+        let part = format!(
+            "ct/{}/{}",
+            c.zone,
+            c.ip.map(|i| i.to_string()).unwrap_or_default()
+        );
+        let dirs = [
+            ("tx", c.tx_bytes, c.tx_packets),
+            ("rx", c.rx_bytes, c.rx_packets),
+        ];
         if let Some(vm) = vms.iter().find(|v| v.id == r.vm_id) {
             let s = nic_subject(vm, r.nic, Some(&r.network));
             for (dir, bytes, packets) in dirs {
-                let d = round.counter_part(&s, &format!("net.ext_{dir}_bytes"), &part, &reset, bytes, now, Origin::Unknown)?;
-                round.counter_part(&s, &format!("net.ext_{dir}_packets"), &part, &reset, packets, now, Origin::Unknown)?;
+                let d = round.counter_part(
+                    &s,
+                    &format!("net.ext_{dir}_bytes"),
+                    &part,
+                    &reset,
+                    bytes,
+                    now,
+                    Origin::Unknown,
+                )?;
+                round.counter_part(
+                    &s,
+                    &format!("net.ext_{dir}_packets"),
+                    &part,
+                    &reset,
+                    packets,
+                    now,
+                    Origin::Unknown,
+                )?;
                 if let Some(kbps) = d.and_then(|d| d.rate(8)) {
                     round.max(&s, &format!("net.ext_{dir}_kbps_peak"), kbps / 1000, now);
                     round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
@@ -174,14 +290,44 @@ pub fn sample_ct(round: &mut Round, ct: &CtCounters, new_gap: bool, reservations
                 round.flag(&s, now, Flag::ExtGap);
             }
         }
-        let Some(n) = networks.iter().find(|n| n.name == r.network).filter(|n| !is_provider(n)) else { continue };
+        let Some(n) = networks
+            .iter()
+            .find(|n| n.id == r.network)
+            .filter(|n| !is_provider(n))
+        else {
+            continue;
+        };
         let s = network_subject(n);
         for (dir, bytes, packets) in dirs {
-            round.counter_part(&s, &format!("bridge.ext_{dir}_bytes"), &part, &reset, bytes, now, Origin::Unknown)?;
-            round.counter_part(&s, &format!("bridge.ext_{dir}_packets"), &part, &reset, packets, now, Origin::Unknown)?;
+            round.counter_part(
+                &s,
+                &format!("bridge.ext_{dir}_bytes"),
+                &part,
+                &reset,
+                bytes,
+                now,
+                Origin::Unknown,
+            )?;
+            round.counter_part(
+                &s,
+                &format!("bridge.ext_{dir}_packets"),
+                &part,
+                &reset,
+                packets,
+                now,
+                Origin::Unknown,
+            )?;
         }
         // The inbound bytes entered the network's address space here.
-        round.counter_part(&s, "bridge.bytes", &part, &reset, c.rx_bytes, now, Origin::Unknown)?;
+        round.counter_part(
+            &s,
+            "bridge.bytes",
+            &part,
+            &reset,
+            c.rx_bytes,
+            now,
+            Origin::Unknown,
+        )?;
         if new_gap {
             round.flag(&s, now, Flag::ExtGap);
         }
@@ -189,7 +335,15 @@ pub fn sample_ct(round: &mut Round, ct: &CtCounters, new_gap: bool, reservations
     Ok(())
 }
 
-fn sample_nic(round: &mut Round, vm: &Vm, nic: u8, network: Option<&str>, p: &PortStats, origin: Origin, now: u64) -> Result<(), MeteringError> {
+fn sample_nic(
+    round: &mut Round,
+    vm: &Vm,
+    nic: u8,
+    network: Option<&str>,
+    p: &PortStats,
+    origin: Origin,
+    now: u64,
+) -> Result<(), MeteringError> {
     let s = nic_subject(vm, nic, network);
     // The switch's view, swapped to the guest's (§2).
     let rx = round.counter(&s, "net.rx_bytes", &p.uuid, p.tx_bytes, now, origin)?;
@@ -215,7 +369,12 @@ fn sample_nic(round: &mut Round, vm: &Vm, nic: u8, network: Option<&str>, p: &Po
     Ok(())
 }
 
-fn sample_bridge(round: &mut Round, s: &Subject, ports: &[(&PortStats, Origin)], now: u64) -> Result<(), MeteringError> {
+fn sample_bridge(
+    round: &mut Round,
+    s: &Subject,
+    ports: &[(&PortStats, Origin)],
+    now: u64,
+) -> Result<(), MeteringError> {
     let mut bytes = Vec::new();
     for (p, origin) in ports {
         let (b, pk) = p.ingress();
@@ -236,7 +395,7 @@ fn sample_bridge(round: &mut Round, s: &Subject, ports: &[(&PortStats, Origin)],
 
 #[cfg(test)]
 mod tests {
-    use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
+    use super::super::ledger::{HOUR_MS, Ledger, LedgerSettings, combine};
     use super::*;
     use crate::store::Db;
     use std::sync::Arc;
@@ -274,7 +433,7 @@ mod tests {
 
     fn net(name: &str, bridge: &str, vlan: Option<u16>) -> Network {
         serde_json::from_value(serde_json::json!({
-            "name": name, "bridge": bridge, "mode": "nat", "port_type": "tap", "vlan": vlan,
+            "id": name, "name": name, "bridge": bridge, "mode": "nat", "port_type": "tap", "vlan": vlan,
             "created_at": 0, "project": "p1",
         }))
         .unwrap()
@@ -335,11 +494,21 @@ mod tests {
         };
         let mut r = l.begin_round(T0 + 30_000).unwrap();
         sample_ports(&mut r, &snap(0, 0, 0, 0), &vms, &nets, T0 + 30_000).unwrap();
-        sample_ports(&mut r, &snap(1_000_000, 0, 4_000_000, 3_000_000), &vms, &nets, T0 + 60_000).unwrap();
+        sample_ports(
+            &mut r,
+            &snap(1_000_000, 0, 4_000_000, 3_000_000),
+            &vms,
+            &nets,
+            T0 + 60_000,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         let t = by_subject(&l);
         assert_eq!(t["a.0"]["net.tx_bytes"], 1_000_000);
-        assert_eq!(t["b.0"]["net.rx_bytes"], 4_000_000, "1 MB from a + 3 MB from outside");
+        assert_eq!(
+            t["b.0"]["net.rx_bytes"], 4_000_000,
+            "1 MB from a + 3 MB from outside"
+        );
         // Each frame once: a's 1 MB entering at pa, 3 MB entering at the gateway.
         assert_eq!(t["nat"]["bridge.bytes"], 4_000_000);
         // 4 MB in 30 s = 1066 kbps (integer).
@@ -351,7 +520,10 @@ mod tests {
     fn shared_bridge_splits_vm_ports_by_network() {
         let (_d, l) = setup();
         let vms = [vm("a", &["red"]), vm("b", &["blue"])];
-        let nets = [net("red", "gxbr-up", Some(10)), net("blue", "gxbr-up", Some(20))];
+        let nets = [
+            net("red", "gxbr-up", Some(10)),
+            net("blue", "gxbr-up", Some(20)),
+        ];
         let snap = |v: u64| {
             vec![BridgeStats {
                 bridge: "gxbr-up".into(),
@@ -369,8 +541,15 @@ mod tests {
         let t = by_subject(&l);
         assert_eq!(t["red"]["bridge.bytes"], 100);
         assert_eq!(t["blue"]["bridge.bytes"], 200);
-        assert_eq!(t["bridge:gxbr-up"]["bridge.bytes"], 500, "the shared uplink is host-level");
-        assert_eq!(by_subject(&l)["bridge:gxbr-up"].len(), 3, "bytes, packets, peak");
+        assert_eq!(
+            t["bridge:gxbr-up"]["bridge.bytes"], 500,
+            "the shared uplink is host-level"
+        );
+        assert_eq!(
+            by_subject(&l)["bridge:gxbr-up"].len(),
+            3,
+            "bytes, packets, peak"
+        );
     }
 
     #[test]
@@ -382,17 +561,54 @@ mod tests {
         let nets = [net("nat", "gxbr-nat", None)];
         let snap = |vm_in: u64, br_in: u64, handle: u64| {
             vec![
-                NatCounter { bridge: "gxbr-nat".into(), mac: Some("02:ff:ef:a5:e8:72".into()), dir: Direction::In, bytes: vm_in, packets: vm_in / 1000, handle },
-                NatCounter { bridge: "gxbr-nat".into(), mac: None, dir: Direction::In, bytes: br_in, packets: br_in / 1000, handle: handle + 10 },
+                NatCounter {
+                    bridge: "gxbr-nat".into(),
+                    mac: Some("02:ff:ef:a5:e8:72".into()),
+                    dir: Direction::In,
+                    bytes: vm_in,
+                    packets: vm_in / 1000,
+                    handle,
+                },
+                NatCounter {
+                    bridge: "gxbr-nat".into(),
+                    mac: None,
+                    dir: Direction::In,
+                    bytes: br_in,
+                    packets: br_in / 1000,
+                    handle: handle + 10,
+                },
                 // A reservation of a deleted VM: skipped.
-                NatCounter { bridge: "gxbr-nat".into(), mac: Some("02:00:00:00:00:99".into()), dir: Direction::Out, bytes: 5, packets: 1, handle: 7 },
+                NatCounter {
+                    bridge: "gxbr-nat".into(),
+                    mac: Some("02:00:00:00:00:99".into()),
+                    dir: Direction::Out,
+                    bytes: 5,
+                    packets: 1,
+                    handle: 7,
+                },
             ]
         };
         let mut r = l.begin_round(T0 + 90_000).unwrap();
         sample_nat(&mut r, &snap(0, 0, 4), &vms, &nets, "boot1", T0 + 30_000).unwrap();
-        sample_nat(&mut r, &snap(3_000_000, 3_500_000, 4), &vms, &nets, "boot1", T0 + 60_000).unwrap();
+        sample_nat(
+            &mut r,
+            &snap(3_000_000, 3_500_000, 4),
+            &vms,
+            &nets,
+            "boot1",
+            T0 + 60_000,
+        )
+        .unwrap();
         // Host rebooted: same handle numbers, new boot id → counts from 0.
-        sample_nat(&mut r, &snap(1_000, 1_000, 4), &vms, &nets, "boot2", T0 + 90_000).unwrap();
+        sample_nat(
+            &mut r,
+            &snap(1_000, 1_000, 4),
+            &vms,
+            &nets,
+            "boot2",
+            T0 + 90_000,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         let t = by_subject(&l);
         assert_eq!(t["a.0"]["net.ext_rx_bytes"], 3_001_000);
@@ -406,7 +622,12 @@ mod tests {
         let (_d, l) = setup();
         let vms = [vm("a", &["nat"])];
         let nets = [net("nat", "gxbr-nat", None)];
-        let one = |uuid: &str, tx: u64| vec![BridgeStats { bridge: "gxbr-nat".into(), ports: vec![port(uuid, PortRole::Vm, Some(("a", 0)), 0, tx)] }];
+        let one = |uuid: &str, tx: u64| {
+            vec![BridgeStats {
+                bridge: "gxbr-nat".into(),
+                ports: vec![port(uuid, PortRole::Vm, Some(("a", 0)), 0, tx)],
+            }]
+        };
         let mut r = l.begin_round(T0 + 90_000).unwrap();
         sample_ports(&mut r, &one("p1", 0), &vms, &nets, T0 + 30_000).unwrap();
         sample_ports(&mut r, &one("p1", 500), &vms, &nets, T0 + 60_000).unwrap();
@@ -418,7 +639,7 @@ mod tests {
 
     fn cluster_net(name: &str, physnet: Option<&str>) -> Network {
         serde_json::from_value(serde_json::json!({
-            "name": name, "bridge": "br-int", "mode": if physnet.is_some() { "bridged" } else { "nat" }, "port_type": "tap",
+            "id": name, "name": name, "bridge": "br-int", "mode": if physnet.is_some() { "bridged" } else { "nat" }, "port_type": "tap",
             "scope": "cluster", "physnet": physnet, "created_at": 0, "project": "p1",
         }))
         .unwrap()
@@ -428,12 +649,24 @@ mod tests {
         CtCounters {
             epoch,
             gaps,
-            counters: vec![glidex_ovs::ct_meter::CtCounter { zone: 60001, ip: Some("10.89.0.5".parse().unwrap()), tx_bytes: tx, tx_packets: tx / 100, rx_bytes: rx, rx_packets: rx / 100 }],
+            counters: vec![glidex_ovs::ct_meter::CtCounter {
+                zone: 60001,
+                ip: Some("10.89.0.5".parse().unwrap()),
+                tx_bytes: tx,
+                tx_packets: tx / 100,
+                rx_bytes: rx,
+                rx_packets: rx / 100,
+            }],
         }
     }
 
     fn flags(l: &Ledger, subject: &str) -> BTreeSet<Flag> {
-        l.scan(0, u64::MAX / 10, None).unwrap().into_iter().filter(|r| r.subject.id == subject).flat_map(|r| r.flags).collect()
+        l.scan(0, u64::MAX / 10, None)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.subject.id == subject)
+            .flat_map(|r| r.flags)
+            .collect()
     }
 
     /// The gateway counts a VM that runs elsewhere: per NIC by address, and the
@@ -443,21 +676,66 @@ mod tests {
         let (_d, l) = setup();
         let vms = [vm("a", &["web"])];
         let nets = [cluster_net("web", None)];
-        let res = [Reservation { network: "web".into(), mac: "02:00:00:00:00:01".into(), ip: "10.89.0.5".parse().unwrap(), vm_id: "a".into(), nic: 0 }];
+        let res = [Reservation {
+            network: "web".into(),
+            mac: "02:00:00:00:00:01".into(),
+            ip: "10.89.0.5".parse().unwrap(),
+            vm_id: "a".into(),
+            nic: 0,
+        }];
         let mut r = l.begin_round(T0 + 90_000).unwrap();
-        sample_ct(&mut r, &ct(7, 0, 1000, 5000), false, &res, &vms, &nets, T0 + 30_000).unwrap();
-        sample_ct(&mut r, &ct(7, 0, 4000, 9000), false, &res, &vms, &nets, T0 + 60_000).unwrap();
+        sample_ct(
+            &mut r,
+            &ct(7, 0, 1000, 5000),
+            false,
+            &res,
+            &vms,
+            &nets,
+            T0 + 30_000,
+        )
+        .unwrap();
+        sample_ct(
+            &mut r,
+            &ct(7, 0, 4000, 9000),
+            false,
+            &res,
+            &vms,
+            &nets,
+            T0 + 60_000,
+        )
+        .unwrap();
         // The collector lost its totals: a new epoch counts from zero, flagged.
-        sample_ct(&mut r, &ct(8, 0, 200, 300), false, &res, &vms, &nets, T0 + 90_000).unwrap();
+        sample_ct(
+            &mut r,
+            &ct(8, 0, 200, 300),
+            false,
+            &res,
+            &vms,
+            &nets,
+            T0 + 90_000,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         let t = by_subject(&l);
         assert_eq!(t["a.0"]["net.ext_tx_bytes"], 3200);
         assert_eq!(t["a.0"]["net.ext_rx_bytes"], 4300);
         assert_eq!(t["web"]["bridge.ext_rx_bytes"], 4300);
-        assert_eq!(t["web"]["bridge.bytes"], 4300, "external inbound is part of the network's total");
+        assert_eq!(
+            t["web"]["bridge.bytes"], 4300,
+            "external inbound is part of the network's total"
+        );
         // An address nobody holds any more has nobody to bill.
         let mut r = l.begin_round(T0 + 120_000).unwrap();
-        sample_ct(&mut r, &ct(8, 0, 9, 9), false, &[], &vms, &nets, T0 + 120_000).unwrap();
+        sample_ct(
+            &mut r,
+            &ct(8, 0, 9, 9),
+            false,
+            &[],
+            &vms,
+            &nets,
+            T0 + 120_000,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -465,24 +743,63 @@ mod tests {
         let (_d, l) = setup();
         let vms = [vm("a", &["web"]), vm("b", &["lan"])];
         let nets = [cluster_net("web", None), cluster_net("lan", Some("lan"))];
-        let res = [Reservation { network: "web".into(), mac: "02:00:00:00:00:01".into(), ip: "10.89.0.5".parse().unwrap(), vm_id: "a".into(), nic: 0 }];
+        let res = [Reservation {
+            network: "web".into(),
+            mac: "02:00:00:00:00:01".into(),
+            ip: "10.89.0.5".parse().unwrap(),
+            vm_id: "a".into(),
+            nic: 0,
+        }];
         let mut r = l.begin_round(T0 + 60_000).unwrap();
-        sample_ct(&mut r, &ct(7, 0, 100, 100), false, &res, &vms, &nets, T0 + 30_000).unwrap();
-        sample_ct(&mut r, &ct(7, 1, 200, 200), true, &res, &vms, &nets, T0 + 60_000).unwrap();
+        sample_ct(
+            &mut r,
+            &ct(7, 0, 100, 100),
+            false,
+            &res,
+            &vms,
+            &nets,
+            T0 + 30_000,
+        )
+        .unwrap();
+        sample_ct(
+            &mut r,
+            &ct(7, 1, 200, 200),
+            true,
+            &res,
+            &vms,
+            &nets,
+            T0 + 60_000,
+        )
+        .unwrap();
         // Ports of both networks on br-int: only the NAT network gets a total.
         // What a guest sends enters the switch: OVS rx.
-        let stats = |uuid: &str, vm: &str, sent: u64| BridgeStats { bridge: "br-int".into(), ports: vec![port(uuid, PortRole::Vm, Some((vm, 0)), sent, 0)] };
+        let stats = |uuid: &str, vm: &str, sent: u64| BridgeStats {
+            bridge: "br-int".into(),
+            ports: vec![port(uuid, PortRole::Vm, Some((vm, 0)), sent, 0)],
+        };
         let mut both = stats("pa", "a", 0);
-        both.ports.push(port("pb", PortRole::Vm, Some(("b", 0)), 0, 0));
+        both.ports
+            .push(port("pb", PortRole::Vm, Some(("b", 0)), 0, 0));
         sample_ports(&mut r, &[both], &vms, &nets, T0 + 30_000).unwrap();
         let mut both = stats("pa", "a", 1000);
-        both.ports.push(port("pb", PortRole::Vm, Some(("b", 0)), 2000, 0));
+        both.ports
+            .push(port("pb", PortRole::Vm, Some(("b", 0)), 2000, 0));
         sample_ports(&mut r, &[both], &vms, &nets, T0 + 60_000).unwrap();
         l.commit(r).unwrap();
-        assert!(flags(&l, "a.0").contains(&Flag::ExtGap) && flags(&l, "web").contains(&Flag::ExtGap));
+        assert!(
+            flags(&l, "a.0").contains(&Flag::ExtGap) && flags(&l, "web").contains(&Flag::ExtGap)
+        );
         let t = by_subject(&l);
-        assert_eq!(t["web"]["bridge.bytes"], 1000 + 100, "ports' tx plus external inbound");
-        assert!(!t.get("lan").is_some_and(|m| m.contains_key("bridge.bytes")), "{:?}", t.get("lan"));
+        assert_eq!(
+            t["web"]["bridge.bytes"],
+            1000 + 100,
+            "ports' tx plus external inbound"
+        );
+        assert!(
+            !t.get("lan").is_some_and(|m| m.contains_key("bridge.bytes")),
+            "{:?}",
+            t.get("lan")
+        );
         assert!(flags(&l, "lan").contains(&Flag::NetworkTotalUnavailable));
         assert_eq!(t["b.0"]["net.tx_bytes"], 2000, "per-VM meters remain");
     }

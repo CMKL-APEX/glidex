@@ -175,6 +175,19 @@ pub trait Exec: Send + Sync {
     /// Create a directory (and parents) and set its mode.
     fn create_dir(&self, path: &Path, mode: u32) -> Result<(), OvsError>;
     fn exists(&self, path: &Path) -> bool;
+    /// The names in a directory; empty when it can't be read.
+    fn list_dir(&self, _path: &Path) -> Vec<String> {
+        Vec::new()
+    }
+    /// The file name a symlink points at (`iommu_group` → `31`).
+    fn link_name(&self, _path: &Path) -> Option<String> {
+        None
+    }
+    /// Give a file to group `group` with `mode` (a VFIO group device to the
+    /// VMs' group, spec/host-topology.md §5.3).
+    fn set_group_mode(&self, _path: &Path, _group: &str, _mode: u32) -> Result<(), OvsError> {
+        Ok(())
+    }
 
     /// Use OVS tools from `dir` (a source-built prefix) from now on.
     fn set_ovs_bin_dir(&self, _dir: Option<PathBuf>) {}
@@ -233,15 +246,17 @@ impl SystemExec {
                 .map(|d| d.join("configure"))
                 .ok_or_else(|| OvsError::Io("./configure needs a working directory".into()));
         }
-        if matches!(program, Program::OvsVsctl | Program::OvsAppctl | Program::OvsVswitchd) {
-            if let Some(dir) = self.ovs_bin_dir.lock().unwrap().as_ref() {
-                // ovs-vswitchd lives in sbin/ of a source prefix.
-                let sbin = dir.parent().map(|p| p.join("sbin").join(program.name()));
-                return Ok(match (program, sbin) {
-                    (Program::OvsVswitchd, Some(p)) => p,
-                    _ => dir.join(program.name()),
-                });
-            }
+        if matches!(
+            program,
+            Program::OvsVsctl | Program::OvsAppctl | Program::OvsVswitchd
+        ) && let Some(dir) = self.ovs_bin_dir.lock().unwrap().as_ref()
+        {
+            // ovs-vswitchd lives in sbin/ of a source prefix.
+            let sbin = dir.parent().map(|p| p.join("sbin").join(program.name()));
+            return Ok(match (program, sbin) {
+                (Program::OvsVswitchd, Some(p)) => p,
+                _ => dir.join(program.name()),
+            });
         }
         Ok(PathBuf::from(program.name()))
     }
@@ -332,19 +347,26 @@ impl Exec for SystemExec {
     }
 
     fn read_file(&self, path: &Path) -> Result<String, OvsError> {
-        std::fs::read_to_string(path).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
+        std::fs::read_to_string(path)
+            .map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError> {
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to write {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to write {} via sudo",
+                path.display()
+            )));
         }
         std::fs::write(path, data).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
     fn remove_file(&self, path: &Path) -> Result<(), OvsError> {
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to remove {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to remove {} via sudo",
+                path.display()
+            )));
         }
         match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -356,7 +378,10 @@ impl Exec for SystemExec {
     fn create_dir(&self, path: &Path, mode: u32) -> Result<(), OvsError> {
         use std::os::unix::fs::PermissionsExt;
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to create {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to create {} via sudo",
+                path.display()
+            )));
         }
         let err = |e: std::io::Error| OvsError::Io(format!("{}: {}", path.display(), e));
         std::fs::create_dir_all(path).map_err(err)?;
@@ -365,6 +390,43 @@ impl Exec for SystemExec {
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+
+    fn list_dir(&self, path: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    fn link_name(&self, path: &Path) -> Option<String> {
+        std::fs::read_link(path)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    }
+
+    fn set_group_mode(&self, path: &Path, group: &str, mode: u32) -> Result<(), OvsError> {
+        use std::os::unix::fs::PermissionsExt;
+        let gid = std::fs::read_to_string("/etc/group")
+            .ok()
+            .and_then(|g| {
+                g.lines().find_map(|l| {
+                    let mut f = l.split(':');
+                    (f.next() == Some(group))
+                        .then(|| f.nth(1).and_then(|id| id.parse::<u32>().ok()))
+                        .flatten()
+                })
+            })
+            .ok_or_else(|| OvsError::Io(format!("no group {group}")))?;
+        std::os::unix::fs::chown(path, None, Some(gid))
+            .map_err(|e| OvsError::Io(format!("{}: {e}", path.display())))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| OvsError::Io(format!("{}: {e}", path.display())))
     }
 
     fn set_ovs_bin_dir(&self, dir: Option<PathBuf>) {
@@ -381,6 +443,7 @@ impl Exec for SystemExec {
 pub struct RecordingExec {
     responses: Mutex<Vec<(String, VecDeque<Output>)>>,
     files: Mutex<Vec<(PathBuf, String)>>,
+    links: Mutex<Vec<(PathBuf, String)>>,
     calls: Mutex<Vec<String>>,
     writes: Mutex<Vec<(PathBuf, Vec<u8>)>>,
 }
@@ -406,6 +469,15 @@ impl RecordingExec {
         let mut responses = self.responses.lock().unwrap();
         responses.retain(|(p, _)| p != prefix);
         responses.push((prefix.to_string(), VecDeque::from([output])));
+        self
+    }
+
+    /// A symlink at `path` whose target's file name is `name`.
+    pub fn link(&self, path: &str, name: &str) -> &Self {
+        self.links
+            .lock()
+            .unwrap()
+            .push((PathBuf::from(path), name.to_string()));
         self
     }
 
@@ -471,10 +543,10 @@ impl Exec for RecordingExec {
             .lock()
             .unwrap()
             .push((path.to_path_buf(), data.to_vec()));
-        self.files
-            .lock()
-            .unwrap()
-            .push((path.to_path_buf(), String::from_utf8_lossy(data).into_owned()));
+        self.files.lock().unwrap().push((
+            path.to_path_buf(),
+            String::from_utf8_lossy(data).into_owned(),
+        ));
         Ok(())
     }
 
@@ -497,5 +569,40 @@ impl Exec for RecordingExec {
 
     fn exists(&self, path: &Path) -> bool {
         self.files.lock().unwrap().iter().any(|(p, _)| p == path)
+    }
+
+    /// The direct children of `path` among the scripted files and links.
+    fn list_dir(&self, path: &Path) -> Vec<String> {
+        let files = self.files.lock().unwrap();
+        let links = self.links.lock().unwrap();
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|(p, _)| p)
+            .chain(links.iter().map(|(p, _)| p))
+            .filter_map(|p| p.strip_prefix(path).ok())
+            .filter_map(|rest| rest.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn link_name(&self, path: &Path) -> Option<String> {
+        self.links
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(p, _)| p == path)
+            .map(|(_, n)| n.clone())
+    }
+
+    fn set_group_mode(&self, path: &Path, group: &str, mode: u32) -> Result<(), OvsError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("chgrp {group} {}; chmod {mode:o}", path.display()));
+        Ok(())
     }
 }

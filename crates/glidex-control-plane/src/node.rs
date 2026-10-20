@@ -33,12 +33,18 @@ pub struct Roles {
 }
 
 impl Roles {
-    pub const STANDALONE: Roles = Roles { node: true, server: true };
+    pub const STANDALONE: Roles = Roles {
+        node: true,
+        server: true,
+    };
 
     pub fn of(role: NodeRole) -> Roles {
         match role {
             NodeRole::Server => Roles::STANDALONE,
-            NodeRole::Agent => Roles { node: true, server: false },
+            NodeRole::Agent => Roles {
+                node: true,
+                server: false,
+            },
         }
     }
 }
@@ -67,6 +73,10 @@ pub struct NodeSpec {
     /// each value once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_spare_files_before: Option<u64>,
+    /// PCI devices (addresses) no new VM gets (spec/host-topology.md
+    /// §5.4); the VM holding one keeps it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub cordoned_devices: std::collections::BTreeSet<String>,
 }
 
 /// What an administrator chose for a node's `br-int` datapath.
@@ -115,7 +125,10 @@ pub enum NodePhase {
 impl NodePhase {
     /// A tombstone: the node is gone and its id retired (§5.3).
     pub fn is_tombstone(self) -> bool {
-        matches!(self, NodePhase::Departed | NodePhase::Removed | NodePhase::Forgotten)
+        matches!(
+            self,
+            NodePhase::Departed | NodePhase::Removed | NodePhase::Forgotten
+        )
     }
 
     pub fn schedulable(self) -> bool {
@@ -126,10 +139,46 @@ impl NodePhase {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resources {
     pub cpus: u32,
+    /// In `allocatable`, without the hugepage pool: a hugepage is counted
+    /// once, as a hugepage (spec/host-topology.md §8a.2).
     pub memory_mib: u64,
-    /// Free-standing hugepages by page size in KiB.
+    /// Hugepages by page size in KiB: the pool in `capacity`; in
+    /// `allocatable`, less what OVS-DPDK takes.
     #[serde(default)]
     pub hugepages: BTreeMap<String, u64>,
+}
+
+impl Resources {
+    /// Pages of `page_kib` hugepages.
+    pub fn pages(&self, page_kib: u64) -> u64 {
+        self.hugepages
+            .get(&page_kib.to_string())
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// MiB held in hugepages of every size (`page KiB → pages`).
+pub fn hugepage_pool_mib(hugepages: &BTreeMap<String, u64>) -> u64 {
+    hugepages
+        .iter()
+        .filter_map(|(kib, n)| kib.parse::<u64>().ok().map(|k| k * n / 1024))
+        .sum()
+}
+
+/// Pages of `page_kib` OVS-DPDK takes for `dpdk-socket-mem` (MiB per NUMA
+/// node, `1024` or `1024,1024`), rounded up per node.
+pub fn dpdk_pages(socket_mem: &str, page_kib: u64) -> u64 {
+    let page_mib = (page_kib / 1024).max(1);
+    socket_mem
+        .split(',')
+        .filter_map(|m| m.trim().parse::<u64>().ok())
+        .map(|mib| mib.div_ceil(page_mib))
+        .sum()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +192,10 @@ pub struct NodeFeatures {
     pub dpdk: bool,
     #[serde(default)]
     pub iommu: bool,
+    /// The host's default hugepage size in KiB (`Hugepagesize`), which
+    /// OVS-DPDK and a VM asking for no size use; 0 from an older node.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hugepage_kib: u64,
     /// Provider networks this node maps: physnet → bridge (§11.3).
     #[serde(default)]
     pub physnets: BTreeMap<String, String>,
@@ -183,10 +236,10 @@ pub struct BridgeAddr {
     pub gateway: Option<String>,
 }
 
-/// What this build supports. A new write-set format or schema migration
-/// raises it, and is used only once the cluster's level (the minimum over
-/// its servers) has reached it.
-pub const FEATURE_LEVEL: u32 = 1;
+/// What this build supports. A new write-set format, schema migration or
+/// table raises it, and is used only once the cluster's level (the minimum
+/// over its servers) has reached it. 2: datastores (spec/storage.md S2).
+pub const FEATURE_LEVEL: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Versions {
@@ -228,6 +281,16 @@ pub struct NodeStatus {
     /// scheduler places a VM with VFIO devices where they exist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pci_devices: Vec<String>,
+    /// The IOMMU group of each PCI function that is not a bridge: a VFIO
+    /// device claims its group (spec/host-topology.md §8.4). Empty from a
+    /// node of an older version, or a host without an IOMMU.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pci_groups: BTreeMap<String, String>,
+    /// NUMA nodes, cores, memory and hugepages per node, reserved CPUs and
+    /// devices' NUMA nodes (spec/host-topology.md §3.1); `None` from a node
+    /// of an older version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<crate::topology::TopologySummary>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
@@ -264,11 +327,16 @@ impl Node {
                 raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
-                versions: Versions { glidex: env!("CARGO_PKG_VERSION").into(), ..Default::default() },
+                versions: Versions {
+                    glidex: env!("CARGO_PKG_VERSION").into(),
+                    ..Default::default()
+                },
                 capacity: Resources::default(),
                 allocatable: Resources::default(),
                 features: NodeFeatures::default(),
                 pci_devices: Vec::new(),
+                pci_groups: BTreeMap::new(),
+                topology: None,
                 heartbeat: None,
             },
         }
@@ -298,7 +366,48 @@ macro_rules! storage_from {
         }
     )*};
 }
-storage_from!(redb::TransactionError, redb::TableError, redb::StorageError, redb::CommitError, serde_json::Error);
+storage_from!(
+    redb::TransactionError,
+    redb::TableError,
+    redb::StorageError,
+    redb::CommitError,
+    serde_json::Error
+);
+
+/// An OVN release series, `(major, minor)` of "26.03.0" or "24.03.8".
+pub fn ovn_series(v: &str) -> Option<(u32, u32)> {
+    let mut parts = v.trim().split(|c: char| !c.is_ascii_digit());
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// The OVN of the cluster's ovn-northd: the newest that the servers running
+/// OVN's central part report (one of them runs northd; a newer one may take
+/// over). `None` without such a server.
+pub fn cluster_northd_ovn(nodes: &[Node]) -> Option<String> {
+    nodes
+        .iter()
+        .filter(|n| {
+            n.spec.role == NodeRole::Server
+                && n.status.phase == NodePhase::Active
+                && n.status.features.ovn_central
+        })
+        .filter_map(|n| n.status.versions.ovn.clone())
+        .filter(|v| ovn_series(v).is_some())
+        .max_by_key(|v| ovn_series(v))
+}
+
+/// Why `n` can't run the logical flows of an ovn-northd of version `northd`:
+/// its ovn-controller is an older release, whose tables stop short of
+/// northd's pipeline (spec/installer.md, OVN). `None` when it can.
+pub fn ovn_outdated(n: &Node, northd: Option<&str>) -> Option<String> {
+    let (want, have) = (
+        northd.and_then(ovn_series)?,
+        n.status.versions.ovn.as_deref()?,
+    );
+    (ovn_series(have)? < want).then(|| {
+        format!("its ovn-controller {have} is older than the cluster's ovn-northd {}: re-run glidex-install on {} to upgrade OVN", northd.unwrap_or_default(), n.spec.name)
+    })
+}
 
 /// The `nodes` table.
 pub struct NodeStore {
@@ -330,27 +439,45 @@ impl NodeStore {
                 Err(e) => tracing::warn!("skipping unreadable node record: {}", e),
             }
         }
-        out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name).then(a.meta.id.cmp(&b.meta.id)));
+        out.sort_by(|a, b| {
+            a.spec
+                .name
+                .cmp(&b.spec.name)
+                .then(a.meta.id.cmp(&b.meta.id))
+        });
         Ok(out)
     }
 
     /// Insert or replace. Names are unique among live nodes.
     pub fn put(&self, n: &Node) -> Result<(), NodeError> {
         if !n.status.phase.is_tombstone()
-            && self.list()?.iter().any(|o| o.meta.id != n.meta.id && !o.status.phase.is_tombstone() && o.spec.name == n.spec.name)
+            && self.list()?.iter().any(|o| {
+                o.meta.id != n.meta.id
+                    && !o.status.phase.is_tombstone()
+                    && o.spec.name == n.spec.name
+            })
         {
             return Err(NodeError::NameTaken(n.spec.name.clone()));
         }
         let bytes = serde_json::to_vec(n)?;
-        let r = self.db.write(Origin::Controller, |tx| -> Result<(), NodeError> {
-            let mut t = tx.open_table(TableId::Nodes.definition())?;
-            t.insert(n.meta.id.as_str(), bytes.as_slice())?;
-            Ok(())
-        });
+        // Not a node-status origin (`Origin::is_node_status`): on a follower
+        // server this must fail with `NotLeader` and go the raw way below,
+        // which lets a server write all of its own record.
+        let r = self
+            .db
+            .write(Origin::System, |tx| -> Result<(), NodeError> {
+                let mut t = tx.open_table(TableId::Nodes.definition())?;
+                t.insert(n.meta.id.as_str(), bytes.as_slice())?;
+                Ok(())
+            });
         match r {
             // A follower server reporting on itself: the leader writes it.
             Err(NodeError::Store(StoreError::NotLeader { .. })) => {
-                Ok(self.db.forward_raw(vec![crate::store::Op::Put { table: TableId::Nodes, key: n.meta.id.as_bytes().to_vec(), value: bytes }])?)
+                Ok(self.db.forward_raw(vec![crate::store::Op::Put {
+                    table: TableId::Nodes,
+                    key: n.meta.id.as_bytes().to_vec(),
+                    value: bytes,
+                }])?)
             }
             other => other,
         }
@@ -360,17 +487,35 @@ impl NodeStore {
     /// node reports about itself (capacity, features, versions). Writes
     /// nothing when nothing changed (§4.1).
     pub fn ensure_self(&self, id: &str, probe: SelfProbe) -> Result<Node, NodeError> {
-        self.report_self(id, probe, true).map(|n| n.expect("created"))
+        self.report_self(id, probe, true)
+            .map(|n| n.expect("created"))
     }
 
     /// Update this node's own record with what the host has now. `create`:
     /// make the record when there is none (a standalone host). A cluster
     /// member never does: its record is the cluster's (join wrote it), and a
     /// cache that hasn't received it yet must not replace it with a guess.
-    pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
+    pub fn report_self(
+        &self,
+        id: &str,
+        probe: SelfProbe,
+        create: bool,
+    ) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
+            None if create => Node::new(
+                id,
+                NodeSpec {
+                    name: probe.name.clone(),
+                    role: NodeRole::Server,
+                    unschedulable: false,
+                    labels: BTreeMap::new(),
+                    br_int_datapath: Default::default(),
+                    bridge_mappings: Default::default(),
+                    drop_spare_files_before: None,
+                    cordoned_devices: Default::default(),
+                },
+            ),
             None => return Ok(None),
         };
         let before = node.clone();
@@ -385,6 +530,8 @@ impl NodeStore {
             node.status.features.physnets.insert(p.clone(), b.clone());
         }
         node.status.pci_devices = probe.pci_devices;
+        node.status.pci_groups = probe.pci_groups;
+        node.status.topology = probe.topology;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
         if node != before || self.get(id)?.is_none() {
@@ -403,6 +550,8 @@ pub struct SelfProbe {
     pub allocatable: Resources,
     pub features: NodeFeatures,
     pub pci_devices: Vec<String>,
+    pub pci_groups: BTreeMap<String, String>,
+    pub topology: Option<crate::topology::TopologySummary>,
     /// `ovn-controller`'s version, when OVN is installed.
     pub ovn_version: Option<String>,
 }
@@ -410,11 +559,20 @@ pub struct SelfProbe {
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
 /// second word; `None` when the program isn't installed.
 fn program_version(program: &str) -> Option<String> {
-    let out = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    let out = std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&out.stdout).lines().next()?.split_whitespace().nth(1).map(String::from)
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .map(String::from)
 }
 
 impl SelfProbe {
@@ -427,13 +585,19 @@ impl SelfProbe {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "localhost".into());
-        let cpus = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1);
         let memory_mib = std::fs::read_to_string("/proc/meminfo")
             .ok()
             .and_then(|m| {
                 m.lines()
                     .find_map(|l| l.strip_prefix("MemTotal:"))
-                    .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()))
+                    .and_then(|r| {
+                        r.split_whitespace()
+                            .next()
+                            .and_then(|n| n.parse::<u64>().ok())
+                    })
             })
             .map(|kib| kib / 1024)
             .unwrap_or(0);
@@ -441,34 +605,89 @@ impl SelfProbe {
         if let Ok(rd) = std::fs::read_dir("/sys/kernel/mm/hugepages") {
             for e in rd.flatten() {
                 let dir = e.file_name().to_string_lossy().into_owned();
-                if let Some(kb) = dir.strip_prefix("hugepages-").and_then(|s| s.strip_suffix("kB")) {
-                    let n = std::fs::read_to_string(e.path().join("nr_hugepages")).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+                if let Some(kb) = dir
+                    .strip_prefix("hugepages-")
+                    .and_then(|s| s.strip_suffix("kB"))
+                {
+                    let n = std::fs::read_to_string(e.path().join("nr_hugepages"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
                     if n > 0 {
                         hugepages.insert(kb.to_string(), n);
                     }
                 }
             }
         }
-        let capacity = Resources { cpus, memory_mib, hugepages: hugepages.clone() };
+        let pool_mib = hugepage_pool_mib(&hugepages);
+        let capacity = Resources {
+            cpus,
+            memory_mib,
+            hugepages: hugepages.clone(),
+        };
         let allocatable = Resources {
             cpus: cpus.saturating_sub(reserved.cpus).max(1),
-            memory_mib: memory_mib.saturating_sub(reserved.memory_mib),
+            memory_mib: memory_mib
+                .saturating_sub(pool_mib)
+                .saturating_sub(reserved.memory_mib),
             hugepages,
         };
-        let hypervisors = [crate::hypervisor::HypervisorType::CloudHypervisor, crate::hypervisor::HypervisorType::Qemu]
-            .into_iter()
-            .filter(|t| crate::hypervisor::driver(*t).is_available())
-            .map(|t| t.to_string())
-            .collect();
+        let hugepage_kib = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|m| {
+                m.lines()
+                    .find_map(|l| l.strip_prefix("Hugepagesize:"))
+                    .and_then(|r| r.split_whitespace().next()?.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+        let hypervisors = [
+            crate::hypervisor::HypervisorType::CloudHypervisor,
+            crate::hypervisor::HypervisorType::Qemu,
+        ]
+        .into_iter()
+        .filter(|t| crate::hypervisor::driver(*t).is_available())
+        .map(|t| t.to_string())
+        .collect();
         let features = NodeFeatures {
             kvm: std::path::Path::new("/dev/kvm").exists(),
             hypervisors,
-            iommu: std::fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false),
+            iommu: std::fs::read_dir("/sys/kernel/iommu_groups")
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false),
+            hugepage_kib,
             ovn_central: program_version("ovn-northd").is_some(),
-            arch: crate::images::catalog::Arch::host().map(|a| a.as_str().to_string()).unwrap_or_default(),
+            arch: crate::images::catalog::Arch::host()
+                .map(|a| a.as_str().to_string())
+                .unwrap_or_default(),
             ..Default::default()
         };
-        let pci_devices = crate::pci::scan_pci_devices().into_iter().map(|d| d.address).collect();
-        SelfProbe { name, capacity, allocatable, features, pci_devices, ovn_version: program_version("ovn-controller") }
+        let pci = crate::pci::scan_pci_devices();
+        let pci_groups = crate::pci::iommu_groups(&pci);
+        let pci_devices = pci.into_iter().map(|d| d.address).collect();
+        SelfProbe {
+            name,
+            capacity,
+            allocatable,
+            features,
+            pci_devices,
+            pci_groups,
+            topology: crate::topology::read(),
+            ovn_version: program_version("ovn-controller"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dpdk_takes_whole_pages_per_numa_node_and_the_pool_is_counted_once() {
+        assert_eq!(super::dpdk_pages("1024", 2048), 512);
+        assert_eq!(super::dpdk_pages("1024,1024", 2048), 1024);
+        assert_eq!(super::dpdk_pages("1025", 2048), 513);
+        assert_eq!(super::dpdk_pages("1024", 1_048_576), 1);
+        assert_eq!(super::dpdk_pages("", 2048), 0);
+        let pool: std::collections::BTreeMap<String, u64> =
+            [("2048".to_string(), 1024), ("1048576".to_string(), 2)].into();
+        assert_eq!(super::hugepage_pool_mib(&pool), 2048 + 2048);
     }
 }

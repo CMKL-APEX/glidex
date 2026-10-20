@@ -5,7 +5,7 @@
 //! A QMP monitor serves one client at a time, so a connection attempt that
 //! finds it busy is retried for a short while (spec §16).
 
-use crate::{connect, GuestState, HvError, Observed};
+use crate::{GuestState, HvError, Observed, connect};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -20,7 +20,9 @@ const BUSY_RETRY: Duration = Duration::from_secs(2);
 
 impl QmpClient {
     pub fn new(socket_path: &str) -> Self {
-        Self { socket_path: socket_path.to_string() }
+        Self {
+            socket_path: socket_path.to_string(),
+        }
     }
 
     /// Open a connection and complete the `qmp_capabilities` handshake.
@@ -28,7 +30,10 @@ impl QmpClient {
         let deadline = Instant::now() + BUSY_RETRY;
         loop {
             match self.try_connect() {
-                Err(HvError::Connect(_)) if Instant::now() < deadline && std::path::Path::new(&self.socket_path).exists() => {
+                Err(HvError::Connect(_))
+                    if Instant::now() < deadline
+                        && std::path::Path::new(&self.socket_path).exists() =>
+                {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 other => return other,
@@ -46,7 +51,10 @@ impl QmpClient {
         stream.set_read_timeout(Some(Duration::from_millis(500)))?;
         let mut greeting = String::new();
         if reader.read_line(&mut greeting).unwrap_or(0) == 0 || !greeting.contains("QMP") {
-            return Err(HvError::Connect(format!("{}: no QMP greeting", self.socket_path)));
+            return Err(HvError::Connect(format!(
+                "{}: no QMP greeting",
+                self.socket_path
+            )));
         }
         stream.set_read_timeout(Some(crate::IO_TIMEOUT))?;
 
@@ -56,13 +64,18 @@ impl QmpClient {
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line)? == 0 {
-                return Err(HvError::Connect("QMP connection closed during handshake".to_string()));
+                return Err(HvError::Connect(
+                    "QMP connection closed during handshake".to_string(),
+                ));
             }
             if line.contains("\"return\"") {
                 break;
             }
             if line.contains("\"error\"") {
-                return Err(HvError::Api(format!("QMP handshake failed: {}", line.trim())));
+                return Err(HvError::Api(format!(
+                    "QMP handshake failed: {}",
+                    line.trim()
+                )));
             }
         }
         Ok((stream, reader))
@@ -79,9 +92,13 @@ impl QmpClient {
             let mut line = String::new();
             if reader.read_line(&mut line)? == 0 {
                 // `quit` closes the connection without replying.
-                return Err(HvError::Connect("QMP connection closed before reply".to_string()));
+                return Err(HvError::Connect(
+                    "QMP connection closed before reply".to_string(),
+                ));
             }
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if let Some(e) = v.get("error") {
                 return Err(HvError::Api(e.to_string()));
             }
@@ -98,8 +115,16 @@ impl QmpClient {
         Ok(crate::stats::parse_qmp_blockstats(&v))
     }
 
+    /// Each vCPU's `cpu-index` and host thread id (`query-cpus-fast`), for
+    /// pinning vCPUs, which QEMU has no option for.
+    pub fn query_cpus_fast(&self) -> Result<Vec<(u32, i32)>, HvError> {
+        let v = self.execute(&serde_json::json!({ "execute": "query-cpus-fast" }))?;
+        parse_cpus_fast(&v)
+    }
+
     fn run(&self, name: &str) -> Result<(), HvError> {
-        self.execute(&serde_json::json!({ "execute": name })).map(|_| ())
+        self.execute(&serde_json::json!({ "execute": name }))
+            .map(|_| ())
     }
 
     /// The monitor answers with its greeting (launch health check).
@@ -136,7 +161,8 @@ impl QmpClient {
     }
 
     pub fn device_del(&self, id: &str) -> Result<(), HvError> {
-        self.execute(&serde_json::json!({ "execute": "device_del", "arguments": { "id": id } })).map(|_| ())
+        self.execute(&serde_json::json!({ "execute": "device_del", "arguments": { "id": id } }))
+            .map(|_| ())
     }
 
     /// The guest's state (`query-status`) and the ids of user-created
@@ -150,12 +176,34 @@ impl QmpClient {
     }
 }
 
+fn parse_cpus_fast(v: &Value) -> Result<Vec<(u32, i32)>, HvError> {
+    let bad = || HvError::Api(format!("unexpected query-cpus-fast reply: {}", v));
+    v.as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|c| {
+            let index = c.get("cpu-index").and_then(|i| i.as_u64());
+            let thread = c.get("thread-id").and_then(|t| t.as_i64());
+            match (index, thread) {
+                (Some(i), Some(t)) => Ok((
+                    u32::try_from(i).map_err(|_| bad())?,
+                    i32::try_from(t).map_err(|_| bad())?,
+                )),
+                _ => Err(bad()),
+            }
+        })
+        .collect()
+}
+
 fn parse_observed(status: &Value, peripherals: &Value) -> Observed {
     let guest = match status.get("status").and_then(|s| s.as_str()).unwrap_or("") {
         "prelaunch" | "inmigrate" => GuestState::Created,
         "running" | "debug" => GuestState::Running,
-        "paused" | "suspended" | "restore-vm" | "save-vm" | "finish-migrate" | "postmigrate" | "colo" => GuestState::Paused,
-        "shutdown" | "guest-panicked" | "internal-error" | "io-error" | "watchdog" => GuestState::Shutdown,
+        "paused" | "suspended" | "restore-vm" | "save-vm" | "finish-migrate" | "postmigrate"
+        | "colo" => GuestState::Paused,
+        "shutdown" | "guest-panicked" | "internal-error" | "io-error" | "watchdog" => {
+            GuestState::Shutdown
+        }
         _ if status.get("running").and_then(|r| r.as_bool()) == Some(true) => GuestState::Running,
         _ => GuestState::Paused,
     };
@@ -163,7 +211,11 @@ fn parse_observed(status: &Value, peripherals: &Value) -> Observed {
         .as_array()
         .map(|a| {
             a.iter()
-                .filter(|p| p.get("type").and_then(|t| t.as_str()).is_some_and(|t| t.starts_with("child<")))
+                .filter(|p| {
+                    p.get("type")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.starts_with("child<"))
+                })
                 .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(String::from))
                 .collect()
         })
@@ -188,9 +240,29 @@ mod tests {
         );
         assert_eq!(o.guest, GuestState::Running);
         assert_eq!(o.device_ids, ["_vfio_0000_41_00_0", "vd0"]);
-        assert_eq!(parse_observed(&serde_json::json!({"status": "prelaunch"}), &Value::Null).guest, GuestState::Created);
-        assert_eq!(parse_observed(&serde_json::json!({"status": "paused"}), &Value::Null).guest, GuestState::Paused);
-        assert_eq!(parse_observed(&serde_json::json!({"status": "shutdown"}), &Value::Null).guest, GuestState::Shutdown);
+        assert_eq!(
+            parse_observed(&serde_json::json!({"status": "prelaunch"}), &Value::Null).guest,
+            GuestState::Created
+        );
+        assert_eq!(
+            parse_observed(&serde_json::json!({"status": "paused"}), &Value::Null).guest,
+            GuestState::Paused
+        );
+        assert_eq!(
+            parse_observed(&serde_json::json!({"status": "shutdown"}), &Value::Null).guest,
+            GuestState::Shutdown
+        );
+    }
+
+    #[test]
+    fn cpus_fast() {
+        let v = serde_json::json!([
+            {"cpu-index": 0, "thread-id": 4101, "qom-path": "/machine/unattached/device[0]", "target": "x86_64"},
+            {"cpu-index": 1, "thread-id": 4102, "qom-path": "/machine/unattached/device[1]", "target": "x86_64"}
+        ]);
+        assert_eq!(parse_cpus_fast(&v).unwrap(), [(0, 4101), (1, 4102)]);
+        assert!(parse_cpus_fast(&serde_json::json!([{"cpu-index": 0}])).is_err());
+        assert!(parse_cpus_fast(&serde_json::json!({})).is_err());
     }
 
     #[test]
@@ -209,16 +281,22 @@ mod tests {
             w.write_all(b"{\"return\": {}}\r\n").unwrap();
             line.clear();
             r.read_line(&mut line).unwrap();
-            w.write_all(b"{\"event\": \"RESUME\"}\r\n{\"return\": {\"status\": \"running\"}}\r\n").unwrap();
+            w.write_all(b"{\"event\": \"RESUME\"}\r\n{\"return\": {\"status\": \"running\"}}\r\n")
+                .unwrap();
             line
         });
-        let r = QmpClient::new(sock.to_str().unwrap()).execute(&serde_json::json!({"execute": "query-status"})).unwrap();
+        let r = QmpClient::new(sock.to_str().unwrap())
+            .execute(&serde_json::json!({"execute": "query-status"}))
+            .unwrap();
         assert_eq!(r["status"], "running");
         assert!(server.join().unwrap().contains("query-status"));
     }
 
     #[test]
     fn missing_socket_is_a_connect_error() {
-        assert!(matches!(QmpClient::new("/nonexistent/qmp.sock").ping(), Err(HvError::Connect(_))));
+        assert!(matches!(
+            QmpClient::new("/nonexistent/qmp.sock").ping(),
+            Err(HvError::Connect(_))
+        ));
     }
 }

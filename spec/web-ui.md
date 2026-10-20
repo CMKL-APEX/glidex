@@ -27,6 +27,8 @@ The installer builds the UI, copies `dist` to
 | `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port; an address that appears after startup counts too) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
 | `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
 | `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
+| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [tailscale-tls.md](tailscale-tls.md). |
+| `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |
 | `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
 
@@ -46,13 +48,16 @@ over TCP it goes by the browser's session cookie alone. `Origin`,
 `Cookie`, `X-Glidex-CSRF` and `Authorization` pass through untouched.
 
 Every response carries `Content-Security-Policy: default-src 'self';
-connect-src 'self'; img-src 'self' data:; style-src 'self'
-'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action
-'self'` (inline styles: React and xterm.js set `style` attributes),
+script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'
+data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';
+base-uri 'none'; form-action 'self'` (`'wasm-unsafe-eval'`: the
+console's ghostty-web terminal is WebAssembly; inline styles: React and
+the terminals set `style` attributes),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, and with a configured certificate (not a
 self-signed one, security.md §5.1.1) `Strict-Transport-Security:
-max-age=31536000`. A plain-HTTP request on the HTTPS port gets `308` to
+max-age=31536000`; on connections served the Tailscale certificate,
+`max-age=86400`. A plain-HTTP request on the HTTPS port gets `308` to
 the `https://` URL.
 
 ## Authentication flow
@@ -90,7 +95,8 @@ the `https://` URL.
 - **React 19** with **react-router-dom 7** for client-side routing.
 - **TypeScript 5** (strict).
 - **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
-- **@xterm/xterm + @xterm/addon-fit** for the VM console page.
+- **ghostty-web** (default) and **@xterm/xterm + @xterm/addon-fit** for
+  the VM console page, each loaded only when chosen.
 - **bun** is the package manager (the lockfile is `bun.lock`).
 
 ## Dev-server proxy
@@ -134,7 +140,8 @@ ui/src/
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
-    ├── VmConsole.tsx       # xterm.js + console WebSocket; Reconnect after it closes
+    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, Reconnect after it closes
+    ├── consoleTerminal.ts  # The two terminals (ghostty-web, xterm.js) behind one interface
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
@@ -159,6 +166,7 @@ ui/src/
 | `/credentials` | `Credentials` |
 | `/images` | `Images` |
 | `/disks` | `Disks` |
+| `/datastores` | `Datastores` (shown with `readDatastore`) |
 | `/projects` | `Projects` |
 | `/projects/:id` | `ProjectDetail` |
 | `/access` | `Access` (shown with `listUsers`, `listTeams` or `readSystemBindings`) |
@@ -166,12 +174,17 @@ ui/src/
 | `/policies` | `Policies` (shown with `readPolicy`) |
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
 | `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
+| `/tenants` | `Tenants` (shown with `listTenants` or `createTenant`, or to members of a tenant; spec/tenancy.md §14) |
+| `/tenants/:id` | `TenantDetail`: rename, suspend, delete, members, tenant roles |
+| `/admissions` | `Admissions` (shown with `listAdmissions`): tenants admitted here and their caps |
+| `/connectors` | `Connectors` (shown with `listConnectors`): login connectors, write-only secrets, `test` |
 | `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
-| `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2) |
+| `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3) |
 | `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 
-Without a session every path shows the login page.
+Without a session every path shows the login page, with a sign-in
+button per OIDC connector (`/api/auth/c/{id}/start`).
 
 ## API client
 
@@ -243,6 +256,12 @@ it now** (`power: "running"`; unchecked, the VM is created stopped).
 `onSubmit` returns a promise: a refused create keeps the form open,
 with what was typed and the error under it.
 
+For **Direct kernel boot** the form shares the boot disk block with
+firmware boot and replaces the firmware picker with a kernel choice
+(kernel image or host files) and *Follow the guest's kernel*; the VM
+detail page's `VmKernel` shows and changes the kernel
+([kernel-boot.md §7](kernel-boot.md#7-clients)).
+
 ## Live stream
 
 `LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one
@@ -300,7 +319,11 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   teams (create, delete, add / remove manual members; `pam` / `oidc`
   memberships are shown but managed by the login sync), and system roles
   (`/system/bindings`: auditor, image-admin, net-admin, system-admin,
-  `grant.host-paths`).
+  `grant.host-paths`). In a cluster the table has a Scope column (the
+  whole cluster, or a host linking to its node page) and the form a Scope
+  select; on a host only auditor, net-admin and host paths are offered
+  (clustering.md §12.2). A node's page has a **Roles on this host** card
+  with the bindings on that host alone (`?node=`), to add and remove.
 - **Tokens** — the caller's tokens and the service accounts it may
   manage. Create (name, expiry, optional narrowing roles; service accounts
   of the selected project with `manageServiceTokens`) shows the secret
@@ -399,6 +422,29 @@ names the catalog entry to pull and the form won't submit. It sends
 `firmware` (the image id), never a host `firmware_path`. `VmDetail`
 shows the VM's firmware image by name (`GET /images/{id}`), and the
 Disks page's create form never offers a firmware image as contents.
+`pages/Datastores.tsx` (spec/storage.md §13) lists the datastores:
+- `local` is marked built in; the default for disks is marked as such;
+- for each, how many nodes reach it, the most free space on one, and
+  its disks;
+- clicking a name shows its paths and each node's row (reachable with
+  free/total, else its reason and message).
+
+With `manageDatastore` the page also offers:
+- **Add Datastore:** name, path (default `/srv/glidex/<name>`), the
+  nodes it is on and per-node paths in a cluster, the default flag, and
+  overcommit;
+- **Make default** (on `local`: clear the other's flag);
+- overcommit on or off;
+- **Delete**, disabled while disks are on it.
+
+It follows the `datastore` watch kind. On the VM page,
+`components/PlaceVm.tsx` offers "Place on another node" for a stopped VM
+("Place on a live node" for a Lost one) in a cluster to those with
+`placeVm`: a ready node, or "where there is room" (spec/storage.md §9). Once there is more than `local`,
+the Disks page shows a Datastore column, and its create form a Datastore
+select with the default chosen. Each disk then has a **Move** form (another
+datastore; for a linked disk, a Flatten box), disabled with Resize while
+the disk moves; its status shows "· moving".
 
 ## Footer
 
@@ -415,25 +461,38 @@ shows no branch.
 
 The console page is the non-obvious component. It:
 
-1. Creates an `xterm` `Terminal` and fits it to a ref'd container.
-2. Gets a single-use ticket (`POST /api/vms/:id/console/ticket`, valid
-   30 s), then opens
-   `ws(s)://<location.host>/api/vms/:id/console/ws?ticket=<ticket>` with
-   `binaryType = "arraybuffer"`. A failed ticket request is shown as the
-   page's error.
+1. Opens the chosen terminal (`consoleTerminal.ts`) in a ref'd container
+   and fits it. **ghostty-web** (Ghostty's terminal engine as
+   WebAssembly) is the default, **xterm.js** the alternative; the
+   choice is a select on the page, kept in `localStorage`
+   (`glidex.console.terminal`). Each library is loaded on demand;
+   ghostty-web's `.wasm` is fetched from `/assets` (its default `data:`
+   URL isn't allowed by `connect-src`). Both get the same options
+   (`convertEol`, font, theme) and Ctrl+Shift+C / Ctrl+Shift+V copy and
+   paste, so Ctrl+C stays `^C` for the guest.
+2. Gets a single-use ticket (`CreateConsoleTicket`, valid 30 s), then
+   opens `ws(s)://<location.host>/api/vms/:id/console/ws?ticket=<ticket>`
+   with `binaryType = "arraybuffer"`. A failed ticket request is shown
+   as the page's error.
 3. Maps:
    - **WS → term**: `message` event → `term.write(Uint8Array)` for
      binary frames, `term.write(string)` for text frames (used by
      the server to surface a connect failure).
    - **term → WS**: `term.onData(d => ws.send(TextEncoder.encode(d)))`.
 4. Tracks a `Status` enum (`connecting | connected | closed | error`)
-   for the status pill shown in the page header.
-5. On unmount, disposes the input handler, detaches the socket's
-   handlers and closes it, takes the terminal off the page, and disposes
-   it on the next tick. xterm 5.5's `open()` queues a timer that reads
-   the renderer; disposing before it runs (React StrictMode mounts twice
-   in dev) throws "reading 'dimensions'". `e2e/tests/console.spec.ts`
-   covers this.
+   for the status pill shown in the page header; on `closed` or `error`
+   a **Reconnect** button runs steps 2-3 again with a new ticket. When
+   the VM's node stopped reporting, the error says so.
+5. Fits the terminal on window resize. The size stays in the browser:
+   it isn't sent to the server ([console.md](console.md) "Known gaps").
+6. Exposes the terminal's text as `screenText()` on the container, for
+   the e2e suite (ghostty-web draws on a canvas).
+7. On unmount, disposes the input handler, detaches the socket's
+   handlers and closes it, and disposes the terminal. xterm 5.5's
+   `open()` queues a timer that reads the renderer, so xterm.js is taken
+   off the page at once and disposed on the next tick; disposing before
+   that timer runs (React StrictMode mounts twice in dev) throws
+   "reading 'dimensions'". `e2e/tests/console.spec.ts` covers this.
 
 See [console.md](console.md) for how the server side of that
 WebSocket is implemented.

@@ -1,0 +1,386 @@
+// The directory's connectors: the IdPs and user sources its users log in
+// through (spec/tenancy.md §5, milestone T1).
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+service ConnectorService {
+  rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listConnectors"
+      kind: KIND_READ
+      rest: "GET /connectors"
+    };
+  }
+  rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readConnector"
+      kind: KIND_READ
+      rest: "GET /connectors/{id}"
+    };
+  }
+  rpc CreateConnector(CreateConnectorRequest) returns (CreateConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createConnector"
+      kind: KIND_WRITE
+      rest: "POST /connectors"
+    };
+  }
+  rpc UpdateConnector(UpdateConnectorRequest) returns (UpdateConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateConnector"
+      kind: KIND_WRITE
+      rest: "PATCH /connectors/{id}"
+    };
+  }
+  rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteConnector"
+      kind: KIND_WRITE
+      rest: "DELETE /connectors/{id}"
+    };
+  }
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setConnectorSecret"
+      kind: KIND_WRITE
+      rest: "PUT /connectors/{id}/secrets/{field}"
+    };
+  }
+  // Run a pulled connector's sync now (spec/tenancy.md §8.2), and answer
+  // how it went. `confirm` applies a run the safety stop blocked (D46),
+  // which takes `confirmConnectorSync` too.
+  rpc SyncConnector(SyncConnectorRequest) returns (SyncConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "syncConnector"
+      kind: KIND_WRITE
+      rest: "POST /connectors/{id}/sync"
+    };
+  }
+  // A provisioned connector's SCIM bearer tokens (spec/tenancy.md §8.1):
+  // names and lifetimes, never the tokens.
+  rpc ListScimTokens(ListScimTokensRequest) returns (ListScimTokensResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readScimTokens"
+      kind: KIND_READ
+      rest: "GET /connectors/{id}/scim-tokens"
+    };
+  }
+  // A token for the IdP to call the connector's SCIM endpoints with,
+  // shown once. The connector needs `provisioning: scim`; at most five
+  // are live at once.
+  rpc CreateScimToken(CreateScimTokenRequest) returns (CreateScimTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageScimTokens"
+      kind: KIND_WRITE
+      rest: "POST /connectors/{id}/scim-tokens"
+    };
+  }
+  rpc RevokeScimToken(RevokeScimTokenRequest) returns (RevokeScimTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageScimTokens"
+      kind: KIND_WRITE
+      rest: "DELETE /connectors/{id}/scim-tokens/{token}"
+    };
+  }
+  // Check what can be checked without a user: discovery and keys, the
+  // client secret being set, glidex-authd being there.
+  rpc TestConnector(TestConnectorRequest) returns (TestConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "testConnector"
+      kind: KIND_READ
+      rest: "POST /connectors/{id}/test"
+    };
+  }
+}
+
+message Connector {
+  // [a-z0-9-]{1,48}; `file-pam` and `file-oidc` are the ones from
+  // control-plane.json.
+  string id = 1;
+  string directory_id = 2 [json_name = "directory_id"];
+  // `pam`, `oidc`, `google` or `jumpcloud`: which settings it has. Output only.
+  string kind = 3;
+  string display_name = 4 [json_name = "display_name"];
+  optional bool enabled = 5;
+  // Create a user at the first login.
+  optional bool jit = 6;
+  repeated string required_groups = 7 [json_name = "required_groups"];
+  optional bool require_mfa = 8 [json_name = "require_mfa"];
+  // IdP (or Unix) group → team name.
+  map<string, string> group_teams = 9 [json_name = "group_teams"];
+  // New users become members of this tenant.
+  optional string default_tenant = 10 [json_name = "default_tenant"];
+  // Longest personal token a login through it mints (default 30 days).
+  optional uint32 token_max_days = 11 [json_name = "token_max_days"];
+  // `none` (the default) or `scim`: the IdP pushes this connector's users
+  // and groups, and only those users log in (spec/tenancy.md §8.1, D41).
+  // `oidc` and `jumpcloud` connectors can be provisioned.
+  optional string provisioning = 20;
+  // `mapped` (the default: `group_teams`) or `auto` (a team per
+  // provisioned group, spec/tenancy.md D43).
+  optional string group_mode = 21 [json_name = "group_mode"];
+  // With `provisioning: pull` (a Google Workspace connector): what the
+  // pull reads and how often (spec/tenancy.md §8.2).
+  SyncSettings sync = 22;
+  // The last pull's outcome. Output only.
+  SyncStatus sync_status = 23 [json_name = "sync_status"];
+  oneof settings {
+    PamSettings pam = 12;
+    OidcSettings oidc = 13;
+    // The `google` preset (spec/tenancy.md D39, §5.1).
+    GoogleSettings google = 18;
+    // The `jumpcloud` preset (spec/tenancy.md §5.1).
+    JumpcloudSettings jumpcloud = 19;
+  }
+  // Which secrets are set; never their values. Output only.
+  repeated SecretStatus secrets = 14;
+  // `api` or `file`. Output only.
+  string source = 15;
+  google.protobuf.Timestamp created_at = 16 [json_name = "created_at"];
+  google.protobuf.Timestamp updated_at = 17 [json_name = "updated_at"];
+}
+
+message PamSettings {
+  repeated string allowed_groups = 1 [json_name = "allowed_groups"];
+}
+
+message OidcSettings {
+  string issuer = 1;
+  string client_id = 2 [json_name = "client_id"];
+  repeated string scopes = 3;
+  string groups_claim = 4 [json_name = "groups_claim"];
+  repeated string allowed_domains = 5 [json_name = "allowed_domains"];
+  optional string redirect_uri = 6 [json_name = "redirect_uri"];
+  repeated string mfa_acr_values = 7 [json_name = "mfa_acr_values"];
+}
+
+// Which Google accounts a `google` connector serves (spec/tenancy.md D39).
+enum GoogleAccounts {
+  // Workspace.
+  GOOGLE_ACCOUNTS_UNSPECIFIED = 0;
+  // Accounts of the Workspace domains in `domains`, by the token's `hd`.
+  GOOGLE_ACCOUNTS_WORKSPACE = 1;
+  // Any Google account, consumer ones included: only for people the
+  // directory knows (an invitation, `allowed_emails`, or `jit` off).
+  GOOGLE_ACCOUNTS_ANY = 2;
+}
+
+// Secrets: `client_secret`, and `device_client_secret` for the device client.
+message GoogleSettings {
+  GoogleAccounts accounts = 1;
+  // The web application client.
+  string client_id = 2 [json_name = "client_id"];
+  // Workspace domains (`hd`); required for Workspace. Never a public mail
+  // domain.
+  repeated string domains = 3;
+  // With `jit`, only these verified addresses get a new account.
+  repeated string allowed_emails = 4 [json_name = "allowed_emails"];
+  // The "TVs and Limited Input devices" client for gxctl's device grant.
+  optional string device_client_id = 5 [json_name = "device_client_id"];
+  // The Workspace domain enforces 2-step verification: its logins count
+  // as multi-factor.
+  optional bool trust_2sv = 6 [json_name = "trust_2sv"];
+  optional string redirect_uri = 7 [json_name = "redirect_uri"];
+  // A local mock IdP instead of Google, for tests: a loopback URL only.
+  optional string issuer = 8;
+}
+
+// JumpCloud SSO over OIDC. Secret: `client_secret`.
+message JumpcloudSettings {
+  string client_id = 1 [json_name = "client_id"];
+  // The claim the application's "Include group attribute" names; default
+  // `memberOf`.
+  optional string groups_claim = 2 [json_name = "groups_claim"];
+  // With `jit`, only these addresses get a new account.
+  repeated string allowed_emails = 3 [json_name = "allowed_emails"];
+  optional string redirect_uri = 4 [json_name = "redirect_uri"];
+  // A local mock IdP instead of JumpCloud, for tests: a loopback URL only.
+  optional string issuer = 5;
+}
+
+message SecretStatus {
+  string field = 1;
+  optional bool set = 2;
+  google.protobuf.Timestamp updated_at = 3 [json_name = "updated_at"];
+}
+
+message ListConnectorsRequest {}
+
+message ListConnectorsResponse {
+  repeated Connector connectors = 1;
+}
+
+message GetConnectorRequest {
+  string id = 1;
+}
+
+message GetConnectorResponse {
+  Connector connector = 1;
+}
+
+message CreateConnectorRequest {
+  Connector connector = 1;
+}
+
+message CreateConnectorResponse {
+  Connector connector = 1;
+}
+
+message UpdateConnectorRequest {
+  string id = 1;
+  Connector connector = 2;
+  // The fields of `connector` to change (`display_name`, `enabled`, `jit`,
+  // `required_groups`, `require_mfa`, `group_teams`, `default_tenant`,
+  // `token_max_days`, `pam`, `oidc`).
+  google.protobuf.FieldMask update_mask = 3 [json_name = "update_mask"];
+}
+
+message UpdateConnectorResponse {
+  Connector connector = 1;
+}
+
+message DeleteConnectorRequest {
+  string id = 1;
+  // What becomes of the users and teams it provisions (spec/tenancy.md
+  // §8.3): `disable` (the default: users are disabled as D20 says, with
+  // `disabled_reason: connector_deleted`) or `detach` (they stay enabled
+  // and become the directory's, and its memberships become manual). Either
+  // way they are no longer managed.
+  optional string users = 2;
+}
+
+message DeleteConnectorResponse {
+  // Managed users it disabled, or detached.
+  uint32 users = 1;
+  // Managed teams it detached.
+  uint32 teams = 2;
+}
+
+message SetSecretRequest {
+  string id = 1;
+  string field = 2;
+  string value = 3 [(glidex.api.v1.secret) = true];
+}
+
+message SetSecretResponse {
+  Connector connector = 1;
+}
+
+message TestConnectorRequest {
+  string id = 1;
+}
+
+message TestConnectorResponse {
+  repeated TestStep steps = 1;
+}
+
+message TestStep {
+  string name = 1;
+  optional bool ok = 2;
+  string message = 3;
+}
+
+// A SCIM bearer token's record; the token itself is shown only when made.
+message ScimToken {
+  string id = 1;
+  string name = 2;
+  string created_by = 3 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 5 [json_name = "expires_at"];
+}
+
+message ListScimTokensRequest {
+  string id = 1;
+}
+
+message ListScimTokensResponse {
+  repeated ScimToken tokens = 1;
+  // Where the IdP sends its requests: this server's path, which the
+  // web UI also serves under `/api`.
+  string path = 2;
+}
+
+message CreateScimTokenRequest {
+  string id = 1;
+  // Shown in lists (default `scim`).
+  string name = 2;
+  // 1–365, default 180.
+  optional uint32 days = 3;
+}
+
+message CreateScimTokenResponse {
+  ScimToken token = 1;
+  // `gxs_…`: shown once, never stored.
+  string secret = 2;
+  string path = 3;
+}
+
+message RevokeScimTokenRequest {
+  string id = 1;
+  string token = 2;
+}
+
+message RevokeScimTokenResponse {}
+
+// A pull's settings (spec/tenancy.md §8.2, D44–D47).
+message SyncSettings {
+  // Default 15, at least 5.
+  optional uint32 interval_minutes = 1 [json_name = "interval_minutes"];
+  // The most a run may disable, as a percentage of the managed users
+  // (default 10); up to 5 are always allowed.
+  optional uint32 max_disable = 2 [json_name = "max_disable"];
+  // Google: the Workspace administrator the service account acts as.
+  string admin_email = 3 [json_name = "admin_email"];
+  // Google: group emails; their members, nested ones too, are the
+  // connector's users.
+  repeated string groups = 4;
+  // Google: `<schema>.<field>`, a custom schema field holding SSH keys.
+  optional string ssh_keys_field = 5 [json_name = "ssh_keys_field"];
+}
+
+enum SyncState {
+  SYNC_STATE_UNSPECIFIED = 0;
+  SYNC_STATE_OK = 1;
+  // Google answered with an error, or something glidex couldn't read:
+  // nothing changed (D46).
+  SYNC_STATE_FAILED = 2;
+  // It would disable more than `max_disable`: nothing changed until a
+  // directory administrator confirms (D46).
+  SYNC_STATE_BLOCKED = 3;
+}
+
+message SyncChanges {
+  uint32 created = 1;
+  // Users from before the pull, with the same subject (D44).
+  uint32 adopted = 2;
+  uint32 updated = 3;
+  uint32 disabled = 4;
+  uint32 enabled = 5;
+}
+
+message SyncStatus {
+  SyncState state = 1;
+  google.protobuf.Timestamp started_at = 2 [json_name = "started_at"];
+  google.protobuf.Timestamp finished_at = 3 [json_name = "finished_at"];
+  SyncChanges changes = 4;
+  // What failed, without secrets.
+  optional string error = 5;
+  // Blocked: the users it would disable.
+  repeated string would_disable = 6 [json_name = "would_disable"];
+  // When the last run that applied finished.
+  google.protobuf.Timestamp last_applied_at = 7 [json_name = "last_applied_at"];
+}
+
+message SyncConnectorRequest {
+  string id = 1;
+  optional bool confirm = 2;
+}
+
+message SyncConnectorResponse {
+  SyncStatus status = 1;
+}

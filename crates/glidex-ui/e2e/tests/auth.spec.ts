@@ -1,7 +1,7 @@
 // Login, session and browser protections (spec/security.md §5.5, §5.6,
 // §14 "UI e2e"): the login page, CSRF on writes, logout, console tickets,
 // and glidex-ui's Host allowlist and security headers.
-import { api, del, expect, rawRequest, test, UI_SERVER_PORT } from "../fixtures";
+import { api, consoleText, createVm, del, expect, rawRequest, test, UI_SERVER_PORT, waitForRpc } from "../fixtures";
 
 const UI_SERVER = `http://localhost:${UI_SERVER_PORT}`;
 
@@ -32,13 +32,13 @@ test.describe("signed in", () => {
 
   test("shows who is signed in and the selected project", async ({ page }) => {
     const me = await api("/auth/whoami");
-    const projects: any[] = await api("/projects");
+    const projects: any[] = (await api("/projects")).projects ?? [];
     const dflt = projects.find((p) => p.name === "default");
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Virtual Machines" })).toBeVisible();
     await expect(page.getByText(me.user.display_name, { exact: true })).toBeVisible();
     await expect(page.getByLabel("Project")).toHaveValue(dflt.id);
-    await expect(page.getByRole("link", { name: "Policies" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Directory" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit" })).toBeVisible();
   });
 
@@ -49,13 +49,13 @@ test.describe("signed in", () => {
 
     await page.getByLabel("New team name").fill("e2e-csrf");
     const [request] = await Promise.all([
-      page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/teams")),
+      page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/glidex.access.v1.TeamService/CreateTeam")),
       page.getByRole("button", { name: "Create team" }).click(),
     ]);
     expect(request.headers()["x-glidex-csrf"]).toBe(csrf);
     await expect(page.getByText("e2e-csrf", { exact: true })).toBeVisible();
 
-    // The same request without the header.
+    // The same request without the header (to its REST twin).
     const refused = await page.evaluate(() =>
       fetch("/api/teams", {
         method: "POST",
@@ -66,7 +66,7 @@ test.describe("signed in", () => {
     expect(refused.status).toBe(403);
     expect(refused.body.error).toBe("csrf_failed");
 
-    for (const t of (await api<any[]>("/teams")).filter((t) => t.name.startsWith("e2e-"))) {
+    for (const t of ((await api<{ teams?: any[] }>("/teams")).teams ?? []).filter((t) => t.name.startsWith("e2e-"))) {
       await del(`/teams/${t.id}`);
     }
   });
@@ -95,18 +95,15 @@ test.describe("console", () => {
   let vmId = "";
 
   test.beforeAll(async () => {
-    const vm = await api("/vms", {
-      method: "POST",
-      body: {
-        name: "e2e-console",
-        project: "default",
-        vcpu_count: 1,
-        mem_size_mib: 256,
-        hypervisor: "cloudhypervisor",
-        kernel_image_path: "",
-        firmware_path: "~/.glidex/CLOUDHV.fd",
-        rootfs_path: "/nonexistent/disk.img",
-      },
+    const vm = await createVm({
+      name: "e2e-console",
+      project: "default",
+      vcpu_count: 1,
+      mem_size_mib: 256,
+      hypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
+      kernel_image_path: "",
+      firmware_path: "~/.glidex/CLOUDHV.fd",
+      rootfs_path: "/nonexistent/disk.img",
     });
     expect(vm.id, JSON.stringify(vm)).toBeTruthy();
     vmId = vm.id;
@@ -121,15 +118,15 @@ test.describe("console", () => {
     ["glidex-ui", UI_SERVER],
   ] as const) {
     test(`opens through a single-use ticket (${server})`, async ({ page }) => {
-      const ticket = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/api/vms/${vmId}/console/ticket`));
+      const ticket = waitForRpc(page, "glidex.vm.v1.VmService/CreateConsoleTicket");
       // (The dev server has a WebSocket of its own, for HMR.)
       const socket = page.waitForEvent("websocket", (ws) => ws.url().includes("/console/ws"));
       await page.goto(`${base}/vms/${vmId}/console`);
-      await ticket;
+      expect(await ticket).toMatchObject({ id: vmId });
       const ws = await socket;
       expect(ws.url()).toMatch(/\/api\/vms\/[^/]+\/console\/ws\?ticket=.+/);
       // The VM isn't running: the server accepted the upgrade and says so.
-      await expect(page.locator(".xterm-rows")).toContainText("Failed to connect to the VM console", { timeout: 15_000 });
+      await expect.poll(() => consoleText(page), { timeout: 15_000 }).toContain("Failed to connect to the VM console");
     });
   }
 

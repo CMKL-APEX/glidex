@@ -1,11 +1,11 @@
 // Reconciliation in progress (spec/reconciliation.md): writes are carried
 // out by the controllers, and the UI says what they are still doing.
-import { api, del, expect, test, vmCard } from "../fixtures";
+import { api, createVm, del, expect, listVms, test, vmCard } from "../fixtures";
 
 const NAME = "e2e-activity";
 
 async function cleanup() {
-  for (const v of await api<{ id: string; name: string }[]>("/vms")) {
+  for (const v of await listVms()) {
     if (v.name === NAME) await del(`/vms/${v.id}?wait=30`);
   }
 }
@@ -17,10 +17,7 @@ test("the header and the VM show what the controller is still doing", async ({ p
   await expect(page.getByText("Up to date")).toBeVisible();
 
   // A VM that can't launch: the controller keeps trying, with backoff.
-  const vm = await api<{ id: string }>("/vms", {
-    method: "POST",
-    body: { name: NAME, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" },
-  });
+  const vm = await createVm({ name: NAME, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" });
   // Written outside this browser: it arrives over the live stream
   // (GET /watch), with no reload and well before the 15 s idle poll.
   await api(`/vms/${vm.id}/start`, { method: "POST" });

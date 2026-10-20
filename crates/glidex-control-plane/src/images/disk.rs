@@ -1,24 +1,36 @@
 //! Disk operations (spec §6): create, grow, shrink, extend root, delete.
+//! The volume itself is made and changed by the disk's datastore driver
+//! (spec/storage.md §7); partitions are edited here, on what it hands back.
 //!
 //! Everything here blocks (it shells out to qemu-img & co.) and assumes
 //! the caller (`VmManager`) has already checked that no running or paused
 //! VM has the disk open and holds the disk's `BusyGuard`.
 
-use super::partition::{self, round_up, TableKind, MIB};
+use super::partition::{self, MIB, TableKind, round_up};
 use super::qemu_img::{self, DiskFormat, GrowOutcome};
 use super::{
-    validate_name, CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase, ExtendMode, ExtendOutcome,
-    ImageError, ImageHold, ImageManager, ImageStatus,
+    CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase, ExtendMode,
+    ExtendOutcome, ImageError, ImageHold, ImageManager, ImageStatus, validate_name,
 };
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use crate::datastore::VolumeSource;
+use std::path::Path;
 use std::sync::Arc;
 
 /// `size_gib` / `size_bytes` → bytes rounded up to a whole MiB.
-pub fn requested_size(size_gib: Option<u64>, size_bytes: Option<u64>) -> Result<Option<u64>, ImageError> {
+pub fn requested_size(
+    size_gib: Option<u64>,
+    size_bytes: Option<u64>,
+) -> Result<Option<u64>, ImageError> {
     let bytes = match (size_gib, size_bytes) {
-        (Some(_), Some(_)) => return Err(ImageError::invalid_disk("give size_gib or size_bytes, not both")),
-        (Some(g), None) => Some(g.checked_mul(super::GIB).ok_or_else(|| ImageError::invalid_disk("size too large"))?),
+        (Some(_), Some(_)) => {
+            return Err(ImageError::invalid_disk(
+                "give size_gib or size_bytes, not both",
+            ));
+        }
+        (Some(g), None) => Some(
+            g.checked_mul(super::GIB)
+                .ok_or_else(|| ImageError::invalid_disk("size too large"))?,
+        ),
         (None, Some(b)) => Some(b),
         (None, None) => None,
     };
@@ -53,46 +65,23 @@ fn too_small(size: u64, image: &str, image_size: u64) -> ImageError {
     }
 }
 
-fn set_mode(path: &Path, mode: u32) -> Result<(), ImageError> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|e| ImageError::Io(format!("{}: {}", path.display(), e)))
-}
-
-/// Removes a temporary file unless disarmed.
-struct TempFile(Option<PathBuf>);
-
-impl TempFile {
-    fn path(&self) -> &Path {
-        self.0.as_deref().unwrap()
-    }
-
-    fn keep(mut self) -> PathBuf {
-        self.0.take().unwrap()
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        if let Some(p) = &self.0 {
-            let _ = std::fs::remove_file(p);
-        }
-    }
-}
-
 impl ImageManager {
-    fn temp_path(&self, id: &str, what: &str, format: DiskFormat) -> TempFile {
-        let p = crate::paths::file_in(&self.settings.disk_dir, &format!(".{}.{}.{}", super::safe_stem(id), what, format.extension()));
-        let _ = std::fs::remove_file(&p);
-        TempFile(Some(p))
-    }
-
     /// Validate a create request (spec §6.1) and return the record, in
     /// phase `Pending` and not yet persisted: the disk controller makes its
     /// file once the source image is ready (spec/reconciliation.md §10.1).
-    pub fn new_disk_record(&self, req: &CreateDiskRequest) -> Result<Disk, ImageError> {
+    /// `in_tenant` accepts the projects of the new disk's tenant, among
+    /// which its name must be unique (spec/tenancy.md D24).
+    pub fn new_disk_record(
+        &self,
+        req: &CreateDiskRequest,
+        in_tenant: impl Fn(&str) -> bool,
+    ) -> Result<Disk, ImageError> {
         validate_name("disk", &req.name)?;
-        if self.disk_name_taken(&req.name) {
-            return Err(ImageError::AlreadyExists(format!("a disk named {} already exists", req.name)));
+        if self.disk_name_taken_in(&req.name, in_tenant) {
+            return Err(ImageError::AlreadyExists(format!(
+                "a disk named {} already exists",
+                req.name
+            )));
         }
         let format = req.format.unwrap_or_default();
         let size = requested_size(req.size_gib, req.size_bytes)?;
@@ -102,36 +91,66 @@ impl ImageManager {
                     return Err(ImageError::invalid_disk("clone needs an image"));
                 }
                 if size.is_none() {
-                    return Err(ImageError::invalid_disk("a blank disk needs size_gib or size_bytes"));
+                    return Err(ImageError::invalid_disk(
+                        "a blank disk needs size_gib or size_bytes",
+                    ));
                 }
                 DiskOrigin::Blank
             }
             Some(key) => {
                 let img = self.get_image(key)?;
-                if img.is_firmware() {
-                    return Err(ImageError::InvalidImage(format!("image {} is UEFI firmware, not a disk image", img.name)));
+                match img.kind {
+                    super::ImageKind::Disk => {}
+                    super::ImageKind::Firmware => {
+                        return Err(ImageError::InvalidImage(format!(
+                            "image {} is UEFI firmware, not a disk image",
+                            img.name
+                        )));
+                    }
+                    super::ImageKind::Kernel => {
+                        return Err(ImageError::InvalidImage(format!(
+                            "image {} is a kernel, not a disk image",
+                            img.name
+                        )));
+                    }
                 }
                 if img.deletion_requested_at.is_some() {
-                    return Err(ImageError::NotReady(format!("image {} is being deleted", img.name)));
+                    return Err(ImageError::NotReady(format!(
+                        "image {} is being deleted",
+                        img.name
+                    )));
                 }
                 match &img.status {
-                    ImageStatus::Missing => return Err(ImageError::NotReady(format!("image {} is missing its file", img.name))),
+                    ImageStatus::Missing => {
+                        return Err(ImageError::NotReady(format!(
+                            "image {} is missing its file",
+                            img.name
+                        )));
+                    }
                     // A disk would wait for it forever: retry it first.
                     ImageStatus::Failed { reason } => {
-                        return Err(ImageError::NotReady(format!("image {} failed ({}); retry it first", img.name, reason)))
+                        return Err(ImageError::NotReady(format!(
+                            "image {} failed ({}); retry it first",
+                            img.name, reason
+                        )));
                     }
                     _ => {}
                 }
                 let mode = req.clone.unwrap_or_default();
                 if (mode, format) == (CloneMode::Linked, DiskFormat::Raw) {
-                    return Err(ImageError::invalid_disk("a raw disk cannot be linked; use clone: full"));
+                    return Err(ImageError::invalid_disk(
+                        "a raw disk cannot be linked; use clone: full",
+                    ));
                 }
-                if let (Some(s), ImageStatus::Ready) = (size, &img.status) {
-                    if s < img.virtual_size_bytes {
-                        return Err(too_small(s, &img.name, img.virtual_size_bytes));
-                    }
+                if let (Some(s), ImageStatus::Ready) = (size, &img.status)
+                    && s < img.virtual_size_bytes
+                {
+                    return Err(too_small(s, &img.name, img.virtual_size_bytes));
                 }
-                DiskOrigin::Image { image_id: img.id.clone(), mode }
+                DiskOrigin::Image {
+                    image_id: img.id.clone(),
+                    mode,
+                }
             }
         };
         let mut disk = Disk::new(
@@ -145,8 +164,110 @@ impl ImageManager {
         disk.phase = DiskPhase::Pending;
         // Bound now when asked, else to the first VM's node (§9.2).
         disk.node = req.node.clone();
-        disk.create = Some(DiskCreateSpec { size_bytes: size, extend_root: req.extend_root });
+        disk.create = Some(DiskCreateSpec {
+            size_bytes: size,
+            extend_root: req.extend_root,
+        });
+        self.choose_datastore(req.datastore.as_deref(), &mut disk)?;
         Ok(disk)
+    }
+
+    /// Put a new disk on the datastore asked for, else the default for disks
+    /// (spec/storage.md S13), checking that it can go there: the node it is
+    /// bound to is one of the datastore's, and a datastore that doesn't
+    /// overcommit has room on some node it can go to (§5.2).
+    fn choose_datastore(&self, key: Option<&str>, disk: &mut Disk) -> Result<(), ImageError> {
+        use crate::datastore::record;
+        let io = |e: record::DatastoreError| ImageError::Io(e.to_string());
+        let ds = match key {
+            Some(k) => record::find(&self.db, k)
+                .map_err(io)?
+                .ok_or_else(|| ImageError::NotFound(format!("no datastore {k}")))?,
+            None => record::default_for_disks(&self.db).map_err(io)?,
+        };
+        if let Some(n) = &disk.node
+            && !ds.on_node(n)
+        {
+            return Err(ImageError::invalid_disk(format!(
+                "datastore {} is not on node {n}",
+                ds.name
+            )));
+        }
+        disk.datastore = ds.id.clone();
+        if ds.is_shared() {
+            // Bound to no node: its VM may run on any node that reaches it.
+            if disk.node.is_some() {
+                return Err(ImageError::invalid_disk(format!(
+                    "datastore {} is shared: a disk on it is bound to no node",
+                    ds.name
+                )));
+            }
+            // Made by this node if it reaches the datastore, else by one that
+            // does; the leader moves it later as needed (S6).
+            let rows = record::rows(&self.db, &ds.id).map_err(io)?;
+            let me = self.node_id.load();
+            let mut ok: Vec<&String> = rows
+                .iter()
+                .filter(|(n, r)| r.reachable && ds.on_node(n))
+                .map(|(n, _)| n)
+                .collect();
+            ok.sort();
+            disk.worker = if ok.iter().any(|n| **n == **me) {
+                Some(me.to_string())
+            } else {
+                ok.first().map(|n| n.to_string())
+            };
+        }
+        if ds.overcommit {
+            return Ok(());
+        }
+        let need = self.estimated_size(disk);
+        let pending = |node: &str| -> u64 {
+            self.list_disks()
+                .iter()
+                .filter(|d| {
+                    d.datastore == ds.id
+                        && matches!(d.phase, DiskPhase::Pending | DiskPhase::Creating)
+                        && d.node.as_deref().is_none_or(|n| n == node)
+                })
+                .map(|d| self.estimated_size(d))
+                .sum()
+        };
+        let best = record::rows(&self.db, &ds.id)
+            .map_err(io)?
+            .into_iter()
+            .filter(|(n, r)| {
+                r.reachable && ds.on_node(n) && disk.node.as_deref().is_none_or(|b| b == n)
+            })
+            .map(|(n, r)| r.free_bytes.saturating_sub(pending(&n)))
+            .max()
+            .unwrap_or(0);
+        if need > best {
+            return Err(ImageError::InsufficientStorage {
+                message: format!(
+                    "datastore {} has {} bytes free where this disk could go, and the disk needs {}",
+                    ds.name, best, need
+                ),
+                details: serde_json::json!({ "free_bytes": best, "needed_bytes": need }),
+            });
+        }
+        Ok(())
+    }
+
+    /// What a disk will take: its size once made, else what it asked for,
+    /// else its image's size or the default root size.
+    pub fn estimated_size(&self, d: &Disk) -> u64 {
+        let requested = d.create.as_ref().and_then(|c| c.size_bytes);
+        match &d.origin {
+            DiskOrigin::Blank => requested.unwrap_or(d.size_bytes),
+            DiskOrigin::Image { image_id, .. } => {
+                let image_size = self
+                    .get_image(image_id)
+                    .map(|i| i.virtual_size_bytes)
+                    .unwrap_or(0);
+                self.root_size(requested, image_size)
+            }
+        }
     }
 
     /// The size a disk cloned from an image of `image_size` bytes gets.
@@ -160,24 +281,34 @@ impl ImageManager {
     /// taken as made. Returns the disk in phase `Ready` (not persisted).
     /// `NotReady` while the source image is not ready yet.
     pub fn materialize(self: &Arc<Self>, disk: &Disk) -> Result<MaterializeOutcome, ImageError> {
-        let spec = disk.create.clone().unwrap_or(DiskCreateSpec { size_bytes: None, extend_root: None });
+        let spec = disk.create.clone().unwrap_or(DiskCreateSpec {
+            size_bytes: None,
+            extend_root: None,
+        });
         let mut disk = disk.clone();
-        let final_path = self.disk_path(&disk);
-        if final_path.exists() {
-            let info = qemu_img::info(&final_path, Some(disk.format))?;
+        let driver = self.driver(&disk)?;
+        // Held while it is made: no other node touches it (S16).
+        let _lock = driver.lock(&disk)?;
+        if driver.exists(&disk) {
+            let made = driver.binding(&disk);
+            let info = qemu_img::info(made.path(), Some(disk.format))?;
             disk.size_bytes = info.virtual_size;
             disk.phase = DiskPhase::Ready;
             disk.create = None;
-            return Ok(MaterializeOutcome { disk, warnings: vec!["the file was already made".into()], _hold: None });
+            return Ok(MaterializeOutcome {
+                disk,
+                warnings: vec!["the file was already made".into()],
+                _hold: None,
+            });
         }
-        let tmp = self.temp_path(&disk.id, "create", disk.format);
-        let mut warnings = Vec::new();
         let mut hold = None;
-        let (size, image_size) = match disk.origin.clone() {
+        let image_path;
+        let (size, image_size, source) = match disk.origin.clone() {
             DiskOrigin::Blank => {
-                let size = spec.size_bytes.ok_or_else(|| ImageError::invalid_disk("a blank disk needs a size"))?;
-                qemu_img::create(tmp.path(), disk.format, size, None)?;
-                (size, None)
+                let size = spec
+                    .size_bytes
+                    .ok_or_else(|| ImageError::invalid_disk("a blank disk needs a size"))?;
+                (size, None, VolumeSource::Blank)
             }
             DiskOrigin::Image { image_id, mode } => {
                 let img = self.get_image(&image_id)?;
@@ -186,69 +317,95 @@ impl ImageManager {
                 // removed the record by now.
                 let img = self.get_image(&img.id)?;
                 if img.status != ImageStatus::Ready {
-                    return Err(ImageError::NotReady(format!("image {} is not ready ({:?})", img.name, img.status)));
+                    return Err(ImageError::NotReady(format!(
+                        "image {} is not ready ({:?})",
+                        img.name, img.status
+                    )));
                 }
-                let image_path = self.image_path(&img.id);
+                // A linked disk on a shared datastore overlays the
+                // datastore's own copy, which every node there sees
+                // (spec/storage.md S8); anything else this node's.
+                let store = (mode == CloneMode::Linked)
+                    .then(|| crate::datastore::record::find(&self.db, &disk.datastore))
+                    .and_then(|r| r.ok().flatten())
+                    .filter(|ds| ds.is_shared());
+                image_path = match &store {
+                    Some(ds) => ds.image_copy_path(&self.node_id.load(), &img.id),
+                    None => self.image_path(&img.id),
+                };
                 // On a node of a cluster the catalog says Ready before this
                 // node's copy has arrived (spec/clustering.md §9.2).
                 if !image_path.exists() {
-                    return Err(ImageError::NotReady(format!("image {} has not been copied to this node yet", img.name)));
+                    return Err(ImageError::NotReady(match &store {
+                        Some(ds) => format!(
+                            "image {} has not been copied into datastore {} yet",
+                            img.name, ds.name
+                        ),
+                        None => format!("image {} has not been copied to this node yet", img.name),
+                    }));
                 }
                 let image_size = img.virtual_size_bytes;
                 if let Some(s) = spec.size_bytes.filter(|s| *s < image_size) {
                     return Err(too_small(s, &img.name, image_size));
                 }
                 let size = self.root_size(spec.size_bytes, image_size);
-                match mode {
-                    CloneMode::Linked => qemu_img::create(tmp.path(), disk.format, size, Some(&image_path))?,
-                    CloneMode::Full => {
-                        qemu_img::convert(&image_path, DiskFormat::Qcow2, tmp.path(), disk.format)?;
-                        if size > image_size {
-                            qemu_img::resize(tmp.path(), disk.format, size, false)?;
-                        }
-                    }
-                }
-                (size, Some(image_size))
+                let source = VolumeSource::Image {
+                    path: &image_path,
+                    size_bytes: image_size,
+                    linked: mode == CloneMode::Linked,
+                };
+                (size, Some(image_size), source)
             }
         };
-        set_mode(tmp.path(), 0o600)?;
         disk.size_bytes = size;
-        let grew = image_size.is_some_and(|s| size > s);
-        if grew && spec.extend_root != Some(false) {
-            match self.extend_root_at(tmp.path(), &mut disk, ExtendMode::Offline) {
-                Ok((_, mut w)) => warnings.append(&mut w),
-                Err(ImageError::InvalidDisk { message, .. }) => {
-                    warnings.push(format!("root partition not extended: {}", message));
+        let extend = image_size.is_some_and(|s| size > s) && spec.extend_root != Some(false);
+        let mut warnings = Vec::new();
+        driver.create_volume(&disk.clone(), size, source, &mut |made| {
+            if extend {
+                match self.extend_root_at(made.path(), &mut disk, ExtendMode::Offline) {
+                    Ok((_, mut w)) => warnings.append(&mut w),
+                    Err(ImageError::InvalidDisk { message, .. }) => {
+                        warnings.push(format!("root partition not extended: {}", message));
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
             }
-        }
-        std::fs::rename(tmp.keep(), &final_path).map_err(|e| ImageError::Io(e.to_string()))?;
+            Ok(())
+        })?;
         disk.phase = DiskPhase::Ready;
         disk.create = None;
         tracing::info!(disk = %disk.name, size = disk.size_bytes, origin = ?disk.origin, "disk created");
-        Ok(MaterializeOutcome { disk, warnings, _hold: hold })
+        Ok(MaterializeOutcome {
+            disk,
+            warnings,
+            _hold: hold,
+        })
     }
 
     /// Remove a disk's file after its record is gone. Failures are logged:
     /// the file stays as an orphan (spec §6.5).
     pub fn remove_disk_file(&self, disk: &Disk) {
-        let path = self.disk_path(disk);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(path = %path.display(), "could not remove disk file: {}", e),
+        let gone = self.driver(disk).and_then(|d| {
+            let _lock = d.lock(disk)?;
+            d.delete_volume(disk)
+        });
+        if let Err(e) = gone {
+            tracing::warn!(disk = %disk.name, "could not remove disk file: {}", e);
         }
     }
 
     /// Minimum size a disk can be shrunk to.
     pub fn shrink_minimum(&self, disk: &Disk) -> Result<(u64, TableKind), ImageError> {
-        let path = self.disk_path(disk);
+        let path = self.driver(disk)?.stage(disk)?.path().to_path_buf();
         let table = partition::read_table(&path, disk.format, disk.size_bytes)?.ok_or_else(|| {
             ImageError::invalid_disk("disk has no partition table, so where its data ends is unknown; it cannot be shrunk")
         })?;
         let mut min = table.min_disk_size();
-        if let DiskOrigin::Image { image_id, mode: CloneMode::Linked } = &disk.origin {
+        if let DiskOrigin::Image {
+            image_id,
+            mode: CloneMode::Linked,
+        } = &disk.origin
+        {
             // The overlay must cover every sector the backing file supplies.
             if let Ok(img) = self.get_image(image_id) {
                 min = min.max(round_up(img.virtual_size_bytes, MIB));
@@ -265,7 +422,9 @@ impl ImageManager {
         extend_root: Option<bool>,
     ) -> Result<(Disk, Option<ExtendOutcome>, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.disk_path(&disk);
+        let driver = self.driver(&disk)?;
+        let _lock = driver.lock(&disk)?;
+        let path = driver.stage(&disk)?.path().to_path_buf();
         let new_size = round_up(new_size, MIB);
         if new_size == disk.size_bytes {
             return Ok((disk, None, vec!["size unchanged".into()]));
@@ -273,7 +432,8 @@ impl ImageManager {
         if new_size > disk.size_bytes {
             self.grow(&mut disk, &path, new_size, extend_root)
         } else {
-            self.shrink(&mut disk, &path, new_size).map(|d| (d, None, Vec::new()))
+            self.shrink(&mut disk, new_size)
+                .map(|d| (d, None, Vec::new()))
         }
     }
 
@@ -284,59 +444,82 @@ impl ImageManager {
         new_size: u64,
         extend_root: Option<bool>,
     ) -> Result<(Disk, Option<ExtendOutcome>, Vec<String>), ImageError> {
-        // In place: growing only adds space at the end.
-        qemu_img::resize(path, disk.format, new_size, false)?;
+        self.driver(disk)?.expand_volume(disk, new_size)?;
         let old = disk.size_bytes;
         disk.size_bytes = new_size;
         self.put_disk(disk)?;
         tracing::info!(disk = %disk.name, old, new = new_size, "disk grown");
 
         let partial = |e: ImageError| {
-            e.context(&format!("disk grown to {} bytes, but the partition table was not updated", new_size))
+            e.context(&format!(
+                "disk grown to {} bytes, but the partition table was not updated",
+                new_size
+            ))
         };
         let table = partition::read_table(path, disk.format, new_size).map_err(partial)?;
-        if let Some(t) = &table {
-            if t.kind == TableKind::Gpt {
-                match partition::edit(path, disk.format, new_size, qemu_img::sgdisk_relocate_backup) {
-                    Ok(()) => {}
-                    Err(e @ ImageError::ToolMissing { .. }) => {
-                        if extend_root.unwrap_or(disk.is_from_image()) {
-                            // On-boot growpart fixes the backup header too.
-                            disk.pending_growpart = true;
-                            self.put_disk(disk)?;
-                            return Ok((
-                                disk.clone(),
-                                Some(ExtendOutcome::OnBoot),
-                                vec![format!("{}; the guest will extend the root partition on next boot", e)],
-                            ));
-                        }
-                        return Err(partial(e));
+        if let Some(t) = &table
+            && t.kind == TableKind::Gpt
+        {
+            match partition::edit(
+                path,
+                disk.format,
+                new_size,
+                qemu_img::sgdisk_relocate_backup,
+            ) {
+                Ok(()) => {}
+                Err(e @ ImageError::ToolMissing { .. }) => {
+                    if extend_root.unwrap_or(disk.is_from_image()) {
+                        // On-boot growpart fixes the backup header too.
+                        disk.pending_growpart = true;
+                        self.put_disk(disk)?;
+                        return Ok((
+                            disk.clone(),
+                            Some(ExtendOutcome::OnBoot),
+                            vec![format!(
+                                "{}; the guest will extend the root partition on next boot",
+                                e
+                            )],
+                        ));
                     }
-                    Err(e) => return Err(partial(e)),
+                    return Err(partial(e));
                 }
+                Err(e) => return Err(partial(e)),
             }
         }
         if !extend_root.unwrap_or(disk.is_from_image()) {
             return Ok((disk.clone(), None, Vec::new()));
         }
         if table.is_none() {
-            return Ok((disk.clone(), Some(ExtendOutcome::Skipped), vec!["no partition table; nothing to extend".into()]));
+            return Ok((
+                disk.clone(),
+                Some(ExtendOutcome::Skipped),
+                vec!["no partition table; nothing to extend".into()],
+            ));
         }
         let (outcome, warnings) = self
             .extend_root_at(path, disk, ExtendMode::Offline)
-            .map_err(|e| e.context(&format!("disk grown to {} bytes, but the root partition was not extended", new_size)))?;
+            .map_err(|e| {
+                e.context(&format!(
+                    "disk grown to {} bytes, but the root partition was not extended",
+                    new_size
+                ))
+            })?;
         self.put_disk(disk)?;
         Ok((disk.clone(), Some(outcome), warnings))
     }
 
-    fn shrink(&self, disk: &mut Disk, path: &Path, new_size: u64) -> Result<Disk, ImageError> {
+    fn shrink(&self, disk: &mut Disk, new_size: u64) -> Result<Disk, ImageError> {
         let (min, kind) = self.shrink_minimum(disk)?;
         if new_size < min {
             return Err(ImageError::InvalidDisk {
                 message: format!(
                     "{} bytes would cut into a partition{}; the minimum is {} bytes. glidex does not shrink filesystems: shrink the filesystem and partition inside the guest first",
                     new_size,
-                    if disk.is_linked() { " or the backing image" } else { "" },
+                    if disk.is_linked() {
+                        " or the backing image"
+                    } else {
+                        ""
+                    },
                     min
                 ),
                 details: serde_json::json!({ "min_size_bytes": min }),
@@ -348,18 +531,19 @@ impl ImageManager {
                 qemu_img::QEMU_IO.require()?;
             }
         }
-        // Work on a copy: `qemu-img resize --shrink` discards data without
-        // asking, and a crash part way must leave the original intact.
-        let tmp = self.temp_path(&disk.id, "shrink", disk.format);
-        qemu_img::copy_sparse(path, tmp.path())?;
-        qemu_img::resize(tmp.path(), disk.format, new_size, true)?;
-        if kind == TableKind::Gpt {
-            partition::edit(tmp.path(), disk.format, new_size, qemu_img::sgdisk_relocate_backup)?;
-        }
-        qemu_img::check(tmp.path(), disk.format)?;
-        set_mode(tmp.path(), 0o600)?;
+        self.driver(disk)?
+            .shrink_volume(disk, new_size, &mut |copy| {
+                if kind == TableKind::Gpt {
+                    partition::edit(
+                        copy.path(),
+                        disk.format,
+                        new_size,
+                        qemu_img::sgdisk_relocate_backup,
+                    )?;
+                }
+                Ok(())
+            })?;
         let old = disk.size_bytes;
-        std::fs::rename(tmp.keep(), path).map_err(|e| ImageError::Io(e.to_string()))?;
         disk.size_bytes = new_size;
         self.put_disk(disk)?;
         tracing::info!(disk = %disk.name, old, new = new_size, "disk shrunk");
@@ -367,9 +551,15 @@ impl ImageManager {
     }
 
     /// `POST /disks/{id}/extend-root` (spec §6.4). Persists the disk.
-    pub fn extend_root(&self, disk_id: &str, mode: ExtendMode) -> Result<(Disk, ExtendOutcome, Vec<String>), ImageError> {
+    pub fn extend_root(
+        &self,
+        disk_id: &str,
+        mode: ExtendMode,
+    ) -> Result<(Disk, ExtendOutcome, Vec<String>), ImageError> {
         let mut disk = self.get_disk(disk_id)?;
-        let path = self.disk_path(&disk);
+        let driver = self.driver(&disk)?;
+        let _lock = driver.lock(&disk)?;
+        let path = driver.stage(&disk)?.path().to_path_buf();
         let (outcome, warnings) = self.extend_root_at(&path, &mut disk, mode)?;
         self.put_disk(&disk)?;
         Ok((disk, outcome, warnings))
@@ -378,7 +568,12 @@ impl ImageManager {
     /// Extend the root partition of the disk file at `path` (which may be
     /// a temporary file during create). Updates `disk.pending_growpart`
     /// but does not persist.
-    fn extend_root_at(&self, path: &Path, disk: &mut Disk, mode: ExtendMode) -> Result<(ExtendOutcome, Vec<String>), ImageError> {
+    fn extend_root_at(
+        &self,
+        path: &Path,
+        disk: &mut Disk,
+        mode: ExtendMode,
+    ) -> Result<(ExtendOutcome, Vec<String>), ImageError> {
         let table = partition::read_table(path, disk.format, disk.size_bytes)?
             .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
         let root = partition::growable_root(&table)?.clone();
@@ -401,9 +596,89 @@ impl ImageManager {
             // Without the host tools, let the guest do it (spec §9).
             Err(e @ ImageError::ToolMissing { .. }) => {
                 disk.pending_growpart = true;
-                Ok((ExtendOutcome::OnBoot, vec![format!("{}; the guest will extend the root partition on next boot", e)]))
+                Ok((
+                    ExtendOutcome::OnBoot,
+                    vec![format!(
+                        "{}; the guest will extend the root partition on next boot",
+                        e
+                    )],
+                ))
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+impl ImageManager {
+    /// The record a disk has once moved as `spec` says (spec/storage.md
+    /// §8.3): on its new datastore, bound or worked by the mover, standalone
+    /// when flattened.
+    pub fn moved_record(&self, disk: &Disk, spec: &super::MoveSpec) -> Disk {
+        let mut d = disk.clone();
+        d.datastore = spec.datastore.clone();
+        d.node = spec.node.clone();
+        d.worker = spec.node.is_none().then(|| spec.mover.clone());
+        d.moving = None;
+        if spec.flatten
+            && let DiskOrigin::Image { mode, .. } = &mut d.origin
+        {
+            *mode = CloneMode::Full;
+        }
+        d
+    }
+
+    /// Copy `src`'s volume to where `dst` (its moved record) says, holding
+    /// both volumes' locks: a linked disk rebased onto the destination's
+    /// copy of its image, or flattened. A copy already in place (a crash
+    /// after the rename) is taken as made. The old volume stays: the caller
+    /// removes it once the move is recorded.
+    pub fn move_volume(&self, src: &Disk, dst: &Disk, flatten: bool) -> Result<(), ImageError> {
+        let (from, to) = (self.driver(src)?, self.driver(dst)?);
+        let _src_lock = from.lock(src)?;
+        let _dst_lock = to.lock(dst)?;
+        let path = from.stage(src)?.path().to_path_buf();
+        if to.exists(dst) {
+            return Ok(());
+        }
+        let backing = match &src.origin {
+            DiskOrigin::Image {
+                image_id,
+                mode: CloneMode::Linked,
+            } if !flatten => Some(self.image_for_move(dst, image_id)?),
+            _ => None,
+        };
+        to.copy_in(dst, &path, flatten, &mut |made| {
+            if let Some(b) = &backing {
+                let dir = made.path().parent().unwrap_or(Path::new("."));
+                let rel = crate::paths::relative_to(b, dir).unwrap_or_else(|| b.clone());
+                qemu_img::rebase_unsafe(made.path(), &rel)?;
+            }
+            Ok(())
+        })?;
+        tracing::info!(disk = %src.name, from = %src.datastore, to = %dst.datastore, "disk copied to its new datastore");
+        Ok(())
+    }
+
+    /// The image file a linked disk moved to `dst`'s datastore overlays:
+    /// a shared datastore's own copy, else this node's (S8).
+    fn image_for_move(&self, dst: &Disk, image_id: &str) -> Result<std::path::PathBuf, ImageError> {
+        let img = self.get_image(image_id)?;
+        let ds = crate::datastore::record::find(&self.db, &dst.datastore)
+            .map_err(|e| ImageError::Io(e.to_string()))?
+            .filter(|ds| ds.is_shared());
+        let path = match &ds {
+            Some(ds) => ds.image_copy_path(&self.node_id.load(), image_id),
+            None => self.image_path(image_id),
+        };
+        if !path.exists() {
+            return Err(ImageError::NotReady(match ds {
+                Some(ds) => format!(
+                    "image {} has not been copied into datastore {} yet",
+                    img.name, ds.name
+                ),
+                None => format!("image {} has not been copied to this node yet", img.name),
+            }));
+        }
+        Ok(path)
     }
 }

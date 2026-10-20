@@ -4,7 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, firmwareImages, LABEL, test, testImage, vmCard } from "../fixtures";
+import { api, bootPrerequisites, CLEAN_POWEROFF, consoleTerminal, consoleText, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
   test.setTimeout(10 * 60_000);
@@ -18,7 +18,10 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   const password = `Gx-${Math.random().toString(36).slice(2, 12)}`;
   const disk = `${E2E_HOME}/images/${vmName}.img`;
   execFileSync("cp", ["--sparse=always", testImage()!, disk]);
-  const vm = async () => (await api<any[]>("/vms")).find((v) => v.name === vmName);
+  const vm = async () => (await listVms()).find((v) => v.name === vmName);
+  // The host network of that name (glidex.network.v1: `{networks}`).
+  const networkOf = async (name: string) =>
+    ((await api<{ networks?: any[] }>("/networks")).networks ?? []).find((n) => n.name === name && !n.project);
 
   try {
     await test.step("add a credential", async () => {
@@ -37,7 +40,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await page.getByRole("button", { name: "Add Network" }).click();
       await page.getByPlaceholder("lab").fill(network);
       await page.getByRole("button", { name: "Create", exact: true }).click();
-      await expect(page.getByText(`gxbr-${network}`).first()).toBeVisible({ timeout: 30_000 });
+      // A new node network's bridge is named from its id (spec/tenancy.md D24).
+      await expect(page.getByRole("row", { name: new RegExp(network) })).toContainText(/gxbr-[0-9a-f]{8}/, { timeout: 30_000 });
     });
 
     await test.step("create the VM", async () => {
@@ -60,9 +64,11 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(page.getByText(vmName, { exact: true })).toBeVisible();
 
       const created = await vm();
-      expect(created.hypervisor).toBe(hypervisor);
-      const full = await api(`/vms/${created.id}`);
-      expect(full.nics.map((n: any) => n.network)).toEqual([network]);
+      expect(created.hypervisor).toBe(PROTO_HYPERVISOR[hypervisor]);
+      const full = (await api(`/vms/${created.id}`)).vm;
+      // NICs name their network by id, with its name beside it.
+      const net = (await networkOf(network))!;
+      expect(full.nics.map((n: any) => [n.network, n.network_name])).toEqual([[net.id, network]]);
     });
 
     let ip = "";
@@ -84,25 +90,25 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
     await test.step("log in on the web console", async () => {
       await page.getByText("Open Console").click();
       await expect(page).toHaveURL(/\/console$/);
-      const screen = page.locator(".xterm-rows");
+      const screen = () => consoleText(page);
       await expect(page.getByText("connected", { exact: true })).toBeVisible();
       // Nudge getty until the login prompt is on screen.
       await expect
         .poll(async () => {
-          if ((await screen.innerText()).includes(`${vmName} login:`)) return true;
-          await page.locator(".xterm").click();
+          if ((await screen()).includes(`${vmName} login:`)) return true;
+          await consoleTerminal(page).click();
           await page.keyboard.press("Enter");
           return false;
         }, { timeout: 300_000, intervals: [2_000] })
         .toBe(true);
-      await page.locator(".xterm").click();
+      await consoleTerminal(page).click();
       await page.keyboard.type(`${username}\n`, { delay: 20 });
-      await expect(screen).toContainText("Password:", { timeout: 30_000 });
+      await expect.poll(screen, { timeout: 30_000 }).toContain("Password:");
       await page.keyboard.type(`${password}\n`, { delay: 20 });
-      await expect(screen).toContainText(`${username}@${vmName}:~$`, { timeout: 60_000 });
+      await expect.poll(screen, { timeout: 60_000 }).toContain(`${username}@${vmName}:~$`);
       // The guest has the address the UI showed.
       await page.keyboard.type(`ip -4 -o addr | grep -q ' ${ip}/' && echo GX_UI_$((40+2))\n`, { delay: 10 });
-      await expect(screen).toContainText("GX_UI_42", { timeout: 30_000 });
+      await expect.poll(screen, { timeout: 30_000 }).toContain("GX_UI_42");
     });
 
     await test.step("pause and resume", async () => {
@@ -120,7 +126,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await page.getByRole("button", { name: "Shut down" }).click();
       await expect(page.getByRole("button", { name: "Start" })).toBeVisible({ timeout: 90_000 });
       const stopped = await vm();
-      expect(stopped.state).toBe("stopped");
+      expect(stopped.state).toBe("VM_STATE_STOPPED");
       const log = await api<string>(`/vms/${stopped.id}/console/log`);
       expect(log, "guest powered off cleanly").toMatch(CLEAN_POWEROFF);
     });
@@ -133,7 +139,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   } finally {
     const left = await vm();
     if (left) await del(`/vms/${left.id}`);
-    await del(`/networks/${network}`);
+    const net = await networkOf(network);
+    if (net) await del(`/networks/${net.id}`);
     await del(`/credentials/${username}`);
     rmSync(disk, { force: true });
   }

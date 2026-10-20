@@ -1,0 +1,585 @@
+// Metering (spec/metering.md §9): usage records, billing-month rate
+// reports (bandwidth, disk I/O, CPU and memory), 5-minute series for
+// graphs and live rates. Every operation is a read; the REST twins answer
+// with these messages as JSON (spec/grpc.md §9.1), and the usage and
+// report routes also answer CSV (`format=csv`, REST only).
+syntax = "proto3";
+
+package glidex.usage.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+// Usage records and billing-month reports.
+service UsageService {
+  // Host readers see every project (deleted ones too); everyone else the
+  // projects they may read usage of (§10).
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readUsage"
+      kind: KIND_READ
+      rest: "GET /usage"
+    };
+  }
+  rpc GetProjectUsage(GetProjectUsageRequest) returns (GetProjectUsageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readProjectUsage"
+      kind: KIND_READ
+      rest: "GET /projects/{id}/usage"
+    };
+  }
+  // The VM and its NICs (and, with `include_disks`, the disks attached
+  // to it now; §9.2).
+  rpc GetVmUsage(GetVmUsageRequest) returns (GetVmUsageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVmUsage"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/usage"
+    };
+  }
+  rpc GetDiskUsage(GetDiskUsageRequest) returns (GetDiskUsageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDiskUsage"
+      kind: KIND_READ
+      rest: "GET /disks/{id}/usage"
+    };
+  }
+  // Billing-month bandwidth by group (§9.3).
+  rpc GetBandwidthReport(GetBandwidthReportRequest) returns (GetBandwidthReportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readBandwidth"
+      kind: KIND_READ
+      rest: "GET /usage/bandwidth"
+    };
+  }
+  rpc GetDiskIoReport(GetDiskIoReportRequest) returns (GetDiskIoReportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDiskIoUsage"
+      kind: KIND_READ
+      rest: "GET /usage/disk-io"
+    };
+  }
+  rpc GetComputeReport(GetComputeReportRequest) returns (GetComputeReportResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readComputeUsage"
+      kind: KIND_READ
+      rest: "GET /usage/compute"
+    };
+  }
+}
+
+// 5-minute series for graphs (§9.3) and live rates (§9.4).
+service MetricsService {
+  rpc GetVmBandwidth(GetVmBandwidthRequest) returns (GetVmBandwidthResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVmBandwidth"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/bandwidth"
+    };
+  }
+  // All the VM's disks summed, and each attached disk separately.
+  rpc GetVmIo(GetVmIoRequest) returns (GetVmIoResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVmIo"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/io"
+    };
+  }
+  rpc GetVmCompute(GetVmComputeRequest) returns (GetVmComputeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVmCompute"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/compute"
+    };
+  }
+  // The latest rates of a VM, its NICs and its disks, from the last two
+  // samples (not stored). A VM on another node is asked of that node.
+  rpc GetVmStats(GetVmStatsRequest) returns (GetVmStatsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVmStats"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/stats"
+    };
+  }
+  rpc GetDiskIo(GetDiskIoRequest) returns (GetDiskIoResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDiskIo"
+      kind: KIND_READ
+      rest: "GET /disks/{id}/io"
+    };
+  }
+  rpc GetNetworkBandwidth(GetNetworkBandwidthRequest) returns (GetNetworkBandwidthResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetworkBandwidth"
+      kind: KIND_READ
+      rest: "GET /networks/{id}/bandwidth"
+    };
+  }
+  rpc GetNetworkStats(GetNetworkStatsRequest) returns (GetNetworkStatsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetworkStats"
+      kind: KIND_READ
+      rest: "GET /networks/{id}/stats"
+    };
+  }
+}
+
+// ---- shared ------------------------------------------------------------------
+
+// What rows are grouped by (§8.1).
+enum GroupKey {
+  GROUP_KEY_UNSPECIFIED = 0;
+  GROUP_KEY_PROJECT = 1;
+  GROUP_KEY_VM = 2;
+  GROUP_KEY_DISK = 3;
+  GROUP_KEY_NIC = 4;
+  GROUP_KEY_NETWORK = 5;
+  // The node a subject was on (spec/clustering-ui.md §5.4).
+  GROUP_KEY_NODE = 6;
+}
+
+enum Granularity {
+  GRANULARITY_UNSPECIFIED = 0;
+  GRANULARITY_HOUR = 1;
+  // The default.
+  GRANULARITY_DAY = 2;
+  GRANULARITY_MONTH = 3;
+}
+
+// One group key's value: a project, VM, disk, NIC, network or node.
+message Named {
+  string id = 1;
+  string name = 2;
+}
+
+// Slots of 5 minutes a group was present in, and how many of them were
+// interpolated.
+message SlotCounts {
+  optional uint32 counted = 1;
+  optional uint32 interpolated = 2;
+}
+
+// ---- usage records (§9.1, §9.2) ------------------------------------------------
+
+// The range and shape of a usage query.
+message UsageQuery {
+  // Rounded down to the hour; default the start of the current billing month.
+  google.protobuf.Timestamp from = 1;
+  // Exclusive, rounded up to the hour; default now. At most 400 days after `from`.
+  google.protobuf.Timestamp to = 2;
+  // `YYYY-MM` in the time zone, instead of `from`/`to`.
+  string month = 3;
+  Granularity granularity = 4;
+  // Default: the operation's own subject (project, VM or disk).
+  repeated GroupKey group_by = 5 [json_name = "group_by"];
+  // Only these meters (derived ones included); empty: all.
+  repeated string meters = 6;
+  // Time zone of day and month buckets (`+07:00`, `UTC`, …); default
+  // `metering.billing_timezone`.
+  string tz = 7;
+}
+
+message GetUsageRequest {
+  // Project ids or names; empty: every project the caller may read.
+  repeated string projects = 1;
+  UsageQuery query = 2;
+}
+message GetUsageResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  Granularity granularity = 3;
+  string timezone = 4;
+  repeated GroupKey group_by = 5 [json_name = "group_by"];
+  repeated UsageRow rows = 6;
+  // The end of the last closed hour; later rows are provisional.
+  google.protobuf.Timestamp complete_through = 7 [json_name = "complete_through"];
+  google.protobuf.Timestamp metering_started_at = 8 [json_name = "metering_started_at"];
+}
+
+// One bucket of one group. Only the keys the query groups by are set.
+message UsageRow {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end = 2;
+  Named project = 3;
+  Named vm = 4;
+  Named disk = 5;
+  Named nic = 6;
+  Named network = 7;
+  Named node = 8;
+  // Meter name (`cpu.used`, `net.ext_bytes`, …) → value.
+  map<string, MeterValue> meters = 9;
+  // `interpolated`, `reset`, `incomplete`, `source_proc`, `revised`,
+  // `provisional`, `partial` (before metering started), …
+  repeated string flags = 10;
+}
+
+// A meter's raw value and its presentation (§8.3).
+message MeterValue {
+  optional uint64 raw = 1;
+  optional double value = 2;
+  // `core-hours`, `GiB`, …; empty for unitless meters.
+  string unit = 3;
+}
+
+message GetProjectUsageRequest {
+  // Id or name.
+  string id = 1;
+  UsageQuery query = 2;
+}
+message GetProjectUsageResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  Granularity granularity = 3;
+  string timezone = 4;
+  repeated GroupKey group_by = 5 [json_name = "group_by"];
+  repeated UsageRow rows = 6;
+  google.protobuf.Timestamp complete_through = 7 [json_name = "complete_through"];
+  google.protobuf.Timestamp metering_started_at = 8 [json_name = "metering_started_at"];
+}
+
+message GetVmUsageRequest {
+  string id = 1;
+  UsageQuery query = 2;
+  // Add the disks attached to the VM now (REST `include=disks`).
+  optional bool include_disks = 3 [json_name = "include_disks"];
+}
+message GetVmUsageResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  Granularity granularity = 3;
+  string timezone = 4;
+  repeated GroupKey group_by = 5 [json_name = "group_by"];
+  repeated UsageRow rows = 6;
+  google.protobuf.Timestamp complete_through = 7 [json_name = "complete_through"];
+  google.protobuf.Timestamp metering_started_at = 8 [json_name = "metering_started_at"];
+}
+
+message GetDiskUsageRequest {
+  string id = 1;
+  UsageQuery query = 2;
+}
+message GetDiskUsageResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  Granularity granularity = 3;
+  string timezone = 4;
+  repeated GroupKey group_by = 5 [json_name = "group_by"];
+  repeated UsageRow rows = 6;
+  google.protobuf.Timestamp complete_through = 7 [json_name = "complete_through"];
+  google.protobuf.Timestamp metering_started_at = 8 [json_name = "metering_started_at"];
+}
+
+// ---- billing-month reports (§9.3) ----------------------------------------------
+
+// The period and grouping of a report.
+message ReportQuery {
+  // `YYYY-MM` in the time zone; default the current billing month.
+  string month = 1;
+  // Instead of `month`: whole hours, at most 100 days.
+  google.protobuf.Timestamp from = 2;
+  // Default now (with `from`).
+  google.protobuf.Timestamp to = 3;
+  // Default `project`.
+  repeated GroupKey group_by = 4 [json_name = "group_by"];
+  // Months in this zone (fixed whole-hour offsets only, §8.1).
+  string tz = 5;
+}
+
+// Bandwidth averages and 30-second peaks in Mbit/s; a network's (bridge)
+// total is `mbps`. Peaks carry their sample interval.
+message BandwidthRates {
+  optional double rx_mbps = 1 [json_name = "rx_mbps"];
+  optional double tx_mbps = 2 [json_name = "tx_mbps"];
+  optional double ext_rx_mbps = 3 [json_name = "ext_rx_mbps"];
+  optional double ext_tx_mbps = 4 [json_name = "ext_tx_mbps"];
+  optional double mbps = 5;
+  optional uint32 resolution_secs = 6 [json_name = "resolution_secs"];
+}
+
+// 95th percentiles of 5-minute slots (§8.5.1); billable is the larger
+// direction. `slots` is set in series, and in a report's final figures.
+message BandwidthP95 {
+  optional double rx_mbps = 1 [json_name = "rx_mbps"];
+  optional double tx_mbps = 2 [json_name = "tx_mbps"];
+  optional double billable_mbps = 3 [json_name = "billable_mbps"];
+  optional double ext_rx_mbps = 4 [json_name = "ext_rx_mbps"];
+  optional double ext_tx_mbps = 5 [json_name = "ext_tx_mbps"];
+  optional double ext_billable_mbps = 6 [json_name = "ext_billable_mbps"];
+  SlotCounts slots = 7;
+}
+
+message BandwidthRow {
+  Named project = 1;
+  Named vm = 2;
+  Named nic = 3;
+  Named network = 4;
+  Named node = 5;
+  BandwidthRates avg = 6;
+  BandwidthRates peak = 7;
+  BandwidthP95 p95 = 8;
+  SlotCounts slots = 9;
+}
+
+message GetBandwidthReportRequest {
+  // Project ids or names; empty: every project the caller may read.
+  repeated string projects = 1;
+  // `group_by` ⊆ project, vm, nic, network, node.
+  ReportQuery query = 2;
+}
+message GetBandwidthReportResponse {
+  // Set when the report covers a billing month.
+  string month = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+  string timezone = 4;
+  // Every hour of the period is closed.
+  optional bool final = 5;
+  // The slots are gone; the rows are the month's stored final figures
+  // (p95 only).
+  optional bool from_final_figures = 6 [json_name = "from_final_figures"];
+  repeated GroupKey group_by = 7 [json_name = "group_by"];
+  repeated BandwidthRow rows = 8;
+}
+
+// Disk I/O averages and peaks: IOPS, MB/s (decimal) and, averages only,
+// latency in ms.
+message DiskIoRates {
+  optional double read_iops = 1 [json_name = "read_iops"];
+  optional double write_iops = 2 [json_name = "write_iops"];
+  optional double iops = 3;
+  optional double read_mbps = 4 [json_name = "read_mbps"];
+  optional double write_mbps = 5 [json_name = "write_mbps"];
+  optional double mbps = 6;
+  optional double read_latency_ms = 7 [json_name = "read_latency_ms"];
+  optional double write_latency_ms = 8 [json_name = "write_latency_ms"];
+  optional uint32 resolution_secs = 9 [json_name = "resolution_secs"];
+}
+
+// Billable is the p95 of read + write per slot (§8.6, D16).
+message DiskIoP95 {
+  optional double read_iops = 1 [json_name = "read_iops"];
+  optional double write_iops = 2 [json_name = "write_iops"];
+  optional double billable_iops = 3 [json_name = "billable_iops"];
+  optional double read_mbps = 4 [json_name = "read_mbps"];
+  optional double write_mbps = 5 [json_name = "write_mbps"];
+  optional double billable_mbps = 6 [json_name = "billable_mbps"];
+  SlotCounts slots = 7;
+}
+
+// Where disk latency comes from.
+enum LatencySource {
+  LATENCY_SOURCE_UNSPECIFIED = 0;
+  // The hypervisor's time counters.
+  LATENCY_SOURCE_COUNTER = 1;
+  // Not available (Cloud Hypervisor).
+  LATENCY_SOURCE_NONE = 2;
+}
+
+message DiskIoRow {
+  Named project = 1;
+  Named vm = 2;
+  Named disk = 3;
+  Named node = 4;
+  DiskIoRates avg = 5;
+  DiskIoRates peak = 6;
+  DiskIoP95 p95 = 7;
+  SlotCounts slots = 8;
+  LatencySource latency_source = 9 [json_name = "latency_source"];
+}
+
+message GetDiskIoReportRequest {
+  repeated string projects = 1;
+  // `group_by` ⊆ project, vm, disk, node.
+  ReportQuery query = 2;
+}
+message GetDiskIoReportResponse {
+  string month = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+  string timezone = 4;
+  optional bool final = 5;
+  optional bool from_final_figures = 6 [json_name = "from_final_figures"];
+  repeated GroupKey group_by = 7 [json_name = "group_by"];
+  repeated DiskIoRow rows = 8;
+}
+
+// CPU (cores used, vCPUs allocated, utilization) and memory (MiB used and
+// allocated, utilization) averages and peaks (§8.7).
+message ComputeRates {
+  optional double cpu_cores = 1 [json_name = "cpu_cores"];
+  optional double vcpus = 2;
+  optional double cpu_percent = 3 [json_name = "cpu_percent"];
+  optional double mem_mib = 4 [json_name = "mem_mib"];
+  optional double mem_alloc_mib = 5 [json_name = "mem_alloc_mib"];
+  optional double mem_percent = 6 [json_name = "mem_percent"];
+  optional uint32 resolution_secs = 7 [json_name = "resolution_secs"];
+}
+
+message ComputeP95 {
+  optional double cpu_cores = 1 [json_name = "cpu_cores"];
+  optional double cpu_percent = 2 [json_name = "cpu_percent"];
+  optional double mem_mib = 3 [json_name = "mem_mib"];
+  optional double mem_percent = 4 [json_name = "mem_percent"];
+  SlotCounts slots = 5;
+}
+
+message ComputeRow {
+  Named project = 1;
+  Named vm = 2;
+  Named node = 3;
+  ComputeRates avg = 4;
+  ComputeRates peak = 5;
+  ComputeP95 p95 = 6;
+  SlotCounts slots = 7;
+}
+
+message GetComputeReportRequest {
+  repeated string projects = 1;
+  // `group_by` ⊆ project, vm, node.
+  ReportQuery query = 2;
+}
+message GetComputeReportResponse {
+  string month = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+  string timezone = 4;
+  optional bool final = 5;
+  optional bool from_final_figures = 6 [json_name = "from_final_figures"];
+  repeated GroupKey group_by = 7 [json_name = "group_by"];
+  repeated ComputeRow rows = 8;
+}
+
+// ---- series (§9.3) ---------------------------------------------------------------
+
+// The range of a series: at most 31 days; default the last day.
+message SeriesQuery {
+  // `YYYY-MM` in the time zone, instead of `from`/`to`.
+  string month = 1;
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+  string tz = 4;
+  // Add the 95th percentiles over the range.
+  optional bool p95 = 5;
+}
+
+// One 5-minute slot of a series. Which rates are set depends on the
+// series: network (`rx_mbps`, `tx_mbps`, `ext_*`; a network's `mbps`),
+// disk (IOPS, MB/s, latency when known) or compute.
+message RatePoint {
+  google.protobuf.Timestamp slot = 1;
+  optional double rx_mbps = 2 [json_name = "rx_mbps"];
+  optional double tx_mbps = 3 [json_name = "tx_mbps"];
+  optional double ext_rx_mbps = 4 [json_name = "ext_rx_mbps"];
+  optional double ext_tx_mbps = 5 [json_name = "ext_tx_mbps"];
+  optional double mbps = 6;
+  optional double read_iops = 7 [json_name = "read_iops"];
+  optional double write_iops = 8 [json_name = "write_iops"];
+  optional double read_mbps = 9 [json_name = "read_mbps"];
+  optional double write_mbps = 10 [json_name = "write_mbps"];
+  optional double read_latency_ms = 11 [json_name = "read_latency_ms"];
+  optional double write_latency_ms = 12 [json_name = "write_latency_ms"];
+  optional double cpu_cores = 13 [json_name = "cpu_cores"];
+  optional double cpu_percent = 14 [json_name = "cpu_percent"];
+  optional double mem_mib = 15 [json_name = "mem_mib"];
+  optional double mem_percent = 16 [json_name = "mem_percent"];
+}
+
+message GetVmBandwidthRequest {
+  string id = 1;
+  SeriesQuery query = 2;
+}
+message GetVmBandwidthResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  repeated RatePoint points = 3;
+  BandwidthP95 p95 = 4;
+}
+
+message GetNetworkBandwidthRequest {
+  string name = 1;
+  SeriesQuery query = 2;
+}
+message GetNetworkBandwidthResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  repeated RatePoint points = 3;
+  BandwidthP95 p95 = 4;
+}
+
+// One disk's I/O series.
+message DiskIoSeries {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  repeated RatePoint points = 3;
+  DiskIoP95 p95 = 4;
+}
+
+message GetVmIoRequest {
+  string id = 1;
+  SeriesQuery query = 2;
+}
+message GetVmIoResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  // All the VM's disks, summed.
+  repeated RatePoint points = 3;
+  DiskIoP95 p95 = 4;
+  // Disk id → that disk's series, for the disks attached now.
+  map<string, DiskIoSeries> disks = 5;
+}
+
+message GetDiskIoRequest {
+  string id = 1;
+  SeriesQuery query = 2;
+}
+message GetDiskIoResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  repeated RatePoint points = 3;
+  DiskIoP95 p95 = 4;
+}
+
+message GetVmComputeRequest {
+  string id = 1;
+  SeriesQuery query = 2;
+}
+message GetVmComputeResponse {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  repeated RatePoint points = 3;
+  ComputeP95 p95 = 4;
+}
+
+// ---- live rates (§9.4) -------------------------------------------------------------
+
+// The latest rates of one NIC or disk.
+message LiveRates {
+  string id = 1;
+  string name = 2;
+  // A NIC's network.
+  string network = 3;
+  // Rate name (`rx_mbps`, `read_iops`, …) → value.
+  map<string, double> values = 4;
+}
+
+message GetVmStatsRequest {
+  string id = 1;
+}
+message GetVmStatsResponse {
+  // Unset when there is no recent sample (the VM isn't running).
+  google.protobuf.Timestamp sampled_at = 1 [json_name = "sampled_at"];
+  optional uint32 resolution_secs = 2 [json_name = "resolution_secs"];
+  // The VM's own rates (`cpu_percent`, `cpu_cores`, `mem_mib`, …).
+  map<string, double> vm = 3;
+  repeated LiveRates nics = 4;
+  repeated LiveRates disks = 5;
+}
+
+message GetNetworkStatsRequest {
+  string name = 1;
+}
+message GetNetworkStatsResponse {
+  google.protobuf.Timestamp sampled_at = 1 [json_name = "sampled_at"];
+  optional uint32 resolution_secs = 2 [json_name = "resolution_secs"];
+  map<string, double> values = 3;
+}

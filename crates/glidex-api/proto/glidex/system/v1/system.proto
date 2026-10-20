@@ -1,0 +1,96 @@
+// What a client asks before and right after logging in (spec/grpc.md G0).
+syntax = "proto3";
+
+package glidex.system.v1;
+
+import "glidex/access/v1/access.proto";
+import "glidex/api/v1/options.proto";
+
+service SystemService {
+  // The server's identity, which client login profiles bind to
+  // (spec/gxctl-auth.md §7.1). No authentication.
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_READ
+      rest: "GET /auth/server-info"
+    };
+  }
+
+  // Who the caller is, and which roles they hold. Also the answer to a
+  // browser login and `GET /users/me`.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /auth/whoami"
+    };
+  }
+}
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+  // Absent on a standalone host.
+  optional string cluster_id = 1 [json_name = "cluster_id"];
+  optional string node_id = 2 [json_name = "node_id"];
+  string cluster_name = 3 [json_name = "cluster_name"];
+  string version = 4;
+  // SHA-256 of the server certificate; absent when TLS is off.
+  optional string fingerprint = 5;
+  LoginMethods methods = 6;
+}
+
+// Which login methods are on. `optional` so `false` is still sent.
+message LoginMethods {
+  optional bool pam = 1;
+  optional bool oidc = 2;
+  optional bool disabled = 3;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  // Absent for a service-account token.
+  optional string user_id = 1 [json_name = "user_id"];
+  string display_name = 2 [json_name = "display_name"];
+  // "peer", "pam", "oidc", "token" or "disabled".
+  string method = 3;
+  optional string token_id = 4 [json_name = "token_id"];
+  repeated string teams = 5;
+  optional bool break_glass = 6 [json_name = "break_glass"];
+  repeated string host_roles = 7 [json_name = "host_roles"];
+  repeated ProjectRole project_roles = 8 [json_name = "project_roles"];
+  optional string default_project = 9 [json_name = "default_project"];
+  // A multi-factor login (spec/tenancy.md §6).
+  optional bool mfa = 10;
+  string directory_id = 11 [json_name = "directory_id"];
+  // Absent for a service-account token.
+  glidex.access.v1.User user = 12;
+  // The token the caller presented.
+  TokenSummary token = 13;
+  // A browser session's CSRF value, for `X-Glidex-CSRF` on writes.
+  optional string csrf = 14;
+}
+
+message TokenSummary {
+  string id = 1;
+  string name = 2;
+  optional string device = 3;
+  optional string client = 4;
+}
+
+message ProjectRole {
+  string project = 1;
+  optional string project_name = 2 [json_name = "project_name"];
+  string role = 3;
+  // The linked principal the role comes through (the user, a team, a token).
+  EntityRef via = 4;
+}
+
+// A Cedar entity, as REST's `{"type": "Team", "id": "…"}`.
+message EntityRef {
+  string type = 1;
+  // Absent for singletons (`Cluster`, `Host`).
+  optional string id = 2;
+}

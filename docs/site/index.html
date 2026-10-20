@@ -1,0 +1,100 @@
+<!doctype html>
+<!-- Landing page of the public docs site (gh-pages). The Docs workflow
+     puts it at the root and the public book under docs/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glidex</title>
+<meta name="description" content="Glidex: a control plane for KVM virtual machines on Cloud Hypervisor or QEMU, on one host or a cluster.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5a6475; --card: #f5f7fa;
+    --border: #e1e5ec; --accent: #2b6cb0; --accent-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --fg: #e6e9ef; --muted: #a0a8b6; --card: #1b2029;
+      --border: #2a313d; --accent: #63a4e8; --accent-fg: #0d1117;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem 3rem; }
+  header h1 { font-size: 2.75rem; margin: 0 0 .5rem; letter-spacing: -.02em; }
+  header p { font-size: 1.2rem; color: var(--muted); margin: 0 0 2rem; max-width: 42rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 3rem; }
+  .button {
+    display: inline-block; padding: .65rem 1.2rem; border-radius: 6px;
+    border: 1px solid var(--border); color: var(--fg); text-decoration: none;
+    font-weight: 600;
+  }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .button:hover { filter: brightness(1.08); }
+  pre {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 3rem;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h2 { font-size: 1.3rem; margin: 0 0 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 3rem; }
+  .card {
+    display: block; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.1rem 1.25rem; color: var(--fg); text-decoration: none;
+  }
+  a.card:hover { border-color: var(--accent); }
+  .card h3 { margin: 0 0 .35rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  footer { color: var(--muted); font-size: .9rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Glidex</h1>
+    <p>A control plane for KVM virtual machines on Cloud Hypervisor or QEMU,
+    with a web UI, the <code>gxctl</code> CLI and REST and RPC APIs. On one
+    Linux host, or many hosts joined into a cluster.</p>
+  </header>
+
+  <div class="actions">
+    <a class="button primary" href="docs/quick-start.html">Quick start</a>
+    <a class="button" href="docs/">Documentation</a>
+    <a class="button" href="https://github.com/CMKL-APEX/glidex">GitHub</a>
+  </div>
+
+  <pre><code>git clone https://github.com/CMKL-APEX/glidex.git &amp;&amp; cd glidex
+cargo run -p glidex-install</code></pre>
+
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card"><h3>Two hypervisors</h3><p>Cloud Hypervisor and QEMU boot cloud images through UEFI, with networks, disks, PCI passthrough, pause and graceful shutdown.</p></div>
+    <div class="card"><h3>Images and disks</h3><p>Checksum-verified cloud images from a built-in catalog; thin root disks grown with their root partition.</p></div>
+    <div class="card"><h3>Networking</h3><p>NAT, isolated and bridged networks on Open vSwitch; kernel, AF_XDP or DPDK uplinks.</p></div>
+    <div class="card"><h3>Console</h3><p>Each VM's serial console in the browser or <code>gxctl</code>, shared by any number of clients.</p></div>
+    <div class="card"><h3>Projects and access</h3><p>Projects with quotas and roles, PAM and OIDC logins, API tokens, Cedar policies and an audit log.</p></div>
+    <div class="card"><h3>Clusters</h3><p>Raft-replicated servers, agents that run VMs, a scheduler, and cluster networks on OVN.</p></div>
+  </div>
+
+  <h2>Documentation</h2>
+  <div class="grid">
+    <a class="card" href="docs/quick-start.html"><h3>Quick start</h3><p>Install on one host and boot your first VM.</p></a>
+    <a class="card" href="docs/user-guide/index.html"><h3>User guide</h3><p>VMs, images, disks, credentials, networks, projects, the console and usage.</p></a>
+    <a class="card" href="docs/operator-guide/index.html"><h3>Operator guide</h3><p>Installation, configuration, TLS, authentication, access control, networking and clusters.</p></a>
+    <a class="card" href="docs/reference/gxctl.html"><h3>gxctl reference</h3><p>Every command of the CLI.</p></a>
+    <a class="card" href="docs/api/index.html"><h3>API reference</h3><p>The REST and RPC APIs.</p></a>
+    <a class="card" href="docs/concepts.html"><h3>Concepts</h3><p>The objects Glidex manages and the words the docs use for them.</p></a>
+  </div>
+
+  <footer>
+    Glidex is dual-licensed under MIT or Apache-2.0.
+    Copyright &copy; 2025-2026 CMKL University and The Glidex Project Contributors.
+    <a href="https://github.com/CMKL-APEX/glidex">Source on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>

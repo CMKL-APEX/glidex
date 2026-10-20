@@ -20,8 +20,14 @@ use tokio::sync::watch;
 use tower::ServiceExt;
 
 /// Serve one connection until it closes or `stop` fires.
-async fn serve_conn<I>(io: I, router: Router, listener: Listener, peer: Option<u32>, addr: Option<SocketAddr>, mut stop: watch::Receiver<bool>)
-where
+async fn serve_conn<I>(
+    io: I,
+    router: Router,
+    listener: Listener,
+    peer: Option<u32>,
+    addr: Option<SocketAddr>,
+    mut stop: watch::Receiver<bool>,
+) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
@@ -60,12 +66,17 @@ pub struct Tls {
     pub self_signed: bool,
     /// Generated on this start.
     pub generated: bool,
+    /// The files behind it, to watch for changes; taken by `main`.
+    pub files: Option<glidex_tls::FileCert>,
 }
 
 /// Where `"auto"` keeps its certificate: `~/.glidex/tls`
 /// (`/var/lib/glidex-control-plane/.glidex/tls` under systemd).
 pub fn self_signed_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".glidex").join("tls")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".glidex")
+        .join("tls")
 }
 
 /// Load or generate the certificate `tls` asks for; `None` when it is
@@ -74,31 +85,54 @@ pub fn tls_setup(tls: &TlsSetting) -> Result<Option<Tls>, String> {
     let (cert, key, self_signed, generated) = match tls {
         TlsSetting::Mode(TlsMode::Off) => return Ok(None),
         TlsSetting::Mode(TlsMode::Auto) => {
-            let s = glidex_tls::ensure_self_signed(&self_signed_dir(), "cp", &glidex_tls::LocalNames::discover())?;
+            let s = glidex_tls::ensure_self_signed(
+                &self_signed_dir(),
+                "cp",
+                &glidex_tls::LocalNames::discover(),
+            )?;
             (s.cert, s.key, true, s.generated)
         }
         TlsSetting::Files(f) => {
             let key: PathBuf = match &f.key {
                 Some(k) => k.clone(),
-                None => crate::config::credential("tls-key").ok_or("TLS key: set tls.key or the tls-key credential")?,
+                None => crate::config::credential("tls-key")
+                    .ok_or("TLS key: set tls.key or the tls-key credential")?,
             };
             (f.cert.clone(), key, false, false)
         }
     };
-    let cfg = glidex_tls::server_config(&cert, &key, &[b"h2", b"http/1.1"])?;
-    let fingerprint = glidex_tls::fingerprint(&cert)?;
-    Ok(Some(Tls { acceptor: tokio_rustls::TlsAcceptor::from(cfg), cert, fingerprint, self_signed, generated }))
+    let files = glidex_tls::FileCert::load(&cert, &key)?;
+    let fingerprint = glidex_tls::fingerprint_certified(&files.slot.get());
+    let cfg = glidex_tls::resolver_config(
+        glidex_tls::Resolver::new(files.slot.clone()),
+        &[b"h2", b"http/1.1"],
+    )?;
+    Ok(Some(Tls {
+        acceptor: tokio_rustls::TlsAcceptor::from(cfg),
+        cert,
+        fingerprint,
+        self_signed,
+        generated,
+        files: Some(files),
+    }))
 }
 
 /// Bind the TCP listeners. `[::]` on a host without IPv6 is skipped
 /// quietly; other failures are warnings, returned with the address.
-pub fn bind_tcp(addrs: &[SocketAddr]) -> (Vec<tokio::net::TcpListener>, Vec<(SocketAddr, std::io::Error)>) {
+pub fn bind_tcp(
+    addrs: &[SocketAddr],
+) -> (
+    Vec<tokio::net::TcpListener>,
+    Vec<(SocketAddr, std::io::Error)>,
+) {
     let mut ok = Vec::new();
     let mut failed = Vec::new();
     for a in addrs {
         match glidex_tls::bind(*a) {
             Ok(l) => ok.push(l),
-            Err(e) if glidex_tls::ipv6_unavailable(a, &e) => tracing::info!("IPv6 unavailable; not listening on {}", a),
+            Err(e) if glidex_tls::ipv6_unavailable(a, &e) => {
+                tracing::info!("IPv6 unavailable; not listening on {}", a)
+            }
             Err(e) => failed.push((*a, e)),
         }
     }
@@ -127,15 +161,29 @@ pub async fn serve_tcp(
         match tls.clone() {
             Some(acceptor) => {
                 tokio::spawn(async move {
-                    match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(stream)).await {
-                        Ok(Ok(s)) => serve_conn(s, router, Listener::Tcp, None, Some(addr), stop).await,
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        acceptor.accept(stream),
+                    )
+                    .await
+                    {
+                        Ok(Ok(s)) => {
+                            serve_conn(s, router, Listener::Tcp, None, Some(addr), stop).await
+                        }
                         Ok(Err(e)) => tracing::debug!(%addr, "TLS handshake failed: {}", e),
                         Err(_) => tracing::debug!(%addr, "TLS handshake timed out"),
                     }
                 });
             }
             None => {
-                tokio::spawn(serve_conn(stream, router, Listener::Tcp, None, Some(addr), stop));
+                tokio::spawn(serve_conn(
+                    stream,
+                    router,
+                    Listener::Tcp,
+                    None,
+                    Some(addr),
+                    stop,
+                ));
             }
         }
     }
@@ -159,7 +207,12 @@ pub fn bind_unix(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
     Ok(l)
 }
 
-pub async fn serve_unix(listener: tokio::net::UnixListener, router: Router, kind: Listener, mut stop: watch::Receiver<bool>) {
+pub async fn serve_unix(
+    listener: tokio::net::UnixListener,
+    router: Router,
+    kind: Listener,
+    mut stop: watch::Receiver<bool>,
+) {
     loop {
         let stream = tokio::select! {
             r = listener.accept() => match r {
@@ -178,7 +231,14 @@ pub async fn serve_unix(listener: tokio::net::UnixListener, router: Router, kind
                 continue;
             }
         };
-        tokio::spawn(serve_conn(stream, router.clone(), kind, Some(uid), None, stop.clone()));
+        tokio::spawn(serve_conn(
+            stream,
+            router.clone(),
+            kind,
+            Some(uid),
+            None,
+            stop.clone(),
+        ));
     }
 }
 
@@ -199,7 +259,9 @@ mod tests {
         tokio::spawn(serve_unix(l, router, Listener::Api, rx));
         let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        s.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await.unwrap();
+        s.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         assert!(out.starts_with("HTTP/1.1 200"), "{out}");

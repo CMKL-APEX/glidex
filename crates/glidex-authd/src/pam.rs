@@ -57,8 +57,12 @@ struct PamConv {
     appdata_ptr: *mut c_void,
 }
 
-type PamStartFn =
-    unsafe extern "C" fn(*const c_char, *const c_char, *const PamConv, *mut *mut PamHandle) -> c_int;
+type PamStartFn = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    *const PamConv,
+    *mut *mut PamHandle,
+) -> c_int;
 type PamFlagsFn = unsafe extern "C" fn(*mut PamHandle, c_int) -> c_int;
 type PamEndFn = unsafe extern "C" fn(*mut PamHandle, c_int) -> c_int;
 type PamStrerrorFn = unsafe extern "C" fn(*mut PamHandle, c_int) -> *const c_char;
@@ -108,7 +112,8 @@ impl Pam {
         unsafe {
             macro_rules! sym {
                 ($ty:ty, $name:literal) => {
-                    *lib.get::<$ty>($name).map_err(|e| err($name.to_str().unwrap_or("?"), e))?
+                    *lib.get::<$ty>($name)
+                        .map_err(|e| err($name.to_str().unwrap_or("?"), e))?
                 };
             }
             let start = sym!(PamStartFn, c"pam_start");
@@ -135,7 +140,10 @@ impl Pam {
             return format!("PAM error {code}");
         }
         // SAFETY: non-NULL pam_strerror results are NUL-terminated.
-        format!("{} ({code})", unsafe { CStr::from_ptr(s) }.to_string_lossy())
+        format!(
+            "{} ({code})",
+            unsafe { CStr::from_ptr(s) }.to_string_lossy()
+        )
     }
 }
 
@@ -151,7 +159,11 @@ fn malloc_copy(bytes_with_nul: &[u8]) -> *mut c_char {
     unsafe {
         let p = libc::malloc(bytes_with_nul.len()) as *mut c_char;
         if !p.is_null() {
-            std::ptr::copy_nonoverlapping(bytes_with_nul.as_ptr() as *const c_char, p, bytes_with_nul.len());
+            std::ptr::copy_nonoverlapping(
+                bytes_with_nul.as_ptr() as *const c_char,
+                p,
+                bytes_with_nul.len(),
+            );
         }
         p
     }
@@ -163,16 +175,18 @@ fn malloc_copy(bytes_with_nul: &[u8]) -> *mut c_char {
 /// SAFETY: `resp` is a `calloc`'d array of `n` responses whose `resp`
 /// fields are NULL or `malloc`'d NUL-terminated strings.
 unsafe fn free_responses(resp: *mut PamResponse, n: usize) {
-    for i in 0..n {
-        let r = &mut *resp.add(i);
-        if !r.resp.is_null() {
-            let len = libc::strlen(r.resp);
-            std::slice::from_raw_parts_mut(r.resp as *mut u8, len).zeroize();
-            libc::free(r.resp as *mut c_void);
-            r.resp = std::ptr::null_mut();
+    unsafe {
+        for i in 0..n {
+            let r = &mut *resp.add(i);
+            if !r.resp.is_null() {
+                let len = libc::strlen(r.resp);
+                std::slice::from_raw_parts_mut(r.resp as *mut u8, len).zeroize();
+                libc::free(r.resp as *mut c_void);
+                r.resp = std::ptr::null_mut();
+            }
         }
+        libc::free(resp as *mut c_void);
     }
-    libc::free(resp as *mut c_void);
 }
 
 /// The PAM conversation: answers password prompts with the password and
@@ -188,53 +202,60 @@ unsafe extern "C" fn conversation(
     resp: *mut *mut PamResponse,
     appdata_ptr: *mut c_void,
 ) -> c_int {
-    let run = || {
-        if num_msg <= 0 || num_msg > PAM_MAX_NUM_MSG || msg.is_null() || resp.is_null() || appdata_ptr.is_null() {
-            return PAM_CONV_ERR;
-        }
-        let n = num_msg as usize;
-        let data = &*(appdata_ptr as *const ConvData);
-        let out = libc::calloc(n, std::mem::size_of::<PamResponse>()) as *mut PamResponse;
-        if out.is_null() {
-            return PAM_BUF_ERR;
-        }
-        for i in 0..n {
-            let m = *msg.add(i);
-            if m.is_null() {
-                free_responses(out, n);
+    unsafe {
+        let run = || {
+            if num_msg <= 0
+                || num_msg > PAM_MAX_NUM_MSG
+                || msg.is_null()
+                || resp.is_null()
+                || appdata_ptr.is_null()
+            {
                 return PAM_CONV_ERR;
             }
-            let answer = match (*m).msg_style {
-                PAM_PROMPT_ECHO_OFF => Some(data.password.as_slice()),
-                PAM_PROMPT_ECHO_ON => Some(data.user.as_bytes_with_nul()),
-                PAM_ERROR_MSG | PAM_TEXT_INFO => {
-                    if !(*m).msg.is_null() {
-                        let text = CStr::from_ptr((*m).msg).to_string_lossy();
-                        tracing::debug!(message = %text, "PAM message");
-                    }
-                    None
-                }
-                _ => {
+            let n = num_msg as usize;
+            let data = &*(appdata_ptr as *const ConvData);
+            let out = libc::calloc(n, std::mem::size_of::<PamResponse>()) as *mut PamResponse;
+            if out.is_null() {
+                return PAM_BUF_ERR;
+            }
+            for i in 0..n {
+                let m = *msg.add(i);
+                if m.is_null() {
                     free_responses(out, n);
                     return PAM_CONV_ERR;
                 }
-            };
-            if let Some(bytes) = answer {
-                let p = malloc_copy(bytes);
-                if p.is_null() {
-                    free_responses(out, n);
-                    return PAM_BUF_ERR;
+                let answer = match (*m).msg_style {
+                    PAM_PROMPT_ECHO_OFF => Some(data.password.as_slice()),
+                    PAM_PROMPT_ECHO_ON => Some(data.user.as_bytes_with_nul()),
+                    PAM_ERROR_MSG | PAM_TEXT_INFO => {
+                        if !(*m).msg.is_null() {
+                            let text = CStr::from_ptr((*m).msg).to_string_lossy();
+                            tracing::debug!(message = %text, "PAM message");
+                        }
+                        None
+                    }
+                    _ => {
+                        free_responses(out, n);
+                        return PAM_CONV_ERR;
+                    }
+                };
+                if let Some(bytes) = answer {
+                    let p = malloc_copy(bytes);
+                    if p.is_null() {
+                        free_responses(out, n);
+                        return PAM_BUF_ERR;
+                    }
+                    (*out.add(i)).resp = p;
                 }
-                (*out.add(i)).resp = p;
             }
-        }
-        // libpam owns `out` and every `resp` in it from here on.
-        *resp = out;
-        PAM_SUCCESS
-    };
-    // Unwinding across the C boundary is undefined; nothing above should
-    // panic, but fail the conversation rather than abort if it does.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or(PAM_CONV_ERR)
+            // libpam owns `out` and every `resp` in it from here on.
+            *resp = out;
+            PAM_SUCCESS
+        };
+        // Unwinding across the C boundary is undefined; nothing above should
+        // panic, but fail the conversation rather than abort if it does.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or(PAM_CONV_ERR)
+    }
 }
 
 /// [`Authenticator`] backed by the host's PAM stack:
@@ -252,8 +273,10 @@ impl PamAuthenticator {
 
 impl Authenticator for PamAuthenticator {
     fn authenticate(&self, service: &str, user: &str, password: &str) -> Result<(), AuthFailure> {
-        let service = CString::new(service).map_err(|_| AuthFailure::Internal("service name contains NUL".into()))?;
-        let user_c = CString::new(user).map_err(|_| AuthFailure::Denied("user name contains NUL".into()))?;
+        let service = CString::new(service)
+            .map_err(|_| AuthFailure::Internal("service name contains NUL".into()))?;
+        let user_c =
+            CString::new(user).map_err(|_| AuthFailure::Denied("user name contains NUL".into()))?;
         if password.as_bytes().contains(&0) {
             return Err(AuthFailure::Denied("password contains NUL".into()));
         }
@@ -291,7 +314,10 @@ impl Authenticator for PamAuthenticator {
         let result = if rc == PAM_SUCCESS {
             Ok(())
         } else {
-            Err(AuthFailure::Denied(format!("{step}: {}", self.pam.describe(pamh, rc))))
+            Err(AuthFailure::Denied(format!(
+                "{step}: {}",
+                self.pam.describe(pamh, rc)
+            )))
         };
         // SAFETY: ends the handle exactly once; libpam frees it.
         unsafe { (self.pam.end)(pamh, rc) };
@@ -307,7 +333,11 @@ mod tests {
     #[test]
     fn missing_library_is_a_clean_error() {
         let e = Pam::load(Path::new("/nonexistent/libpam-glidex-test.so.0")).unwrap_err();
-        assert!(e.to_string().contains("/nonexistent/libpam-glidex-test.so.0"), "{e}");
+        assert!(
+            e.to_string()
+                .contains("/nonexistent/libpam-glidex-test.so.0"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -318,20 +348,29 @@ mod tests {
 
     #[test]
     fn loads_system_libpam_when_present() {
-        if !Path::new("/usr/lib/x86_64-linux-gnu/libpam.so.0").exists() && !Path::new("/usr/lib64/libpam.so.0").exists() {
+        if !Path::new("/usr/lib/x86_64-linux-gnu/libpam.so.0").exists()
+            && !Path::new("/usr/lib64/libpam.so.0").exists()
+        {
             return;
         }
         Pam::load_default().expect("libpam.so.0 should load");
     }
 
     fn call_conv(data: &ConvData, styles: &[c_int]) -> (c_int, Vec<Option<Vec<u8>>>) {
-        let texts: Vec<CString> = styles.iter().map(|_| CString::new("Prompt: ").unwrap()).collect();
+        let texts: Vec<CString> = styles
+            .iter()
+            .map(|_| CString::new("Prompt: ").unwrap())
+            .collect();
         let msgs: Vec<PamMessage> = styles
             .iter()
             .zip(&texts)
-            .map(|(s, t)| PamMessage { msg_style: *s, msg: t.as_ptr() })
+            .map(|(s, t)| PamMessage {
+                msg_style: *s,
+                msg: t.as_ptr(),
+            })
             .collect();
-        let mut ptrs: Vec<*const PamMessage> = msgs.iter().map(|m| m as *const PamMessage).collect();
+        let mut ptrs: Vec<*const PamMessage> =
+            msgs.iter().map(|m| m as *const PamMessage).collect();
         let mut out: *mut PamResponse = std::ptr::null_mut();
         // SAFETY: same contract libpam follows; we free the result like libpam.
         unsafe {
@@ -364,9 +403,25 @@ mod tests {
             user: CString::new("alice").unwrap(),
             password: Zeroizing::new(b"s3cret\0".to_vec()),
         };
-        let (rc, answers) = call_conv(&data, &[PAM_TEXT_INFO, PAM_PROMPT_ECHO_ON, PAM_PROMPT_ECHO_OFF, PAM_ERROR_MSG]);
+        let (rc, answers) = call_conv(
+            &data,
+            &[
+                PAM_TEXT_INFO,
+                PAM_PROMPT_ECHO_ON,
+                PAM_PROMPT_ECHO_OFF,
+                PAM_ERROR_MSG,
+            ],
+        );
         assert_eq!(rc, PAM_SUCCESS);
-        assert_eq!(answers, vec![None, Some(b"alice".to_vec()), Some(b"s3cret".to_vec()), None]);
+        assert_eq!(
+            answers,
+            vec![
+                None,
+                Some(b"alice".to_vec()),
+                Some(b"s3cret".to_vec()),
+                None
+            ]
+        );
         let (rc, _) = call_conv(&data, &[PAM_PROMPT_ECHO_OFF, 99]);
         assert_eq!(rc, PAM_CONV_ERR);
         let (rc, _) = call_conv(&data, &[]);

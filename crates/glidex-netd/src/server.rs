@@ -2,25 +2,25 @@
 
 use crate::auth::{self, Peer};
 use crate::proto::*;
-use crate::store::{self, Store, BRIDGES, META, NAT, UPLINKS, VM_PORTS};
-use glidex_ovs::ipmigrate;
-use glidex_ovs::nic;
-use glidex_ovs::uplink::{self, UplinkKind};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::store::{self, BRIDGES, DEVICES, META, NAT, Store, UPLINKS, VM_PORTS};
 use crate::supervisor::Supervisor;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
 use glidex_ovs::install;
+use glidex_ovs::ipmigrate;
 use glidex_ovs::names;
 use glidex_ovs::nat::{self, NatSpec, NatState};
 use glidex_ovs::net::Ipv4Net;
+use glidex_ovs::nic;
+use glidex_ovs::uplink::{self, UplinkKind};
 use glidex_ovs::vm_port::{self, VmPortSpec};
 use glidex_ovs::{Exec, OvsError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -109,7 +109,10 @@ impl Netd {
             self.store.put(META, "ct_acct_set_by_glidex", &true)?;
         }
         let saved: Option<String> = self.store.get(META, "ct_counters")?;
-        let m = Arc::new(glidex_ovs::ct_meter::CtMeter::new(self.config.ct_zones, saved.as_deref()));
+        let m = Arc::new(glidex_ovs::ct_meter::CtMeter::new(
+            self.config.ct_zones,
+            saved.as_deref(),
+        ));
         if self.ct_events.load(std::sync::atomic::Ordering::Relaxed) {
             glidex_ovs::ct_meter::spawn_event_reader(m.clone());
         }
@@ -120,11 +123,17 @@ impl Netd {
     /// The daemon follows conntrack `DESTROY` events from the first
     /// collection on, and from startup on a node that collected before.
     pub fn enable_ct_events(&self) {
-        self.ct_events.store(true, std::sync::atomic::Ordering::Relaxed);
-        if self.store.get::<String>(META, "ct_counters").ok().flatten().is_some() {
-            if let Err(e) = self.ct_meter() {
-                tracing::warn!("conntrack counters: {}", e);
-            }
+        self.ct_events
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if self
+            .store
+            .get::<String>(META, "ct_counters")
+            .ok()
+            .flatten()
+            .is_some()
+            && let Err(e) = self.ct_meter()
+        {
+            tracing::warn!("conntrack counters: {}", e);
         }
     }
 
@@ -146,16 +155,31 @@ impl Netd {
             Op::ListVmPorts => to_value(self.vm_ports()?),
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
-            Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(self.ex(), &self.nats()?)?),
+            Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(
+                self.ex(),
+                &self.nats()?,
+            )?),
             Op::CtExternalCounters => {
                 let m = self.ct_meter()?;
                 // Persist before reporting, so what metering saw can't go backwards.
-                to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| self.store.put(META, "ct_counters", &s.to_string()))?)
+                to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| {
+                    self.store.put(META, "ct_counters", &s.to_string())
+                })?)
             }
-            Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm, args.accept_dhcp)?),
-            Op::ReapplyUplink { bridge, name } => to_value(self.reapply_uplink_after_rollback(&bridge, &name)?),
-            Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
-            Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
+            Op::EnsureUplink(args) => {
+                to_value(self.ensure_uplink(args.spec, args.confirm, args.accept_dhcp)?)
+            }
+            Op::ReapplyUplink { bridge, name } => {
+                to_value(self.reapply_uplink_after_rollback(&bridge, &name)?)
+            }
+            Op::CommitUplink {
+                bridge,
+                name,
+                token,
+            } => to_value(self.commit_uplink(&bridge, &name, &token)?),
+            Op::DeleteUplink { bridge, name } => {
+                self.delete_uplink(&bridge, &name).map(|_| Value::Null)
+            }
             Op::InstallOvs(req) => {
                 let report = install::install(self.ex(), &self.config.probe, &req)?;
                 if report.method == "source" {
@@ -166,29 +190,43 @@ impl Netd {
                 }
                 to_value(report)
             }
-            Op::InitDpdk(settings) => install::init_dpdk(self.ex(), &self.config.probe, &settings).map(|_| Value::Null),
+            Op::InitDpdk(settings) => {
+                install::init_dpdk(self.ex(), &self.config.probe, &settings).map(|_| Value::Null)
+            }
             Op::EnsureBridge(spec) => to_value(self.ensure_bridge(spec)?),
             Op::DeleteBridge { name } => self.delete_bridge(&name).map(|_| Value::Null),
             Op::EnsureNat(spec) => to_value(self.ensure_nat(spec)?),
             Op::DeleteNat { bridge } => self.delete_nat(&bridge).map(|_| Value::Null),
             Op::AttachVmPort(spec) => to_value(self.attach(spec, peer.uid)?),
             Op::MoveVmPort(spec) => to_value(self.move_port(spec, peer.uid)?),
-            Op::DetachVmPort { vm_id, nic_index } => {
-                self.detach(&vm_id, nic_index, peer.uid).map(|_| Value::Null)
-            }
+            Op::DetachVmPort { vm_id, nic_index } => self
+                .detach(&vm_id, nic_index, peer.uid)
+                .map(|_| Value::Null),
             Op::ReleaseVm { vm_id } => self.release_vm(&vm_id, peer.uid).map(|_| Value::Null),
             Op::SyncVms { running } => to_value(self.sync_vms(&running)?),
             Op::EnsureOvnChassis(args) => {
                 let caps = host::probe(self.ex(), &self.config.probe);
                 if !caps.ovs_running {
-                    return Err(OvsError::Unsupported { missing: vec!["ovs-vswitchd running".into()] });
+                    return Err(OvsError::Unsupported {
+                        missing: vec!["ovs-vswitchd running".into()],
+                    });
                 }
-                let st = glidex_ovs::ovn::ensure_chassis(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                let st = glidex_ovs::ovn::ensure_chassis(
+                    self.ex(),
+                    &args.spec,
+                    &args.certs,
+                    &self.config.ovn_dir,
+                )?;
                 tracing::info!(chassis = %args.spec.chassis, "OVN chassis ensured");
                 to_value(st)
             }
             Op::EnsureOvnCentral(args) => {
-                let changed = glidex_ovs::ovn::ensure_central(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                let changed = glidex_ovs::ovn::ensure_central(
+                    self.ex(),
+                    &args.spec,
+                    &args.certs,
+                    &self.config.ovn_dir,
+                )?;
                 to_value(serde_json::json!({ "changed": changed }))
             }
             Op::ForgetOvnMember(a) => {
@@ -197,6 +235,16 @@ impl Netd {
                 Ok(Value::Null)
             }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
+            Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
+            Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
+            Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
+            Op::ListPreparedDevices => to_value(
+                self.store
+                    .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
+                    .into_iter()
+                    .map(|(_, p)| p)
+                    .collect::<Vec<_>>(),
+            ),
             Op::LeaveOvn { confirm } => {
                 glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
                 tracing::info!("left OVN");
@@ -226,15 +274,28 @@ impl Netd {
             });
         }
         if spec.isolated && self.store.get::<NatState>(NAT, &spec.name)?.is_some() {
-            return Err(OvsError::conflict(format!("bridge '{}' is a NAT network, not an isolated one", spec.name)));
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' is a NAT network, not an isolated one",
+                spec.name
+            )));
         }
         if spec.isolated && self.uplinks()?.iter().any(|u| u.spec.bridge == spec.name) {
-            return Err(OvsError::conflict(format!("bridge '{}' has uplinks; an isolated bridge can't", spec.name)));
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' has uplinks; an isolated bridge can't",
+                spec.name
+            )));
         }
         let before = self.isolated_bridges()?;
         let live = bridge::ensure(self.ex(), &caps, &spec)?;
         // Stored after success only, so the store never claims more than OVS has.
-        self.store.put(BRIDGES, &spec.name, &BridgeSpec { adopt: false, ..spec.clone() })?;
+        self.store.put(
+            BRIDGES,
+            &spec.name,
+            &BridgeSpec {
+                adopt: false,
+                ..spec.clone()
+            },
+        )?;
         if self.isolated_bridges()? != before {
             self.apply_firewall(&self.nats()?)?;
         }
@@ -247,10 +308,16 @@ impl Netd {
 
     fn delete_bridge(&self, name: &str) -> Result<(), OvsError> {
         if self.uplinks()?.iter().any(|u| u.spec.bridge == name) {
-            return Err(OvsError::conflict(format!("bridge '{}' has uplinks; delete them first", name)));
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' has uplinks; delete them first",
+                name
+            )));
         }
         if self.store.get::<NatState>(NAT, name)?.is_some() {
-            return Err(OvsError::conflict(format!("bridge '{}' has a NAT network; delete it first", name)));
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' has a NAT network; delete it first",
+                name
+            )));
         }
         let users: Vec<String> = self
             .vm_ports()?
@@ -265,7 +332,10 @@ impl Netd {
                 users.join(", ")
             )));
         }
-        let was_isolated = self.store.get::<BridgeSpec>(BRIDGES, name)?.is_some_and(|b| b.isolated);
+        let was_isolated = self
+            .store
+            .get::<BridgeSpec>(BRIDGES, name)?
+            .is_some_and(|b| b.isolated);
         bridge::delete(self.ex(), name)?;
         self.store.delete(BRIDGES, name)?;
         if was_isolated {
@@ -283,8 +353,13 @@ impl Netd {
 
     /// Bridges of isolated networks, sorted: fenced off in `inet glidex`.
     fn isolated_bridges(&self) -> Result<Vec<String>, OvsError> {
-        let mut v: Vec<String> =
-            self.store.list::<BridgeSpec>(BRIDGES)?.into_iter().filter(|(_, b)| b.isolated).map(|(n, _)| n).collect();
+        let mut v: Vec<String> = self
+            .store
+            .list::<BridgeSpec>(BRIDGES)?
+            .into_iter()
+            .filter(|(_, b)| b.isolated)
+            .map(|(n, _)| n)
+            .collect();
         v.sort();
         Ok(v)
     }
@@ -299,8 +374,92 @@ impl Netd {
 
     // ---- uplinks -------------------------------------------------------
 
+    /// The addresses of this host's DPDK uplinks.
+    fn dpdk_uplink_addresses(&self) -> Result<Vec<String>, OvsError> {
+        Ok(self
+            .uplinks()?
+            .into_iter()
+            .filter_map(|r| match r.spec.kind {
+                UplinkKind::Dpdk { pci, .. } => Some(pci),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// spec/host-topology.md §5.3: bind the device's IOMMU group to
+    /// vfio-pci and give its group device to the VMs' group, remembering
+    /// the drivers for `release_device`. A group prepared already is
+    /// prepared again with what it had first.
+    fn prepare_device(&self, address: &str) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
+        let address = address.to_ascii_lowercase();
+        let uplinks = self.dpdk_uplink_addresses()?;
+        let mut p = glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group)?;
+        if let Some(before) = self
+            .store
+            .get::<glidex_ovs::vfio::Prepared>(DEVICES, &p.iommu_group)?
+        {
+            for m in &mut p.members {
+                if let Some(b) = before.members.iter().find(|b| b.address == m.address) {
+                    m.previous_driver = b.previous_driver.clone().or(m.previous_driver.take());
+                }
+            }
+        }
+        self.store.put(DEVICES, &p.iommu_group.clone(), &p)?;
+        tracing::info!(device = %address, group = %p.iommu_group, "prepared for passthrough");
+        Ok(p)
+    }
+
+    /// spec/host-topology.md §10.1: set a PF's VF count. On a change every
+    /// VF it had is removed from the bus (new ones come back on their
+    /// default driver), so their prepared groups are forgotten with their
+    /// udev rules; whether a VM holds one is the control plane's to check
+    /// first.
+    fn set_sriov_vfs(
+        &self,
+        address: &str,
+        vfs: u32,
+    ) -> Result<glidex_ovs::sriov::SriovState, OvsError> {
+        let address = address.to_ascii_lowercase();
+        let before = glidex_ovs::sriov::vfs_of(self.ex(), &address);
+        let uplinks = self.dpdk_uplink_addresses()?;
+        let state = glidex_ovs::sriov::set_vfs(self.ex(), &address, vfs, &uplinks)?;
+        let gone: &[String] = if state.changed { &before } else { &[] };
+        for (group, p) in self.store.list::<glidex_ovs::vfio::Prepared>(DEVICES)? {
+            if p.members.iter().any(|m| gone.contains(&m.address)) {
+                self.ex().remove_file(std::path::Path::new(&p.udev_rule))?;
+                self.store.delete(DEVICES, &group)?;
+            }
+        }
+        tracing::info!(device = %address, vfs = state.enabled, "SR-IOV virtual functions set");
+        Ok(state)
+    }
+
+    /// Undo `prepare_device` for the group `address` is in.
+    fn release_device(&self, address: &str) -> Result<(), OvsError> {
+        let address = address.to_ascii_lowercase();
+        let found = self
+            .store
+            .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
+            .into_iter()
+            .find(|(_, p)| p.members.iter().any(|m| m.address == address));
+        let Some((group, p)) = found else {
+            return Err(OvsError::not_found(format!(
+                "{address} was not prepared by glidex"
+            )));
+        };
+        glidex_ovs::vfio::release(self.ex(), &p)?;
+        self.store.delete(DEVICES, &group)?;
+        tracing::info!(device = %address, group = %group, "released from passthrough");
+        Ok(())
+    }
+
     fn uplinks(&self) -> Result<Vec<UplinkRecord>, OvsError> {
-        Ok(self.store.list::<UplinkRecord>(UPLINKS)?.into_iter().map(|(_, r)| r).collect())
+        Ok(self
+            .store
+            .list::<UplinkRecord>(UPLINKS)?
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect())
     }
 
     fn list_uplinks(&self) -> Result<Vec<UplinkResult>, OvsError> {
@@ -308,7 +467,11 @@ impl Netd {
             .into_iter()
             .map(|record| {
                 Ok(UplinkResult {
-                    phase: if record.pending.is_some() { UplinkPhase::PendingCommit } else { UplinkPhase::Active },
+                    phase: if record.pending.is_some() {
+                        UplinkPhase::PendingCommit
+                    } else {
+                        UplinkPhase::Active
+                    },
                     live: uplink::state(self.ex(), &record.spec.name)?,
                     record,
                     classification: None,
@@ -317,7 +480,12 @@ impl Netd {
             .collect()
     }
 
-    fn ensure_uplink(&self, spec: uplink::UplinkSpec, confirm: bool, accept_dhcp: bool) -> Result<UplinkResult, OvsError> {
+    fn ensure_uplink(
+        &self,
+        spec: uplink::UplinkSpec,
+        confirm: bool,
+        accept_dhcp: bool,
+    ) -> Result<UplinkResult, OvsError> {
         spec.validate()?;
         if self.store.get::<NatState>(NAT, &spec.bridge)?.is_some() {
             return Err(OvsError::conflict(format!(
@@ -336,13 +504,20 @@ impl Netd {
             if existing.spec == spec {
                 // Idempotent: already there (maybe still pending).
                 return Ok(UplinkResult {
-                    phase: if existing.pending.is_some() { UplinkPhase::PendingCommit } else { UplinkPhase::Active },
+                    phase: if existing.pending.is_some() {
+                        UplinkPhase::PendingCommit
+                    } else {
+                        UplinkPhase::Active
+                    },
                     live: uplink::state(self.ex(), &spec.name)?,
                     record: existing,
                     classification: None,
                 });
             }
-            return Err(OvsError::conflict(format!("uplink '{}' exists with different settings", spec.name)));
+            return Err(OvsError::conflict(format!(
+                "uplink '{}' exists with different settings",
+                spec.name
+            )));
         }
         // One uplink per NIC / PCI device, across all bridges.
         for other in self.uplinks()? {
@@ -350,7 +525,10 @@ impl Netd {
             let same_pci = matches!((&other.spec.kind, &spec.kind),
                 (UplinkKind::Dpdk { pci: a, .. }, UplinkKind::Dpdk { pci: b, .. }) if a == b);
             if same_nic || same_pci {
-                return Err(OvsError::conflict(format!("already used by uplink '{}' on '{}'", other.spec.name, other.spec.bridge)));
+                return Err(OvsError::conflict(format!(
+                    "already used by uplink '{}' on '{}'",
+                    other.spec.name, other.spec.bridge
+                )));
             }
         }
         let caps = host::probe(self.ex(), &self.config.probe);
@@ -391,7 +569,10 @@ impl Netd {
             for dev in nic::pci_netdevs(self.ex(), pci) {
                 let c = nic::classify(self.ex(), &dev)?;
                 if c.in_use() && !confirm {
-                    return Err(OvsError::HostInterfaceInUse { ifname: dev, reasons: c.reasons });
+                    return Err(OvsError::HostInterfaceInUse {
+                        ifname: dev,
+                        reasons: c.reasons,
+                    });
                 }
             }
             orig_driver = nic::pci_driver(self.ex(), pci)?;
@@ -400,10 +581,10 @@ impl Netd {
             }
         }
         let undo_driver = |netd: &Netd| {
-            if let UplinkKind::Dpdk { pci, .. } = &spec.kind {
-                if orig_driver.as_deref() != Some("vfio-pci") {
-                    let _ = nic::restore_driver(netd.ex(), pci);
-                }
+            if let UplinkKind::Dpdk { pci, .. } = &spec.kind
+                && orig_driver.as_deref() != Some("vfio-pci")
+            {
+                let _ = nic::restore_driver(netd.ex(), pci);
             }
         };
         if let Err(e) = uplink::add_port(self.ex(), &spec, orig_driver.as_deref()) {
@@ -429,10 +610,21 @@ impl Netd {
             if let Err(e) = ipmigrate::apply(self.ex(), &snap, &spec.bridge) {
                 return Err(rollback(self, format!("applying failed: {}", e)));
             }
-            if let Some(gw) = snap.default_gateway() {
-                if !ipmigrate::gateway_reachable(self.ex(), gw, &spec.bridge, self.config.gateway_check) {
-                    return Err(rollback(self, format!("default gateway {} did not answer through {}", gw, spec.bridge)));
-                }
+            if let Some(gw) = snap.default_gateway()
+                && !ipmigrate::gateway_reachable(
+                    self.ex(),
+                    gw,
+                    &spec.bridge,
+                    self.config.gateway_check,
+                )
+            {
+                return Err(rollback(
+                    self,
+                    format!(
+                        "default gateway {} did not answer through {}",
+                        gw, spec.bridge
+                    ),
+                ));
             }
             record.pending = Some(Pending {
                 token: random_token(),
@@ -445,19 +637,33 @@ impl Netd {
         let mut live = uplink::state(self.ex(), &spec.name)?;
         live.warnings = warnings;
         Ok(UplinkResult {
-            phase: if record.pending.is_some() { UplinkPhase::PendingCommit } else { UplinkPhase::Active },
+            phase: if record.pending.is_some() {
+                UplinkPhase::PendingCommit
+            } else {
+                UplinkPhase::Active
+            },
             record,
             live,
             classification,
         })
     }
 
-    fn commit_uplink(&self, bridge: &str, name: &str, token: &str) -> Result<UplinkResult, OvsError> {
+    fn commit_uplink(
+        &self,
+        bridge: &str,
+        name: &str,
+        token: &str,
+    ) -> Result<UplinkResult, OvsError> {
         let key = store::uplink_key(bridge, name);
         let mut record = self
             .store
             .get::<UplinkRecord>(UPLINKS, &key)?
-            .ok_or_else(|| OvsError::not_found(format!("uplink '{}' on '{}' (it may have been rolled back)", name, bridge)))?;
+            .ok_or_else(|| {
+                OvsError::not_found(format!(
+                    "uplink '{}' on '{}' (it may have been rolled back)",
+                    name, bridge
+                ))
+            })?;
         match &record.pending {
             None => {}
             Some(p) if p.token == token => {
@@ -481,17 +687,22 @@ impl Netd {
         if let Some(snap) = &record.snapshot {
             ipmigrate::restore(self.ex(), snap, &record.spec.bridge)?;
         }
-        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
-            if record.orig_driver.as_deref() != Some("vfio-pci") {
-                nic::restore_driver(self.ex(), pci)?;
-            }
+        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind
+            && record.orig_driver.as_deref() != Some("vfio-pci")
+        {
+            nic::restore_driver(self.ex(), pci)?;
         }
-        self.store
-            .delete(UPLINKS, &store::uplink_key(&record.spec.bridge, &record.spec.name))
+        self.store.delete(
+            UPLINKS,
+            &store::uplink_key(&record.spec.bridge, &record.spec.name),
+        )
     }
 
     fn delete_uplink(&self, bridge: &str, name: &str) -> Result<(), OvsError> {
-        let Some(record) = self.store.get::<UplinkRecord>(UPLINKS, &store::uplink_key(bridge, name))? else {
+        let Some(record) = self
+            .store
+            .get::<UplinkRecord>(UPLINKS, &store::uplink_key(bridge, name))?
+        else {
             return Ok(());
         };
         self.remove_uplink(&record)?;
@@ -512,7 +723,9 @@ impl Netd {
                         tracing::warn!(uplink = %record.spec.name, "not committed in time; rolled back");
                         rolled.push(record.spec.name.clone());
                     }
-                    Err(e) => tracing::error!(uplink = %record.spec.name, error = %e, "rollback failed"),
+                    Err(e) => {
+                        tracing::error!(uplink = %record.spec.name, error = %e, "rollback failed")
+                    }
                 }
             }
         }
@@ -522,7 +735,12 @@ impl Netd {
     // ---- NAT -----------------------------------------------------------
 
     fn nats(&self) -> Result<Vec<NatState>, OvsError> {
-        Ok(self.store.list::<NatState>(NAT)?.into_iter().map(|(_, n)| n).collect())
+        Ok(self
+            .store
+            .list::<NatState>(NAT)?
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect())
     }
 
     fn list_nat(&self) -> Result<Vec<NatInfo>, OvsError> {
@@ -598,7 +816,10 @@ impl Netd {
 
     fn ensure_nat(&self, spec: NatSpec) -> Result<NatInfo, OvsError> {
         if self.require_bridge(&spec.bridge)?.isolated {
-            return Err(OvsError::conflict(format!("bridge '{}' is an isolated network, not a NAT one", spec.bridge)));
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' is an isolated network, not a NAT one",
+                spec.bridge
+            )));
         }
         let existing = self.store.get::<NatState>(NAT, &spec.bridge)?;
         let others: Vec<NatState> = self
@@ -606,7 +827,13 @@ impl Netd {
             .into_iter()
             .filter(|n| n.bridge != spec.bridge)
             .collect();
-        let state = nat::plan(self.ex(), &spec, self.config.nat_supernet, &others, existing.as_ref())?;
+        let state = nat::plan(
+            self.ex(),
+            &spec,
+            self.config.nat_supernet,
+            &others,
+            existing.as_ref(),
+        )?;
         let mut all = others;
         all.push(state.clone());
         self.apply_nat(&state, &all)?;
@@ -623,10 +850,17 @@ impl Netd {
             return Ok(());
         };
         if self.vm_ports()?.iter().any(|r| r.spec.bridge == bridge) {
-            return Err(OvsError::conflict(format!("NAT network on '{}' still has VM ports", bridge)));
+            return Err(OvsError::conflict(format!(
+                "NAT network on '{}' still has VM ports",
+                bridge
+            )));
         }
         self.supervisor.stop(bridge);
-        let rest: Vec<NatState> = self.nats()?.into_iter().filter(|n| n.bridge != bridge).collect();
+        let rest: Vec<NatState> = self
+            .nats()?
+            .into_iter()
+            .filter(|n| n.bridge != bridge)
+            .collect();
         self.apply_firewall(&rest)?;
         self.apply_meter(&rest);
         nat::apply_iptables(self.ex(), &rest)?;
@@ -656,13 +890,13 @@ impl Netd {
             self.require_bridge(&spec.bridge)?;
         }
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
-        if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)? {
-            if existing.spec.bridge != spec.bridge {
-                return Err(OvsError::conflict(format!(
-                    "{} is attached to bridge '{}'",
-                    existing.port, existing.spec.bridge
-                )));
-            }
+        if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)?
+            && existing.spec.bridge != spec.bridge
+        {
+            return Err(OvsError::conflict(format!(
+                "{} is attached to bridge '{}'",
+                existing.port, existing.spec.bridge
+            )));
         }
         let caps = host::probe(self.ex(), &self.config.probe);
         let binding = vm_port::attach(self.ex(), &caps, &spec, owner_uid)?;
@@ -697,7 +931,11 @@ impl Netd {
         };
         self.store.put(VM_PORTS, &key, &record)?;
         tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, "VM port attached");
-        Ok(AttachResult { port, binding, ipv4 })
+        Ok(AttachResult {
+            port,
+            binding,
+            ipv4,
+        })
     }
 
     /// §11.3 `move_vm_port`: unplug from the old bridge, keeping the tap or
@@ -705,7 +943,12 @@ impl Netd {
     fn move_port(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
         spec.validate()?;
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
-        let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?.ok_or_else(|| OvsError::not_found(format!("port {}", spec.port_name().unwrap_or_default())))?;
+        let old = self
+            .store
+            .get::<VmPortRecord>(VM_PORTS, &key)?
+            .ok_or_else(|| {
+                OvsError::not_found(format!("port {}", spec.port_name().unwrap_or_default()))
+            })?;
         Self::check_owner(&old, owner_uid)?;
         if old.spec.bridge != spec.bridge {
             vm_port::unplug(self.ex(), &spec.vm_id, spec.nic_index)?;
@@ -730,7 +973,10 @@ impl Netd {
     /// an untracked port) there is no owner to check.
     fn detach(&self, vm_id: &str, nic_index: u8, uid: u32) -> Result<(), OvsError> {
         names::validate_vm_id(vm_id)?;
-        if let Some(record) = self.store.get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic_index))? {
+        if let Some(record) = self
+            .store
+            .get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic_index))?
+        {
             Self::check_owner(&record, uid)?;
         }
         self.remove_port(vm_id, nic_index)
@@ -739,7 +985,8 @@ impl Netd {
     fn remove_port(&self, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
-        self.store.delete(VM_PORTS, &store::vm_port_key(vm_id, nic_index))?;
+        self.store
+            .delete(VM_PORTS, &store::vm_port_key(vm_id, nic_index))?;
         tracing::info!(vm = %vm_id, nic = nic_index, "VM port detached");
         Ok(())
     }
@@ -748,7 +995,10 @@ impl Netd {
         names::validate_vm_id(vm_id)?;
         let mut records = Vec::new();
         for nic in 0..names::MAX_NICS {
-            if let Some(record) = self.store.get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic))? {
+            if let Some(record) = self
+                .store
+                .get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic))?
+            {
                 records.push(record);
             }
         }
@@ -813,8 +1063,15 @@ impl Netd {
         }
         let caps = host::probe(ex, &self.config.probe);
         if !caps.ovs_running {
-            if !self.store.list::<BridgeSpec>(BRIDGES).unwrap_or_default().is_empty() {
-                report.errors.push("ovs-vswitchd is not running; bridges not reconciled".into());
+            if !self
+                .store
+                .list::<BridgeSpec>(BRIDGES)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                report
+                    .errors
+                    .push("ovs-vswitchd is not running; bridges not reconciled".into());
             }
             return report;
         }
@@ -828,8 +1085,13 @@ impl Netd {
             if record.pending.is_some() {
                 // netd stopped during the commit window: nobody committed.
                 match self.remove_uplink(&record) {
-                    Ok(()) => report.repaired.push(format!("rolled back uncommitted uplink {}", record.spec.name)),
-                    Err(e) => report.errors.push(format!("uplink {}: {}", record.spec.name, e)),
+                    Ok(()) => report.repaired.push(format!(
+                        "rolled back uncommitted uplink {}",
+                        record.spec.name
+                    )),
+                    Err(e) => report
+                        .errors
+                        .push(format!("uplink {}: {}", record.spec.name, e)),
                 }
                 continue;
             }
@@ -839,7 +1101,9 @@ impl Netd {
             }
             match self.reapply_uplink(&record) {
                 Ok(()) => report.repaired.push(format!("uplink {}", record.spec.name)),
-                Err(e) => report.errors.push(format!("uplink {}: {}", record.spec.name, e)),
+                Err(e) => report
+                    .errors
+                    .push(format!("uplink {}: {}", record.spec.name, e)),
             }
         }
         let nats = self.nats().unwrap_or_default();
@@ -885,27 +1149,48 @@ impl Netd {
     /// the bridge, and the record says why (`boot_rollback`), so the host
     /// stays reachable.
     fn reapply_uplink(&self, record: &UplinkRecord) -> Result<(), OvsError> {
-        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
-            if nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci") {
-                nic::bind_driver(self.ex(), pci, "vfio-pci")?;
-            }
+        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind
+            && nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci")
+        {
+            nic::bind_driver(self.ex(), pci, "vfio-pci")?;
         }
         let Some(snap) = &record.snapshot else {
             return uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref());
         };
-        let failed = match uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref()).and_then(|_| ipmigrate::apply(self.ex(), snap, &record.spec.bridge)) {
+        let failed = match uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref())
+            .and_then(|_| ipmigrate::apply(self.ex(), snap, &record.spec.bridge))
+        {
             Err(e) => Some(format!("moving the address failed: {e}")),
             Ok(()) => snap
                 .default_gateway()
-                .filter(|gw| !ipmigrate::gateway_reachable(self.ex(), gw, &record.spec.bridge, self.config.gateway_check))
-                .map(|gw| format!("default gateway {gw} did not answer through {}", record.spec.bridge)),
+                .filter(|gw| {
+                    !ipmigrate::gateway_reachable(
+                        self.ex(),
+                        gw,
+                        &record.spec.bridge,
+                        self.config.gateway_check,
+                    )
+                })
+                .map(|gw| {
+                    format!(
+                        "default gateway {gw} did not answer through {}",
+                        record.spec.bridge
+                    )
+                }),
         };
         let Some(reason) = failed else { return Ok(()) };
         let _ = ipmigrate::restore(self.ex(), snap, &record.spec.bridge);
         let _ = uplink::del_port(self.ex(), &record.spec.name);
         let mut held = record.clone();
-        held.boot_rollback = Some(BootRollback { at: unix_now(), reason: reason.clone() });
-        self.store.put(UPLINKS, &store::uplink_key(&record.spec.bridge, &record.spec.name), &held)?;
+        held.boot_rollback = Some(BootRollback {
+            at: unix_now(),
+            reason: reason.clone(),
+        });
+        self.store.put(
+            UPLINKS,
+            &store::uplink_key(&record.spec.bridge, &record.spec.name),
+            &held,
+        )?;
         tracing::error!(uplink = %record.spec.name, %reason, "IP migration rolled back at start; the NIC has its own address again");
         Err(OvsError::MigrationRolledBack { reason })
     }
@@ -913,11 +1198,20 @@ impl Netd {
     /// `ensure_uplink_reapply`: set up an uplink held since a rollback at
     /// start, as if new (a fresh snapshot of the NIC, the gateway check, a
     /// commit window). Its record stays as it was if that fails.
-    fn reapply_uplink_after_rollback(&self, bridge: &str, name: &str) -> Result<UplinkResult, OvsError> {
+    fn reapply_uplink_after_rollback(
+        &self,
+        bridge: &str,
+        name: &str,
+    ) -> Result<UplinkResult, OvsError> {
         let key = store::uplink_key(bridge, name);
-        let record = self.store.get::<UplinkRecord>(UPLINKS, &key)?.ok_or_else(|| OvsError::not_found(format!("uplink '{name}' on '{bridge}'")))?;
+        let record = self
+            .store
+            .get::<UplinkRecord>(UPLINKS, &key)?
+            .ok_or_else(|| OvsError::not_found(format!("uplink '{name}' on '{bridge}'")))?;
         if record.boot_rollback.is_none() {
-            return Err(OvsError::conflict(format!("uplink '{name}' is not held: it is on the bridge already")));
+            return Err(OvsError::conflict(format!(
+                "uplink '{name}' is not held: it is on the bridge already"
+            )));
         }
         self.store.delete(UPLINKS, &key)?;
         match self.ensure_uplink(record.spec.clone(), true, record.accept_dhcp) {
@@ -988,8 +1282,18 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
         }
     };
     if access != Access::Status && !auth::authorized(&peer, group_gid) {
-        let group = if access == Access::Admin { &netd.config.admin_group } else { &netd.config.group };
-        tracing::warn!(uid = peer.uid, pid = peer.pid, socket = access.socket_name(), "rejected peer not in group {}", group);
+        let group = if access == Access::Admin {
+            &netd.config.admin_group
+        } else {
+            &netd.config.group
+        };
+        tracing::warn!(
+            uid = peer.uid,
+            pid = peer.pid,
+            socket = access.socket_name(),
+            "rejected peer not in group {}",
+            group
+        );
         return;
     }
     // Policy groups the peer is in, looked up once per connection.
@@ -1006,10 +1310,17 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
     let mut said_hello = false;
     loop {
         let mut line = String::new();
-        match reader.by_ref().take(MAX_LINE as u64 + 1).read_line(&mut line) {
+        match reader
+            .by_ref()
+            .take(MAX_LINE as u64 + 1)
+            .read_line(&mut line)
+        {
             Ok(0) | Err(_) => return,
             Ok(n) if n > MAX_LINE => {
-                let _ = write_line(&mut writer, &Response::err(0, ErrorBody::new("protocol_error", "request too large")));
+                let _ = write_line(
+                    &mut writer,
+                    &Response::err(0, ErrorBody::new("protocol_error", "request too large")),
+                );
                 return;
             }
             Ok(_) => {}
@@ -1017,31 +1328,55 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
         let req: Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                let _ = write_line(&mut writer, &Response::err(0, ErrorBody::new("protocol_error", e.to_string())));
+                let _ = write_line(
+                    &mut writer,
+                    &Response::err(0, ErrorBody::new("protocol_error", e.to_string())),
+                );
                 continue;
             }
         };
         let resp = if !said_hello && !matches!(req.op, Op::Hello { .. }) {
-            Response::err(req.id, ErrorBody::new("protocol_error", "first request must be hello"))
+            Response::err(
+                req.id,
+                ErrorBody::new("protocol_error", "first request must be hello"),
+            )
         } else if access == Access::Status && !req.op.is_status() {
             Response::err(
                 req.id,
-                ErrorBody::new("permission_denied", format!("'{}' is not available on the status socket", req.op.name())),
+                ErrorBody::new(
+                    "permission_denied",
+                    format!("'{}' is not available on the status socket", req.op.name()),
+                ),
             )
         } else if access != Access::Status
-            && !auth::allows(&netd.config.policy, peer.uid, req.op.name(), |g| policy_groups.iter().any(|m| m == g))
+            && !auth::allows(&netd.config.policy, peer.uid, req.op.name(), |g| {
+                policy_groups.iter().any(|m| m == g)
+            })
         {
             tracing::warn!(uid = peer.uid, op = req.op.name(), "denied by policy");
             Response::err(
                 req.id,
-                ErrorBody::new("permission_denied", format!("netd policy does not allow '{}' for uid {}", req.op.name(), peer.uid)),
+                ErrorBody::new(
+                    "permission_denied",
+                    format!(
+                        "netd policy does not allow '{}' for uid {}",
+                        req.op.name(),
+                        peer.uid
+                    ),
+                ),
             )
         } else {
             if let Op::Hello { protocol } = &req.op {
                 if *protocol != PROTOCOL_VERSION {
                     let _ = write_line(
                         &mut writer,
-                        &Response::err(req.id, ErrorBody::new("protocol_error", format!("unsupported protocol {}", protocol))),
+                        &Response::err(
+                            req.id,
+                            ErrorBody::new(
+                                "protocol_error",
+                                format!("unsupported protocol {}", protocol),
+                            ),
+                        ),
                     );
                     return;
                 }
@@ -1052,7 +1387,7 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
                 tracing::info!(
                     uid = peer.uid,
                     op = req.op.name(),
-                    args = %serde_json::to_string(&req.op).unwrap_or_default(),
+                    args = %req.op.log_args(),
                     on_behalf_of = %req.on_behalf_of.as_ref().and_then(|o| serde_json::to_string(o).ok()).unwrap_or_else(|| "-".into()),
                     "request"
                 );

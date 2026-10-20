@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as api from "../api";
 import type { IssuedToken, NodeRecord } from "../types";
+import { isClusterNetwork, isTombstone, nodeLabel, nodePhaseLabel, nodeReady } from "../types";
 import { hostOf, useAllowed, useNodes } from "../nodes";
 import { useSession } from "../session";
 import { useLive } from "../live";
@@ -21,12 +22,15 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
   const { host: caps } = useSession();
   const id = node.meta.id;
   const name = node.spec.name;
+  // A node that left keeps its name: its short id tells the records apart.
+  const label = nodeLabel(node);
   const host = hostOf(id, dir.self);
   const can = useAllowed(["drainNode", "undrainNode"], [host]);
   const [op, setOp] = useState<Op | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { phase, ready } = node.status;
-  const tombstone = phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+  const phase = nodePhaseLabel(node.status.phase);
+  const ready = nodeReady(node);
+  const tombstone = isTombstone(node.status.phase);
   const done = () => {
     setOp(null);
     onDone();
@@ -34,7 +38,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
 
   const items: { op: Op; label: string; show: boolean }[] = [
     { op: "drain", label: "Drain", show: phase === "Active" && !!can?.(host, "drainNode") },
-    { op: "promote", label: "Promote to server", show: phase === "Active" && node.spec.role === "agent" && caps.promoteNode },
+    { op: "promote", label: "Promote to server", show: phase === "Active" && node.spec.role === "NODE_ROLE_AGENT" && caps.promoteNode },
     { op: "detach", label: "Detach with its VMs…", show: (phase === "Active" || phase === "Draining") && dir.self !== id && caps.detachNode },
     { op: "abort", label: "Abort the detach", show: phase === "Departing" && caps.detachNode },
     { op: "remove", label: "Remove…", show: (phase === "Active" || phase === "Draining") && dir.self !== id && caps.removeNode },
@@ -62,7 +66,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {shown.length > 0 && (
         <select
-          aria-label={`Operations on ${name}`}
+          aria-label={`Operations on ${label}`}
           className={`${selectClass} w-auto py-1 text-sm`}
           value=""
           onChange={(e) => setOp(e.target.value as Op)}
@@ -78,7 +82,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
 
       {op === "drain" && (
         <ConfirmDialog
-          title={`Drain ${name}`}
+          title={`Drain ${label}`}
           consequence="No new VMs are placed on this node. VMs already on it keep running; move or stop them before removing the node."
           actionLabel="Drain"
           danger={false}
@@ -90,7 +94,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {op === "promote" && (
         <ConfirmDialog
-          title={`Promote ${name}`}
+          title={`Promote ${label}`}
           consequence="It becomes a Raft voter and a member of the OVN databases. Keep the number of servers odd (1, 3 or 5)."
           actionLabel="Promote"
           danger={false}
@@ -103,7 +107,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {op === "remove" && (
         <ConfirmDialog
-          title={`Remove ${name}`}
+          title={`Remove ${label}`}
           consequence="The node leaves the cluster: Raft and the OVN databases forget it and its certificate is refused from now on. It must have no VMs, disks or node networks left."
           typeToConfirm={name}
           actionLabel="Remove"
@@ -117,7 +121,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       {op === "forget" && <ForgetDialog node={node} onClose={done} />}
       {op === "purge" && (
         <ConfirmDialog
-          title={`Purge ${name}`}
+          title={`Purge ${label}`}
           consequence="Deletes the records of the VMs, disks and networks that were on this forgotten node. Their files, if the host ever comes back, are not touched. This cannot be undone."
           typeToConfirm={name}
           actionLabel="Purge"
@@ -131,7 +135,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       {op === "detach" && <DetachDialog node={node} onClose={done} />}
       {op === "abort" && (
         <ConfirmDialog
-          title={`Abort the detach of ${name}`}
+          title={`Abort the detach of ${label}`}
           consequence="The node goes back to Active and keeps its VMs in the cluster. A detach the node already acknowledged can't be aborted."
           actionLabel="Abort the detach"
           danger={false}
@@ -149,7 +153,7 @@ function ForgetDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
   const [fenced, setFenced] = useState(false);
   return (
     <ConfirmDialog
-      title={`Forget ${node.spec.name}`}
+      title={`Forget ${nodeLabel(node)}`}
       consequence="For a node that is gone for good. Its VMs stay recorded on it, marked lost, until it rejoins with its disks or you purge it. Its certificate is refused from now on."
       typeToConfirm={fenced ? node.spec.name : undefined}
       actionLabel="Forget"
@@ -174,13 +178,13 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const live = useLive();
-  const server = [...live.nodes.values()].find((n) => n.spec.role === "server" && n.status.phase === "Active")?.status.advertise ?? "<server>:8842";
+  const server = [...live.nodes.values()].find((n) => n.spec.role === "NODE_ROLE_SERVER" && n.status.phase === "NODE_PHASE_ACTIVE")?.status.advertise ?? "<server>:8842";
   const close = () => {
     setIssued(null);
     onClose();
   };
   return (
-    <Modal title={`Rejoin token for ${node.spec.name}`} onClose={close}>
+    <Modal title={`Rejoin token for ${nodeLabel(node)}`} onClose={close}>
       {issued ? (
         <>
           <TokenReveal
@@ -201,7 +205,7 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
         <div className="space-y-4 text-sm">
           <p>The node comes back as itself, with its disks; its VMs are adopted where they are.</p>
           <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          {node.spec.role === "server" && (
+          {node.spec.role === "NODE_ROLE_SERVER" && (
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={raftIntact} onChange={(e) => setRaftIntact(e.target.checked)} />
               <span>Its Raft log is intact (it rejoins as the same voter; otherwise as a learner).</span>
@@ -238,12 +242,13 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
 function DetachDialog({ node, onClose }: { node: NodeRecord; onClose: () => void }) {
   const live = useLive();
   // Cluster networks its VMs use need a node network to land on.
-  const clusterNets = [...live.networks.values()].filter((n) => n.scope === "cluster").map((n) => n.name);
+  // Keyed by id (names repeat across tenants); the target may be a name or an id.
+  const clusterNets = [...live.networks.values()].filter(isClusterNetwork);
   const [map, setMap] = useState<Record<string, string>>({});
   const [withAccess, setWithAccess] = useState(false);
   return (
     <ConfirmDialog
-      title={`Detach ${node.spec.name}`}
+      title={`Detach ${nodeLabel(node)}`}
       consequence={
         <>
           The node leaves the cluster <strong>with its VMs, disks and node networks</strong> and becomes a standalone host (or can be imported
@@ -263,13 +268,15 @@ function DetachDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
         <div className="space-y-2">
           <p className="font-medium">Cluster network → node network on {node.spec.name}</p>
           {clusterNets.map((n) => (
-            <div key={n} className="grid grid-cols-2 gap-2 items-center">
-              <span className="font-mono text-xs">{n}</span>
+            <div key={n.id} className="grid grid-cols-2 gap-2 items-center">
+              <span className="font-mono text-xs" title={n.id}>
+                {n.name}
+              </span>
               <input
                 className={inputClass}
                 placeholder="leave empty to drop"
-                value={map[n] ?? ""}
-                onChange={(e) => setMap((m) => ({ ...m, [n]: e.target.value }))}
+                value={map[n.id] ?? ""}
+                onChange={(e) => setMap((m) => ({ ...m, [n.id]: e.target.value }))}
               />
             </div>
           ))}

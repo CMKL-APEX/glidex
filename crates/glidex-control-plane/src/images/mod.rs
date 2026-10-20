@@ -11,21 +11,29 @@
 //! through, pulled from the firmware catalog or a URL; they are images of
 //! kind `firmware` and never the source of a disk.
 //!
+//! *Kernel* images (`kernel.rs`, spec/kernel-boot.md §4) are a kernel, an
+//! optional initramfs and a default command line VMs boot directly,
+//! pulled from a URL or copied from the host; they are images of kind
+//! `kernel` and never the source of a disk either.
+//!
 //! Records live in the `images` and `disks` tables of the control plane's
 //! ReDB file; files live under `<dir>/images` and `<dir>/disks`, named by
 //! id only.
 
 pub mod catalog;
-pub mod spare;
 pub mod disk;
 pub mod download;
+pub mod extract;
+pub mod extractor;
 pub mod firmware;
+pub mod kernel;
 pub mod partition;
 pub mod qemu_img;
+pub mod spare;
 
+use crate::store::Db;
 use catalog::{Arch, HashAlgo};
 use qemu_img::DiskFormat;
-use crate::store::Db;
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,7 +47,7 @@ pub const DISKS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("disk
 /// Image-module bookkeeping, e.g. which firmware was auto-imported once.
 pub const IMAGE_META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("image_meta");
 
-pub use disk::{wanted_root_size, MaterializeOutcome};
+pub use disk::{MaterializeOutcome, wanted_root_size};
 
 pub const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -49,6 +57,9 @@ pub enum ImageError {
     NotFound(String),
     #[error("{0}")]
     AlreadyExists(String),
+    /// A name more than one record has, where a name was given.
+    #[error("{0}")]
+    Ambiguous(String),
     #[error("{0}")]
     InUse(String),
     #[error("{0}")]
@@ -58,7 +69,10 @@ pub enum ImageError {
     #[error("invalid image: {0}")]
     InvalidImage(String),
     #[error("invalid disk: {message}")]
-    InvalidDisk { message: String, details: serde_json::Value },
+    InvalidDisk {
+        message: String,
+        details: serde_json::Value,
+    },
     #[error("{tool} is not installed (install {package})")]
     ToolMissing { tool: String, package: String },
     #[error("{0}")]
@@ -69,16 +83,26 @@ pub enum ImageError {
     Download(String),
     #[error("image storage error: {0}")]
     Storage(String),
+    /// A datastore that doesn't overcommit has no room (spec/storage.md §5.2).
+    #[error("{message}")]
+    InsufficientStorage {
+        message: String,
+        details: serde_json::Value,
+    },
 }
 
 impl ImageError {
     pub fn invalid_disk(message: impl Into<String>) -> Self {
-        ImageError::InvalidDisk { message: message.into(), details: serde_json::Value::Null }
+        ImageError::InvalidDisk {
+            message: message.into(),
+            details: serde_json::Value::Null,
+        }
     }
 
     pub fn details(&self) -> serde_json::Value {
         match self {
-            ImageError::InvalidDisk { details, .. } => details.clone(),
+            ImageError::InvalidDisk { details, .. }
+            | ImageError::InsufficientStorage { details, .. } => details.clone(),
             _ => serde_json::Value::Null,
         }
     }
@@ -86,7 +110,10 @@ impl ImageError {
     /// Prefix the message (used when a multi-step operation fails part way).
     pub fn context(self, prefix: &str) -> Self {
         match self {
-            ImageError::Tool { tool, stderr } => ImageError::Tool { tool, stderr: format!("{}: {}", prefix, stderr) },
+            ImageError::Tool { tool, stderr } => ImageError::Tool {
+                tool,
+                stderr: format!("{}: {}", prefix, stderr),
+            },
             ImageError::Io(m) => ImageError::Io(format!("{}: {}", prefix, m)),
             other => other,
         }
@@ -104,7 +131,10 @@ fn storage(e: impl std::fmt::Display) -> ImageError {
 }
 
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---- records ------------------------------------------------------------
@@ -112,11 +142,42 @@ pub fn now() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ImageSource {
-    Catalog { key: String, url: String, version: String },
-    Url { url: String, expected_sha256: Option<String> },
+    Catalog {
+        key: String,
+        url: String,
+        version: String,
+    },
+    Url {
+        url: String,
+        expected_sha256: Option<String>,
+    },
     /// A firmware catalog entry (`firmware.rs`): `url` is the pinned
     /// download or, for a host package, the file it was copied from.
-    Firmware { key: String, url: String, version: String },
+    Firmware {
+        key: String,
+        url: String,
+        version: String,
+    },
+    /// Copied from a host file by an admin (a kernel image's `kernel_path`).
+    Host { path: String },
+    /// Extracted from a disk image's `/boot` (spec/kernel-boot.md §10):
+    /// the image, the digest of the copy read, the kernel's place in it
+    /// (`vda13:/vmlinuz-…`; empty until extracted), and whether that image
+    /// was verified.
+    Extracted {
+        /// Empty when extracted from a VM's disk (`disk_id`).
+        #[serde(default)]
+        image_id: String,
+        /// The VM disk it was extracted from (§10.5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disk_id: Option<String>,
+        #[serde(default)]
+        image_sha256: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        verified: bool,
+    },
 }
 
 /// What an image is for.
@@ -128,15 +189,25 @@ pub enum ImageKind {
     Disk,
     /// UEFI firmware a VM boots through (raw `.fd`).
     Firmware,
+    /// A kernel, its initramfs and command line a VM boots directly
+    /// (spec/kernel-boot.md §4).
+    Kernel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum ImageStatus {
-    Downloading { received_bytes: u64, total_bytes: Option<u64> },
+    Downloading {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
     Verifying,
+    /// A kernel image waiting for, or running, its extraction (§10).
+    Extracting,
     Ready,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     Missing,
 }
 
@@ -159,6 +230,19 @@ pub struct DownloadMeta {
     pub vars_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vars_sha256: Option<String>,
+    /// A kernel download's initramfs, fetched after the kernel and stored
+    /// as `<id>.initrd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_sha256: Option<String>,
+}
+
+/// A file an image is made of besides its main one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMeta {
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +288,22 @@ pub struct Image {
     /// one (the downloading server's, §9.2.2).
     #[serde(default = "keep_copies", skip_serializing_if = "is_true")]
     pub keep_server_copy: bool,
+    /// A kernel image's initramfs (`<id>.initrd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<FileMeta>,
+    /// A kernel image's default `kernel_args` (spec/kernel-boot.md K7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmdline: Option<String>,
+    /// A kernel image's release, from its header when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_release: Option<String>,
+    /// The disk image (id) a kernel image was extracted from (K3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
+    /// The VM a kernel extracted from its own disk belongs to (K12): such a
+    /// kernel is deleted once no VM uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -222,16 +322,27 @@ impl Image {
             // Pinned digests, or a host package its manager verified.
             ImageSource::Catalog { .. } | ImageSource::Firmware { .. } => true,
             // Every file it is made of was checked.
-            ImageSource::Url { expected_sha256, .. } => {
-                expected_sha256.is_some() && (self.download.vars_url.is_none() || self.download.vars_sha256.is_some())
+            ImageSource::Url {
+                expected_sha256, ..
+            } => {
+                expected_sha256.is_some()
+                    && (self.download.vars_url.is_none() || self.download.vars_sha256.is_some())
+                    && (self.download.initrd_url.is_none() || self.download.initrd_sha256.is_some())
             }
+            // An admin's file: nothing glidex checked it against.
+            ImageSource::Host { .. } => false,
+            // As trusted as the image it came from.
+            ImageSource::Extracted { verified, .. } => *verified,
         }
     }
 
     pub fn catalog_key(&self) -> Option<&str> {
         match &self.source {
             ImageSource::Catalog { key, .. } => Some(key),
-            ImageSource::Url { .. } | ImageSource::Firmware { .. } => None,
+            ImageSource::Url { .. }
+            | ImageSource::Firmware { .. }
+            | ImageSource::Host { .. }
+            | ImageSource::Extracted { .. } => None,
         }
     }
 
@@ -244,6 +355,10 @@ impl Image {
 
     pub fn is_firmware(&self) -> bool {
         self.kind == ImageKind::Firmware
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.kind == ImageKind::Kernel
     }
 
     /// Ready and not being deleted: usable by a new disk or VM.
@@ -357,11 +472,58 @@ pub struct Disk {
     /// until the disk is bound, at creation or at its first VM (D6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The datastore holding the disk (spec/storage.md §4.2). Records
+    /// without one, and every record written today, are `local`, which is
+    /// left out so they stay as older releases wrote them.
+    #[serde(
+        default = "local_datastore",
+        skip_serializing_if = "is_local_datastore"
+    )]
+    pub datastore: String,
+    /// On a shared datastore, where `node` stays `None`: the node that acts
+    /// on the disk's file now, its VM's when placed (spec/storage.md S6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    /// A move to another datastore asked for and not done yet
+    /// (spec/storage.md §8.3); its `mover` makes the copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moving: Option<MoveSpec>,
+}
+
+/// `POST /disks/{id}/move` (spec/storage.md §8.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MoveSpec {
+    pub datastore: String,
+    /// The node a node-local destination is on; `None` for a shared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// The node that holds the file now and reaches the destination: it
+    /// copies, records the move and removes the old file.
+    pub mover: String,
+    /// Copy a linked disk as a standalone one instead of rebasing it onto
+    /// the destination's copy of its image.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flatten: bool,
+}
+
+fn local_datastore() -> String {
+    crate::datastore::LOCAL.to_string()
+}
+
+fn is_local_datastore(d: &str) -> bool {
+    d == crate::datastore::LOCAL
 }
 
 impl Disk {
     /// A disk record with the controller fields at their defaults.
-    pub fn new(id: String, name: String, project: String, format: DiskFormat, size_bytes: u64, origin: DiskOrigin) -> Self {
+    pub fn new(
+        id: String,
+        name: String,
+        project: String,
+        format: DiskFormat,
+        size_bytes: u64,
+        origin: DiskOrigin,
+    ) -> Self {
         Disk {
             id,
             name,
@@ -381,11 +543,30 @@ impl Disk {
             deletion_requested_at: None,
             conditions: Vec::new(),
             node: None,
+            datastore: local_datastore(),
+            worker: None,
+            moving: None,
+        }
+    }
+
+    /// Bind it to the node of its VM: a shared disk's worker follows the
+    /// VM; any other disk is bound once, where it is first used (D6).
+    pub fn bind_to(&mut self, node: &str, shared: bool) {
+        if shared {
+            self.worker = Some(node.to_string());
+        } else {
+            self.node.get_or_insert_with(|| node.to_string());
         }
     }
 
     pub fn is_linked(&self) -> bool {
-        matches!(self.origin, DiskOrigin::Image { mode: CloneMode::Linked, .. })
+        matches!(
+            self.origin,
+            DiskOrigin::Image {
+                mode: CloneMode::Linked,
+                ..
+            }
+        )
     }
 
     pub fn is_from_image(&self) -> bool {
@@ -430,6 +611,28 @@ pub struct PullImageRequest {
     /// `false`: the server's copy goes once one of `nodes` has one.
     #[serde(default)]
     pub keep_server_copy: Option<bool>,
+    /// With a kernel `url`: its initramfs (spec/kernel-boot.md §4.2).
+    #[serde(default)]
+    pub initrd_url: Option<String>,
+    #[serde(default)]
+    pub initrd_sha256: Option<String>,
+    /// A kernel image's default `kernel_args`.
+    #[serde(default)]
+    pub cmdline: Option<String>,
+    /// Copy a kernel from this host file (needs `useHostPath`), with
+    /// `initrd_path` as its initramfs.
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+    #[serde(default)]
+    pub initrd_path: Option<String>,
+    /// Extract a kernel image from this disk image (id or name, §10).
+    #[serde(default)]
+    pub kernel_from: Option<String>,
+    /// With a disk image pull: also extract its kernel once downloaded
+    /// (K10; default: on for catalog pulls with an extractor for the
+    /// architecture, off for URL pulls).
+    #[serde(default)]
+    pub with_kernel: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -456,6 +659,10 @@ pub struct CreateDiskRequest {
     /// node of the first VM that uses it (spec/clustering.md §9.2).
     #[serde(default)]
     pub node: Option<String>,
+    /// Datastore id or name; default: the one that is default for disks,
+    /// else `local` (spec/storage.md S13).
+    #[serde(default)]
+    pub datastore: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -508,6 +715,11 @@ pub struct ImageCopy {
     /// Kept whether or not the node needs it (§9.2.2).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// A shared datastore's copy (`node` empty), spec/storage.md S9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datastore: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datastore_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -533,9 +745,19 @@ pub struct ImageResponse {
     /// code and a per-VM store; without one, `-bios`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub vars_template: bool,
-    /// VMs that boot through this firmware image (filled in by `VmManager`).
+    /// VMs that boot through this firmware or kernel image (filled in by
+    /// `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by_vms: Vec<String>,
+    /// A kernel image's initramfs, command line and release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<KernelResponse>,
+    /// The disk image a kernel image was extracted from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
+    /// The VM a kernel extracted from its disk belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
     /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -545,6 +767,16 @@ pub struct ImageResponse {
     /// Deletion requested and not finished yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub deleting: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cmdline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<FileMeta>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -588,6 +820,10 @@ pub struct DiskResponse {
     pub extend_root: Option<ExtendOutcome>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    pub datastore: String,
+    pub worker: Option<String>,
+    pub worker_name: Option<String>,
+    pub moving_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -647,13 +883,23 @@ pub struct ImageSettings {
     pub default_root_bytes: u64,
     pub max_downloads: usize,
     pub allow_private_urls: bool,
+    /// A kernel image's kernel and initramfs limits (spec/kernel-boot.md §4.3).
+    pub max_kernel_size: u64,
+    pub max_initrd_size: u64,
+    /// Extractions at once on this node (`GLIDEX_MAX_EXTRACTIONS`, §10.2).
+    pub max_extractions: usize,
+    /// `GLIDEX_KERNEL_EXTRACTION=off`: never extract kernels (a host that
+    /// can't download the extractor, or tests).
+    pub kernel_extraction: bool,
 }
 
 impl ImageSettings {
     /// `base` is the directory holding the database (normally `~/.glidex`).
     pub fn from_env(base: &Path) -> Self {
         let dir = |var: &str, sub: &str| {
-            std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| base.join(sub))
+            std::env::var_os(var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| base.join(sub))
         };
         Self {
             image_dir: dir("GLIDEX_IMAGE_DIR", "images"),
@@ -672,7 +918,23 @@ impl ImageSettings {
                 .and_then(|v| v.trim().parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(2),
-            allow_private_urls: std::env::var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS").is_ok_and(|v| v == "1"),
+            allow_private_urls: std::env::var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS")
+                .is_ok_and(|v| v == "1"),
+            max_kernel_size: std::env::var("GLIDEX_MAX_KERNEL_SIZE")
+                .ok()
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(kernel::MAX_KERNEL_SIZE),
+            max_initrd_size: std::env::var("GLIDEX_MAX_INITRD_SIZE")
+                .ok()
+                .and_then(|v| parse_size(&v))
+                .unwrap_or(kernel::MAX_INITRD_SIZE),
+            max_extractions: std::env::var("GLIDEX_MAX_EXTRACTIONS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(1),
+            kernel_extraction: std::env::var("GLIDEX_KERNEL_EXTRACTION")
+                .map_or(true, |v| v != "off"),
         }
     }
 }
@@ -695,19 +957,36 @@ pub fn parse_size(s: &str) -> Option<u64> {
 /// `_`, so an id can never name a path outside its directory. Generated ids
 /// (UUIDs) are unchanged.
 pub(crate) fn safe_stem(id: &str) -> String {
-    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
     let ok = !name.is_empty()
         && name.len() <= 64
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         && !name.starts_with('.');
     if ok {
         Ok(())
     } else {
-        let msg = format!("{} name must be 1-64 characters of A-Z a-z 0-9 . _ - (not starting with '.')", kind);
-        Err(if kind == "image" { ImageError::InvalidImage(msg) } else { ImageError::invalid_disk(msg) })
+        let msg = format!(
+            "{} name must be 1-64 characters of A-Z a-z 0-9 . _ - (not starting with '.')",
+            kind
+        );
+        Err(if kind == "image" {
+            ImageError::InvalidImage(msg)
+        } else {
+            ImageError::invalid_disk(msg)
+        })
     }
 }
 
@@ -721,8 +1000,16 @@ pub struct ImageManager {
     /// Image id → disks being cloned from it but not yet committed.
     holds: Mutex<HashMap<String, usize>>,
     downloads: Arc<tokio::sync::Semaphore>,
+    /// Extractor runs at once (§10.2), and the extractor appliance's
+    /// download and assembly, done once.
+    pub(crate) extractions: Arc<tokio::sync::Semaphore>,
+    pub(crate) extractor_lock: tokio::sync::Mutex<()>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
+    /// The `local` datastore's driver, over `settings.disk_dir`.
+    local: Arc<crate::datastore::file::FileDriver>,
+    /// This node's id: which of a datastore's paths is this node's (S14).
+    node_id: arc_swap::ArcSwap<String>,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -776,7 +1063,13 @@ impl ImageManager {
 
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
+            extractions: Arc::new(tokio::sync::Semaphore::new(settings.max_extractions)),
+            extractor_lock: tokio::sync::Mutex::new(()),
             http: download::http_client(settings.allow_private_urls)?,
+            local: Arc::new(crate::datastore::file::FileDriver::new(
+                settings.disk_dir.clone(),
+            )),
+            node_id: arc_swap::ArcSwap::from_pointee(crate::authz::node_id()),
             db,
             settings,
             images: RwLock::new(HashMap::new()),
@@ -803,7 +1096,12 @@ impl ImageManager {
                 Ok(rec) => {
                     out.insert(k.value().to_string(), rec);
                 }
-                Err(e) => tracing::warn!(id = k.value(), "skipping unreadable {} record: {}", table, e),
+                Err(e) => tracing::warn!(
+                    id = k.value(),
+                    "skipping unreadable {} record: {}",
+                    table,
+                    e
+                ),
             }
         }
         Ok(out)
@@ -814,8 +1112,12 @@ impl ImageManager {
     /// the ids that changed in `table`.
     pub fn sync_keys(&self, table: crate::store::TableId, keys: &[String]) {
         use crate::store::TableId;
-        let Ok(txn) = self.db.begin_read() else { return };
-        let Ok(t) = txn.open_table(table.definition()) else { return };
+        let Ok(txn) = self.db.begin_read() else {
+            return;
+        };
+        let Ok(t) = txn.open_table(table.definition()) else {
+            return;
+        };
         for k in keys {
             let raw = t.get(k.as_str()).ok().flatten().map(|v| v.value().to_vec());
             match table {
@@ -867,11 +1169,10 @@ impl ImageManager {
         let mut known = std::collections::HashSet::new();
         let images: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
         for mut img in images {
-            known.insert(self.image_file(&img));
+            known.extend(self.image_files(&img).into_iter().map(|(_, p)| p));
             known.insert(self.part_path(&img.id));
-            if img.is_firmware() {
-                known.insert(self.firmware_vars_template(&img.id));
-            }
+            known.insert(self.initrd_part_path(&img.id));
+            known.insert(self.extract_out_path(&img.id));
             let exists = self.image_file(&img).exists();
             let new_status = match &img.status {
                 ImageStatus::Ready if !exists && held_elsewhere(&img) => None,
@@ -883,12 +1184,12 @@ impl ImageManager {
                 }
                 _ => None,
             };
-            if let Some(s) = new_status {
-                if s != img.status {
-                    tracing::warn!(image = %img.name, "image status {:?} -> {:?}", img.status, s);
-                    img.status = s;
-                    let _ = self.put_image(&img);
-                }
+            if let Some(s) = new_status
+                && s != img.status
+            {
+                tracing::warn!(image = %img.name, "image status {:?} -> {:?}", img.status, s);
+                img.status = s;
+                let _ = self.put_image(&img);
             }
         }
         let disks: Vec<Disk> = self.disks.read().unwrap().values().cloned().collect();
@@ -903,7 +1204,9 @@ impl ImageManager {
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    let index = p.file_name().is_some_and(|n| n == "spare-index.json");
+                    let index = p
+                        .file_name()
+                        .is_some_and(|n| n == "spare-index.json" || n == extract::EXTRACTOR_DIR);
                     if !known.contains(&p) && !index {
                         tracing::warn!(path = %p.display(), "file without a glidex record left in place");
                     }
@@ -920,7 +1223,10 @@ impl ImageManager {
 
     /// A disk image's file.
     pub fn image_path(&self, id: &str) -> PathBuf {
-        crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2", safe_stem(id)))
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.qcow2", safe_stem(id)),
+        )
     }
 
     /// A firmware image's code file.
@@ -931,7 +1237,34 @@ impl ImageManager {
     /// The UEFI variable-store template stored with a firmware image
     /// (OVMF), copied into each QEMU VM's own store on first boot.
     pub fn firmware_vars_template(&self, id: &str) -> PathBuf {
-        crate::paths::file_in(&self.settings.image_dir, &format!("{}.vars.fd", safe_stem(id)))
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.vars.fd", safe_stem(id)),
+        )
+    }
+
+    /// A kernel image's kernel.
+    pub fn kernel_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.kernel", safe_stem(id)),
+        )
+    }
+
+    /// A kernel image's initramfs.
+    pub fn kernel_initrd_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.initrd", safe_stem(id)),
+        )
+    }
+
+    /// A kernel download's initramfs while it arrives.
+    pub fn initrd_part_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.initrd.part", safe_stem(id)),
+        )
     }
 
     /// The file an image's record stands for.
@@ -939,15 +1272,85 @@ impl ImageManager {
         match img.kind {
             ImageKind::Disk => self.image_path(&img.id),
             ImageKind::Firmware => self.firmware_path(&img.id),
+            ImageKind::Kernel => self.kernel_path(&img.id),
         }
     }
 
-    pub fn part_path(&self, id: &str) -> PathBuf {
-        crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.part", safe_stem(id)))
+    /// Every file an image is made of, by the part name nodes copy it under
+    /// (spec/clustering.md §9.2): `main` first, then a firmware's `vars`
+    /// template or a kernel's `initrd`, which an image may lack.
+    pub fn image_files(&self, img: &Image) -> Vec<(&'static str, PathBuf)> {
+        let mut files = vec![("main", self.image_file(img))];
+        match img.kind {
+            ImageKind::Disk => {}
+            ImageKind::Firmware => files.push(("vars", self.firmware_vars_template(&img.id))),
+            ImageKind::Kernel => files.push(("initrd", self.kernel_initrd_path(&img.id))),
+        }
+        files
     }
 
+    pub fn part_path(&self, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &self.settings.image_dir,
+            &format!("{}.qcow2.part", safe_stem(id)),
+        )
+    }
+
+    /// The file of a disk on this node, whether or not it exists: for
+    /// reading it (responses, metering). Changes to a disk go through its
+    /// datastore's driver ([`Self::driver`]). A disk on a datastore this
+    /// node can't reach gets the path it would have in `local`, which
+    /// doesn't exist.
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        crate::paths::file_in(&self.settings.disk_dir, &format!("{}.{}", safe_stem(&d.id), d.format.extension()))
+        self.driver(d)
+            .map(|dr| dr.binding(d).path().to_path_buf())
+            .unwrap_or_else(|_| self.local.path(d))
+    }
+
+    /// The driver of `d`'s datastore on this node: `local`, or a registered
+    /// `dir` datastore at this node's path to it (spec/storage.md S14). A
+    /// datastore this node isn't on is refused rather than looked for
+    /// somewhere else.
+    pub fn driver(&self, d: &Disk) -> Result<Arc<dyn crate::datastore::StorageDriver>, ImageError> {
+        use crate::datastore::record;
+        if d.datastore == crate::datastore::LOCAL {
+            return Ok(self.local.clone());
+        }
+        let missing = |why: &str| {
+            ImageError::NotReady(format!(
+                "disk {} is on datastore {}, {why}",
+                d.name, d.datastore
+            ))
+        };
+        let ds = record::find(&self.db, &d.datastore)
+            .map_err(|e| ImageError::Io(e.to_string()))?
+            .ok_or_else(|| missing("which doesn't exist"))?;
+        let node = self.node_id.load();
+        if !ds.on_node(&node) {
+            return Err(missing("which this node isn't on"));
+        }
+        let root = std::path::Path::new(ds.path_for(&node));
+        let dir = root.join("disks");
+        crate::paths::checked_path(&dir).map_err(ImageError::Io)?;
+        Ok(Arc::new(if ds.is_shared() {
+            crate::datastore::file::FileDriver::shared(dir, root.join(".locks"))
+        } else {
+            crate::datastore::file::FileDriver::new(dir)
+        }))
+    }
+
+    /// Whether `d` is on a shared datastore (S4): unbound, with a worker.
+    pub fn is_shared(&self, d: &Disk) -> bool {
+        d.datastore != crate::datastore::LOCAL
+            && crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| ds.is_shared())
+    }
+
+    /// The node this manager works for (cluster attach and detach).
+    pub fn set_node_id(&self, id: &str) {
+        self.node_id.store(Arc::new(id.to_string()));
     }
 
     // ---- persistence -------------------------------------------------------
@@ -967,7 +1370,9 @@ impl ImageManager {
     /// requested deletion is kept.
     pub fn put_image(&self, img: &Image) -> Result<(), ImageError> {
         let mut cache = self.images.write().unwrap();
-        let Some(current) = cache.get(&img.id) else { return Ok(()) };
+        let Some(current) = cache.get(&img.id) else {
+            return Ok(());
+        };
         let mut img = img.clone();
         img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
         self.write_image(&img)?;
@@ -978,7 +1383,10 @@ impl ImageManager {
 
     fn write_image(&self, img: &Image) -> Result<(), ImageError> {
         let bytes = serde_json::to_vec(img).map_err(storage)?;
-        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Images)
+            .map_err(storage)?;
         txn.open_table(IMAGES_TABLE)
             .map_err(storage)?
             .insert(img.id.as_str(), bytes.as_slice())
@@ -1000,8 +1408,14 @@ impl ImageManager {
 
     fn remove_image_record(&self, id: &str) -> Result<(), ImageError> {
         let mut cache = self.images.write().unwrap();
-        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
-        txn.open_table(IMAGES_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Images)
+            .map_err(storage)?;
+        txn.open_table(IMAGES_TABLE)
+            .map_err(storage)?
+            .remove(id)
+            .map_err(storage)?;
         txn.commit().map_err(storage)?;
         cache.remove(id);
         drop(cache);
@@ -1009,7 +1423,10 @@ impl ImageManager {
     }
 
     pub fn put_disk(&self, d: &Disk) -> Result<(), ImageError> {
-        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Images)
+            .map_err(storage)?;
         write_disk(&txn, d)?;
         txn.commit().map_err(storage)?;
         self.cache_disk(d);
@@ -1032,8 +1449,14 @@ impl ImageManager {
     }
 
     pub(crate) fn meta_put(&self, key: &str, value: &[u8]) -> Result<(), ImageError> {
-        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
-        txn.open_table(IMAGE_META_TABLE).map_err(storage)?.insert(key, value).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Images)
+            .map_err(storage)?;
+        txn.open_table(IMAGE_META_TABLE)
+            .map_err(storage)?
+            .insert(key, value)
+            .map_err(storage)?;
         txn.commit().map_err(storage)
     }
 
@@ -1061,17 +1484,44 @@ impl ImageManager {
         v
     }
 
+    /// Disk `key`: an id, or a name that only one disk has. Names are
+    /// unique per tenant (spec/tenancy.md D24): where a tenant is known,
+    /// [`get_disk_in`](Self::get_disk_in) resolves them.
     pub fn get_disk(&self, key: &str) -> Result<Disk, ImageError> {
-        let disks = self.disks.read().unwrap();
-        disks
-            .get(key)
-            .or_else(|| disks.values().find(|d| d.name == key))
-            .cloned()
-            .ok_or_else(|| ImageError::NotFound(format!("disk not found: {}", key)))
+        self.get_disk_in(key, |_| true)
     }
 
-    pub fn disk_name_taken(&self, name: &str) -> bool {
-        self.disks.read().unwrap().values().any(|d| d.name == name)
+    /// Disk `key`: an id, or a name among the disks of the projects
+    /// `in_scope` accepts (a tenant's). A name two of them share is
+    /// refused: give the id.
+    pub fn get_disk_in(
+        &self,
+        key: &str,
+        in_scope: impl Fn(&str) -> bool,
+    ) -> Result<Disk, ImageError> {
+        let disks = self.disks.read().unwrap();
+        if let Some(d) = disks.get(key) {
+            return Ok(d.clone());
+        }
+        let mut named = disks
+            .values()
+            .filter(|d| d.name == key && in_scope(&d.project));
+        match (named.next(), named.next()) {
+            (Some(d), None) => Ok(d.clone()),
+            (Some(_), Some(_)) => Err(ImageError::Ambiguous(format!(
+                "more than one disk is named {key}: give its id"
+            ))),
+            (None, _) => Err(ImageError::NotFound(format!("disk not found: {}", key))),
+        }
+    }
+
+    /// Whether a disk of the projects `in_scope` accepts is named `name`.
+    pub fn disk_name_taken_in(&self, name: &str, in_scope: impl Fn(&str) -> bool) -> bool {
+        self.disks
+            .read()
+            .unwrap()
+            .values()
+            .any(|d| d.name == name && in_scope(&d.project))
     }
 
     pub fn linked_disks(&self, image_id: &str) -> Vec<Disk> {
@@ -1093,7 +1543,10 @@ impl ImageManager {
             return Err(ImageError::Busy(format!("disk {} is busy ({})", id, other)));
         }
         busy.insert(id.to_string(), op);
-        Ok(BusyGuard { mgr: self.clone(), id: id.to_string() })
+        Ok(BusyGuard {
+            mgr: self.clone(),
+            id: id.to_string(),
+        })
     }
 
     pub fn busy_op(&self, id: &str) -> Option<&'static str> {
@@ -1102,15 +1555,23 @@ impl ImageManager {
 
     /// See `ImageHold`. Taken under the same lock `delete_image` checks.
     pub fn hold_image(self: &Arc<Self>, image_id: &str) -> ImageHold {
-        *self.holds.lock().unwrap().entry(image_id.to_string()).or_insert(0) += 1;
-        ImageHold { mgr: self.clone(), image_id: image_id.to_string() }
+        *self
+            .holds
+            .lock()
+            .unwrap()
+            .entry(image_id.to_string())
+            .or_insert(0) += 1;
+        ImageHold {
+            mgr: self.clone(),
+            image_id: image_id.to_string(),
+        }
     }
 
     // ---- responses -------------------------------------------------------------
 
     pub fn image_response(&self, img: &Image, with_info: bool) -> ImageResponse {
         let path = self.image_file(img);
-        let info = (with_info && img.status == ImageStatus::Ready && !img.is_firmware())
+        let info = (with_info && img.status == ImageStatus::Ready && img.kind == ImageKind::Disk)
             .then(|| qemu_img::info(&path, Some(DiskFormat::Qcow2)).ok())
             .flatten();
         ImageResponse {
@@ -1128,10 +1589,21 @@ impl ImageManager {
             created_at: img.created_at,
             verified: img.verified(),
             path: path.to_string_lossy().into_owned(),
-            linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
+            linked_disks: self
+                .linked_disks(&img.id)
+                .into_iter()
+                .map(|d| d.name)
+                .collect(),
             used_by_vms: Vec::new(),
             copies: Vec::new(),
             vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
+            kernel: img.is_kernel().then(|| KernelResponse {
+                release: img.kernel_release.clone(),
+                cmdline: img.cmdline.clone(),
+                initrd: img.initrd.clone(),
+            }),
+            for_image: img.for_image.clone(),
+            owner: img.owner.clone(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -1156,7 +1628,9 @@ impl ImageManager {
         let (info, table) = if with_detail && status == "ready" && path.exists() {
             (
                 qemu_img::info(&path, Some(d.format)).ok(),
-                partition::read_table(&path, d.format, d.size_bytes).ok().flatten(),
+                partition::read_table(&path, d.format, d.size_bytes)
+                    .ok()
+                    .flatten(),
             )
         } else {
             (None, None)
@@ -1170,7 +1644,16 @@ impl ImageManager {
             origin: d.origin.clone(),
             attached_to: d.attached_to.clone(),
             node: d.node.clone(),
-            node_name: d.node.as_deref().and_then(|n| crate::node::NodeStore::new(self.db.clone()).get(n).ok().flatten()).map(|n| n.spec.name),
+            node_name: d
+                .node
+                .as_deref()
+                .and_then(|n| {
+                    crate::node::NodeStore::new(self.db.clone())
+                        .get(n)
+                        .ok()
+                        .flatten()
+                })
+                .map(|n| n.spec.name),
             pending_growpart: d.pending_growpart,
             status: status.to_string(),
             phase: d.phase,
@@ -1185,12 +1668,27 @@ impl ImageManager {
             partition_table: table,
             extend_root: None,
             warnings: Vec::new(),
+            datastore: d.datastore.clone(),
+            worker: d.worker.clone(),
+            worker_name: d
+                .worker
+                .as_deref()
+                .and_then(|n| {
+                    crate::node::NodeStore::new(self.db.clone())
+                        .get(n)
+                        .ok()
+                        .flatten()
+                })
+                .map(|n| n.spec.name),
+            moving_to: d.moving.as_ref().map(|m| m.datastore.clone()),
         }
     }
 
     /// The cloud image catalog for `arch` (default: the host's).
     pub fn catalog(&self, arch: Option<Arch>) -> Vec<CatalogItem> {
-        let Some(arch) = arch.or_else(Arch::host) else { return Vec::new() };
+        let Some(arch) = arch.or_else(Arch::host) else {
+            return Vec::new();
+        };
         let images = self.images.read().unwrap();
         catalog::for_arch(arch)
             .map(|(e, img)| CatalogItem {
@@ -1210,18 +1708,30 @@ impl ImageManager {
 
     /// The firmware catalog for `arch` (default: the host's).
     pub fn firmware_catalog(&self, arch: Option<Arch>) -> Vec<FirmwareCatalogItem> {
-        let Some(arch) = arch.or_else(Arch::host) else { return Vec::new() };
+        let Some(arch) = arch.or_else(Arch::host) else {
+            return Vec::new();
+        };
         let images = self.images.read().unwrap();
         firmware::FIRMWARE_CATALOG
             .iter()
             .filter(|e| e.supports(arch))
             .map(|e| {
                 let (source, url, hint) = match e.source {
-                    firmware::FirmwareSource::Download { .. } => ("download", e.download_for(arch).map(|(u, _)| u.to_string()), None),
-                    firmware::FirmwareSource::Deb { .. } => ("debian", e.download_for(arch).map(|(u, _)| u.to_string()), None),
+                    firmware::FirmwareSource::Download { .. } => (
+                        "download",
+                        e.download_for(arch).map(|(u, _)| u.to_string()),
+                        None,
+                    ),
+                    firmware::FirmwareSource::Deb { .. } => (
+                        "debian",
+                        e.download_for(arch).map(|(u, _)| u.to_string()),
+                        None,
+                    ),
                     firmware::FirmwareSource::Host { package, .. } => {
                         let file = e.host_file();
-                        let hint = file.is_none().then(|| format!("install the {} package", package));
+                        let hint = file
+                            .is_none()
+                            .then(|| format!("install the {} package", package));
                         ("host", file.map(|p| p.to_string_lossy().into_owned()), hint)
                     }
                 };
@@ -1248,12 +1758,21 @@ impl ImageManager {
     /// The firmware image a VM of `hypervisor` boots through when none is
     /// named: the newest usable one built for it, for `arch` when the VM
     /// has one (spec/clustering.md §9.2.1).
-    pub fn default_firmware(&self, hypervisor: crate::hypervisor::HypervisorType, arch: Option<catalog::Arch>) -> Option<Image> {
+    pub fn default_firmware(
+        &self,
+        hypervisor: crate::hypervisor::HypervisorType,
+        arch: Option<catalog::Arch>,
+    ) -> Option<Image> {
         self.images
             .read()
             .unwrap()
             .values()
-            .filter(|i| i.is_firmware() && i.hypervisor == Some(hypervisor) && i.usable() && arch.is_none_or(|a| i.arch == a))
+            .filter(|i| {
+                i.is_firmware()
+                    && i.hypervisor == Some(hypervisor)
+                    && i.usable()
+                    && arch.is_none_or(|a| i.arch == a)
+            })
             .max_by_key(|i| i.created_at)
             .cloned()
     }
@@ -1273,14 +1792,21 @@ impl ImageManager {
         // either sees the image deleting or blocks the delete.
         let holds = self.holds.lock().unwrap();
         if holds.contains_key(&img.id) {
-            return Err(ImageError::InUse(format!("image {} is being cloned into a new disk", img.name)));
+            return Err(ImageError::InUse(format!(
+                "image {} is being cloned into a new disk",
+                img.name
+            )));
         }
         let linked = self.linked_disks(&img.id);
         if !linked.is_empty() {
             return Err(ImageError::InUse(format!(
                 "image {} is the backing file of linked disk(s): {}",
                 img.name,
-                linked.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ")
+                linked
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
         let waiting: Vec<String> = self
@@ -1295,7 +1821,11 @@ impl ImageManager {
             .map(|d| d.name.clone())
             .collect();
         if !waiting.is_empty() {
-            return Err(ImageError::InUse(format!("disk(s) waiting for image {}: {}", img.name, waiting.join(", "))));
+            return Err(ImageError::InUse(format!(
+                "disk(s) waiting for image {}: {}",
+                img.name,
+                waiting.join(", ")
+            )));
         }
         let mut img = img;
         img.deletion_requested_at = Some(now());
@@ -1307,16 +1837,24 @@ impl ImageManager {
     /// The image controller's half of a deletion: stop the download, then
     /// remove the record, then the files. A file that can't be removed is
     /// left as an orphan (spec/images.md §2) and logged.
-    pub(crate) fn finish_image_delete(&self, id: &str) -> Result<(), ImageError> {
-        let img = self.get_image(id)?;
+    /// Remove the record and the files of an image being deleted. `false`
+    /// when another round already did (a request's own round and the
+    /// controller's can race to it).
+    pub(crate) fn finish_image_delete(&self, id: &str) -> Result<bool, ImageError> {
+        let img = match self.get_image(id) {
+            Ok(img) => img,
+            Err(ImageError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        };
         if let Some(task) = self.tasks.lock().unwrap().remove(&img.id) {
             task.abort();
         }
         self.remove_image_record(&img.id)?;
-        let files = match img.kind {
-            ImageKind::Disk => vec![self.image_path(&img.id), self.part_path(&img.id)],
-            ImageKind::Firmware => vec![self.firmware_path(&img.id), self.firmware_vars_template(&img.id), self.part_path(&img.id)],
-        };
+        let files = self
+            .image_files(&img)
+            .into_iter()
+            .map(|(_, p)| p)
+            .chain([self.part_path(&img.id), self.initrd_part_path(&img.id)]);
         for p in files {
             match std::fs::remove_file(&p) {
                 Ok(()) => {}
@@ -1325,7 +1863,7 @@ impl ImageManager {
             }
         }
         tracing::info!(image = %img.name, "image deleted");
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -1341,7 +1879,10 @@ pub fn write_disk(txn: &crate::store::Tx<'_>, d: &Disk) -> Result<(), ImageError
 }
 
 pub fn delete_disk_record(txn: &crate::store::Tx<'_>, id: &str) -> Result<(), ImageError> {
-    txn.open_table(DISKS_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
+    txn.open_table(DISKS_TABLE)
+        .map_err(storage)?
+        .remove(id)
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -1375,7 +1916,10 @@ mod tests {
             name: "base".into(),
             kind: ImageKind::Disk,
             hypervisor: None,
-            source: ImageSource::Url { url: "https://example.com/x.qcow2".into(), expected_sha256: None },
+            source: ImageSource::Url {
+                url: "https://example.com/x.qcow2".into(),
+                expected_sha256: None,
+            },
             status: ImageStatus::Ready,
             format: DiskFormat::Qcow2,
             virtual_size_bytes: GIB,
@@ -1390,13 +1934,24 @@ mod tests {
             pinned: Vec::new(),
             release: Vec::new(),
             keep_server_copy: true,
+            initrd: None,
+            cmdline: None,
+            kernel_release: None,
+            for_image: None,
+            owner: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");
         let second = mgr.hold_image("img-1");
-        assert!(matches!(mgr.request_image_delete("base"), Err(ImageError::InUse(_))));
+        assert!(matches!(
+            mgr.request_image_delete("base"),
+            Err(ImageError::InUse(_))
+        ));
         drop(hold);
-        assert!(matches!(mgr.request_image_delete("base"), Err(ImageError::InUse(_))), "one hold left");
+        assert!(
+            matches!(mgr.request_image_delete("base"), Err(ImageError::InUse(_))),
+            "one hold left"
+        );
         drop(second);
         let img = mgr.request_image_delete("base").unwrap();
         assert!(img.deletion_requested_at.is_some());
@@ -1404,28 +1959,78 @@ mod tests {
         let mut stale = img.clone();
         stale.deletion_requested_at = None;
         mgr.put_image(&stale).unwrap();
-        assert!(mgr.get_image("base").unwrap().deletion_requested_at.is_some());
-        mgr.finish_image_delete("img-1").unwrap();
-        assert!(matches!(mgr.get_image("base"), Err(ImageError::NotFound(_))));
+        assert!(
+            mgr.get_image("base")
+                .unwrap()
+                .deletion_requested_at
+                .is_some()
+        );
+        assert!(mgr.finish_image_delete("img-1").unwrap());
+        assert!(
+            !mgr.finish_image_delete("img-1").unwrap(),
+            "a second round finds it done: no error (a request and the controller race to it)"
+        );
+        assert!(matches!(
+            mgr.get_image("base"),
+            Err(ImageError::NotFound(_))
+        ));
         // ...and can't bring it back.
         mgr.put_image(&stale).unwrap();
-        assert!(matches!(mgr.get_image("base"), Err(ImageError::NotFound(_))));
+        assert!(matches!(
+            mgr.get_image("base"),
+            Err(ImageError::NotFound(_))
+        ));
     }
 
     #[test]
     fn record_json_shape() {
-        let d = Disk::new("i".into(), "n".into(), String::new(), DiskFormat::Qcow2, GIB, DiskOrigin::Image { image_id: "img".into(), mode: CloneMode::Linked });
+        let d = Disk::new(
+            "i".into(),
+            "n".into(),
+            String::new(),
+            DiskFormat::Qcow2,
+            GIB,
+            DiskOrigin::Image {
+                image_id: "img".into(),
+                mode: CloneMode::Linked,
+            },
+        );
         let v = serde_json::to_value(&d).unwrap();
-        assert_eq!(v["origin"], serde_json::json!({"kind": "image", "image_id": "img", "mode": "linked"}));
+        assert_eq!(
+            v["origin"],
+            serde_json::json!({"kind": "image", "image_id": "img", "mode": "linked"})
+        );
         // Records from before the disk controller load as ready disks.
         let old: Disk = serde_json::from_value(serde_json::json!({
             "id": "i", "name": "n", "format": "qcow2", "size_bytes": 1, "origin": {"kind": "blank"}, "created_at": 0
         }))
         .unwrap();
-        assert_eq!((old.phase, old.applied_extend_root_seq), (DiskPhase::Ready, 0));
+        assert_eq!(
+            (old.phase, old.applied_extend_root_seq),
+            (DiskPhase::Ready, 0)
+        );
         assert_eq!(v["format"], "qcow2");
-        let s = serde_json::to_value(ImageStatus::Downloading { received_bytes: 1, total_bytes: None }).unwrap();
+        let s = serde_json::to_value(ImageStatus::Downloading {
+            received_bytes: 1,
+            total_bytes: None,
+        })
+        .unwrap();
         assert_eq!(s["state"], "downloading");
         assert_eq!(serde_json::to_value(ExtendMode::OnBoot).unwrap(), "on-boot");
+    }
+
+    /// Records written before datastores are `local`, and a `local` record
+    /// is written as they were (spec/storage.md S3).
+    #[test]
+    fn disks_without_a_datastore_are_local_and_stay_so_written() {
+        let old = serde_json::json!({ "id": "d", "name": "d", "project": "", "format": "qcow2", "size_bytes": 1048576,
+            "origin": { "kind": "blank" }, "created_at": 1 });
+        let d: Disk = serde_json::from_value(old).unwrap();
+        assert_eq!(d.datastore, crate::datastore::LOCAL);
+        let back = serde_json::to_value(&d).unwrap();
+        assert!(back.get("datastore").is_none(), "{back}");
+        let mut other = d;
+        other.datastore = "nfs-1".into();
+        assert_eq!(serde_json::to_value(&other).unwrap()["datastore"], "nfs-1");
     }
 }

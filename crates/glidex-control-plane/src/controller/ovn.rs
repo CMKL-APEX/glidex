@@ -19,13 +19,25 @@ impl VmManager {
             .list()
             .ok()?
             .into_iter()
-            .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
-            .filter_map(|n| n.status.advertise.map(|a| format!("ssl:{}:{}", a.ip(), glidex_ovs::ovn::NB_PORT)))
+            .filter(|n| {
+                n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone()
+            })
+            .filter_map(|n| {
+                n.status
+                    .advertise
+                    .map(|a| format!("ssl:{}:{}", a.ip(), glidex_ovs::ovn::NB_PORT))
+            })
             .collect();
         if servers.is_empty() {
             return None;
         }
-        Some(NbConn { db: servers, key: cluster.files.key(), cert: cluster.files.cert(), ca: cluster.files.trust(), daemon: None })
+        Some(NbConn {
+            db: servers,
+            key: cluster.files.key(),
+            cert: cluster.files.cert(),
+            ca: cluster.files.trust(),
+            daemon: None,
+        })
     }
 
     /// Whether this node is a gateway of the shared edge or of a VPC router
@@ -37,27 +49,46 @@ impl VmManager {
         let me = self.local_node_id();
         let ovn = self.ovn.load_full();
         let nodes = self.nodes().list().unwrap_or_default();
-        let is_me = |w: &String| w == &me || nodes.iter().any(|n| &n.spec.name == w && n.meta.id == me);
-        ovn.edge.as_ref().is_some_and(|e| e.gateway_nodes.iter().any(is_me))
-            || crate::router::list(&self.store.database()).unwrap_or_default().iter().any(|r| r.spec.gateway_nodes.iter().flatten().any(is_me))
+        let is_me =
+            |w: &String| w == &me || nodes.iter().any(|n| &n.spec.name == w && n.meta.id == me);
+        ovn.edge
+            .as_ref()
+            .is_some_and(|e| e.gateway_nodes.iter().any(is_me))
+            || crate::router::list(&self.store.database())
+                .unwrap_or_default()
+                .iter()
+                .any(|r| r.spec.gateway_nodes.iter().flatten().any(is_me))
     }
 
     /// What the northbound database should say right now.
     pub(crate) async fn desired_ovn(&self) -> Result<Desired, crate::state::VmManagerError> {
         let ovn = self.ovn.load_full();
         let nodes = self.nodes().list().unwrap_or_default();
-        let subnets = crate::ipam::list_subnets(&self.store.database()).map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
-        let reservations = crate::ipam::list_reservations(&self.store.database()).map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
+        let subnets = crate::ipam::list_subnets(&self.store.database())
+            .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
+        let reservations = crate::ipam::list_reservations(&self.store.database())
+            .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
         let mut d = Desired::default();
-        for n in self.networks.list()?.into_iter().filter(|n| n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_none()) {
-            let sub = subnets.iter().find(|s| s.network == n.name);
+        // Network id → the name its OVN objects have (`ovn_key`).
+        let mut keys: std::collections::HashMap<String, String> = Default::default();
+        for n in self
+            .networks
+            .list()?
+            .into_iter()
+            .filter(|n| n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_none())
+        {
+            let sub = subnets.iter().find(|s| s.network == n.id);
             if sub.is_none() && n.mode != NetworkMode::Bridged {
                 continue;
             }
+            keys.insert(n.id.clone(), n.ovn_key().to_string());
             d.networks.push(NetworkSpec {
-                name: n.name.clone(),
+                name: n.ovn_key().to_string(),
                 kind: match (&n.mode, &n.physnet) {
-                    (NetworkMode::Bridged, Some(p)) => NetKind::Provider { physnet: p.clone(), vlan: n.vlan },
+                    (NetworkMode::Bridged, Some(p)) => NetKind::Provider {
+                        physnet: p.clone(),
+                        vlan: n.vlan,
+                    },
                     (NetworkMode::Nat, _) => NetKind::Nat,
                     // An isolated network on a project's router is routed
                     // there like a NAT network (clustering-ui.md §8d).
@@ -72,50 +103,117 @@ impl VmManager {
         }
         let vms = self.vms.read().await;
         for vm in vms.values() {
-            let Some(p) = &vm.status.placement else { continue };
+            let Some(p) = &vm.status.placement else {
+                continue;
+            };
             for (i, a) in vm.config().networks.iter().enumerate() {
-                if !d.networks.iter().any(|n| n.name == a.network) {
+                let Some(key) = keys.get(&a.network) else {
                     continue;
-                }
-                let mac = a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok());
+                };
+                let mac = a
+                    .mac
+                    .clone()
+                    .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok());
                 let Some(mac) = mac else { continue };
-                let provider = d.networks.iter().any(|n| n.name == a.network && matches!(n.kind, NetKind::Provider { .. }));
+                let provider = d
+                    .networks
+                    .iter()
+                    .any(|n| &n.name == key && matches!(n.kind, NetKind::Provider { .. }));
                 let ip = if provider {
                     None
                 } else {
-                    let Some(r) = reservations.iter().find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac)) else { continue };
+                    let Some(r) = reservations
+                        .iter()
+                        .find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac))
+                    else {
+                        continue;
+                    };
                     Some(r.ip)
                 };
-                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else { continue };
-                d.ports.push(PortSpec { network: a.network.clone(), lport, mac: mac.to_ascii_lowercase(), ip, vm_id: vm.id.clone(), nic: i as u8, chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)) });
+                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else {
+                    continue;
+                };
+                d.ports.push(PortSpec {
+                    network: key.clone(),
+                    lport,
+                    mac: mac.to_ascii_lowercase(),
+                    ip,
+                    vm_id: vm.id.clone(),
+                    nic: i as u8,
+                    chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)),
+                });
             }
         }
         drop(vms);
         if let Some(e) = &ovn.edge {
             let cidr: Option<glidex_ovs::net::Ipv4Net> = e.external_cidr.parse().ok();
-            if let (IpAddr::V4(ext), IpAddr::V4(gw), Some(cidr)) = (e.external_ip, e.gateway, cidr) {
+            if let (IpAddr::V4(ext), IpAddr::V4(gw), Some(cidr)) = (e.external_ip, e.gateway, cidr)
+            {
                 let gateway_nodes = e
                     .gateway_nodes
                     .iter()
-                    .filter_map(|w| nodes.iter().find(|n| (&n.meta.id == w || &n.spec.name == w) && !n.status.phase.is_tombstone()).map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id)))
+                    .filter_map(|w| {
+                        nodes
+                            .iter()
+                            .find(|n| {
+                                (&n.meta.id == w || &n.spec.name == w)
+                                    && !n.status.phase.is_tombstone()
+                            })
+                            .map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id))
+                    })
                     .collect();
                 // The shared edge keeps the first zone of the range, routers the rest.
                 let zones = ovn.snat_ct_zones.unwrap_or((60000, 64999));
-                d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes, snat_ct_zone: Some(zones.0) });
-                let resolve = |names: &[String]| -> Vec<String> { names.iter().filter_map(|w| nodes.iter().find(|n| (&n.meta.id == w || &n.spec.name == w) && !n.status.phase.is_tombstone()).map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id))).collect() };
-                for r in crate::router::list(&self.store.database()).map_err(crate::state::router_err)? {
+                d.edge = Some(EdgeSpec {
+                    physnet: e.physnet.clone(),
+                    external_ip: ext,
+                    external_prefix: cidr.prefix(),
+                    gateway: gw,
+                    gateway_nodes,
+                    snat_ct_zone: Some(zones.0),
+                });
+                let resolve = |names: &[String]| -> Vec<String> {
+                    names
+                        .iter()
+                        .filter_map(|w| {
+                            nodes
+                                .iter()
+                                .find(|n| {
+                                    (&n.meta.id == w || &n.spec.name == w)
+                                        && !n.status.phase.is_tombstone()
+                                })
+                                .map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id))
+                        })
+                        .collect()
+                };
+                for r in
+                    crate::router::list(&self.store.database()).map_err(crate::state::router_err)?
+                {
                     let external = match (r.spec.external, r.status.external_ip) {
                         (true, Some(ip)) => Some(glidex_ovn::ExternalSpec {
                             physnet: e.physnet.clone(),
                             external_ip: ip,
                             external_prefix: cidr.prefix(),
                             gateway: gw,
-                            gateway_nodes: r.spec.gateway_nodes.as_deref().map(resolve).unwrap_or_else(|| d.edge.as_ref().map(|x| x.gateway_nodes.clone()).unwrap_or_default()),
+                            gateway_nodes: r
+                                .spec
+                                .gateway_nodes
+                                .as_deref()
+                                .map(resolve)
+                                .unwrap_or_else(|| {
+                                    d.edge
+                                        .as_ref()
+                                        .map(|x| x.gateway_nodes.clone())
+                                        .unwrap_or_default()
+                                }),
                             snat_ct_zone: r.status.snat_ct_zone,
                         }),
                         _ => None,
                     };
-                    d.routers.push(glidex_ovn::RouterSpec { name: r.id.clone(), external });
+                    d.routers.push(glidex_ovn::RouterSpec {
+                        name: r.id.clone(),
+                        external,
+                    });
                 }
             }
         }
@@ -129,7 +227,12 @@ impl VmManager {
             .collect();
         // The supernet subnets come from (create_cluster_network's default):
         // isolation holds whether or not it was set.
-        d.nat_supernet = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().ok();
+        d.nat_supernet = ovn
+            .nat_supernet
+            .as_deref()
+            .unwrap_or("10.89.0.0/16")
+            .parse()
+            .ok();
         Ok(d)
     }
 
@@ -184,13 +287,31 @@ impl VmManager {
         }
         LAST.store(now, std::sync::atomic::Ordering::Relaxed);
         let sb = self.ovn_endpoints(glidex_ovs::ovn::SB_PORT);
-        let Ok(Ok(chassis)) = tokio::task::spawn_blocking(move || glidex_ovn::view::chassis(&SystemExec::new(), &conn, &sb)).await else { return };
+        let Ok(Ok(chassis)) = tokio::task::spawn_blocking(move || {
+            glidex_ovn::view::chassis(&SystemExec::new(), &conn, &sb)
+        })
+        .await
+        else {
+            return;
+        };
         let names: Vec<String> = chassis.into_iter().map(|c| c.name).collect();
         for (chassis, node) in stale_chassis(&names, &self.nodes().list().unwrap_or_default()) {
             let netd = self.netd.clone();
-            let args = glidex_netd::proto::ForgetOvnMemberArgs { address: String::new(), chassis: chassis.clone(), server: false };
-            match tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))).await {
-                Ok(Ok(())) => tracing::warn!(node, chassis, "deleted the OVN chassis of a node that is no longer a member: its ovn-controller still runs (on it: `sudo glidex-install --leave`)"),
+            let args = glidex_netd::proto::ForgetOvnMemberArgs {
+                address: String::new(),
+                chassis: chassis.clone(),
+                server: false,
+            };
+            match tokio::task::spawn_blocking(move || {
+                netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))
+            })
+            .await
+            {
+                Ok(Ok(())) => tracing::warn!(
+                    node,
+                    chassis,
+                    "deleted the OVN chassis of a node that is no longer a member: its ovn-controller still runs (on it: `sudo glidex-install --leave`)"
+                ),
                 Ok(Err(e)) => tracing::warn!(node, chassis, "deleting a stale OVN chassis: {}", e),
                 Err(e) => tracing::warn!("deleting a stale OVN chassis: {}", e),
             }
@@ -201,10 +322,15 @@ impl VmManager {
     fn finish_cluster_network_deletes(&self) {
         for n in self.networks.list().unwrap_or_default() {
             if n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_some() {
-                let name = n.name.clone();
-                let _ = self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::free_subnet(tx, &name));
-                let _ = self.networks.remove(&name);
-                tracing::info!(network = %n.name, "cluster network deleted");
+                let id = n.id.clone();
+                let _ = self
+                    .store
+                    .database()
+                    .write(crate::store::Origin::Network, |tx| {
+                        crate::ipam::free_subnet(tx, &id)
+                    });
+                let _ = self.networks.remove(&id);
+                tracing::info!(network = %n.name, id = %n.id, "cluster network deleted");
             }
         }
     }
@@ -213,14 +339,20 @@ impl VmManager {
     /// finalizer of the plan, done as garbage collection): free any whose VM
     /// or NIC is gone.
     async fn gc_reservations(&self) {
-        let Ok(res) = crate::ipam::list_reservations(&self.store.database()) else { return };
+        let Ok(res) = crate::ipam::list_reservations(&self.store.database()) else {
+            return;
+        };
         let vms = self.vms.read().await;
         let stale: Vec<_> = res
             .into_iter()
             .filter(|r| {
                 !vms.get(&r.vm_id).is_some_and(|vm: &Vm| {
                     vm.config().networks.iter().enumerate().any(|(i, a)| {
-                        a.network == r.network && a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok()).is_some_and(|m| m.eq_ignore_ascii_case(&r.mac))
+                        a.network == r.network
+                            && a.mac
+                                .clone()
+                                .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())
+                                .is_some_and(|m| m.eq_ignore_ascii_case(&r.mac))
                     })
                 })
             })
@@ -229,12 +361,15 @@ impl VmManager {
         if stale.is_empty() {
             return;
         }
-        let _ = self.store.database().write(crate::store::Origin::Network, |tx| -> Result<(), crate::ipam::IpamError> {
-            for r in &stale {
-                crate::ipam::release(tx, &r.network, &r.mac)?;
-            }
-            Ok(())
-        });
+        let _ = self.store.database().write(
+            crate::store::Origin::Network,
+            |tx| -> Result<(), crate::ipam::IpamError> {
+                for r in &stale {
+                    crate::ipam::release(tx, &r.network, &r.mac)?;
+                }
+                Ok(())
+            },
+        );
     }
 
     /// Every node: make this host an OVN chassis, and a server also run its
@@ -244,21 +379,39 @@ impl VmManager {
             self.leave_ovn_if_turned_off().await;
             return;
         }
-        let Some(cluster) = self.cluster() else { return };
+        let Some(cluster) = self.cluster() else {
+            return;
+        };
         let nodes = self.nodes().list().unwrap_or_default();
         let servers: Vec<(String, IpAddr, chrono_like::Stamp)> = nodes
             .iter()
-            .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
-            .filter_map(|n| Some((n.meta.id.clone(), n.status.advertise?.ip(), chrono_like::Stamp(n.meta.created_at))))
+            .filter(|n| {
+                n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone()
+            })
+            .filter_map(|n| {
+                Some((
+                    n.meta.id.clone(),
+                    n.status.advertise?.ip(),
+                    chrono_like::Stamp(n.meta.created_at),
+                ))
+            })
             .collect();
         let read = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap_or_default();
-        let certs = glidex_ovs::ovn::ChassisCerts { key_pem: read(cluster.files.key()), cert_pem: read(cluster.files.cert()), ca_pem: read(cluster.files.trust()) };
+        let certs = glidex_ovs::ovn::ChassisCerts {
+            key_pem: read(cluster.files.key()),
+            cert_pem: read(cluster.files.cert()),
+            ca_pem: read(cluster.files.trust()),
+        };
         if certs.key_pem.is_empty() || servers.is_empty() {
             return;
         }
         let me = self.local_node_id();
         let netd = self.netd.clone();
-        let tunnel = nodes.iter().find(|n| n.meta.id == me).and_then(|n| n.status.tunnel_ip).unwrap_or(cluster.identity.advertise.ip());
+        let tunnel = nodes
+            .iter()
+            .find(|n| n.meta.id == me)
+            .and_then(|n| n.status.tunnel_ip)
+            .unwrap_or(cluster.identity.advertise.ip());
         // The oldest server makes OVN's databases; the others join it.
         let mut by_age = servers.clone();
         by_age.sort_by_key(|(_, _, t)| t.0);
@@ -267,9 +420,20 @@ impl VmManager {
         // The databases listen on this server's advertised address (the one the others know).
         let own_ip = cluster.identity.advertise.ip();
         let all_ips: Vec<IpAddr> = servers.iter().map(|(_, ip, _)| *ip).collect();
-        let sb_remotes: Vec<String> = all_ips.iter().map(|ip| format!("ssl:{ip}:{}", glidex_ovs::ovn::SB_PORT)).collect();
-        let bridge_mappings = nodes.iter().find(|n| n.meta.id == me).map(|n| n.status.features.physnets.clone()).unwrap_or_default();
-        let setting = nodes.iter().find(|n| n.meta.id == me).map(|n| n.spec.br_int_datapath).unwrap_or_default();
+        let sb_remotes: Vec<String> = all_ips
+            .iter()
+            .map(|ip| format!("ssl:{ip}:{}", glidex_ovs::ovn::SB_PORT))
+            .collect();
+        let bridge_mappings = nodes
+            .iter()
+            .find(|n| n.meta.id == me)
+            .map(|n| n.status.features.physnets.clone())
+            .unwrap_or_default();
+        let setting = nodes
+            .iter()
+            .find(|n| n.meta.id == me)
+            .map(|n| n.spec.br_int_datapath)
+            .unwrap_or_default();
         let res = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
             use glidex_netd::proto::{EnsureOvnCentralArgs, EnsureOvnChassisArgs, Op};
             if is_server {
@@ -296,12 +460,12 @@ impl VmManager {
             Ok(Ok(datapath)) => {
                 // The scheduler needs to know where vhost-user NICs can go (§9.1).
                 let me = self.local_node_id();
-                if let Ok(Some(mut n)) = self.nodes().get(&me) {
-                    if n.status.features.br_int_datapath != datapath {
-                        n.status.features.br_int_datapath = datapath;
-                        n.meta.resource_version += 1;
-                        let _ = self.nodes().put(&n);
-                    }
+                if let Ok(Some(mut n)) = self.nodes().get(&me)
+                    && n.status.features.br_int_datapath != datapath
+                {
+                    n.status.features.br_int_datapath = datapath;
+                    n.meta.resource_version += 1;
+                    let _ = self.nodes().put(&n);
                 }
             }
             // A node that can't become a chassis can't run VMs on cluster networks.
@@ -317,7 +481,9 @@ fn cluster_local_ip(all: &[IpAddr], mine: IpAddr) -> IpAddr {
     if all.contains(&mine) {
         mine
     } else {
-        all.first().copied().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        all.first()
+            .copied()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 }
 
@@ -337,11 +503,14 @@ impl VmManager {
         }
         let netd = self.netd.clone();
         let r = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-            let st: glidex_ovs::ovn::OvnStatus = netd.call(glidex_netd::proto::Op::OvnStatus).map_err(|e| e.to_string())?;
+            let st: glidex_ovs::ovn::OvnStatus = netd
+                .call(glidex_netd::proto::Op::OvnStatus)
+                .map_err(|e| e.to_string())?;
             if st.chassis.is_none() && !st.controller_running {
                 return Ok(false);
             }
-            netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true }).map_err(|e| e.to_string())?;
+            netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true })
+                .map_err(|e| e.to_string())?;
             Ok(true)
         })
         .await;
@@ -362,7 +531,9 @@ impl VmManager {
             .list()
             .unwrap_or_default()
             .into_iter()
-            .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
+            .filter(|n| {
+                n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone()
+            })
             .filter_map(|n| n.status.advertise.map(|a| format!("ssl:{}:{port}", a.ip())))
             .collect()
     }
@@ -370,7 +541,10 @@ impl VmManager {
     /// A chassis name (`node:<id>`) as `{chassis, node, node_name}`.
     fn chassis_json(&self, chassis: &str) -> serde_json::Value {
         let node = chassis.strip_prefix("node:").map(String::from);
-        let name = node.as_deref().and_then(|n| self.nodes().get(n).ok().flatten()).map(|n| n.spec.name);
+        let name = node
+            .as_deref()
+            .and_then(|n| self.nodes().get(n).ok().flatten())
+            .map(|n| n.spec.name);
         serde_json::json!({ "chassis": chassis, "node": node, "node_name": name })
     }
 
@@ -380,13 +554,20 @@ impl VmManager {
         if !self.ovn_enabled() {
             return Ok(serde_json::json!({ "enabled": false }));
         }
-        let Some(conn) = self.nb_conn() else { return Ok(serde_json::json!({ "enabled": true, "servers": 0 })) };
-        let (nb, sb) = (self.ovn_endpoints(glidex_ovs::ovn::NB_PORT), self.ovn_endpoints(glidex_ovs::ovn::SB_PORT));
+        let Some(conn) = self.nb_conn() else {
+            return Ok(serde_json::json!({ "enabled": true, "servers": 0 }));
+        };
+        let (nb, sb) = (
+            self.ovn_endpoints(glidex_ovs::ovn::NB_PORT),
+            self.ovn_endpoints(glidex_ovs::ovn::SB_PORT),
+        );
         let (nb2, sb2) = (nb.clone(), sb.clone());
         let r = tokio::task::spawn_blocking(move || {
             let exec = SystemExec::new();
-            let nb_members = glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnNbctl, &conn, &nb2);
-            let sb_members = glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnSbctl, &conn, &sb2);
+            let nb_members =
+                glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnNbctl, &conn, &nb2);
+            let sb_members =
+                glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnSbctl, &conn, &sb2);
             let chassis = glidex_ovn::view::chassis(&exec, &conn, &sb2);
             let gateways = glidex_ovn::view::gateways(&exec, &conn, &nb2, &sb2);
             (nb_members, sb_members, chassis, gateways)
@@ -416,18 +597,35 @@ impl VmManager {
                 })
             })
             .collect();
-        Ok(serde_json::json!({ "enabled": true, "nb": nb_members, "sb": sb_members, "chassis": chassis, "gateways": gateways }))
+        Ok(
+            serde_json::json!({ "enabled": true, "nb": nb_members, "sb": sb_members, "chassis": chassis, "gateways": gateways }),
+        )
     }
 
-    /// `GET /networks/{name}/ovn`: a cluster network's switch, its ports and
+    /// `GET /networks/{id}/ovn`: a cluster network's switch, its ports and
     /// where they are bound, and its router.
-    pub async fn network_ovn(&self, net: &crate::network::Network) -> Result<serde_json::Value, crate::state::VmManagerError> {
+    pub async fn network_ovn(
+        &self,
+        net: &crate::network::Network,
+    ) -> Result<serde_json::Value, crate::state::VmManagerError> {
         if net.scope != NetworkScope::Cluster || !self.ovn_enabled() {
-            return Err(crate::hypervisor::HypervisorError::InvalidConfig(format!("{} is not an OVN network", net.name)).into());
+            return Err(crate::hypervisor::HypervisorError::InvalidConfig(format!(
+                "{} is not an OVN network",
+                net.name
+            ))
+            .into());
         }
-        let Some(conn) = self.nb_conn() else { return Err(crate::hypervisor::HypervisorError::InvalidConfig("no OVN server is known".into()).into()) };
-        let (nb, sb) = (self.ovn_endpoints(glidex_ovs::ovn::NB_PORT), self.ovn_endpoints(glidex_ovs::ovn::SB_PORT));
-        let switch = format!("gx-{}", net.name);
+        let Some(conn) = self.nb_conn() else {
+            return Err(crate::hypervisor::HypervisorError::InvalidConfig(
+                "no OVN server is known".into(),
+            )
+            .into());
+        };
+        let (nb, sb) = (
+            self.ovn_endpoints(glidex_ovs::ovn::NB_PORT),
+            self.ovn_endpoints(glidex_ovs::ovn::SB_PORT),
+        );
+        let switch = format!("gx-{}", net.ovn_key());
         let router = match (&net.mode, &net.router) {
             (NetworkMode::Nat, Some(r)) => Some(format!("gxr-{r}")),
             (NetworkMode::Nat, None) => Some(glidex_ovn::EDGE.to_string()),
@@ -437,19 +635,29 @@ impl VmManager {
         let (ports, nat, gws) = tokio::task::spawn_blocking(move || {
             let exec = SystemExec::new();
             let ports = glidex_ovn::view::switch_ports(&exec, &conn, &nb, &sb, &sw);
-            let nat = rt.as_deref().map(|r| glidex_ovn::view::router_nat(&exec, &conn, &nb, r));
-            let gws = rt.as_ref().map(|_| glidex_ovn::view::gateways(&exec, &conn, &nb, &sb));
+            let nat = rt
+                .as_deref()
+                .map(|r| glidex_ovn::view::router_nat(&exec, &conn, &nb, r));
+            let gws = rt
+                .as_ref()
+                .map(|_| glidex_ovn::view::gateways(&exec, &conn, &nb, &sb));
             (ports, nat, gws)
         })
         .await
         .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
-        let ports = ports.map_err(|e| crate::state::VmManagerError::PersistenceError(format!("reading OVN: {e}")))?;
+        let ports = ports.map_err(|e| {
+            crate::state::VmManagerError::PersistenceError(format!("reading OVN: {e}"))
+        })?;
         let vms = self.list_vms().await;
         let ports: Vec<serde_json::Value> = ports
             .into_iter()
             .map(|p| {
                 // VM ports are `gx<first 8 of the VM id>-<nic>`.
-                let vm = p.name.strip_prefix("gx").and_then(|r| r.split_once('-')).and_then(|(pre, _)| vms.iter().find(|v| v.id.starts_with(pre)));
+                let vm = p
+                    .name
+                    .strip_prefix("gx")
+                    .and_then(|r| r.split_once('-'))
+                    .and_then(|(pre, _)| vms.iter().find(|v| v.id.starts_with(pre)));
                 serde_json::json!({
                     "name": p.name, "kind": p.kind, "addresses": p.addresses, "up": p.up,
                     "bound": p.chassis.as_deref().map(|c| self.chassis_json(c)),
@@ -457,7 +665,9 @@ impl VmManager {
                 })
             })
             .collect();
-        let gateway = gws.and_then(|g| g.ok()).and_then(|g| g.into_iter().find(|g| Some(&g.router) == router.as_ref()));
+        let gateway = gws
+            .and_then(|g| g.ok())
+            .and_then(|g| g.into_iter().find(|g| Some(&g.router) == router.as_ref()));
         Ok(serde_json::json!({
             "switch": switch,
             "ports": ports,
@@ -477,9 +687,12 @@ impl VmManager {
     /// This node's OVN chassis and tunnels, from its netd.
     pub async fn local_ovn_status(&self) -> Result<serde_json::Value, String> {
         let netd = self.netd.clone();
-        tokio::task::spawn_blocking(move || netd.call::<serde_json::Value>(glidex_netd::proto::Op::OvnStatus).map_err(|e| e.to_string()))
-            .await
-            .map_err(|e| e.to_string())?
+        tokio::task::spawn_blocking(move || {
+            netd.call::<serde_json::Value>(glidex_netd::proto::Op::OvnStatus)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     /// `GET /cluster/ovn/tunnels`: every live node's tunnels, matched to the
@@ -490,11 +703,24 @@ impl VmManager {
         if !self.ovn_enabled() {
             return json!({ "enabled": false });
         }
-        let Some(cluster) = self.cluster() else { return json!({ "enabled": false }) };
+        let Some(cluster) = self.cluster() else {
+            return json!({ "enabled": false });
+        };
         let me = self.local_node_id();
-        let nodes: Vec<crate::node::Node> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+        let nodes: Vec<crate::node::Node> = self
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| !n.status.phase.is_tombstone())
+            .collect();
         // A tunnel's remote_ip is the peer's tunnel address (its advertise address by default).
-        let endpoint = |n: &crate::node::Node| n.status.tunnel_ip.or(n.status.advertise.map(|a| a.ip())).map(|ip| ip.to_string());
+        let endpoint = |n: &crate::node::Node| {
+            n.status
+                .tunnel_ip
+                .or(n.status.advertise.map(|a| a.ip()))
+                .map(|ip| ip.to_string())
+        };
         let asks = nodes.iter().map(|n| {
             let cluster = cluster.clone();
             let id = n.meta.id.clone();
@@ -506,8 +732,21 @@ impl VmManager {
                 } else {
                     match addr {
                         None => Err("no address".into()),
-                        Some(a) => match cluster.client.request_timeout(&a, hyper::Method::GET, "/cluster/v1/ovn-status", &[], bytes::Bytes::new(), std::time::Duration::from_secs(4)).await {
-                            Ok(r) if r.status.is_success() => serde_json::from_slice(&r.body).map_err(|e| e.to_string()),
+                        Some(a) => match cluster
+                            .client
+                            .request_timeout(
+                                &a,
+                                hyper::Method::GET,
+                                "/cluster/v1/ovn-status",
+                                &[],
+                                bytes::Bytes::new(),
+                                std::time::Duration::from_secs(4),
+                            )
+                            .await
+                        {
+                            Ok(r) if r.status.is_success() => {
+                                serde_json::from_slice(&r.body).map_err(|e| e.to_string())
+                            }
                             Ok(r) => Err(format!("answered {}", r.status)),
                             Err(e) => Err(e.to_string()),
                         },
@@ -569,13 +808,19 @@ impl VmManager {
 /// The glidex chassis (`node:<id>`) whose node is a tombstone (removed,
 /// forgotten, departed), with the node's name. A chassis of a node the
 /// cluster doesn't know is left alone (one joining, say).
-pub(crate) fn stale_chassis(chassis: &[String], nodes: &[crate::node::Node]) -> Vec<(String, String)> {
+pub(crate) fn stale_chassis(
+    chassis: &[String],
+    nodes: &[crate::node::Node],
+) -> Vec<(String, String)> {
     chassis
         .iter()
         .filter_map(|c| {
             let id = c.strip_prefix("node:")?;
             let n = nodes.iter().find(|n| n.meta.id == id)?;
-            n.status.phase.is_tombstone().then(|| (c.clone(), n.spec.name.clone()))
+            n.status
+                .phase
+                .is_tombstone()
+                .then(|| (c.clone(), n.spec.name.clone()))
         })
         .collect()
 }
@@ -586,15 +831,46 @@ mod stale_chassis_tests {
     use crate::node::{Node, NodePhase, NodeRole, NodeSpec};
 
     fn node(id: &str, name: &str, phase: NodePhase) -> Node {
-        let mut n = Node::new(id, NodeSpec { name: name.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
+        let mut n = Node::new(
+            id,
+            NodeSpec {
+                name: name.into(),
+                role: NodeRole::Agent,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
         n.status.phase = phase;
         n
     }
 
     #[test]
     fn only_chassis_of_nodes_that_left_go() {
-        let nodes = [node("a", "live", NodePhase::Active), node("b", "removed", NodePhase::Removed), node("c", "forgotten", NodePhase::Forgotten), node("d", "draining", NodePhase::Draining)];
-        let chassis = ["node:a", "node:b", "node:c", "node:d", "node:unknown", "not-glidex"].map(String::from);
-        assert_eq!(stale_chassis(&chassis, &nodes), vec![("node:b".to_string(), "removed".to_string()), ("node:c".to_string(), "forgotten".to_string())]);
+        let nodes = [
+            node("a", "live", NodePhase::Active),
+            node("b", "removed", NodePhase::Removed),
+            node("c", "forgotten", NodePhase::Forgotten),
+            node("d", "draining", NodePhase::Draining),
+        ];
+        let chassis = [
+            "node:a",
+            "node:b",
+            "node:c",
+            "node:d",
+            "node:unknown",
+            "not-glidex",
+        ]
+        .map(String::from);
+        assert_eq!(
+            stale_chassis(&chassis, &nodes),
+            vec![
+                ("node:b".to_string(), "removed".to_string()),
+                ("node:c".to_string(), "forgotten".to_string())
+            ]
+        );
     }
 }

@@ -1,0 +1,93 @@
+// Invitations to the directory's tenants (spec/tenancy.md D40, §6.1): an
+// email address, a tenant role and one connector. The first login through
+// that connector that brings the invitation's secret, with a verified
+// email equal to the invited one, takes it, once, before it expires.
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+service InvitationService {
+  // A tenant's invitations: open ones, and taken or expired ones for 30
+  // days. Never their secrets.
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantInvitations"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/invitations"
+    };
+  }
+  // Invite an email address; answers the invitation's link once. Giving
+  // its role also takes `manageTenantBindings` on the tenant.
+  rpc CreateInvitation(CreateInvitationRequest) returns (CreateInvitationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantInvitations"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/invitations"
+    };
+  }
+  // Revoking deletes it.
+  rpc RevokeInvitation(RevokeInvitationRequest) returns (RevokeInvitationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantInvitations"
+      kind: KIND_WRITE
+      rest: "DELETE /invitations/{id}"
+    };
+  }
+}
+
+enum InvitationState {
+  INVITATION_STATE_UNSPECIFIED = 0;
+  INVITATION_STATE_OPEN = 1;
+  INVITATION_STATE_TAKEN = 2;
+  INVITATION_STATE_EXPIRED = 3;
+}
+
+message Invitation {
+  string id = 1;
+  string tenant_id = 2 [json_name = "tenant_id"];
+  string email = 3;
+  // A tenant role (`role.tenant-admin`, `role.tenant-member`, …).
+  string role = 4;
+  string connector_id = 5 [json_name = "connector_id"];
+  string invited_by = 6 [json_name = "invited_by"];
+  google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 8 [json_name = "expires_at"];
+  InvitationState state = 9;
+  // The user who took it.
+  optional string taken_by = 10 [json_name = "taken_by"];
+  google.protobuf.Timestamp taken_at = 11 [json_name = "taken_at"];
+}
+
+message ListInvitationsRequest {
+  // Tenant id or slug.
+  string tenant = 1;
+}
+message ListInvitationsResponse {
+  repeated Invitation invitations = 1;
+}
+
+message CreateInvitationRequest {
+  // Tenant id or slug.
+  string tenant = 1;
+  string email = 2;
+  string role = 3;
+  // The connector the invitee logs in through. For the directory owner's
+  // or an operator's tenant, one that D22 allows there and that requires MFA.
+  string connector = 4;
+  // 1-30; default 7.
+  optional uint32 days = 5;
+}
+message CreateInvitationResponse {
+  Invitation invitation = 1;
+  // `<origin>/invite/<id>#<secret>`: shown once; the secret is in the
+  // fragment, so it reaches no log.
+  string link = 2;
+}
+
+message RevokeInvitationRequest {
+  string id = 1;
+}
+message RevokeInvitationResponse {}

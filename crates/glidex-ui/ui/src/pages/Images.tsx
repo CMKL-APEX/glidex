@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
-import type { CatalogItem, FirmwareCatalogItem, HypervisorType, ImageInfo, ImageKind, NodeRecord } from "../types";
-import { HYPERVISOR_LABELS, formatBytes, isTombstone } from "../types";
+import type { CatalogItem, FirmwareCatalogItem, HypervisorType, ImageInfo, NodeRecord } from "../types";
+import {
+  HYPERVISOR_LABELS,
+  HYPERVISOR_TO_PROTO,
+  archLabel,
+  archToProto,
+  formatBytes,
+  hypervisorOf,
+  imageState,
+  isDiskImage,
+  isFirmware,
+  isKernel,
+  isTombstone,
+  num,
+  sourceKey,
+} from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { useLiveRefresh } from "../live";
@@ -11,11 +25,12 @@ const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
 
 function StatusBadge({ image }: { image: ImageInfo }) {
-  const s = image.status;
+  const s = image.status ?? {};
   if (image.deleting) return <span className="text-xs text-gray-500">Deleting…</span>;
-  switch (s.state) {
+  switch (imageState(image)) {
     case "downloading": {
-      const pct = s.total_bytes ? Math.floor((s.received_bytes * 100) / s.total_bytes) : null;
+      const total = num(s.total_bytes);
+      const pct = total ? Math.floor((num(s.received_bytes) * 100) / total) : null;
       return (
         <div className="w-40">
           <div className="text-xs text-sky-700">
@@ -29,24 +44,29 @@ function StatusBadge({ image }: { image: ImageInfo }) {
     }
     case "verifying":
       return <span className="text-xs text-sky-700">Verifying…</span>;
+    case "extracting":
+      return <span className="text-xs text-sky-700">Extracting…</span>;
     case "ready":
       return <span className="text-xs text-green-700">Ready</span>;
     case "missing":
       return <span className="text-xs text-red-700">File missing</span>;
-    case "failed":
+    case "failed": {
+      const reason = s.reason ?? "";
       return (
-        <span className="text-xs text-red-700" title={s.reason}>
-          Failed: {s.reason.length > 60 ? `${s.reason.slice(0, 60)}…` : s.reason}
+        <span className="text-xs text-red-700" title={reason}>
+          Failed: {reason.length > 60 ? `${reason.slice(0, 60)}…` : reason}
         </span>
       );
+    }
   }
+  return null;
 }
 
 function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
   const [url, setUrl] = useState("");
   const [sha256, setSha256] = useState("");
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<ImageKind>("disk");
+  const [kind, setKind] = useState<"disk" | "firmware">("disk");
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
   const [varsUrl, setVarsUrl] = useState("");
   const [varsSha256, setVarsSha256] = useState("");
@@ -62,7 +82,7 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
         url,
         sha256: sha256 || undefined,
         name: name || undefined,
-        ...(kind === "firmware" ? { kind: "firmware" as const, hypervisor } : {}),
+        ...(kind === "firmware" ? { kind: "IMAGE_KIND_FIRMWARE" as const, hypervisor: HYPERVISOR_TO_PROTO[hypervisor] } : {}),
         ...(withVars && varsUrl ? { vars_url: varsUrl, vars_sha256: varsSha256 || undefined } : {}),
       });
       onDone();
@@ -77,7 +97,7 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700">Type</label>
-          <select className={`${inputClass} bg-white`} value={kind} onChange={(e) => setKind(e.target.value as ImageKind)}>
+          <select className={`${inputClass} bg-white`} value={kind} onChange={(e) => setKind(e.target.value as "disk" | "firmware")}>
             <option value="disk">Cloud image (qcow2 or raw)</option>
             <option value="firmware">UEFI firmware (.fd)</option>
           </select>
@@ -143,15 +163,20 @@ const pullClass = "px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg
 
 /** Where an image came from, for the tables. */
 function SourceCell({ img }: { img: ImageInfo }) {
-  const s = img.source;
+  const s = img.source ?? {};
+  const cat = s.catalog ?? s.firmware;
   return (
     <>
-      {s.kind === "url" ? (
-        <span className="break-all">{s.url}</span>
+      {s.url ? (
+        <span className="break-all">{s.url.url}</span>
+      ) : s.host ? (
+        <span className="break-all">{s.host.path}</span>
+      ) : s.extracted ? (
+        <span className="break-all">{s.extracted.path ? `extracted: ${s.extracted.path}` : "extracting from its image"}</span>
       ) : (
         <span>
-          {s.key} <span className="text-gray-400">{s.version}</span>
-          {s.kind === "firmware" && s.url.startsWith("/") && <span className="block text-gray-400 break-all">{s.url}</span>}
+          {cat?.key} <span className="text-gray-400">{cat?.version}</span>
+          {s.firmware?.url?.startsWith("/") && <span className="block text-gray-400 break-all">{s.firmware.url}</span>}
         </span>
       )}
       {!img.verified && <span className="ml-1 text-amber-700">(unverified)</span>}
@@ -161,47 +186,62 @@ function SourceCell({ img }: { img: ImageInfo }) {
 
 interface TableProps {
   images: ImageInfo[];
-  firmware: boolean;
+  kind: "disk" | "firmware" | "kernel";
   onRetry: (img: ImageInfo) => void;
   onRemove: (img: ImageInfo) => void;
   /** In a cluster: copies on chosen nodes (spec/clustering.md §9.2.2). */
   clustered?: boolean;
   onCopy?: (img: ImageInfo) => void;
   onRemoveCopy?: (img: ImageInfo, node: string) => void;
+  /** Disk images: take the kernel out of one (spec/kernel-boot.md §10),
+   * offered when no kernel image comes from it yet. */
+  onExtractKernel?: (img: ImageInfo) => void;
+  hasKernel?: (img: ImageInfo) => boolean;
 }
 
-function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, onRemoveCopy }: TableProps) {
+function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemoveCopy, onExtractKernel, hasKernel }: TableProps) {
+  // Firmware and kernels are booted through, so VMs are their users.
+  const firmware = kind === "firmware";
+  const boot = kind !== "disk";
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-      <table className="w-full text-sm" data-testid={firmware ? "firmware-images" : "disk-images"}>
+      <table className="w-full text-sm" data-testid={`${kind}-images`}>
         <thead className="bg-gray-50 text-gray-600 text-left">
           <tr>
             <th className="px-4 py-3 font-medium">Name</th>
             {firmware && <th className="px-4 py-3 font-medium">Hypervisor</th>}
+            {kind === "kernel" && <th className="px-4 py-3 font-medium">Release</th>}
             <th className="px-4 py-3 font-medium">Status</th>
             <th className="px-4 py-3 font-medium">Size</th>
             <th className="px-4 py-3 font-medium">Source</th>
-            <th className="px-4 py-3 font-medium">{firmware ? "Used by VMs" : "Linked disks"}</th>
+            <th className="px-4 py-3 font-medium">{boot ? "Used by VMs" : "Linked disks"}</th>
             <th className="px-4 py-3" />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {images.map((img) => {
-            const users = firmware ? img.used_by_vms ?? [] : img.linked_disks;
+            const users = (boot ? img.used_by_vms : img.linked_disks) ?? [];
             return (
               <tr key={img.id}>
                 <td className="px-4 py-3 font-mono">
                   {img.name}
-                  {clustered && <span className="ml-1 text-xs text-gray-500 font-sans">{img.arch}</span>}
+                  {clustered && <span className="ml-1 text-xs text-gray-500 font-sans">{archLabel(img.arch)}</span>}
                 </td>
                 {firmware && (
                   <td className="px-4 py-3">
-                    {img.hypervisor ? HYPERVISOR_LABELS[img.hypervisor] : "—"}
-                    {img.hypervisor === "qemu" && (
+                    {img.hypervisor ? HYPERVISOR_LABELS[hypervisorOf(img.hypervisor)!] : "—"}
+                    {hypervisorOf(img.hypervisor) === "qemu" && (
                       <span className="block text-xs text-gray-500">
                         {img.vars_template ? "with variable store" : "single file (no saved UEFI settings)"}
                       </span>
                     )}
+                  </td>
+                )}
+                {kind === "kernel" && (
+                  <td className="px-4 py-3">
+                    <span className="font-mono">{img.kernel?.release ?? "—"}</span>
+                    <span className="block text-xs text-gray-500">{img.kernel?.initrd ? "with initramfs" : "no initramfs"}</span>
+                    {img.kernel?.cmdline && <span className="block text-xs text-gray-500 font-mono break-all">{img.kernel.cmdline}</span>}
                   </td>
                 )}
                 <td className="px-4 py-3">
@@ -209,11 +249,11 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
                   <Copies img={img} onRemove={onRemoveCopy && ((node) => onRemoveCopy(img, node))} />
                 </td>
                 <td className="px-4 py-3">
-                  {firmware
-                    ? img.file_size_bytes
+                  {boot
+                    ? num(img.file_size_bytes)
                       ? formatBytes(img.file_size_bytes)
                       : "—"
-                    : img.virtual_size_bytes
+                    : num(img.virtual_size_bytes)
                       ? formatBytes(img.virtual_size_bytes)
                       : "—"}
                 </td>
@@ -222,12 +262,17 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
                 </td>
                 <td className="px-4 py-3 text-xs font-mono">{users.join(", ") || "—"}</td>
                 <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                  {clustered && onCopy && img.status.state === "ready" && !img.deleting && (
+                  {onExtractKernel && imageState(img) === "ready" && !img.deleting && !hasKernel?.(img) && (
+                    <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => onExtractKernel(img)}>
+                      Extract kernel
+                    </button>
+                  )}
+                  {clustered && onCopy && imageState(img) === "ready" && !img.deleting && (
                     <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => onCopy(img)}>
                       Copy to node…
                     </button>
                   )}
-                  {img.status.state === "failed" && (
+                  {imageState(img) === "failed" && (
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
                       onClick={() => onRetry(img)}
@@ -237,11 +282,11 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
                   )}
                   <button
                     className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-50"
-                    disabled={users.length > 0 && firmware}
+                    disabled={users.length > 0 && boot}
                     title={users.length > 0 && firmware ? "VMs boot through it" : undefined}
                     onClick={() => onRemove(img)}
                   >
-                    {img.status.state === "downloading" ? "Cancel" : "Delete"}
+                    {imageState(img) === "downloading" ? "Cancel" : "Delete"}
                   </button>
                 </td>
               </tr>
@@ -253,26 +298,43 @@ function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, on
   );
 }
 
-/** Where the image's file is, in a cluster: one line per node's copy. */
+/** Where the image's file is: one line per node's copy (in a cluster),
+ * and per shared datastore's copy. */
 function Copies({ img, onRemove }: { img: ImageInfo; onRemove?: (node: string) => void }) {
-  const copies = img.copies ?? [];
-  if (copies.length === 0) return null;
+  const all = img.copies ?? [];
+  const copies = all.filter((c) => !c.datastore);
+  const stores = all.filter((c) => c.datastore);
+  if (all.length === 0) return null;
   const ready = copies.filter((c) => c.state === "ready").length;
   const pending = copies.length - ready;
+  const inStores = stores.filter((c) => c.state === "ready").length;
   return (
     <details className="mt-1 text-xs text-gray-600">
       <summary className="cursor-pointer">
-        on {ready} node{ready === 1 ? "" : "s"}
+        {copies.length > 0 && `on ${ready} node${ready === 1 ? "" : "s"}`}
         {pending ? `, ${pending} on the way, going or failed` : ""}
+        {stores.length > 0 && `${copies.length > 0 ? "; " : ""}in ${inStores} shared datastore${inStores === 1 ? "" : "s"}`}
       </summary>
       <ul className="mt-1 space-y-0.5">
+        {stores.map((c) => (
+          <li key={`ds:${c.datastore}`}>
+            <span className="font-medium">datastore {c.datastore_name ?? c.datastore}</span>:{" "}
+            {c.state === "failed" ? (
+              <span className="text-red-600">failed{c.error ? `: ${c.error}` : ""}</span>
+            ) : c.state === "downloading" ? (
+              "copying"
+            ) : (
+              "ready"
+            )}
+          </li>
+        ))}
         {copies.map((c) => (
           <li key={c.node}>
             <span className="font-medium">{c.node_name ?? c.node.slice(0, 8)}</span>:{" "}
             {c.state === "ready" ? (
               "ready"
             ) : c.state === "downloading" ? (
-              `copying${img.file_size_bytes ? ` (${Math.min(100, Math.round((c.bytes / img.file_size_bytes) * 100))} %)` : ""}`
+              `copying${num(img.file_size_bytes) ? ` (${Math.min(100, Math.round((num(c.bytes) / num(img.file_size_bytes)) * 100))} %)` : ""}`
             ) : c.state === "wanted" ? (
               "wanted"
             ) : c.state === "releasing" ? (
@@ -329,7 +391,7 @@ function PullDialog({
     setBusy(true);
     setError(null);
     try {
-      await api.pullImage({ catalog: what.catalog, firmware: what.firmware, arch: arch || undefined, nodes: picked.length ? picked : undefined, keep_server_copy: picked.length ? keep : undefined });
+      await api.pullImage({ catalog: what.catalog, firmware: what.firmware, arch: arch ? archToProto(arch) : undefined, nodes: picked.length ? picked : undefined, keep_server_copy: picked.length ? keep : undefined });
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start download");
@@ -382,7 +444,8 @@ function PullDialog({
 /** Keep a copy of an image on a node ahead of need (§9.2.2). */
 function CopyDialog({ img, nodes, onClose, onDone }: { img: ImageInfo; nodes: Map<string, NodeRecord>; onClose: () => void; onDone: () => void }) {
   const has = new Set((img.copies ?? []).filter((c) => c.state !== "releasing").map((c) => c.node));
-  const candidates = nodesFor(nodes, img.arch).filter((n) => !has.has(n.meta.id));
+  const arch = archLabel(img.arch);
+  const candidates = nodesFor(nodes, arch).filter((n) => !has.has(n.meta.id));
   const [error, setError] = useState<string | null>(null);
   const copy = async (node: string) => {
     setError(null);
@@ -397,9 +460,9 @@ function CopyDialog({ img, nodes, onClose, onDone }: { img: ImageInfo; nodes: Ma
     <Modal title={`Copy ${img.name} to a node`} onClose={onClose}>
       <div className="space-y-3 text-sm">
         {error && <p className="text-red-600">{error}</p>}
-        <p className="text-gray-600">The node copies it from a node that has it, checks it, and keeps it until it is let go. Only {img.arch} nodes can run it.</p>
+        <p className="text-gray-600">The node copies it from a node that has it, checks it, and keeps it until it is let go. Only {arch} nodes can run it.</p>
         {candidates.length === 0 ? (
-          <p className="text-gray-500">Every {img.arch} node has a copy already.</p>
+          <p className="text-gray-500">Every {arch} node has a copy already.</p>
         ) : (
           <ul className="divide-y divide-gray-100">
             {candidates.map((n) => (
@@ -447,7 +510,9 @@ export default function Images() {
 
   // Follow the live stream; without it, poll while anything is downloading.
   const live = useLiveRefresh(["image", "disk", "vm"], refresh);
-  const busy = images?.some((i) => i.status.state === "downloading" || i.status.state === "verifying" || i.deleting);
+  const busy = images?.some(
+    (i) => imageState(i) === "downloading" || imageState(i) === "verifying" || imageState(i) === "extracting" || i.deleting,
+  );
   useEffect(() => {
     if (!busy || live) return;
     const id = setInterval(refresh, 1500);
@@ -469,8 +534,19 @@ export default function Images() {
     }
   };
 
+  const extractKernel = async (img: ImageInfo) => {
+    setError(null);
+    try {
+      await api.pullImage({ kernel_from: img.id });
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start the kernel extraction");
+    }
+  };
+
   const remove = async (img: ImageInfo) => {
-    const what = img.status.state === "downloading" ? "Cancel the download of" : img.kind === "firmware" ? "Delete firmware" : "Delete image";
+    const what =
+      imageState(img) === "downloading" ? "Cancel the download of" : isFirmware(img) ? "Delete firmware" : isKernel(img) ? "Delete kernel" : "Delete image";
     if (!confirm(`${what} ${img.name}?`)) return;
     setError(null);
     try {
@@ -509,14 +585,15 @@ export default function Images() {
   const inFlight = (kind: "catalog" | "firmware", key: string) =>
     images?.some(
       (i) =>
-        i.source.kind === kind &&
-        i.source.key === key &&
-        (!arch || i.arch === arch) &&
-        (i.status.state === "downloading" || i.status.state === "verifying"),
+        sourceKey(i)?.kind === kind &&
+        sourceKey(i)?.key === key &&
+        (!arch || archLabel(i.arch) === arch) &&
+        (imageState(i) === "downloading" || imageState(i) === "verifying"),
     );
 
-  const diskImages = images?.filter((i) => i.kind !== "firmware") ?? [];
-  const firmwareImages = images?.filter((i) => i.kind === "firmware") ?? [];
+  const diskImages = images?.filter(isDiskImage) ?? [];
+  const firmwareImages = images?.filter(isFirmware) ?? [];
+  const kernelImages = images?.filter(isKernel) ?? [];
 
   return (
     <div>
@@ -549,7 +626,10 @@ export default function Images() {
           </select>
         </div>
       )}
-      <h2 className="text-lg font-semibold text-gray-800 mb-3">Cloud image catalog</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">Cloud image catalog</h2>
+      <p className="text-sm text-gray-500 mb-3">
+        Pulling an image also extracts its kernel, for VMs that boot it directly (listed under Kernels).
+      </p>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         {catalog.map((c) => (
           <div key={c.key} className={cardClass}>
@@ -581,7 +661,7 @@ export default function Images() {
             <div className="min-w-0">
               <div className="font-medium text-gray-900">{f.name}</div>
               <div className="text-xs text-gray-500">
-                <span className="font-mono">{f.key}</span> · {HYPERVISOR_LABELS[f.hypervisor]}
+                <span className="font-mono">{f.key}</span> · {f.hypervisor ? HYPERVISOR_LABELS[hypervisorOf(f.hypervisor)!] : "—"}
               </div>
               <div className="text-xs text-gray-400 truncate" title={f.url}>
                 {f.source === "download"
@@ -617,7 +697,17 @@ export default function Images() {
           No images yet. Pull one from the catalog above.
         </div>
       ) : (
-        <ImageTable images={diskImages} firmware={false} onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable
+          images={diskImages}
+          kind="disk"
+          onRetry={retry}
+          onRemove={remove}
+          clustered={dir.clustered}
+          onCopy={setCopying}
+          onRemoveCopy={removeCopy}
+          onExtractKernel={(img) => void extractKernel(img)}
+          hasKernel={(img) => kernelImages.some((k) => k.for_image === img.id)}
+        />
       )}
 
       <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Firmware</h2>
@@ -628,7 +718,14 @@ export default function Images() {
           No firmware yet. VMs booting cloud images need one: pull it from the firmware catalog above.
         </div>
       ) : (
-        <ImageTable images={firmwareImages} firmware onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable images={firmwareImages} kind="firmware" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+      )}
+
+      {kernelImages.length > 0 && (
+        <>
+          <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Kernels</h2>
+          <ImageTable images={kernelImages} kind="kernel" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        </>
       )}
 
       {pulling && (

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Binding, Network, NetworkShare, ProjectView, Quotas, Router } from "../types";
-import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, notReady } from "../types";
+import type { Binding, Network, NetworkShare, ProjectView, QuotaKey, Quotas, Router } from "../types";
+import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTimestamp, isClusterNetwork, networkModeLabel, notReady, quotaPools } from "../types";
 import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
@@ -19,7 +19,7 @@ import {
 } from "../components/ui";
 import { UsageCell } from "./Projects";
 import { useCan, useSession } from "../session";
-import { useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import RoutersCard from "../components/RoutersCard";
 
 const CAPS = [
@@ -34,9 +34,23 @@ const CAPS = [
 ] as const;
 type Cap = (typeof CAPS)[number];
 
-function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q: Quotas) => Promise<void>; onCancel: () => void }) {
-  const [values, setValues] = useState<Record<keyof Quotas, string>>(
-    () => Object.fromEntries(QUOTA_KEYS.map((k) => [k, quotas[k] === null ? "" : String(quotas[k])])) as Record<keyof Quotas, string>,
+function QuotaEditor({
+  quotas,
+  pools,
+  onSave,
+  onCancel,
+}: {
+  quotas: Quotas;
+  /** Device pools to offer a limit for. */
+  pools: string[];
+  onSave: (q: Quotas) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [values, setValues] = useState<Record<QuotaKey, string>>(
+    () => Object.fromEntries(QUOTA_KEYS.map((k) => [k, quotas[k] === undefined ? "" : String(quotas[k])])) as Record<QuotaKey, string>,
+  );
+  const [devices, setDevices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(pools.map((p) => [p, quotas.devices?.[p] === undefined ? "" : String(quotas.devices[p])])),
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,9 +60,16 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
     setBusy(true);
     setError(null);
     try {
-      const q = Object.fromEntries(
-        QUOTA_KEYS.map((k) => [k, values[k].trim() === "" ? null : Number(values[k])]),
-      ) as unknown as Quotas;
+      // An absent limit is unlimited: send only the ones set.
+      const q: Quotas = Object.fromEntries(
+        QUOTA_KEYS.filter((k) => values[k].trim() !== "").map((k) => [k, Number(values[k])]),
+      );
+      const devs = Object.fromEntries(
+        Object.entries(devices)
+          .filter(([, v]) => v.trim() !== "")
+          .map(([p, v]) => [p, Number(v)]),
+      );
+      if (Object.keys(devs).length > 0) q.devices = devs;
       await onSave(q);
     } catch (err) {
       setError(errorMessage(err));
@@ -72,6 +93,22 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
               placeholder="unlimited"
               value={values[k]}
               onChange={(e) => setValues({ ...values, [k]: e.target.value })}
+            />
+          </div>
+        ))}
+        {pools.map((p) => (
+          <div key={`pool-${p}`}>
+            <label htmlFor={`quota-pool-${p}`} className="block text-sm font-medium text-gray-700">
+              Devices: {p}
+            </label>
+            <input
+              id={`quota-pool-${p}`}
+              className={inputClass}
+              type="number"
+              min={0}
+              placeholder="unlimited"
+              value={devices[p] ?? ""}
+              onChange={(e) => setDevices({ ...devices, [p]: e.target.value })}
             />
           </div>
         ))}
@@ -125,10 +162,10 @@ function NetworkRow({
         <div>
           <span className="font-medium text-gray-900">{net.name}</span>{" "}
           <span className="text-xs text-gray-500">
-            {net.mode} on {net.scope === "cluster" ? "OVN" : net.bridge}
-            {net.scope === "cluster" && net.mode === "nat" &&
+            {networkModeLabel(net.mode)} on {isClusterNetwork(net) ? "OVN" : net.bridge}
+            {isClusterNetwork(net) && net.mode === "NETWORK_MODE_NAT" &&
               (net.router ? ` · leaves via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}` : " · leaves via the shared edge")}
-            {net.scope === "cluster" && net.mode === "isolated" && net.router && ` · routed via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}`}
+            {isClusterNetwork(net) && net.mode === "NETWORK_MODE_ISOLATED" && net.router && ` · routed via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}`}
           </span>
           {net.deletion_requested_at && (
             <span className="ml-2 text-xs text-gray-500" title={notReady(net.conditions)?.message}>
@@ -139,7 +176,7 @@ function NetworkRow({
         {manage && !net.deletion_requested_at && (
           <button
             className={dangerLink}
-            onClick={() => confirm(`Delete network ${net.name}?`) && run(() => api.deleteNetwork(net.name))}
+            onClick={() => confirm(`Delete network ${net.name}?`) && run(() => api.deleteNetwork(net.id))}
           >
             Delete
           </button>
@@ -152,7 +189,7 @@ function NetworkRow({
               <Badge kind="ok">shared</Badge>
               <span title={p}>{projectName(p)}</span>
               {share && (
-                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.name, p))}>
+                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.id, p))}>
                   Unshare
                 </button>
               )}
@@ -164,9 +201,9 @@ function NetworkRow({
               <span className="font-mono text-xs" title={o.project}>
                 {projectName(o.project)}
               </span>
-              <span className="text-xs text-gray-500">until {formatTime(o.expires_at)}</span>
+              <span className="text-xs text-gray-500">until {formatTimestamp(o.expires_at)}</span>
               {share && (
-                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.name, o.project))}>
+                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.id, o.project))}>
                   Withdraw
                 </button>
               )}
@@ -182,7 +219,7 @@ function NetworkRow({
             const to = target.trim();
             if (!to) return;
             run(async () => {
-              await api.offerNetworkShare(net.name, to);
+              await api.offerNetworkShare(net.id, to);
               setTarget("");
               setNote(`Offered to ${to}. The other project's owner must accept it.`);
             });
@@ -209,6 +246,8 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const session = useSession();
   const [dir] = useDirectory();
+  const connectors = useConnectorNames();
+  const nodes = useNodeNames();
   const [project, setProject] = useState<ProjectView | null>(null);
   const [bindings, setBindings] = useState<Binding[] | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -217,6 +256,8 @@ export default function ProjectDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingQuotas, setEditingQuotas] = useState(false);
+  /** Pools the project may use, to offer a limit for. */
+  const [pools, setPools] = useState<string[]>([]);
 
   const allowed = useCan(CAPS.map((action) => ({ action, resource: { type: "Project" as const, id } })));
   const can = (c: Cap) => !!allowed?.[CAPS.indexOf(c)];
@@ -238,6 +279,10 @@ export default function ProjectDetail() {
       .listRouters(id)
       .then(setRouters)
       .catch(() => setRouters([]));
+    api
+      .listProjectPciPools(id)
+      .then((ps) => setPools(ps.map((p) => p.name ?? "").filter(Boolean)))
+      .catch(() => setPools([]));
   }, [id]);
 
   const refreshBindings = useCallback(() => {
@@ -303,7 +348,7 @@ export default function ProjectDetail() {
           {project.description && <p className="text-gray-500 mt-1">{project.description}</p>}
           <p className="mt-1 text-xs text-gray-500">
             Project id <code className="font-mono bg-gray-100 px-1 rounded select-all">{project.id}</code> · created{" "}
-            {formatTime(project.created_at)}
+            {formatTimestamp(project.created_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -346,7 +391,8 @@ export default function ProjectDetail() {
       >
         {editingQuotas ? (
           <QuotaEditor
-            quotas={project.quotas}
+            quotas={project.quotas ?? {}}
+            pools={[...new Set([...quotaPools(project.quotas, project.usage), ...pools])].sort()}
             onCancel={() => setEditingQuotas(false)}
             onSave={async (quotas) => {
               await api.updateProject(project.id, { quotas });
@@ -360,7 +406,15 @@ export default function ProjectDetail() {
               <div key={k}>
                 <div className="text-xs text-gray-500">{QUOTA_LABELS[k]}</div>
                 <div className="text-lg">
-                  <UsageCell used={project.usage[k]} limit={project.quotas[k]} />
+                  <UsageCell used={project.usage?.[k]} limit={project.quotas?.[k]} />
+                </div>
+              </div>
+            ))}
+            {quotaPools(project.quotas, project.usage).map((p) => (
+              <div key={`pool-${p}`}>
+                <div className="text-xs text-gray-500">Devices: {p}</div>
+                <div className="text-lg">
+                  <UsageCell used={project.usage?.devices?.[p]} limit={project.quotas?.devices?.[p]} />
                 </div>
               </div>
             ))}
@@ -374,6 +428,8 @@ export default function ProjectDetail() {
             <Loading />
           ) : (
             <BindingTable
+              connectors={connectors}
+              nodes={nodes}
               bindings={bindings}
               dir={dir ?? { users: [], teams: [] }}
               onRemove={
@@ -402,7 +458,7 @@ export default function ProjectDetail() {
         ) : (
           networks.map((n) => (
             <NetworkRow
-              key={n.name}
+              key={n.id}
               net={n}
               routers={routers}
               manage={can("createProjectNetwork")}
@@ -442,22 +498,24 @@ export default function ProjectDetail() {
               <tbody>
                 {shares.map((s) => (
                   <tr key={s.network} className="border-b border-gray-50">
-                    <td className="py-2 font-medium">{s.network}</td>
+                    <td className="py-2 font-medium" title={s.network}>
+                      {s.network_name || s.network}
+                    </td>
                     <td className="py-2" title={s.owner_project ?? ""}>
                       {s.owner_project ? projectName(s.owner_project) : "—"}
                     </td>
                     <td className="py-2">
-                      {s.status === "accepted" ? (
+                      {s.status === "SHARE_STATUS_ACCEPTED" ? (
                         <Badge kind="ok">accepted</Badge>
                       ) : (
                         <>
                           <Badge kind="muted">offered</Badge>{" "}
-                          <span className="text-xs text-gray-500">until {formatTime(s.expires_at)}</span>
+                          <span className="text-xs text-gray-500">until {formatTimestamp(s.expires_at)}</span>
                         </>
                       )}
                     </td>
                     <td className="py-2 text-right">
-                      {s.status === "offered" ? (
+                      {s.status !== "SHARE_STATUS_ACCEPTED" ? (
                         <button
                           className={secondaryButton}
                           onClick={() => run(() => api.acceptNetworkShare(project.id, s.network), refreshShares)}

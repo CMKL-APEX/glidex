@@ -33,6 +33,8 @@ pub struct NodeLink {
     /// The cache holds a usable copy (listed once, or kept from before).
     ready: tokio::sync::watch::Sender<bool>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// This link, for the requests `submit` hands to the runtime.
+    me: std::sync::Weak<NodeLink>,
 }
 
 impl NodeLink {
@@ -40,7 +42,7 @@ impl NodeLink {
     /// cluster store and runs the list/watch, heartbeat and outbox loops.
     pub fn start(cluster: Arc<Cluster>, db: Arc<Db>, seeds: Vec<String>) -> Arc<NodeLink> {
         let (stop, _) = tokio::sync::watch::channel(false);
-        let link = Arc::new(NodeLink {
+        let link = Arc::new_cyclic(|me| NodeLink {
             cluster,
             db: db.clone(),
             servers: Mutex::new(seeds),
@@ -52,6 +54,7 @@ impl NodeLink {
             partitioned: AtomicBool::new(false),
             ready: tokio::sync::watch::channel(false).0,
             stop,
+            me: me.clone(),
         });
         db.set_revision(db.stored_mirror_revision());
         if db.revision() > 0 {
@@ -65,6 +68,13 @@ impl NodeLink {
         tokio::spawn(async move { l.heartbeat_loop().await });
         let l = link.clone();
         tokio::spawn(async move { l.outbox_loop().await });
+        // Stopping the cluster stops the link: a stopped node sends no heartbeats.
+        let l = link.clone();
+        let mut stopped = link.cluster.stop_rx();
+        tokio::spawn(async move {
+            let _ = stopped.wait_for(|s| *s).await;
+            l.stop();
+        });
         link
     }
 
@@ -72,8 +82,10 @@ impl NodeLink {
     /// startup never mistakes "not listed yet" for "no VMs" (networking.md §7.7).
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
         let mut rx = self.ready.subscribe();
-        let ok = tokio::time::timeout(timeout, rx.wait_for(|r| *r)).await.is_ok();
-        ok
+
+        tokio::time::timeout(timeout, rx.wait_for(|r| *r))
+            .await
+            .is_ok()
     }
 
     pub fn stop(&self) {
@@ -109,12 +121,13 @@ impl NodeLink {
         let mut v = self.servers.lock().unwrap().clone();
         if let Ok(nodes) = crate::node::NodeStore::new(self.db.clone()).list() {
             for n in nodes {
-                if n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone() {
-                    if let Some(a) = n.status.advertise {
-                        let a = a.to_string();
-                        if !v.contains(&a) {
-                            v.push(a);
-                        }
+                if n.spec.role == crate::node::NodeRole::Server
+                    && !n.status.phase.is_tombstone()
+                    && let Some(a) = n.status.advertise
+                {
+                    let a = a.to_string();
+                    if !v.contains(&a) {
+                        v.push(a);
                     }
                 }
             }
@@ -131,7 +144,13 @@ impl NodeLink {
     /// One request to the leader: tries each known server, following
     /// "not the leader" answers. `Err(None)`: nobody could be reached.
     #[allow(clippy::result_large_err)] // the reply itself is the error: the caller passes it on
-    async fn to_leader(&self, method: hyper::Method, path: &str, body: Bytes, timeout: Duration) -> Result<super::net::Reply, Option<super::net::Reply>> {
+    async fn to_leader(
+        &self,
+        method: hyper::Method,
+        path: &str,
+        body: Bytes,
+        timeout: Duration,
+    ) -> Result<super::net::Reply, Option<super::net::Reply>> {
         if self.partitioned.load(Ordering::Acquire) {
             self.set_connected(false, "partitioned");
             return Err(None);
@@ -144,9 +163,24 @@ impl NodeLink {
             if !tried.insert(addr.clone()) {
                 continue;
             }
-            match self.cluster.client.request_timeout(&addr, method.clone(), path, &[("content-type", "application/json".into())], body.clone(), timeout).await {
+            match self
+                .cluster
+                .client
+                .request_timeout(
+                    &addr,
+                    method.clone(),
+                    path,
+                    &[("content-type", "application/json".into())],
+                    body.clone(),
+                    timeout,
+                )
+                .await
+            {
                 Ok(r) if r.status == hyper::StatusCode::MISDIRECTED_REQUEST => {
-                    if let Some(l) = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
+                    if let Some(l) = serde_json::from_slice::<Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v["leader"].as_str().map(String::from))
+                    {
                         queue.insert(0, l);
                     }
                 }
@@ -165,7 +199,15 @@ impl NodeLink {
     // ---- cache ------------------------------------------------------------
 
     async fn list(&self) -> Result<(), String> {
-        let r = self.to_leader(hyper::Method::GET, "/cluster/v1/list", Bytes::new(), Duration::from_secs(60)).await.map_err(|_| "no server could be reached".to_string())?;
+        let r = self
+            .to_leader(
+                hyper::Method::GET,
+                "/cluster/v1/list",
+                Bytes::new(),
+                Duration::from_secs(60),
+            )
+            .await
+            .map_err(|_| "no server could be reached".to_string())?;
         if !r.status.is_success() {
             return Err(format!("list: {}", r.status));
         }
@@ -173,7 +215,10 @@ impl NodeLink {
         let revision = v["revision"].as_u64().ok_or("no revision")?;
         let ws: WriteSet = serde_json::from_value(v["ws"].clone()).map_err(|e| e.to_string())?;
         let db = self.db.clone();
-        tokio::task::spawn_blocking(move || db.install_ops(&ws, revision)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || db.install_ops(&ws, revision))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
         // Writes still queued are applied again over the fresh copy.
         self.reapply_outbox();
         Ok(())
@@ -193,7 +238,10 @@ impl NodeLink {
                         self.ready.send_replace(true);
                     }
                     Err(e) => {
-                        tracing::warn!("cannot list the cluster store ({}); running from the cache", e);
+                        tracing::warn!(
+                            "cannot list the cluster store ({}); running from the cache",
+                            e
+                        );
                         tokio::select! { _ = tokio::time::sleep(Duration::from_secs(2)) => {}, _ = stop.changed() => return }
                         continue;
                     }
@@ -229,7 +277,19 @@ impl NodeLink {
         }
         let mut last = String::from("no server known");
         for addr in self.candidates() {
-            match self.cluster.client.request_timeout(&addr, hyper::Method::GET, path, &[], Bytes::new(), Duration::from_secs(40)).await {
+            match self
+                .cluster
+                .client
+                .request_timeout(
+                    &addr,
+                    hyper::Method::GET,
+                    path,
+                    &[],
+                    Bytes::new(),
+                    Duration::from_secs(40),
+                )
+                .await
+            {
                 Ok(r) => {
                     self.prefer(&addr);
                     self.set_connected(true, &addr);
@@ -251,19 +311,31 @@ impl NodeLink {
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             for e in entries {
                 let index = e["index"].as_u64().ok_or("no index")?;
-                let mut ws: WriteSet = serde_json::from_value(e["ws"].clone()).map_err(|e| e.to_string())?;
-                ws.ops.retain(|o| !pending.contains(&(o.table(), o.key().to_vec())));
+                let mut ws: WriteSet =
+                    serde_json::from_value(e["ws"].clone()).map_err(|e| e.to_string())?;
+                ws.ops
+                    .retain(|o| !pending.contains(&(o.table(), o.key().to_vec())));
                 db.apply(&ws, index, |txn| {
-                    txn.open_table(TableId::RaftMeta.definition())?.insert(crate::store::MIRROR_REVISION, index.to_string().as_bytes())?;
+                    txn.open_table(TableId::RaftMeta.definition())?
+                        .insert(crate::store::MIRROR_REVISION, index.to_string().as_bytes())?;
                     Ok(())
                 })
                 .map_err(|e| e.to_string())?;
             }
             if upto > db.revision() {
-                db.apply(&WriteSet { format: crate::store::WRITE_SET_FORMAT, origin: crate::store::Origin::System, ops: Vec::new() }, upto, |txn| {
-                    txn.open_table(TableId::RaftMeta.definition())?.insert(crate::store::MIRROR_REVISION, upto.to_string().as_bytes())?;
-                    Ok(())
-                })
+                db.apply(
+                    &WriteSet {
+                        format: crate::store::WRITE_SET_FORMAT,
+                        origin: crate::store::Origin::System,
+                        ops: Vec::new(),
+                    },
+                    upto,
+                    |txn| {
+                        txn.open_table(TableId::RaftMeta.definition())?
+                            .insert(crate::store::MIRROR_REVISION, upto.to_string().as_bytes())?;
+                        Ok(())
+                    },
+                )
                 .map_err(|e| e.to_string())?;
             }
             Ok(())
@@ -277,7 +349,14 @@ impl NodeLink {
     async fn heartbeat_loop(self: Arc<Self>) {
         let mut stop = self.stop.subscribe();
         loop {
-            let _ = self.to_leader(hyper::Method::POST, "/cluster/v1/heartbeat", Bytes::from_static(b"{}"), Duration::from_secs(4)).await;
+            let _ = self
+                .to_leader(
+                    hyper::Method::POST,
+                    "/cluster/v1/heartbeat",
+                    Bytes::from_static(b"{}"),
+                    Duration::from_secs(4),
+                )
+                .await;
             tokio::select! { _ = tokio::time::sleep(Duration::from_secs(5)) => {}, _ = stop.changed() => return }
         }
     }
@@ -285,8 +364,12 @@ impl NodeLink {
     // ---- outbox -------------------------------------------------------------
 
     fn load_outbox(&self) {
-        let Ok(txn) = self.db.begin_read() else { return };
-        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else { return };
+        let Ok(txn) = self.db.begin_read() else {
+            return;
+        };
+        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else {
+            return;
+        };
         let mut pending = self.pending.lock().unwrap();
         let mut max = 0;
         for r in t.range(OUTBOX_PREFIX..).into_iter().flatten().flatten() {
@@ -305,8 +388,12 @@ impl NodeLink {
     }
 
     fn outbox(&self) -> Vec<(String, WriteSet)> {
-        let Ok(txn) = self.db.begin_read() else { return Vec::new() };
-        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else { return Vec::new() };
+        let Ok(txn) = self.db.begin_read() else {
+            return Vec::new();
+        };
+        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         for r in t.range(OUTBOX_PREFIX..).into_iter().flatten().flatten() {
             let k = r.0.value().to_string();
@@ -329,7 +416,8 @@ impl NodeLink {
     fn enqueue(&self, ws: &WriteSet) -> Result<(), StoreError> {
         let n = self.seq.fetch_add(1, Ordering::AcqRel) + 1;
         let key = format!("{OUTBOX_PREFIX}{n:016}");
-        let bytes = serde_json::to_vec(ws).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        let bytes = serde_json::to_vec(ws)
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
         self.db.put_local(&key, &bytes)?;
         let mut p = self.pending.lock().unwrap();
         for o in &ws.ops {
@@ -359,10 +447,21 @@ impl NodeLink {
             tokio::select! { _ = tokio::time::sleep(Duration::from_secs(2)) => {}, _ = stop.changed() => return }
             for (key, ws) in self.outbox() {
                 let body = Bytes::from(serde_json::to_vec(&ws).unwrap_or_default());
-                match self.to_leader(hyper::Method::POST, "/cluster/v1/status-write", body, Duration::from_secs(10)).await {
+                match self
+                    .to_leader(
+                        hyper::Method::POST,
+                        "/cluster/v1/status-write",
+                        body,
+                        Duration::from_secs(10),
+                    )
+                    .await
+                {
                     Ok(r) if r.status.is_success() => self.pop_outbox(&key),
                     Ok(r) => {
-                        tracing::warn!("the leader refused a queued status write: {}", String::from_utf8_lossy(&r.body));
+                        tracing::warn!(
+                            "the leader refused a queued status write: {}",
+                            String::from_utf8_lossy(&r.body)
+                        );
                         self.pop_outbox(&key);
                         self.relist.store(true, Ordering::Release);
                     }
@@ -374,11 +473,18 @@ impl NodeLink {
 
     /// POST to the leader as this node.
     pub async fn post_leader(&self, path: &str, body: Bytes) -> Result<super::net::Reply, String> {
-        self.to_leader(hyper::Method::POST, path, body, Duration::from_secs(30)).await.map_err(|_| "no server could be reached".to_string())
+        self.to_leader(hyper::Method::POST, path, body, Duration::from_secs(30))
+            .await
+            .map_err(|_| "no server could be reached".to_string())
     }
 
-    fn block<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::task::block_in_place(|| self.runtime.block_on(f))
+    /// `None` when the control plane is shutting down.
+    fn block<F>(&self, f: F) -> Option<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        super::wait_on(&self.runtime, f)
     }
 }
 
@@ -389,10 +495,28 @@ impl Mirror for NodeLink {
             self.enqueue(ws)?;
             return Ok(Submitted::Queued);
         }
-        let body = Bytes::from(serde_json::to_vec(ws).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?);
-        match self.block(self.to_leader(hyper::Method::POST, "/cluster/v1/status-write", body, Duration::from_secs(10))) {
+        let body = Bytes::from(
+            serde_json::to_vec(ws)
+                .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?,
+        );
+        let me = self.me.upgrade().expect("the link submits through itself");
+        let sent = self.block(async move {
+            me.to_leader(
+                hyper::Method::POST,
+                "/cluster/v1/status-write",
+                body,
+                Duration::from_secs(10),
+            )
+            .await
+        });
+        // Shutting down: queued like a write the leader didn't get, and sent
+        // after the restart.
+        match sent.unwrap_or(Err(None)) {
             Ok(r) if r.status.is_success() => {
-                let index = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["index"].as_u64()).unwrap_or(0);
+                let index = serde_json::from_slice::<Value>(&r.body)
+                    .ok()
+                    .and_then(|v| v["index"].as_u64())
+                    .unwrap_or(0);
                 // Read your writes: the controller's next step reads the cache.
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
                 while self.db.revision() < index && std::time::Instant::now() < deadline {
@@ -402,7 +526,12 @@ impl Mirror for NodeLink {
             }
             Ok(r) => {
                 self.relist.store(true, Ordering::Release);
-                Err(StoreError::Refused(serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["message"].as_str().map(String::from)).unwrap_or_else(|| r.status.to_string())))
+                Err(StoreError::Refused(
+                    serde_json::from_slice::<Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v["message"].as_str().map(String::from))
+                        .unwrap_or_else(|| r.status.to_string()),
+                ))
             }
             Err(_) => {
                 self.enqueue(ws)?;

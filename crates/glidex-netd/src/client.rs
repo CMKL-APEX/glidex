@@ -1,7 +1,7 @@
 //! Blocking client for glidex-netd, used by the control plane (run it in
 //! `spawn_blocking`).
 
-use crate::proto::{ErrorBody, HelloResult, OnBehalfOf, Op, Request, Response, PROTOCOL_VERSION};
+use crate::proto::{ErrorBody, HelloResult, OnBehalfOf, Op, PROTOCOL_VERSION, Request, Response};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
@@ -29,8 +29,8 @@ pub struct Client {
 
 impl Client {
     pub fn connect(path: &Path) -> Result<Self, ClientError> {
-        let stream =
-            UnixStream::connect(path).map_err(|e| ClientError::Unavailable(format!("{}: {}", path.display(), e)))?;
+        let stream = UnixStream::connect(path)
+            .map_err(|e| ClientError::Unavailable(format!("{}: {}", path.display(), e)))?;
         let writer = stream
             .try_clone()
             .map_err(|e| ClientError::Unavailable(e.to_string()))?;
@@ -78,12 +78,16 @@ impl Client {
             op,
             on_behalf_of: on_behalf_of.cloned(),
         };
-        let mut line = serde_json::to_string(&request)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let mut line =
+            serde_json::to_string(&request).map_err(|e| ClientError::Protocol(e.to_string()))?;
         line.push('\n');
         let unavailable = |e: std::io::Error| ClientError::Unavailable(e.to_string());
-        self.writer.set_write_timeout(Some(timeout)).map_err(unavailable)?;
-        self.writer.write_all(line.as_bytes()).map_err(unavailable)?;
+        self.writer
+            .set_write_timeout(Some(timeout))
+            .map_err(unavailable)?;
+        self.writer
+            .write_all(line.as_bytes())
+            .map_err(unavailable)?;
         self.reader
             .get_ref()
             .set_read_timeout(Some(timeout))
@@ -91,7 +95,9 @@ impl Client {
         let mut reply = String::new();
         let n = self.reader.read_line(&mut reply).map_err(unavailable)?;
         if n == 0 {
-            return Err(ClientError::Unavailable("netd closed the connection".into()));
+            return Err(ClientError::Unavailable(
+                "netd closed the connection".into(),
+            ));
         }
         let resp: Response =
             serde_json::from_str(&reply).map_err(|e| ClientError::Protocol(e.to_string()))?;
@@ -108,7 +114,11 @@ impl Client {
         }
     }
 
-    pub fn call<T: DeserializeOwned>(&mut self, op: Op, timeout: Duration) -> Result<T, ClientError> {
+    pub fn call<T: DeserializeOwned>(
+        &mut self,
+        op: Op,
+        timeout: Duration,
+    ) -> Result<T, ClientError> {
         self.call_as(op, None, timeout)
     }
 

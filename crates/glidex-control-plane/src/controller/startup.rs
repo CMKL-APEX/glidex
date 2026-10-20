@@ -13,13 +13,26 @@ impl VmManager {
     /// §9.4 steps 2-4. No VM is launched, stopped or changed on the host
     /// here; only what is observed is recorded.
     pub(crate) async fn adopt_instances(&self) {
-        let ids: Vec<String> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| v.id.clone()).collect();
+        let ids: Vec<String> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .filter(|v| self.is_local(v))
+            .map(|v| v.id.clone())
+            .collect();
         let mut adopted = 0;
         for id in &ids {
-            let Some(vm) = self.vm(id).await else { continue };
+            let Some(vm) = self.vm(id).await else {
+                continue;
+            };
             let unit = self.runner().unit_active(id).await;
             let v = vm.clone();
-            let Ok(seen) = tokio::task::spawn_blocking(move || crate::instance::liveness(&v, unit)).await else { continue };
+            let Ok(seen) =
+                tokio::task::spawn_blocking(move || crate::instance::liveness(&v, unit)).await
+            else {
+                continue;
+            };
             if seen.liveness != Liveness::Live {
                 continue;
             }
@@ -27,31 +40,55 @@ impl VmManager {
             let mut events = Vec::new();
             match &seen.file {
                 Some(f) => {
-                    let matches = st.instance.as_ref().is_some_and(|i| i.instance_id == f.instance_id);
+                    let matches = st
+                        .instance
+                        .as_ref()
+                        .is_some_and(|i| i.instance_id == f.instance_id);
                     if !matches {
                         let inst = self.adopted_ref(&vm, f);
-                        events.push(Event::new("controller", EventKind::Warning, "AdoptedUnrecorded", format!("adopted instance {}", f.instance_id)));
+                        events.push(Event::new(
+                            "controller",
+                            EventKind::Warning,
+                            "AdoptedUnrecorded",
+                            format!("adopted instance {}", f.instance_id),
+                        ));
                         st.instance = Some(inst);
                     } else if let Some(inst) = st.instance.as_mut() {
                         inst.shim_pid = Some(f.shim_pid);
                         inst.shim_starttime = Some(f.shim_starttime);
                         inst.hypervisor_pid = f.hypervisor_pid.or(inst.hypervisor_pid);
-                        inst.hypervisor_starttime = f.hypervisor_starttime.or(inst.hypervisor_starttime);
+                        inst.hypervisor_starttime =
+                            f.hypervisor_starttime.or(inst.hypervisor_starttime);
                     }
-                    if f.phase == Phase::Running && !matches!(st.phase, VmPhase::Running | VmPhase::Paused) {
+                    if f.phase == Phase::Running
+                        && !matches!(st.phase, VmPhase::Running | VmPhase::Paused)
+                    {
                         st.phase = VmPhase::Running;
                     }
-                    events.push(Event::new("controller", EventKind::Normal, "Adopted", format!("instance {} is still running", f.instance_id)));
+                    events.push(Event::new(
+                        "controller",
+                        EventKind::Normal,
+                        "Adopted",
+                        format!("instance {} is still running", f.instance_id),
+                    ));
                     adopted += 1;
                 }
                 None if st.instance.is_none() => {
                     st.phase = VmPhase::Unknown;
-                    set_cond(&mut st.conditions, "HypervisorReachable", Tristate::Unknown, "LegacyOrphan",
-                        "a hypervisor answers on this VM's socket but no shim reports it; stop that process");
+                    set_cond(
+                        &mut st.conditions,
+                        "HypervisorReachable",
+                        Tristate::Unknown,
+                        "LegacyOrphan",
+                        "a hypervisor answers on this VM's socket but no shim reports it; stop that process",
+                    );
                 }
                 None => {}
             }
-            if let Err(e) = self.write_status(id, vm.status.observed_generation, st, events).await {
+            if let Err(e) = self
+                .write_status(id, vm.status.observed_generation, st, events)
+                .await
+            {
                 tracing::warn!(vm_id = %id, "recording the adopted instance: {}", e);
             }
         }
@@ -64,15 +101,22 @@ impl VmManager {
         if let Ok(dir) = std::fs::read_dir(crate::paths::run_dir().join("vms")) {
             for e in dir.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if !ids.contains(&name) {
-                    orphans.push(Orphan { kind: "runtime_dir", id: name });
+                // Kernel extractions are one-shot jobs, not VMs (§10.2).
+                if !ids.contains(&name) && !crate::controller::extract::is_job(&name) {
+                    orphans.push(Orphan {
+                        kind: "runtime_dir",
+                        id: name,
+                    });
                 }
             }
         }
         if let Ok(units) = self.runner().list_units().await {
             for u in units {
-                if !ids.contains(&u) {
-                    orphans.push(Orphan { kind: "unit", id: crate::instance::runner::unit_name(&u) });
+                if !ids.contains(&u) && !crate::controller::extract::is_job(&u) {
+                    orphans.push(Orphan {
+                        kind: "unit",
+                        id: crate::instance::runner::unit_name(&u),
+                    });
                 }
             }
         }
@@ -84,5 +128,4 @@ impl VmManager {
         // Only now: netd may detach ports of VMs that own none (D16).
         self.sync_netd_ports().await;
     }
-
 }

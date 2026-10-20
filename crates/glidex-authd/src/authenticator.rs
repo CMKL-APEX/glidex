@@ -2,7 +2,7 @@
 //! replace them: password verification (PAM) and the account database
 //! (NSS: passwd and group).
 
-use nix::unistd::{getgrouplist, Group, User};
+use nix::unistd::{Group, User, getgrouplist};
 use std::ffi::CString;
 
 /// Why a password check failed. The detail is for the daemon's log only;
@@ -46,10 +46,10 @@ impl Accounts for SystemAccounts {
         let gids = getgrouplist(&name, u.gid).ok()?;
         let mut groups: Vec<String> = Vec::with_capacity(gids.len());
         for gid in std::iter::once(u.gid).chain(gids) {
-            if let Ok(Some(g)) = Group::from_gid(gid) {
-                if !groups.contains(&g.name) {
-                    groups.push(g.name);
-                }
+            if let Ok(Some(g)) = Group::from_gid(gid)
+                && !groups.contains(&g.name)
+            {
+                groups.push(g.name);
             }
         }
         Some(Account {

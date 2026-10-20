@@ -16,6 +16,11 @@ managed object alongside it:
   VM boots a cloud image through, built for one hypervisor, pulled from a
   firmware catalog or a URL ([§4.1](#41-firmware-catalog)). VMs name one
   with `firmware` instead of a host `firmware_path` ([§7](#7-vm-integration)).
+- **Kernel images** are images of kind `kernel`: a kernel, an optional
+  initramfs and a default command line a VM boots directly, pulled from
+  a URL or copied from host files. VMs name one with `kernel` instead of a
+  host `kernel_image_path`. Their design is in
+  [kernel-boot.md](kernel-boot.md) §4 and §6.
 
 Source: `crates/glidex-control-plane/src/images/`: `mod.rs` (records,
 `ImageManager`, `ImageError`), `catalog.rs`, `firmware.rs`, `download.rs`, `disk.rs`,
@@ -44,8 +49,9 @@ Non-goals:
 - Shrinking filesystems. Shrinking only gives back space that no partition
   uses (see [§6.3](#63-shrink)).
 - Disk snapshots, export/import, and image building or customization.
-- Remote or shared storage (NFS, Ceph, iSCSI). Images and disks live on the
-  local filesystem.
+- Block storage (Ceph RBD, iSCSI, LVM). Disks are files: on the node's
+  own filesystem, or on a filesystem every node mounts (NFS, CephFS), as
+  [datastores](storage.md).
 - Non-Linux guests, and images that are not cloud images (installer ISOs).
 - Live resize of a disk attached to a running VM. This is v1; see
   [§11](#11-future-work).
@@ -59,7 +65,9 @@ Non-goals:
 │   ├── <image-id>.qcow2          # verified, chmod 0444
 │   ├── <image-id>.qcow2.part     # in-flight download (firmware too)
 │   ├── <image-id>.fd             # firmware image, chmod 0444
-│   └── <image-id>.vars.fd        # its UEFI variable-store template (OVMF), 0444
+│   ├── <image-id>.vars.fd        # its UEFI variable-store template (OVMF), 0444
+│   ├── <image-id>.kernel         # kernel image, chmod 0444
+│   └── <image-id>.initrd         # its initramfs, 0444 (`.initrd.part` while downloading)
 └── disks/
     └── <disk-id>.qcow2           # chmod 0600
 ```
@@ -70,6 +78,14 @@ them. Both are created `0700` at startup. Raw disks are `<disk-id>.raw`.
 Operations write temporaries as dot-files (`.<id>.create.qcow2`,
 `.<id>.shrink.qcow2`, `.gx-edit*/`) in the same directory, so the final
 rename never crosses filesystems.
+
+These two directories are the built-in datastore `local`
+([storage.md](storage.md) §4): every node has its own. A disk on another
+datastore lives in that datastore's directory instead,
+`<path>/disks/<disk-id>.qcow2`; a linked disk on a shared datastore
+overlays the datastore's copy of its image, `<path>/images/<image-id>.qcow2`
+([storage.md](storage.md) §4.5). Images themselves stay in each node's
+`images/`.
 
 **Invariant.** Files under `images/` and `disks/` are named only by id. The
 user-chosen name exists only in the database. Why: renaming a record never
@@ -94,7 +110,7 @@ is keyed by id, and the value is serde-JSON, as in
 pub struct Image {
     pub id: String,                 // UUIDv4
     pub name: String,               // unique, user-chosen; defaults to catalog key
-    pub kind: ImageKind,            // Disk (default: older records) | Firmware
+    pub kind: ImageKind,            // Disk (default: older records) | Firmware | Kernel
     pub hypervisor: Option<HypervisorType>, // what a firmware image is built for
     pub source: ImageSource,
     pub status: ImageStatus,
@@ -109,17 +125,26 @@ pub struct Image {
     pub retry_seq: u64,             // bumped by POST /images/{id}/retry (§5)
     pub applied_retry_seq: u64,     // the last retry the controller started
     pub deletion_requested_at: Option<u64>, // set by DELETE; the controller finishes it (§6.6)
+    // Kernel images only (kernel-boot.md §4.1):
+    pub initrd: Option<FileMeta>,   // {sha256, size_bytes} of `<id>.initrd`
+    pub cmdline: Option<String>,    // default `kernel_args`
+    pub kernel_release: Option<String>, // from the kernel's header
+    pub for_image: Option<String>,  // the disk image it was extracted from
+    pub owner: Option<String>,      // the VM whose disk it came from (kernel-boot.md K12)
 }
 
 pub enum ImageSource {
     Catalog { key: String, url: String, version: String },
     Url { url: String, expected_sha256: Option<String> },
     Firmware { key: String, url: String, version: String }, // url: download, or host file copied
+    Host { path: String },          // a kernel copied from host files
+    Extracted { image_id: String, image_sha256: String, path: String, verified: bool },
 }
 
 pub enum ImageStatus {
     Downloading { received_bytes: u64, total_bytes: Option<u64> },
     Verifying,
+    Extracting,                     // a kernel image being extracted (kernel-boot.md §10)
     Ready,
     Failed { reason: String },
     Missing,
@@ -147,6 +172,11 @@ pub struct Disk {
     pub owner: Option<String>,      // VM the disk was made for
     pub deletion_requested_at: Option<u64>,
     pub conditions: Vec<Condition>, // `Ready`
+    // Where it lives (storage.md §4.2):
+    pub datastore: String,          // datastore id; "local" (left out) by default
+    pub node: Option<String>,       // node-local datastore: the node holding the file
+    pub worker: Option<String>,     // shared datastore: the node acting on it now
+    pub moving: Option<MoveSpec>,   // a move asked for (storage.md §8.3)
 }
 
 pub enum DiskOrigin {
@@ -411,8 +441,13 @@ controller applies it (`controller/disk.rs`, [reconciliation.md
   renames it into place, so a crash leaves the old disk intact.
 
 Each step is recorded as a disk event (`Created`, `Resized`,
-`RootExtended`, `ExtendRootFailed`, `FileMissing`, `Released`, …), read
-with `GET /disks/{id}/events`.
+`RootExtended`, `ExtendRootFailed`, `FileMissing`, `Released`, `Moved`,
+…), read with `GET /disks/{id}/events`.
+
+In a cluster these operations run on the node holding the disk: its
+`node` on a node-local datastore, its `worker` on a shared one
+([storage.md](storage.md) §8.1). Moving a disk to another datastore is
+`POST /disks/{id}/move` ([storage.md](storage.md) §8.3).
 
 ### 6.1 Create
 
@@ -639,8 +674,9 @@ default), but some do not (AlmaLinux sets `growpart` off in
   not reuse it and the catalog's `downloaded_image_id` ignores it. A
   stale writer (the download task, say) cannot clear the request or
   bring a deleted image back.
-- A firmware image is refused (`409 conflict`, naming them) while VMs
-  boot through it (`VmConfig.firmware_image`); `VmManager::delete_image`
+- A firmware or kernel image is refused (`409 conflict`, naming them)
+  while VMs boot through it (`VmConfig.firmware_image`,
+  `VmConfig.kernel_image`); `VmManager::delete_image`
   checks under the VM-map read lock, which `create_vm` holds for writing
   while it picks the image. Image responses list those VMs as
   `used_by_vms`.
@@ -658,6 +694,7 @@ default), but some do not (AlmaLinux sets `growpart` off in
 |---|---|
 | `image` | Image id or name. glidex records a linked root disk named `<vm-name>-root`, sized `root_disk_size_gib` (or the §6.1 default), extended offline, and owned by the VM (`owner`). The image may still be downloading. |
 | `firmware` | Firmware image id or name (§4.1) the VM boots through: `ready`, not being deleted, built for the VM's hypervisor. |
+| `kernel` | Kernel image id or name the VM boots directly ([kernel-boot.md](kernel-boot.md) §6): `ready`, not being deleted, of the root image's architecture. Excludes `firmware`; an `image`/`root_disk` VM with it needs no firmware image. |
 | `root_disk` | Id or name of an existing, unattached disk to boot from. |
 | `data_disks` | Ids or names of extra unattached disks, attached in order after the root disk. |
 
@@ -717,9 +754,9 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images/catalog` | Catalog entries for this host's arch, each with `downloaded_image_id` if one exists |
 | `GET` | `/images/firmware-catalog` | Firmware catalog entries (§4.1), each with `available`, `hint` and `downloaded_image_id` |
 | `GET` | `/images` | List images |
-| `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}` or `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
+| `POST` | `/images` | `{catalog, name?, with_kernel?}` (a catalog pull also extracts the image's kernel by default, kernel-boot.md K10), `{kernel_from, name?}` (extract a disk image's kernel, §10 there), `{firmware, name?}`, `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`, a kernel `{url, kind: IMAGE_KIND_KERNEL, sha256?, initrd_url?, initrd_sha256?, cmdline?}` or `{kernel_path, initrd_path?, cmdline?}` (`useHostPath`; ready at once, kernel-boot.md §4.2). Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
-| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
+| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204` once gone (with `wait`, if it went in time), else `202` with the image while the controller finishes. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
 | `GET` | `/images/{id}/events` | The image's events |
 | `GET` | `/disks` | List disks |
@@ -732,20 +769,45 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `POST` | `/vms/{id}/disks` | Attach a data disk (stopped VM) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk (stopped VM) |
 
-Image responses carry `kind` (`disk` | `firmware`), `hypervisor` (firmware
-only), `used_by_vms` (firmware in use) and `deleting: true` while a
-deletion is in progress (omitted otherwise).
+These are the REST twins of `glidex.storage.v1` (`ImageService`,
+`DiskService`, and `CredentialService` for spec/credentials.md;
+[grpc.md](grpc.md) §9.1). Bodies are the proto messages as JSON:
+- **Wrapped answers**: lists are `{images}`, `{disks}`, `{items}` (the
+  catalogs), `{events}`; one object is `{image}` or `{disk}`; disk writes
+  answer `{disk, settled}` (`settled` only with `wait`), a pull `{image,
+  created}`.
+- **Values**: 64-bit numbers (`size_bytes`, `virtual_size_bytes`, …) are
+  strings, timestamps RFC 3339, enums their proto names
+  (`DISK_PHASE_READY`, `IMAGE_STATE_DOWNLOADING`, `DISK_FORMAT_QCOW2`,
+  `CLONE_MODE_LINKED`, `IMAGE_KIND_FIRMWARE`, `HYPERVISOR_QEMU`,
+  `ARCH_X86_64`, `EXTEND_MODE_ON_BOOT`).
+- **Oneofs**: an image's `source` is `{catalog}`, `{url}` or
+  `{firmware}`, and a disk's `origin` is `{blank: {}}` or `{image:
+  {image_id, mode}}`.
+- **Absent fields**: fields at their default are left out (`deleting`,
+  `pinned` and `vars_template` appear only when true).
+- **Deleting an image with `wait`**: answers `204` once it is gone (`200`
+  before).
+
+Image responses carry `kind`, `hypervisor` (firmware only), `used_by_vms`
+(firmware in use) and `deleting: true` while a deletion is in progress.
 
 For images and disks, `{id}` path segments (and the `image`, `root_disk`,
-`data_disks` and `disk` request fields) accept an id or a unique name.
-Names are 1–64 characters of `A-Z a-z 0-9 . _ -` and must not start with
-`.`. VM routes still take ids only.
+`data_disks` and `disk` request fields) accept an id or a name. Names are
+1–64 characters of `A-Z a-z 0-9 . _ -` and must not start with `.`. Image
+names are unique on the cluster. **Disk names are unique per tenant**
+([tenancy.md](tenancy.md) D24): two tenants may each have a disk `data`.
+A name resolves among the disks of the tenant in question (a VM's
+project's tenant for the VM's disks, the caller's tenants for
+`/disks/{id}`); a name two of the caller's tenants share answers `409
+ambiguous`, and the id works. VM routes still take ids only.
 
 New error codes for the `ApiError` envelope (`api::image_error_response`):
 
 | `ImageError` variant | HTTP | `error` |
 |---|---|---|
 | `NotFound` | `404` | `not_found` |
+| `Ambiguous` (a name more than one disk of the caller's tenants has) | `409` | `ambiguous` |
 | `AlreadyExists`, `InUse`, `Busy`, `NotReady` | `409` | `conflict` |
 | `InvalidImage` (bad URL, scheme, catalog key, size) | `400` | `invalid_image` |
 | `InvalidDisk` (size, layout, shrink below minimum; `details.min_size_bytes`) | `400` | `invalid_disk` |
@@ -830,6 +892,7 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
 - Periodic catalog refresh: pull a newer build and offer to rebase linked
   disks onto it (`qemu-img rebase`).
 - Disk snapshots (`qemu-img snapshot`) and export.
+- Block datastores and a CSI adapter: [storage.md](storage.md) §11, §12.
 
 ## 12. Testing
 

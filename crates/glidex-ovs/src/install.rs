@@ -4,10 +4,10 @@
 //! together, so they are the default. The pinned source build for
 //! features a distro lacks (spec §6.3) lives in `source_build`.
 
+use crate::OvsError;
 use crate::bridge;
 use crate::exec::{Cmd, Exec, Program};
 use crate::host::{self, HostCapabilities, ProbeOptions};
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -84,7 +84,9 @@ pub fn parse_os_release(contents: &str) -> Distro {
 }
 
 pub fn detect_distro(exec: &dyn Exec) -> Result<Distro, OvsError> {
-    Ok(parse_os_release(&exec.read_file(Path::new("/etc/os-release"))?))
+    Ok(parse_os_release(
+        &exec.read_file(Path::new("/etc/os-release"))?,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,12 +146,20 @@ pub fn foreign_ovs_package(exec: &dyn Exec, family: Family) -> Option<String> {
     if family != Family::Debian {
         return None;
     }
-    let out = exec.run(&Cmd::new(Program::DpkgQuery, ["-S", "/usr/bin/ovs-vsctl"]).timeout(Duration::from_secs(10))).ok()?;
+    let out = exec
+        .run(
+            &Cmd::new(Program::DpkgQuery, ["-S", "/usr/bin/ovs-vsctl"])
+                .timeout(Duration::from_secs(10)),
+        )
+        .ok()?;
     if out.status != 0 {
         return None;
     }
     // "doca-openvswitch-switch: /usr/bin/ovs-vsctl" (diversions list more).
-    let pkg = out.stdout_str().lines().find_map(|l| l.split_once(": ").map(|(p, _)| p.trim().to_string()))?;
+    let pkg = out
+        .stdout_str()
+        .lines()
+        .find_map(|l| l.split_once(": ").map(|(p, _)| p.trim().to_string()))?;
     let pkg = pkg.split(':').next().unwrap_or_default().to_string();
     (!pkg.is_empty() && !pkg.starts_with("openvswitch-")).then_some(pkg)
 }
@@ -171,21 +181,35 @@ pub fn satisfied(caps: &HostCapabilities, profile: Profile) -> bool {
         && profile.provided_by(caps)
 }
 
-pub fn plan(exec: &dyn Exec, caps: &HostCapabilities, req: &InstallRequest) -> Result<InstallPlan, OvsError> {
+pub fn plan(
+    exec: &dyn Exec,
+    caps: &HostCapabilities,
+    req: &InstallRequest,
+) -> Result<InstallPlan, OvsError> {
     let distro = detect_distro(exec)?;
     let family = distro.family.ok_or_else(|| OvsError::Unsupported {
         missing: vec![format!("package install on distro '{}'", distro.id)],
     })?;
     let mut packages = packages_for(family, req.profile);
-    let foreign = if caps.ovs_installed { foreign_ovs_package(exec, family) } else { None };
+    let foreign = if caps.ovs_installed {
+        foreign_ovs_package(exec, family)
+    } else {
+        None
+    };
     if let Some(pkg) = &foreign {
         // Keep that OVS: start it, never replace it.
         if req.profile == Profile::Dpdk && !caps.ovs_dpdk_build {
             return Err(OvsError::Unsupported {
-                missing: vec![format!("a DPDK build of ovs-vswitchd (this host's OVS comes from {pkg}, which glidex does not replace)")],
+                missing: vec![format!(
+                    "a DPDK build of ovs-vswitchd (this host's OVS comes from {pkg}, which glidex does not replace)"
+                )],
             });
         }
-        packages.retain(|p| !is_ovs_package(p) && !(p.starts_with("dnsmasq") && caps.dnsmasq) && !(p == "nftables" && caps.nft));
+        packages.retain(|p| {
+            !is_ovs_package(p)
+                && !(p.starts_with("dnsmasq") && caps.dnsmasq)
+                && !(p == "nftables" && caps.nft)
+        });
     }
     let mut post = Vec::new();
     if family == Family::Debian && req.profile == Profile::Dpdk && foreign.is_none() {
@@ -204,7 +228,10 @@ pub fn plan(exec: &dyn Exec, caps: &HostCapabilities, req: &InstallRequest) -> R
     ));
     if req.profile == Profile::Dpdk || caps.ovs_running {
         // Pick up a switched ovs-vswitchd binary.
-        post.push(Cmd::new(Program::Systemctl, ["restart", service_for(family)]));
+        post.push(Cmd::new(
+            Program::Systemctl,
+            ["restart", service_for(family)],
+        ));
     }
     let affected_bridges = if caps.ovs_running {
         bridge::list_all_names(exec).unwrap_or_default()
@@ -222,7 +249,10 @@ pub fn plan(exec: &dyn Exec, caps: &HostCapabilities, req: &InstallRequest) -> R
 /// `librte-mempool-*` driver packages the installed `dpdk` package
 /// recommends (e.g. `librte-mempool-ring26`).
 fn dpdk_mempool_drivers(exec: &dyn Exec) -> Vec<String> {
-    let Ok(out) = exec.check(&Cmd::new(Program::DpkgQuery, ["-W", "-f=${Recommends}", "dpdk"])) else {
+    let Ok(out) = exec.check(&Cmd::new(
+        Program::DpkgQuery,
+        ["-W", "-f=${Recommends}", "dpdk"],
+    )) else {
         return Vec::new();
     };
     let mut names: Vec<String> = out
@@ -230,7 +260,10 @@ fn dpdk_mempool_drivers(exec: &dyn Exec) -> Vec<String> {
         .split([',', '|'])
         .filter_map(|dep| dep.split_whitespace().next())
         .filter(|name| name.starts_with("librte-mempool-"))
-        .filter(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '+'))
+        .filter(|name| {
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '+')
+        })
         .map(str::to_string)
         .collect();
     names.sort();
@@ -246,7 +279,11 @@ fn tail(bytes: &[u8]) -> String {
 
 /// Install (or switch) OVS for `req.profile`. No-op when already
 /// satisfied; never removes or downgrades packages.
-pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest) -> Result<InstallReport, OvsError> {
+pub fn install(
+    exec: &dyn Exec,
+    probe_opts: &ProbeOptions,
+    req: &InstallRequest,
+) -> Result<InstallReport, OvsError> {
     if req.source_build {
         return crate::source_build::build(exec, probe_opts, req.confirm);
     }
@@ -307,7 +344,10 @@ pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest)
     if let Some(cmd) = install_cmd {
         output.extend(exec.check(&cmd.timeout(INSTALL_TIMEOUT))?.stdout);
     }
-    if plan.family == Family::Debian && req.profile == Profile::Dpdk && plan.packages.iter().any(|p| is_ovs_package(p)) {
+    if plan.family == Family::Debian
+        && req.profile == Profile::Dpdk
+        && plan.packages.iter().any(|p| is_ovs_package(p))
+    {
         // apt skips recommends of packages that are already installed, so
         // install dpdk's mempool drivers explicitly. Their names carry the
         // DPDK ABI (librte-mempool-ring26), so read them from dpdk itself.
@@ -316,8 +356,12 @@ pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest)
             let mut args = vec!["install".to_string(), "-y".into()];
             args.extend(drivers);
             output.extend(
-                exec.check(&Cmd::new(Program::AptGet, args).env("DEBIAN_FRONTEND", "noninteractive").timeout(INSTALL_TIMEOUT))?
-                    .stdout,
+                exec.check(
+                    &Cmd::new(Program::AptGet, args)
+                        .env("DEBIAN_FRONTEND", "noninteractive")
+                        .timeout(INSTALL_TIMEOUT),
+                )?
+                .stdout,
             );
         }
     }
@@ -343,7 +387,10 @@ pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest)
     }
     let mut warnings = Vec::new();
     if !after.iface_types.iter().any(|t| t == "afxdp") {
-        warnings.push("this OVS build has no AF_XDP support (combinations C/D need the pinned source build)".into());
+        warnings.push(
+            "this OVS build has no AF_XDP support (combinations C/D need the pinned source build)"
+                .into(),
+        );
     }
     Ok(InstallReport {
         changed: true,
@@ -369,14 +416,21 @@ pub struct DpdkSettings {
 impl DpdkSettings {
     pub fn validate(&self) -> Result<(), OvsError> {
         let mem_ok = !self.socket_mem.is_empty()
-            && self.socket_mem.split(',').all(|p| !p.is_empty() && p.len() <= 7 && p.chars().all(|c| c.is_ascii_digit()));
+            && self
+                .socket_mem
+                .split(',')
+                .all(|p| !p.is_empty() && p.len() <= 7 && p.chars().all(|c| c.is_ascii_digit()));
         if !mem_ok {
-            return Err(OvsError::invalid("socket_mem must be MiB per NUMA node, e.g. 1024 or 1024,1024"));
+            return Err(OvsError::invalid(
+                "socket_mem must be MiB per NUMA node, e.g. 1024 or 1024,1024",
+            ));
         }
         if let Some(mask) = &self.pmd_cpu_mask {
             let hex = mask.strip_prefix("0x").unwrap_or("");
             if hex.is_empty() || hex.len() > 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(OvsError::invalid("pmd_cpu_mask must be a hex mask like 0x2"));
+                return Err(OvsError::invalid(
+                    "pmd_cpu_mask must be a hex mask like 0x2",
+                ));
             }
         }
         Ok(())
@@ -385,11 +439,17 @@ impl DpdkSettings {
 
 /// Enable DPDK in ovs-vswitchd (spec §6.2): needs a DPDK-built vswitchd
 /// (profile `dpdk`) and hugepages. Restarts ovs-vswitchd.
-pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -> Result<(), OvsError> {
+pub fn init_dpdk(
+    exec: &dyn Exec,
+    probe_opts: &ProbeOptions,
+    s: &DpdkSettings,
+) -> Result<(), OvsError> {
     s.validate()?;
     let caps = host::probe(exec, probe_opts);
     if !caps.ovs_running {
-        return Err(OvsError::Unsupported { missing: vec!["ovs-vswitchd running".into()] });
+        return Err(OvsError::Unsupported {
+            missing: vec!["ovs-vswitchd running".into()],
+        });
     }
     // Already initialized with these settings: nothing to do. Different
     // settings (e.g. more socket memory) need a restart like the first time.
@@ -403,7 +463,9 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
         return Ok(());
     }
     if caps.hugepages.iter().all(|h| h.total == 0) {
-        return Err(OvsError::Unsupported { missing: vec!["hugepages (e.g. sysctl vm.nr_hugepages=1024)".into()] });
+        return Err(OvsError::Unsupported {
+            missing: vec!["hugepages (e.g. sysctl vm.nr_hugepages=1024)".into()],
+        });
     }
     let bridges = bridge::list_all_names(exec).unwrap_or_default();
     if !bridges.is_empty() && !s.confirm {
@@ -414,13 +476,27 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
             ),
         });
     }
-    let family = detect_distro(exec)?.family.ok_or_else(|| OvsError::Unsupported {
-        missing: vec!["supported distro".into()],
-    })?;
-    let mut args = vec!["set".to_string(), "Open_vSwitch".into(), ".".into(), "other_config:dpdk-init=true".into()];
-    args.extend(wanted.iter().map(|(k, v)| format!("other_config:{}={}", k, v)));
+    let family = detect_distro(exec)?
+        .family
+        .ok_or_else(|| OvsError::Unsupported {
+            missing: vec!["supported distro".into()],
+        })?;
+    let mut args = vec![
+        "set".to_string(),
+        "Open_vSwitch".into(),
+        ".".into(),
+        "other_config:dpdk-init=true".into(),
+    ];
+    args.extend(
+        wanted
+            .iter()
+            .map(|(k, v)| format!("other_config:{}={}", k, v)),
+    );
     crate::vsctl::run(exec, args)?;
-    exec.check(&Cmd::new(Program::Systemctl, ["restart", service_for(family)]).timeout(Duration::from_secs(120)))?;
+    exec.check(
+        &Cmd::new(Program::Systemctl, ["restart", service_for(family)])
+            .timeout(Duration::from_secs(120)),
+    )?;
     // DPDK EAL init happens in the restarted daemon; trust OVSDB, not the restart.
     for _ in 0..60 {
         let after = host::probe(exec, probe_opts);
@@ -431,6 +507,104 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
     }
     Err(OvsError::Unsupported {
         missing: vec!["dpdk initialized (is the dpdk profile installed and are hugepages free? see the ovs-vswitchd log)".into()],
+    })
+}
+
+/// The `other_config` keys `init_dpdk` sets, which `deinit_dpdk` removes.
+const DPDK_KEYS: &[&str] = &[
+    "dpdk-init",
+    "dpdk-socket-mem",
+    "dpdk-lcore-mask",
+    "pmd-cpu-mask",
+    "pmd-auto-lb",
+    "userspace-tso-enable",
+];
+
+/// Interface types that only exist with DPDK: vhost-user VM NICs and DPDK
+/// uplinks.
+const DPDK_PORT_TYPES: &[&str] = &["dpdk", "dpdkvhostuser", "dpdkvhostuserclient"];
+
+/// Turn DPDK off in ovs-vswitchd, the way back to the kernel profile
+/// (spec §6.2): remove what `init_dpdk` set and restart. DPDK can't be
+/// stopped in a running vswitchd, so the restart is what applies it.
+/// Returns whether anything changed. Refused while a DPDK port exists,
+/// since it would stop working; with bridges, it needs `confirm`, the
+/// restart interrupting their traffic. Hugepages are left alone.
+pub fn deinit_dpdk(
+    exec: &dyn Exec,
+    probe_opts: &ProbeOptions,
+    confirm: bool,
+) -> Result<bool, OvsError> {
+    let caps = host::probe(exec, probe_opts);
+    let current = crate::vsctl::list(exec, "Open_vSwitch", &["other_config"])
+        .ok()
+        .and_then(|rows| rows.first().map(|r| r.map("other_config")))
+        .unwrap_or_default();
+    let configured: Vec<&str> = DPDK_KEYS
+        .iter()
+        .copied()
+        .filter(|k| current.contains_key(*k))
+        .collect();
+    if configured.is_empty() && !caps.dpdk_initialized {
+        return Ok(false);
+    }
+    let dpdk_ports: Vec<String> = crate::vsctl::list(exec, "Interface", &["name", "type"])
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| {
+            r.str("type")
+                .is_some_and(|t| DPDK_PORT_TYPES.contains(&t.as_str()))
+        })
+        .filter_map(|r| r.str("name"))
+        .collect();
+    if !dpdk_ports.is_empty() {
+        return Err(OvsError::Conflict {
+            message: format!(
+                "DPDK ports need DPDK: {} (vhost-user VM NICs or DPDK uplinks); remove them first",
+                dpdk_ports.join(", ")
+            ),
+        });
+    }
+    let bridges = bridge::list_all_names(exec).unwrap_or_default();
+    if caps.ovs_running && !bridges.is_empty() && !confirm {
+        return Err(OvsError::ConfirmationRequired {
+            impact: format!(
+                "ovs-vswitchd will restart without DPDK, interrupting traffic on bridges: {}",
+                bridges.join(", ")
+            ),
+        });
+    }
+    if !configured.is_empty() {
+        let mut args = vec![
+            "remove".to_string(),
+            "Open_vSwitch".into(),
+            ".".into(),
+            "other_config".into(),
+        ];
+        args.extend(configured.iter().map(|k| k.to_string()));
+        crate::vsctl::run(exec, args)?;
+    }
+    // Not running: the next start comes up without DPDK.
+    if !caps.ovs_running {
+        return Ok(true);
+    }
+    let family = detect_distro(exec)?
+        .family
+        .ok_or_else(|| OvsError::Unsupported {
+            missing: vec!["supported distro".into()],
+        })?;
+    exec.check(
+        &Cmd::new(Program::Systemctl, ["restart", service_for(family)])
+            .timeout(Duration::from_secs(120)),
+    )?;
+    for _ in 0..60 {
+        if !host::probe(exec, probe_opts).dpdk_initialized {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(OvsError::Unsupported {
+        missing: vec!["dpdk off after the restart (see the ovs-vswitchd log)".into()],
     })
 }
 
@@ -445,7 +619,10 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
 /// VM-to-VM throughput down. `pmd-auto-lb` rebalances queues across PMDs
 /// by load, which only matters with more than one.
 fn dpdk_config(exec: &dyn Exec, s: &DpdkSettings) -> Vec<(&'static str, String)> {
-    let mut v = vec![("dpdk-socket-mem", s.socket_mem.clone()), ("userspace-tso-enable", "true".to_string())];
+    let mut v = vec![
+        ("dpdk-socket-mem", s.socket_mem.clone()),
+        ("userspace-tso-enable", "true".to_string()),
+    ];
     let plan = crate::tuning::plan(&crate::tuning::read_topology(exec));
     let pmds = match (&s.pmd_cpu_mask, &plan) {
         (Some(mask), _) => {
@@ -470,7 +647,8 @@ mod tests {
     use super::*;
     use crate::exec::{Output, RecordingExec};
 
-    const UBUNTU: &str = "PRETTY_NAME=\"Ubuntu 26.04 LTS\"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n";
+    const UBUNTU: &str =
+        "PRETTY_NAME=\"Ubuntu 26.04 LTS\"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n";
     const FEDORA: &str = "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=42\n";
     const ROCKY: &str = "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n";
     const ARCH: &str = "ID=arch\n";
@@ -479,34 +657,84 @@ mod tests {
 
     #[test]
     fn dpdk_settings_validation_and_commands() {
-        let ok = DpdkSettings { socket_mem: "1024,1024".into(), pmd_cpu_mask: Some("0x6".into()), confirm: false };
+        let ok = DpdkSettings {
+            socket_mem: "1024,1024".into(),
+            pmd_cpu_mask: Some("0x6".into()),
+            confirm: false,
+        };
         ok.validate().unwrap();
         for bad in [
-            DpdkSettings { socket_mem: "1G".into(), pmd_cpu_mask: None, confirm: false },
-            DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: Some("6; reboot".into()), confirm: false },
+            DpdkSettings {
+                socket_mem: "1G".into(),
+                pmd_cpu_mask: None,
+                confirm: false,
+            },
+            DpdkSettings {
+                socket_mem: "1024".into(),
+                pmd_cpu_mask: Some("6; reboot".into()),
+                confirm: false,
+            },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
         }
 
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")));
-        exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "1024\n");
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")),
+        );
+        exec.file(
+            "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages",
+            "1024\n",
+        );
         exec.on("ovs-vsctl list-br", Output::ok("br-int\n"));
         let err = init_dpdk(&exec, &ProbeOptions::default(), &ok).unwrap_err();
-        assert!(matches!(err, OvsError::ConfirmationRequired { .. }), "{err:?}");
-        assert!(!exec.calls().iter().any(|c| c.contains("dpdk-init=true")), "nothing changed without confirm");
+        assert!(
+            matches!(err, OvsError::ConfirmationRequired { .. }),
+            "{err:?}"
+        );
+        assert!(
+            !exec.calls().iter().any(|c| c.contains("dpdk-init=true")),
+            "nothing changed without confirm"
+        );
 
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")));
-        exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "1024\n");
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")),
+        );
+        exec.file(
+            "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages",
+            "1024\n",
+        );
         exec.on("ovs-vsctl list-br", Output::ok("br-int\n"));
-        init_dpdk(&exec, &ProbeOptions::default(), &DpdkSettings { confirm: true, ..ok }).unwrap();
+        init_dpdk(
+            &exec,
+            &ProbeOptions::default(),
+            &DpdkSettings {
+                confirm: true,
+                ..ok
+            },
+        )
+        .unwrap();
         let calls = exec.calls();
         assert!(calls.contains(&"ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true other_config:dpdk-socket-mem=1024,1024 other_config:userspace-tso-enable=true other_config:pmd-cpu-mask=0x6 other_config:pmd-auto-lb=true".to_string()), "{calls:#?}");
         assert!(calls.contains(&"systemctl restart openvswitch-switch".to_string()));
@@ -515,16 +743,34 @@ mod tests {
     #[test]
     fn missing_mempool_driver_is_not_satisfied() {
         let exec = RecordingExec::new();
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vswitchd --version", Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"));
-        exec.on("dpkg-query -W", Output::failed(1, "dpkg-query: no packages found matching librte-mempool-ring*"));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vswitchd --version",
+            Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"),
+        );
+        exec.on(
+            "dpkg-query -W",
+            Output::failed(
+                1,
+                "dpkg-query: no packages found matching librte-mempool-ring*",
+            ),
+        );
         exec.file("/var/lib/dpkg/status", "");
         exec.on("dnsmasq --version", Output::ok("Dnsmasq 2.92\n"));
         exec.on("nft --version", Output::ok("nftables\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
         let caps = host::probe(&exec, &ProbeOptions::default());
         assert_eq!(caps.dpdk_mempool_driver, Some(false));
-        assert!(!satisfied(&caps, Profile::Dpdk), "broken DPDK install must be repaired");
+        assert!(
+            !satisfied(&caps, Profile::Dpdk),
+            "broken DPDK install must be repaired"
+        );
         assert!(satisfied(&caps, Profile::Kernel));
     }
 
@@ -533,18 +779,43 @@ mod tests {
         let initialized = OVS_DPDK_ROW.replace("false]]", "true]]");
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(initialized.clone()));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(initialized.clone()),
+        );
         exec.on("ovs-vsctl --format=json --columns=other_config", Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"],["userspace-tso-enable","true"]]]]],"headings":["other_config"]}"#));
-        exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "2048\n");
-        let same = DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: None, confirm: false };
+        exec.file(
+            "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages",
+            "2048\n",
+        );
+        let same = DpdkSettings {
+            socket_mem: "1024".into(),
+            pmd_cpu_mask: None,
+            confirm: false,
+        };
         init_dpdk(&exec, &ProbeOptions::default(), &same).unwrap();
-        assert!(!exec.calls().iter().any(|c| c.contains("systemctl restart")), "same settings: no restart");
+        assert!(
+            !exec.calls().iter().any(|c| c.contains("systemctl restart")),
+            "same settings: no restart"
+        );
 
-        let more = DpdkSettings { socket_mem: "2048".into(), pmd_cpu_mask: None, confirm: true };
+        let more = DpdkSettings {
+            socket_mem: "2048".into(),
+            pmd_cpu_mask: None,
+            confirm: true,
+        };
         init_dpdk(&exec, &ProbeOptions::default(), &more).unwrap();
         let calls = exec.calls();
-        assert!(calls.iter().any(|c| c.contains("other_config:dpdk-socket-mem=2048")), "{calls:#?}");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("other_config:dpdk-socket-mem=2048")),
+            "{calls:#?}"
+        );
         assert!(calls.contains(&"systemctl restart openvswitch-switch".to_string()));
     }
 
@@ -552,10 +823,19 @@ mod tests {
     fn dpdk_without_tso_is_reconfigured_with_auto_pmd_placement() {
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")),
+        );
         exec.on("ovs-vsctl --format=json --columns=other_config", Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"]]]]],"headings":["other_config"]}"#));
-        exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "2048\n");
+        exec.file(
+            "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages",
+            "2048\n",
+        );
         // 8 cores, no SMT, one NUMA node.
         exec.file("/sys/devices/system/cpu/online", "0-7\n");
         exec.file("/sys/devices/system/node/online", "0\n");
@@ -566,7 +846,11 @@ mod tests {
             exec.file(&format!("{}/physical_package_id", b), "0\n");
             exec.file(&format!("{}/thread_siblings_list", b), &format!("{}\n", c));
         }
-        let s = DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: None, confirm: true };
+        let s = DpdkSettings {
+            socket_mem: "1024".into(),
+            pmd_cpu_mask: None,
+            confirm: true,
+        };
         init_dpdk(&exec, &ProbeOptions::default(), &s).unwrap();
         let calls = exec.calls();
         assert!(calls.contains(&"ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true other_config:dpdk-socket-mem=1024 other_config:userspace-tso-enable=true other_config:pmd-cpu-mask=0x6 other_config:dpdk-lcore-mask=0x1 other_config:pmd-auto-lb=true".to_string()), "{calls:#?}");
@@ -576,9 +860,24 @@ mod tests {
     #[test]
     fn dpdk_needs_hugepages() {
         let exec = RecordingExec::new();
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
-        let err = init_dpdk(&exec, &ProbeOptions::default(), &DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: None, confirm: true }).unwrap_err();
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
+        let err = init_dpdk(
+            &exec,
+            &ProbeOptions::default(),
+            &DpdkSettings {
+                socket_mem: "1024".into(),
+                pmd_cpu_mask: None,
+                confirm: true,
+            },
+        )
+        .unwrap_err();
         assert!(format!("{err}").contains("hugepages"), "{err}");
     }
 
@@ -599,43 +898,98 @@ mod tests {
 
     fn installed_after(exec: &RecordingExec, row: &str) {
         // First probe: missing; after install: present.
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
         exec.on("dnsmasq --version", Output::ok("Dnsmasq version 2.92\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(row));
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(row),
+        );
     }
 
     /// NVIDIA DOCA's OVS, installed with its ovs-vswitchd stopped: the
     /// database answers, the switch doesn't.
     fn doca_ovs_stopped(exec: &RecordingExec) {
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.5.0052\n"));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.5.0052\n"),
+        );
         exec.on("dnsmasq --version", Output::ok("Dnsmasq version 2.90\n"));
-        exec.on("ovs-appctl --timeout=2 -t ovs-vswitchd version", Output::failed(1, ""));
-        exec.on("ovs-appctl --timeout=2 -t ovs-vswitchd version", Output::ok("ovs-vswitchd (Open vSwitch) 3.5.0052\n"));
-        exec.on("dpkg-query -S /usr/bin/ovs-vsctl", Output::ok("doca-openvswitch-switch: /usr/bin/ovs-vsctl\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
+        exec.on(
+            "ovs-appctl --timeout=2 -t ovs-vswitchd version",
+            Output::failed(1, ""),
+        );
+        exec.on(
+            "ovs-appctl --timeout=2 -t ovs-vswitchd version",
+            Output::ok("ovs-vswitchd (Open vSwitch) 3.5.0052\n"),
+        );
+        exec.on(
+            "dpkg-query -S /usr/bin/ovs-vsctl",
+            Output::ok("doca-openvswitch-switch: /usr/bin/ovs-vsctl\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
     }
 
     #[test]
     fn an_ovs_from_another_package_is_started_not_replaced() {
         let exec = RecordingExec::new();
         doca_ovs_stopped(&exec);
-        assert!(!host::probe(&exec, &ProbeOptions::default()).ovs_running, "a database without ovs-vswitchd is not a running OVS");
+        assert!(
+            !host::probe(&exec, &ProbeOptions::default()).ovs_running,
+            "a database without ovs-vswitchd is not a running OVS"
+        );
 
         let exec = RecordingExec::new();
         doca_ovs_stopped(&exec);
-        let report = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }).unwrap();
+        let report = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Kernel,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap();
         assert!(report.packages.is_empty(), "{report:?}");
         let calls = exec.calls();
-        assert!(!calls.iter().any(|c| c.starts_with("apt-get")), "nothing to install, and never the distribution's OVS: {calls:?}");
-        assert!(calls.contains(&"systemctl enable --now openvswitch-switch".to_string()), "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| c.starts_with("apt-get")),
+            "nothing to install, and never the distribution's OVS: {calls:?}"
+        );
+        assert!(
+            calls.contains(&"systemctl enable --now openvswitch-switch".to_string()),
+            "{calls:?}"
+        );
 
         // DPDK needs a build of it this OVS isn't: say so, don't replace it.
         let exec = RecordingExec::new();
         doca_ovs_stopped(&exec);
-        let e = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap_err();
+        let e = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Dpdk,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("doca-openvswitch-switch"), "{e}");
-        assert!(!exec.calls().iter().any(|c| c.starts_with("apt-get") || c.starts_with("update-alternatives")), "{:?}", exec.calls());
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("apt-get") || c.starts_with("update-alternatives")),
+            "{:?}",
+            exec.calls()
+        );
     }
 
     #[test]
@@ -643,7 +997,16 @@ mod tests {
         let exec = RecordingExec::new();
         not_installed(&exec);
         installed_after(&exec, OVS_ROW);
-        let report = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }).unwrap();
+        let report = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Kernel,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap();
         assert!(report.changed);
         assert_eq!(report.ovs_version.as_deref(), Some("3.7.1"));
         let calls = exec.calls();
@@ -657,30 +1020,88 @@ mod tests {
         let exec = RecordingExec::new();
         not_installed(&exec);
         installed_after(&exec, OVS_ROW);
-        exec.on("ovs-vswitchd --version", Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"));
+        exec.on(
+            "ovs-vswitchd --version",
+            Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"),
+        );
         exec.on("dpkg-query -W", Output::ok("install ok installed\n"));
-        install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap();
+        install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Dpdk,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap();
         assert!(exec.calls().contains(&"update-alternatives --set ovs-vswitchd /usr/lib/openvswitch-switch-dpdk/ovs-vswitchd-dpdk".to_string()));
-        let apt = exec.calls().into_iter().find(|c| c.starts_with("apt-get install")).unwrap();
-        assert!(!apt.contains("--no-install-recommends"), "dpdk needs its recommended driver packages: {apt}");
+        let apt = exec
+            .calls()
+            .into_iter()
+            .find(|c| c.starts_with("apt-get install"))
+            .unwrap();
+        assert!(
+            !apt.contains("--no-install-recommends"),
+            "dpdk needs its recommended driver packages: {apt}"
+        );
 
         // Already-installed dpdk: its mempool drivers are installed by name.
         let exec = RecordingExec::new();
         not_installed(&exec);
         installed_after(&exec, OVS_ROW);
-        exec.on("ovs-vswitchd --version", Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"));
-        exec.on("dpkg-query -W -f=${Recommends} dpdk", Output::ok("librte-mempool26, librte-mempool-ring26, librte-net-ixgbe26 | librte-net-i40e26"));
-        exec.on("dpkg-query -W -f=${Status}", Output::ok("install ok installed\n"));
-        install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap();
-        assert!(exec.calls().contains(&"apt-get install -y librte-mempool-ring26".to_string()), "{:#?}", exec.calls());
+        exec.on(
+            "ovs-vswitchd --version",
+            Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\nDPDK 25.11.0\n"),
+        );
+        exec.on(
+            "dpkg-query -W -f=${Recommends} dpdk",
+            Output::ok(
+                "librte-mempool26, librte-mempool-ring26, librte-net-ixgbe26 | librte-net-i40e26",
+            ),
+        );
+        exec.on(
+            "dpkg-query -W -f=${Status}",
+            Output::ok("install ok installed\n"),
+        );
+        install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Dpdk,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            exec.calls()
+                .contains(&"apt-get install -y librte-mempool-ring26".to_string()),
+            "{:#?}",
+            exec.calls()
+        );
 
         // If the installed vswitchd isn't a DPDK build, fail instead of trusting packages.
         let exec = RecordingExec::new();
         not_installed(&exec);
         installed_after(&exec, OVS_ROW);
-        exec.on("ovs-vswitchd --version", Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\n"));
-        let err = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap_err();
-        let OvsError::Unsupported { missing } = err else { panic!("{err:?}") };
+        exec.on(
+            "ovs-vswitchd --version",
+            Output::ok("ovs-vswitchd (Open vSwitch) 3.7.1\n"),
+        );
+        let err = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Dpdk,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap_err();
+        let OvsError::Unsupported { missing } = err else {
+            panic!("{err:?}")
+        };
         assert!(missing.contains(&"dpdk build of ovs-vswitchd".to_string()));
     }
 
@@ -690,7 +1111,16 @@ mod tests {
         exec.file("/etc/os-release", UBUNTU);
         installed_after(&exec, OVS_ROW);
         exec.on("nft --version", Output::ok("nftables v1.1\n"));
-        let report = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }).unwrap();
+        let report = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Kernel,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap();
         assert!(!report.changed);
         assert!(!exec.calls().iter().any(|c| c.starts_with("apt-get")));
     }
@@ -699,11 +1129,28 @@ mod tests {
     fn restart_with_bridges_needs_confirmation() {
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
-        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types",
+            Output::ok(OVS_ROW),
+        );
         exec.on("ovs-vsctl list-br", Output::ok("br-int\ngxbr-nat\n"));
-        let err = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap_err();
-        let OvsError::ConfirmationRequired { impact } = err else { panic!("{err:?}") };
+        let err = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Dpdk,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap_err();
+        let OvsError::ConfirmationRequired { impact } = err else {
+            panic!("{err:?}")
+        };
         assert!(impact.contains("br-int") && impact.contains("gxbr-nat"));
         assert!(!exec.calls().iter().any(|c| c.starts_with("apt-get")));
     }
@@ -713,12 +1160,121 @@ mod tests {
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", ARCH);
         exec.on("ovs-vsctl --version", Output::failed(127, ""));
-        assert!(matches!(install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }), Err(OvsError::Unsupported { .. })));
+        assert!(matches!(
+            install(
+                &exec,
+                &ProbeOptions::default(),
+                &InstallRequest {
+                    profile: Profile::Kernel,
+                    source_build: false,
+                    confirm: false
+                }
+            ),
+            Err(OvsError::Unsupported { .. })
+        ));
 
         let exec = RecordingExec::new();
         exec.file("/etc/os-release", UBUNTU);
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 2.17.9\n"));
-        let err = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }).unwrap_err();
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 2.17.9\n"),
+        );
+        let err = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Kernel,
+                source_build: false,
+                confirm: false,
+            },
+        )
+        .unwrap_err();
         assert!(format!("{err}").contains("2.17.9"));
+    }
+
+    /// The way back to the kernel profile: what `init_dpdk` set is removed
+    /// and ovs-vswitchd restarted, only when DPDK is on, never under a
+    /// DPDK port, and with bridges only once confirmed.
+    #[test]
+    fn deinit_dpdk_turns_dpdk_off() {
+        const DPDK_CONFIG: &str = r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"],["pmd-cpu-mask","0x6"],["vlan-limit","0"]]]]],"headings":["other_config"]}"#;
+        const NO_CONFIG: &str =
+            r#"{"data":[[["map",[["vlan-limit","0"]]]]],"headings":["other_config"]}"#;
+        const TAP_PORTS: &str =
+            r#"{"data":[["gxp-1",""],["br-int","internal"]],"headings":["name","type"]}"#;
+        let initialized = OVS_DPDK_ROW.replace("false]]", "true]]");
+        let host = |config: &str, ports: &str, iface_rows: &[String]| {
+            let exec = RecordingExec::new();
+            exec.file("/etc/os-release", UBUNTU);
+            exec.on(
+                "ovs-vsctl --version",
+                Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+            );
+            for row in iface_rows {
+                exec.on(
+                    "ovs-vsctl --format=json --columns=iface_types",
+                    Output::ok(row.clone()),
+                );
+            }
+            exec.on(
+                "ovs-vsctl --format=json --columns=other_config",
+                Output::ok(config),
+            );
+            exec.on(
+                "ovs-vsctl --format=json --columns=name,type list Interface",
+                Output::ok(ports),
+            );
+            exec.on("ovs-vsctl list-br", Output::ok("br-int\ngxp-1\n"));
+            exec
+        };
+        let changed = |exec: &RecordingExec| {
+            exec.calls()
+                .iter()
+                .any(|c| c.contains("remove Open_vSwitch") || c.starts_with("systemctl restart"))
+        };
+
+        // Kernel profile already: nothing to do.
+        let exec = host(NO_CONFIG, TAP_PORTS, &[OVS_ROW.to_string()]);
+        assert!(!deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap());
+        assert!(!changed(&exec));
+
+        // A vhost-user NIC would stop working.
+        let exec = host(
+            DPDK_CONFIG,
+            r#"{"data":[["vhu-a","dpdkvhostuserclient"]],"headings":["name","type"]}"#,
+            std::slice::from_ref(&initialized),
+        );
+        let err = deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap_err();
+        assert!(
+            matches!(&err, OvsError::Conflict { message } if message.contains("vhu-a")),
+            "{err:?}"
+        );
+        assert!(!changed(&exec));
+
+        // Bridges: the restart needs confirming.
+        let exec = host(DPDK_CONFIG, TAP_PORTS, std::slice::from_ref(&initialized));
+        let err = deinit_dpdk(&exec, &ProbeOptions::default(), false).unwrap_err();
+        assert!(
+            matches!(&err, OvsError::ConfirmationRequired { impact } if impact.contains("br-int")),
+            "{err:?}"
+        );
+        assert!(!changed(&exec));
+
+        // Confirmed: exactly the DPDK keys go, then a restart until it's off.
+        let exec = host(
+            DPDK_CONFIG,
+            TAP_PORTS,
+            &[initialized, OVS_DPDK_ROW.to_string()],
+        );
+        assert!(deinit_dpdk(&exec, &ProbeOptions::default(), true).unwrap());
+        let calls = exec.calls();
+        assert!(
+            calls.contains(&"ovs-vsctl remove Open_vSwitch . other_config dpdk-init dpdk-socket-mem pmd-cpu-mask".to_string()),
+            "{calls:#?}"
+        );
+        assert!(
+            calls.contains(&"systemctl restart openvswitch-switch".to_string()),
+            "{calls:#?}"
+        );
     }
 }

@@ -53,6 +53,13 @@ for port in "$api_port" "$ui_port" "$ui_server_port"; do
   fi
 done
 
+# The scratch control plane holds this lock while a run is going
+# (crates/glidex-ui/e2e/scripts/start-control-plane.sh); say so before starting.
+lock=${GLIDEX_E2E_LOCK:-/tmp/glidex-ui-e2e.lock}
+if [ -e "$lock" ] && ! flock -n "$lock" true 2>/dev/null; then
+  die "another UI e2e run is going on this machine ($(cat "$lock" 2>/dev/null)); wait for it to finish"
+fi
+
 if [ -n "$image" ]; then
   image=${image/#\~/$HOME}
   [ -f "$image" ] || die "image $image does not exist"

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# The jobs only read the repository.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -13,7 +17,7 @@ jobs:
   build:
 
     runs-on: ubuntu-26.04
-    # A full run takes about 10 minutes; a test that hangs fails the job
+    # A full run takes about 20 minutes; a test that hangs fails the job
     # instead of holding the runner for GitHub's 6 hours.
     timeout-minutes: 45
 
@@ -25,7 +29,59 @@ jobs:
       run: scripts/lint-store-writes.sh
     - name: Build
       run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-    - name: Replay write sets (spec/clustering.md section 6.1)
-      run: GLIDEX_CHECK_WRITE_SETS=1 cargo test -p glidex-control-plane --verbose
+    # With every database a test opens replayed from its write sets and
+    # compared (spec/clustering.md section 6.1). The check only adds to the
+    # tests, so one run covers both.
+    - name: Run tests, replaying write sets
+      run: GLIDEX_CHECK_WRITE_SETS=1 cargo test --verbose
+
+  # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
+  fmt:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check formatting
+      run: cargo fmt --all --check
+
+  # The RPC API's protos (spec/grpc.md G-D9). Building them needs only
+  # cargo (protox in glidex-api's build.rs); buf checks style and
+  # compatibility.
+  proto:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - uses: bufbuild/buf-action@v1
+      with:
+        version: 1.74.0
+        setup_only: true
+    - name: Lint and format
+      working-directory: crates/glidex-api
+      run: buf lint && buf format --exit-code > /dev/null
+    - uses: oven-sh/setup-bun@v2
+    - name: Generated TypeScript is current
+      run: |
+        (cd crates/glidex-ui/ui && bun install --frozen-lockfile)
+        (cd crates/glidex-api && buf generate)
+        git diff --exit-code -- crates/glidex-ui/ui/src/gen || {
+          echo "crates/glidex-ui/ui/src/gen is stale: run buf generate in crates/glidex-api"; exit 1;
+        }
+        test -z "$(git status --porcelain -- crates/glidex-ui/ui/src/gen)" || {
+          echo "buf generate made new files under crates/glidex-ui/ui/src/gen: commit them"; exit 1;
+        }
+    - name: Breaking changes against main
+      working-directory: crates/glidex-api
+      run: |
+        # Nothing to compare with until the API exists on main.
+        if git cat-file -e origin/main:crates/glidex-api/buf.yaml 2>/dev/null; then
+          buf breaking --against "../../.git#ref=origin/main,subdir=crates/glidex-api"
+        else
+          echo "crates/glidex-api is not on main yet; skipping"
+        fi

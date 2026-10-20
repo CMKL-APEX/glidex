@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import * as api from "../api";
-import type { Binding, Team } from "../types";
-import { HOST_ROLES, formatTime } from "../types";
+import type { Team } from "../types";
+import { formatTimestamp } from "../types";
 import { Loading } from "../components/Loading";
-import AddBindingForm from "../components/AddBindingForm";
+import ConfirmDialog from "../components/ConfirmDialog";
+import SystemRoles from "../components/SystemRoles";
 import {
   Badge,
-  BindingTable,
   Card,
   ErrorBanner,
   PageHeader,
@@ -14,19 +14,22 @@ import {
   errorMessage,
   primaryButton,
   secondaryButton,
+  signInLabel,
 } from "../components/ui";
 import { useSession } from "../session";
-import { useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 
 function TeamCard({
   team,
   manage,
   users,
+  connectors,
   onChange,
   onError,
 }: {
   team: Team;
   manage: boolean;
+  connectors: Record<string, string>;
   users: { id: string; display_name: string }[];
   onChange: () => void;
   onError: (e: string) => void;
@@ -41,23 +44,29 @@ function TeamCard({
       onError(errorMessage(e));
     }
   };
-  const members = team.members.map((m) => m.user_id);
+  const teamMembers = team.members ?? [];
+  const members = teamMembers.map((m) => m.user_id);
   return (
     <div className="py-3 border-b border-gray-100 last:border-0">
       <div className="flex items-center justify-between">
         <div>
           <span className="font-medium text-gray-900">{team.name}</span>{" "}
           <code className="text-xs text-gray-400 font-mono">{team.id}</code>
+          {team.managed_by && (
+            <span className="ml-2" title="Its name and its connector memberships come from the IdP">
+              <Badge kind="muted">from {connectors[team.managed_by] ?? team.managed_by}</Badge>
+            </span>
+          )}
         </div>
-        {manage && (
+        {manage && !team.managed_by && (
           <button className={dangerLink} onClick={() => confirm(`Delete team ${team.name}?`) && run(() => api.deleteTeam(team.id))}>
             Delete
           </button>
         )}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
-        {team.members.length === 0 && <span className="text-sm text-gray-500">No members.</span>}
-        {team.members.map((m) => (
+        {teamMembers.length === 0 && <span className="text-sm text-gray-500">No members.</span>}
+        {teamMembers.map((m) => (
           <span key={`${m.user_id}-${m.source}`} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 rounded-full text-sm">
             {name(m.user_id)}
             {m.source !== "manual" && <span className="text-xs text-gray-500">({m.source})</span>}
@@ -103,24 +112,33 @@ function TeamCard({
   );
 }
 
+function disabledWhy(r: string | undefined): string {
+  switch (r) {
+    case "scim":
+      return "Its IdP deactivated or removed it; it is enabled again there";
+    case "sync":
+      return "Its directory pull found it suspended, archived, gone, or out of the connector's groups; it comes back with them";
+    case "connector_deleted":
+      return "Its connector was deleted";
+    case "admin":
+      return "An administrator disabled it";
+    default:
+      return "";
+  }
+}
+
 export default function Access() {
-  const { host, projects, projectName } = useSession();
+  const { host, projects, projectName, me } = useSession();
   const [dir, reloadDir] = useDirectory();
-  const [system, setSystem] = useState<Binding[] | null>(null);
+  const connectors = useConnectorNames();
+  const nodes = useNodeNames();
   const [error, setError] = useState<string | null>(null);
+  // An administrator taking one of a user's sign-in methods away.
+  const [unlinking, setUnlinking] = useState<{ user: string; name: string; key: string; label: string } | null>(null);
+  const [endSessions, setEndSessions] = useState(true);
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
-
-  const refreshSystem = useCallback(() => {
-    if (!host.readSystemBindings) return;
-    api
-      .listSystemBindings()
-      .then(setSystem)
-      .catch((e) => setError(errorMessage(e)));
-  }, [host.readSystemBindings]);
-
-  useEffect(() => {
-    refreshSystem();
-  }, [refreshSystem]);
 
   const run = async (f: () => Promise<unknown>, after: () => void) => {
     setError(null);
@@ -141,12 +159,15 @@ export default function Access() {
     );
   }
 
-  const directory = dir ?? { users: [], teams: [] };
-
   return (
     <div>
       <PageHeader title="Access" subtitle="Users, teams and host-wide roles. Project roles are set on each project's page." />
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {notice && (
+        <div className="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800" role="status">
+          {notice}
+        </div>
+      )}
 
       {host.listUsers && (
         <Card title="Users">
@@ -171,11 +192,28 @@ export default function Access() {
                       <code className="text-xs text-gray-400 font-mono">{u.id}</code>
                     </td>
                     <td className="py-2 text-xs font-mono text-gray-600">
-                      {u.identities.map((i) => (
-                        <div key={`${i.provider}:${i.subject}`}>
-                          {i.provider}:{i.subject}
-                        </div>
-                      ))}
+                      {(u.identities ?? []).map((i) => {
+                        const key = `${i.provider}:${i.subject}`;
+                        const label = signInLabel(i.provider, connectors, i.subject, nodes);
+                        return (
+                          <div key={key}>
+                            <span className="font-sans text-gray-700">{label}</span>{" "}
+                            <span className="text-gray-400">{i.email ?? i.subject}</span>
+                            {host.manageUsers && ((u.identities ?? []).length > 1 || u.disabled) && (
+                              <button
+                                className="ml-2 font-sans text-red-600 hover:underline"
+                                title="Remove this sign-in method"
+                                onClick={() => {
+                                  setEndSessions(true);
+                                  setUnlinking({ user: u.id, name: u.display_name, key, label });
+                                }}
+                              >
+                                remove
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </td>
                     <td className="py-2">
                       {host.manageUsers ? (
@@ -201,10 +239,22 @@ export default function Access() {
                         projectName(u.default_project)
                       )}
                     </td>
-                    <td className="py-2 text-gray-500">{formatTime(u.created_at)}</td>
+                    <td className="py-2 text-gray-500">{formatTimestamp(u.created_at)}</td>
                     <td className="py-2">
-                      {u.disabled ? <Badge kind="denied">disabled</Badge> : <Badge kind="ok">active</Badge>}
-                      {host.manageUsers && (
+                      {u.disabled ? (
+                        <span title={disabledWhy(u.disabled_reason)}>
+                          <Badge kind="denied">{u.disabled_reason === "scim" || u.disabled_reason === "sync" ? "disabled by its IdP" : "disabled"}</Badge>
+                        </span>
+                      ) : (
+                        <Badge kind="ok">active</Badge>
+                      )}
+                      {u.managed_by && (
+                        <span className="ml-2" title="Its name, email and whether it is enabled come from the IdP">
+                          <Badge kind="muted">managed by {connectors[u.managed_by] ?? u.managed_by}</Badge>
+                        </span>
+                      )}
+                      {/* An administrator may stop a managed user, and undo only that (§8.3). */}
+                      {host.manageUsers && !(u.managed_by && u.disabled && u.disabled_reason !== "admin") && (
                         <button
                           className="ml-2 text-sm text-sky-700 hover:underline"
                           onClick={() =>
@@ -213,6 +263,11 @@ export default function Access() {
                           }
                         >
                           {u.disabled ? "Enable" : "Disable"}
+                        </button>
+                      )}
+                      {host.manageUsers && u.id !== me.user?.id && !(u.managed_by && !u.disabled) && (
+                        <button className={`ml-2 ${dangerLink}`} onClick={() => setDeleting({ id: u.id, name: u.display_name })}>
+                          Delete
                         </button>
                       )}
                     </td>
@@ -232,7 +287,15 @@ export default function Access() {
             <p className="text-sm text-gray-500">No teams.</p>
           ) : (
             dir.teams.map((t) => (
-              <TeamCard key={t.id} team={t} manage={host.manageTeams} users={dir.users} onChange={reloadDir} onError={setError} />
+              <TeamCard
+                key={t.id}
+                team={t}
+                manage={host.manageTeams}
+                users={dir.users}
+                connectors={connectors}
+                onChange={reloadDir}
+                onError={setError}
+              />
             ))
           )}
           {host.manageTeams && (
@@ -265,37 +328,45 @@ export default function Access() {
         </Card>
       )}
 
-      {host.readSystemBindings && (
-        <Card title="System roles">
-          <p className="mb-3 text-sm text-gray-500">
-            Host-wide roles: auditor (read everything), image-admin, net-admin, system-admin, and the host-paths grant.
-          </p>
-          {system === null ? (
-            <Loading />
-          ) : (
-            <BindingTable
-              bindings={system}
-              dir={directory}
-              onRemove={
-                host.manageSystemBindings
-                  ? (b) =>
-                      confirm(`Remove ${b.template} from this principal?`) &&
-                      run(() => api.removeSystemBinding(b.id), refreshSystem)
-                  : undefined
-              }
-            />
-          )}
-          {host.manageSystemBindings && (
-            <AddBindingForm
-              roles={HOST_ROLES}
-              dir={dir}
-              onAdd={async (role, principal) => {
-                await api.addSystemBinding(role, principal);
-                refreshSystem();
-              }}
-            />
-          )}
-        </Card>
+      <SystemRoles dir={dir} />
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.name}`}
+          consequence={
+            <>
+              The user goes with its sign-in methods, sessions, personal tokens, team memberships, role links and tenant
+              memberships. Service-account tokens it made stay. This can't be undone; a local account that signs in again
+              becomes a new user.
+            </>
+          }
+          typeToConfirm={deleting.name}
+          actionLabel="Delete user"
+          onConfirm={async () => {
+            const d = await api.deleteUser(deleting.id);
+            setNotice(
+              `Deleted ${deleting.name}: ${d.identities} sign-in methods, ${d.sessions} sessions, ${d.tokens} tokens, ${d.links} role links, ${d.teams} teams, ${d.tenants} tenant memberships.`,
+            );
+            reloadDir();
+          }}
+          onClose={() => setDeleting(null)}
+        />
+      )}
+      {unlinking && (
+        <ConfirmDialog
+          title="Remove a sign-in method"
+          consequence={`${unlinking.name} won't be able to sign in with ${unlinking.label} any more. Their other sign-in methods stay; a disabled user's last one can go, so it can be added to the right user.`}
+          actionLabel="Remove"
+          onConfirm={async () => {
+            await api.unlinkIdentity(unlinking.user, unlinking.key, endSessions);
+            reloadDir();
+          }}
+          onClose={() => setUnlinking(null)}
+        >
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" checked={endSessions} onChange={(e) => setEndSessions(e.target.checked)} />
+            Also sign them out everywhere (end their sessions)
+          </label>
+        </ConfirmDialog>
       )}
     </div>
   );

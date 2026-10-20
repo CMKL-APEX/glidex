@@ -84,15 +84,20 @@ payload, option for option, in this order
 ([reconciliation.md §8.2](reconciliation.md#82-cloud-hypervisor-argv-d9)):
 `--api-socket path=…`, `--cpus boot=,max=`, `--memory
 size=…M[,shared=on][,hugepages=on]`, `--firmware` or `--kernel` +
-`--cmdline` (the cmdline is one argv element, never split), one
-`--disk` value per disk, one `--net` value per NIC, one `--device` per
-VFIO device, then `--console` / `--serial`. The boot mode decides the
-console:
+[`--initramfs`] + `--cmdline` (the cmdline is one argv element, never
+split), one `--disk` value per disk, one `--net` value per NIC, one
+`--device` per VFIO device, then `--console` / `--serial`. The console
+device is `ConsoleDevice::of(config)` (`hypervisor/mod.rs`,
+[kernel-boot.md §5.2](kernel-boot.md#52-console-k5)): the serial port on
+a firmware boot; on a kernel boot, the device the last `console=` of
+`kernel_args` names (`hvc…` → virtio console, anything else or none →
+serial port):
 
-| Boot mode | payload | `--console` | `--serial` | Guest console |
-|---|---|---|---|---|
-| Kernel (`firmware_path` unset) | `--kernel` + `--cmdline` | `tty` | `off` | `hvc0` |
-| Firmware (`firmware_path` set) | `--firmware` | `off` | `tty` | `ttyS0` |
+| Boot mode | payload | Console device | `--console` | `--serial` | Guest console |
+|---|---|---|---|---|---|
+| Kernel (`firmware_path` unset) | `--kernel` [+ `--initramfs`] + `--cmdline` | serial (default) | `off` | `tty` | `ttyS0` |
+| Kernel, last `console=hvc…` | same | virtio | `tty` | `off` | `hvc0` |
+| Firmware (`firmware_path` set) | `--firmware` | serial | `off` | `tty` | `ttyS0` |
 
 `tty` makes the device CH's stdio, i.e. the shim's PTY; see
 [console.md](console.md#why-the-shim-owns-the-master).
@@ -160,7 +165,7 @@ Runtime operations (`glidex-hv-client/src/ch.rs`): `observe` is `GET
 /vm.info`, `pause` / `resume` are `/vm.pause` / `/vm.resume`,
 `add_device` / `remove_device` use `/vm.add-device` and
 `/vm.remove-device` with a deterministic device id derived from the
-sysfs BDF (`_vfio_0000_41_00_0`). The shim uses `GET /vmm.ping` (launch
+sysfs BDF (`vfio_0000_41_00_0`). The shim uses `GET /vmm.ping` (launch
 health check), `/vm.power-button`, and `PUT /vmm.shutdown` to stop CH
 without the guest: it closes the disks first, where a bare SIGKILL can
 leave a qcow2 disk CH refuses to reopen (F8).
@@ -192,7 +197,7 @@ qemu-system-x86_64
   -m <mem>M -smp <vcpus>
   [-object memory-backend-memfd,id=mem,size=<mem>M,share=on[,hugetlb=on]]
   # kernel boot:
-  -kernel <kernel_image_path> -append "<kernel_args>"
+  -kernel <kernel_image_path> [-initrd <initrd_path>] -append "<kernel_args>"
   # or firmware boot (see below):
   [-global driver=cfi.pflash01,property=secure,value=on]
   -drive if=pflash,format=raw,unit=0,readonly=on,file=<OVMF code>
@@ -201,10 +206,13 @@ qemu-system-x86_64
   -blockdev <JSON> -device virtio-blk-pci,drive=disk<i>,id=vd<i>[,bootindex=1]
   # per NIC, see networking.md §3a:
   [-netdev … -device virtio-net-pci,…]
-  [-device vfio-pci,host=<bdf>,id=<_vfio_xxx> …]
+  [-device vfio-pci,host=<bdf>,id=<vfio_xxx> …]
   -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0
   -qmp unix:<socket_path>,server=on,wait=off
   -serial stdio -display none
+  # or, for a kernel boot whose last console= is hvc…, instead of -serial stdio:
+  -serial none -device virtio-serial-pci,id=vser0
+  -chardev stdio,id=con0 -device virtconsole,chardev=con0
 ```
 
 Notes captured in code comments:
@@ -302,8 +310,20 @@ missing KVM, missing firmware and other launch-time errors.
 
 ### Default kernel args
 
-`HypervisorType::Qemu::default_kernel_args` is
-`"console=ttyS0 root=/dev/vda reboot=k panic=1"`. `root=/dev/vda`
+`HypervisorType::default_kernel_args` is
+`"console=ttyS0 root=/dev/vda reboot=k panic=1"` for both backends
+(`DEFAULT_KERNEL_ARGS`). Cloud Hypervisor's used to be `console=hvc0 …`;
+VMs created with it keep it in their stored `kernel_args`, so they keep
+the virtio console. The serial port shows the kernel from its first
+line, where `hvc0` shows nothing until the virtio driver is up.
+
+`kernel_args` is at most 2047 bytes (x86 `COMMAND_LINE_SIZE` less the
+NUL) and must not contain control characters (`check_kernel_args`,
+`400 invalid_config` at create and PATCH). `initrd_path` names an
+initramfs for `kernel_image_path`: a host path like the kernel's
+(`useHostPath`), only with a kernel, fixed after create.
+
+`root=/dev/vda`
 (no partition number) assumes a bare ext4 rootfs image with no
 partition table. glidex no longer ships one; bring your own kernel +
 rootfs for kernel boot, or use firmware boot with a distro cloud image.
@@ -312,8 +332,8 @@ rootfs for kernel boot, or use firmware boot with a distro cloud image.
 
 Both backends derive a stable *id* for a
 device from the sysfs path. Given
-`/sys/bus/pci/devices/0000:41:00.0` the id is `_vfio_0000_41_00_0`
-(colons/dots replaced with underscores, `_vfio_` prefix). This id is:
+`/sys/bus/pci/devices/0000:41:00.0` the id is `vfio_0000_41_00_0`
+(colons/dots replaced with underscores, `vfio_` prefix; QEMU takes only ids starting with a letter, so the `_vfio_` prefix of earlier releases never launched on QEMU. Cloud Hypervisor guests launched with `_vfio_` ids are still recognised, and their devices removed by the old id). This id is:
 
 - Given to the device on the launch command line (CH `--device
   …,id=`, QEMU `-device vfio-pci,…,id=`) and in hot-plug calls, so

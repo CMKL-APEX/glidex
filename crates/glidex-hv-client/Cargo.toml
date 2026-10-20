@@ -2,6 +2,7 @@
 name = "glidex-hv-client"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP (spec/reconciliation.md §5.2)"
 
 [dependencies]

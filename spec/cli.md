@@ -102,14 +102,18 @@ name (ids when `/projects` isn't readable).
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
 | `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
+| `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
+| `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/kernel-boot.md §10.5) |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
 | `log <name\|id>` | `GET /vms/{id}/console/log` (last 1 MiB) |
 | `delete <name\|id> [--keep-disk] [--no-wait]` | Confirmation prompt → `DELETE /vms/{id}?wait=60[&keep_disk=true]` |
-| `pci` / `pci-devices` | `GET /pci-devices` + table |
+| `pci` / `pci-devices` | `GET /pci-devices` + table (NUMA node, ready) |
+| `node prepare-device|release-device|cordon-device|uncordon-device <node> <address>` | `PrepareDevice`, `ReleaseDevice`, `CordonDevice`, `UncordonDevice` |
+| `node topology <node> [--devices]` | `GetNodeTopology`: NUMA nodes with their devices, or the devices with their tree place |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
 | `credentials` / `creds` | `GET /credentials` + table (no hashes) |
@@ -120,17 +124,25 @@ name (ids when `/projects` isn't readable).
 | `image catalog` | `GET /images/catalog` |
 | `image list` / `images` | `GET /images` |
 | `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
+| `image pull <key> [--no-kernel]`, `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline S]`, `image pull --kernel-path P [--initrd-path P]` | Kernel images (spec/kernel-boot.md §4.2): a catalog pull brings its kernel unless `--no-kernel`; waits through `Extracting` and prints the release and command line |
+| `image extract-kernel <image>` | `POST /images` with `kernel_from`, then polls until ready |
 | `image retry <name\|id>` | `POST /images/{id}/retry`: download a failed image again (follow it with `image list`) |
 | `image rm <image>` | `DELETE /images/{id}?wait=60`; prints `Image deleted:` once gone, else `Deleting:` with the reason it waits |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks?wait=300` (it may wait for its image to download) |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | `POST /disks?wait=300` (it may wait for its image to download); `--datastore`: where it goes, else the default for disks (spec/storage.md S13) |
 | `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize?wait=120`; a refused shrink prints the minimum |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | `MoveDisk`, waiting up to 300 s: to another datastore (spec/storage.md §8.3); prints the disk, or that it is still moving |
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
+| `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
+| `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
+| `datastore create <name> --path P [--shared] [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`) |
+| `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
+| `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
 | `networks` / `network list` | `GET /networks` (project networks show their project) |
 | `network create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, or isolated with `--isolated`; tap ports, or vhost-user with `--vhost-user`; generated bridge); without: as `network-add` |
-| `network rm <name>` / `network-rm` / `net-rm` | `DELETE /networks/{name}?wait=60`; prints `Network deleted:` once gone, else `Deleting: <name> (the control plane finishes it)` and `Waiting: <Ready reason>: <message>` (e.g. `NetdUnavailable`, `InUse`) |
+| `network rm <name>` / `network-rm` / `net-rm` | `DELETE /networks/{id}?wait=60`; prints `Network deleted:` once gone, else `Deleting: <name> (the control plane finishes it)` and `Waiting: <Ready reason>: <message>` (e.g. `NetdUnavailable`, `InUse`) |
 | `network share <net> <project-id>` | `POST /networks/{net}/shares {project}` (offer, valid 7 days) |
 | `network unshare <net> <project-id>` | `DELETE /networks/{net}/shares/{project}` |
 | `network shares <project>` | `GET /projects/{p}/network-shares` (offered / accepted) |
@@ -145,7 +157,7 @@ name (ids when `/projects` isn't readable).
 | Command | Effect |
 |---|---|
 | `whoami` | `GET /auth/whoami`: user, method, token, teams, break-glass, host roles, project roles (with the principal they come through), default project |
-| `login --oidc` | TCP only. `POST /auth/oidc/device` → prints the verification URI and user code → polls `POST /auth/oidc/device/poll {device_code, token_name: "gxctl"}` every `interval` s (`202` pending, `429` slow down: +5 s) until it returns `{token}` or `expires_in` passes; the token is checked with `whoami` and saved |
+| `login --oidc [--connector ID]` | TCP only. `POST /auth/oidc/device` (`/auth/c/{ID}/device` with `--connector`; `auth login` takes `--connector` too, also for `--pam-user`) → prints the verification URI and user code → polls `POST /auth/oidc/device/poll {device_code, token_name: "gxctl"}` every `interval` s (`202` pending, `429` slow down: +5 s) until it returns `{token}` or `expires_in` passes; the token is checked with `whoami` and saved |
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
@@ -157,15 +169,28 @@ name (ids when `/projects` isn't readable).
 | `token list` | `GET /tokens` |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | `POST /tokens {name, expires_in_days, kind, project, roles}`; prints the secret once with a warning |
 | `token revoke <id>` | `DELETE /tokens/{id}` |
+| `tenant list` / `show <t>` / `create <slug> [--name N] [--operator]` / `rename <t> <name>` / `suspend <t>` / `resume <t>` / `delete <t>` | `TenantService` RPCs (spec/tenancy.md §14) through the generated connectrpc client, Connect protocol over gxctl's own connection (api.sock or pinned TLS) |
+| `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
+| `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
+| `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([tenancy.md](tenancy.md) §6.1); `create` prints the link once |
+| `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([tenancy.md](tenancy.md) §9) |
+| `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
+| `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
+| `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |
+| `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |
+| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…` / `add google <id> --client-id ID (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID]` / `add jumpcloud <id> --client-id ID [--groups-claim C] [--allow-email E]…` (tenancy.md §5.1), all with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
+| `connector update <id> [--name N] [--enable\|--disable] [same flags]` | `UpdateConnector` with a field mask of the flags given |
+| `connector secret set <id> [field] [--from-file PATH]` | `SetSecret` (default field `client_secret`); the value comes from a hidden prompt, piped stdin or the file, never from argv |
+| `connector test <id>` / `remove <id>` | `TestConnector` (one line per step) / `DeleteConnector` |
 | `project list` / `show <p>` | `GET /projects`, `GET /projects/{p}` (quotas and usage) |
-| `project create <name> [--description D]` | `POST /projects` |
+| `project create <name> [--description D]` | `POST /projects` (in tenant `default` unless the body names `tenant`) |
 | `project delete <p>` | Confirmation → `DELETE /projects/{p}` |
 | `project quota <p> [key=value…]` | Without edits: show. With: `GET` the current quotas, apply the edits (`vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`; `none` = unlimited) and `PATCH /projects/{p} {"quotas": …}` (the server replaces the whole set) |
 | `project use <p>` | `PATCH /users/me {"default_project": p}` (`-`/`none` clears). Where the server has no profile (service-account token, auth disabled) the project is used for this session only |
 | `binding list <p>` | `GET /projects/{p}/bindings` |
 | `binding add <p> <role> <principal>` | `POST /projects/{p}/bindings {role, principal}` |
 | `binding remove <p> <binding-id>` | `DELETE /projects/{p}/bindings/{id}` |
-| `system-binding list` / `add <role> <principal>` / `remove <id>` | `GET/POST/DELETE /system/bindings` |
+| `system-binding list [--node N]` / `add <role> <principal> [--node N]` / `remove <id>` | `GET/POST/DELETE /system/bindings` (`?node=` / `node` for one node's host) |
 | `user list` | `GET /users` (with identities) |
 | `team list` / `create <name>` / `delete <team>` | `GET/POST /teams`, `DELETE /teams/{id}` |
 | `team add-member <team> <user-id>` / `remove-member …` | `PUT/DELETE /teams/{id}/members/{user}` (team by id or name) |
@@ -302,7 +327,7 @@ Interactive `handle_create` asks, in order:
    the default instead (`none` for no login). With
    no credentials in the project gxctl says "no login available" and
    doesn't ask.
-9. Kernel args (optional — server picks per-hypervisor default) —
+9. Kernel args (optional — server default `console=ttyS0 root=/dev/vda reboot=k panic=1`) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.
 
@@ -313,34 +338,37 @@ The request is `POST /vms`. Tilde in paths is expanded server-side
 ### `connect` loop
 
 The VM's console socket is in its private `0700` run directory
-(`paths::vm_dir`), so gxctl goes through the API like the browser does:
+(`paths::vm_dir`), so gxctl goes through the API
+(`bin/gxctl/console.rs`):
 
-1. `GET /vms/{id}/console` → `{available, websocket}`; a VM with no
-   instance is refused before anything else. A VM whose guest has
-   exited but whose shim is not yet released still connects and
-   replays its log.
-2. `ApiClient::connect` opens the same kind of stream as any request
-   (Unix socket, TCP or TLS) and `tokio_tungstenite::client_async` does
-   the WebSocket handshake on it for `GET /vms/{id}/console/ws`, with the
-   bearer header on TCP. Local peers and token holders need no console
-   ticket (tickets are for browser sessions, security.md §5.6), and no
-   `Origin` is sent. A refused handshake shows the API error.
+1. `GetConsoleInfo` → `available`; a VM with no instance is refused
+   before anything else. A VM whose guest has exited but whose shim is
+   not yet released still connects and replays its log.
+2. The console is the bidi RPC `VmService.Console`, on an HTTP/2
+   connection of its own made like every other (Unix socket, TCP or
+   TLS, with the bearer token on TCP). The first message is
+   `{open: {id}}`; the server's answer, or its refusal (unknown VM, not
+   allowed, no console), comes back before the terminal is touched.
+   Local peers and token holders need no console ticket (tickets are for
+   browser sessions, security.md §5.6). Browsers use the WebSocket
+   instead (gRPC-Web can't stream both ways).
 3. stdin goes into raw mode (termios: no `ICANON`, `ECHO`, `ISIG`, so
    Ctrl+C reaches the guest). A thread `poll`s fd 0 every 100 ms and
    `read`s it directly, forwarding chunks over a channel; it stops at
    `0x1D` (`Ctrl+]`), sending what came before it.
-4. The async loop writes binary (and text) frames to stdout and sends
-   stdin chunks as binary frames, until `Ctrl+]` ("Detached") or the
-   server closes ("Console closed").
-5. The terminal is restored and a Close frame sent.
+4. The async loop writes each `output` message to stdout and sends
+   stdin chunks as `input` messages, until `Ctrl+]` ("Detached from
+   console") or the server ends the stream ("Console closed").
+5. The terminal is restored.
 
-The console proxy behind the WebSocket supports many clients, so
-several `gxctl connect` sessions and browser sessions can share a VM.
-They all see the same output and share one input stream (no locking).
+The console proxy behind it supports many clients, so several
+`gxctl connect` sessions and browser sessions can share a VM. They all
+see the same output and share one input stream (no locking). The
+terminal size is not sent ([console.md](console.md) "Known gaps").
 
 ### `log` command
 
-`GET /vms/{id}/console/log` (needs `vm.console`) returns the last 1 MiB
+`GetConsoleLog` (`GET /vms/{id}/console/log`, needs `vm.console`) returns the last 1 MiB
 of the captured console output, printed as is. Not a follow; to
 live-tail, use `connect`. The log spans the VM's earlier instances,
 separated by `--- glidex: instance … ---` lines; the rotated

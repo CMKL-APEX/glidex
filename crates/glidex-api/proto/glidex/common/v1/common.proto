@@ -1,0 +1,52 @@
+// Types several families share (spec/grpc.md §9).
+syntax = "proto3";
+
+package glidex.common.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// A CPU architecture.
+enum Arch {
+  ARCH_UNSPECIFIED = 0;
+  ARCH_X86_64 = 1;
+  ARCH_AARCH64 = 2;
+}
+
+enum Hypervisor {
+  HYPERVISOR_UNSPECIFIED = 0;
+  HYPERVISOR_CLOUD_HYPERVISOR = 1;
+  HYPERVISOR_QEMU = 2;
+}
+
+enum ConditionStatus {
+  CONDITION_STATUS_UNSPECIFIED = 0;
+  CONDITION_STATUS_TRUE = 1;
+  CONDITION_STATUS_FALSE = 2;
+  CONDITION_STATUS_UNKNOWN = 3;
+}
+
+// One condition of an object's status (spec/reconciliation.md §6.2).
+message Condition {
+  // `Ready`, …
+  string kind = 1;
+  ConditionStatus status = 2;
+  string reason = 3;
+  string message = 4;
+  google.protobuf.Timestamp last_transition_at = 5 [json_name = "last_transition_at"];
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_NORMAL = 1;
+  EVENT_KIND_WARNING = 2;
+}
+
+// One entry of an object's event ring (spec/reconciliation.md §6.4).
+message Event {
+  google.protobuf.Timestamp at = 1;
+  // `api:<principal>`, `controller`, `guest`, `systemd` or `host`.
+  string actor = 2;
+  EventKind kind = 3;
+  string reason = 4;
+  string message = 5;
+}

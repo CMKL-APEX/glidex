@@ -6,24 +6,34 @@
 //! drift. Every step is idempotent and safe to repeat after a crash.
 
 use crate::cloud_init;
-use crate::controller::queue::{backoff, Key};
-use crate::hypervisor::{driver, vfio_device_id, HypervisorError, HypervisorType};
+use crate::controller::queue::{Key, backoff};
+use crate::hypervisor::{HypervisorError, HypervisorType, driver, vfio_device_id};
 use crate::images::ImageError;
-use crate::instance::{liveness, Liveness, Seen};
+use crate::instance::{Liveness, Seen, liveness};
 use crate::models::{
-    Condition, ExitCause, ExitRecord, InstanceRef, NicBinding, NicStatus, PowerState, RestartPolicy, Tristate, Vm,
-    VmPhase, VmSpec, VmStatus,
+    Condition, ExitCause, ExitRecord, InstanceRef, NicBinding, NicStatus, PowerState,
+    RestartPolicy, Tristate, Vm, VmPhase, VmSpec, VmStatus,
 };
 use crate::network::NetError;
-use crate::state::{power_name, VmManager, VmManagerError};
-use crate::store::{event_key, Commit, Event, EventKind};
+use crate::state::{VmManager, VmManagerError, power_name};
+use crate::store::{Commit, Event, EventKind, event_key};
 use glidex_hv_client::GuestState;
 use glidex_netd::proto::{AttachResult, Op};
 use glidex_ovs::vm_port::VmPortSpec;
+use glidex_vm_shim::LaunchFile;
 use glidex_vm_shim::client::ShimClient;
 use glidex_vm_shim::state::{InstanceFile, Phase};
-use glidex_vm_shim::LaunchFile;
 use std::time::Duration;
+
+/// What a launch binds on this node: the root disk (with its record), the
+/// data disks, the firmware image's file, and the kernel image's files
+/// (kernel, initramfs).
+type LaunchBindings = (
+    Option<(crate::models::VolumeBinding, crate::images::Disk)>,
+    Vec<crate::models::VolumeBinding>,
+    Option<String>,
+    Option<(String, Option<String>)>,
+);
 
 /// Finalizers of a VM (§6.3), in the order they are worked off.
 pub const FINALIZER_INSTANCE: &str = "vm.instance";
@@ -31,7 +41,13 @@ pub const FINALIZER_PORTS: &str = "vm.ports";
 pub const FINALIZER_DISKS: &str = "vm.disks";
 pub const FINALIZER_OWNED_DISK: &str = "vm.owned-disk";
 pub const FINALIZER_RUNTIME: &str = "vm.runtime";
-pub const FINALIZERS: &[&str] = &[FINALIZER_INSTANCE, FINALIZER_PORTS, FINALIZER_DISKS, FINALIZER_OWNED_DISK, FINALIZER_RUNTIME];
+pub const FINALIZERS: &[&str] = &[
+    FINALIZER_INSTANCE,
+    FINALIZER_PORTS,
+    FINALIZER_DISKS,
+    FINALIZER_OWNED_DISK,
+    FINALIZER_RUNTIME,
+];
 
 /// After this long running, a crash restart counts as the first again.
 const STABLE_SECS: u64 = 600;
@@ -43,7 +59,13 @@ const STOP_SLACK_SECS: u64 = 15;
 
 /// Set (or update) a condition; `last_transition_at` moves only when its
 /// status changes.
-pub(crate) fn set_cond(conds: &mut Vec<Condition>, kind: &str, status: Tristate, reason: &str, message: impl Into<String>) {
+pub(crate) fn set_cond(
+    conds: &mut Vec<Condition>,
+    kind: &str,
+    status: Tristate,
+    reason: &str,
+    message: impl Into<String>,
+) {
     let message = message.into();
     let now = crate::tenancy::now();
     match conds.iter_mut().find(|c| c.kind == kind) {
@@ -55,11 +77,17 @@ pub(crate) fn set_cond(conds: &mut Vec<Condition>, kind: &str, status: Tristate,
             c.reason = reason.to_string();
             c.message = message;
         }
-        None => conds.push(Condition { kind: kind.to_string(), status, reason: reason.to_string(), message, last_transition_at: now }),
+        None => conds.push(Condition {
+            kind: kind.to_string(),
+            status,
+            reason: reason.to_string(),
+            message,
+            last_transition_at: now,
+        }),
     }
 }
 
-fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
+pub(crate) fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
     conds.retain(|c| c.kind != kind);
 }
 
@@ -83,8 +111,12 @@ fn launched_spec(paths: &crate::paths::VmPaths) -> Option<VmSpec> {
     serde_json::from_value(f.spec.get("spec")?.clone()).ok()
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, VmManagerError> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| VmManagerError::PersistenceError(format!("task failed: {}", e)))
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, VmManagerError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| VmManagerError::PersistenceError(format!("task failed: {}", e)))
 }
 
 /// One call on the VM's `shim.sock`.
@@ -104,7 +136,9 @@ async fn shim_call<T: Send + 'static>(
 /// for vhost-user, where a single queue pins the NIC to one OVS PMD, else 1.
 fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind, vcpus: u8) -> u8 {
     requested.unwrap_or(match kind {
-        glidex_ovs::vm_port::VmPortKind::VhostUser => glidex_ovs::tuning::default_vhost_queue_pairs(vcpus as u32),
+        glidex_ovs::vm_port::VmPortKind::VhostUser => {
+            glidex_ovs::tuning::default_vhost_queue_pairs(vcpus as u32)
+        }
         glidex_ovs::vm_port::VmPortKind::Tap => 1,
     })
 }
@@ -115,10 +149,20 @@ const RECONCILED_STAMP_SECS: u64 = 600;
 
 /// The port a NIC gets: on its network's bridge, or, on a cluster network,
 /// on `br-int` as the logical port OVN knows (spec/clustering.md §11.3, §11.5).
-fn port_spec(vm_id: &str, net: &crate::network::Network, nic: u8, mac: String, queue_pairs: u8) -> VmPortSpec {
+fn port_spec(
+    vm_id: &str,
+    net: &crate::network::Network,
+    nic: u8,
+    mac: String,
+    queue_pairs: u8,
+) -> VmPortSpec {
     let cluster = net.scope == crate::network::NetworkScope::Cluster;
     VmPortSpec {
-        bridge: if cluster { glidex_ovs::ovn::BR_INT.to_string() } else { net.bridge.clone() },
+        bridge: if cluster {
+            glidex_ovs::ovn::BR_INT.to_string()
+        } else {
+            net.bridge.clone()
+        },
         vm_id: vm_id.to_string(),
         nic_index: nic,
         kind: net.port_type,
@@ -141,16 +185,119 @@ struct LaunchFailure {
     intent: bool,
 }
 
+/// Each VFIO device's uncorrectable AER errors now (address → count);
+/// devices without AER are left out.
+fn device_errors_now(devices: &[String]) -> std::collections::BTreeMap<String, u64> {
+    devices
+        .iter()
+        .filter_map(|d| {
+            let a = crate::scheduler::pci_address(d);
+            crate::topology::read_aer(&a).map(|c| (a, c.uncorrectable()))
+        })
+        .collect()
+}
+
+/// What is wrong with a running VM's VFIO devices (spec/host-topology.md
+/// §5.4): gone from the bus, or uncorrectable AER errors since its launch.
+/// `exists` and `errors` read the host (sysfs), as parameters for tests.
+fn device_problems(
+    devices: &[String],
+    baseline: &std::collections::BTreeMap<String, u64>,
+    exists: impl Fn(&str) -> bool,
+    errors: impl Fn(&str) -> Option<u64>,
+) -> Vec<String> {
+    devices
+        .iter()
+        .filter_map(|d| {
+            let a = crate::scheduler::pci_address(d);
+            if !exists(&a) {
+                return Some(format!("{a} is gone from the PCI bus"));
+            }
+            let now = errors(&a)?;
+            let then = baseline.get(&a).copied().unwrap_or(0);
+            (now > then).then(|| {
+                format!(
+                    "{a} had {} uncorrectable PCIe errors since the VM started",
+                    now - then
+                )
+            })
+        })
+        .collect()
+}
+
+/// `DeviceHealthy` for a VM with VFIO devices, and a `DeviceError` event
+/// when it turns false. Reported only; nothing is stopped (H18).
+fn device_health(st: &mut VmStatus, events: &mut Vec<Event>) {
+    let Some(inst) = st.instance.as_ref() else {
+        return;
+    };
+    if inst.vfio_devices.is_empty() {
+        clear_cond(&mut st.conditions, "DeviceHealthy");
+        return;
+    }
+    let problems = device_problems(
+        &inst.vfio_devices,
+        &inst.device_errors,
+        |a| {
+            std::path::Path::new("/sys/bus/pci/devices")
+                .join(a)
+                .exists()
+        },
+        |a| crate::topology::read_aer(a).map(|c| c.uncorrectable()),
+    );
+    let was_bad = st
+        .conditions
+        .iter()
+        .any(|c| c.kind == "DeviceHealthy" && c.status == Tristate::False);
+    if problems.is_empty() {
+        set_cond(
+            &mut st.conditions,
+            "DeviceHealthy",
+            Tristate::True,
+            "Healthy",
+            "",
+        );
+    } else {
+        let msg = problems.join("; ");
+        if !was_bad {
+            events.push(Event::new(
+                "controller",
+                EventKind::Warning,
+                "DeviceError",
+                msg.clone(),
+            ));
+        }
+        set_cond(
+            &mut st.conditions,
+            "DeviceHealthy",
+            Tristate::False,
+            "DeviceError",
+            msg,
+        );
+    }
+}
+
 fn before_intent(e: impl Into<VmManagerError>) -> LaunchFailure {
-    LaunchFailure { error: Box::new(e.into()), intent: false }
+    LaunchFailure {
+        error: Box::new(e.into()),
+        intent: false,
+    }
 }
 
 impl VmManager {
     /// Replace `status` (never `spec`) of VM `id`, as observed under
     /// `read_gen`. Returns the stored VM, `None` if it is gone.
-    pub(crate) async fn write_status(&self, id: &str, read_gen: u64, mut status: VmStatus, events: Vec<Event>) -> Result<Option<Vm>, VmManagerError> {
+    pub(crate) async fn write_status(
+        &self,
+        id: &str,
+        read_gen: u64,
+        mut status: VmStatus,
+        events: Vec<Event>,
+    ) -> Result<Option<Vm>, VmManagerError> {
         let mut vms = self.vms.write().await;
-        let Some(cur) = vms.get(id).cloned() else { return Ok(None) };
+        let Some(cur) = vms.get(id).cloned() else {
+            return Ok(None);
+        };
         // spec/clustering.md §4.1: a round that observes nothing new writes
         // nothing, so `last_reconciled_at` is left out of the comparison and
         // stamped only with another change, or at most every 10 minutes.
@@ -160,7 +307,10 @@ impl VmManager {
         if status.phase != cur.status.phase {
             status.phase_since = Some(now);
         }
-        if cur.status == status && events.is_empty() && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS {
+        if cur.status == status
+            && events.is_empty()
+            && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS
+        {
             return Ok(Some(cur));
         }
         status.last_reconciled_at = now;
@@ -174,17 +324,30 @@ impl VmManager {
     /// (tests of partitions and the outbox).
     #[doc(hidden)]
     pub async fn __touch_status_for_tests(&self, id: &str) -> Result<(), VmManagerError> {
-        let Some(vm) = self.vm(id).await else { return Err(VmManagerError::VmNotFound(id.into())) };
+        let Some(vm) = self.vm(id).await else {
+            return Err(VmManagerError::VmNotFound(id.into()));
+        };
         let mut st = vm.status.clone();
         st.launch_failures += 1;
-        self.write_status(id, vm.generation, st, vec![]).await.map(|_| ())
+        self.write_status(id, vm.generation, st, vec![])
+            .await
+            .map(|_| ())
     }
 
     /// D12: `spec.power = Stopped` after an exit nobody asked for, unless
     /// the user changed the spec since it was observed.
-    async fn stop_spec_after_exit(&self, id: &str, observed_gen: u64, actor: &str, reason: &str, message: String) -> Result<(), VmManagerError> {
+    async fn stop_spec_after_exit(
+        &self,
+        id: &str,
+        observed_gen: u64,
+        actor: &str,
+        reason: &str,
+        message: String,
+    ) -> Result<(), VmManagerError> {
         let mut vms = self.vms.write().await;
-        let Some(cur) = vms.get(id).cloned() else { return Ok(()) };
+        let Some(cur) = vms.get(id).cloned() else {
+            return Ok(());
+        };
         if cur.generation != observed_gen || cur.spec.power == PowerState::Stopped {
             return Ok(());
         }
@@ -209,7 +372,11 @@ impl VmManager {
     /// This VM's private copy of the UEFI variable store (QEMU firmware
     /// boot), so boot entries the guest writes survive a restart.
     pub(crate) fn firmware_vars_path(&self, vm_id: &str) -> String {
-        self.data_dir.join("firmware-vars").join(format!("{}.fd", vm_id)).to_string_lossy().into_owned()
+        self.data_dir
+            .join("firmware-vars")
+            .join(format!("{}.fd", vm_id))
+            .to_string_lossy()
+            .into_owned()
     }
 
     async fn observe(&self, vm: &Vm) -> Result<Seen, VmManagerError> {
@@ -220,33 +387,47 @@ impl VmManager {
 
     /// One round for VM `id` (§9.1).
     pub async fn reconcile_vm(&self, id: &str) -> Next {
-        let Some(vm) = self.vm(id).await else { return Ok(None) };
+        let Some(vm) = self.vm(id).await else {
+            return Ok(None);
+        };
         // Another node's VM: that node's controller owns it (spec/clustering.md §8.1).
         if !self.is_local(&vm) {
             return Ok(None);
         }
-        let gen = vm.generation;
+        let generation = vm.generation;
         let mut st = vm.status.clone();
         let mut events: Vec<Event> = Vec::new();
         let seen = self.observe(&vm).await?;
         let paths = vm.paths();
 
         // Fill in what the shim reported about our instance.
-        if let (Some(inst), Some(f)) = (st.instance.as_mut(), seen.file.as_ref()) {
-            if f.instance_id == inst.instance_id {
-                inst.shim_pid = Some(f.shim_pid);
-                inst.shim_starttime = Some(f.shim_starttime);
-                inst.hypervisor_pid = f.hypervisor_pid.or(inst.hypervisor_pid);
-                inst.hypervisor_starttime = f.hypervisor_starttime.or(inst.hypervisor_starttime);
-            }
+        if let (Some(inst), Some(f)) = (st.instance.as_mut(), seen.file.as_ref())
+            && f.instance_id == inst.instance_id
+        {
+            inst.shim_pid = Some(f.shim_pid);
+            inst.shim_starttime = Some(f.shim_starttime);
+            inst.hypervisor_pid = f.hypervisor_pid.or(inst.hypervisor_pid);
+            inst.hypervisor_starttime = f.hypervisor_starttime.or(inst.hypervisor_starttime);
         }
 
         match &seen.liveness {
             Liveness::Unknown(why) => {
                 st.phase = VmPhase::Unknown;
-                set_cond(&mut st.conditions, "HypervisorReachable", Tristate::Unknown, "CannotVerify", why.clone());
-                set_cond(&mut st.conditions, "Ready", Tristate::Unknown, "CannotVerify", "the instance's state cannot be established");
-                self.write_status(id, gen, st, events).await?;
+                set_cond(
+                    &mut st.conditions,
+                    "HypervisorReachable",
+                    Tristate::Unknown,
+                    "CannotVerify",
+                    why.clone(),
+                );
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::Unknown,
+                    "CannotVerify",
+                    "the instance's state cannot be established",
+                );
+                self.write_status(id, generation, st, events).await?;
                 return Ok(Some(Duration::from_secs(10)));
             }
             Liveness::Live => {
@@ -256,14 +437,30 @@ impl VmManager {
                         // A live instance we have no (matching) record of: by
                         // D8 it is the only one this VM can have; adopt it.
                         st.instance = Some(self.adopted_ref(&vm, f));
-                        events.push(Event::new("controller", EventKind::Warning, "AdoptedUnrecorded", format!("adopted instance {}", f.instance_id)));
+                        events.push(Event::new(
+                            "controller",
+                            EventKind::Warning,
+                            "AdoptedUnrecorded",
+                            format!("adopted instance {}", f.instance_id),
+                        ));
                     }
                     None if recorded.is_none() => {
                         st.phase = VmPhase::Unknown;
-                        set_cond(&mut st.conditions, "HypervisorReachable", Tristate::Unknown, "LegacyOrphan",
-                            "a hypervisor answers on this VM's socket but no shim reports it; stop that process");
-                        set_cond(&mut st.conditions, "Ready", Tristate::Unknown, "LegacyOrphan", "an unmanaged hypervisor holds this VM");
-                        self.write_status(id, gen, st, events).await?;
+                        set_cond(
+                            &mut st.conditions,
+                            "HypervisorReachable",
+                            Tristate::Unknown,
+                            "LegacyOrphan",
+                            "a hypervisor answers on this VM's socket but no shim reports it; stop that process",
+                        );
+                        set_cond(
+                            &mut st.conditions,
+                            "Ready",
+                            Tristate::Unknown,
+                            "LegacyOrphan",
+                            "an unmanaged hypervisor holds this VM",
+                        );
+                        self.write_status(id, generation, st, events).await?;
                         return Ok(Some(Duration::from_secs(30)));
                     }
                     _ => {}
@@ -273,7 +470,11 @@ impl VmManager {
         }
         clear_cond(&mut st.conditions, "HypervisorReachable");
         let live = seen.liveness == Liveness::Live;
-        let file = seen.file.clone().filter(|f| st.instance.as_ref().is_some_and(|i| i.instance_id == f.instance_id));
+        let file = seen.file.clone().filter(|f| {
+            st.instance
+                .as_ref()
+                .is_some_and(|i| i.instance_id == f.instance_id)
+        });
 
         // ---- 3. exit ------------------------------------------------------
         if let Some(inst) = st.instance.clone() {
@@ -282,11 +483,13 @@ impl VmManager {
                 // The shim keeps the console until released.
                 let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
                 st.phase = VmPhase::Stopping;
-                self.write_status(id, gen, st, events).await?;
+                self.write_status(id, generation, st, events).await?;
                 return Ok(Some(Duration::from_millis(300)));
             }
             if !live {
-                return self.finish_exit(&vm, st, inst, file, &seen.boot_id, events).await;
+                return self
+                    .finish_exit(&vm, st, inst, file, &seen.boot_id, events)
+                    .await;
             }
         }
 
@@ -297,7 +500,11 @@ impl VmManager {
             return Ok(None);
         }
 
-        let desired = if deleting { PowerState::Stopped } else { vm.spec.power };
+        let desired = if deleting {
+            PowerState::Stopped
+        } else {
+            vm.spec.power
+        };
         if desired == PowerState::Stopped {
             if live {
                 return self.stop_round(&vm, st, events).await;
@@ -312,9 +519,15 @@ impl VmManager {
             clear_cond(&mut st.conditions, "CrashLoopBackOff");
             clear_cond(&mut st.conditions, "RestartRequired");
             clear_cond(&mut st.conditions, "DevicesPending");
-            set_cond(&mut st.conditions, "ConsoleReady", Tristate::False, "NotRunning", "");
+            set_cond(
+                &mut st.conditions,
+                "ConsoleReady",
+                Tristate::False,
+                "NotRunning",
+                "",
+            );
             set_cond(&mut st.conditions, "Ready", Tristate::True, "Converged", "");
-            self.write_status(id, gen, st, events).await?;
+            self.write_status(id, generation, st, events).await?;
             return Ok(None);
         }
 
@@ -340,7 +553,12 @@ impl VmManager {
             runner: self.runner().record(&vm.id),
             boot_id: f.boot_id.clone(),
             launched_generation,
-            disks: c.root_disk.iter().chain(c.data_disks.iter()).cloned().collect(),
+            disks: c
+                .root_disk
+                .iter()
+                .chain(c.data_disks.iter())
+                .cloned()
+                .collect(),
             vfio_devices: c.vfio_devices.clone(),
             shim_pid: Some(f.shim_pid),
             shim_starttime: Some(f.shim_starttime),
@@ -349,11 +567,21 @@ impl VmManager {
             launched_at: f.launched_at,
             growpart_disk: None,
             growpart_seq: None,
+            cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
+            device_errors: device_errors_now(&c.vfio_devices),
         }
     }
 
     /// §7.5: the instance is gone; record why and act on it.
-    async fn finish_exit(&self, vm: &Vm, mut st: VmStatus, inst: InstanceRef, file: Option<InstanceFile>, boot: &str, mut events: Vec<Event>) -> Next {
+    async fn finish_exit(
+        &self,
+        vm: &Vm,
+        mut st: VmStatus,
+        inst: InstanceRef,
+        file: Option<InstanceFile>,
+        boot: &str,
+        mut events: Vec<Event>,
+    ) -> Next {
         let now = crate::tenancy::now();
         // When it really exited (the shim's record), not when we noticed:
         // metering ends allocation there (spec/metering.md §6.4).
@@ -370,15 +598,22 @@ impl VmManager {
             (ExitCause::Lost, None, None, None)
         } else {
             // The shim died without recording an exit.
-            (ExitCause::Lost, None, None, Some("the shim died without recording how the hypervisor ended".into()))
+            (
+                ExitCause::Lost,
+                None,
+                None,
+                Some("the shim died without recording how the hypervisor ended".into()),
+            )
         };
         let shim_died = cause == ExitCause::Lost && file.is_some();
         let disk_ids = match &usage {
-            Some(u) if !u.disks.is_empty() => glidex_vm_shim::LaunchFile::read(&crate::paths::vm_paths(&vm.id).launch)
-                .ok()
-                .filter(|l| l.instance_id == inst.instance_id)
-                .map(|l| crate::metering::sources::launched_disk_ids(&l.spec))
-                .unwrap_or_default(),
+            Some(u) if !u.disks.is_empty() => {
+                glidex_vm_shim::LaunchFile::read(&crate::paths::vm_paths(&vm.id).launch)
+                    .ok()
+                    .filter(|l| l.instance_id == inst.instance_id)
+                    .map(|l| crate::metering::sources::launched_disk_ids(&l.spec))
+                    .unwrap_or_default()
+            }
             _ => Vec::new(),
         };
         st.last_exit = Some(ExitRecord {
@@ -395,7 +630,13 @@ impl VmManager {
         st.instance = None;
         st.phase = VmPhase::Stopped;
         st.stop_deadline = None;
-        set_cond(&mut st.conditions, "ConsoleReady", Tristate::False, "NotRunning", "");
+        set_cond(
+            &mut st.conditions,
+            "ConsoleReady",
+            Tristate::False,
+            "NotRunning",
+            "",
+        );
         clear_cond(&mut st.conditions, "DevicesPending");
         let ran_for = now.saturating_sub(inst.launched_at);
         let mut stop: Option<(&str, &str, String)> = None;
@@ -403,22 +644,49 @@ impl VmManager {
             ExitCause::Requested | ExitCause::HostReboot => EventKind::Normal,
             _ => EventKind::Warning,
         };
-        events.push(Event::new("controller", kind, "InstanceExited", format!("instance {} ended: {}", inst.instance_id, cause.as_str())));
+        events.push(Event::new(
+            "controller",
+            kind,
+            "InstanceExited",
+            format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
+        ));
         match cause {
             ExitCause::Requested => {}
             ExitCause::Lost if !shim_died => {}
-            ExitCause::Terminated => stop = Some(("systemd", "Terminated", "the VM's unit was stopped outside glidex".into())),
-            ExitCause::CleanExit => stop = Some(("guest", "CleanExit", "guest powered off; desired state set to stopped".into())),
+            ExitCause::Terminated => {
+                stop = Some((
+                    "systemd",
+                    "Terminated",
+                    "the VM's unit was stopped outside glidex".into(),
+                ))
+            }
+            ExitCause::CleanExit => {
+                stop = Some((
+                    "guest",
+                    "CleanExit",
+                    "guest powered off; desired state set to stopped".into(),
+                ))
+            }
             ExitCause::HostReboot => {
                 if vm.spec.on_host_boot == crate::models::HostBootPolicy::Stop {
-                    stop = Some(("host", "HostReboot", "host rebooted; on_host_boot is stop".into()));
+                    stop = Some((
+                        "host",
+                        "HostReboot",
+                        "host rebooted; on_host_boot is stop".into(),
+                    ));
                 }
             }
             ExitCause::LaunchFailed => {
                 st.launch_failures += 1;
                 st.next_restart_at = Some(now + backoff(st.launch_failures).as_secs());
                 st.phase = VmPhase::Failed;
-                set_cond(&mut st.conditions, "Ready", Tristate::False, "LaunchFailed", message.clone().unwrap_or_default());
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "LaunchFailed",
+                    message.clone().unwrap_or_default(),
+                );
             }
             ExitCause::Crashed | ExitCause::Lost => {
                 if ran_for >= STABLE_SECS {
@@ -429,12 +697,37 @@ impl VmManager {
                         st.restart_count += 1;
                         let delay = crash_delay(st.restart_count);
                         st.next_restart_at = Some(now + delay);
-                        set_cond(&mut st.conditions, "CrashLoopBackOff", Tristate::True, "BackingOff", format!("restarting in {} s", delay));
-                        set_cond(&mut st.conditions, "Ready", Tristate::False, "Crashed", format!("the hypervisor crashed; restart {} in {} s", st.restart_count, delay));
+                        set_cond(
+                            &mut st.conditions,
+                            "CrashLoopBackOff",
+                            Tristate::True,
+                            "BackingOff",
+                            format!("restarting in {} s", delay),
+                        );
+                        set_cond(
+                            &mut st.conditions,
+                            "Ready",
+                            Tristate::False,
+                            "Crashed",
+                            format!(
+                                "the hypervisor crashed; restart {} in {} s",
+                                st.restart_count, delay
+                            ),
+                        );
                     }
                     RestartPolicy::Never => {
-                        set_cond(&mut st.conditions, "Ready", Tristate::False, "Crashed", "the hypervisor crashed; restart_policy is never");
-                        stop = Some(("controller", "Crashed", "the hypervisor crashed; desired state set to stopped".into()));
+                        set_cond(
+                            &mut st.conditions,
+                            "Ready",
+                            Tristate::False,
+                            "Crashed",
+                            "the hypervisor crashed; restart_policy is never",
+                        );
+                        stop = Some((
+                            "controller",
+                            "Crashed",
+                            "the hypervisor crashed; desired state set to stopped".into(),
+                        ));
                     }
                 }
             }
@@ -444,10 +737,12 @@ impl VmManager {
         // Disks the spec no longer references lose their claim with the
         // instance (D11): the disk controller releases them.
         for d in &inst.disks {
-            self.queue.add(crate::controller::queue::Key::Disk(d.clone()));
+            self.queue
+                .add(crate::controller::queue::Key::Disk(d.clone()));
         }
         if let Some((actor, reason, msg)) = stop {
-            self.stop_spec_after_exit(&vm.id, vm.generation, actor, reason, msg).await?;
+            self.stop_spec_after_exit(&vm.id, vm.generation, actor, reason, msg)
+                .await?;
         }
         Ok(Some(Duration::ZERO))
     }
@@ -456,7 +751,9 @@ impl VmManager {
     async fn stop_round(&self, vm: &Vm, mut st: VmStatus, events: Vec<Event>) -> Next {
         let now = crate::tenancy::now();
         let grace = vm.spec.stop_grace_secs as u64;
-        let deadline = *st.stop_deadline.get_or_insert(now + grace + STOP_SLACK_SECS);
+        let deadline = *st
+            .stop_deadline
+            .get_or_insert(now + grace + STOP_SLACK_SECS);
         let paths = vm.paths();
         let inst = st.instance.clone();
         let sent = shim_call(paths.shim_socket.clone(), move |c| c.stop(grace)).await;
@@ -466,25 +763,43 @@ impl VmManager {
             let shim = inst.as_ref().and_then(|i| i.shim_pid.zip(i.shim_starttime));
             let pids: Vec<(u32, u64)> = inst
                 .iter()
-                .flat_map(|i| [i.shim_pid.zip(i.shim_starttime), i.hypervisor_pid.zip(i.hypervisor_starttime)])
+                .flat_map(|i| {
+                    [
+                        i.shim_pid.zip(i.shim_starttime),
+                        i.hypervisor_pid.zip(i.hypervisor_starttime),
+                    ]
+                })
                 .flatten()
                 .collect();
             if now >= deadline + STOP_SLACK_SECS {
                 let _ = runner.kill(&vm.id, &pids).await;
-            } else if now >= deadline || sent.is_err() {
-                if let Err(e) = runner.stop(&vm.id, shim).await {
-                    tracing::warn!(vm_id = %vm.id, "stopping the instance: {}", e);
-                }
+            } else if (now >= deadline || sent.is_err())
+                && let Err(e) = runner.stop(&vm.id, shim).await
+            {
+                tracing::warn!(vm_id = %vm.id, "stopping the instance: {}", e);
             }
         }
         st.phase = VmPhase::Stopping;
-        set_cond(&mut st.conditions, "Ready", Tristate::False, "Progressing", "stopping");
+        set_cond(
+            &mut st.conditions,
+            "Ready",
+            Tristate::False,
+            "Progressing",
+            "stopping",
+        );
         self.write_status(&vm.id, vm.generation, st, events).await?;
-        Ok(Some(Duration::from_secs(deadline.saturating_sub(now).clamp(1, 5))))
+        Ok(Some(Duration::from_secs(
+            deadline.saturating_sub(now).clamp(1, 5),
+        )))
     }
 
     /// Detach this VM's ports: all of them, or those `keep` rejects.
-    pub(crate) async fn detach_ports(&self, vm_id: &str, st: &mut VmStatus, keep: Option<&(dyn Fn(&NicStatus) -> bool + Sync)>) -> Result<(), VmManagerError> {
+    pub(crate) async fn detach_ports(
+        &self,
+        vm_id: &str,
+        st: &mut VmStatus,
+        keep: Option<&(dyn Fn(&NicStatus) -> bool + Sync)>,
+    ) -> Result<(), VmManagerError> {
         // The ports' counters go with them: meter them first (metering §5.4).
         if st.nics.iter().any(|n| !keep.is_some_and(|k| k(n))) {
             self.meter_final_sample().await;
@@ -498,11 +813,23 @@ impl VmManager {
             }
             let netd = self.netd.clone();
             let (id, idx) = (vm_id.to_string(), nic.nic_index);
-            match blocking(move || netd.call::<serde_json::Value>(Op::DetachVmPort { vm_id: id, nic_index: idx })).await? {
+            match blocking(move || {
+                netd.call::<serde_json::Value>(Op::DetachVmPort {
+                    vm_id: id,
+                    nic_index: idx,
+                })
+            })
+            .await?
+            {
                 Ok(_) => {}
                 Err(NetError::Unavailable(e)) => {
                     // netd's own sync removes it once it is back.
-                    tracing::warn!(vm_id, nic = idx, "glidex-netd unavailable; port left for its next sync: {}", e);
+                    tracing::warn!(
+                        vm_id,
+                        nic = idx,
+                        "glidex-netd unavailable; port left for its next sync: {}",
+                        e
+                    );
                     remaining.push(nic);
                 }
                 Err(e) => {
@@ -527,21 +854,75 @@ impl VmManager {
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
 
-        // Dependencies.
-        let bindings = match self.disk_bindings(vm) {
+        // A kernel the guest installed (spec/kernel-boot.md §10.5): extract
+        // it first, so the bindings below use what this records.
+        let followed: Vm;
+        let vm = if vm.config().kernel_from_disk || st.disk_kernel.is_some() {
+            if let Err(e) = self.follow_disk_kernel(vm, &mut st).await {
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "KernelNotExtracted",
+                    e.to_string(),
+                );
+                if !matches!(st.phase, VmPhase::Failed) {
+                    st.phase = VmPhase::Stopped;
+                }
+                self.write_status(&vm.id, vm.generation, st, events).await?;
+                return Ok(Some(Duration::from_secs(30)));
+            }
+            followed = Vm {
+                status: st.clone(),
+                ..vm.clone()
+            };
+            &followed
+        } else {
+            vm
+        };
+
+        // Dependencies: disks, and this node's copy of the firmware or
+        // kernel image.
+        let bindings = match self.disk_bindings(vm).and_then(|(root, data)| {
+            Ok((
+                root,
+                data,
+                self.firmware_binding(vm)?,
+                self.kernel_binding(vm)?,
+            ))
+        }) {
             Ok(b) => {
-                set_cond(&mut st.conditions, "DisksReady", Tristate::True, "Ready", "");
+                set_cond(
+                    &mut st.conditions,
+                    "DisksReady",
+                    Tristate::True,
+                    "Ready",
+                    "",
+                );
                 b
             }
             Err(e) => {
                 let reason = match &e {
                     VmManagerError::Image(ImageError::Busy(_)) => "DiskBusy",
                     VmManagerError::Image(ImageError::NotReady(_)) => "DiskNotReady",
-                    VmManagerError::Image(ImageError::NotFound(_)) | VmManagerError::Image(ImageError::Io(_)) => "DiskMissing",
+                    VmManagerError::Image(ImageError::NotFound(_))
+                    | VmManagerError::Image(ImageError::Io(_)) => "DiskMissing",
                     _ => "DiskNotReady",
                 };
-                set_cond(&mut st.conditions, "DisksReady", Tristate::False, reason, e.to_string());
-                set_cond(&mut st.conditions, "Ready", Tristate::False, reason, e.to_string());
+                set_cond(
+                    &mut st.conditions,
+                    "DisksReady",
+                    Tristate::False,
+                    reason,
+                    e.to_string(),
+                );
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    reason,
+                    e.to_string(),
+                );
                 if !matches!(st.phase, VmPhase::Failed) {
                     st.phase = VmPhase::Stopped;
                 }
@@ -554,8 +935,20 @@ impl VmManager {
                 Ok(Some(_)) => {}
                 _ => {
                     let msg = format!("network {} does not exist", att.network);
-                    set_cond(&mut st.conditions, "NetworkReady", Tristate::False, "NetworkNotReady", msg.clone());
-                    set_cond(&mut st.conditions, "Ready", Tristate::False, "NetworkNotReady", msg);
+                    set_cond(
+                        &mut st.conditions,
+                        "NetworkReady",
+                        Tristate::False,
+                        "NetworkNotReady",
+                        msg.clone(),
+                    );
+                    set_cond(
+                        &mut st.conditions,
+                        "Ready",
+                        Tristate::False,
+                        "NetworkNotReady",
+                        msg,
+                    );
                     self.write_status(&vm.id, vm.generation, st, events).await?;
                     return Ok(Some(Duration::from_secs(5)));
                 }
@@ -563,11 +956,23 @@ impl VmManager {
         }
 
         st.phase = VmPhase::Provisioning;
-        set_cond(&mut st.conditions, "Ready", Tristate::False, "Progressing", "provisioning");
+        set_cond(
+            &mut st.conditions,
+            "Ready",
+            Tristate::False,
+            "Progressing",
+            "provisioning",
+        );
         // A new instance takes the spec as it is now, with new ports.
         clear_cond(&mut st.conditions, "RestartRequired");
-        st.conditions.retain(|c| !(c.kind == "NetworkReady" && c.reason == "PortLost"));
-        let Some(stored) = self.write_status(&vm.id, vm.generation, st.clone(), events).await? else { return Ok(None) };
+        st.conditions
+            .retain(|c| !(c.kind == "NetworkReady" && c.reason == "PortLost"));
+        let Some(stored) = self
+            .write_status(&vm.id, vm.generation, st.clone(), events)
+            .await?
+        else {
+            return Ok(None);
+        };
         st = stored.status;
         // Ports kept from an earlier instance stay ours whatever happens
         // this round (D16); only ports this round adds are undone.
@@ -576,7 +981,13 @@ impl VmManager {
         match self.provision_and_start(vm, &mut st, bindings).await {
             Ok(()) => {
                 st.phase = VmPhase::Starting;
-                set_cond(&mut st.conditions, "Ready", Tristate::False, "Progressing", "starting");
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "Progressing",
+                    "starting",
+                );
                 self.write_status(&vm.id, vm.generation, st, vec![]).await?;
                 self.watch_instance(&vm.id).await;
                 Ok(Some(Duration::from_millis(500)))
@@ -589,18 +1000,30 @@ impl VmManager {
                     self.detach_ports(&vm.id, &mut st, Some(&keep)).await?;
                 }
                 st.launch_failures += 1;
-                st.next_restart_at = Some(crate::tenancy::now() + backoff(st.launch_failures).as_secs());
+                st.next_restart_at =
+                    Some(crate::tenancy::now() + backoff(st.launch_failures).as_secs());
                 st.phase = VmPhase::Failed;
                 let reason = match &e {
                     VmManagerError::Network(NetError::Unavailable(_)) => "NetdUnavailable",
                     VmManagerError::Credential(_) => "CredentialError",
                     VmManagerError::Image(ImageError::ToolMissing { .. }) => "ToolUnavailable",
-                    VmManagerError::HypervisorError(HypervisorError::CloudInit(m)) if m.contains("not installed") || m.contains("not found") => "ToolUnavailable",
+                    VmManagerError::HypervisorError(HypervisorError::CloudInit(m))
+                        if m.contains("not installed") || m.contains("not found") =>
+                    {
+                        "ToolUnavailable"
+                    }
                     _ => "ProvisioningFailed",
                 };
-                set_cond(&mut st.conditions, "Ready", Tristate::False, reason, e.to_string());
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    reason,
+                    e.to_string(),
+                );
                 let ev = Event::new("controller", EventKind::Warning, reason, e.to_string());
-                self.write_status(&vm.id, vm.generation, st.clone(), vec![ev]).await?;
+                self.write_status(&vm.id, vm.generation, st.clone(), vec![ev])
+                    .await?;
                 Ok(Some(backoff(st.launch_failures)))
             }
         }
@@ -612,36 +1035,56 @@ impl VmManager {
         &self,
         vm: &Vm,
         st: &mut VmStatus,
-        (root, data): (Option<(crate::models::DiskBinding, crate::images::Disk)>, Vec<crate::models::DiskBinding>),
+        (root, data, firmware, kernel): LaunchBindings,
     ) -> Result<(), LaunchFailure> {
         let paths = vm.paths();
-        crate::paths::ensure_vm_dir(&vm.id).map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
+        crate::paths::ensure_vm_dir(&vm.id)
+            .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
         let mut config = vm.config().clone();
         config.root_disk_binding = root.as_ref().map(|(b, _)| b.clone());
         config.data_disk_bindings = data;
+        if firmware.is_some() {
+            config.firmware_path = firmware;
+        }
+        if let Some((kernel, initrd)) = kernel {
+            config.kernel_image_path = kernel;
+            config.initrd_path = initrd;
+        }
         if config.firmware_path.is_some() && vm.hypervisor() == HypervisorType::Qemu {
             config.firmware_vars_path = Some(self.firmware_vars_path(&vm.id));
             if let Some(id) = &config.firmware_image {
                 let template = self.images.firmware_vars_template(id);
-                config.firmware_vars_template = template.exists().then(|| template.to_string_lossy().into_owned());
+                config.firmware_vars_template = template
+                    .exists()
+                    .then(|| template.to_string_lossy().into_owned());
             }
         }
 
         // 5.1 the cloud-init seed (regenerated on every launch).
         let mut growpart_disk = None;
         let mut growpart_seq = None;
-        if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
+        if config.generates_seed() {
             let seed_path = paths.cloud_init.clone();
             let mut seed = match &config.credential {
                 Some(username) => {
-                    let cred = self.credentials.get(&vm.project, username).map_err(before_intent)?;
+                    let cred = self
+                        .credentials
+                        .get(&vm.project, username)
+                        .map_err(before_intent)?;
                     cloud_init::SeedConfig::for_credential(&vm.id, &vm.name, &cred)
                 }
                 None => cloud_init::SeedConfig::for_vm(&vm.id, &vm.name),
             };
-            seed.nic_macs = config.networks.iter().enumerate().map(|(i, a)| {
-                a.mac.clone().unwrap_or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).unwrap_or_default())
-            }).collect();
+            seed.nic_macs = config
+                .networks
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    a.mac.clone().unwrap_or_else(|| {
+                        glidex_ovs::names::mac_address(&vm.id, i as u8).unwrap_or_default()
+                    })
+                })
+                .collect();
             seed.growpart = root.as_ref().is_some_and(|(_, d)| d.pending_growpart);
             if seed.growpart {
                 growpart_disk = root.as_ref().map(|(_, d)| d.id.clone());
@@ -660,12 +1103,92 @@ impl VmManager {
 
         // 5.2 the ports: record each in status before attaching it (D16).
         config.nic_bindings = self.attach_ports(vm, st).await.map_err(before_intent)?;
-        // vhost-user over 4 KiB guest pages makes OVS's PMDs take TLB
-        // misses on every packet; back the guest with hugepages when the
-        // host has them to spare.
-        if !config.hugepages && crate::hypervisor::needs_shared_memory(&config) {
-            config.hugepages = crate::hypervisor::hugepages_available_for(config.mem_size_mib);
+        // Guest RAM in the pages the scheduler counted (spec/host-topology.md
+        // §8a.3), checked against what is free now.
+        match vm.status.placement.as_ref().and_then(|p| p.page_kib) {
+            Some(kib) => {
+                config.hugepages = kib != crate::models::SMALL_PAGE_KIB;
+                if config.hugepages {
+                    config.hugepage_size = Some(crate::models::hugepage_size_name(kib));
+                    let need = config.mem_size_mib as u64;
+                    let numa = vm.status.placement.as_ref().and_then(|p| p.numa_node);
+                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
+                        .await
+                        .map_err(before_intent)?;
+                    if spare < need {
+                        return Err(before_intent(
+                            crate::hypervisor::HypervisorError::Unsupported(format!(
+                                "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
+                                crate::models::hugepage_size_name(kib),
+                                numa.map(|n| format!(" on NUMA node {n}"))
+                                    .unwrap_or_default(),
+                                spare,
+                                need
+                            )),
+                        ));
+                    }
+                }
+            }
+            // Placed before the scheduler counted pages: vhost-user over 4 KiB
+            // guest pages makes OVS's PMDs take TLB misses on every packet;
+            // back the guest with hugepages when the host has them to spare.
+            None => {
+                if !config.hugepages && crate::hypervisor::needs_shared_memory(&config) {
+                    config.hugepages =
+                        crate::hypervisor::hugepages_available_for(config.mem_size_mib);
+                }
+            }
         }
+
+        // Where it runs (spec/host-topology.md §7): its RAM bound to its
+        // NUMA node; dedicated vCPUs each on a CPU it holds, every thread
+        // on those; a shared VM on what dedicated VMs leave, once any are
+        // here. A placement that no longer holds fails the start.
+        let (numa, held) = vm
+            .status
+            .placement
+            .as_ref()
+            .map(|p| (p.numa_node, p.cpus.clone()))
+            .unwrap_or_default();
+        config.host_numa_node = numa;
+        // The devices picked for its pool requests (spec/host-topology.md §9).
+        for d in vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+        {
+            let path = format!("/sys/bus/pci/devices/{}", d.address);
+            if !config.vfio_devices.contains(&path) {
+                config.vfio_devices.push(path);
+            }
+        }
+        let (cpu_affinity, launch_pins) = if held.is_empty() {
+            (self.local_shared_pool().await, Vec::new())
+        } else {
+            let n = config.vcpu_count as usize;
+            let online = crate::hypervisor::online_cpus();
+            if held.len() < n {
+                return Err(before_intent(HypervisorError::Unsupported(format!(
+                    "the placement holds {} CPUs for {} dedicated vCPUs",
+                    held.len(),
+                    n
+                ))));
+            }
+            if let Some(c) = held.iter().find(|c| !online.contains(c)) {
+                return Err(before_intent(HypervisorError::Unsupported(format!(
+                    "CPU {c} of the placement is offline"
+                ))));
+            }
+            let pins = held[..n].to_vec();
+            match vm.hypervisor() {
+                crate::hypervisor::HypervisorType::CloudHypervisor => {
+                    config.vcpu_pins = pins;
+                    (held, Vec::new())
+                }
+                crate::hypervisor::HypervisorType::Qemu => (held, pins),
+            }
+        };
 
         // 5.3 launch.json
         let instance_id = uuid::Uuid::new_v4().to_string();
@@ -673,10 +1196,22 @@ impl VmManager {
         let args = {
             let c = config.clone();
             let api = paths.api_socket.clone();
-            blocking(move || d.launch_args(&c, &api)).await.map_err(before_intent)?.map_err(before_intent)?
+            blocking(move || d.launch_args(&c, &api))
+                .await
+                .map_err(before_intent)?
+                .map_err(before_intent)?
         };
         let settings = self.settings();
+        // Shared disks' locks: the shim takes them before the hypervisor
+        // starts (spec/storage.md S16).
+        let volume_locks = config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .filter_map(|b| b.lock().map(String::from))
+            .collect();
         let launch = LaunchFile {
+            volume_locks,
             version: glidex_vm_shim::launch::LAUNCH_VERSION,
             vm_id: vm.id.clone(),
             instance_id: instance_id.clone(),
@@ -692,20 +1227,31 @@ impl VmManager {
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
             meter_poll_secs: settings.meter_poll_secs,
+            cpu_affinity: cpu_affinity.clone(),
+            vcpu_pins: launch_pins,
+            job: false,
         };
-        launch.write(&paths.launch).map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
+        launch
+            .write(&paths.launch)
+            .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
 
         // 5.4 the intent record, before anything runs.
         let runner = self.runner();
-        let boot = glidex_vm_shim::util::boot_id().map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
+        let boot = glidex_vm_shim::util::boot_id()
+            .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
         let c = vm.config();
         st.instance = Some(InstanceRef {
             instance_id: instance_id.clone(),
             runner: runner.record(&vm.id),
             boot_id: boot,
             launched_generation: vm.generation,
-            disks: c.root_disk.iter().chain(c.data_disks.iter()).cloned().collect(),
-            vfio_devices: c.vfio_devices.clone(),
+            disks: c
+                .root_disk
+                .iter()
+                .chain(c.data_disks.iter())
+                .cloned()
+                .collect(),
+            vfio_devices: config.vfio_devices.clone(),
             shim_pid: None,
             shim_starttime: None,
             hypervisor_pid: None,
@@ -713,19 +1259,36 @@ impl VmManager {
             launched_at: crate::tenancy::now(),
             growpart_disk,
             growpart_seq,
+            cpu_affinity,
+            device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
-        let ev = Event::new("controller", EventKind::Normal, "Launching", format!("launching instance {}", instance_id));
-        if let Some(stored) = self.write_status(&vm.id, vm.generation, st.clone(), vec![ev]).await.map_err(before_intent)? {
+        let ev = Event::new(
+            "controller",
+            EventKind::Normal,
+            "Launching",
+            format!("launching instance {}", instance_id),
+        );
+        if let Some(stored) = self
+            .write_status(&vm.id, vm.generation, st.clone(), vec![ev])
+            .await
+            .map_err(before_intent)?
+        {
             *st = stored.status;
         }
 
         // 5.5 start the shim, and wait for it to leave `launching`.
-        runner.start(&vm.id, &paths).await.map_err(|e| LaunchFailure {
-            error: Box::new(HypervisorError::ProcessStart(std::io::Error::other(e.to_string())).into()),
-            intent: true,
-        })?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(settings.ready_timeout_secs + 5);
+        runner
+            .start(&vm.id, &paths)
+            .await
+            .map_err(|e| LaunchFailure {
+                error: Box::new(
+                    HypervisorError::ProcessStart(std::io::Error::other(e.to_string())).into(),
+                ),
+                intent: true,
+            })?;
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(settings.ready_timeout_secs + 5);
         loop {
             match InstanceFile::read(&paths.instance) {
                 Ok(Some(f)) if f.instance_id == instance_id && f.phase != Phase::Launching => {
@@ -750,10 +1313,12 @@ impl VmManager {
         loop {
             let netd = self.netd.clone();
             let st = blocking(move || netd.call::<glidex_ovs::ovn::OvnStatus>(Op::OvnStatus)).await;
-            if let Ok(Ok(st)) = st {
-                if lports.iter().all(|p| st.ports.iter().any(|x| &x.lport == p && x.ovn_installed)) {
-                    return true;
-                }
+            if let Ok(Ok(st)) = st
+                && lports
+                    .iter()
+                    .all(|p| st.ports.iter().any(|x| &x.lport == p && x.ovn_installed))
+            {
+                return true;
             }
             if tokio::time::Instant::now() >= deadline {
                 return false;
@@ -765,9 +1330,17 @@ impl VmManager {
     /// Attach (or re-attach: netd is idempotent) every NIC of the spec,
     /// first detaching ports the spec no longer has. Each port is written
     /// to `status.nics` before netd attaches it.
-    async fn attach_ports(&self, vm: &Vm, st: &mut VmStatus) -> Result<Vec<NicBinding>, VmManagerError> {
+    async fn attach_ports(
+        &self,
+        vm: &Vm,
+        st: &mut VmStatus,
+    ) -> Result<Vec<NicBinding>, VmManagerError> {
         let networks = vm.config().networks.clone();
-        let stale = |n: &NicStatus| networks.get(n.nic_index as usize).is_some_and(|a| a.network == n.network);
+        let stale = |n: &NicStatus| {
+            networks
+                .get(n.nic_index as usize)
+                .is_some_and(|a| a.network == n.network)
+        };
         if st.nics.iter().any(|n| !stale(n)) {
             self.detach_ports(&vm.id, st, Some(&stale)).await?;
         }
@@ -777,18 +1350,33 @@ impl VmManager {
         let _ports = self.ports_lock.lock().await;
         let mut out = Vec::new();
         for (i, att) in networks.iter().enumerate() {
-            let net = self.networks.get(&att.network)?.ok_or_else(|| NetError::NotFound(att.network.clone()))?;
+            let net = self
+                .networks
+                .get(&att.network)?
+                .ok_or_else(|| NetError::NotFound(att.network.clone()))?;
             let mac = match &att.mac {
                 Some(m) => m.clone(),
-                None => glidex_ovs::names::mac_address(&vm.id, i as u8).map_err(|e| NetError::Invalid(e.to_string()))?,
+                None => glidex_ovs::names::mac_address(&vm.id, i as u8)
+                    .map_err(|e| NetError::Invalid(e.to_string()))?,
             };
             if !st.nics.iter().any(|n| n.nic_index as usize == i) {
-                st.nics.push(NicStatus { network: net.name.clone(), nic_index: i as u8, mac: mac.clone(), port: None, ipv4: None, port_ok: false });
-                if let Some(stored) = self.write_status(&vm.id, vm.generation, st.clone(), vec![]).await? {
+                st.nics.push(NicStatus {
+                    network: net.id.clone(),
+                    nic_index: i as u8,
+                    mac: mac.clone(),
+                    port: None,
+                    ipv4: None,
+                    port_ok: false,
+                });
+                if let Some(stored) = self
+                    .write_status(&vm.id, vm.generation, st.clone(), vec![])
+                    .await?
+                {
                     *st = stored.status;
                 }
             }
-            let queue_pairs = nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
+            let queue_pairs =
+                nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
             let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
@@ -797,23 +1385,51 @@ impl VmManager {
                 n.ipv4 = res.ipv4;
                 n.port_ok = true;
             }
-            out.push(NicBinding { id: format!("net{}", i), mac, binding: res.binding, queue_pairs, mtu: net.mtu });
+            out.push(NicBinding {
+                id: format!("net{}", i),
+                mac,
+                binding: res.binding,
+                queue_pairs,
+                mtu: net.mtu,
+            });
         }
         // Ports on OVN networks carry traffic once ovn-controller has their
         // flows (§11.5): wait a little, then launch anyway and say so.
         let lports: Vec<String> = networks
             .iter()
             .enumerate()
-            .filter(|(_, a)| self.networks.get(&a.network).ok().flatten().is_some_and(|n| n.scope == crate::network::NetworkScope::Cluster))
+            .filter(|(_, a)| {
+                self.networks
+                    .get(&a.network)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|n| n.scope == crate::network::NetworkScope::Cluster)
+            })
             .filter_map(|(i, _)| glidex_ovs::names::port_name(&vm.id, i as u8).ok())
             .collect();
         if !lports.is_empty() {
             if self.wait_ovn_installed(&lports).await {
-                if st.conditions.iter().any(|c| c.kind == "NetworkReady" && c.reason == "PortNotInstalled") {
-                    set_cond(&mut st.conditions, "NetworkReady", Tristate::True, "Ready", "");
+                if st
+                    .conditions
+                    .iter()
+                    .any(|c| c.kind == "NetworkReady" && c.reason == "PortNotInstalled")
+                {
+                    set_cond(
+                        &mut st.conditions,
+                        "NetworkReady",
+                        Tristate::True,
+                        "Ready",
+                        "",
+                    );
                 }
             } else {
-                set_cond(&mut st.conditions, "NetworkReady", Tristate::False, "PortNotInstalled", "OVN has not installed the port's flows yet; traffic starts when it does");
+                set_cond(
+                    &mut st.conditions,
+                    "NetworkReady",
+                    Tristate::False,
+                    "PortNotInstalled",
+                    "OVN has not installed the port's flows yet; traffic starts when it does",
+                );
             }
         }
         Ok(out)
@@ -821,7 +1437,13 @@ impl VmManager {
 
     /// A live instance whose guest should be running or paused (§9.1
     /// steps 6-8).
-    async fn running_round(&self, vm: &Vm, mut st: VmStatus, file: Option<InstanceFile>, events: Vec<Event>) -> Next {
+    async fn running_round(
+        &self,
+        vm: &Vm,
+        mut st: VmStatus,
+        file: Option<InstanceFile>,
+        events: Vec<Event>,
+    ) -> Next {
         if file.as_ref().is_none_or(|f| f.phase == Phase::Launching) {
             st.phase = VmPhase::Starting;
             self.write_status(&vm.id, vm.generation, st, events).await?;
@@ -833,20 +1455,49 @@ impl VmManager {
         let observed = match blocking(move || d.observe(&api)).await? {
             Ok(o) => o,
             Err(e) => {
-                set_cond(&mut st.conditions, "HypervisorReachable", Tristate::False, "Unreachable", e.to_string());
+                set_cond(
+                    &mut st.conditions,
+                    "HypervisorReachable",
+                    Tristate::False,
+                    "Unreachable",
+                    e.to_string(),
+                );
                 self.write_status(&vm.id, vm.generation, st, events).await?;
                 return Ok(Some(Duration::from_secs(5)));
             }
         };
-        set_cond(&mut st.conditions, "HypervisorReachable", Tristate::True, "Reachable", "");
-        set_cond(&mut st.conditions, "ConsoleReady", Tristate::True, "Ready", "");
+        set_cond(
+            &mut st.conditions,
+            "HypervisorReachable",
+            Tristate::True,
+            "Reachable",
+            "",
+        );
+        set_cond(
+            &mut st.conditions,
+            "ConsoleReady",
+            Tristate::True,
+            "Ready",
+            "",
+        );
         let mut events = events;
         match observed.guest {
             GuestState::NotCreated | GuestState::Created => {
                 // Cannot happen with D9; never patched up through the API.
                 let _ = shim_call(paths.shim_socket.clone(), |c| c.kill()).await;
-                set_cond(&mut st.conditions, "Ready", Tristate::False, "HypervisorError", "the hypervisor runs no booted VM; killed");
-                events.push(Event::new("controller", EventKind::Warning, "HypervisorError", "the hypervisor runs no booted VM; killed it"));
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "HypervisorError",
+                    "the hypervisor runs no booted VM; killed",
+                );
+                events.push(Event::new(
+                    "controller",
+                    EventKind::Warning,
+                    "HypervisorError",
+                    "the hypervisor runs no booted VM; killed it",
+                ));
                 self.write_status(&vm.id, vm.generation, st, events).await?;
                 return Ok(Some(Duration::from_secs(1)));
             }
@@ -861,31 +1512,77 @@ impl VmManager {
         if !st.nics.is_empty() {
             self.port_drift(vm, &mut st, &mut events).await?;
         }
+        self.cpu_drift(vm, &mut st, &mut events).await;
+        device_health(&mut st, &mut events);
         let mut guest = observed.guest;
         let d = driver(vm.hypervisor());
         if vm.spec.power == PowerState::Paused && guest == GuestState::Running {
             let api = paths.api_socket.clone();
             match blocking(move || d.pause(&api)).await? {
                 Ok(()) => guest = GuestState::Paused,
-                Err(e) => events.push(Event::new("controller", EventKind::Warning, "PauseFailed", e.to_string())),
+                Err(e) => events.push(Event::new(
+                    "controller",
+                    EventKind::Warning,
+                    "PauseFailed",
+                    e.to_string(),
+                )),
             }
         } else if vm.spec.power == PowerState::Running && guest == GuestState::Paused {
             let api = paths.api_socket.clone();
             match blocking(move || d.resume(&api)).await? {
                 Ok(()) => guest = GuestState::Running,
-                Err(e) => events.push(Event::new("controller", EventKind::Warning, "ResumeFailed", e.to_string())),
+                Err(e) => events.push(Event::new(
+                    "controller",
+                    EventKind::Warning,
+                    "ResumeFailed",
+                    e.to_string(),
+                )),
             }
         }
 
         // VFIO: hot-plug what the spec has and the guest lacks, and back.
-        let wanted: Vec<String> = vm.config().vfio_devices.clone();
-        let have: Vec<String> = observed.device_ids.iter().filter(|i| i.starts_with("_vfio_")).cloned().collect();
-        let mut held: Vec<String> = st.instance.as_ref().map(|i| i.vfio_devices.clone()).unwrap_or_default();
-        let to_add: Vec<String> = wanted.iter().filter(|p| !have.contains(&vfio_device_id(p))).cloned().collect();
-        let to_remove: Vec<String> = held.iter().filter(|p| !wanted.contains(p) && have.contains(&vfio_device_id(p))).cloned().collect();
+        // What the spec names and what its pool requests got.
+        let mut wanted: Vec<String> = vm.config().vfio_devices.clone();
+        for d in vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+        {
+            let path = format!("/sys/bus/pci/devices/{}", d.address);
+            if !wanted.contains(&path) {
+                wanted.push(path);
+            }
+        }
+        let have: Vec<String> = observed
+            .device_ids
+            .iter()
+            .filter_map(|i| crate::hypervisor::observed_vfio_id(i))
+            .collect();
+        let mut held: Vec<String> = st
+            .instance
+            .as_ref()
+            .map(|i| i.vfio_devices.clone())
+            .unwrap_or_default();
+        let to_add: Vec<String> = wanted
+            .iter()
+            .filter(|p| !have.contains(&vfio_device_id(p)))
+            .cloned()
+            .collect();
+        let to_remove: Vec<String> = held
+            .iter()
+            .filter(|p| !wanted.contains(p) && have.contains(&vfio_device_id(p)))
+            .cloned()
+            .collect();
         if !to_add.is_empty() || !to_remove.is_empty() {
             if guest != GuestState::Running {
-                set_cond(&mut st.conditions, "DevicesPending", Tristate::True, "GuestPaused", "devices change once the guest runs");
+                set_cond(
+                    &mut st.conditions,
+                    "DevicesPending",
+                    Tristate::True,
+                    "GuestPaused",
+                    "devices change once the guest runs",
+                );
             } else {
                 let mut failed = Vec::new();
                 for p in to_add {
@@ -909,7 +1606,13 @@ impl VmManager {
                 if failed.is_empty() {
                     clear_cond(&mut st.conditions, "DevicesPending");
                 } else {
-                    set_cond(&mut st.conditions, "DevicesPending", Tristate::True, "HotplugFailed", failed.join("; "));
+                    set_cond(
+                        &mut st.conditions,
+                        "DevicesPending",
+                        Tristate::True,
+                        "HotplugFailed",
+                        failed.join("; "),
+                    );
                 }
             }
         } else {
@@ -920,7 +1623,11 @@ impl VmManager {
             inst.vfio_devices = held;
         }
 
-        st.phase = if guest == GuestState::Paused { VmPhase::Paused } else { VmPhase::Running };
+        st.phase = if guest == GuestState::Paused {
+            VmPhase::Paused
+        } else {
+            VmPhase::Running
+        };
         let now = crate::tenancy::now();
         if let Some(inst) = st.instance.as_mut() {
             if now.saturating_sub(inst.launched_at) >= STABLE_SECS {
@@ -929,11 +1636,11 @@ impl VmManager {
             // The seed carried a root-partition grow and the guest booted
             // it: say so; the disk controller clears its flag (each
             // controller writes only its own object, §6.2).
-            if guest == GuestState::Running {
-                if let Some(disk) = inst.growpart_disk.take() {
-                    st.seed_growpart_seq = inst.growpart_seq.take();
-                    self.queue.add(crate::controller::queue::Key::Disk(disk));
-                }
+            if guest == GuestState::Running
+                && let Some(disk) = inst.growpart_disk.take()
+            {
+                st.seed_growpart_seq = inst.growpart_seq.take();
+                self.queue.add(crate::controller::queue::Key::Disk(disk));
             }
         }
         st.launch_failures = 0;
@@ -941,22 +1648,97 @@ impl VmManager {
 
         // ---- 8. RestartRequired, Ready ------------------------------------------
         let launched = blocking(move || launched_spec(&paths)).await?;
-        let restart_required = launched.as_ref().is_some_and(|l| launch_relevant(l) != launch_relevant(&vm.spec));
+        let restart_required = launched
+            .as_ref()
+            .is_some_and(|l| launch_relevant(l) != launch_relevant(&vm.spec));
         if restart_required {
-            set_cond(&mut st.conditions, "RestartRequired", Tristate::True, "ConfigChanged", "changes take effect at the next start");
-        } else if st.conditions.iter().any(|c| c.kind == "RestartRequired" && c.reason == "ConfigChanged") {
+            set_cond(
+                &mut st.conditions,
+                "RestartRequired",
+                Tristate::True,
+                "ConfigChanged",
+                "changes take effect at the next start",
+            );
+        } else if st
+            .conditions
+            .iter()
+            .any(|c| c.kind == "RestartRequired" && c.reason == "ConfigChanged")
+        {
             clear_cond(&mut st.conditions, "RestartRequired");
         }
-        let converged = matches!((vm.spec.power, st.phase), (PowerState::Running, VmPhase::Running) | (PowerState::Paused, VmPhase::Paused))
-            && !st.conditions.iter().any(|c| c.kind == "DevicesPending" && c.status == Tristate::True);
+        let converged = matches!(
+            (vm.spec.power, st.phase),
+            (PowerState::Running, VmPhase::Running) | (PowerState::Paused, VmPhase::Paused)
+        ) && !st
+            .conditions
+            .iter()
+            .any(|c| c.kind == "DevicesPending" && c.status == Tristate::True);
         if converged {
             set_cond(&mut st.conditions, "Ready", Tristate::True, "Converged", "");
         } else {
-            set_cond(&mut st.conditions, "Ready", Tristate::False, "Progressing", format!("guest is {:?}, desired {}", guest, power_name(vm.spec.power)));
+            set_cond(
+                &mut st.conditions,
+                "Ready",
+                Tristate::False,
+                "Progressing",
+                format!(
+                    "guest is {:?}, desired {}",
+                    guest,
+                    power_name(vm.spec.power)
+                ),
+            );
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
         self.write_status(&vm.id, vm.generation, st, events).await?;
-        Ok(if converged { None } else { Some(Duration::from_secs(2)) })
+        Ok(if converged {
+            None
+        } else {
+            Some(Duration::from_secs(2))
+        })
+    }
+
+    /// A running shared VM follows the CPUs dedicated VMs leave free on its
+    /// node (spec/host-topology.md §8.1): the shim moves its threads when
+    /// that set changes, back to every online CPU once no dedicated VM is
+    /// left. Dedicated VMs keep the CPUs they launched on.
+    async fn cpu_drift(&self, vm: &Vm, st: &mut VmStatus, events: &mut Vec<Event>) {
+        if vm
+            .status
+            .placement
+            .as_ref()
+            .is_some_and(|p| !p.cpus.is_empty())
+        {
+            return;
+        }
+        let Some(inst) = st.instance.as_ref() else {
+            return;
+        };
+        let want = self.local_shared_pool().await;
+        if want == inst.cpu_affinity {
+            return;
+        }
+        let cpus = if want.is_empty() {
+            crate::hypervisor::online_cpus()
+        } else {
+            want.clone()
+        };
+        match shim_call(vm.paths().shim_socket.clone(), move |c| {
+            c.set_affinity(&cpus)
+        })
+        .await
+        {
+            Ok(_) => {
+                if let Some(i) = st.instance.as_mut() {
+                    i.cpu_affinity = want;
+                }
+            }
+            Err(e) => events.push(Event::new(
+                "controller",
+                EventKind::Warning,
+                "CpuAffinityFailed",
+                format!("moving its threads off dedicated CPUs: {e}"),
+            )),
+        }
     }
 
     /// §10.3: a live instance's ports, against what OVS has. An OVS port
@@ -964,18 +1746,37 @@ impl VmManager {
     /// (`attach_vm_port` is idempotent, F5). A tap that is gone is not
     /// re-created: the hypervisor holds an fd to the old device, so a new
     /// one would be connected to nothing (`PortLost`, restart needed).
-    async fn port_drift(&self, vm: &Vm, st: &mut VmStatus, events: &mut Vec<Event>) -> Result<(), VmManagerError> {
+    async fn port_drift(
+        &self,
+        vm: &Vm,
+        st: &mut VmStatus,
+        events: &mut Vec<Event>,
+    ) -> Result<(), VmManagerError> {
         let netd = self.netd.clone();
-        let bridges = match blocking(move || netd.call::<Vec<glidex_netd::proto::BridgeRecord>>(Op::ListBridges)).await? {
+        let bridges = match blocking(move || {
+            netd.call::<Vec<glidex_netd::proto::BridgeRecord>>(Op::ListBridges)
+        })
+        .await?
+        {
             Ok(b) => b,
             Err(_) => return Ok(()), // netd away: nothing to compare with
         };
         let mut lost = Vec::new();
         for i in 0..st.nics.len() {
             let nic = st.nics[i].clone();
-            let Some(port) = nic.port.clone() else { continue };
-            let Ok(Some(net)) = self.networks.get(&nic.network) else { continue };
-            let Some(live) = bridges.iter().find(|b| b.spec.name == net.bridge).and_then(|b| b.live.as_ref()) else { continue };
+            let Some(port) = nic.port.clone() else {
+                continue;
+            };
+            let Ok(Some(net)) = self.networks.get(&nic.network) else {
+                continue;
+            };
+            let Some(live) = bridges
+                .iter()
+                .find(|b| b.spec.name == net.bridge)
+                .and_then(|b| b.live.as_ref())
+            else {
+                continue;
+            };
             if live.ports.contains(&port) {
                 st.nics[i].port_ok = true;
                 continue;
@@ -986,32 +1787,84 @@ impl VmManager {
                 lost.push(port);
                 continue;
             }
-            let Some(att) = vm.config().networks.get(nic.nic_index as usize) else { continue };
-            let spec = port_spec(&vm.id, &net, nic.nic_index, nic.mac.clone(), nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count));
+            let Some(att) = vm.config().networks.get(nic.nic_index as usize) else {
+                continue;
+            };
+            let spec = port_spec(
+                &vm.id,
+                &net,
+                nic.nic_index,
+                nic.mac.clone(),
+                nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
+            );
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             match blocking(move || netd.call::<AttachResult>(Op::AttachVmPort(spec))).await? {
                 Ok(_) => {
                     st.nics[i].port_ok = true;
-                    events.push(Event::new("controller", EventKind::Warning, "PortRestored", format!("re-added {} to {}", port, net.bridge)));
+                    events.push(Event::new(
+                        "controller",
+                        EventKind::Warning,
+                        "PortRestored",
+                        format!("re-added {} to {}", port, net.bridge),
+                    ));
                 }
                 Err(e) => {
                     st.nics[i].port_ok = false;
-                    events.push(Event::new("controller", EventKind::Warning, "PortRestoreFailed", format!("{}: {}", port, e)));
+                    events.push(Event::new(
+                        "controller",
+                        EventKind::Warning,
+                        "PortRestoreFailed",
+                        format!("{}: {}", port, e),
+                    ));
                 }
             }
         }
         if lost.is_empty() {
-            if st.conditions.iter().any(|c| c.kind == "NetworkReady" && c.reason == "PortLost") {
-                set_cond(&mut st.conditions, "NetworkReady", Tristate::True, "Ready", "");
+            if st
+                .conditions
+                .iter()
+                .any(|c| c.kind == "NetworkReady" && c.reason == "PortLost")
+            {
+                set_cond(
+                    &mut st.conditions,
+                    "NetworkReady",
+                    Tristate::True,
+                    "Ready",
+                    "",
+                );
             }
         } else {
-            let msg = format!("tap {} is gone; restart the VM to get a new one", lost.join(", "));
-            if !st.conditions.iter().any(|c| c.kind == "NetworkReady" && c.reason == "PortLost") {
-                events.push(Event::new("controller", EventKind::Warning, "PortLost", msg.clone()));
+            let msg = format!(
+                "tap {} is gone; restart the VM to get a new one",
+                lost.join(", ")
+            );
+            if !st
+                .conditions
+                .iter()
+                .any(|c| c.kind == "NetworkReady" && c.reason == "PortLost")
+            {
+                events.push(Event::new(
+                    "controller",
+                    EventKind::Warning,
+                    "PortLost",
+                    msg.clone(),
+                ));
             }
-            set_cond(&mut st.conditions, "NetworkReady", Tristate::False, "PortLost", msg.clone());
-            set_cond(&mut st.conditions, "RestartRequired", Tristate::True, "PortLost", msg);
+            set_cond(
+                &mut st.conditions,
+                "NetworkReady",
+                Tristate::False,
+                "PortLost",
+                msg.clone(),
+            );
+            set_cond(
+                &mut st.conditions,
+                "RestartRequired",
+                Tristate::True,
+                "PortLost",
+                msg,
+            );
         }
         Ok(())
     }
@@ -1021,16 +1874,21 @@ impl VmManager {
     pub(crate) async fn finalize_deletion(&self, vm: &Vm) -> Result<(), VmManagerError> {
         let has = |f: &str| vm.finalizers.iter().any(|x| x == f);
         // Ports and the VM's NAT reservations.
-        if has(FINALIZER_PORTS) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty()) {
+        if has(FINALIZER_PORTS) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty())
+        {
             self.meter_final_sample().await;
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             let id = vm.id.clone();
-            match blocking(move || netd.call::<serde_json::Value>(Op::ReleaseVm { vm_id: id })).await? {
+            match blocking(move || netd.call::<serde_json::Value>(Op::ReleaseVm { vm_id: id }))
+                .await?
+            {
                 Ok(_) => {}
                 // No ports to remove: netd being away only leaks a NAT
                 // reservation, as before.
-                Err(e) if vm.status.nics.is_empty() => tracing::warn!(vm_id = %vm.id, "glidex-netd release failed: {}", e),
+                Err(e) if vm.status.nics.is_empty() => {
+                    tracing::warn!(vm_id = %vm.id, "glidex-netd release failed: {}", e)
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -1046,12 +1904,15 @@ impl VmManager {
             ids.sort();
             ids.dedup();
             for id in ids {
-                let Ok(mut d) = self.images.get_disk(id) else { continue };
+                let Ok(mut d) = self.images.get_disk(id) else {
+                    continue;
+                };
                 if d.attached_to.as_deref().is_some_and(|a| a != vm.id) {
                     continue;
                 }
                 d.attached_to = None;
-                if c.owns_root_disk && has(FINALIZER_OWNED_DISK) && Some(id) == c.root_disk.as_ref() {
+                if c.owns_root_disk && has(FINALIZER_OWNED_DISK) && Some(id) == c.root_disk.as_ref()
+                {
                     owned = Some(d);
                 } else {
                     detach.push(d);
@@ -1097,12 +1958,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn device_problems_are_errors_since_launch_or_a_device_gone() {
+        let base: std::collections::BTreeMap<String, u64> =
+            [("0000:87:00.0".to_string(), 2)].into();
+        let devs = vec![
+            "/sys/bus/pci/devices/0000:87:00.0".to_string(),
+            "0000:90:00.0".to_string(),
+        ];
+        // Errors from before the launch don't count.
+        let p = device_problems(&devs, &base, |_| true, |_| Some(2));
+        assert_eq!(
+            p,
+            vec!["0000:90:00.0 had 2 uncorrectable PCIe errors since the VM started"]
+        );
+        let p = device_problems(&devs, &base, |a| a != "0000:87:00.0", |_| Some(0));
+        assert_eq!(p, vec!["0000:87:00.0 is gone from the PCI bus"]);
+        assert!(device_problems(&devs, &base, |_| true, |_| None).is_empty());
+    }
+
+    #[test]
     fn conditions_track_transitions() {
         let mut c = Vec::new();
         set_cond(&mut c, "Ready", Tristate::False, "Progressing", "a");
         let t0 = c[0].last_transition_at;
         set_cond(&mut c, "Ready", Tristate::False, "Progressing", "b");
-        assert_eq!((c.len(), c[0].message.as_str(), c[0].last_transition_at), (1, "b", t0));
+        assert_eq!(
+            (c.len(), c[0].message.as_str(), c[0].last_transition_at),
+            (1, "b", t0)
+        );
         set_cond(&mut c, "Ready", Tristate::True, "Converged", "");
         assert_eq!(c[0].reason, "Converged");
         clear_cond(&mut c, "Ready");
@@ -1111,7 +1994,10 @@ mod tests {
 
     #[test]
     fn crash_backoff_is_10s_doubling_to_5min() {
-        assert_eq!([1, 2, 3, 5, 6, 30].map(crash_delay), [10, 20, 40, 160, 300, 300]);
+        assert_eq!(
+            [1, 2, 3, 5, 6, 30].map(crash_delay),
+            [10, 20, 40, 160, 300, 300]
+        );
     }
 
     /// spec/clustering.md §4.1 / C0: an idle VM causes no store write across
@@ -1127,18 +2013,27 @@ mod tests {
         let vm = manager.create_vm("idle".into(), config).await.unwrap();
         let cur = manager.get_vm(&vm.id).await.unwrap();
         // The first write stamps `last_reconciled_at`.
-        manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+        manager
+            .write_status(&vm.id, cur.generation, cur.status.clone(), vec![])
+            .await
+            .unwrap();
         let db = manager.database();
         let before = db.revision();
         for _ in 0..10 {
             let cur = manager.get_vm(&vm.id).await.unwrap();
-            manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+            manager
+                .write_status(&vm.id, cur.generation, cur.status.clone(), vec![])
+                .await
+                .unwrap();
         }
         assert_eq!(db.revision(), before, "ten idle rounds wrote to the store");
         // A real change is written.
         let mut changed = manager.get_vm(&vm.id).await.unwrap().status;
         changed.never_started = !changed.never_started;
-        manager.write_status(&vm.id, vm.generation, changed, vec![]).await.unwrap();
+        manager
+            .write_status(&vm.id, vm.generation, changed, vec![])
+            .await
+            .unwrap();
         assert_eq!(db.revision(), before + 1);
     }
 }

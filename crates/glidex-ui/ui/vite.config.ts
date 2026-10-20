@@ -1,12 +1,17 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { rootCertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 
-// GLIDEX_API_URL points the dev proxy at another control plane (the e2e
-// suite runs a scratch one, over plain HTTP on loopback).
+// GLIDEX_API_SOCKET: the control plane's UI socket (`glidex-ui --dev` and
+// the e2e suite set it). The UI's RPCs are gRPC-Web, which the control
+// plane takes there only (spec/grpc.md §6). Without it, GLIDEX_API_URL
+// points the dev proxy at a control plane over TCP (REST only, then).
+const apiSocket = process.env.GLIDEX_API_SOCKET;
 const apiUrl = process.env.GLIDEX_API_URL ?? "https://localhost:8841";
 
 /** The file at env var `name`, if set. */
@@ -56,23 +61,72 @@ function buildInfo() {
   };
 }
 
+/**
+ * Third-party code in chunks of its own: they change only with the
+ * dependencies (or the protos), so browsers keep them across UI releases,
+ * and no chunk passes Vite's 500 kB warning.
+ */
+function manualChunks(id: string): string | undefined {
+  if (/\/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id)) {
+    return "react";
+  }
+  if (/\/node_modules\/@(bufbuild|connectrpc)\//.test(id) || id.includes("/src/gen/")) {
+    return "rpc";
+  }
+  return undefined;
+}
+
+/**
+ * A `.gz` and a `.br` beside each built text (or WebAssembly) file: glidex-ui serves them
+ * to browsers that accept them (`ServeDir::precompressed_*`).
+ */
+function precompress(): Plugin {
+  return {
+    name: "glidex-precompress",
+    apply: "build",
+    writeBundle(options, bundle) {
+      const dir = options.dir ?? "dist";
+      const files = [...Object.keys(bundle)].filter((f) => /\.(js|css|html|svg|json|wasm)$/.test(f));
+      for (const file of files) {
+        const path = join(dir, file);
+        const data = readFileSync(path);
+        if (data.length < 1024) continue;
+        writeFileSync(`${path}.gz`, gzipSync(data, { level: 9 }));
+        writeFileSync(
+          `${path}.br`,
+          brotliCompressSync(data, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 } }),
+        );
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), precompress()],
   define: {
     __GLIDEX_BUILD__: JSON.stringify(buildInfo()),
+  },
+  build: {
+    rollupOptions: { output: { manualChunks } },
   },
   server: {
     port: 5173,
     https,
     proxy: {
-      "/api": {
-        target: apiUrl,
-        changeOrigin: true,
-        ws: true,
-        secure: true,
-        ...(apiCa ? { ca: apiCa } : {}),
-        rewrite: (path) => path.replace(/^\/api/, ""),
-      },
+      "/api": apiSocket
+        ? {
+            target: { socketPath: apiSocket, host: "localhost", protocol: "http:" } as unknown as string,
+            ws: true,
+            rewrite: (path) => path.replace(/^\/api/, ""),
+          }
+        : {
+            target: apiUrl,
+            changeOrigin: true,
+            ws: true,
+            secure: true,
+            ...(apiCa ? { ca: apiCa } : {}),
+            rewrite: (path) => path.replace(/^\/api/, ""),
+          },
     },
   },
 });

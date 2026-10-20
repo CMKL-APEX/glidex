@@ -43,7 +43,7 @@ function activityOf(
   for (const n of networks) {
     const what = networkActivity(n);
     // Waiting on netd is outside the control plane: shown, polled slowly.
-    if (what) found.push({ key: `net/${n.name}`, kind: "Net", name: n.name, what, to: "/networking", waiting: what !== "Deleting" });
+    if (what) found.push({ key: `net/${n.id}`, kind: "Net", name: n.name, what, to: "/networking", waiting: what !== "Deleting" });
   }
   return found;
 }

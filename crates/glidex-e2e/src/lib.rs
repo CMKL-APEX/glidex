@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 /// Run `cmd` and return its output; panics only if it can't be started.
 pub fn run(cmd: &mut Command) -> Output {
-    cmd.output().unwrap_or_else(|e| panic!("running {cmd:?}: {e}"))
+    cmd.output()
+        .unwrap_or_else(|e| panic!("running {cmd:?}: {e}"))
 }
 
 fn text(b: &[u8]) -> String {
@@ -28,20 +29,32 @@ pub fn wait_for<T>(what: &str, timeout: Duration, mut f: impl FnMut() -> Option<
         if let Some(v) = f() {
             return v;
         }
-        assert!(start.elapsed() < timeout, "timed out after {:?} waiting for {what}", timeout);
+        assert!(
+            start.elapsed() < timeout,
+            "timed out after {:?} waiting for {what}",
+            timeout
+        );
         std::thread::sleep(Duration::from_secs(3));
     }
 }
 
 /// As [`wait_for`], with `detail()` in the panic message.
-pub fn wait_for_or<T>(what: &str, timeout: Duration, mut f: impl FnMut() -> Option<T>, detail: impl FnOnce() -> String) -> T {
+pub fn wait_for_or<T>(
+    what: &str,
+    timeout: Duration,
+    mut f: impl FnMut() -> Option<T>,
+    detail: impl FnOnce() -> String,
+) -> T {
     let start = Instant::now();
     loop {
         if let Some(v) = f() {
             return v;
         }
         if start.elapsed() >= timeout {
-            panic!("timed out after {timeout:?} waiting for {what}; {}", detail());
+            panic!(
+                "timed out after {timeout:?} waiting for {what}; {}",
+                detail()
+            );
         }
         std::thread::sleep(Duration::from_secs(3));
     }
@@ -63,16 +76,40 @@ impl Api<'_> {
             Api::Local(p) => p.display().to_string(),
             Api::Remote(_) => API_SOCKET.to_string(),
         };
-        let mut args: Vec<String> = vec!["-s".into(), "-X".into(), method.into(), "--unix-socket".into(), socket, "-w".into(), "\n%{http_code}".into()];
+        let mut args: Vec<String> = vec![
+            "-s".into(),
+            "-X".into(),
+            method.into(),
+            "--unix-socket".into(),
+            socket,
+            "-w".into(),
+            "\n%{http_code}".into(),
+        ];
         if body.is_some() {
-            args.extend(["-H".into(), "content-type: application/json".into(), "--data-binary".into(), "@-".into()]);
+            args.extend([
+                "-H".into(),
+                "content-type: application/json".into(),
+                "--data-binary".into(),
+                "@-".into(),
+            ]);
         }
         args.push(format!("http://glidex{path}"));
         let input = body.map(|b| b.to_string()).unwrap_or_default();
         let out = match self {
             Api::Local(_) => {
-                let mut child = Command::new("curl").args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("curl");
-                child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+                let mut child = Command::new("curl")
+                    .args(&args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("curl");
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
                 child.wait_with_output().unwrap()
             }
             Api::Remote(ssh) => {
@@ -82,13 +119,19 @@ impl Api<'_> {
         };
         let s = text(&out.stdout);
         let (body, code) = s.trim_end().rsplit_once('\n').unwrap_or(("", s.trim()));
-        (code.trim().parse().unwrap_or(0), serde_json::from_str(body).unwrap_or(Value::Null))
+        (
+            code.trim().parse().unwrap_or(0),
+            serde_json::from_str(body).unwrap_or(Value::Null),
+        )
     }
 
     /// A call that must succeed (2xx); returns the body.
     pub fn ok(&self, method: &str, path: &str, body: Option<&Value>) -> Value {
         let (code, v) = self.call(method, path, body);
-        assert!((200..300).contains(&code), "{method} {path} answered {code}: {v}");
+        assert!(
+            (200..300).contains(&code),
+            "{method} {path} answered {code}: {v}"
+        );
         v
     }
 }
@@ -109,7 +152,18 @@ impl Ssh {
     fn command(&self) -> Command {
         let mut c = Command::new("ssh");
         c.args(["-i", &self.key.display().to_string()])
-            .args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"])
+            .args([
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+            ])
             .arg(format!("{}@{}", self.user, self.host));
         c
     }
@@ -119,7 +173,14 @@ impl Ssh {
     }
 
     pub fn run_with_input(&self, cmd: &str, input: &[u8]) -> Output {
-        let mut child = self.command().arg(cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("ssh");
+        let mut child = self
+            .command()
+            .arg(cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("ssh");
         child.stdin.take().unwrap().write_all(input).unwrap();
         child.wait_with_output().unwrap()
     }
@@ -127,7 +188,14 @@ impl Ssh {
     /// Run `cmd`, which must succeed; returns its standard output.
     pub fn check(&self, cmd: &str) -> String {
         let out = self.run(cmd);
-        assert!(out.status.success(), "on {}: `{cmd}` failed ({}):\n{}{}", self.host, out.status, text(&out.stdout), text(&out.stderr));
+        assert!(
+            out.status.success(),
+            "on {}: `{cmd}` failed ({}):\n{}{}",
+            self.host,
+            out.status,
+            text(&out.stdout),
+            text(&out.stderr)
+        );
         text(&out.stdout)
     }
 
@@ -144,7 +212,14 @@ impl Ssh {
         }
         tar.args(paths).stdout(Stdio::piped());
         let mut tar = tar.spawn().expect("tar");
-        let mut ssh = self.command().arg(format!("mkdir -p {dest} && tar -xz -C {dest}")).stdin(tar.stdout.take().unwrap()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("ssh");
+        let mut ssh = self
+            .command()
+            .arg(format!("mkdir -p {dest} && tar -xz -C {dest}"))
+            .stdin(tar.stdout.take().unwrap())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("ssh");
         assert!(tar.wait().unwrap().success(), "tar of {paths:?}");
         let out = ssh.wait().unwrap();
         assert!(out.success(), "copying {paths:?} to {}", self.host);
@@ -154,15 +229,23 @@ impl Ssh {
 /// A fresh SSH key pair in `dir`; returns (private key path, public key).
 pub fn ssh_keypair(dir: &Path) -> (PathBuf, String) {
     let key = dir.join("id_ed25519");
-    let out = run(Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "glidex-e2e", "-f"]).arg(&key));
+    let out = run(Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "glidex-e2e", "-f"])
+        .arg(&key));
     assert!(out.status.success(), "ssh-keygen: {}", text(&out.stderr));
-    let public = std::fs::read_to_string(key.with_extension("pub")).unwrap().trim().to_string();
+    let public = std::fs::read_to_string(key.with_extension("pub"))
+        .unwrap()
+        .trim()
+        .to_string();
     (key, public)
 }
 
 /// The workspace root, as the installer binary built from it knows it.
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("workspace root")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root")
 }
 
 /// The NoCloud seed (`cidata`) for a guest named `name` that pings `peer`
@@ -170,7 +253,11 @@ pub fn workspace_root() -> PathBuf {
 /// consoles, as a shell script that writes the image to `out` (it needs
 /// `mkfs.vfat` and `mcopy`, which glidex installs).
 pub fn ping_seed_script(name: &str, peer: &str, out: &str) -> String {
-    let report = |what: &str| format!(r#"for t in /dev/ttyS0 /dev/hvc0 /dev/console; do echo "GXE2E-PING-{what} from {name} to {peer} after $i tries; my address: $(hostname -I)" > $t 2>/dev/null; done"#);
+    let report = |what: &str| {
+        format!(
+            r#"for t in /dev/ttyS0 /dev/hvc0 /dev/console; do echo "GXE2E-PING-{what} from {name} to {peer} after $i tries; my address: $(hostname -I)" > $t 2>/dev/null; done"#
+        )
+    };
     let loop_ = format!(
         "for i in $(seq 300); do if ping -c1 -W1 {peer} >/dev/null 2>&1; then {}; exit 0; fi; sleep 1; done; {}",
         report("OK"),
@@ -212,20 +299,33 @@ mod tests {
         let script = ping_seed_script("a", "10.89.77.3", out.to_str().unwrap());
         assert!(script.contains("ping -c1 -W1 10.89.77.3"));
         // Only where the tools are, as on a glidex host.
-        let have = |c: &str| Command::new("sh").arg("-c").arg(format!("command -v {c}")).output().map(|o| o.status.success()).unwrap_or(false);
+        let have = |c: &str| {
+            Command::new("sh")
+                .arg("-c")
+                .arg(format!("command -v {c}"))
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
         if have("mkfs.vfat") && have("mcopy") {
             let st = run(Command::new("sh").arg("-c").arg(&script));
             assert!(st.status.success(), "{}", text(&st.stderr));
-            let list = run(Command::new("mtype").args(["-i", out.to_str().unwrap(), "::user-data"]));
+            let list =
+                run(Command::new("mtype").args(["-i", out.to_str().unwrap(), "::user-data"]));
             let ud = text(&list.stdout);
-            assert!(ud.starts_with("#cloud-config") && ud.contains("GXE2E-PING-OK"), "{ud}");
+            assert!(
+                ud.starts_with("#cloud-config") && ud.contains("GXE2E-PING-OK"),
+                "{ud}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn shell_quoting_survives_single_quotes() {
-        let out = run(Command::new("sh").arg("-c").arg(format!("printf %s {}", shell_quote("it's \"ok\" $HOME"))));
+        let out = run(Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf %s {}", shell_quote("it's \"ok\" $HOME"))));
         assert_eq!(text(&out.stdout), "it's \"ok\" $HOME");
     }
 }

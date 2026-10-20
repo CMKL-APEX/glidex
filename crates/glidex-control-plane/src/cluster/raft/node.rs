@@ -7,8 +7,8 @@ use openraft::error::{ClientWriteError, RaftError};
 use openraft::{BasicNode, Config, SnapshotPolicy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// `cluster.raft.*` (§10.2).
@@ -21,7 +21,11 @@ pub struct RaftSettings {
 
 impl Default for RaftSettings {
     fn default() -> Self {
-        RaftSettings { heartbeat_ms: 250, election_ms: (1000, 2000), log_keep_entries: 10_000 }
+        RaftSettings {
+            heartbeat_ms: 250,
+            election_ms: (1000, 2000),
+            log_keep_entries: 10_000,
+        }
     }
 }
 
@@ -42,9 +46,16 @@ impl ClusterNode {
     /// Open the log in `dir/log.redb` and start Raft on `db`. A fresh node
     /// has no membership: it waits to be added (`add_learner`), or
     /// [`bootstrap`](Self::bootstrap)ped as a cluster of one.
-    pub async fn start(db: Arc<Db>, dir: &Path, id: RaftId, settings: &RaftSettings, transport: Arc<dyn Transport>) -> Result<Arc<ClusterNode>, StoreError> {
+    pub async fn start(
+        db: Arc<Db>,
+        dir: &Path,
+        id: RaftId,
+        settings: &RaftSettings,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Arc<ClusterNode>, StoreError> {
         std::fs::create_dir_all(dir)?;
-        let log = LogStore::open(&dir.join("log.redb")).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        let log = LogStore::open(&dir.join("log.redb"))
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
         let sm = StateMachine::new(db.clone(), dir.join("snapshots"));
         let cfg = Config {
             heartbeat_interval: settings.heartbeat_ms,
@@ -57,18 +68,41 @@ impl ClusterNode {
             purge_batch_size: (settings.log_keep_entries / 10).max(1),
             ..Default::default()
         };
-        let cfg = Arc::new(cfg.validate().map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?);
-        let net = NetworkFactory { transport, dir: dir.join("snapshots") };
-        let raft = GxRaft::new(id, cfg, net, log.clone(), sm).await.map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
-        let service = Arc::new(RaftService { raft: raft.clone(), dir: dir.join("snapshots") });
-        Ok(Arc::new(ClusterNode { id, db, raft, service, log, dir: dir.to_path_buf(), runtime: tokio::runtime::Handle::current(), ready_term: AtomicU64::new(0) }))
+        let cfg = Arc::new(
+            cfg.validate()
+                .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?,
+        );
+        let net = NetworkFactory {
+            transport,
+            dir: dir.join("snapshots"),
+        };
+        let raft = GxRaft::new(id, cfg, net, log.clone(), sm)
+            .await
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        let service = Arc::new(RaftService {
+            raft: raft.clone(),
+            dir: dir.join("snapshots"),
+        });
+        Ok(Arc::new(ClusterNode {
+            id,
+            db,
+            raft,
+            service,
+            log,
+            dir: dir.to_path_buf(),
+            runtime: tokio::runtime::Handle::current(),
+            ready_term: AtomicU64::new(0),
+        }))
     }
 
     /// Make this node the only voter of a new cluster.
     pub async fn bootstrap(&self, addr: &str) -> Result<(), StoreError> {
         let mut m = BTreeMap::new();
         m.insert(self.id, BasicNode::new(addr));
-        self.raft.initialize(m).await.map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
+        self.raft
+            .initialize(m)
+            .await
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
     }
 
     /// Start the log at a snapshot boundary: purge everything up to what is
@@ -80,18 +114,42 @@ impl ClusterNode {
     pub async fn seal_baseline(&self) -> Result<(), StoreError> {
         let io = |e: &dyn std::fmt::Display| StoreError::Io(std::io::Error::other(e.to_string()));
         // The bootstrap entry must be applied first.
-        let m = self.raft.wait(Some(Duration::from_secs(30))).metrics(|m| m.last_applied.is_some(), "the first entry applied").await.map_err(|e| io(&e))?;
+        let m = self
+            .raft
+            .wait(Some(Duration::from_secs(30)))
+            .metrics(|m| m.last_applied.is_some(), "the first entry applied")
+            .await
+            .map_err(|e| io(&e))?;
         let applied = m.last_applied.expect("waited for it");
         self.raft.trigger().snapshot().await.map_err(|e| io(&e))?;
-        self.raft.wait(Some(Duration::from_secs(30))).metrics(|m| m.snapshot.is_some_and(|s| s.index >= applied.index), "baseline snapshot").await.map_err(|e| io(&e))?;
-        self.raft.trigger().purge_log(applied.index).await.map_err(|e| io(&e))?;
-        self.raft.wait(Some(Duration::from_secs(30))).metrics(|m| m.purged.is_some_and(|p| p.index >= applied.index), "baseline purge").await.map_err(|e| io(&e))?;
+        self.raft
+            .wait(Some(Duration::from_secs(30)))
+            .metrics(
+                |m| m.snapshot.is_some_and(|s| s.index >= applied.index),
+                "baseline snapshot",
+            )
+            .await
+            .map_err(|e| io(&e))?;
+        self.raft
+            .trigger()
+            .purge_log(applied.index)
+            .await
+            .map_err(|e| io(&e))?;
+        self.raft
+            .wait(Some(Duration::from_secs(30)))
+            .metrics(
+                |m| m.purged.is_some_and(|p| p.index >= applied.index),
+                "baseline purge",
+            )
+            .await
+            .map_err(|e| io(&e))?;
         Ok(())
     }
 
     /// Route `Db::write` through this node (§6.1).
     pub fn replicate(self: &Arc<Self>) {
-        self.db.set_replicator(Arc::new(RaftReplicator { node: self.clone() }));
+        self.db
+            .set_replicator(Arc::new(RaftReplicator { node: self.clone() }));
     }
 
     pub fn is_leader(&self) -> bool {
@@ -106,13 +164,23 @@ impl ClusterNode {
     pub fn leader_addr(&self) -> Option<String> {
         let m = self.raft.metrics().borrow().clone();
         let l = m.current_leader?;
-        let addr = m.membership_config.nodes().find(|(id, _)| **id == l).map(|(_, n)| n.addr.clone());
+        let addr = m
+            .membership_config
+            .nodes()
+            .find(|(id, _)| **id == l)
+            .map(|(_, n)| n.addr.clone());
         if addr.is_some() {
             return addr;
         }
         // A member that has not applied the membership yet knows who leads
         // but not where: the replicated `nodes` table may already say.
-        crate::node::NodeStore::new(self.db.clone()).list().ok()?.into_iter().find(|n| n.status.raft_id == Some(l)).and_then(|n| n.status.advertise).map(|a| a.to_string())
+        crate::node::NodeStore::new(self.db.clone())
+            .list()
+            .ok()?
+            .into_iter()
+            .find(|n| n.status.raft_id == Some(l))
+            .and_then(|n| n.status.advertise)
+            .map(|a| a.to_string())
     }
 
     /// Wait for a leader to be elected, as seen by this node.
@@ -127,7 +195,11 @@ impl ClusterNode {
     }
 
     pub async fn add_learner(&self, id: RaftId, addr: &str) -> Result<(), StoreError> {
-        self.raft.add_learner(id, BasicNode::new(addr), true).await.map(|_| ()).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
+        self.raft
+            .add_learner(id, BasicNode::new(addr), true)
+            .await
+            .map(|_| ())
+            .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
     }
 
     /// Replace the voter set (joint consensus, one change at a time, §5.11).
@@ -145,21 +217,39 @@ impl ClusterNode {
         let io = |e: String| StoreError::Io(std::io::Error::other(e));
         let voting: BTreeSet<RaftId> = ids.intersection(&self.voters()).copied().collect();
         if !voting.is_empty() {
-            self.raft.change_membership(openraft::ChangeMembers::RemoveVoters(voting), false).await.map_err(|e| io(e.to_string()))?;
+            self.raft
+                .change_membership(openraft::ChangeMembers::RemoveVoters(voting), false)
+                .await
+                .map_err(|e| io(e.to_string()))?;
         }
         let learning: BTreeSet<RaftId> = ids.intersection(&self.learners()).copied().collect();
         if !learning.is_empty() {
-            self.raft.change_membership(openraft::ChangeMembers::RemoveNodes(learning), false).await.map_err(|e| io(e.to_string()))?;
+            self.raft
+                .change_membership(openraft::ChangeMembers::RemoveNodes(learning), false)
+                .await
+                .map_err(|e| io(e.to_string()))?;
         }
         Ok(())
     }
 
     pub fn voters(&self) -> BTreeSet<RaftId> {
-        self.raft.metrics().borrow().membership_config.membership().voter_ids().collect()
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .voter_ids()
+            .collect()
     }
 
     pub fn learners(&self) -> BTreeSet<RaftId> {
-        self.raft.metrics().borrow().membership_config.membership().learner_ids().collect()
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .learner_ids()
+            .collect()
     }
 
     pub async fn shutdown(&self) {
@@ -167,7 +257,9 @@ impl ClusterNode {
     }
 
     fn not_leader(&self) -> StoreError {
-        StoreError::NotLeader { leader: self.leader_addr() }
+        StoreError::NotLeader {
+            leader: self.leader_addr(),
+        }
     }
 }
 
@@ -176,8 +268,13 @@ struct RaftReplicator {
 }
 
 impl RaftReplicator {
-    fn block<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::task::block_in_place(|| self.node.runtime.block_on(f))
+    /// `None` when the control plane is shutting down.
+    fn block<F>(&self, f: F) -> Option<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        crate::cluster::wait_on(&self.node.runtime, f)
     }
 }
 
@@ -193,7 +290,10 @@ impl Replicator for RaftReplicator {
         }
         // A new leader first applies everything committed before it, so the
         // closure of the first write reads the state its write set lands on.
-        self.block(n.raft.ensure_linearizable()).map_err(|_| n.not_leader())?;
+        let raft = n.raft.clone();
+        self.block(async move { raft.ensure_linearizable().await })
+            .and_then(|r| r.ok())
+            .ok_or_else(|| n.not_leader())?;
         n.ready_term.store(m.current_term, Ordering::Release);
         Ok(())
     }
@@ -206,9 +306,19 @@ impl Replicator for RaftReplicator {
 
     fn propose(&self, _db: &Db, ws: WriteSet) -> Result<u64, StoreError> {
         let n = &self.node;
-        match self.block(n.raft.client_write(ws)) {
+        let raft = n.raft.clone();
+        let Some(written) = self.block(async move { raft.client_write(ws).await }) else {
+            return Err(StoreError::Io(std::io::Error::other(
+                "the control plane is shutting down",
+            )));
+        };
+        match written {
             Ok(r) => Ok(r.log_id.index),
-            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => Err(StoreError::NotLeader { leader: f.leader_node.map(|n| n.addr) }),
+            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
+                Err(StoreError::NotLeader {
+                    leader: f.leader_node.map(|n| n.addr),
+                })
+            }
             Err(e) => Err(StoreError::Io(std::io::Error::other(e.to_string()))),
         }
     }

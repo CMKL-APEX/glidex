@@ -50,6 +50,28 @@ pub struct LaunchFile {
     /// snapshot (spec/metering.md D12); 0 = never.
     #[serde(default)]
     pub meter_poll_secs: u64,
+    /// Host CPUs the hypervisor and all its threads may run on (NUMA
+    /// placement, host-topology §7). Set by the shim before exec, since
+    /// the unprivileged control plane cannot write unit drop-ins. Empty:
+    /// leave the affinity alone.
+    #[serde(default)]
+    pub cpu_affinity: Vec<u32>,
+    /// QEMU only: vCPU `i` (QMP `cpu-index`) runs on host CPU
+    /// `vcpu_pins[i]`, set once QMP answers. QEMU has no option for it;
+    /// Cloud Hypervisor takes `--cpus affinity=` instead. Empty: none.
+    #[serde(default)]
+    pub vcpu_pins: Vec<u32>,
+    /// A one-shot run, not a VM (spec/kernel-boot.md §10.2): `Running` as
+    /// soon as the hypervisor starts, without waiting for its API socket,
+    /// so an exit is recorded as usual (status 0: `clean_exit`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub job: bool,
+    /// Lock files of the VM's disks on shared datastores: the shim holds a
+    /// write lock on each for as long as it runs, taken before the
+    /// hypervisor starts, so no other node's hypervisor opens those disks
+    /// meanwhile (spec/storage.md S16). Empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_locks: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,7 +94,8 @@ impl LaunchFile {
     pub fn read(path: &Path) -> Result<Self, LaunchError> {
         let shown = path.display().to_string();
         let bytes = std::fs::read(path).map_err(|e| LaunchError::Read(shown.clone(), e))?;
-        let f: LaunchFile = serde_json::from_slice(&bytes).map_err(|e| LaunchError::Parse(shown, e))?;
+        let f: LaunchFile =
+            serde_json::from_slice(&bytes).map_err(|e| LaunchError::Parse(shown, e))?;
         if f.version != LAUNCH_VERSION {
             return Err(LaunchError::Version(f.version));
         }
@@ -85,18 +108,33 @@ impl LaunchFile {
     }
 
     /// Structural checks plus the allowlist for every command it may run.
-    pub fn validate(&self, expected_vm: Option<&str>, allowed: &[PathBuf]) -> Result<(), LaunchError> {
-        if let Some(vm) = expected_vm {
-            if vm != self.vm_id {
-                return Err(LaunchError::WrongVm { expected: vm.to_string(), found: self.vm_id.clone() });
-            }
+    pub fn validate(
+        &self,
+        expected_vm: Option<&str>,
+        allowed: &[PathBuf],
+    ) -> Result<(), LaunchError> {
+        if let Some(vm) = expected_vm
+            && vm != self.vm_id
+        {
+            return Err(LaunchError::WrongVm {
+                expected: vm.to_string(),
+                found: self.vm_id.clone(),
+            });
         }
         if self.argv.is_empty() {
             return Err(LaunchError::Invalid("argv is empty".into()));
         }
-        for path in [&self.api_socket, &self.console_socket, &self.shim_socket, &self.log_path] {
+        for path in [
+            &self.api_socket,
+            &self.console_socket,
+            &self.shim_socket,
+            &self.log_path,
+        ] {
             if !Path::new(path).is_absolute() {
-                return Err(LaunchError::Invalid(format!("{} is not an absolute path", path)));
+                return Err(LaunchError::Invalid(format!(
+                    "{} is not an absolute path",
+                    path
+                )));
             }
         }
         check_allowed(&self.argv[0], allowed)?;
@@ -106,12 +144,30 @@ impl LaunchFile {
             }
             check_allowed(&fb.argv[0], allowed)?;
         }
+        if let Some(c) = self
+            .cpu_affinity
+            .iter()
+            .chain(&self.vcpu_pins)
+            .find(|&&c| c >= crate::util::CPU_SETSIZE)
+        {
+            return Err(LaunchError::Invalid(format!(
+                "CPU {} is out of range (at most {})",
+                c,
+                crate::util::CPU_SETSIZE - 1
+            )));
+        }
+        if !self.vcpu_pins.is_empty() && self.hypervisor == HypervisorKind::CloudHypervisor {
+            return Err(LaunchError::Invalid(
+                "vcpu_pins is for QEMU; Cloud Hypervisor pins vCPUs with --cpus affinity=".into(),
+            ));
+        }
         Ok(())
     }
 }
 
 fn check_allowed(binary: &str, allowed: &[PathBuf]) -> Result<(), LaunchError> {
-    let canon = std::fs::canonicalize(binary).map_err(|_| LaunchError::NotAllowed(binary.to_string()))?;
+    let canon =
+        std::fs::canonicalize(binary).map_err(|_| LaunchError::NotAllowed(binary.to_string()))?;
     if allowed.contains(&canon) {
         Ok(())
     } else {
@@ -142,18 +198,31 @@ pub fn allowed_binaries() -> Vec<PathBuf> {
 pub fn allowed_binaries_from(file: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = match std::fs::read(file) {
         Ok(bytes) => match serde_json::from_slice::<AllowlistFile>(&bytes) {
-            Ok(f) => f.hypervisors.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect(),
+            Ok(f) => f
+                .hypervisors
+                .iter()
+                .filter_map(|p| std::fs::canonicalize(p).ok())
+                .collect(),
             Err(e) => {
-                eprintln!("glidex-vm-shim: ignoring unreadable {}: {}", file.display(), e);
+                eprintln!(
+                    "glidex-vm-shim: ignoring unreadable {}: {}",
+                    file.display(),
+                    e
+                );
                 Vec::new()
             }
         },
         Err(_) => default_binaries(),
     };
-    if std::env::var_os("INVOCATION_ID").is_none() {
-        if let Ok(extra) = std::env::var("GLIDEX_VM_SHIM_ALLOW") {
-            out.extend(extra.split(':').filter(|s| !s.is_empty()).filter_map(|p| std::fs::canonicalize(p).ok()));
-        }
+    if std::env::var_os("INVOCATION_ID").is_none()
+        && let Ok(extra) = std::env::var("GLIDEX_VM_SHIM_ALLOW")
+    {
+        out.extend(
+            extra
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .filter_map(|p| std::fs::canonicalize(p).ok()),
+        );
     }
     out
 }
@@ -189,6 +258,10 @@ mod tests {
             host_shutdown_grace_secs: 0,
             spec: serde_json::Value::Null,
             meter_poll_secs: 0,
+            cpu_affinity: vec![],
+            vcpu_pins: vec![],
+            job: false,
+            volume_locks: vec![],
         }
     }
 
@@ -199,10 +272,61 @@ mod tests {
         let path = dir.path().join(crate::LAUNCH_FILE);
         f.write(&path).unwrap();
         assert_eq!(LaunchFile::read(&path).unwrap(), f);
-        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         v["version"] = 2.into();
         std::fs::write(&path, v.to_string()).unwrap();
-        assert!(matches!(LaunchFile::read(&path), Err(LaunchError::Version(2))));
+        assert!(matches!(
+            LaunchFile::read(&path),
+            Err(LaunchError::Version(2))
+        ));
+    }
+
+    #[test]
+    fn placement_fields_round_trip_and_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), "/bin/true");
+        f.hypervisor = HypervisorKind::Qemu;
+        f.cpu_affinity = vec![64, 65, 66, 67];
+        f.vcpu_pins = vec![64, 65];
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap(), f);
+
+        // A launch file from before NUMA placement: no fields, no binding.
+        let mut v = serde_json::to_value(sample(dir.path(), "/bin/true")).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("cpu_affinity");
+        o.remove("vcpu_pins");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let old = LaunchFile::read(&path).unwrap();
+        assert!(old.cpu_affinity.is_empty() && old.vcpu_pins.is_empty());
+    }
+
+    #[test]
+    fn placement_fields_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hv");
+        std::fs::write(&bin, "").unwrap();
+        let allowed = vec![std::fs::canonicalize(&bin).unwrap()];
+        let mut f = sample(dir.path(), bin.to_str().unwrap());
+        f.cpu_affinity = vec![0, 1023];
+        f.validate(None, &allowed).unwrap();
+        f.cpu_affinity = vec![1024];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("1024"))
+        );
+        f.cpu_affinity = vec![];
+        f.vcpu_pins = vec![3];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("vcpu_pins"))
+        );
+        f.hypervisor = HypervisorKind::Qemu;
+        f.validate(None, &allowed).unwrap();
+        f.vcpu_pins = vec![3, 4096];
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("4096"))
+        );
     }
 
     #[test]
@@ -216,12 +340,24 @@ mod tests {
 
         let f = sample(dir.path(), link.to_str().unwrap());
         f.validate(Some("vm-1"), &allowed).unwrap();
-        assert!(matches!(f.validate(Some("vm-2"), &allowed), Err(LaunchError::WrongVm { .. })));
-        assert!(matches!(sample(dir.path(), "/bin/sh").validate(None, &allowed), Err(LaunchError::NotAllowed(_))));
+        assert!(matches!(
+            f.validate(Some("vm-2"), &allowed),
+            Err(LaunchError::WrongVm { .. })
+        ));
+        assert!(matches!(
+            sample(dir.path(), "/bin/sh").validate(None, &allowed),
+            Err(LaunchError::NotAllowed(_))
+        ));
 
         let mut fb = sample(dir.path(), bin.to_str().unwrap());
-        fb.fallback = Some(Fallback { argv: vec!["/bin/sh".into()], when_output_matches: vec![] });
-        assert!(matches!(fb.validate(None, &allowed), Err(LaunchError::NotAllowed(_))));
+        fb.fallback = Some(Fallback {
+            argv: vec!["/bin/sh".into()],
+            when_output_matches: vec![],
+        });
+        assert!(matches!(
+            fb.validate(None, &allowed),
+            Err(LaunchError::NotAllowed(_))
+        ));
     }
 
     #[test]
@@ -230,7 +366,11 @@ mod tests {
         let bin = dir.path().join("hv");
         std::fs::write(&bin, "").unwrap();
         let file = dir.path().join("vm-shim.json");
-        std::fs::write(&file, serde_json::json!({"hypervisors": [bin, "/nonexistent/qemu"]}).to_string()).unwrap();
+        std::fs::write(
+            &file,
+            serde_json::json!({"hypervisors": [bin, "/nonexistent/qemu"]}).to_string(),
+        )
+        .unwrap();
         let list = allowed_binaries_from(&file);
         assert!(list.contains(&std::fs::canonicalize(&bin).unwrap()));
         assert!(!list.iter().any(|p| p.ends_with("cloud-hypervisor")));

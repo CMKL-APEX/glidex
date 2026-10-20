@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
-import type { DiskInfo, ImageInfo, VmResponse } from "../types";
-import { diskActivity, diskWaiting, formatBytes, notReady } from "../types";
+import type { CloneMode, Datastore, DiskFormat, DiskInfo, ImageInfo, VmResponse } from "../types";
+import { cloneLabel, diskActivity, diskPhase, diskWaiting, formatBytes, formatLabel, imageState, isDiskImage, notReady, num, enumLabel } from "../types";
 import { Spinner } from "../components/Activity";
 import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
@@ -16,6 +16,10 @@ const inputClass =
 
 const GIB = 1024 * 1024 * 1024;
 
+/** The form's choices in the API's enum names. */
+const CLONE_MODE: Record<"linked" | "full", CloneMode> = { linked: "CLONE_MODE_LINKED", full: "CLONE_MODE_FULL" };
+const DISK_FORMAT: Record<"qcow2" | "raw", DiskFormat> = { qcow2: "DISK_FORMAT_QCOW2", raw: "DISK_FORMAT_RAW" };
+
 function errorText(e: unknown): string {
   if (e instanceof ApiRequestError && e.details?.min_size_bytes) {
     return `${e.message} (minimum ${formatBytes(e.details.min_size_bytes)})`;
@@ -23,7 +27,8 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function resultNotes(d: DiskInfo): string[] {
+function resultNotes(d: DiskInfo | undefined): string[] {
+  if (!d) return [];
   const notes = [...(d.warnings ?? [])];
   const waiting = notReady(d.conditions);
   if (d.deleting) notes.unshift(`${d.name} is deleted once its current operation finishes.`);
@@ -36,7 +41,7 @@ function DiskStatus({ d }: { d: DiskInfo }) {
   const why = notReady(d.conditions);
   const color = d.status === "failed" || d.status === "missing" ? "text-red-700" : d.status === "ready" ? "" : "text-sky-700";
   return (
-    <div title={why ? `${why.reason}: ${why.message}` : undefined}>
+    <div title={why ? `${why.reason ?? ""}: ${why.message ?? ""}` : undefined}>
       <span className={`inline-flex items-center gap-1 ${color}`}>
         {diskActivity(d) && !diskWaiting(d) && <Spinner />}
         {d.deleting ? "deleting" : d.status === "busy" ? `busy (${d.busy_op})` : d.status}
@@ -45,6 +50,7 @@ function DiskStatus({ d }: { d: DiskInfo }) {
         <span className="ml-1 text-sky-700">· {formatBytes(d.pending_size_bytes)} once its VM stops</span>
       )}
       {d.pending_growpart && <span className="ml-1 text-sky-700">· grows on boot</span>}
+      {d.moving_to && <span className="ml-1 text-sky-700">· moving</span>}
       {why && d.status !== "ready" && <div className="text-gray-500 truncate max-w-xs">{why.message || why.reason}</div>}
     </div>
   );
@@ -52,21 +58,24 @@ function DiskStatus({ d }: { d: DiskInfo }) {
 
 function CreateDiskForm({
   images,
+  datastores,
   onDone,
   onCancel,
 }: {
   images: ImageInfo[];
-  onDone: (d: DiskInfo) => void;
+  datastores: Datastore[];
+  onDone: (d: DiskInfo | undefined) => void;
   onCancel: () => void;
 }) {
   const { project } = useSession();
   // Firmware images are never a disk source.
-  const ready = images.filter((i) => i.status.state === "ready" && !i.deleting && i.kind !== "firmware");
+  const ready = images.filter((i) => imageState(i) === "ready" && !i.deleting && isDiskImage(i));
   const [name, setName] = useState("");
   const [image, setImage] = useState(ready[0]?.id ?? "");
   const [size, setSize] = useState("");
   const [clone, setClone] = useState<"linked" | "full">("linked");
   const [format, setFormat] = useState<"qcow2" | "raw">("qcow2");
+  const [datastore, setDatastore] = useState(datastores.find((d) => d.default_for_disks)?.id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -80,10 +89,11 @@ function CreateDiskForm({
         name,
         image: image || undefined,
         size_gib: size ? Number(size) : undefined,
-        clone: image ? clone : undefined,
-        format,
+        clone: image ? CLONE_MODE[clone] : undefined,
+        format: DISK_FORMAT[format],
+        datastore: datastore || undefined,
       });
-      onDone(d);
+      onDone(d.disk);
     } catch (err) {
       setError(errorText(err));
       setSubmitting(false);
@@ -137,6 +147,19 @@ function CreateDiskForm({
           </select>
         </div>
       </div>
+      {datastores.length > 1 && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Datastore</label>
+          <select className={`${inputClass} bg-white`} value={datastore} onChange={(e) => setDatastore(e.target.value)}>
+            {datastores.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.default_for_disks ? " (default)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {image && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Clone</label>
@@ -161,19 +184,84 @@ function CreateDiskForm({
   );
 }
 
-function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: DiskInfo) => void; onCancel: () => void }) {
-  const [size, setSize] = useState(String(Math.ceil(disk.size_bytes / GIB)));
-  const [extend, setExtend] = useState(disk.origin.kind === "image");
+function MoveForm({
+  disk,
+  datastores,
+  onDone,
+  onCancel,
+}: {
+  disk: DiskInfo;
+  datastores: Datastore[];
+  onDone: (d: DiskInfo | undefined) => void;
+  onCancel: () => void;
+}) {
+  const others = datastores.filter((d) => d.id !== (disk.datastore ?? "local"));
+  const [to, setTo] = useState(others[0]?.id ?? "");
+  const [flatten, setFlatten] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const shrinking = Number(size) * GIB < disk.size_bytes;
+  const linked = disk.origin?.image?.mode === "CLONE_MODE_LINKED";
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      onDone(await api.resizeDisk(disk.id, Number(size), shrinking ? undefined : extend));
+      onDone((await api.moveDisk(disk.id, to, flatten)).disk);
+    } catch (err) {
+      setError(errorText(err));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <p className="text-sm text-gray-600">
+        The node that has the disk copies it to the new datastore, then removes the old file. Its VM must be stopped. To
+        go between two nodes' own datastores, move it to a shared one first.
+      </p>
+      <div>
+        <label className="block text-sm font-medium text-gray-700">Datastore</label>
+        <select className={`${inputClass} bg-white`} value={to} onChange={(e) => setTo(e.target.value)}>
+          {others.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {linked && (
+        <label className="flex items-center space-x-2 text-sm">
+          <input type="checkbox" checked={flatten} onChange={(e) => setFlatten(e.target.checked)} />
+          <span>Flatten: a standalone copy instead of an overlay on the image there</span>
+        </label>
+      )}
+      <div className="flex justify-end space-x-3 pt-2">
+        <button type="button" className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" disabled={submitting || !to} className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
+          {submitting ? "Moving…" : "Move"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: DiskInfo | undefined) => void; onCancel: () => void }) {
+  const [size, setSize] = useState(String(Math.ceil(num(disk.size_bytes) / GIB)));
+  const [extend, setExtend] = useState(!!disk.origin?.image);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const shrinking = Number(size) * GIB < num(disk.size_bytes);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      onDone((await api.resizeDisk(disk.id, Number(size), shrinking ? undefined : extend)).disk);
     } catch (err) {
       setError(errorText(err));
       setSubmitting(false);
@@ -216,16 +304,19 @@ export default function Disks() {
   const [canCreate] = useCan(project ? [{ action: "createDisk", resource: { type: "Project", id: project } }] : []) ?? [];
   const [disks, setDisks] = useState<DiskInfo[] | null>(null);
   const [images, setImages] = useState<ImageInfo[]>([]);
+  const [datastores, setDatastores] = useState<Datastore[]>([]);
   const [vms, setVms] = useState<VmResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [resizing, setResizing] = useState<DiskInfo | null>(null);
+  const [moving, setMoving] = useState<DiskInfo | null>(null);
   const [detail, setDetail] = useState<DiskInfo | null>(null);
 
   const refresh = useCallback(() => {
     api.listDisks(project).then(setDisks).catch((e) => setError(errorText(e)));
     api.listImages().then(setImages).catch(() => setImages([]));
+    api.listDatastores().then(setDatastores).catch(() => setDatastores([]));
     api.listVms(project).then(setVms).catch(() => setVms([]));
   }, [project]);
 
@@ -244,15 +335,19 @@ export default function Disks() {
     return () => clearInterval(id);
   }, [busy, waiting, live, refresh]);
 
-  const done = (d: DiskInfo) => {
+  const done = (d: DiskInfo | undefined) => {
     setNotes(resultNotes(d));
     setCreating(false);
     setResizing(null);
+    setMoving(null);
     refresh();
   };
 
   const vmName = (id?: string | null) => (id ? vms.find((v) => v.id === id)?.name ?? id : null);
   const imageName = (id: string) => images.find((i) => i.id === id)?.name ?? id.slice(0, 8);
+  // Only worth a column once there is more than `local`.
+  const manyStores = datastores.length > 1;
+  const storeName = (id?: string) => datastores.find((d) => d.id === id)?.name ?? id ?? "local";
 
   const act = async (f: () => Promise<DiskInfo | void>) => {
     setError(null);
@@ -308,6 +403,7 @@ export default function Disks() {
                 <th className="px-4 py-3 font-medium">Format</th>
                 <th className="px-4 py-3 font-medium">Origin</th>
                 <th className="px-4 py-3 font-medium">Attached to</th>
+                {manyStores && <th className="px-4 py-3 font-medium">Datastore</th>}
                 {nodes.clustered && <th className="px-4 py-3 font-medium">Node</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3" />
@@ -322,14 +418,25 @@ export default function Disks() {
                     </button>
                   </td>
                   <td className="px-4 py-3">{formatBytes(d.size_bytes)}</td>
-                  <td className="px-4 py-3">{d.format}</td>
+                  <td className="px-4 py-3">{formatLabel(d.format)}</td>
                   <td className="px-4 py-3 text-xs">
-                    {d.origin.kind === "image" ? `${imageName(d.origin.image_id)} (${d.origin.mode})` : "blank"}
+                    {d.origin?.image ? `${imageName(d.origin.image.image_id)} (${cloneLabel(d.origin.image.mode)})` : "blank"}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{vmName(d.attached_to) ?? "—"}</td>
+                  {manyStores && <td className="px-4 py-3 text-xs font-mono">{storeName(d.datastore)}</td>}
                   {nodes.clustered && (
                     <td className="px-4 py-3 text-xs">
-                      {d.node ? <NodeName id={d.node} name={d.node_name} /> : <span className="text-gray-400" title="Bound to a node by its first VM">unbound</span>}
+                      {d.node ? (
+                        <NodeName id={d.node} name={d.node_name} />
+                      ) : d.worker ? (
+                        <span title="On a shared datastore: any node reaching it can run its VM">
+                          shared · <NodeName id={d.worker} name={d.worker_name} />
+                        </span>
+                      ) : (
+                        <span className="text-gray-400" title="Bound to a node by its first VM">
+                          unbound
+                        </span>
+                      )}
                     </td>
                   )}
                   <td className="px-4 py-3 text-xs">
@@ -338,16 +445,25 @@ export default function Disks() {
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                      disabled={d.phase !== "ready" || !!d.deleting}
+                      disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
                       onClick={() => setResizing(d)}
                     >
                       Resize
                     </button>
-                    {d.origin.kind === "image" && (
+                    {manyStores && (
                       <button
                         className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                        disabled={d.phase !== "ready" || !!d.deleting}
-                        onClick={() => act(() => api.extendRoot(d.id, "offline"))}
+                        disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
+                        onClick={() => setMoving(d)}
+                      >
+                        Move
+                      </button>
+                    )}
+                    {d.origin?.image && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                        disabled={diskPhase(d) !== "ready" || !!d.deleting}
+                        onClick={() => act(() => api.extendRoot(d.id, "EXTEND_MODE_OFFLINE").then((r) => r.disk))}
                       >
                         Extend root
                       </button>
@@ -370,7 +486,12 @@ export default function Disks() {
 
       {creating && (
         <Modal title="Create Disk" onClose={() => setCreating(false)}>
-          <CreateDiskForm images={images} onCancel={() => setCreating(false)} onDone={done} />
+          <CreateDiskForm images={images} datastores={datastores} onCancel={() => setCreating(false)} onDone={done} />
+        </Modal>
+      )}
+      {moving && (
+        <Modal title={`Move ${moving.name}`} onClose={() => setMoving(null)}>
+          <MoveForm disk={moving} datastores={datastores} onCancel={() => setMoving(null)} onDone={done} />
         </Modal>
       )}
       {resizing && (
@@ -382,6 +503,7 @@ export default function Disks() {
         <Modal title={detail.name} onClose={() => setDetail(null)}>
           <div className="text-sm space-y-2">
             <div className="font-mono text-xs break-all text-gray-600">{detail.path}</div>
+            {manyStores && <div className="text-gray-600">Datastore: {storeName(detail.datastore)}</div>}
             {detail.partition_table ? (
               <table className="w-full text-xs">
                 <thead className="text-gray-500 text-left">
@@ -393,7 +515,7 @@ export default function Disks() {
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.partition_table.partitions.map((p) => (
+                  {(detail.partition_table.partitions ?? []).map((p) => (
                     <tr key={p.number} className={p.is_root ? "font-semibold" : ""}>
                       <td className="py-1">{p.number}</td>
                       <td>{formatBytes(p.start_bytes)}</td>
@@ -411,7 +533,7 @@ export default function Disks() {
             )}
             {detail.partition_table && (
               <p className="text-gray-600">
-                {detail.partition_table.kind.toUpperCase()}, free at end: {formatBytes(detail.partition_table.free_tail_bytes)}
+                {enumLabel(detail.partition_table.kind, "PARTITION_TABLE_KIND_").toUpperCase()}, free at end: {formatBytes(detail.partition_table.free_tail_bytes)}
               </p>
             )}
           </div>

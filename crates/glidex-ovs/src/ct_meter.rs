@@ -19,9 +19,9 @@
 //! Bytes are L2-normalized like `nat_counters`: L3 bytes + 14 per packet,
 //! so they match OVS's frame counts.
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::nat_meter::ETHERNET_HEADER;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -50,7 +50,9 @@ pub fn parse_line(line: &str) -> Option<CtEntry> {
     let (mut srcs, mut packets, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
     let (mut zone, mut id) = (None, None);
     for tok in line.split_whitespace() {
-        let Some((k, v)) = tok.split_once('=') else { continue };
+        let Some((k, v)) = tok.split_once('=') else {
+            continue;
+        };
         match k {
             "src" => srcs.push(v),
             "packets" => packets.push(v.parse::<u64>().ok()?),
@@ -133,9 +135,18 @@ impl CtMeter {
                 st.gaps += 1;
                 st
             }
-            None => State { epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(1), ..Default::default() },
+            None => State {
+                epoch: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(1),
+                ..Default::default()
+            },
         };
-        Self { zones, state: Mutex::new(state) }
+        Self {
+            zones,
+            state: Mutex::new(state),
+        }
     }
 
     fn mine(&self, e: &CtEntry) -> bool {
@@ -143,13 +154,36 @@ impl CtMeter {
     }
 
     fn add(st: &mut State, e: &CtEntry, closed: bool) {
-        let prev = st.seen.get(&e.id).filter(|p| p.zone == e.zone && p.vm == e.vm && p.tx_bytes <= e.tx_bytes && p.rx_bytes <= e.rx_bytes && p.tx_packets <= e.tx_packets && p.rx_packets <= e.rx_packets).cloned();
+        let prev = st
+            .seen
+            .get(&e.id)
+            .filter(|p| {
+                p.zone == e.zone
+                    && p.vm == e.vm
+                    && p.tx_bytes <= e.tx_bytes
+                    && p.rx_bytes <= e.rx_bytes
+                    && p.tx_packets <= e.tx_packets
+                    && p.rx_packets <= e.rx_packets
+            })
+            .cloned();
         // A counter that went backwards is a different connection under a reused id.
         let (tb, tp, rb, rp) = match &prev {
-            Some(p) => (e.tx_bytes - p.tx_bytes, e.tx_packets - p.tx_packets, e.rx_bytes - p.rx_bytes, e.rx_packets - p.rx_packets),
+            Some(p) => (
+                e.tx_bytes - p.tx_bytes,
+                e.tx_packets - p.tx_packets,
+                e.rx_bytes - p.rx_bytes,
+                e.rx_packets - p.rx_packets,
+            ),
             None => (e.tx_bytes, e.tx_packets, e.rx_bytes, e.rx_packets),
         };
-        let c = st.totals.entry(format!("{}/{}", e.zone, e.vm)).or_insert_with(|| CtCounter { zone: e.zone, ip: Some(e.vm), ..Default::default() });
+        let c = st
+            .totals
+            .entry(format!("{}/{}", e.zone, e.vm))
+            .or_insert_with(|| CtCounter {
+                zone: e.zone,
+                ip: Some(e.vm),
+                ..Default::default()
+            });
         c.tx_bytes += tb + tp * ETHERNET_HEADER;
         c.tx_packets += tp;
         c.rx_bytes += rb + rp * ETHERNET_HEADER;
@@ -157,7 +191,17 @@ impl CtMeter {
         if closed {
             st.seen.remove(&e.id);
         } else {
-            st.seen.insert(e.id, Seen { zone: e.zone, vm: e.vm, tx_bytes: e.tx_bytes, tx_packets: e.tx_packets, rx_bytes: e.rx_bytes, rx_packets: e.rx_packets });
+            st.seen.insert(
+                e.id,
+                Seen {
+                    zone: e.zone,
+                    vm: e.vm,
+                    tx_bytes: e.tx_bytes,
+                    tx_packets: e.tx_packets,
+                    rx_bytes: e.rx_bytes,
+                    rx_packets: e.rx_packets,
+                },
+            );
         }
     }
 
@@ -165,7 +209,11 @@ impl CtMeter {
     /// without an event we saw; it was counted up to its last dump.
     pub fn ingest_dump(&self, entries: &[CtEntry]) {
         let mut st = self.state.lock().unwrap();
-        let live: std::collections::BTreeSet<u64> = entries.iter().filter(|e| self.mine(e)).map(|e| e.id).collect();
+        let live: std::collections::BTreeSet<u64> = entries
+            .iter()
+            .filter(|e| self.mine(e))
+            .map(|e| e.id)
+            .collect();
         st.seen.retain(|id, _| live.contains(id));
         for e in entries.iter().filter(|e| self.mine(e)) {
             Self::add(&mut st, e, false);
@@ -174,29 +222,46 @@ impl CtMeter {
 
     /// Account the final counters of a closed connection.
     pub fn ingest_destroy(&self, line: &str) {
-        let Some(e) = parse_line(line).filter(|e| self.mine(e)) else { return };
+        let Some(e) = parse_line(line).filter(|e| self.mine(e)) else {
+            return;
+        };
         Self::add(&mut self.state.lock().unwrap(), &e, true);
     }
 
     pub fn counters(&self) -> CtCounters {
         let st = self.state.lock().unwrap();
-        CtCounters { epoch: st.epoch, gaps: st.gaps, counters: st.totals.values().cloned().collect() }
+        CtCounters {
+            epoch: st.epoch,
+            gaps: st.gaps,
+            counters: st.totals.values().cloned().collect(),
+        }
     }
 
     /// The state to persist before reporting it.
     pub fn save(&self) -> Result<String, OvsError> {
-        serde_json::to_string(&*self.state.lock().unwrap()).map_err(|e| OvsError::Io(format!("conntrack counters: {e}")))
+        serde_json::to_string(&*self.state.lock().unwrap())
+            .map_err(|e| OvsError::Io(format!("conntrack counters: {e}")))
     }
 }
 
 /// Dump the router zones with the `conntrack` tool.
 pub fn dump(exec: &dyn Exec) -> Result<Vec<CtEntry>, OvsError> {
-    let out = exec.check(&Cmd::new(Program::Conntrack, ["-L", "-f", "ipv4", "-o", "extended,id"]))?;
-    Ok(String::from_utf8_lossy(&out.stdout).lines().filter_map(parse_line).collect())
+    let out = exec.check(&Cmd::new(
+        Program::Conntrack,
+        ["-L", "-f", "ipv4", "-o", "extended,id"],
+    ))?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_line)
+        .collect())
 }
 
 /// One collection round: dump, account, persist (via `persist`), report.
-pub fn collect(exec: &dyn Exec, meter: &CtMeter, persist: impl FnOnce(&str) -> Result<(), OvsError>) -> Result<CtCounters, OvsError> {
+pub fn collect(
+    exec: &dyn Exec,
+    meter: &CtMeter,
+    persist: impl FnOnce(&str) -> Result<(), OvsError>,
+) -> Result<CtCounters, OvsError> {
     meter.ingest_dump(&dump(exec)?);
     persist(&meter.save()?)?;
     Ok(meter.counters())
@@ -205,10 +270,17 @@ pub fn collect(exec: &dyn Exec, meter: &CtMeter, persist: impl FnOnce(&str) -> R
 /// Turn conntrack accounting on (it is off by default). Returns whether
 /// glidex changed it, so uninstall can put it back.
 pub fn ensure_accounting(exec: &dyn Exec) -> Result<bool, OvsError> {
-    if exec.read_file(Path::new(ACCT_PROC)).map(|s| s.trim() == "1").unwrap_or(false) {
+    if exec
+        .read_file(Path::new(ACCT_PROC))
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+    {
         return Ok(false);
     }
-    exec.check(&Cmd::new(Program::Sysctl, ["-w", &format!("{ACCT_SYSCTL}=1")]))?;
+    exec.check(&Cmd::new(
+        Program::Sysctl,
+        ["-w", &format!("{ACCT_SYSCTL}=1")],
+    ))?;
     Ok(true)
 }
 
@@ -217,24 +289,43 @@ pub fn ensure_accounting(exec: &dyn Exec) -> Result<bool, OvsError> {
 pub fn spawn_event_reader(meter: Arc<CtMeter>) {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
-    let _ = std::thread::Builder::new().name("ct-events".into()).spawn(move || loop {
-        // `stdbuf -oL`: conntrack's output to a pipe is block-buffered, which would
-        // hold events back (and lose them if the reader dies).
-        let child = Command::new("stdbuf").args(["-oL", Program::Conntrack.name(), "-E", "-e", "DESTROY", "-f", "ipv4", "-o", "extended,id"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
-        match child {
-            Ok(mut c) => {
-                if let Some(out) = c.stdout.take() {
-                    for line in BufRead::lines(BufReader::new(out)).map_while(Result::ok) {
-                        meter.ingest_destroy(&line);
+    let _ = std::thread::Builder::new()
+        .name("ct-events".into())
+        .spawn(move || {
+            loop {
+                // `stdbuf -oL`: conntrack's output to a pipe is block-buffered, which would
+                // hold events back (and lose them if the reader dies).
+                let child = Command::new("stdbuf")
+                    .args([
+                        "-oL",
+                        Program::Conntrack.name(),
+                        "-E",
+                        "-e",
+                        "DESTROY",
+                        "-f",
+                        "ipv4",
+                        "-o",
+                        "extended,id",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn();
+                match child {
+                    Ok(mut c) => {
+                        if let Some(out) = c.stdout.take() {
+                            for line in BufRead::lines(BufReader::new(out)).map_while(Result::ok) {
+                                meter.ingest_destroy(&line);
+                            }
+                        }
+                        let _ = c.wait();
                     }
+                    Err(e) => tracing_log(&format!("conntrack events: {e}")),
                 }
-                let _ = c.wait();
+                meter.state.lock().unwrap().gaps += 1;
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
-            Err(e) => tracing_log(&format!("conntrack events: {e}")),
-        }
-        meter.state.lock().unwrap().gaps += 1;
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    });
+        });
 }
 
 fn tracing_log(m: &str) {
@@ -259,8 +350,14 @@ mod tests {
     #[test]
     fn a_line_gives_the_vm_and_both_directions() {
         let x = e(&line(7, 60001, "10.89.0.5", (10, 1000), (8, 9000)));
-        assert_eq!((x.id, x.zone, x.vm.to_string()), (7, 60001, "10.89.0.5".into()));
-        assert_eq!((x.tx_packets, x.tx_bytes, x.rx_packets, x.rx_bytes), (10, 1000, 8, 9000));
+        assert_eq!(
+            (x.id, x.zone, x.vm.to_string()),
+            (7, 60001, "10.89.0.5".into())
+        );
+        assert_eq!(
+            (x.tx_packets, x.tx_bytes, x.rx_packets, x.rx_bytes),
+            (10, 1000, 8, 9000)
+        );
         // ICMP has its own id= in the tuples; the entry's is the last one.
         let icmp = "ipv4 2 icmp 1 29 src=10.89.0.5 dst=203.0.113.9 type=8 code=0 id=21 packets=1 bytes=84 src=203.0.113.9 dst=192.0.2.3 type=0 code=0 id=21 packets=1 bytes=84 mark=0 zone=60001 use=1 id=99";
         assert_eq!(e(icmp).id, 99);
@@ -282,12 +379,25 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
         let entries: Vec<CtEntry> = REAL_DUMP.lines().filter_map(parse_line).collect();
         // The zone-0 entry without counters (accounting off for it) is not one.
         assert_eq!(entries.len(), 3);
-        assert!(entries.iter().all(|e| e.vm.to_string() == "10.89.0.5" && e.zone == 60001));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.vm.to_string() == "10.89.0.5" && e.zone == 60001)
+        );
         let big = entries.iter().find(|e| e.id == 3424708189).unwrap();
-        assert_eq!((big.tx_bytes, big.rx_bytes), (1580, 100476), "the download is the reply direction");
+        assert_eq!(
+            (big.tx_bytes, big.rx_bytes),
+            (1580, 100476),
+            "the download is the reply direction"
+        );
         let m = CtMeter::new((60000, 60010), None);
         m.ingest_dump(&entries);
-        m.ingest_dump(&REAL_LATER.lines().filter_map(parse_line).collect::<Vec<_>>());
+        m.ingest_dump(
+            &REAL_LATER
+                .lines()
+                .filter_map(parse_line)
+                .collect::<Vec<_>>(),
+        );
         m.ingest_destroy(REAL_DESTROY);
         let c = &m.counters().counters[0];
         // 5424 + 84 + 1580 + 84 bytes out, plus 14 per packet (8 + 1 + 11 + 1).
@@ -304,8 +414,14 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
         m.ingest_dump(&[e(&line(1, 60001, "10.89.0.5", (20, 2000), (16, 18000)))]);
         let c = m.counters();
         // L2-normalized: bytes + 14 per packet.
-        assert_eq!((c.counters[0].tx_bytes, c.counters[0].tx_packets), (2000 + 20 * 14, 20));
-        assert_eq!((c.counters[0].rx_bytes, c.counters[0].rx_packets), (18000 + 16 * 14, 16));
+        assert_eq!(
+            (c.counters[0].tx_bytes, c.counters[0].tx_packets),
+            (2000 + 20 * 14, 20)
+        );
+        assert_eq!(
+            (c.counters[0].rx_bytes, c.counters[0].rx_packets),
+            (18000 + 16 * 14, 16)
+        );
         // The connection closes between dumps: its final counters count once.
         m.ingest_destroy(&line(1, 60001, "10.89.0.5", (25, 2600), (20, 20000)));
         // A short connection never dumped counts in full.
@@ -318,8 +434,15 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
     #[test]
     fn other_zones_and_counters_that_went_backwards_are_handled() {
         let m = CtMeter::new((60000, 60010), None);
-        m.ingest_dump(&[e(&line(1, 50, "10.0.0.1", (1, 100), (1, 100))), e(&line(2, 60002, "10.89.0.6", (1, 100), (1, 100)))]);
-        assert_eq!(m.counters().counters.len(), 1, "a zone that isn't a router's isn't metered");
+        m.ingest_dump(&[
+            e(&line(1, 50, "10.0.0.1", (1, 100), (1, 100))),
+            e(&line(2, 60002, "10.89.0.6", (1, 100), (1, 100))),
+        ]);
+        assert_eq!(
+            m.counters().counters.len(),
+            1,
+            "a zone that isn't a router's isn't metered"
+        );
         // The id is reused by a new connection: counted from zero, not negative.
         m.ingest_dump(&[e(&line(2, 60002, "10.89.0.6", (1, 50), (1, 50)))]);
         assert_eq!(m.counters().counters[0].tx_packets, 2);
@@ -335,7 +458,10 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
         let (saved, before) = (m.save().unwrap(), m.counters());
         let again = CtMeter::new((60000, 60010), Some(&saved));
         let after = again.counters();
-        assert_eq!((after.epoch, after.counters.clone()), (before.epoch, before.counters.clone()));
+        assert_eq!(
+            (after.epoch, after.counters.clone()),
+            (before.epoch, before.counters.clone())
+        );
         assert_eq!((before.gaps, after.gaps), (0, 1));
         // The surviving connection keeps its baseline: no double counting.
         again.ingest_dump(&[e(&line(1, 60001, "10.89.0.5", (10, 1000), (8, 9000)))]);
@@ -347,7 +473,10 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
     #[test]
     fn collect_dumps_persists_then_reports_and_accounting_is_turned_on() {
         let ex = crate::exec::RecordingExec::new();
-        ex.on("conntrack -L -f ipv4 -o extended,id", crate::exec::Output::ok(line(4, 60001, "10.89.0.5", (2, 200), (2, 200)).as_str()));
+        ex.on(
+            "conntrack -L -f ipv4 -o extended,id",
+            crate::exec::Output::ok(line(4, 60001, "10.89.0.5", (2, 200), (2, 200)).as_str()),
+        );
         let m = CtMeter::new((60000, 60010), None);
         let mut saved = String::new();
         let c = collect(&ex, &m, |s| {
@@ -358,6 +487,12 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
         assert_eq!(c.counters[0].tx_packets, 2);
         assert!(saved.contains("10.89.0.5"));
         assert!(ensure_accounting(&ex).unwrap());
-        assert!(ex.calls().iter().any(|c| c == "sysctl -w net.netfilter.nf_conntrack_acct=1"), "{:?}", ex.calls());
+        assert!(
+            ex.calls()
+                .iter()
+                .any(|c| c == "sysctl -w net.netfilter.nf_conntrack_acct=1"),
+            "{:?}",
+            ex.calls()
+        );
     }
 }

@@ -1,19 +1,52 @@
-// The live stream (spec/reconciliation.md §12.6): one EventSource on
-// `GET /watch` for the selected project, shared by the whole app. It keeps
-// the latest copy of every VM, disk, image and network the user can see,
-// and, in a cluster, of its nodes, import plans and status, plus a marker
-// that changes with the policies (spec/clustering-ui.md §3.7); it tells
-// subscribers when one of a kind changes. Without it (an old control
-// plane, a proxy that buffers) pages fall back to polling.
+// The live stream (spec/reconciliation.md §12.6): one
+// `glidex.watch.v1.WatchService.Watch` server stream (gRPC-Web) for the
+// selected project, shared by the whole app. It keeps the latest copy of
+// every VM, disk, image and network the user can see, and, in a cluster,
+// of its nodes, import plans and status, plus a marker that changes with
+// the policies (spec/clustering-ui.md §3.7); it tells subscribers when one
+// of a kind changes. Without it (an old control plane, a proxy that
+// buffers) pages fall back to polling. Objects arrive in the proto3 JSON
+// shape their list operations answer in; the cluster summary is read into
+// the same shape.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
-import type { ClusterStatus } from "./api";
+import { toJson } from "@bufbuild/protobuf";
+import { createClient } from "@connectrpc/connect";
+import type { ClusterStatus, Datastore, DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
+import { clusterStatusOf } from "./types";
 import { useSession } from "./session";
+import { transport } from "./api";
+import { WatchKind, WatchResponseSchema, WatchService, type WatchResponseJson } from "./gen/glidex/watch/v1/watch_pb";
 
-export type LiveKind = "vm" | "disk" | "image" | "network" | "node" | "import" | "cluster" | "policy";
+export type LiveKind = "vm" | "disk" | "image" | "network" | "node" | "import" | "cluster" | "policy" | "datastore";
 
-const KINDS: LiveKind[] = ["vm", "disk", "image", "network", "node", "import", "cluster", "policy"];
-const WATCH_KINDS = "vms,disks,images,networks,nodes,imports,cluster,policy";
+const KINDS: LiveKind[] = ["vm", "disk", "image", "network", "node", "import", "cluster", "policy", "datastore"];
+const WATCH_KINDS = [
+  WatchKind.VM,
+  WatchKind.DISK,
+  WatchKind.IMAGE,
+  WatchKind.NETWORK,
+  WatchKind.NODE,
+  WatchKind.IMPORT,
+  WatchKind.CLUSTER,
+  WatchKind.POLICY,
+  WatchKind.DATASTORE,
+];
+
+/** Wait before opening the stream again after it ended or failed (what
+ * EventSource did by default). */
+const RECONNECT_MS = 3000;
+
+type EventType = "added" | "modified" | "deleted" | "synced" | "expired";
+
+/** A WatchResponse as the `/watch` events read: its type, and `{kind, id, object}`. */
+function eventOf(r: WatchResponseJson): { type: EventType; kind: LiveKind; id: string; object?: unknown } {
+  return {
+    type: (r.type ?? "").replace("WATCH_EVENT_TYPE_", "").toLowerCase() as EventType,
+    kind: (r.kind ?? "").replace("WATCH_KIND_", "").toLowerCase() as LiveKind,
+    id: r.id ?? "",
+    object: r.vm ?? r.disk ?? r.image ?? r.network ?? r.node ?? r.import_plan ?? r.cluster ?? r.policy ?? r.datastore,
+  };
+}
 
 export interface LiveState {
   /** The stream delivered its snapshot and is open: the maps are current. */
@@ -30,6 +63,8 @@ export interface LiveState {
   clusters: Map<string, ClusterStatus>;
   /** Changes whenever policies or role links change. */
   policies: Map<string, { generation: number }>;
+  /** Datastores, with each node's view of them. */
+  datastores: Map<string, Datastore>;
   /** Call `cb` (debounced) whenever an object of one of `kinds` changes. */
   subscribe: (kinds: LiveKind[], cb: () => void) => () => void;
 }
@@ -43,6 +78,7 @@ const empty = (): Omit<LiveState, "live" | "subscribe"> => ({
   imports: new Map(),
   clusters: new Map(),
   policies: new Map(),
+  datastores: new Map(),
 });
 
 /** The map that holds objects of `kind`, by its field name. */
@@ -55,6 +91,7 @@ const FIELD: Record<LiveKind, keyof ReturnType<typeof empty>> = {
   import: "imports",
   cluster: "clusters",
   policy: "policies",
+  datastore: "datastores",
 };
 
 const LiveContext = createContext<LiveState | null>(null);
@@ -96,10 +133,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const subscribers = useRef(new Set<{ kinds: LiveKind[]; cb: () => void; timer?: number }>());
 
   useEffect(() => {
-    if (typeof EventSource === "undefined") return;
-    const q = new URLSearchParams({ kinds: WATCH_KINDS });
-    if (project) q.set("project", project);
-    const source = new EventSource(`/api/watch?${q}`, { withCredentials: true });
+    const abort = new AbortController();
     // Built up until `synced`, then applied per event.
     let next = empty();
     let synced = false;
@@ -118,9 +152,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     };
     const mapFor = (o: ReturnType<typeof empty>, kind: LiveKind) => o[FIELD[kind]] as Map<string, unknown>;
 
-    const apply = (type: "added" | "modified" | "deleted") => (e: MessageEvent) => {
-      const { kind, id, object } = JSON.parse(e.data) as { kind: LiveKind; id: string; object?: unknown };
+    const apply = (type: "added" | "modified" | "deleted", kind: LiveKind, id: string, raw: unknown) => {
       if (!KINDS.includes(kind)) return;
+      // The summary may come in the older shape (`raft.state: "Leader"`).
+      const object = kind === "cluster" && raw !== undefined ? clusterStatusOf(raw) : raw;
       if (!synced) {
         if (type !== "deleted") mapFor(next, kind).set(id, object);
         return;
@@ -139,10 +174,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       changed.add(kind);
       if (flush === undefined) flush = window.setTimeout(notify, 0);
     };
-    source.addEventListener("added", apply("added"));
-    source.addEventListener("modified", apply("modified"));
-    source.addEventListener("deleted", apply("deleted"));
-    source.addEventListener("synced", () => {
+    const onSynced = () => {
       synced = true;
       // A policy change while the stream was down (or on another server).
       const gen = next.policies.values().next().value?.generation ?? null;
@@ -154,18 +186,41 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       // Pages may have missed changes while reconnecting.
       for (const k of KINDS) changed.add(k);
       notify();
-    });
-    // The server ends a stream after a while; EventSource reconnects and
-    // the next snapshot replaces the maps.
+    };
+    // The server ends a stream after a while (`expired`), or it fails: open
+    // it again; the next snapshot replaces the maps.
     const restart = () => {
       synced = false;
       next = empty();
       setLive(false);
     };
-    source.addEventListener("expired", restart);
-    source.onerror = restart;
+
+    const client = createClient(WatchService, transport);
+    const pause = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const t = window.setTimeout(resolve, ms);
+        abort.signal.addEventListener("abort", () => (window.clearTimeout(t), resolve()), { once: true });
+      });
+    void (async () => {
+      while (!abort.signal.aborted) {
+        try {
+          const stream = client.watch({ kinds: WATCH_KINDS, project: project || undefined }, { signal: abort.signal });
+          for await (const msg of stream) {
+            const e = eventOf(toJson(WatchResponseSchema, msg) as WatchResponseJson);
+            if (e.type === "synced") onSynced();
+            else if (e.type === "expired") restart();
+            else if (e.type === "added" || e.type === "modified" || e.type === "deleted") apply(e.type, e.kind, e.id, e.object);
+          }
+        } catch {
+          /* closed, refused or cut off: open it again below */
+        }
+        if (abort.signal.aborted) break;
+        restart();
+        await pause(RECONNECT_MS);
+      }
+    })();
     return () => {
-      source.close();
+      abort.abort();
       window.clearTimeout(flush);
       setLive(false);
     };

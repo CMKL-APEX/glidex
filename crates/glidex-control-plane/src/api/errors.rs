@@ -3,14 +3,52 @@
 use crate::credentials::CredentialError;
 use crate::hypervisor::HypervisorError;
 use crate::images::ImageError;
-use crate::models::ApiError;
 use crate::network::NetError;
 use crate::state::VmManagerError;
 use crate::tenancy::TenancyError;
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use glidex_netd::proto::ErrorBody;
 
 pub type ApiErr = (StatusCode, Json<ApiError>);
+
+/// A REST error, sent as a `glidex.api.v1.Error`.
+#[derive(Debug)]
+pub struct ApiError {
+    pub error: String,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+impl ApiError {
+    pub fn new(error: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            message: message.into(),
+            details: serde_json::Value::Null,
+        }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
+    }
+}
+
+/// The fields of `glidex.api.v1.Error`. `details` is written as the JSON it
+/// is rather than through `google.protobuf.Value`, whose numbers are
+/// doubles (`33554432.0`): sizes and versions stay integers.
+impl serde::Serialize for ApiError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("Error", 3)?;
+        st.serialize_field("error", &self.error)?;
+        st.serialize_field("message", &self.message)?;
+        if !self.details.is_null() {
+            st.serialize_field("details", &self.details)?;
+        }
+        st.end()
+    }
+}
 
 /// REST status for an error reported by netd (spec §11.3).
 pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiError>) {
@@ -34,9 +72,11 @@ pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiErro
 fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
     let (status, code) = match e {
         ImageError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-        ImageError::AlreadyExists(_) | ImageError::InUse(_) | ImageError::Busy(_) | ImageError::NotReady(_) => {
-            (StatusCode::CONFLICT, "conflict")
-        }
+        ImageError::Ambiguous(_) => (StatusCode::CONFLICT, "ambiguous"),
+        ImageError::AlreadyExists(_)
+        | ImageError::InUse(_)
+        | ImageError::Busy(_)
+        | ImageError::NotReady(_) => (StatusCode::CONFLICT, "conflict"),
         ImageError::InvalidImage(_) => (StatusCode::BAD_REQUEST, "invalid_image"),
         ImageError::InvalidDisk { .. } => (StatusCode::BAD_REQUEST, "invalid_disk"),
         // A host that is not set up, not a bug (like hypervisor_unavailable).
@@ -45,8 +85,14 @@ fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
             (StatusCode::INTERNAL_SERVER_ERROR, "image_error")
         }
         ImageError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+        ImageError::InsufficientStorage { .. } => {
+            (StatusCode::INSUFFICIENT_STORAGE, "insufficient_storage")
+        }
     };
-    (status, Json(ApiError::new(code, e.to_string()).with_details(e.details())))
+    (
+        status,
+        Json(ApiError::new(code, e.to_string()).with_details(e.details())),
+    )
 }
 
 /// The error envelope a failed reconcile maps to under `?wait`
@@ -63,11 +109,20 @@ pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<Ap
         "CredentialError" => (StatusCode::INTERNAL_SERVER_ERROR, "credential_error"),
         "DiskBusy" => (StatusCode::CONFLICT, "conflict"),
         "DiskMissing" | "DiskNotReady" => (StatusCode::INTERNAL_SERVER_ERROR, "image_error"),
-        _ if message.contains("is not installed") => (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable"),
+        _ if message.contains("is not installed") => {
+            (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable")
+        }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "hypervisor_error"),
     };
-    let details = serde_json::json!({ "reason": reason, "vm": crate::models::VmResponse::from(vm) });
-    (status, Json(ApiError::new(code, message).with_details(details)))
+    // The VM in the proto shape, as the VM routes answer (spec/grpc.md §9.1).
+    let details = serde_json::json!({
+        "reason": reason,
+        "vm": serde_json::to_value(crate::service::vm::vm_pb_plain(vm)).unwrap_or_default(),
+    });
+    (
+        status,
+        Json(ApiError::new(code, message).with_details(details)),
+    )
 }
 
 pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
@@ -93,6 +148,10 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         VmManagerError::Network(NetError::Conflict(_)) => (
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::Ambiguous(_)) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("ambiguous", error.to_string())),
         ),
         VmManagerError::Network(NetError::ExternalPoolExhausted) => (
             StatusCode::CONFLICT,
@@ -149,7 +208,17 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         ),
         VmManagerError::QuotaExceeded(over) => (
             StatusCode::FORBIDDEN,
-            Json(ApiError::new("quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+            Json(
+                ApiError::new("quota_exceeded", error.to_string())
+                    .with_details(serde_json::json!({ "quota": over })),
+            ),
+        ),
+        VmManagerError::TenantQuotaExceeded(over) => (
+            StatusCode::FORBIDDEN,
+            Json(
+                ApiError::new("tenant_quota_exceeded", error.to_string())
+                    .with_details(serde_json::json!({ "quota": over })),
+            ),
         ),
         VmManagerError::Deleting(_) => (
             StatusCode::CONFLICT,
@@ -157,16 +226,59 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         ),
         VmManagerError::PreconditionFailed { actual, .. } => (
             StatusCode::PRECONDITION_FAILED,
-            Json(ApiError::new("precondition_failed", error.to_string()).with_details(serde_json::json!({ "resource_version": actual }))),
+            Json(
+                ApiError::new("precondition_failed", error.to_string())
+                    .with_details(serde_json::json!({ "resource_version": actual })),
+            ),
         ),
+        VmManagerError::Datastore(e) => {
+            use crate::datastore::record::DatastoreError as D;
+            let (status, code) = match e {
+                D::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+                D::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_datastore"),
+                D::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+                D::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+            };
+            (status, Json(ApiError::new(code, error.to_string())))
+        }
         VmManagerError::Tenancy(e) => {
             let (status, code) = match e {
                 TenancyError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
                 TenancyError::AlreadyExists(_) => (StatusCode::CONFLICT, "conflict"),
                 TenancyError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_project"),
-                TenancyError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+                TenancyError::Storage(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error")
+                }
             };
             (status, Json(ApiError::new(code, error.to_string())))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rest_error_is_a_glidex_api_v1_error() {
+        let e = ApiError::new("quota_exceeded", "over")
+            .with_details(serde_json::json!({"bytes": 33554432}));
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            glidex_api::unknown_field("glidex.api.v1.Error", &v),
+            None,
+            "{v}"
+        );
+        let other = serde_json::json!({"bogus": 1});
+        assert!(glidex_api::unknown_field("glidex.api.v1.Error", &other).is_some());
+        assert_eq!(
+            v["details"]["bytes"], 33554432,
+            "integers stay integers: {v}"
+        );
+        let v = serde_json::to_value(ApiError::new("not_found", "no such vm")).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"error": "not_found", "message": "no such vm"})
+        );
     }
 }

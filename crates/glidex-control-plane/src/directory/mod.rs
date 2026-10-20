@@ -1,0 +1,1079 @@
+//! Directory connectors (spec/tenancy.md §5, D16; milestone T1).
+//!
+//! A connector is one IdP or user source of a directory: in T1, `pam`
+//! (the co-hosted cluster's Unix accounts through glidex-authd) and
+//! `oidc` (any OpenID Connect provider); in T2 the OIDC presets
+//! ([`presets`]: `google`). Connectors made through the API
+//! live in the `connectors` table; `auth.pam` and `auth.oidc` in
+//! `control-plane.json` are **file-defined** connectors (`file-pam`,
+//! `file-oidc`), listed with the rest and read-only through the API.
+//!
+//! Every login, whichever connector, ends in one [`ExternalIdentity`],
+//! which `AuthService::external_login` turns into a user (§6).
+
+pub mod exchange;
+pub mod federation;
+pub mod google_directory;
+pub mod invitations;
+pub mod oidc;
+pub mod presets;
+pub mod scim;
+pub mod scim_tokens;
+pub mod secrets;
+pub mod sync;
+
+pub use presets::google::GoogleSettings;
+pub use presets::jumpcloud::JumpcloudSettings;
+
+use crate::config::Config;
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
+
+const CONNECTORS: TableDefinition<&str, &[u8]> = TableDefinition::new("connectors");
+const SECRETS: TableDefinition<&str, &[u8]> = TableDefinition::new("connector_secrets");
+const KEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("directory_keys");
+
+pub const FILE_PAM: &str = "file-pam";
+pub const FILE_OIDC: &str = "file-oidc";
+/// Longest a login-minted personal token of a connector without
+/// provisioning may last (D20).
+pub const DEFAULT_TOKEN_MAX_DAYS: u64 = 30;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectorError {
+    #[error("connector not found: {0}")]
+    NotFound(String),
+    #[error("connector already exists: {0}")]
+    AlreadyExists(String),
+    #[error("{0}")]
+    Invalid(String),
+    #[error("{0} is defined in control-plane.json and can't be changed through the API")]
+    FileDefined(String),
+    #[error(transparent)]
+    Secret(#[from] secrets::SecretError),
+    #[error("connector storage error: {0}")]
+    Storage(String),
+}
+
+macro_rules! storage_from {
+    ($($t:ty),*) => {$(
+        impl From<$t> for ConnectorError {
+            fn from(e: $t) -> Self {
+                ConnectorError::Storage(e.to_string())
+            }
+        }
+    )*};
+}
+storage_from!(
+    crate::store::StoreError,
+    redb::TransactionError,
+    redb::TableError,
+    redb::StorageError,
+    redb::CommitError,
+    serde_json::Error
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Pam,
+    Oidc,
+    /// The `google` preset over the OIDC code (§5.1).
+    Google,
+    /// The `jumpcloud` preset over the OIDC code (§5.1).
+    Jumpcloud,
+}
+
+impl Kind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Kind::Pam => "pam",
+            Kind::Oidc => "oidc",
+            Kind::Google => "google",
+            Kind::Jumpcloud => "jumpcloud",
+        }
+    }
+
+    /// Whether it logs in through the OIDC code.
+    pub fn is_oidc(&self) -> bool {
+        matches!(self, Kind::Oidc | Kind::Google | Kind::Jumpcloud)
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        match s {
+            "pam" => Some(Kind::Pam),
+            "oidc" => Some(Kind::Oidc),
+            "google" => Some(Kind::Google),
+            "jumpcloud" => Some(Kind::Jumpcloud),
+            _ => None,
+        }
+    }
+
+    /// The secret fields a kind has.
+    pub fn secret_fields(&self) -> &'static [&'static str] {
+        match self {
+            Kind::Pam => &[],
+            Kind::Oidc => &["client_secret"],
+            Kind::Google => &[
+                "client_secret",
+                "device_client_secret",
+                "service_account_key",
+            ],
+            Kind::Jumpcloud => &["client_secret"],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Api,
+    File,
+}
+
+/// `pam` settings: which Unix groups may log in through it. glidex-authd's
+/// own `allowed_groups` stays the outer fence (D23).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PamSettings {
+    pub allowed_groups: Vec<String>,
+}
+
+/// `oidc` settings (security.md §5.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcSettings {
+    pub issuer: String,
+    pub client_id: String,
+    #[serde(default = "default_scopes")]
+    pub scopes: Vec<String>,
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Where the IdP sends the browser back; default
+    /// `<first allowed origin>/api/auth/c/<id>/callback`.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+    /// `acr` values that count as multi-factor, besides `amr` containing
+    /// `mfa` (D22).
+    #[serde(default)]
+    pub mfa_acr_values: Vec<String>,
+}
+
+fn default_scopes() -> Vec<String> {
+    ["openid", "profile", "email", "groups"]
+        .map(String::from)
+        .to_vec()
+}
+
+fn default_groups_claim() -> String {
+    "groups".into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connector {
+    pub id: String,
+    pub directory_id: String,
+    pub kind: Kind,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Create a user on the first login (when the rules below pass).
+    #[serde(default)]
+    pub jit: bool,
+    /// Login only for members of one of these IdP (or Unix) groups.
+    #[serde(default)]
+    pub required_groups: Vec<String>,
+    #[serde(default)]
+    pub require_mfa: bool,
+    /// IdP group → team name, synced at every login (D18).
+    #[serde(default)]
+    pub group_teams: BTreeMap<String, String>,
+    /// New users become members of this tenant.
+    #[serde(default)]
+    pub default_tenant: Option<String>,
+    /// Longest personal token a login through it mints (D20).
+    #[serde(default)]
+    pub token_max_days: Option<u64>,
+    /// Whether the IdP provisions this connector's users (§8).
+    #[serde(default, skip_serializing_if = "Provisioning::is_none")]
+    pub provisioning: Provisioning,
+    /// How provisioned groups become teams (D18, D43).
+    #[serde(default, skip_serializing_if = "GroupMode::is_mapped")]
+    pub group_mode: GroupMode,
+    /// What and how often a pull reads (`provisioning: pull`, §8.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncSettings>,
+    /// Kind-specific, see [`PamSettings`] and [`OidcSettings`].
+    #[serde(default)]
+    pub settings: serde_json::Value,
+    pub source: Source,
+    pub created_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// spec/tenancy.md §8: who creates and removes a connector's users.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provisioning {
+    /// Logins create them (JIT), or invitations and administrators do.
+    #[default]
+    None,
+    /// The IdP pushes them over SCIM 2.0 (§8.1); only they log in (D41).
+    Scim,
+    /// glidex reads them from the IdP's directory (§8.2); only they log
+    /// in (D44).
+    Pull,
+}
+
+impl Provisioning {
+    pub fn is_none(&self) -> bool {
+        *self == Provisioning::None
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Provisioning::None => "none",
+            Provisioning::Scim => "scim",
+            Provisioning::Pull => "pull",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Provisioning> {
+        match s {
+            "" | "none" => Some(Provisioning::None),
+            "scim" => Some(Provisioning::Scim),
+            "pull" => Some(Provisioning::Pull),
+            _ => None,
+        }
+    }
+}
+
+/// A pull's settings (spec/tenancy.md §8.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncSettings {
+    /// Minutes between runs (default 15, at least 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_minutes: Option<u32>,
+    /// The most a run may disable, as a percentage of the managed users
+    /// (default 10); up to [`SYNC_DISABLE_FLOOR`] are always allowed (D46).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_disable: Option<u32>,
+    /// Google: the administrator the service account acts as (D47).
+    #[serde(default)]
+    pub admin_email: String,
+    /// Google: the groups whose members are the managed users (D44).
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// Google: `<schema>.<field>`, a custom schema field with SSH keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_keys_field: Option<String>,
+}
+
+pub const SYNC_DEFAULT_MINUTES: u32 = 15;
+pub const SYNC_MIN_MINUTES: u32 = 5;
+pub const SYNC_DEFAULT_MAX_DISABLE: u32 = 10;
+/// A run may always disable this many (D46).
+pub const SYNC_DISABLE_FLOOR: usize = 5;
+pub const SYNC_MAX_GROUPS: usize = 50;
+
+impl SyncSettings {
+    pub fn interval_minutes(&self) -> u32 {
+        self.interval_minutes.unwrap_or(SYNC_DEFAULT_MINUTES)
+    }
+
+    /// How many of `managed` users a run may disable (D46).
+    pub fn disable_limit(&self, managed: usize) -> usize {
+        let pct = self.max_disable.unwrap_or(SYNC_DEFAULT_MAX_DISABLE) as usize;
+        (managed * pct / 100).max(SYNC_DISABLE_FLOOR)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.interval_minutes() < SYNC_MIN_MINUTES {
+            return Err(format!(
+                "sync.interval_minutes is at least {SYNC_MIN_MINUTES}"
+            ));
+        }
+        if self.max_disable.is_some_and(|m| m == 0 || m > 100) {
+            return Err("sync.max_disable is a percentage, 1-100".into());
+        }
+        let email = |e: &str| {
+            e.split_once('@')
+                .is_some_and(|(l, d)| !l.is_empty() && d.contains('.'))
+                && !e.contains(char::is_whitespace)
+        };
+        if !email(&self.admin_email) {
+            return Err(
+                "sync.admin_email is the Workspace administrator the service account acts as"
+                    .into(),
+            );
+        }
+        if self.groups.is_empty() || self.groups.len() > SYNC_MAX_GROUPS {
+            return Err(format!(
+                "sync.groups names 1-{SYNC_MAX_GROUPS} Google groups (by email): their members are who the pull brings in"
+            ));
+        }
+        if let Some(g) = self.groups.iter().find(|g| !email(g)) {
+            return Err(format!("sync.groups: {g:?} isn't a group email"));
+        }
+        if let Some(f) = &self.ssh_keys_field
+            && !f
+                .split_once('.')
+                .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && !b.contains('.'))
+        {
+            return Err("sync.ssh_keys_field is <schema>.<field>".into());
+        }
+        Ok(())
+    }
+}
+
+/// D18, D43: provisioned groups map to named teams, or each is a team.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupMode {
+    #[default]
+    Mapped,
+    Auto,
+}
+
+impl GroupMode {
+    pub fn is_mapped(&self) -> bool {
+        *self == GroupMode::Mapped
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GroupMode::Mapped => "mapped",
+            GroupMode::Auto => "auto",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<GroupMode> {
+        match s {
+            "" | "mapped" => Some(GroupMode::Mapped),
+            "auto" => Some(GroupMode::Auto),
+            _ => None,
+        }
+    }
+}
+
+impl Connector {
+    pub fn pam(&self) -> Result<PamSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("pam settings: {e}")))
+    }
+
+    pub fn oidc(&self) -> Result<OidcSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("oidc settings: {e}")))
+    }
+
+    pub fn google(&self) -> Result<GoogleSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("google settings: {e}")))
+    }
+
+    pub fn jumpcloud(&self) -> Result<JumpcloudSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("jumpcloud settings: {e}")))
+    }
+
+    /// How an OIDC-code connector logs in: the browser's client, or with
+    /// `device` gxctl's (Google keeps a separate one for the device grant).
+    pub fn oidc_profile(&self, device: bool) -> Result<OidcProfile, ConnectorError> {
+        match self.kind {
+            Kind::Oidc => Ok(OidcProfile {
+                settings: self.oidc()?,
+                preset: presets::Preset::default(),
+                secret_field: "client_secret",
+            }),
+            Kind::Google => {
+                let g = self.google()?;
+                let client_id = if device {
+                    g.device_client_id.clone().ok_or_else(|| {
+                        ConnectorError::Invalid("this connector has no device client".into())
+                    })?
+                } else {
+                    g.client_id.clone()
+                };
+                Ok(OidcProfile {
+                    settings: OidcSettings {
+                        issuer: g.issuer().to_string(),
+                        client_id,
+                        scopes: presets::google::SCOPES.map(String::from).to_vec(),
+                        groups_claim: default_groups_claim(),
+                        allowed_domains: Vec::new(),
+                        redirect_uri: g.redirect_uri.clone(),
+                        mfa_acr_values: Vec::new(),
+                    },
+                    preset: g.preset(),
+                    secret_field: if device {
+                        "device_client_secret"
+                    } else {
+                        "client_secret"
+                    },
+                })
+            }
+            Kind::Jumpcloud => {
+                let j = self.jumpcloud()?;
+                Ok(OidcProfile {
+                    settings: OidcSettings {
+                        issuer: j.issuer().to_string(),
+                        client_id: j.client_id.clone(),
+                        scopes: presets::jumpcloud::SCOPES.map(String::from).to_vec(),
+                        groups_claim: j.groups_claim().to_string(),
+                        allowed_domains: Vec::new(),
+                        redirect_uri: j.redirect_uri.clone(),
+                        mfa_acr_values: Vec::new(),
+                    },
+                    preset: j.preset(),
+                    secret_field: "client_secret",
+                })
+            }
+            Kind::Pam => Err(ConnectorError::Invalid(
+                "a pam connector has no OIDC client".into(),
+            )),
+        }
+    }
+
+    /// Whether gxctl's device grant goes through it.
+    /// The secrets this connector uses: the client's, a device client's
+    /// when it has one, a pull's key when it pulls (D47).
+    pub fn secrets_in_use(&self) -> Vec<&'static str> {
+        self.kind
+            .secret_fields()
+            .iter()
+            .copied()
+            .filter(|f| match *f {
+                "device_client_secret" => self.has_device_client(),
+                "service_account_key" => self.provisioning == Provisioning::Pull,
+                _ => true,
+            })
+            .collect()
+    }
+
+    pub fn has_device_client(&self) -> bool {
+        match self.kind {
+            // Whether the IdP offers the grant, its discovery says.
+            Kind::Oidc | Kind::Jumpcloud => true,
+            Kind::Google => self.google().is_ok_and(|g| g.device_client_id.is_some()),
+            Kind::Pam => false,
+        }
+    }
+
+    /// The verified addresses that alone may get a new account through it,
+    /// when not empty.
+    pub fn allowed_emails(&self) -> Vec<String> {
+        match self.kind {
+            Kind::Google => self.google().map(|g| g.allowed_emails).unwrap_or_default(),
+            Kind::Jumpcloud => self
+                .jumpcloud()
+                .map(|j| j.allowed_emails)
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The `provider` its identities are stored under. The file-defined
+    /// connectors keep today's keys (`pam`, `oidc:<issuer>`), so nothing
+    /// needs migrating; host accounts are `pam` whichever connector checks
+    /// them (D23).
+    pub fn identity_provider(&self) -> String {
+        match (self.kind, self.id.as_str()) {
+            (Kind::Pam, _) => "pam".into(),
+            (Kind::Oidc, FILE_OIDC) => {
+                format!("oidc:{}", self.oidc().map(|s| s.issuer).unwrap_or_default())
+            }
+            (Kind::Oidc | Kind::Google | Kind::Jumpcloud, id) => format!("conn:{id}"),
+        }
+    }
+
+    /// What team memberships it manages are marked with.
+    pub fn member_source(&self) -> crate::auth::store::MemberSource {
+        use crate::auth::store::MemberSource;
+        match self.id.as_str() {
+            FILE_PAM => MemberSource::Pam,
+            FILE_OIDC => MemberSource::Oidc,
+            id => MemberSource::Connector(id.into()),
+        }
+    }
+
+    pub fn token_max_days(&self) -> u64 {
+        self.token_max_days.unwrap_or(DEFAULT_TOKEN_MAX_DAYS)
+    }
+
+    /// Check settings and rules (§5, D22). `guarded` is whether new users
+    /// land in the directory's owner or an operator tenant.
+    pub fn validate(&self, guarded: bool) -> Result<(), ConnectorError> {
+        let id_ok = !self.id.is_empty()
+            && self.id.len() <= 48
+            && self
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && !self.id.starts_with('-');
+        if !id_ok {
+            return Err(ConnectorError::Invalid(format!(
+                "invalid connector id '{}': use [a-z0-9-], 1-48 characters",
+                self.id
+            )));
+        }
+        if self.source == Source::Api && self.id.starts_with("file-") {
+            return Err(ConnectorError::Invalid(
+                "connector ids starting with file- are reserved".into(),
+            ));
+        }
+        match self.kind {
+            Kind::Pam => {
+                let s = self.pam()?;
+                if s.allowed_groups.is_empty() {
+                    return Err(ConnectorError::Invalid(
+                        "a pam connector needs allowed_groups".into(),
+                    ));
+                }
+            }
+            Kind::Oidc => {
+                let s = self.oidc()?;
+                if !s.issuer.starts_with("https://")
+                    && !s.issuer.starts_with("http://127.0.0.1")
+                    && !s.issuer.starts_with("http://localhost")
+                {
+                    return Err(ConnectorError::Invalid(
+                        "the issuer must be an https:// URL".into(),
+                    ));
+                }
+                if s.client_id.is_empty() {
+                    return Err(ConnectorError::Invalid("client_id is required".into()));
+                }
+                if !s.scopes.iter().any(|x| x == "openid") {
+                    return Err(ConnectorError::Invalid("scopes must include openid".into()));
+                }
+            }
+            Kind::Google => {
+                self.google()?
+                    .validate(self.jit, guarded)
+                    .map_err(ConnectorError::Invalid)?;
+            }
+            Kind::Jumpcloud => {
+                self.jumpcloud()?
+                    .validate()
+                    .map_err(ConnectorError::Invalid)?;
+            }
+        }
+        if let Some(d) = self.token_max_days
+            && (d == 0 || d > 365)
+        {
+            return Err(ConnectorError::Invalid("token_max_days is 1-365".into()));
+        }
+        if self.provisioning == Provisioning::Scim {
+            if !matches!(self.kind, Kind::Oidc | Kind::Jumpcloud) {
+                return Err(ConnectorError::Invalid(format!(
+                    "a {} connector isn't provisioned by SCIM: oidc and jumpcloud are",
+                    self.kind.as_str()
+                )));
+            }
+            // D41: the IdP decides who has an account.
+            if self.jit {
+                return Err(ConnectorError::Invalid(
+                    "a SCIM connector creates users by provisioning only: turn jit off".into(),
+                ));
+            }
+        }
+        if self.provisioning == Provisioning::Pull {
+            // T4 pulls from Google Workspace only (§8.2).
+            let workspace = self.kind == Kind::Google
+                && self
+                    .google()
+                    .is_ok_and(|g| g.accounts == presets::google::Accounts::Workspace);
+            if !workspace {
+                return Err(ConnectorError::Invalid(
+                    "a pull reads a Google Workspace directory: a google connector with accounts workspace".into(),
+                ));
+            }
+            if self.jit {
+                return Err(ConnectorError::Invalid(
+                    "a pulled connector creates users by its pull only: turn jit off".into(),
+                ));
+            }
+            self.sync
+                .as_ref()
+                .ok_or_else(|| ConnectorError::Invalid("a pull needs sync settings".into()))?
+                .validate()
+                .map_err(ConnectorError::Invalid)?;
+        } else if self.sync.is_some() {
+            return Err(ConnectorError::Invalid(
+                "sync settings are for provisioning pull".into(),
+            ));
+        }
+        if self.group_mode == GroupMode::Auto && self.provisioning.is_none() {
+            return Err(ConnectorError::Invalid(
+                "group_mode auto is for a provisioned connector (D43)".into(),
+            ));
+        }
+        // D22: who lands in the owner's or an operator's tenant is
+        // decided by the IdP; admit nobody by default.
+        if guarded && self.jit && self.required_groups.is_empty() {
+            return Err(ConnectorError::Invalid(
+                "new users of this connector join an owner or operator tenant: set required_groups, or turn jit off".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A verified login, whatever the connector (spec/tenancy.md §6).
+#[derive(Debug, Clone)]
+pub struct ExternalIdentity {
+    pub connector_id: String,
+    pub subject: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub groups: Vec<String>,
+    /// The IdP said the login used more than one factor.
+    pub mfa: bool,
+    /// The IdP vouches that `email` is the user's.
+    pub email_verified: bool,
+}
+
+/// An OIDC-code connector's client: its settings and preset.
+pub struct OidcProfile {
+    pub settings: OidcSettings,
+    pub preset: presets::Preset,
+    /// Which secret authenticates the client.
+    pub secret_field: &'static str,
+}
+
+/// The connectors defined in `control-plane.json`.
+pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
+    let mut out = Vec::new();
+    let pam = &cfg.auth.pam;
+    if pam.enabled {
+        out.push(Connector {
+            id: FILE_PAM.into(),
+            directory_id: crate::tenants::LOCAL_DIRECTORY.into(),
+            kind: Kind::Pam,
+            display_name: "Local accounts".into(),
+            enabled: true,
+            jit: pam.jit,
+            required_groups: Vec::new(),
+            require_mfa: false,
+            group_teams: pam
+                .group_teams
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            default_tenant: None,
+            token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
+            sync: None,
+            settings: serde_json::json!({ "allowed_groups": pam.allowed_groups }),
+            source: Source::File,
+            created_at: 0,
+            updated_at: 0,
+        });
+    }
+    let o = &cfg.auth.oidc;
+    if o.enabled && !o.issuer.is_empty() && !o.client_id.is_empty() {
+        out.push(Connector {
+            id: FILE_OIDC.into(),
+            directory_id: crate::tenants::LOCAL_DIRECTORY.into(),
+            kind: Kind::Oidc,
+            display_name: "Single sign-on".into(),
+            enabled: true,
+            jit: o.jit,
+            required_groups: o.required_groups.clone(),
+            require_mfa: false,
+            group_teams: o.group_teams.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            default_tenant: None,
+            token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
+            sync: None,
+            settings: serde_json::json!({
+                "issuer": o.issuer, "client_id": o.client_id, "scopes": o.scopes, "groups_claim": o.groups_claim,
+                "allowed_domains": o.allowed_domains, "redirect_uri": o.redirect_uri,
+            }),
+            source: Source::File,
+            created_at: 0,
+            updated_at: 0,
+        });
+    }
+    out
+}
+
+/// Connectors of the directories this control plane hosts, and their
+/// secrets.
+pub struct ConnectorStore {
+    db: Arc<Db>,
+    file: Vec<Connector>,
+    kek: RwLock<secrets::Kek>,
+}
+
+impl ConnectorStore {
+    pub fn new(db: Arc<Db>, cfg: &Config) -> Result<Self, ConnectorError> {
+        let kek = secrets::Kek::load(cfg.auth.secrets_key.as_deref())?;
+        Ok(Self {
+            db,
+            file: file_connectors(cfg),
+            kek: RwLock::new(kek),
+        })
+    }
+
+    fn read_all<T: serde::de::DeserializeOwned>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+    ) -> Result<Vec<(String, T)>, ConnectorError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_table(def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            out.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+        }
+        Ok(out)
+    }
+
+    fn get_raw<T: serde::de::DeserializeOwned>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+    ) -> Result<Option<T>, ConnectorError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_table(def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(match table.get(key)? {
+            Some(v) => Some(serde_json::from_slice(v.value())?),
+            None => None,
+        })
+    }
+
+    fn put_raw<T: Serialize>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+        v: &T,
+    ) -> Result<(), ConnectorError> {
+        let bytes = serde_json::to_vec(v)?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut t = txn.open_table(def)?;
+            t.insert(key, bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn remove_raw(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+    ) -> Result<bool, ConnectorError> {
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        let removed = {
+            let mut t = txn.open_table(def)?;
+            t.remove(key)?.is_some()
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    // ---- connectors -----------------------------------------------------
+
+    pub fn list(&self) -> Result<Vec<Connector>, ConnectorError> {
+        let mut out = self.file.clone();
+        let mut stored: Vec<Connector> = self
+            .read_all::<Connector>(CONNECTORS)?
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        stored.sort_by(|a, b| a.id.cmp(&b.id));
+        out.extend(stored);
+        Ok(out)
+    }
+
+    pub fn get(&self, id: &str) -> Result<Option<Connector>, ConnectorError> {
+        if let Some(c) = self.file.iter().find(|c| c.id == id) {
+            return Ok(Some(c.clone()));
+        }
+        self.get_raw(CONNECTORS, id)
+    }
+
+    /// The first enabled connector of `kind` (the legacy `/auth/oidc/*`
+    /// and `/auth/login` routes, which name none).
+    pub fn first(&self, kind: Kind) -> Result<Option<Connector>, ConnectorError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|c| c.kind == kind && c.enabled))
+    }
+
+    pub fn create(&self, c: &Connector) -> Result<(), ConnectorError> {
+        if self.get(&c.id)?.is_some() {
+            return Err(ConnectorError::AlreadyExists(c.id.clone()));
+        }
+        self.put_raw(CONNECTORS, &c.id, c)
+    }
+
+    pub fn update(&self, c: &Connector) -> Result<(), ConnectorError> {
+        if self.file.iter().any(|f| f.id == c.id) {
+            return Err(ConnectorError::FileDefined(c.id.clone()));
+        }
+        if self.get_raw::<Connector>(CONNECTORS, &c.id)?.is_none() {
+            return Err(ConnectorError::NotFound(c.id.clone()));
+        }
+        self.put_raw(CONNECTORS, &c.id, c)
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), ConnectorError> {
+        if self.file.iter().any(|f| f.id == id) {
+            return Err(ConnectorError::FileDefined(id.into()));
+        }
+        if !self.remove_raw(CONNECTORS, id)? {
+            return Err(ConnectorError::NotFound(id.into()));
+        }
+        // Secrets are wiped with it.
+        for (k, _) in self.read_all::<secrets::Sealed>(SECRETS)? {
+            if k.starts_with(&format!("{id}/")) {
+                self.remove_raw(SECRETS, &k)?;
+            }
+        }
+        Ok(())
+    }
+
+    // ---- secrets --------------------------------------------------------
+
+    fn data_key(&self, directory: &str) -> Result<Zeroizing<Vec<u8>>, ConnectorError> {
+        let kek = self.kek.read().unwrap();
+        let wrapped = match self.get_raw::<secrets::WrappedKey>(KEYS, directory)? {
+            Some(w) => w,
+            None => {
+                let w = secrets::new_data_key(&kek, directory);
+                self.put_raw(KEYS, directory, &w)?;
+                w
+            }
+        };
+        Ok(secrets::unwrap_data_key(&kek, &wrapped)?)
+    }
+
+    pub fn set_secret(
+        &self,
+        c: &Connector,
+        field: &str,
+        value: &str,
+    ) -> Result<(), ConnectorError> {
+        if c.source == Source::File {
+            return Err(ConnectorError::FileDefined(c.id.clone()));
+        }
+        if !c.kind.secret_fields().contains(&field) {
+            return Err(ConnectorError::Invalid(format!(
+                "a {} connector has no secret {field}; it has {}",
+                c.kind.as_str(),
+                c.kind.secret_fields().join(", ")
+            )));
+        }
+        if value.is_empty() || value.len() > 8192 {
+            return Err(ConnectorError::Invalid("a secret is 1-8192 bytes".into()));
+        }
+        let dk = self.data_key(&c.directory_id)?;
+        let sealed = secrets::seal(
+            &dk,
+            &c.directory_id,
+            &c.id,
+            field,
+            value,
+            crate::tenancy::now(),
+        );
+        self.put_raw(SECRETS, &format!("{}/{field}", c.id), &sealed)
+    }
+
+    /// A secret in clear, for the connector code path only.
+    pub fn secret(
+        &self,
+        c: &Connector,
+        field: &str,
+    ) -> Result<Option<Zeroizing<String>>, ConnectorError> {
+        let Some(sealed) =
+            self.get_raw::<secrets::Sealed>(SECRETS, &format!("{}/{field}", c.id))?
+        else {
+            return Ok(None);
+        };
+        let dk = self.data_key(&c.directory_id)?;
+        Ok(Some(secrets::open(
+            &dk,
+            &c.directory_id,
+            &c.id,
+            field,
+            &sealed,
+        )?))
+    }
+
+    /// Which secrets are set, and when: all the API ever shows of them.
+    pub fn secret_status(
+        &self,
+        c: &Connector,
+    ) -> Result<BTreeMap<String, Option<u64>>, ConnectorError> {
+        let mut out = BTreeMap::new();
+        for f in c.secrets_in_use() {
+            let s = self.get_raw::<secrets::Sealed>(SECRETS, &format!("{}/{f}", c.id))?;
+            out.insert(f.to_string(), s.map(|s| s.updated_at));
+        }
+        Ok(out)
+    }
+
+    // ---- the secrets key ------------------------------------------------
+
+    /// The KEK, for the leader to send to a new server (never logged).
+    pub fn kek_bytes(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(self.kek.read().unwrap().bytes().to_vec())
+    }
+
+    /// The KEK before the current one, while a rotation re-wraps.
+    pub fn kek_previous(&self) -> Option<Zeroizing<Vec<u8>>> {
+        self.kek
+            .read()
+            .unwrap()
+            .previous()
+            .map(|p| Zeroizing::new(p.to_vec()))
+    }
+
+    /// Take the cluster's KEK, and the one before it during a rotation (a
+    /// new server, or every server when the leader rotates). The data keys
+    /// in the replicated store are wrapped by one of them.
+    pub fn install_kek(&self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), ConnectorError> {
+        self.kek.write().unwrap().install(bytes, previous)?;
+        Ok(())
+    }
+
+    /// Whether the KEK is a systemd credential, which only its operator
+    /// rotates (on every server).
+    pub fn kek_is_credential(&self) -> bool {
+        self.kek.read().unwrap().is_credential()
+    }
+
+    /// Wrap every directory's data key with the current KEK (the last step
+    /// of a rotation), in one write. Returns how many changed.
+    pub fn rewrap_data_keys(&self) -> Result<usize, ConnectorError> {
+        let kek = self.kek.read().unwrap();
+        let id = kek.id();
+        let mut changed = Vec::new();
+        for (k, w) in self.read_all::<secrets::WrappedKey>(KEYS)? {
+            if w.kek_id != id {
+                changed.push((k, secrets::rewrap(&kek, &w)?));
+            }
+        }
+        if changed.is_empty() {
+            return Ok(0);
+        }
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut t = txn.open_table(KEYS)?;
+            for (k, w) in &changed {
+                t.insert(k.as_str(), serde_json::to_vec(w)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(changed.len())
+    }
+
+    pub fn kek_id(&self) -> String {
+        self.kek.read().unwrap().id()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oidc(id: &str) -> Connector {
+        Connector {
+            id: id.into(),
+            directory_id: "local".into(),
+            kind: Kind::Oidc,
+            display_name: "Acme".into(),
+            enabled: true,
+            jit: true,
+            required_groups: vec![],
+            require_mfa: false,
+            group_teams: BTreeMap::new(),
+            default_tenant: None,
+            token_max_days: None,
+            provisioning: Default::default(),
+            group_mode: Default::default(),
+            sync: None,
+            settings: serde_json::json!({ "issuer": "https://idp.example", "client_id": "glidex" }),
+            source: Source::Api,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn validation() {
+        assert!(oidc("acme").validate(false).is_ok());
+        assert!(oidc("Acme").validate(false).is_err());
+        assert!(oidc("file-x").validate(false).is_err(), "reserved");
+        let mut c = oidc("acme");
+        c.settings = serde_json::json!({ "issuer": "http://idp.example", "client_id": "glidex" });
+        assert!(c.validate(false).is_err(), "https only");
+        c.settings = serde_json::json!({ "issuer": "https://idp.example", "client_id": "glidex", "bogus": 1 });
+        assert!(c.validate(false).is_err(), "unknown settings");
+        // D22: an owner/operator tenant isn't open to anyone in the IdP.
+        assert!(oidc("acme").validate(true).is_err());
+        let mut c = oidc("acme");
+        c.required_groups = vec!["ops".into()];
+        assert!(c.validate(true).is_ok());
+    }
+
+    #[test]
+    fn secrets_are_stored_sealed_and_wiped_with_the_connector() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("c.db")).unwrap());
+        let mut cfg = Config::default();
+        cfg.auth.secrets_key = Some(dir.path().join("secrets.kek"));
+        let s = ConnectorStore::new(db.clone(), &cfg).unwrap();
+        let c = oidc("acme");
+        s.create(&c).unwrap();
+        assert!(
+            s.set_secret(&c, "password", "x").is_err(),
+            "not a field of oidc"
+        );
+        s.set_secret(&c, "client_secret", "very-secret-value")
+            .unwrap();
+        assert_eq!(
+            s.secret(&c, "client_secret").unwrap().unwrap().as_str(),
+            "very-secret-value"
+        );
+        assert!(s.secret_status(&c).unwrap()["client_secret"].is_some());
+        // The database file never holds it in clear.
+        drop(s);
+        let raw = std::fs::read(dir.path().join("c.db")).unwrap();
+        assert!(!raw.windows(17).any(|w| w == b"very-secret-value"));
+        // A restart with the same key file reads it back; deleting wipes it.
+        let s = ConnectorStore::new(db, &cfg).unwrap();
+        assert_eq!(
+            s.secret(&c, "client_secret").unwrap().unwrap().as_str(),
+            "very-secret-value"
+        );
+        s.delete("acme").unwrap();
+        assert!(s.secret(&c, "client_secret").unwrap().is_none());
+    }
+}

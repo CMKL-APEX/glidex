@@ -10,8 +10,8 @@
 pub mod cloud_hypervisor;
 pub mod qemu;
 
-use crate::images::qemu_img::{detect_image_type, ImageType};
-use crate::models::VmConfig;
+use crate::images::qemu_img::{ImageType, detect_image_type};
+use crate::models::{VmConfig, VolumeBinding};
 use glidex_hv_client::{HvError, Observed};
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
@@ -37,12 +37,12 @@ impl HypervisorType {
         }
     }
 
-    /// Get the default kernel boot arguments for this hypervisor
+    /// The kernel arguments a new kernel-boot VM gets when it names none.
+    /// The same for both backends: the serial port shows the kernel from
+    /// its first line (spec/kernel-boot.md K5). VMs created before this
+    /// keep the arguments they were stored with.
     pub fn default_kernel_args(&self) -> &'static str {
-        match self {
-            HypervisorType::CloudHypervisor => "console=hvc0 root=/dev/vda reboot=k panic=1",
-            HypervisorType::Qemu => "console=ttyS0 root=/dev/vda reboot=k panic=1",
-        }
+        DEFAULT_KERNEL_ARGS
     }
 
     /// The UEFI firmware a VM of this type boots from when the caller
@@ -69,6 +69,44 @@ impl fmt::Display for HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => write!(f, "cloudhypervisor"),
             HypervisorType::Qemu => write!(f, "qemu"),
+        }
+    }
+}
+
+/// See `HypervisorType::default_kernel_args`.
+pub const DEFAULT_KERNEL_ARGS: &str = "console=ttyS0 root=/dev/vda reboot=k panic=1";
+
+/// x86's `COMMAND_LINE_SIZE` (2048) less the terminating NUL.
+pub const MAX_KERNEL_ARGS_LEN: usize = 2047;
+
+/// Where the guest's console is (spec/kernel-boot.md §5.2): what the
+/// shim's PTY is wired to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleDevice {
+    /// The emulated 16550 UART (`ttyS0`).
+    Serial,
+    /// The virtio console (`hvc0`).
+    Virtio,
+}
+
+impl ConsoleDevice {
+    /// The device a VM's console is on: always the serial port on a
+    /// firmware boot (cloud images put their console there), else the one
+    /// the kernel's last `console=` names, as the kernel makes the last
+    /// one `/dev/console`. `hvc…` is the virtio console; any other name,
+    /// or no `console=`, the serial port.
+    pub fn of(config: &VmConfig) -> Self {
+        if config.firmware_path.is_some() {
+            return ConsoleDevice::Serial;
+        }
+        let last = config
+            .kernel_args
+            .split_whitespace()
+            .rev()
+            .find_map(|t| t.strip_prefix("console="));
+        match last {
+            Some(dev) if dev.starts_with("hvc") => ConsoleDevice::Virtio,
+            _ => ConsoleDevice::Serial,
         }
     }
 }
@@ -127,7 +165,11 @@ pub trait HypervisorDriver: Send + Sync {
     /// The command line carrying the whole VM config. `config` has its
     /// non-persisted bindings (disks, NICs, seed, firmware vars) filled in.
     /// Pure apart from host probes (firmware vars, `O_DIRECT`, vhost-net).
-    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError>;
+    fn launch_args(
+        &self,
+        config: &VmConfig,
+        api_socket: &str,
+    ) -> Result<LaunchArgs, HypervisorError>;
 
     fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError>;
     fn pause(&self, api_socket: &str) -> Result<(), HypervisorError>;
@@ -165,55 +207,83 @@ pub(crate) struct VmDisk {
     /// disks glidex created: a user-supplied qcow2 could otherwise name any
     /// host file as its backing file and hand it to the guest.
     pub backing_files: bool,
+    /// On a shared datastore: QEMU's image locking must be on, so another
+    /// node's QEMU can't open it (spec/storage.md §10).
+    pub shared: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
 /// the database; only a user-supplied `rootfs_path` is probed. The seed
 /// is always the raw FAT image `write_seed_image` builds.
 pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
-    let root = match &config.root_disk_binding {
-        Some(b) => VmDisk {
-            path: b.path.clone(),
+    let managed = |b: &VolumeBinding| match b {
+        VolumeBinding::File {
+            path,
+            format,
+            backing_files,
+            lock,
+        } => VmDisk {
+            path: path.clone(),
             read_only: false,
-            format: Some(b.format.into()),
-            backing_files: b.backing_files,
+            format: Some((*format).into()),
+            backing_files: *backing_files,
+            shared: lock.is_some(),
         },
+    };
+    let root = match &config.root_disk_binding {
+        Some(b) => managed(b),
         None => VmDisk {
             path: config.rootfs_path.clone(),
             read_only: false,
             format: detect_image_type(&config.rootfs_path),
             backing_files: false,
+            shared: false,
         },
     };
     std::iter::once(root)
-        .chain(config.data_disk_bindings.iter().map(|b| VmDisk {
-            path: b.path.clone(),
-            read_only: false,
-            format: Some(b.format.into()),
-            backing_files: b.backing_files,
-        }))
+        .chain(config.data_disk_bindings.iter().map(managed))
         .chain(config.cloud_init_path.iter().map(|path| VmDisk {
             path: path.clone(),
             read_only: true,
             format: Some(ImageType::Raw),
             backing_files: false,
+            shared: false,
         }))
         .collect()
 }
 
-/// Whether the host has enough unreserved 2 MiB hugepages to back a guest
-/// of `mem_mib`, leaving 25% (at least 256 MiB) for what OVS-DPDK and
-/// other guests are about to touch. `false` when they can't be read.
-pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
+/// MiB of `page_kib` hugepages free and not promised to a process now,
+/// on the host or on one NUMA node (which has no reserved count); 0 when
+/// they can't be read.
+pub(crate) fn hugepages_spare_mib(page_kib: u64, numa_node: Option<u32>) -> u64 {
+    let dir = match numa_node {
+        Some(n) => format!("/sys/devices/system/node/node{n}/hugepages/hugepages-{page_kib}kB"),
+        None => format!("/sys/kernel/mm/hugepages/hugepages-{page_kib}kB"),
+    };
     let read = |f: &str| {
-        std::fs::read_to_string(format!("/sys/kernel/mm/hugepages/hugepages-2048kB/{}", f))
+        std::fs::read_to_string(format!("{dir}/{f}"))
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
     };
-    let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else { return false };
-    let spare_mib = free.saturating_sub(resv) * 2;
+    let free = read("free_hugepages").unwrap_or(0);
+    let resv = read("resv_hugepages").unwrap_or(0);
+    free.saturating_sub(resv) * page_kib / 1024
+}
+
+/// The host's online CPUs.
+pub(crate) fn online_cpus() -> Vec<u32> {
+    std::fs::read_to_string("/sys/devices/system/cpu/online")
+        .map(|s| glidex_ovs::tuning::parse_cpu_list(&s))
+        .unwrap_or_default()
+}
+
+/// Whether the host has enough unreserved 2 MiB hugepages to back a guest
+/// of `mem_mib`, leaving 25% (at least 256 MiB) for what OVS-DPDK and
+/// other guests are about to touch. For VMs placed before the scheduler
+/// counted pages (spec/host-topology.md §8a.3).
+pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     let mem = mem_mib as u64;
-    mem.is_multiple_of(2) && spare_mib >= mem + (mem / 4).max(256)
+    mem.is_multiple_of(2) && hugepages_spare_mib(2048, None) >= mem + (mem / 4).max(256)
 }
 
 /// vhost-user: OVS maps guest RAM, so it must be shared.
@@ -233,10 +303,24 @@ pub(crate) fn vfio_bdf(path: &str) -> String {
 }
 
 /// Derive a deterministic hypervisor device id from a sysfs path.
-/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "_vfio_0000_41_00_0"
+/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "vfio_0000_41_00_0". QEMU
+/// takes only ids starting with a letter.
 pub fn vfio_device_id(path: &str) -> String {
     let bdf = vfio_bdf(path);
-    format!("_vfio_{}", bdf.replace([':', '.'], "_"))
+    format!("vfio_{}", bdf.replace([':', '.'], "_"))
+}
+
+/// The id a Cloud Hypervisor guest launched before ids started with a
+/// letter has for the device (`_vfio_…`).
+pub fn legacy_vfio_device_id(path: &str) -> String {
+    format!("_{}", vfio_device_id(path))
+}
+
+/// A device id a guest reports, as [`vfio_device_id`] makes it; `None` for
+/// anything but a VFIO device.
+pub fn observed_vfio_id(id: &str) -> Option<String> {
+    let id = id.strip_prefix('_').unwrap_or(id);
+    id.starts_with("vfio_").then(|| id.to_string())
 }
 
 /// Characters a path must not contain to reach a hypervisor command line
@@ -251,21 +335,53 @@ pub fn check_command_line_path(field: &str, path: &str) -> Result<(), Hypervisor
     Ok(())
 }
 
+/// Admission rule for `kernel_args` (spec/kernel-boot.md K7): it is one
+/// argv element, so only its length and control characters matter.
+pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
+    if args.len() > MAX_KERNEL_ARGS_LEN {
+        return Err(HypervisorError::InvalidConfig(format!(
+            "kernel_args must be at most {} bytes",
+            MAX_KERNEL_ARGS_LEN
+        )));
+    }
+    if args.chars().any(|c| c.is_control()) {
+        return Err(HypervisorError::InvalidConfig(
+            "kernel_args must not contain control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn binary_name_matches_hypervisor_type() {
-        assert_eq!(HypervisorType::CloudHypervisor.binary_name(), "cloud-hypervisor");
+        assert_eq!(
+            HypervisorType::CloudHypervisor.binary_name(),
+            "cloud-hypervisor"
+        );
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
     }
 
     #[test]
     fn vfio_ids_ignore_trailing_slashes() {
-        assert_eq!(vfio_bdf("/sys/bus/pci/devices/0000:41:00.0/"), "0000:41:00.0");
-        assert_eq!(vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"), "_vfio_0000_41_00_0");
-        assert_eq!(vfio_device_id("0000:41:00.0"), "_vfio_0000_41_00_0");
+        assert_eq!(
+            vfio_bdf("/sys/bus/pci/devices/0000:41:00.0/"),
+            "0000:41:00.0"
+        );
+        assert_eq!(
+            vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"),
+            "vfio_0000_41_00_0"
+        );
+        assert_eq!(vfio_device_id("0000:41:00.0"), "vfio_0000_41_00_0");
+        assert_eq!(
+            observed_vfio_id("_vfio_0000_41_00_0").as_deref(),
+            Some("vfio_0000_41_00_0"),
+            "a device of a guest launched before"
+        );
+        assert_eq!(observed_vfio_id("vd0"), None);
     }
 
     #[test]
@@ -280,6 +396,60 @@ mod tests {
             assert_eq!(driver(ty).hypervisor_type(), ty);
             let _ = driver(ty).is_available();
         }
+    }
+
+    fn kernel_config(args: &str, firmware: Option<&str>) -> VmConfig {
+        serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": args, "firmware_path": firmware,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn console_device_follows_the_last_console() {
+        use ConsoleDevice::*;
+        for (args, want) in [
+            ("console=ttyS0 root=/dev/vda", Serial),
+            ("console=hvc0 root=/dev/vda", Virtio),
+            ("console=ttyS0 console=hvc0", Virtio),
+            ("console=hvc0 console=ttyS0,115200n8", Serial),
+            ("console=hvc1", Virtio),
+            ("root=/dev/vda", Serial),
+            ("", Serial),
+            // Only a whole `console=` token counts.
+            ("xconsole=hvc0", Serial),
+        ] {
+            assert_eq!(
+                ConsoleDevice::of(&kernel_config(args, None)),
+                want,
+                "{args}"
+            );
+        }
+        // Firmware boot: the serial port, whatever the arguments say.
+        assert_eq!(
+            ConsoleDevice::of(&kernel_config("console=hvc0", Some("/fw.fd"))),
+            Serial
+        );
+    }
+
+    #[test]
+    fn kernel_args_limits() {
+        assert!(check_kernel_args(DEFAULT_KERNEL_ARGS).is_ok());
+        assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN)).is_ok());
+        assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN + 1)).is_err());
+        assert!(check_kernel_args("root=/dev/vda init=/bin/sh").is_ok());
+        assert!(check_kernel_args("root=/dev/vda\ninit=/bin/sh").is_err());
+        assert!(check_kernel_args("a\tb").is_err());
+    }
+
+    #[test]
+    fn default_kernel_args_are_shared() {
+        assert_eq!(
+            HypervisorType::CloudHypervisor.default_kernel_args(),
+            HypervisorType::Qemu.default_kernel_args()
+        );
+        assert!(DEFAULT_KERNEL_ARGS.starts_with("console=ttyS0 "));
     }
 
     #[test]

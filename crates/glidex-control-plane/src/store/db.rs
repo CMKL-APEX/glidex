@@ -102,6 +102,57 @@ tables! {
     IpamReservations = 35 => "ipam_reservations",
     Routers = 36 => "routers",
     IpamExternal = 37 => "ipam_external",
+    // Tenants, directories and admissions (spec/tenancy.md §4).
+    Directories = 38 => "directories",
+    Tenants = 39 => "tenants",
+    Admissions = 40 => "admissions",
+    TenantMembers = 41 => "tenant_members",
+    // Directory connectors and their sealed secrets (spec/tenancy.md §5, §13).
+    Connectors = 42 => "connectors",
+    ConnectorSecrets = 43 => "connector_secrets",
+    DirectoryKeys = 44 => "directory_keys",
+    // Invitations to tenants (spec/tenancy.md §6.1).
+    Invitations = 45 => "invitations",
+    // SCIM bearer tokens, by hash (spec/tenancy.md §8.1).
+    ScimTokens = 46 => "scim_tokens",
+    // Groups an IdP pushed over SCIM (spec/tenancy.md D43).
+    ScimGroups = 47 => "scim_groups",
+    // Each pulled connector's last run (spec/tenancy.md §8.2).
+    ConnectorSync = 48 => "connector_sync",
+    // Datastores and what each node finds at them (spec/storage.md §4.1).
+    Datastores = 49 => "datastores",
+    DatastoreNodes = 50 => "datastore_nodes",
+    // Tenants' shares of cluster device pools (spec/host-topology.md §9.1a).
+    TenantDevicePools = 51 => "tenant_device_pools",
+    // Workload federations (spec/tenancy.md §9).
+    Federations = 52 => "federations",
+    // The tokens exchanges gave, and the workload tokens they used (§9, D48).
+    FederatedTokens = 53 => "federated_tokens",
+}
+
+/// Whose a table's records are (spec/tenancy.md §4): a directory's (they
+/// follow the organization), this cluster's (they follow the hardware), or
+/// both (role links: on a tenant or project, the directory's; on the
+/// cluster or a host, the cluster's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Directory,
+    Cluster,
+    Both,
+}
+
+impl TableId {
+    pub fn scope(self) -> Scope {
+        use TableId::*;
+        match self {
+            Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
+            | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
+            | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
+            | FederatedTokens => Scope::Directory,
+            PolicyLinks | Audit | Meta => Scope::Both,
+            _ => Scope::Cluster,
+        }
+    }
 }
 
 impl Serialize for TableId {
@@ -113,7 +164,8 @@ impl Serialize for TableId {
 impl<'de> Deserialize<'de> for TableId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let id = u16::deserialize(d)?;
-        TableId::from_id(id).ok_or_else(|| serde::de::Error::custom(format!("unknown table id {id}")))
+        TableId::from_id(id)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown table id {id}")))
     }
 }
 
@@ -129,7 +181,9 @@ mod b64 {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let t = String::deserialize(d)?;
-        base64::engine::general_purpose::STANDARD_NO_PAD.decode(t).map_err(serde::de::Error::custom)
+        base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(t)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -174,6 +228,15 @@ pub enum Origin {
     Network,
     Migration,
     System,
+}
+
+impl Origin {
+    /// Writes a node makes about its own work, which a server that isn't
+    /// the leader sends to the leader (spec/clustering.md §8.3). The
+    /// leader decides what the node may write (`check_status_write`).
+    pub fn is_node_status(self) -> bool {
+        matches!(self, Origin::Controller | Origin::Images | Origin::Network)
+    }
 }
 
 /// The ordered `put`/`delete` operations of one write: the Raft log entry.
@@ -236,7 +299,10 @@ pub const LAST_MEMBERSHIP: &str = "last_membership";
 pub const MIRROR_REVISION: &str = "mirror_revision";
 
 fn read_local(txn: &ReadTransaction, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-    Ok(txn.open_table(TableId::RaftMeta.definition())?.get(key)?.map(|v| v.value().to_vec()))
+    Ok(txn
+        .open_table(TableId::RaftMeta.definition())?
+        .get(key)?
+        .map(|v| v.value().to_vec()))
 }
 
 /// A read transaction over the replicated tables with the Raft position it
@@ -283,20 +349,38 @@ pub struct Tx<'db> {
     origin: Origin,
     txn: redb::WriteTransaction,
     ops: RefCell<Vec<Op>>,
+    /// A node's status write on a server that isn't the leader: sent to
+    /// the leader at commit, as an agent's are (spec/clustering.md §8.3).
+    forward: bool,
     _lane: std::sync::MutexGuard<'db, ()>,
 }
 
 impl Tx<'_> {
-    pub fn open_table(&self, def: TableDefinition<'static, &'static str, &'static [u8]>) -> Result<RecTable<'_>, redb::TableError> {
-        let id = TableId::from_name(def.name()).ok_or_else(|| redb::TableError::TableDoesNotExist(def.name().to_string()))?;
-        Ok(RecTable { table: self.txn.open_table(def)?, id, ops: &self.ops })
+    pub fn open_table(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+    ) -> Result<RecTable<'_>, redb::TableError> {
+        let id = TableId::from_name(def.name())
+            .ok_or_else(|| redb::TableError::TableDoesNotExist(def.name().to_string()))?;
+        Ok(RecTable {
+            table: self.txn.open_table(def)?,
+            id,
+            ops: &self.ops,
+        })
     }
 
     /// Persist what was written: commit locally, or propose the write set
     /// and wait until it is applied (§6.1). An empty write set commits
     /// nothing.
     pub fn commit(self) -> Result<(), StoreError> {
-        let Tx { db, origin, txn, ops, _lane } = self;
+        let Tx {
+            db,
+            origin,
+            txn,
+            ops,
+            forward,
+            _lane,
+        } = self;
         let ops = ops.into_inner();
         let (replicator, mirror) = match &*db.mode.lock().unwrap() {
             Mode::Local => (None, None),
@@ -307,7 +391,23 @@ impl Tx<'_> {
             let _ = txn.abort();
             return Ok(());
         }
-        let ws = WriteSet { format: WRITE_SET_FORMAT, origin, ops };
+        let ws = WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin,
+            ops,
+        };
+        if forward {
+            let _ = txn.abort();
+            let f = db.forwarder.lock().unwrap().clone();
+            let f = f.ok_or(StoreError::NotLeader { leader: None })?;
+            let index = f.status_write(&ws)?;
+            // Read your writes: the controller's next step reads this store.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while db.revision() < index && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Ok(());
+        }
         if let Some(m) = mirror {
             let _ = txn.abort();
             return match m.submit(&ws)? {
@@ -353,7 +453,11 @@ impl<'tx> Deref for RecTable<'tx> {
 impl RecTable<'_> {
     pub fn insert(&mut self, key: &str, value: &[u8]) -> Result<(), redb::StorageError> {
         self.table.insert(key, value)?;
-        self.ops.borrow_mut().push(Op::Put { table: self.id, key: key.as_bytes().to_vec(), value: value.to_vec() });
+        self.ops.borrow_mut().push(Op::Put {
+            table: self.id,
+            key: key.as_bytes().to_vec(),
+            value: value.to_vec(),
+        });
         Ok(())
     }
 
@@ -364,7 +468,10 @@ impl RecTable<'_> {
         if !existed {
             return Ok(None);
         }
-        self.ops.borrow_mut().push(Op::Delete { table: self.id, key: key.as_bytes().to_vec() });
+        self.ops.borrow_mut().push(Op::Delete {
+            table: self.id,
+            key: key.as_bytes().to_vec(),
+        });
         Ok(Some(()))
     }
 }
@@ -396,6 +503,9 @@ pub trait Replicator: Send + Sync {
 /// puts and deletes in a few tables, or a named operation.
 pub trait Forwarder: Send + Sync {
     fn write_raw(&self, ops: Vec<Op>) -> Result<(), StoreError>;
+    /// Have the leader check and apply a node's status write (§8.3);
+    /// returns the revision it was applied at.
+    fn status_write(&self, ws: &WriteSet) -> Result<u64, StoreError>;
     fn call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError>;
 }
 
@@ -524,7 +634,11 @@ impl Db {
         }
     }
 
-    pub fn forward_call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+    pub fn forward_call(
+        &self,
+        op: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, StoreError> {
         let f = self.forwarder.lock().unwrap().clone();
         match f {
             Some(f) => f.call(op, args),
@@ -556,16 +670,40 @@ impl Db {
             Mode::Replicated(r) => Some(r.clone()),
             _ => None,
         };
+        // On a server that isn't the leader, a node's own work (its
+        // controllers, disks and images, network status) is status for the
+        // leader to check, like an agent's; anything else is refused here
+        // as before.
+        let mut forward = false;
         if let Some(r) = replicator {
-            r.before_write()?;
+            match r.before_write() {
+                Ok(()) => {}
+                Err(StoreError::NotLeader { .. })
+                    if origin.is_node_status() && self.forwarder.lock().unwrap().is_some() =>
+                {
+                    forward = true;
+                }
+                Err(e) => return Err(e),
+            }
         }
         let txn = self.inner.begin_write()?;
-        Ok(Tx { db: self, origin, txn, ops: RefCell::new(Vec::new()), _lane: lane })
+        Ok(Tx {
+            db: self,
+            origin,
+            txn,
+            ops: RefCell::new(Vec::new()),
+            forward,
+            _lane: lane,
+        })
     }
 
     /// Run `f` against the current state and persist exactly the writes it
     /// made (§6.1).
-    pub fn write<R, E>(&self, origin: Origin, f: impl FnOnce(&Tx<'_>) -> Result<R, E>) -> Result<R, E>
+    pub fn write<R, E>(
+        &self,
+        origin: Origin,
+        f: impl FnOnce(&Tx<'_>) -> Result<R, E>,
+    ) -> Result<R, E>
     where
         E: From<StoreError>,
     {
@@ -578,13 +716,19 @@ impl Db {
     /// Apply a write set as raw bytes, in one transaction (§6.2: "applying
     /// an entry is a pure byte operation"). `also` runs inside the same
     /// transaction (a replicated store advances `last_applied` there).
-    pub fn apply(&self, ws: &WriteSet, revision: u64, also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>) -> Result<(), StoreError> {
+    pub fn apply(
+        &self,
+        ws: &WriteSet,
+        revision: u64,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
         if ws.format > WRITE_SET_FORMAT {
             return Err(StoreError::Format(ws.format));
         }
         let txn = self.inner.begin_write()?;
         for op in &ws.ops {
-            let key = std::str::from_utf8(op.key()).map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+            let key = std::str::from_utf8(op.key())
+                .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
             let mut t = txn.open_table(op.table().definition())?;
             match op {
                 Op::Put { value, .. } => {
@@ -617,7 +761,12 @@ impl Db {
             keys.push((op.table(), op.key().to_vec()));
         }
         ring(&self.bell);
-        let _ = self.applied.send(Applied { revision, ws: Arc::new(ws), tables, keys });
+        let _ = self.applied.send(Applied {
+            revision,
+            ws: Arc::new(ws),
+            tables,
+            keys,
+        });
     }
 
     /// Start recording every committed write set (the replay test, §15).
@@ -661,7 +810,11 @@ impl Db {
         let txn = self.inner.begin_read()?;
         let last_applied = read_local(&txn, LAST_APPLIED)?;
         let last_membership = read_local(&txn, LAST_MEMBERSHIP)?;
-        Ok(SnapshotView { txn, last_applied, last_membership })
+        Ok(SnapshotView {
+            txn,
+            last_applied,
+            last_membership,
+        })
     }
 
     /// Replace every replicated table with the contents of a snapshot
@@ -676,7 +829,10 @@ impl Db {
         let mut magic = [0u8; 8];
         r.read_exact(&mut magic)?;
         if &magic != DUMP_MAGIC {
-            return Err(StoreError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a glidex snapshot")));
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not a glidex snapshot",
+            )));
         }
         // Its contents no longer follow from its own write sets: the replay
         // check (GLIDEX_CHECK_WRITE_SETS) has nothing to compare it with.
@@ -693,16 +849,22 @@ impl Db {
             if table == DUMP_END {
                 break;
             }
-            let id = TableId::from_id(table).ok_or_else(|| StoreError::UnknownTable(format!("id {table}")))?;
+            let id = TableId::from_id(table)
+                .ok_or_else(|| StoreError::UnknownTable(format!("id {table}")))?;
             let mut lens = [0u8; 8];
             r.read_exact(&mut lens)?;
-            let (kl, vl) = (u32::from_le_bytes(lens[..4].try_into().unwrap()) as usize, u32::from_le_bytes(lens[4..].try_into().unwrap()) as usize);
+            let (kl, vl) = (
+                u32::from_le_bytes(lens[..4].try_into().unwrap()) as usize,
+                u32::from_le_bytes(lens[4..].try_into().unwrap()) as usize,
+            );
             let mut key = vec![0u8; kl];
             let mut value = vec![0u8; vl];
             r.read_exact(&mut key)?;
             r.read_exact(&mut value)?;
-            let key = String::from_utf8(key).map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
-            txn.open_table(id.definition())?.insert(key.as_str(), value.as_slice())?;
+            let key = String::from_utf8(key)
+                .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+            txn.open_table(id.definition())?
+                .insert(key.as_str(), value.as_slice())?;
         }
         also(&txn)?;
         txn.commit()?;
@@ -714,14 +876,16 @@ impl Db {
     /// Write a row of the local `raft_meta` table (not replicated).
     pub fn put_local(&self, key: &str, value: &[u8]) -> Result<(), StoreError> {
         let txn = self.inner.begin_write()?;
-        txn.open_table(TableId::RaftMeta.definition())?.insert(key, value)?;
+        txn.open_table(TableId::RaftMeta.definition())?
+            .insert(key, value)?;
         txn.commit()?;
         Ok(())
     }
 
     pub fn delete_local(&self, key: &str) -> Result<(), StoreError> {
         let txn = self.inner.begin_write()?;
-        txn.open_table(TableId::RaftMeta.definition())?.remove(key)?;
+        txn.open_table(TableId::RaftMeta.definition())?
+            .remove(key)?;
         txn.commit()?;
         Ok(())
     }
@@ -742,23 +906,44 @@ impl Db {
         }
         for op in &ws.ops {
             if let Op::Put { table, key, value } = op {
-                let key = std::str::from_utf8(key).map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
-                txn.open_table(table.definition())?.insert(key, value.as_slice())?;
+                let key = std::str::from_utf8(key)
+                    .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+                txn.open_table(table.definition())?
+                    .insert(key, value.as_slice())?;
             }
         }
-        txn.open_table(TableId::RaftMeta.definition())?.insert(MIRROR_REVISION, revision.to_string().as_bytes())?;
+        txn.open_table(TableId::RaftMeta.definition())?
+            .insert(MIRROR_REVISION, revision.to_string().as_bytes())?;
         txn.commit()?;
         self.revision.store(revision, Ordering::Release);
         ring(&self.bell);
-        let _ = self.applied.send(Applied { revision, ws: Arc::new(ws.clone()), tables: TableId::ALL.iter().copied().filter(|t| !t.is_local()).collect(), keys: Vec::new() });
+        let _ = self.applied.send(Applied {
+            revision,
+            ws: Arc::new(ws.clone()),
+            tables: TableId::ALL
+                .iter()
+                .copied()
+                .filter(|t| !t.is_local())
+                .collect(),
+            keys: Vec::new(),
+        });
         Ok(())
     }
 
     /// The revision a node's cache had reached when it last stopped.
     pub fn stored_mirror_revision(&self) -> u64 {
-        let Ok(txn) = self.inner.begin_read() else { return 0 };
-        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else { return 0 };
-        t.get(MIRROR_REVISION).ok().flatten().and_then(|v| String::from_utf8(v.value().to_vec()).ok()).and_then(|s| s.parse().ok()).unwrap_or(0)
+        let Ok(txn) = self.inner.begin_read() else {
+            return 0;
+        };
+        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else {
+            return 0;
+        };
+        t.get(MIRROR_REVISION)
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v.value().to_vec()).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Replay `journal` into an empty database at `path`.
@@ -788,10 +973,14 @@ impl Drop for Db {
         if self.revision() != journal.len() as u64 {
             return;
         }
-        let replayed = Db::replay(dir.path().join("replay.db"), &journal).expect("replay of the write sets failed");
+        let replayed = Db::replay(dir.path().join("replay.db"), &journal)
+            .expect("replay of the write sets failed");
         replayed.journal.lock().unwrap().take();
         let (a, b) = (self.dump().expect("dump"), replayed.dump().expect("dump"));
-        assert!(a == b, "replaying the write sets did not reproduce the database (spec/clustering.md §6.1 invariant)");
+        assert!(
+            a == b,
+            "replaying the write sets did not reproduce the database (spec/clustering.md §6.1 invariant)"
+        );
         replayed.journal.lock().unwrap().take();
     }
 }
@@ -828,7 +1017,8 @@ mod tests {
         .unwrap();
         // An empty write set commits nothing.
         let rev = db.revision();
-        db.write(Origin::Api, |_| -> Result<(), StoreError> { Ok(()) }).unwrap();
+        db.write(Origin::Api, |_| -> Result<(), StoreError> { Ok(()) })
+            .unwrap();
         assert_eq!(db.revision(), rev);
         // A failed closure leaves nothing behind, in the database or the journal.
         let failed: Result<(), StoreError> = db.write(Origin::Api, |tx| {
@@ -849,8 +1039,15 @@ mod tests {
             format: WRITE_SET_FORMAT,
             origin: Origin::Controller,
             ops: vec![
-                Op::Put { table: TableId::Events, key: b"vm/1".to_vec(), value: vec![0, 255, 7] },
-                Op::Delete { table: TableId::Audit, key: b"k".to_vec() },
+                Op::Put {
+                    table: TableId::Events,
+                    key: b"vm/1".to_vec(),
+                    value: vec![0, 255, 7],
+                },
+                Op::Delete {
+                    table: TableId::Audit,
+                    key: b"k".to_vec(),
+                },
             ],
         };
         let back: WriteSet = serde_json::from_slice(&serde_json::to_vec(&ws).unwrap()).unwrap();
@@ -869,7 +1066,10 @@ mod tests {
         })
         .unwrap();
         let a = rx.try_recv().unwrap();
-        assert_eq!((a.revision, a.tables.as_slice()), (1, [TableId::Vms, TableId::Disks].as_slice()));
+        assert_eq!(
+            (a.revision, a.tables.as_slice()),
+            (1, [TableId::Vms, TableId::Disks].as_slice())
+        );
         assert_eq!(a.keys.len(), 2);
         assert!(bell.has_changed().unwrap());
     }
@@ -877,7 +1077,15 @@ mod tests {
     #[test]
     fn table_ids_are_stable() {
         // Append-only (§6.6): these numbers are on disk in Raft logs.
-        assert_eq!((TableId::Vms as u16, TableId::Audit as u16, TableId::UsageMonthlyRates as u16, TableId::Nodes as u16), (1, 4, 25, 26));
+        assert_eq!(
+            (
+                TableId::Vms as u16,
+                TableId::Audit as u16,
+                TableId::UsageMonthlyRates as u16,
+                TableId::Nodes as u16
+            ),
+            (1, 4, 25, 26)
+        );
         for &t in TableId::ALL {
             assert_eq!(TableId::from_name(t.name()), Some(t));
             assert_eq!(TableId::from_id(t as u16), Some(t));

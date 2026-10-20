@@ -47,7 +47,10 @@ fn passwords_are_never_logged() {
 
     let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
     assert!(log.contains("alice"), "user names are logged: {log}");
-    assert!(log.contains("success") && log.contains("denied") && log.contains("rate_limited"), "{log}");
+    assert!(
+        log.contains("success") && log.contains("denied") && log.contains("rate_limited"),
+        "{log}"
+    );
     assert!(!log.contains(PASSWORD), "{log}");
     assert!(!log.contains(wrong), "{log}");
     assert!(!log.contains("Typed My Password"), "{log}");

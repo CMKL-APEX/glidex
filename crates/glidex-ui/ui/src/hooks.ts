@@ -25,3 +25,37 @@ export function useDirectory(): [Directory | null, () => void] {
   }, [host.listUsers, host.listTeams, tick]);
   return [dir, () => setTick((t) => t + 1)];
 }
+
+/** Connector id → display name, from the login page's public list: who
+ *  may see a tenant may see how its people sign in. */
+export function useConnectorNames(): Record<string, string> {
+  const [names, setNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    api
+      .authMethods()
+      .then((m) => live && setNames(Object.fromEntries((m.connectors ?? []).map((c) => [c.id, c.display_name || c.id]))))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return names;
+}
+
+/** Node id → name, when the caller may list nodes: a local account in a
+ *  cluster is one host's. Empty otherwise. */
+export function useNodeNames(): Record<string, string> {
+  const [names, setNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    api
+      .listNodes()
+      .then((ns) => live && setNames(Object.fromEntries(ns.map((n) => [n.meta.id, n.spec.name]))))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return names;
+}

@@ -45,6 +45,17 @@ pub struct HostCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpdk_mempool_driver: Option<bool>,
     pub dpdk_initialized: bool,
+    /// `other_config:dpdk-socket-mem` once DPDK is initialized: MiB of
+    /// hugepages DPDK takes per NUMA node (`1024` or `1024,1024`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_socket_mem: Option<String>,
+    /// `pmd-cpu-mask` and `dpdk-lcore-mask` once DPDK is initialized: the
+    /// CPUs OVS-DPDK polls on and keeps its other threads on, which VMs
+    /// don't get.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_pmd_cpu_mask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpdk_lcore_mask: Option<String>,
     pub hugepages: Vec<Hugepages>,
     pub iommu: bool,
     /// `None` when the Cloud Hypervisor binary wasn't found.
@@ -71,7 +82,11 @@ fn active_units(exec: &dyn Exec, units: &[&str]) -> Vec<String> {
     units
         .iter()
         .filter(|u| {
-            ok(exec, Cmd::new(Program::Systemctl, ["is-active", "--quiet", u])).is_some()
+            ok(
+                exec,
+                Cmd::new(Program::Systemctl, ["is-active", "--quiet", u]),
+            )
+            .is_some()
         })
         .map(|u| u.to_string())
         .collect()
@@ -80,13 +95,27 @@ fn active_units(exec: &dyn Exec, units: &[&str]) -> Vec<String> {
 /// Debian/Ubuntu: is a `librte-mempool-ring*` package installed?
 fn dpdk_mempool_driver(exec: &dyn Exec) -> Option<bool> {
     let out = exec
-        .run(&Cmd::new(Program::DpkgQuery, ["-W", "-f=${Status}\\n", "librte-mempool-ring*"]).timeout(Duration::from_secs(5)))
+        .run(
+            &Cmd::new(
+                Program::DpkgQuery,
+                ["-W", "-f=${Status}\\n", "librte-mempool-ring*"],
+            )
+            .timeout(Duration::from_secs(5)),
+        )
         .ok()?;
     if out.status != 0 && out.stdout.is_empty() {
         // dpkg-query missing (not Debian) or no such package known.
-        return if exec.exists(Path::new("/var/lib/dpkg/status")) { Some(false) } else { None };
+        return if exec.exists(Path::new("/var/lib/dpkg/status")) {
+            Some(false)
+        } else {
+            None
+        };
     }
-    Some(out.stdout_str().lines().any(|l| l.trim() == "install ok installed"))
+    Some(
+        out.stdout_str()
+            .lines()
+            .any(|l| l.trim() == "install ok installed"),
+    )
 }
 
 /// "ovs-vsctl (Open vSwitch) 3.7.1" → "3.7.1".
@@ -101,7 +130,9 @@ pub fn parse_ovs_version(output: &str) -> Option<String> {
 }
 
 pub fn version_at_least(version: &str, min: (u32, u32)) -> bool {
-    let mut parts = version.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse::<u32>().ok());
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|p| p.parse::<u32>().ok());
     let major = parts.next().unwrap_or(0);
     let minor = parts.next().unwrap_or(0);
     (major, minor) >= min
@@ -128,19 +159,34 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
     // `show` needs only ovsdb-server; ovs-vswitchd answers `version` itself.
     if caps.ovs_installed
         && ok(exec, Cmd::new(Program::OvsVsctl, ["--timeout=2", "show"])).is_some()
-        && ok(exec, Cmd::new(Program::OvsAppctl, ["--timeout=2", "-t", "ovs-vswitchd", "version"])).is_some()
+        && ok(
+            exec,
+            Cmd::new(
+                Program::OvsAppctl,
+                ["--timeout=2", "-t", "ovs-vswitchd", "version"],
+            ),
+        )
+        .is_some()
     {
         caps.ovs_running = true;
         if let Ok(rows) = vsctl::list(
             exec,
             "Open_vSwitch",
             &["iface_types", "datapath_types", "dpdk_initialized"],
-        ) {
-            if let Some(row) = rows.first() {
-                caps.iface_types = row.set("iface_types");
-                caps.datapath_types = row.set("datapath_types");
-                caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
-            }
+        ) && let Some(row) = rows.first()
+        {
+            caps.iface_types = row.set("iface_types");
+            caps.datapath_types = row.set("datapath_types");
+            caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
+        }
+        if caps.dpdk_initialized
+            && let Some(m) = vsctl::list(exec, "Open_vSwitch", &["other_config"])
+                .ok()
+                .and_then(|rows| rows.first().map(|r| r.map("other_config")))
+        {
+            caps.dpdk_socket_mem = m.get("dpdk-socket-mem").cloned();
+            caps.dpdk_pmd_cpu_mask = m.get("pmd-cpu-mask").cloned();
+            caps.dpdk_lcore_mask = m.get("dpdk-lcore-mask").cloned();
         }
     }
 
@@ -162,8 +208,11 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
     caps.iommu = exec.exists(Path::new("/sys/kernel/iommu_groups/0"));
 
     caps.ch_net_admin = opts.ch_binary.as_ref().map(|bin| {
-        ok(exec, Cmd::new(Program::Getcap, [bin.to_string_lossy().to_string()]))
-            .is_some_and(|out| out.contains("cap_net_admin"))
+        ok(
+            exec,
+            Cmd::new(Program::Getcap, [bin.to_string_lossy().to_string()]),
+        )
+        .is_some_and(|out| out.contains("cap_net_admin"))
     });
     caps.dnsmasq = ok(exec, Cmd::new(Program::Dnsmasq, ["--version"])).is_some();
     caps.nft = ok(exec, Cmd::new(Program::Nft, ["--version"])).is_some();
@@ -233,9 +282,21 @@ fn combinations(caps: &HostCapabilities) -> Vec<Combination> {
         d.push("cap_net_admin on cloud-hypervisor".into());
     }
     for (id, description, missing) in [
-        ("A", "kernel datapath, tap VM ports (NAT or kernel uplink)", a),
-        ("B", "userspace datapath, DPDK uplink, vhost-user VM ports", b),
-        ("C", "userspace datapath, AF_XDP uplink, vhost-user VM ports", c),
+        (
+            "A",
+            "kernel datapath, tap VM ports (NAT or kernel uplink)",
+            a,
+        ),
+        (
+            "B",
+            "userspace datapath, DPDK uplink, vhost-user VM ports",
+            b,
+        ),
+        (
+            "C",
+            "userspace datapath, AF_XDP uplink, vhost-user VM ports",
+            c,
+        ),
         ("D", "userspace datapath, AF_XDP uplink, tap VM ports", d),
     ] {
         out.push(Combination {
@@ -278,15 +339,27 @@ mod tests {
     #[test]
     fn probe_with_kernel_ovs() {
         let exec = RecordingExec::new();
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
         exec.on(
             "ovs-vsctl --format=json --columns=iface_types,datapath_types,dpdk_initialized list Open_vSwitch",
             Output::ok(r#"{"data":[[["set",["afxdp","geneve","internal","system","tap"]],["set",["netdev","system"]],false]],"headings":["iface_types","datapath_types","dpdk_initialized"]}"#),
         );
-        exec.on("getcap", Output::ok("/usr/local/bin/cloud-hypervisor cap_net_admin=ep\n"));
+        exec.on(
+            "getcap",
+            Output::ok("/usr/local/bin/cloud-hypervisor cap_net_admin=ep\n"),
+        );
         exec.on("systemctl is-active --quiet ufw", Output::failed(3, ""));
-        exec.on("systemctl is-active --quiet firewalld", Output::failed(3, ""));
-        exec.on("systemctl is-active --quiet NetworkManager", Output::failed(3, ""));
+        exec.on(
+            "systemctl is-active --quiet firewalld",
+            Output::failed(3, ""),
+        );
+        exec.on(
+            "systemctl is-active --quiet NetworkManager",
+            Output::failed(3, ""),
+        );
         exec.file("/proc/sys/net/ipv4/ip_forward", "1\n");
         let caps = probe(
             &exec,
@@ -299,9 +372,44 @@ mod tests {
         assert_eq!(caps.ch_net_admin, Some(true));
         assert!(caps.ip_forward);
         assert_eq!(caps.network_managers, vec!["systemd-networkd"]);
-        let by_id = |id: &str| caps.combinations.iter().find(|c| c.id == id).unwrap().clone();
+        let by_id = |id: &str| {
+            caps.combinations
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .clone()
+        };
         assert!(by_id("A").available);
         assert!(by_id("D").available);
-        assert!(by_id("B").missing.iter().any(|m| m.starts_with("dpdk build of ovs-vswitchd")), "{:?}", by_id("B"));
+        assert!(
+            by_id("B")
+                .missing
+                .iter()
+                .any(|m| m.starts_with("dpdk build of ovs-vswitchd")),
+            "{:?}",
+            by_id("B")
+        );
+    }
+
+    #[test]
+    fn probe_reports_dpdk_socket_memory_once_initialized() {
+        let exec = RecordingExec::new();
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=iface_types,datapath_types,dpdk_initialized list Open_vSwitch",
+            Output::ok(r#"{"data":[[["set",["dpdk","dpdkvhostuserclient","internal","system"]],["set",["netdev","system"]],true]],"headings":["iface_types","datapath_types","dpdk_initialized"]}"#),
+        );
+        exec.on(
+            "ovs-vsctl --format=json --columns=other_config list Open_vSwitch",
+            Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-lcore-mask","0x1"],["dpdk-socket-mem","1024,1024"],["pmd-cpu-mask","0x6"]]]]],"headings":["other_config"]}"#),
+        );
+        let caps = probe(&exec, &ProbeOptions::default());
+        assert!(caps.dpdk_initialized);
+        assert_eq!(caps.dpdk_socket_mem.as_deref(), Some("1024,1024"));
+        assert_eq!(caps.dpdk_pmd_cpu_mask.as_deref(), Some("0x6"));
+        assert_eq!(caps.dpdk_lcore_mask.as_deref(), Some("0x1"));
     }
 }

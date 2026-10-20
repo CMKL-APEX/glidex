@@ -37,17 +37,36 @@ pub fn liveness(vm: &Vm, unit: Option<Result<bool, String>>) -> Seen {
     let boot = match boot_id() {
         Ok(b) => b,
         Err(e) => {
-            return Seen { liveness: Liveness::Unknown(format!("boot id: {}", e)), file: None, boot_id: String::new() }
+            return Seen {
+                liveness: Liveness::Unknown(format!("boot id: {}", e)),
+                file: None,
+                boot_id: String::new(),
+            };
         }
     };
     let file = match InstanceFile::read(&paths.instance) {
         Ok(f) => f,
         Err(e) => {
-            return Seen { liveness: Liveness::Unknown(format!("{}: {}", paths.instance.display(), e)), file: None, boot_id: boot }
+            return Seen {
+                liveness: Liveness::Unknown(format!("{}: {}", paths.instance.display(), e)),
+                file: None,
+                boot_id: boot,
+            };
         }
     };
-    let liveness = check(vm.status.instance.as_ref(), file.as_ref(), &boot, unit, &paths.api_socket, &paths.shim_socket);
-    Seen { liveness, file, boot_id: boot }
+    let liveness = check(
+        vm.status.instance.as_ref(),
+        file.as_ref(),
+        &boot,
+        unit,
+        &paths.api_socket,
+        &paths.shim_socket,
+    );
+    Seen {
+        liveness,
+        file,
+        boot_id: boot,
+    }
 }
 
 fn check(
@@ -113,6 +132,8 @@ mod tests {
             launched_at: 0,
             growpart_disk: None,
             growpart_seq: None,
+            cpu_affinity: vec![],
+            device_errors: Default::default(),
         }
     }
 
@@ -143,15 +164,40 @@ mod tests {
         let st = glidex_vm_shim::util::proc_starttime(me).unwrap().unwrap();
 
         assert_eq!(check(None, None, "b", None, a, s), Liveness::Dead);
-        assert_eq!(check(None, None, "b", Some(Ok(false)), a, s), Liveness::Dead);
+        assert_eq!(
+            check(None, None, "b", Some(Ok(false)), a, s),
+            Liveness::Dead
+        );
         // 1. unit
         assert_eq!(check(None, None, "b", Some(Ok(true)), a, s), Liveness::Live);
-        assert!(matches!(check(None, None, "b", Some(Err("no bus".into())), a, s), Liveness::Unknown(_)));
+        assert!(matches!(
+            check(None, None, "b", Some(Err("no bus".into())), a, s),
+            Liveness::Unknown(_)
+        ));
         // 2./3. processes, recorded or from instance.json, this boot only
-        assert_eq!(check(Some(&inst(me, st, "b")), None, "b", None, a, s), Liveness::Live);
-        assert_eq!(check(None, Some(&file(me, st, "b")), "b", None, a, s), Liveness::Live);
-        assert_eq!(check(Some(&inst(me, st, "old")), Some(&file(me, st, "old")), "b", None, a, s), Liveness::Dead);
-        assert_eq!(check(Some(&inst(me, st + 1, "b")), None, "b", None, a, s), Liveness::Dead);
+        assert_eq!(
+            check(Some(&inst(me, st, "b")), None, "b", None, a, s),
+            Liveness::Live
+        );
+        assert_eq!(
+            check(None, Some(&file(me, st, "b")), "b", None, a, s),
+            Liveness::Live
+        );
+        assert_eq!(
+            check(
+                Some(&inst(me, st, "old")),
+                Some(&file(me, st, "old")),
+                "b",
+                None,
+                a,
+                s
+            ),
+            Liveness::Dead
+        );
+        assert_eq!(
+            check(Some(&inst(me, st + 1, "b")), None, "b", None, a, s),
+            Liveness::Dead
+        );
         // 4. sockets
         let l = std::os::unix::net::UnixListener::bind(&api).unwrap();
         assert_eq!(check(None, None, "b", None, a, s), Liveness::Live);

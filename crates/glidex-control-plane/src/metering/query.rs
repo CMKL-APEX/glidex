@@ -1,7 +1,7 @@
 //! Reading usage back (spec/metering.md §8): buckets in a fixed-offset
 //! time zone, grouping, derived meters and presentation units.
 
-use super::ledger::{is_max_meter, Flag, SubjectKind, UsageRecord};
+use super::ledger::{Flag, SubjectKind, UsageRecord, is_max_meter};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -16,7 +16,10 @@ pub struct Tz {
 
 impl Tz {
     pub fn utc() -> Self {
-        Self { name: "UTC".into(), offset_secs: 0 }
+        Self {
+            name: "UTC".into(),
+            offset_secs: 0,
+        }
     }
 }
 
@@ -29,19 +32,36 @@ pub fn parse_tz(s: &str) -> Result<Tz, String> {
 }
 
 fn parse_tz_in(s: &str, zoneinfo: &Path) -> Result<Tz, String> {
-    let named = |offset_secs| Ok(Tz { name: s.to_string(), offset_secs });
+    let named = |offset_secs| {
+        Ok(Tz {
+            name: s.to_string(),
+            offset_secs,
+        })
+    };
     if matches!(s, "UTC" | "Etc/UTC" | "Z" | "GMT" | "Etc/GMT") {
         return named(0);
     }
     if let Some(rest) = s.strip_prefix('+').or_else(|| s.strip_prefix('-')) {
         let (h, m) = rest.split_once(':').unwrap_or((rest, "00"));
-        let (h, m): (i64, i64) = (h.parse().map_err(|_| format!("bad offset {s}"))?, m.parse().map_err(|_| format!("bad offset {s}"))?);
+        let (h, m): (i64, i64) = (
+            h.parse().map_err(|_| format!("bad offset {s}"))?,
+            m.parse().map_err(|_| format!("bad offset {s}"))?,
+        );
         if m != 0 || h > 14 {
-            return Err(format!("{s}: the billing time zone must be a whole number of hours from UTC"));
+            return Err(format!(
+                "{s}: the billing time zone must be a whole number of hours from UTC"
+            ));
         }
-        return named(if s.starts_with('-') { -h * 3600 } else { h * 3600 });
+        return named(if s.starts_with('-') {
+            -h * 3600
+        } else {
+            h * 3600
+        });
     }
-    let valid = !s.is_empty() && !s.contains("..") && s.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
+    let valid = !s.is_empty()
+        && !s.contains("..")
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
     if !valid {
         return Err(format!("{s}: not a time zone name"));
     }
@@ -57,7 +77,11 @@ fn tzif_fixed_offset(data: &[u8]) -> Result<i64, String> {
     }
     // The footer is the last line: "\n<POSIX TZ>\n".
     let text = data.strip_suffix(b"\n").ok_or("no POSIX rule (TZif v1)")?;
-    let start = text.iter().rposition(|&b| b == b'\n').ok_or("no POSIX rule")? + 1;
+    let start = text
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .ok_or("no POSIX rule")?
+        + 1;
     let rule = std::str::from_utf8(&text[start..]).map_err(|_| "bad POSIX rule")?;
     // std name: <...> or letters.
     let rest = if let Some(r) = rule.strip_prefix('<') {
@@ -65,7 +89,9 @@ fn tzif_fixed_offset(data: &[u8]) -> Result<i64, String> {
     } else {
         rule.trim_start_matches(|c: char| c.is_ascii_alphabetic())
     };
-    let end = rest.find(|c: char| !(c.is_ascii_digit() || "+-:".contains(c))).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || "+-:".contains(c)))
+        .unwrap_or(rest.len());
     let (off, dst) = rest.split_at(end);
     if !dst.is_empty() {
         return Err("has daylight saving time; use a zone with a fixed offset".into());
@@ -75,7 +101,10 @@ fn tzif_fixed_offset(data: &[u8]) -> Result<i64, String> {
         None => (-1, off.trim_start_matches('+')),
     };
     let mut parts = off.split(':');
-    let h: i64 = parts.next().and_then(|p| p.parse().ok()).ok_or("bad POSIX offset")?;
+    let h: i64 = parts
+        .next()
+        .and_then(|p| p.parse().ok())
+        .ok_or("bad POSIX offset")?;
     if parts.any(|p| p.parse::<i64>().ok() != Some(0)) {
         return Err("is not a whole number of hours from UTC".into());
     }
@@ -139,10 +168,16 @@ pub fn bucket(t: u64, g: Granularity, tz: &Tz) -> (u64, u64) {
         Granularity::Month => {
             let (y, m, _) = civil_from_days(local.div_euclid(86400));
             let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-            (days_from_civil(y, m, 1) * 86400, days_from_civil(ny, nm, 1) * 86400)
+            (
+                days_from_civil(y, m, 1) * 86400,
+                days_from_civil(ny, nm, 1) * 86400,
+            )
         }
     };
-    ((start - tz.offset_secs).max(0) as u64, (end - tz.offset_secs).max(0) as u64)
+    (
+        (start - tz.offset_secs).max(0) as u64,
+        (end - tz.offset_secs).max(0) as u64,
+    )
 }
 
 /// `[start, end)` (unix s) of the calendar month `YYYY-MM` in `tz`.
@@ -167,7 +202,12 @@ pub fn month_label(t: u64, tz: &Tz) -> String {
 pub fn rfc3339(t: u64) -> String {
     let (y, m, d) = civil_from_days((t / 86400) as i64);
     let s = t % 86400;
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", s / 3600, s / 60 % 60, s % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        s / 3600,
+        s / 60 % 60,
+        s % 60
+    )
 }
 
 /// Unix seconds, or RFC 3339 (`YYYY-MM-DDTHH:MM[:SS](Z|±HH:MM)`).
@@ -179,7 +219,11 @@ pub fn parse_time(s: &str) -> Result<u64, String> {
     let (date, time) = s.split_once('T').ok_or_else(bad)?;
     let mut d = date.split('-').map(|p| p.parse::<i64>());
     let (y, m, day) = match (d.next(), d.next(), d.next()) {
-        (Some(Ok(y)), Some(Ok(m)), Some(Ok(day))) if (1..=12).contains(&m) && (1..=31).contains(&day) => (y, m as u32, day as u32),
+        (Some(Ok(y)), Some(Ok(m)), Some(Ok(day)))
+            if (1..=12).contains(&m) && (1..=31).contains(&day) =>
+        {
+            (y, m as u32, day as u32)
+        }
         _ => return Err(bad()),
     };
     let (clock, offset) = if let Some(c) = time.strip_suffix('Z') {
@@ -190,7 +234,9 @@ pub fn parse_time(s: &str) -> Result<u64, String> {
         let tz = parse_tz(o).map_err(|_| bad())?;
         (c, tz.offset_secs)
     };
-    let mut c = clock.split(':').map(|p| p.split('.').next().unwrap_or(p).parse::<i64>());
+    let mut c = clock
+        .split(':')
+        .map(|p| p.split('.').next().unwrap_or(p).parse::<i64>());
     let (h, mi, sec) = match (c.next(), c.next(), c.next()) {
         (Some(Ok(h)), Some(Ok(mi)), sec) => (h, mi, sec.unwrap_or(Ok(0)).map_err(|_| bad())?),
         _ => return Err(bad()),
@@ -221,7 +267,9 @@ impl std::str::FromStr for GroupKey {
             "nic" => Ok(Self::Nic),
             "network" => Ok(Self::Network),
             "node" => Ok(Self::Node),
-            _ => Err(format!("group_by: unknown key {s} (project, vm, disk, nic, network, node)")),
+            _ => Err(format!(
+                "group_by: unknown key {s} (project, vm, disk, nic, network, node)"
+            )),
         }
     }
 }
@@ -234,15 +282,28 @@ pub struct Named {
 
 /// The value of one group key for a subject, if it has one.
 pub fn key_of(s: &super::ledger::Subject, k: GroupKey) -> Option<Named> {
-    let named = |id: &str, name: &str| Some(Named { id: id.to_string(), name: name.to_string() });
+    let named = |id: &str, name: &str| {
+        Some(Named {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+    };
     match (k, s.kind) {
-        (GroupKey::Project, _) => s.project.as_ref().map(|p| Named { id: p.clone(), name: p.clone() }),
+        (GroupKey::Project, _) => s.project.as_ref().map(|p| Named {
+            id: p.clone(),
+            name: p.clone(),
+        }),
         (GroupKey::Vm, SubjectKind::Vm) => named(&s.id, &s.name),
         // A NIC's name is `<vm name>/nic<i>`.
-        (GroupKey::Vm, SubjectKind::Nic) => s.vm_id.as_deref().and_then(|v| named(v, s.name.rsplit_once('/').map_or(&s.name, |x| x.0))),
+        (GroupKey::Vm, SubjectKind::Nic) => s
+            .vm_id
+            .as_deref()
+            .and_then(|v| named(v, s.name.rsplit_once('/').map_or(&s.name, |x| x.0))),
         // A disk counts towards the VM it is attached to (§8.6).
         (GroupKey::Vm, SubjectKind::Disk) => s.vm_id.as_deref().and_then(|v| named(v, v)),
-        (GroupKey::Disk, SubjectKind::Disk) | (GroupKey::Nic, SubjectKind::Nic) | (GroupKey::Network, SubjectKind::Network) => named(&s.id, &s.name),
+        (GroupKey::Disk, SubjectKind::Disk)
+        | (GroupKey::Nic, SubjectKind::Nic)
+        | (GroupKey::Network, SubjectKind::Network) => named(&s.id, &s.name),
         (GroupKey::Network, SubjectKind::Nic) => s.network.as_deref().and_then(|n| named(n, n)),
         (GroupKey::Node, _) => s.node.as_deref().and_then(|n| named(n, n)),
         _ => None,
@@ -304,7 +365,10 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
     for r in records.iter().filter(|r| r.hour >= q.from && r.hour < q.to) {
         let (start, end) = bucket(r.hour, q.granularity, &q.tz);
         let keys: Vec<Option<Named>> = q.group_by.iter().map(|k| key_of(&r.subject, *k)).collect();
-        let ids = keys.iter().map(|k| k.as_ref().map(|n| n.id.clone())).collect();
+        let ids = keys
+            .iter()
+            .map(|k| k.as_ref().map(|n| n.id.clone()))
+            .collect();
         let row = groups.entry((start, ids)).or_insert_with(|| Row {
             start,
             end,
@@ -313,17 +377,22 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
             flags: BTreeSet::new(),
         });
         for (k, v) in q.group_by.iter().zip(keys) {
-            if let Some(v) = v {
-                if names_itself(*k, r.subject.kind) || !row.keys.contains_key(k) {
-                    row.keys.insert(*k, v);
-                }
+            if let Some(v) = v
+                && (names_itself(*k, r.subject.kind) || !row.keys.contains_key(k))
+            {
+                row.keys.insert(*k, v);
             }
         }
         for (m, v) in &r.meters {
             let e = row.meters.entry(m.clone()).or_insert(0);
-            *e = if is_max_meter(m) { (*e).max(*v) } else { e.saturating_add(*v) };
+            *e = if is_max_meter(m) {
+                (*e).max(*v)
+            } else {
+                e.saturating_add(*v)
+            };
         }
-        row.flags.extend(r.flags.iter().map(|f| flag_name(f).to_string()));
+        row.flags
+            .extend(r.flags.iter().map(|f| flag_name(f).to_string()));
         if r.seq > 0 {
             row.flags.insert("revised".into());
         }
@@ -333,7 +402,11 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
     }
     let mut rows: Vec<Row> = groups.into_values().collect();
     for row in &mut rows {
-        let secs = row.end.min(q.to).min(q.now).saturating_sub(row.start.max(q.from));
+        let secs = row
+            .end
+            .min(q.to)
+            .min(q.now)
+            .saturating_sub(row.start.max(q.from));
         derive(&mut row.meters, secs);
         if let Some(only) = &q.meters {
             row.meters.retain(|m, _| only.contains(m));
@@ -357,11 +430,11 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
             add.push(("net.internal_bytes", total.saturating_sub(ext)));
         }
     }
-    if let Some(total) = get(m, "bridge.bytes") {
-        if let Some(ext) = sum2(m, "bridge.ext_rx_bytes", "bridge.ext_tx_bytes") {
-            add.push(("bridge.ext_bytes", ext));
-            add.push(("bridge.internal_bytes", total.saturating_sub(ext)));
-        }
+    if let Some(total) = get(m, "bridge.bytes")
+        && let Some(ext) = sum2(m, "bridge.ext_rx_bytes", "bridge.ext_tx_bytes")
+    {
+        add.push(("bridge.ext_bytes", ext));
+        add.push(("bridge.internal_bytes", total.saturating_sub(ext)));
     }
     // kbit/s averages over the bucket; presented in Mbps.
     for (bytes, avg) in [
@@ -377,28 +450,41 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
     }
     // Disk I/O (§8.6): averages over the bucket, and op-weighted
     // latency in µs (Σtime / Σops; none without ops or a time counter).
-    for (ops, avg) in [("disk.read_ops", "disk.read_iops_avg"), ("disk.write_ops", "disk.write_iops_avg")] {
-        if let Some(o) = get(m, ops) {
-            if let Some(v) = (o * 1000).checked_div(secs) {
-                add.push((avg, v));
-            }
+    for (ops, avg) in [
+        ("disk.read_ops", "disk.read_iops_avg"),
+        ("disk.write_ops", "disk.write_iops_avg"),
+    ] {
+        if let Some(o) = get(m, ops)
+            && let Some(v) = (o * 1000).checked_div(secs)
+        {
+            add.push((avg, v));
         }
     }
-    if let Some(total) = sum2(m, "disk.read_ops", "disk.write_ops") {
-        if let Some(v) = (total * 1000).checked_div(secs) {
-            add.push(("disk.iops_avg", v));
-        }
+    if let Some(total) = sum2(m, "disk.read_ops", "disk.write_ops")
+        && let Some(v) = (total * 1000).checked_div(secs)
+    {
+        add.push(("disk.iops_avg", v));
     }
-    for (by, avg) in [("disk.read_bytes", "disk.read_kBps_avg"), ("disk.write_bytes", "disk.write_kBps_avg")] {
+    for (by, avg) in [
+        ("disk.read_bytes", "disk.read_kBps_avg"),
+        ("disk.write_bytes", "disk.write_kBps_avg"),
+    ] {
         if let Some(v) = get(m, by).and_then(|b| (b / 1000).checked_div(secs)) {
             add.push((avg, v));
         }
     }
-    for (t, ops, lat) in [("disk.read_time_ns", "disk.read_ops", "disk.read_latency_us"), ("disk.write_time_ns", "disk.write_ops", "disk.write_latency_us")] {
-        if let (Some(t), Some(o)) = (get(m, t), get(m, ops)) {
-            if let Some(us) = (t / 1000).checked_div(o) {
-                add.push((lat, us));
-            }
+    for (t, ops, lat) in [
+        ("disk.read_time_ns", "disk.read_ops", "disk.read_latency_us"),
+        (
+            "disk.write_time_ns",
+            "disk.write_ops",
+            "disk.write_latency_us",
+        ),
+    ] {
+        if let (Some(t), Some(o)) = (get(m, t), get(m, ops))
+            && let Some(us) = (t / 1000).checked_div(o)
+        {
+            add.push((lat, us));
         }
     }
     for (k, v) in add {
@@ -416,6 +502,7 @@ pub fn present(meter: &str, raw: u64) -> (f64, &'static str) {
         "mem.peak" => (r, "MiB"),
         "disk.alloc" | "disk.stored" | "image.stored" => (r / 3600.0 / 1024.0, "GiB-hours"),
         "vm.running" | "vm.paused" => (r / 3600.0, "hours"),
+        m if m.starts_with(super::sampler::DEVICE_ALLOC) => (r / 3600.0, "device-hours"),
         m if m.ends_with("bytes") => (r / (1u64 << 30) as f64, "GiB"),
         m if m.ends_with("iops_peak") || m.ends_with("iops_avg") => (r / 1000.0, "IOPS"),
         m if m.ends_with("kBps_peak") || m.ends_with("kBps_avg") => (r / 1000.0, "MB/s"),
@@ -435,7 +522,13 @@ mod tests {
     use super::super::ledger::Subject;
     use super::*;
 
-    fn rec(hour: u64, kind: SubjectKind, id: &str, project: &str, meters: &[(&str, u64)]) -> UsageRecord {
+    fn rec(
+        hour: u64,
+        kind: SubjectKind,
+        id: &str,
+        project: &str,
+        meters: &[(&str, u64)],
+    ) -> UsageRecord {
         UsageRecord {
             hour,
             subject: Subject::new(kind, id, id, Some(project.into())),
@@ -465,20 +558,29 @@ mod tests {
         // 2026-10-31T17:00Z is 2026-11-01T00:00 in Bangkok.
         let t = parse_time("2026-10-31T17:00:00Z").unwrap();
         let (s, e) = bucket(t, Granularity::Month, &bkk);
-        assert_eq!((rfc3339(s), rfc3339(e)), ("2026-10-31T17:00:00Z".into(), "2026-11-30T17:00:00Z".into()));
+        assert_eq!(
+            (rfc3339(s), rfc3339(e)),
+            ("2026-10-31T17:00:00Z".into(), "2026-11-30T17:00:00Z".into())
+        );
         let (s, _) = bucket(t - 3600, Granularity::Month, &bkk);
         assert_eq!(rfc3339(s), "2026-09-30T17:00:00Z");
         // October in Bangkok has exactly 31 × 24 hours.
         let (s, e) = bucket(t - 3600, Granularity::Month, &bkk);
         assert_eq!((e - s) / 3600, 744);
-        assert_eq!(bucket(t, Granularity::Day, &Tz::utc()), (t - 17 * 3600, t + 7 * 3600));
+        assert_eq!(
+            bucket(t, Granularity::Day, &Tz::utc()),
+            (t - 17 * 3600, t + 7 * 3600)
+        );
     }
 
     #[test]
     fn month_bounds_and_labels() {
         let bkk = parse_tz("+07:00").unwrap();
         let (s, e) = month_bounds("2026-10", &bkk).unwrap();
-        assert_eq!((rfc3339(s), rfc3339(e)), ("2026-09-30T17:00:00Z".into(), "2026-10-31T17:00:00Z".into()));
+        assert_eq!(
+            (rfc3339(s), rfc3339(e)),
+            ("2026-09-30T17:00:00Z".into(), "2026-10-31T17:00:00Z".into())
+        );
         assert_eq!(month_label(s, &bkk), "2026-10");
         assert_eq!(month_label(s, &Tz::utc()), "2026-09");
         assert!(month_bounds("2026-13", &bkk).is_err() && month_bounds("Oct", &bkk).is_err());
@@ -490,10 +592,21 @@ mod tests {
         assert_eq!(parse_tz("-05:00").unwrap().offset_secs, -5 * 3600);
         assert!(parse_tz("+05:30").is_err());
         assert!(parse_tz("../etc/passwd").is_err());
-        assert_eq!(tzif_fixed_offset(b"TZif2....\n<+07>-7\n").unwrap(), 7 * 3600);
+        assert_eq!(
+            tzif_fixed_offset(b"TZif2....\n<+07>-7\n").unwrap(),
+            7 * 3600
+        );
         assert_eq!(tzif_fixed_offset(b"TZif2....\nEST5\n").unwrap(), -5 * 3600);
-        assert!(tzif_fixed_offset(b"TZif2....\nIST-5:30\n").unwrap_err().contains("whole number"));
-        assert!(tzif_fixed_offset(b"TZif2....\nCET-1CEST,M3.5.0,M10.5.0/3\n").unwrap_err().contains("daylight"));
+        assert!(
+            tzif_fixed_offset(b"TZif2....\nIST-5:30\n")
+                .unwrap_err()
+                .contains("whole number")
+        );
+        assert!(
+            tzif_fixed_offset(b"TZif2....\nCET-1CEST,M3.5.0,M10.5.0/3\n")
+                .unwrap_err()
+                .contains("daylight")
+        );
         // The host's zoneinfo, when present.
         if Path::new(ZONEINFO).join("Asia/Bangkok").exists() {
             assert_eq!(parse_tz("Asia/Bangkok").unwrap().offset_secs, 7 * 3600);
@@ -505,12 +618,34 @@ mod tests {
     #[test]
     fn group_derive_and_present() {
         let h0 = 1_791_158_400; // 2026-10-05T00:00Z
-        let mut nic = rec(h0, SubjectKind::Nic, "vm1.0", "p1", &[("net.rx_bytes", 3 << 30), ("net.tx_bytes", 1 << 30), ("net.ext_rx_bytes", 2 << 30)]);
+        let mut nic = rec(
+            h0,
+            SubjectKind::Nic,
+            "vm1.0",
+            "p1",
+            &[
+                ("net.rx_bytes", 3 << 30),
+                ("net.tx_bytes", 1 << 30),
+                ("net.ext_rx_bytes", 2 << 30),
+            ],
+        );
         nic.subject.vm_id = Some("vm1".into());
         nic.subject.name = "web-1/nic0".into();
-        let mut vm = rec(h0 + 3600, SubjectKind::Vm, "vm1", "p1", &[("cpu.used", 7_200_000_000), ("mem.peak", 512)]);
+        let mut vm = rec(
+            h0 + 3600,
+            SubjectKind::Vm,
+            "vm1",
+            "p1",
+            &[("cpu.used", 7_200_000_000), ("mem.peak", 512)],
+        );
         vm.subject.name = "web-1".into();
-        let mut vm2 = rec(h0 + 7200, SubjectKind::Vm, "vm1", "p1", &[("cpu.used", 3_600_000_000), ("mem.peak", 768)]);
+        let mut vm2 = rec(
+            h0 + 7200,
+            SubjectKind::Vm,
+            "vm1",
+            "p1",
+            &[("cpu.used", 3_600_000_000), ("mem.peak", 768)],
+        );
         vm2.seq = 1;
         vm2.subject.name = "web-1".into();
         let other = rec(h0, SubjectKind::Vm, "vm2", "p2", &[("cpu.used", 1)]);
@@ -526,12 +661,24 @@ mod tests {
         let rows = aggregate(&[nic, vm, vm2, other], &q);
         assert_eq!(rows.len(), 2);
         let r = &rows[0];
-        assert_eq!(r.keys[&GroupKey::Vm], Named { id: "vm1".into(), name: "web-1".into() });
+        assert_eq!(
+            r.keys[&GroupKey::Vm],
+            Named {
+                id: "vm1".into(),
+                name: "web-1".into()
+            }
+        );
         // Usage by node (spec/clustering-ui.md §5.4): any subject that says where it was.
         let mut s = Subject::new(SubjectKind::Disk, "d1", "d1", Some("p".into()));
         assert_eq!(key_of(&s, GroupKey::Node), None);
         s.node = Some("n1".into());
-        assert_eq!(key_of(&s, GroupKey::Node), Some(Named { id: "n1".into(), name: "n1".into() }));
+        assert_eq!(
+            key_of(&s, GroupKey::Node),
+            Some(Named {
+                id: "n1".into(),
+                name: "n1".into()
+            })
+        );
         assert_eq!("node".parse::<GroupKey>(), Ok(GroupKey::Node));
         assert_eq!(r.meters["cpu.used"], 10_800_000_000);
         assert_eq!(r.meters["mem.peak"], 768, "peaks take the max");
@@ -539,23 +686,49 @@ mod tests {
         assert_eq!(r.meters["net.internal_bytes"], 2 << 30);
         assert_eq!(r.meters["net.rx_kbps_avg"], (3u64 << 30) * 8 / 1000 / 86400);
         assert!(r.flags.contains("revised"));
-        assert_eq!(present("cpu.used", r.meters["cpu.used"]), (3.0, "core-hours"));
+        assert_eq!(
+            present("cpu.used", r.meters["cpu.used"]),
+            (3.0, "core-hours")
+        );
         assert_eq!(present("net.bytes", 4 << 30), (4.0, "GiB"));
         assert_eq!(present("net.rx_kbps_peak", 1500), (1.5, "Mbps"));
         assert_eq!(present("disk.iops_peak", 500_000), (500.0, "IOPS"));
         assert_eq!(present("disk.read_latency_us", 1_250), (1.25, "ms"));
-        let mut d: BTreeMap<String, u64> =
-            [("disk.read_ops", 1000), ("disk.write_ops", 500), ("disk.read_time_ns", 3_000_000_000), ("disk.read_bytes", 4_096_000)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+        let mut d: BTreeMap<String, u64> = [
+            ("disk.read_ops", 1000),
+            ("disk.write_ops", 500),
+            ("disk.read_time_ns", 3_000_000_000),
+            ("disk.read_bytes", 4_096_000),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
         derive(&mut d, 100);
-        assert_eq!((d["disk.iops_avg"], d["disk.read_iops_avg"]), (15_000, 10_000), "15 and 10 IOPS");
+        assert_eq!(
+            (d["disk.iops_avg"], d["disk.read_iops_avg"]),
+            (15_000, 10_000),
+            "15 and 10 IOPS"
+        );
         assert_eq!(d["disk.read_latency_us"], 3_000, "3 s / 1000 ops = 3 ms");
-        assert!(!d.contains_key("disk.write_latency_us"), "no time counter, no latency");
+        assert!(
+            !d.contains_key("disk.write_latency_us"),
+            "no time counter, no latency"
+        );
         // Only some meters.
-        let only = Query { meters: Some(["net.bytes".to_string()].into()), ..q };
-        let rows = aggregate(&[rec(h0, SubjectKind::Nic, "x.0", "p1", &[("net.rx_bytes", 5)])], &only);
+        let only = Query {
+            meters: Some(["net.bytes".to_string()].into()),
+            ..q
+        };
+        let rows = aggregate(
+            &[rec(
+                h0,
+                SubjectKind::Nic,
+                "x.0",
+                "p1",
+                &[("net.rx_bytes", 5)],
+            )],
+            &only,
+        );
         assert_eq!(rows[0].meters.keys().collect::<Vec<_>>(), vec!["net.bytes"]);
     }
 }

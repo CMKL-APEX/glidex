@@ -1,0 +1,932 @@
+// Who may do what (spec/security.md §6, §7, §10, §13): projects and their
+// role bindings, users and their identities, teams, API tokens, host role
+// bindings, site policies, the audit log, and capability checks. The REST
+// twins answer with these messages as JSON (spec/grpc.md §9.1). Logging in
+// and out (cookies) stays HTTP-only; `GET /auth/whoami` is
+// `glidex.system.v1.SystemService.WhoAmI`.
+syntax = "proto3";
+
+package glidex.access.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/api/v1/types.proto";
+import "glidex/tenancy/v1/tenancy.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---- projects ---------------------------------------------------------------
+
+service ProjectService {
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /projects"
+    };
+  }
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createProject"
+      kind: KIND_WRITE
+      rest: "POST /projects"
+    };
+  }
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readProject"
+      kind: KIND_READ
+      rest: "GET /projects/{id}"
+    };
+  }
+  // Changes what `update_mask` names (`description`, `quotas`).
+  rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateProject"
+      kind: KIND_WRITE
+      rest: "PATCH /projects/{id}"
+    };
+  }
+  // Refused (`409`) while the project owns VMs, disks or networks.
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteProject"
+      kind: KIND_WRITE
+      rest: "DELETE /projects/{id}"
+    };
+  }
+  rpc ListProjectBindings(ListProjectBindingsRequest) returns (ListProjectBindingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readBindings"
+      kind: KIND_READ
+      rest: "GET /projects/{id}/bindings"
+    };
+  }
+  rpc AddProjectBinding(AddProjectBindingRequest) returns (AddProjectBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageBindings"
+      kind: KIND_WRITE
+      rest: "POST /projects/{id}/bindings"
+    };
+  }
+  rpc RemoveProjectBinding(RemoveProjectBindingRequest) returns (RemoveProjectBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageBindings"
+      kind: KIND_WRITE
+      rest: "DELETE /projects/{id}/bindings/{link}"
+    };
+  }
+}
+
+// Resources a project holds now.
+message ProjectUsage {
+  uint32 vms = 1;
+  uint32 vcpus = 2;
+  uint32 memory_mib = 3 [json_name = "memory_mib"];
+  uint32 disk_gib = 4 [json_name = "disk_gib"];
+  uint32 running_vms = 5 [json_name = "running_vms"];
+  uint32 networks = 6;
+  uint32 routers = 7;
+  uint32 external_ips = 8 [json_name = "external_ips"];
+  // Pool devices the project's VMs ask for, by pool.
+  map<string, uint32> devices = 9;
+}
+
+message Project {
+  string id = 1;
+  // Unique within its tenant.
+  string name = 2;
+  string tenant_id = 3 [json_name = "tenant_id"];
+  string description = 4;
+  // Absent limits are unlimited.
+  glidex.tenancy.v1.Quotas quotas = 5;
+  google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
+  // Lists and reads only.
+  ProjectUsage usage = 7;
+}
+
+message ListProjectsRequest {}
+message ListProjectsResponse {
+  // The ones the caller may read.
+  repeated Project projects = 1;
+}
+
+message CreateProjectRequest {
+  string name = 1;
+  string description = 2;
+  // Default: the site's default quotas.
+  glidex.tenancy.v1.Quotas quotas = 3;
+  // Users (ids) made owners.
+  repeated string owners = 4;
+  // Tenant id or slug; default `default`.
+  optional string tenant = 5;
+}
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message GetProjectRequest {
+  // Id or name.
+  string id = 1;
+}
+message GetProjectResponse {
+  Project project = 1;
+}
+
+message UpdateProjectRequest {
+  string id = 1;
+  string description = 2;
+  glidex.tenancy.v1.Quotas quotas = 3;
+  // `description`, `quotas`. REST derives it from the fields present.
+  google.protobuf.FieldMask update_mask = 4 [json_name = "update_mask"];
+}
+message UpdateProjectResponse {
+  Project project = 1;
+}
+
+message DeleteProjectRequest {
+  string id = 1;
+}
+message DeleteProjectResponse {}
+
+// A role link: a role a principal holds on a resource.
+message Binding {
+  string id = 1;
+  // `role.owner`, `role.viewer`, …
+  string role = 2;
+  glidex.api.v1.EntityRef principal = 3;
+  // The user's display name, team's or token's name, when known.
+  optional string principal_name = 4 [json_name = "principal_name"];
+  glidex.api.v1.EntityRef resource = 5;
+  string created_by = 6 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
+}
+
+message ListProjectBindingsRequest {
+  string id = 1;
+}
+message ListProjectBindingsResponse {
+  repeated Binding bindings = 1;
+}
+
+message AddProjectBindingRequest {
+  string id = 1;
+  // A project role.
+  string role = 2;
+  glidex.api.v1.EntityRef principal = 3;
+}
+message AddProjectBindingResponse {
+  Binding binding = 1;
+}
+
+message RemoveProjectBindingRequest {
+  string id = 1;
+  string link = 2;
+}
+message RemoveProjectBindingResponse {}
+
+// ---- users ------------------------------------------------------------------
+
+service UserService {
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listUsers"
+      kind: KIND_READ
+      rest: "GET /users"
+    };
+  }
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "POST /users"
+    };
+  }
+  // Changes what `update_mask` names (`display_name`, `disabled`,
+  // `default_project`). Disabling ends the user's sessions.
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "PATCH /users/{id}"
+    };
+  }
+  // Deletes the user and what is its alone (spec/tenancy.md §6.3): its
+  // identities, sessions, personal tokens, team memberships, role links
+  // and tenant memberships. Never oneself, nor the last holder of
+  // system-admin or directory-admin.
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "DELETE /users/{id}"
+    };
+  }
+  rpc LinkIdentity(LinkIdentityRequest) returns (LinkIdentityResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "POST /users/{id}/identities"
+    };
+  }
+  rpc UnlinkIdentity(UnlinkIdentityRequest) returns (UnlinkIdentityResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "DELETE /users/{id}/identities/{key}"
+    };
+  }
+  // The caller's own profile: their default project.
+  rpc UpdateMe(UpdateMeRequest) returns (UpdateMeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_WRITE
+      rest: "PATCH /users/me"
+    };
+  }
+  // The caller's SSH public keys from their local account's home, through
+  // glidex-authd, for prefilling guest credentials.
+  rpc GetMySshKeys(GetMySshKeysRequest) returns (GetMySshKeysResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /users/me/ssh-keys"
+    };
+  }
+}
+
+// A login identity linked to a user.
+message Identity {
+  // `unix`, `pam`, `oidc:<issuer>` or `conn:<connector>`.
+  string provider = 1;
+  string subject = 2;
+  string user_id = 3 [json_name = "user_id"];
+  optional string email = 4;
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+}
+
+message User {
+  string id = 1;
+  string display_name = 2 [json_name = "display_name"];
+  optional bool disabled = 3;
+  // Used when a request doesn't name a project.
+  optional string default_project = 4 [json_name = "default_project"];
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+  // Lists only.
+  repeated Identity identities = 6;
+  // The connector that provisions it: its display name, email, external
+  // id and disabled state are the connector's (spec/tenancy.md §8.3).
+  // Output only.
+  optional string managed_by = 7 [json_name = "managed_by"];
+  // The IdP's id for it (SCIM `externalId`). Output only.
+  optional string external_id = 8 [json_name = "external_id"];
+  // A managed user's email, from its connector. Output only.
+  optional string email = 9;
+  // Why it is disabled: `admin`, `scim` or `connector_deleted`. Output only.
+  optional string disabled_reason = 10 [json_name = "disabled_reason"];
+}
+
+message ListUsersRequest {}
+message ListUsersResponse {
+  repeated User users = 1;
+}
+
+message IdentityRef {
+  // `pam`, `unix` or `oidc:<issuer>`.
+  string provider = 1;
+  string subject = 2;
+}
+
+message CreateUserRequest {
+  string display_name = 1 [json_name = "display_name"];
+  repeated IdentityRef identities = 2;
+}
+message CreateUserResponse {
+  User user = 1;
+}
+
+message UpdateUserRequest {
+  string id = 1;
+  string display_name = 2 [json_name = "display_name"];
+  bool disabled = 3;
+  // A project id or name; empty clears it.
+  string default_project = 4 [json_name = "default_project"];
+  google.protobuf.FieldMask update_mask = 5 [json_name = "update_mask"];
+}
+message UpdateUserResponse {
+  User user = 1;
+}
+
+message LinkIdentityRequest {
+  string id = 1;
+  string provider = 2;
+  string subject = 3;
+}
+message LinkIdentityResponse {
+  Identity identity = 1;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+}
+// What went with the user.
+message DeleteUserResponse {
+  uint32 identities = 1;
+  uint32 sessions = 2;
+  uint32 tokens = 3;
+  uint32 links = 4;
+  uint32 teams = 5;
+  uint32 tenants = 6;
+}
+
+message UnlinkIdentityRequest {
+  string id = 1;
+  // `<provider>:<subject>`.
+  string key = 2;
+  // Also end the user's sessions (an administrator taking a sign-in away).
+  optional bool end_sessions = 3 [json_name = "end_sessions"];
+}
+message UnlinkIdentityResponse {}
+
+message UpdateMeRequest {
+  // A project id or name; empty clears it.
+  string default_project = 1 [json_name = "default_project"];
+}
+message UpdateMeResponse {
+  User user = 1;
+}
+
+message GetMySshKeysRequest {}
+message GetMySshKeysResponse {
+  // Whether keys could be read; `reason` says why not.
+  optional bool available = 1;
+  optional string reason = 2;
+  // The local account read.
+  optional string username = 3;
+  repeated string keys = 4;
+  // Where they came from: `local` (the local account's authorized keys)
+  // or `connector:<id>` (its directory's SSH key field, when there is no
+  // local account here).
+  optional string source = 5;
+}
+
+// ---- teams ------------------------------------------------------------------
+
+service TeamService {
+  rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listTeams"
+      kind: KIND_READ
+      rest: "GET /teams"
+    };
+  }
+  rpc CreateTeam(CreateTeamRequest) returns (CreateTeamResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTeams"
+      kind: KIND_WRITE
+      rest: "POST /teams"
+    };
+  }
+  // Renames it.
+  rpc UpdateTeam(UpdateTeamRequest) returns (UpdateTeamResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTeams"
+      kind: KIND_WRITE
+      rest: "PATCH /teams/{id}"
+    };
+  }
+  rpc DeleteTeam(DeleteTeamRequest) returns (DeleteTeamResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTeams"
+      kind: KIND_WRITE
+      rest: "DELETE /teams/{id}"
+    };
+  }
+  rpc AddTeamMember(AddTeamMemberRequest) returns (AddTeamMemberResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTeams"
+      kind: KIND_WRITE
+      rest: "PUT /teams/{id}/members/{user}"
+    };
+  }
+  rpc RemoveTeamMember(RemoveTeamMemberRequest) returns (RemoveTeamMemberResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTeams"
+      kind: KIND_WRITE
+      rest: "DELETE /teams/{id}/members/{user}"
+    };
+  }
+}
+
+message TeamMember {
+  string user_id = 1 [json_name = "user_id"];
+  // `manual`, `pam`, `oidc`, or `connector:<id>` for one a connector syncs.
+  string source = 2;
+}
+
+message Team {
+  string id = 1;
+  // 1–64 characters; `unix:` names are the peers' Unix groups.
+  string name = 2;
+  repeated TeamMember members = 3;
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  // The connector whose group it is (`group_mode: auto`): its name and
+  // its connector memberships are the connector's. Output only.
+  optional string managed_by = 5 [json_name = "managed_by"];
+  // The IdP's id for the group. Output only.
+  optional string external_id = 6 [json_name = "external_id"];
+}
+
+message ListTeamsRequest {}
+message ListTeamsResponse {
+  repeated Team teams = 1;
+}
+
+message CreateTeamRequest {
+  string name = 1;
+}
+message CreateTeamResponse {
+  Team team = 1;
+}
+
+message UpdateTeamRequest {
+  string id = 1;
+  string name = 2;
+}
+message UpdateTeamResponse {
+  Team team = 1;
+}
+
+message DeleteTeamRequest {
+  string id = 1;
+}
+message DeleteTeamResponse {}
+
+message AddTeamMemberRequest {
+  string id = 1;
+  string user = 2;
+}
+message AddTeamMemberResponse {
+  Team team = 1;
+}
+
+message RemoveTeamMemberRequest {
+  string id = 1;
+  string user = 2;
+}
+message RemoveTeamMemberResponse {
+  Team team = 1;
+}
+
+// ---- tokens -----------------------------------------------------------------
+
+service TokenService {
+  // The caller's own tokens, the service accounts of the projects they
+  // manage, and with `manageAnyTokens` all.
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /tokens"
+    };
+  }
+  // The secret is in the answer once and never again.
+  rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_WRITE
+      rest: "POST /tokens"
+    };
+  }
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_WRITE
+      rest: "DELETE /tokens/{id}"
+    };
+  }
+}
+
+enum TokenKind {
+  TOKEN_KIND_UNSPECIFIED = 0;
+  // Acts as its owner, narrowed by its own roles when it has any.
+  TOKEN_KIND_PERSONAL = 1;
+  // A project's own principal.
+  TOKEN_KIND_SERVICE_ACCOUNT = 2;
+}
+
+message Token {
+  // Public id (not the secret).
+  string id = 1;
+  string name = 2;
+  TokenKind kind = 3;
+  // Personal tokens.
+  optional string owner = 4;
+  // Service accounts.
+  optional string project = 5;
+  string created_by = 6 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 8 [json_name = "expires_at"];
+  google.protobuf.Timestamp last_used_at = 9 [json_name = "last_used_at"];
+  optional string last_used_from = 10 [json_name = "last_used_from"];
+  // What the minting client said it is; display only.
+  optional string device = 11;
+  optional string client = 12;
+  // Its own role links.
+  repeated Binding roles = 13;
+}
+
+message ListTokensRequest {}
+message ListTokensResponse {
+  repeated Token tokens = 1;
+}
+
+message RoleRef {
+  string role = 1;
+  // Project id or name; absent for host roles.
+  optional string project = 2;
+}
+
+message CreateTokenRequest {
+  string name = 1;
+  optional uint32 expires_in_days = 2 [json_name = "expires_in_days"];
+  // Default: personal.
+  TokenKind kind = 3;
+  // Service accounts: the project.
+  optional string project = 4;
+  // Links for the token itself.
+  repeated RoleRef roles = 5;
+  optional string device = 6;
+  optional string client = 7;
+}
+message CreateTokenResponse {
+  // The secret, shown once.
+  string token = 1;
+  Token record = 2;
+}
+
+message RevokeTokenRequest {
+  string id = 1;
+}
+message RevokeTokenResponse {}
+
+// ---- host role bindings -----------------------------------------------------
+
+service SystemBindingService {
+  rpc ListSystemBindings(ListSystemBindingsRequest) returns (ListSystemBindingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readSystemBindings"
+      kind: KIND_READ
+      rest: "GET /system/bindings"
+    };
+  }
+  // Host roles go to members of the operator tenant only (spec/tenancy.md
+  // D4): `422 not_operator_member` otherwise. With `node`, the role covers
+  // that host only.
+  rpc AddSystemBinding(AddSystemBindingRequest) returns (AddSystemBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageSystemBindings"
+      kind: KIND_WRITE
+      rest: "POST /system/bindings"
+    };
+  }
+  rpc RemoveSystemBinding(RemoveSystemBindingRequest) returns (RemoveSystemBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageSystemBindings"
+      kind: KIND_WRITE
+      rest: "DELETE /system/bindings/{link}"
+    };
+  }
+}
+
+message ListSystemBindingsRequest {
+  // Only the bindings on this node's host (id or name); all of them, the
+  // cluster's and every host's, when absent.
+  optional string node = 1;
+}
+message ListSystemBindingsResponse {
+  repeated Binding bindings = 1;
+}
+
+message AddSystemBindingRequest {
+  // A host role or grant.
+  string role = 1;
+  glidex.api.v1.EntityRef principal = 2;
+  // Grant it on this node's host only (id or name), not cluster-wide.
+  // `role.auditor`, `role.net-admin` and `grant.host-paths` can be; the
+  // others are cluster-wide (spec/clustering.md §12.2).
+  optional string node = 3;
+}
+message AddSystemBindingResponse {
+  Binding binding = 1;
+}
+
+message RemoveSystemBindingRequest {
+  string link = 1;
+}
+message RemoveSystemBindingResponse {}
+
+// ---- site policies ----------------------------------------------------------
+
+service PolicyService {
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readPolicy"
+      kind: KIND_READ
+      rest: "GET /authz/policies"
+    };
+  }
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readPolicy"
+      kind: KIND_READ
+      rest: "GET /authz/policies/{id}"
+    };
+  }
+  rpc ListPolicyVersions(ListPolicyVersionsRequest) returns (ListPolicyVersionsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readPolicy"
+      kind: KIND_READ
+      rest: "GET /authz/policies/{id}/versions"
+    };
+  }
+  // Create (`version` 0) or replace a site policy. Refused when it would
+  // stop the caller from managing policies (`409 would_lock_out`).
+  rpc PutPolicy(PutPolicyRequest) returns (PutPolicyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "writePolicy"
+      kind: KIND_WRITE
+      rest: "PUT /authz/policies/{id}"
+    };
+  }
+  rpc DeletePolicy(DeletePolicyRequest) returns (DeletePolicyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deletePolicy"
+      kind: KIND_WRITE
+      rest: "DELETE /authz/policies/{id}"
+    };
+  }
+  rpc ValidatePolicy(ValidatePolicyRequest) returns (ValidatePolicyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "validatePolicy"
+      kind: KIND_READ
+      rest: "POST /authz/validate"
+    };
+  }
+  // Decide requests under the current policies and under `changes`.
+  rpc SimulatePolicy(SimulatePolicyRequest) returns (SimulatePolicyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "simulatePolicy"
+      kind: KIND_READ
+      rest: "POST /authz/simulate"
+    };
+  }
+  // Read the policy files again.
+  rpc ReloadPolicies(ReloadPoliciesRequest) returns (ReloadPoliciesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "reloadPolicies"
+      kind: KIND_WRITE
+      rest: "POST /authz/reload"
+    };
+  }
+}
+
+enum PolicySource {
+  POLICY_SOURCE_UNSPECIFIED = 0;
+  POLICY_SOURCE_BASE = 1;
+  POLICY_SOURCE_ROLE = 2;
+  POLICY_SOURCE_LINK = 3;
+  POLICY_SOURCE_SITE = 4;
+  POLICY_SOURCE_FILE = 5;
+}
+
+// A policy as loaded.
+message LoadedPolicy {
+  string id = 1;
+  PolicySource source = 2;
+  optional bool template = 3;
+  string text = 4;
+}
+
+// A site policy as stored.
+message SitePolicy {
+  string id = 1;
+  string text = 2;
+  string description = 3;
+  optional bool enabled = 4;
+  uint64 version = 5;
+  string updated_by = 6 [json_name = "updated_by"];
+  google.protobuf.Timestamp updated_at = 7 [json_name = "updated_at"];
+}
+
+message SitePolicyVersion {
+  string id = 1;
+  uint64 version = 2;
+  string text = 3;
+  optional bool enabled = 4;
+  string author = 5;
+  google.protobuf.Timestamp time = 6;
+  // Deleted at this version.
+  optional bool deleted = 7;
+}
+
+message ListPoliciesRequest {}
+message ListPoliciesResponse {
+  repeated LoadedPolicy policies = 1;
+  repeated SitePolicy site = 2;
+}
+
+message GetPolicyRequest {
+  string id = 1;
+}
+message GetPolicyResponse {
+  PolicySource source = 1;
+  oneof policy {
+    SitePolicy site = 2;
+    LoadedPolicy loaded = 3;
+  }
+}
+
+message ListPolicyVersionsRequest {
+  string id = 1;
+}
+message ListPolicyVersionsResponse {
+  repeated SitePolicyVersion versions = 1;
+}
+
+message PutPolicyRequest {
+  string id = 1;
+  string text = 2;
+  string description = 3;
+  // Default: enabled.
+  optional bool enabled = 4;
+  // The version being replaced; 0 to create.
+  uint64 version = 5;
+}
+message PutPolicyResponse {
+  SitePolicy policy = 1;
+}
+
+message DeletePolicyRequest {
+  string id = 1;
+  // The version being deleted.
+  uint64 version = 2;
+}
+message DeletePolicyResponse {}
+
+message ValidatePolicyRequest {
+  string id = 1;
+  string text = 2;
+}
+message ValidatePolicyResponse {
+  optional bool valid = 1;
+  repeated string errors = 2;
+}
+
+// A change to the site policies, for a simulation.
+message PolicyChange {
+  string id = 1;
+  optional string text = 2;
+  optional string description = 3;
+  optional bool enabled = 4;
+  optional bool delete = 5;
+}
+
+message SimulatedRequest {
+  glidex.api.v1.EntityRef principal = 1;
+  string action = 2;
+  // Default: the cluster.
+  glidex.api.v1.EntityRef resource = 3;
+}
+
+message Decision {
+  optional bool allowed = 1;
+  // The policies that decided it.
+  repeated string policies = 2;
+  // Evaluation errors; any makes it a deny.
+  repeated string errors = 3;
+}
+
+message SimulatedResult {
+  // The principal or resource doesn't exist.
+  optional string error = 1;
+  Decision current = 2;
+  Decision candidate = 3;
+}
+
+message SimulatePolicyRequest {
+  repeated PolicyChange changes = 1;
+  // At most 100.
+  repeated SimulatedRequest requests = 2;
+}
+message SimulatePolicyResponse {
+  repeated SimulatedResult results = 1;
+}
+
+message ReloadPoliciesRequest {}
+message ReloadPoliciesResponse {}
+
+// ---- audit ------------------------------------------------------------------
+
+service AuditService {
+  // Everything with `readAudit`; a project's entries for its owners.
+  rpc ReadAudit(ReadAuditRequest) returns (ReadAuditResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /audit"
+    };
+  }
+}
+
+message AuditEntry {
+  // Millisecond precision.
+  google.protobuf.Timestamp time = 1;
+  string request_id = 2 [json_name = "request_id"];
+  // Who: `{user, token, method, teams, …}`.
+  google.protobuf.Struct principal = 3;
+  string source = 4;
+  string action = 5;
+  optional string project = 6;
+  optional string target = 7;
+  // `ok`, `denied`, `error`.
+  string result = 8;
+  optional string error_code = 9 [json_name = "error_code"];
+  repeated string policies = 10;
+  google.protobuf.Struct details = 11;
+}
+
+message ReadAuditRequest {
+  // Entries from this time on.
+  google.protobuf.Timestamp since = 1;
+  optional string project = 2;
+  // A user id.
+  optional string user = 3;
+  // Default 500, at most 5000.
+  optional uint32 limit = 4;
+}
+message ReadAuditResponse {
+  repeated AuditEntry entries = 1;
+}
+
+// ---- capability checks ------------------------------------------------------
+
+service AuthzService {
+  // One answer per check (spec/security.md §7.7).
+  rpc Check(CheckRequest) returns (CheckResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "POST /authz/check"
+    };
+  }
+  // The actions allowed on each resource (spec/clustering-ui.md §3.5).
+  rpc Allowed(AllowedRequest) returns (AllowedResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "POST /authz/allowed"
+    };
+  }
+}
+
+message CheckItem {
+  string action = 1;
+  // Default: the cluster.
+  glidex.api.v1.EntityRef resource = 2;
+}
+
+message CheckResult {
+  optional bool allowed = 1;
+  // A fresh login would allow it (step-up).
+  optional bool reauth = 2;
+  // `unknown action`.
+  optional string error = 3;
+}
+
+message CheckRequest {
+  // At most 200.
+  repeated CheckItem checks = 1;
+}
+message CheckResponse {
+  repeated CheckResult results = 1;
+}
+
+message AllowedRequest {
+  // At most 50; an action that doesn't apply to a resource's type is left
+  // out for it.
+  repeated string actions = 1;
+  // At most 500.
+  repeated glidex.api.v1.EntityRef resources = 2;
+}
+
+message ActionList {
+  repeated string actions = 1;
+}
+
+message AllowedResponse {
+  // Per resource, in order.
+  repeated ActionList allowed = 1;
+  // Per resource: what a fresh login would allow.
+  repeated ActionList reauth = 2;
+}

@@ -113,6 +113,14 @@ name, or the first 8 characters of the id when the caller can't list
 nodes (`listNodes` denied) — see §9 `node_name` for the proper fix. The
 node serving the UI is marked "(this node)" (`node_id` of `GET /cluster/status`).
 
+A tombstone (clustering.md §5.3) keeps its name, and a host that joins
+again takes the same one, so the directory can hold several records of
+one name. `nodeLabel(node)` shows a tombstone as `<name> · <first 8 of
+id>` wherever tombstones are listed (the Cluster page's departed list,
+the node page, the operations menu and its dialogs). A picker of nodes
+for something to run on (gateway nodes, copy targets, placement) lists
+live nodes only.
+
 ### 3.3 Leader changes and unavailability
 
 `request()` in `api.ts`:
@@ -164,6 +172,13 @@ when the live stream reports a policy change (`policy` kind, §3.7).
 `/authz/check` stays for single checks and the session's capability
 table (§3.1).
 
+Step-up actions (`base.step-up`) are refused once a browser login is
+older than the step-up window, though using them only asks for a fresh
+login. So `/authz/check` adds `reauth: true` to a refused item a fresh
+login would allow, and `/authz/allowed` returns `reauth` next to
+`allowed`, per resource; the UI counts both as allowed and its re-login
+dialog runs when the action is used. Tokens never get `reauth`.
+
 ### 3.6 The UI on an agent
 
 An agent has no users, sessions or tokens: the auth tables replicate to
@@ -203,7 +218,7 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
   host-local requests only from a server certificate, with the
   server-verified principal.
 - **Unreachable servers**: the agent answers `503 cluster_unavailable`
-  ("this node can't reach a server; log in on a server: <list>"); the
+  (`this node can't reach a server; log in on a server: <list>`); the
   UI shows its banner (§3.3). Nothing falls back to authenticating
   locally.
 - **Trust**: a compromised agent sees what its users type into its UI
@@ -443,7 +458,7 @@ from a file and changes the host's identity.
   external IP, active gateway node, ports with their chassis.
 
 All need a read-only server endpoint (§9 `GET /cluster/ovn`,
-`GET /networks/{name}/ovn`); the UI never talks to OVN.
+`GET /networks/{id}/ovn`); the UI never talks to OVN.
 
 ## 8a. Turning OVN on from the UI (U6)
 
@@ -483,6 +498,15 @@ lacks OVN: every node must report `versions.ovn` (`ovn-controller` is
 installed) and every server `features.ovn_central` (`ovn-northd` is).
 The message names the nodes and the fix (`sudo glidex-install --ovn`
 there). Nodes report both in their status from now on.
+
+**Outdated OVN.** Each node in `GET /cluster/settings/ovn` also carries
+`outdated`: why it can't run the cluster's logical flows, when its
+`ovn-controller` is an older release than the cluster's ovn-northd (the
+newest OVN its servers with `ovn-central` report; installer.md, OVN). It
+doesn't block the setting; it is shown on the Cluster page (in the OVN
+card, and as the node's badge while OVN is off), and the scheduler refuses
+that node for a VM with a NIC on a cluster network, with the same reason.
+Re-running the installer on the node fetches the matching OVN.
 
 **Rollout.** Nothing restarts. Each node's existing OVN loop (every
 controller resync) reads the setting from its replica: servers start
@@ -587,7 +611,7 @@ own way out instead of the shared edge. The UI:
 - **Network form**: a project NAT network that spans the nodes gets
   *Leaves through* (the shared edge, or one of the project's routers), an
   isolated one *Routed through* (not routed, or one of them).
-- **Moving a network** (`PUT /projects/{id}/networks/{name}/router`,
+- **Moving a network** (`PUT /projects/{id}/networks/{network}/router`,
   `{router: name | null}`, action `createRouter`): only the project's own
   NAT or isolated networks that span the nodes. An isolated network on a
   router keeps `mode: isolated` but is routed there exactly like a NAT
@@ -619,7 +643,7 @@ with the router's address, not the shared edge's.
 | `group_by=node` on `/usage` | U2 §5.4 | |
 | CA expiry (`not_after`) and the trust bundle in `/cluster/status` `ca` (which has `signing`, `retiring`, `retire_at`, `started_at` today), and each node's certificate issuer and expiry | U4 §7.6 | |
 | Detach progress in node status (`departure: {plan, step}`) | U3 §6.4 | |
-| `GET /cluster/ovn`, `GET /networks/{name}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{name}`. |
+| `GET /cluster/ovn`, `GET /networks/{id}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{id}`. |
 | UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6 |
 | `POST /authz/allowed` | U0 | §3.5 |
 | Watch kinds `node`, `import`, `cluster`, `policy` | U0 | §3.7 |

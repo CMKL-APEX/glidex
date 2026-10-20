@@ -362,8 +362,22 @@ if the features the profile promises aren't in `iface_types`.
   `{"changed": false}`. `kernel` → `dpdk` adds the package and flips the
   alternative; nothing is ever removed.
 - **Restart impact.** If `ovs-vswitchd` is running with any bridges,
-  installing, switching profile, or `init_dpdk` returns
+  installing, switching profile, `init_dpdk` or `deinit_dpdk` returns
   `ConfirmationRequired` listing every bridge (glidex-owned or not).
+- **Back to the kernel profile.** The packages stay, but the `kernel`
+  profile runs no DPDK: `deinit_dpdk` removes what `init_dpdk` set
+  (`dpdk-init`, `dpdk-socket-mem`, `dpdk-lcore-mask`, `pmd-cpu-mask`,
+  `pmd-auto-lb`, `userspace-tso-enable`) and restarts `ovs-vswitchd`,
+  since DPDK can't be stopped in a running one. It is refused while a
+  DPDK port exists (`dpdk`, `dpdkvhostuser`, `dpdkvhostuserclient`: a
+  vhost-user VM NIC or DPDK uplink would stop working). With DPDK off,
+  `br-int`'s `auto` datapath is `system` again (clustering.md §11.6),
+  and glidex moves it at its next OVN round (not while VM ports are on
+  it). `glidex-install` with the
+  kernel profile (the default) does this when it finds DPDK on, once
+  allowed to restart OVS (`--allow-ovs-restart`); the hugepages the dpdk
+  profile reserved are kept unless `--release-hugepages`, which puts
+  `vm.nr_hugepages` back to its value before glidex (else 0).
 - Non-interactive (`DEBIAN_FRONTEND=noninteractive apt-get -y`), 30 min
   timeout; stdout/stderr tails returned in `InstallReport`.
 
@@ -458,8 +472,11 @@ release FAQ's pairing.
 - The **status socket** accepts any local user but only `hello` and
   `probe`; anything else returns `permission_denied`.
 - Every mutating request is logged to the journal: peer uid, op,
-  arguments (the protocol carries no secrets), and the request's
-  `on_behalf_of` (or `-`). Denied requests are logged with uid and op.
+  arguments, and the request's `on_behalf_of` (or `-`). Arguments that
+  are secrets are written as `[REDACTED]`: the OVN chassis and central
+  ops carry the node's private key (`*_pem` fields), and fields named
+  `token`, `password`, `secret` or `private_key` are left out too.
+  Denied requests are logged with uid and op.
 
 ### 7.3 Protocol
 
@@ -502,6 +519,8 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `delete_uplink` | full | `{bridge, name}` |
 | `ensure_nat` · `delete_nat` | full | `NatSpec` · `{bridge}` → `NatState` |
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
+| `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (host-topology.md §5.3) |
+| `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (host-topology.md §10.1) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 
@@ -921,7 +940,7 @@ error gives `Ready=False/DeleteFailed` (phase `degraded`, event
 retried every 30 s. Finally the record is removed (event `Deleted`).
 
 Only `phase` and `conditions` are written by the controller; grants and
-shares written meanwhile are kept. `GET /networks/{name}/events` returns
+shares written meanwhile are kept. `GET /networks/{id}/events` returns
 the network's event ring.
 
 ### 11.3 REST
@@ -934,7 +953,7 @@ the network's event ring.
 | `GET` · `POST /ovs/bridges`, `DELETE /ovs/bridges/{name}` | `list_bridges` · `ensure_bridge` · `delete_bridge` | 200 · 201 · 204 |
 | `GET` · `POST /ovs/bridges/{b}/uplinks`, `DELETE …/{u}`, `POST …/{u}/commit {token}` | uplink ops | 200 · 201 or 202 (pending) · 204 · 200 |
 | `GET` · `POST /networks` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 |
-| `DELETE /networks/{name}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone at once, else 202 with the network; with `wait`, 200 once gone |
+| `DELETE /networks/{id}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone (at once, or within `wait`), else 202 with the network |
 | `POST /vms` with `networks` | validation only | 201 |
 
 Error mapping:

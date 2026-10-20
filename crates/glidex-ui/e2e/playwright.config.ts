@@ -5,7 +5,7 @@ const apiPort = Number(process.env.E2E_API_PORT ?? 8851);
 const uiPort = Number(process.env.E2E_UI_PORT ?? 5174);
 
 // Specs that don't depend on a hypervisor.
-const uiSpecs = /(console|auth|access|credentials|activity|footer|usage|cluster|routers|image-copies)\.spec\.ts/;
+const uiSpecs = /(console|auth|access|credentials|activity|footer|usage|cluster|routers|image-copies|invitations|connectors|host|datastores)\.spec\.ts/;
 
 export default defineConfig<Options>({
   testDir: "./tests",
@@ -52,7 +52,9 @@ export default defineConfig<Options>({
       command: `bunx vite --port ${uiPort} --strictPort`,
       cwd: "../ui",
       url: `http://localhost:${uiPort}`,
-      env: { GLIDEX_API_URL: `http://127.0.0.1:${apiPort}` },
+      // Through the scratch control plane's ui.sock: the UI's RPCs are
+      // gRPC-Web, taken there only (spec/grpc.md §6).
+      env: { GLIDEX_API_SOCKET: `${process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e"}/ui.sock` },
       reuseExistingServer: false,
       stdout: "ignore",
     },

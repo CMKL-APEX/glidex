@@ -41,28 +41,32 @@ impl DnsmasqSupervisor {
         let watched = procs.clone();
         std::thread::Builder::new()
             .name("dnsmasq-watch".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(2));
-                let mut procs = watched.lock().unwrap();
-                for (bridge, p) in procs.iter_mut() {
-                    if let Ok(Some(status)) = p.child.try_wait() {
-                        // Exponential back-off (2, 4, 8 … 60 s) while it keeps
-                        // failing; a run that lasted a minute resets it.
-                        let backoff = Duration::from_secs((1u64 << p.restarts.min(6)).min(60));
-                        if p.last_start.elapsed() < backoff {
-                            continue;
-                        }
-                        if p.last_start.elapsed() > Duration::from_secs(60) + backoff {
-                            p.restarts = 0;
-                        }
-                        tracing::warn!(bridge, %status, "dnsmasq exited; restarting");
-                        match spawn(&p.args) {
-                            Ok(child) => {
-                                p.child = child;
-                                p.restarts += 1;
-                                p.last_start = Instant::now();
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(2));
+                    let mut procs = watched.lock().unwrap();
+                    for (bridge, p) in procs.iter_mut() {
+                        if let Ok(Some(status)) = p.child.try_wait() {
+                            // Exponential back-off (2, 4, 8 … 60 s) while it keeps
+                            // failing; a run that lasted a minute resets it.
+                            let backoff = Duration::from_secs((1u64 << p.restarts.min(6)).min(60));
+                            if p.last_start.elapsed() < backoff {
+                                continue;
                             }
-                            Err(e) => tracing::error!(bridge, error = %e, "dnsmasq restart failed"),
+                            if p.last_start.elapsed() > Duration::from_secs(60) + backoff {
+                                p.restarts = 0;
+                            }
+                            tracing::warn!(bridge, %status, "dnsmasq exited; restarting");
+                            match spawn(&p.args) {
+                                Ok(child) => {
+                                    p.child = child;
+                                    p.restarts += 1;
+                                    p.last_start = Instant::now();
+                                }
+                                Err(e) => {
+                                    tracing::error!(bridge, error = %e, "dnsmasq restart failed")
+                                }
+                            }
                         }
                     }
                 }
@@ -139,7 +143,10 @@ pub struct FakeSupervisor {
 
 impl Supervisor for FakeSupervisor {
     fn start(&self, bridge: &str, args: Vec<String>) -> Result<(), OvsError> {
-        self.events.lock().unwrap().push(format!("start {} {}", bridge, args.join(" ")));
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("start {} {}", bridge, args.join(" ")));
         self.running.lock().unwrap().insert(bridge.to_string());
         Ok(())
     }
@@ -148,7 +155,10 @@ impl Supervisor for FakeSupervisor {
         self.running.lock().unwrap().remove(bridge);
     }
     fn reload(&self, bridge: &str) {
-        self.events.lock().unwrap().push(format!("reload {}", bridge));
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("reload {}", bridge));
     }
     fn running(&self, bridge: &str) -> bool {
         self.running.lock().unwrap().contains(bridge)

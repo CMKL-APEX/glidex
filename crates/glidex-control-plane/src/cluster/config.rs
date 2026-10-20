@@ -49,6 +49,9 @@ pub struct RaftConfig {
 pub struct SchedulerConfig {
     pub cpu_overcommit: f64,
     pub memory_overcommit: f64,
+    /// Dedicated vCPUs take whole SMT cores, so no other VM shares a core
+    /// with them (spec/host-topology.md H16).
+    pub dedicated_whole_cores: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +59,10 @@ pub struct SchedulerConfig {
 pub struct NodeReserved {
     pub cpus: u32,
     pub memory_mib: u64,
+    /// CPUs no VM gets, as a list (`0-1,128-129`). Set, it replaces the
+    /// default host core per NUMA node that dedicated VMs leave free;
+    /// empty reserves none (spec/host-topology.md H7).
+    pub cpu_list: Option<String>,
 }
 
 /// OVN settings (milestone C5); parsed now so one file serves every build.
@@ -109,19 +116,31 @@ impl Default for ClusterConfig {
 
 impl Default for RaftConfig {
     fn default() -> Self {
-        RaftConfig { heartbeat_ms: 250, election_ms: (1000, 2000), log_keep_entries: 10_000 }
+        RaftConfig {
+            heartbeat_ms: 250,
+            election_ms: (1000, 2000),
+            log_keep_entries: 10_000,
+        }
     }
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        SchedulerConfig { cpu_overcommit: 4.0, memory_overcommit: 1.0 }
+        SchedulerConfig {
+            cpu_overcommit: 4.0,
+            memory_overcommit: 1.0,
+            dedicated_whole_cores: true,
+        }
     }
 }
 
 impl Default for NodeReserved {
     fn default() -> Self {
-        NodeReserved { cpus: 1, memory_mib: 2048 }
+        NodeReserved {
+            cpus: 1,
+            memory_mib: 2048,
+            cpu_list: None,
+        }
     }
 }
 
@@ -147,7 +166,11 @@ impl ClusterConfig {
     }
 
     pub fn raft_settings(&self) -> crate::cluster::raft::RaftSettings {
-        crate::cluster::raft::RaftSettings { heartbeat_ms: self.raft.heartbeat_ms, election_ms: self.raft.election_ms, log_keep_entries: self.raft.log_keep_entries }
+        crate::cluster::raft::RaftSettings {
+            heartbeat_ms: self.raft.heartbeat_ms,
+            election_ms: self.raft.election_ms,
+            log_keep_entries: self.raft.log_keep_entries,
+        }
     }
 }
 

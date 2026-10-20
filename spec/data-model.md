@@ -48,14 +48,30 @@ The guest configuration the hypervisor needs to boot:
 - `vcpu_count: u8`
 - `mem_size_mib: u32`
 - `kernel_image_path: String` — empty when booting via firmware
+- `initrd_path: Option<String>` — initramfs loaded with the kernel
+  (`--initramfs` / `-initrd`); only with `kernel_image_path`. A host
+  path (`useHostPath`). Absent in older records.
 - `firmware_path: Option<String>` — UEFI firmware: normally the file of
   a firmware image (`<image dir>/<id>.fd`, [images.md](images.md#7-vm-integration)),
   else a host path given by an admin; when set, the guest boots its
   disk's bootloader and the kernel fields are ignored.
 - `firmware_image: Option<String>` — the firmware image (id) behind
   `firmware_path`; while set, the image can't be deleted.
-- `cloud_init_path: Option<String>` — NoCloud seed disk. `None` on a
-  firmware boot → the VM controller regenerates a default seed
+- `kernel_image: Option<String>` — the kernel image (id) behind
+  `kernel_image_path` and `initrd_path` ([kernel-boot.md](kernel-boot.md)
+  §6); while set, the image can't be deleted. Changeable (next launch).
+- `generate_seed: Option<bool>` — whether the VM controller generates the
+  cloud-init seed, fixed at create (firmware boot, and kernel boot of a
+  kernel image or managed root disk, unless `cloud_init_path` is given).
+  Absent in older records, where it means firmware boot.
+  `VmConfig::generates_seed()` is the rule.
+- `kernel_from_disk: bool` — boot the kernel the guest installed:
+  extracted from the root disk before a launch when that changed
+  ([kernel-boot.md](kernel-boot.md) §10.5). What it boots is
+  `VmStatus.disk_kernel` (`{image, previous, disk_stamp}`), never the
+  spec. Changeable (next launch).
+- `cloud_init_path: Option<String>` — NoCloud seed disk. `None` when
+  `generates_seed()` → the VM controller regenerates a default seed
   (`cloud_init.rs`) at `Vm::default_cloud_init_path()` before every
   launch and puts it on the command line; the persisted config is left
   untouched. The file goes with the VM's runtime directory on delete.
@@ -76,7 +92,7 @@ The guest configuration the hypervisor needs to boot:
   `firmware_vars_path`) are filled in by the controller for
   `HypervisorDriver::launch_args`.
 
-**Invariant.** `kernel_image_path`, `firmware_path` and `rootfs_path` are tilde-expanded
+**Invariant.** `kernel_image_path`, `initrd_path`, `firmware_path` and `rootfs_path` are tilde-expanded
 at the moment `VmConfig` is built from `CreateVmRequest`. Hypervisors
 do not do shell expansion themselves; keeping expansion at the API
 boundary means every backend sees a filesystem-ready path.
@@ -93,9 +109,10 @@ Spec edits are accepted in any state; what varies is when they take
 effect. `power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`:
 at once. `vfio_devices`: hot-plugged while the guest runs (pending,
 `DevicesPending`, while paused). `data_disks`, `networks`, `vcpu_count`,
-`mem_size_mib`, `credential`, `kernel_args`, `hugepages`: at the next
+`mem_size_mib`, `credential`, `kernel_args`, `kernel`, `hugepages`,
+`hugepage_size`: at the next
 launch, with `RestartRequired=True` meanwhile. `hypervisor`,
-`kernel_image_path`, `firmware_path`, `rootfs_path`, `cloud_init_path`,
+`kernel_image_path`, `initrd_path`, `generate_seed`, `firmware_path`, `rootfs_path`, `cloud_init_path`,
 `image`, `root_disk`: never (`400 invalid_config`, "immutable field").
 
 **Invariant (claims, D11).** A disk or VFIO device is claimed by a VM
@@ -183,13 +200,17 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 - `firmware` / `firmware_path` — omitted → direct kernel boot, except
   that an `image` / `root_disk` VM without a kernel gets the newest
   firmware image for its hypervisor. `create_vm` rejects a request that
-  ends up with neither a kernel nor firmware.
+  ends up with neither a kernel nor firmware, or with both
+  ([kernel-boot.md](kernel-boot.md) K2).
+- `initrd_path` — only with `kernel_image_path`.
 - `vfio_devices` — omitted → empty list.
 - `power` — omitted → `stopped` (create, then start); `"running"`
   creates and starts in one call. `restart_policy`, `on_host_boot`,
   `stop_grace_secs` default as in `VmSpec`.
 
-`VmResponse` is the API projection (`From<&Vm>`):
+`VmResponse` is the API projection (`From<&Vm>`), which
+`service::vm` turns into the `glidex.vm.v1.Vm` message the API answers
+with ([rest-api.md](rest-api.md#vm)):
 
 - `id, name, project, state, vcpu_count, mem_size_mib, hypervisor,
   vfio_devices, credential, nics, root_disk, data_disks`;
@@ -202,8 +223,8 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 
 `PATCH /vms/{id}` takes `VmPatch` (`state.rs`): a JSON merge patch of
 the spec (`power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`,
-`config.{vcpu_count, mem_size_mib, kernel_args, credential, hugepages,
-vfio_devices, data_disks, networks}`); immutable fields are accepted by
+`config.{vcpu_count, mem_size_mib, kernel_args, kernel, credential, hugepages,
+hugepage_size, vfio_devices, data_disks, networks}`); immutable fields are accepted by
 the parser only to be refused.
 
 `DeviceRequest` is the body for attach/detach:

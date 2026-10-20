@@ -2,11 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
 import type { ChassisRef, NetworkOvn, NodeTunnels, OvnOverview } from "../types";
+import { num, tsSecs, tunnelStateLabel } from "../types";
 import { Badge, Card, errorMessage } from "./ui";
 import Modal from "./Modal";
 
 /** A chassis as its node's name, linked. */
-function Chassis({ c }: { c: ChassisRef | null }) {
+function Chassis({ c }: { c: Pick<ChassisRef, "chassis" | "node" | "node_name"> | null | undefined }) {
   if (!c) return <span className="text-gray-400">none</span>;
   if (!c.node) return <span className="font-mono text-xs">{c.chassis}</span>;
   return (
@@ -16,10 +17,11 @@ function Chassis({ c }: { c: ChassisRef | null }) {
   );
 }
 
-/** Seconds since an `nb_cfg_timestamp` (ms), as "12 s ago". */
-function since(ms: number | null): string {
-  if (!ms) return "never";
-  const s = Math.max(0, Math.round(Date.now() / 1000 - ms / 1000));
+/** Time since an `nb_cfg_at` (RFC 3339), as "12 s ago". */
+function since(at: string | undefined): string {
+  const secs = tsSecs(at);
+  if (!secs) return "never";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - secs));
   return s < 120 ? `${s} s ago` : s < 7200 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 }
 
@@ -66,7 +68,7 @@ export function OvnCard({ ovn, error, actions, nodes = [], children }: { ovn: Ov
   // Nodes not yet a chassis: OVN was just turned on, or one is in trouble.
   const joining = nodes.filter((n) => !(ovn.chassis ?? []).some((c) => c.node === n.id));
   // Only meaningful once something advanced nb_cfg (a client waiting for the hypervisors).
-  const timed = (ovn.chassis ?? []).some((c) => c.nb_cfg_timestamp);
+  const timed = (ovn.chassis ?? []).some((c) => c.nb_cfg_at);
   const db = (name: string, ms: OvnOverview["nb"]) => (
     <p className="text-sm">
       <span className="text-gray-500">{name}:</span>{" "}
@@ -99,8 +101,8 @@ export function OvnCard({ ovn, error, actions, nodes = [], children }: { ovn: Ov
               <td className="py-1.5">
                 <Chassis c={c} />
               </td>
-              <td className="font-mono text-xs">{c.encaps.join(", ") || "—"}</td>
-              {timed && <td>{since(c.nb_cfg_timestamp)}</td>}
+              <td className="font-mono text-xs">{(c.encaps ?? []).join(", ") || "—"}</td>
+              {timed && <td>{since(c.nb_cfg_at)}</td>}
             </tr>
           ))}
         </tbody>
@@ -110,10 +112,10 @@ export function OvnCard({ ovn, error, actions, nodes = [], children }: { ovn: Ov
           {ovn.gateways!.map((g) => (
             <p key={g.router}>
               <span className="font-mono text-xs">{g.router}</span>: active on <Chassis c={g.active} />; candidates{" "}
-              {g.candidates.map((c, i) => (
+              {(g.candidates ?? []).map((c, i) => (
                 <span key={c.chassis}>
                   {i > 0 && ", "}
-                  <Chassis c={c} /> ({c.priority})
+                  <Chassis c={c} /> ({num(c.priority)})
                 </span>
               ))}
             </p>
@@ -139,11 +141,11 @@ export function NodeOvnCard({ node }: { node: string }) {
           <dt className="text-gray-500">Chassis</dt>
           <dd className="font-mono text-xs">{mine.chassis}</dd>
           <dt className="text-gray-500">Tunnel endpoint</dt>
-          <dd className="font-mono text-xs">{mine.encaps.join(", ")}</dd>
-          {mine.nb_cfg_timestamp && (
+          <dd className="font-mono text-xs">{(mine.encaps ?? []).join(", ")}</dd>
+          {mine.nb_cfg_at && (
             <>
               <dt className="text-gray-500">ovn-controller caught up</dt>
-              <dd>{since(mine.nb_cfg_timestamp)}</dd>
+              <dd>{since(mine.nb_cfg_at)}</dd>
             </>
           )}
           <dt className="text-gray-500">Gateways carried</dt>
@@ -158,15 +160,15 @@ export function NodeOvnCard({ node }: { node: string }) {
 }
 
 /** A cluster network as OVN has it: its ports, where each is bound, and its router. */
-export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () => void }) {
+export function NetworkOvnDialog({ id, name, onClose }: { id: string; name: string; onClose: () => void }) {
   const [v, setV] = useState<NetworkOvn | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api
-      .networkOvn(name)
+      .networkOvn(id)
       .then(setV)
       .catch((e) => setError(errorMessage(e)));
-  }, [name]);
+  }, [id]);
   return (
     <Modal title={`${name} on OVN`} onClose={onClose}>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -186,14 +188,14 @@ export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () 
               </tr>
             </thead>
             <tbody>
-              {v.ports.map((p) => (
+              {(v.ports ?? []).map((p) => (
                 <tr key={p.name} className="border-t border-gray-100">
                   <td className="py-1 font-mono text-xs">
                     {p.name}
                     {p.kind && <span className="text-gray-400"> ({p.kind})</span>}
                   </td>
                   <td>{p.vm ? <Link to={`/vms/${p.vm.id}`} className="text-sky-700 hover:underline">{p.vm.name}</Link> : "—"}</td>
-                  <td className="font-mono text-xs">{p.addresses.join(" ")}</td>
+                  <td className="font-mono text-xs">{(p.addresses ?? []).join(" ")}</td>
                   <td>
                     {p.bound ? <Chassis c={p.bound} /> : p.kind ? "—" : <span className="text-amber-700">not bound</span>}
                     {p.up === false && <span className="text-amber-700"> (down)</span>}
@@ -207,9 +209,9 @@ export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () 
               <p>
                 Router <span className="font-mono">{v.router.name}</span>, gateway active on <Chassis c={v.router.active_gateway} />
               </p>
-              {v.router.nat.length > 0 && (
+              {(v.router.nat ?? []).length > 0 && (
                 <ul className="mt-1 font-mono text-xs text-gray-600">
-                  {v.router.nat.map((n) => (
+                  {(v.router.nat ?? []).map((n) => (
                     <li key={n}>{n}</li>
                   ))}
                 </ul>
@@ -265,9 +267,9 @@ export function TunnelMatrix({ nodes, error, onRefresh }: { nodes: NodeTunnels[]
     if (from.node === to.node) return <span className="text-gray-300">—</span>;
     if (!from.answered) return <span className="text-gray-400">?</span>;
     const t = from.tunnels?.find((x) => x.peer?.node === to.node);
-    if (!t) return <TunnelBadge state="missing" title={`${from.node_name} has no tunnel to ${to.node_name}`} />;
-    const why = t.error ?? (t.bfd_diagnostic ? `BFD: ${t.bfd_diagnostic}` : `${t.remote_ip}: rx ${t.rx_packets} / tx ${t.tx_packets} packets`);
-    return <TunnelBadge state={t.state} title={why} />;
+    if (!t) return <TunnelBadge state="missing" title={`${from.node_name ?? from.node} has no tunnel to ${to.node_name ?? to.node}`} />;
+    const why = t.error ?? (t.bfd_diagnostic ? `BFD: ${t.bfd_diagnostic}` : `${t.remote_ip ?? ""}: rx ${num(t.rx_packets)} / tx ${num(t.tx_packets)} packets`);
+    return <TunnelBadge state={tunnelStateLabel(t.state)} title={why} />;
   };
   return (
     <div className="mt-4">
@@ -283,7 +285,7 @@ export function TunnelMatrix({ nodes, error, onRefresh }: { nodes: NodeTunnels[]
             <th className="py-1 pr-4" />
             {nodes.map((n) => (
               <th key={n.node} className="pr-4 font-normal">
-                {n.node_name}
+                {n.node_name ?? n.node.slice(0, 8)}
               </th>
             ))}
           </tr>
@@ -292,7 +294,7 @@ export function TunnelMatrix({ nodes, error, onRefresh }: { nodes: NodeTunnels[]
           {nodes.map((from) => (
             <tr key={from.node} className="border-t border-gray-100">
               <td className="py-1.5 pr-4">
-                {from.node_name}
+                {from.node_name ?? from.node.slice(0, 8)}
                 {!from.answered && <span className="text-xs text-amber-700"> (no answer: {from.error})</span>}
               </td>
               {nodes.map((to) => (
@@ -332,19 +334,19 @@ export function NodeTunnelTable({ entry }: { entry: NodeTunnels | undefined }) {
             <td className="py-1.5">{t.peer ? <Chassis c={{ chassis: "", node: t.peer.node, node_name: t.peer.node_name }} /> : <span className="text-gray-500">unknown peer</span>}</td>
             <td className="font-mono text-xs">{t.remote_ip}</td>
             <td>
-              <TunnelBadge state={t.state} title={t.error ?? t.bfd_diagnostic} />
+              <TunnelBadge state={tunnelStateLabel(t.state)} title={t.error ?? t.bfd_diagnostic} />
             </td>
             <td>
-              {t.rx_packets} pkts ({t.rx_bytes} B)
+              {num(t.rx_packets)} pkts ({num(t.rx_bytes)} B)
             </td>
             <td>
-              {t.tx_packets} pkts ({t.tx_bytes} B)
+              {num(t.tx_packets)} pkts ({num(t.tx_bytes)} B)
             </td>
           </tr>
         ))}
         {(entry.missing ?? []).map((m) => (
           <tr key={m.node} className="border-t border-gray-100">
-            <td className="py-1.5">{m.node_name}</td>
+            <td className="py-1.5">{m.node_name ?? m.node.slice(0, 8)}</td>
             <td>—</td>
             <td>
               <TunnelBadge state="missing" />

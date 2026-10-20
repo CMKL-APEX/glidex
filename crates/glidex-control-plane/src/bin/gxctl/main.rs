@@ -1,28 +1,39 @@
 //! `gxctl`: interactive CLI for the glidex control plane (spec/cli.md).
 
+// Doc comments on the clap types are `--help` text, printed verbatim:
+// `<uid>` and bare URLs there are meant for the terminal, not rustdoc.
+#![allow(rustdoc::invalid_html_tags, rustdoc::bare_urls)]
+
+mod access;
 mod admin;
 mod client;
+mod cluster;
 mod config;
 mod console;
+mod directory;
+mod host;
+mod network;
+mod storage;
+mod tenancy;
+mod usage;
+mod vm;
 
 use clap::Parser;
-use client::{enc, ApiClient};
+use client::ApiClient;
 use colored::Colorize;
 use console::{handle_connect, handle_log, restore_terminal};
 use hyper::Method;
 use nix::sys::termios::{self, LocalFlags, SetArg};
-use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
+use rustyline::completion::{Completer, FilenameCompleter, Pair, unescape};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
-use serde::{Deserialize, Serialize};
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
-use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "gxctl")]
@@ -68,10 +79,10 @@ struct Cli {
 /// first existing default socket, else TCP to localhost.
 fn build_client(cli: &Cli) -> Result<ApiClient, String> {
     let cfg = config::load()?;
-    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any()) {
-        if let Some(sel) = config::select(cfg, cli.profile.as_deref())? {
-            return profile_client(cli, &sel);
-        }
+    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any())
+        && let Some(sel) = config::select(cfg, cli.profile.as_deref())?
+    {
+        return profile_client(cli, &sel);
     }
     let tcp = |url: &str| -> Result<ApiClient, String> {
         let token = match client::load_token() {
@@ -94,7 +105,9 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
                 Some(p) => ApiClient::unix(p),
                 // A UI socket but no API socket: a cluster agent, which has
                 // no API of its own (spec/clustering-ui.md §3.6).
-                None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => return Err(client::AGENT_HINT.into()),
+                None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => {
+                    return Err(client::AGENT_HINT.into());
+                }
                 None => tcp(client::DEFAULT_URL)?,
             }
         }
@@ -114,23 +127,35 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
         Some(u) => vec![u.clone()],
         None => p.url.clone(),
     };
-    let dials_known = urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u)));
+    let dials_known = urls.iter().all(|u| {
+        p.url
+            .iter()
+            .any(|pu| config::url_host(pu) == config::url_host(u))
+    });
     let mut token = client::token_from_env();
     if token.is_none() && dials_known {
         token = p.credential()?;
     }
     if token.is_none() && !dials_known {
         // The point of the rule, said out loud once per run.
-        eprintln!("note: --url dials a host outside profile '{}'; no credential is sent to it", sel.name);
+        eprintln!(
+            "note: --url dials a host outside profile '{}'; no credential is sent to it",
+            sel.name
+        );
     }
-    let loopback_only = urls.iter().all(|u| client::is_loopback_host(&config::url_host(u)));
+    let loopback_only = urls
+        .iter()
+        .all(|u| client::is_loopback_host(&config::url_host(u)));
     if token.is_none() && loopback_only {
         // The legacy token file is the implicit localhost profile's
         // credential (§3.5); `auth login` folds a copy into the profile,
         // and until then the banner says where the credential came from.
         token = config::legacy_token()?;
         if token.is_some() {
-            eprintln!("note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile", sel.name);
+            eprintln!(
+                "note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile",
+                sel.name
+            );
         }
     }
     // The CI-only one-run grant (§5.4): never when the profile carries
@@ -138,158 +163,60 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
     // through `auth trust remove` — and never for a login, which reads
     // its own flags, not this environment.
     let mut tls = p.tls.clone();
-    if !tls.insecure && tls.pins.is_empty() && tls.ca_file.is_none() && tls.ca_pem.is_none() {
-        if let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE") {
-            if v.trim() == "1" {
-                tls.insecure = true;
-            }
-        }
+    if !tls.insecure
+        && tls.pins.is_empty()
+        && tls.ca_file.is_none()
+        && tls.ca_pem.is_none()
+        && let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE")
+        && v.trim() == "1"
+    {
+        tls.insecure = true;
     }
     if tls.insecure {
         // The bypass's loud line, before this invocation's first request
         // (§5.4) — every run, not just the ones that notice it.
-        eprintln!("{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token", "Warning:".red(), urls.join(", "));
+        eprintln!(
+            "{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token",
+            "Warning:".red(),
+            urls.join(", ")
+        );
     }
-    let mut banner = format!("profile '{}' · {}", sel.name, if tls.insecure { "UNVERIFIED".to_string() } else { p.trust_mode() });
+    let mut banner = format!(
+        "profile '{}' · {}",
+        sel.name,
+        if tls.insecure {
+            "UNVERIFIED".to_string()
+        } else {
+            p.trust_mode()
+        }
+    );
     if let Some(c) = p.cluster_name.as_ref().or(p.cluster_id.as_ref()) {
         banner.push_str(&format!(" · cluster {c}"));
     }
-    if let Some(id) = &p.identity {
-        if let Some(tn) = id.token_name.as_ref() {
-            banner.push_str(&format!(" · token {tn}"));
-        }
+    if let Some(id) = &p.identity
+        && let Some(tn) = id.token_name.as_ref()
+    {
+        banner.push_str(&format!(" · token {tn}"));
     }
     let c = ApiClient::tcp_multi(
         &urls,
         token,
         Some(&tls),
-        Some(client::ProfileCtx { name: sel.name.clone(), path: config::file().unwrap_or_else(|| PathBuf::from("")), banner }),
-        Some(client::Binding { profile: sel.name.clone(), cluster_id: p.cluster_id.clone() }),
+        Some(client::ProfileCtx {
+            name: sel.name.clone(),
+            path: config::file().unwrap_or_else(|| PathBuf::from("")),
+            banner,
+        }),
+        Some(client::Binding {
+            profile: sel.name.clone(),
+            cluster_id: p.cluster_id.clone(),
+        }),
     )?;
     c.set_project(cli.project.clone().or_else(|| p.project.clone()));
     Ok(c)
 }
 
-#[derive(Debug, Deserialize)]
-struct VmResponse {
-    id: String,
-    name: String,
-    #[serde(default)]
-    project: String,
-    state: String,
-    /// What the VM should be doing; `state` is what it is doing
-    /// (spec/reconciliation.md §7.4).
-    #[serde(default)]
-    desired_state: String,
-    #[serde(default)]
-    conditions: Vec<serde_json::Value>,
-    #[serde(default)]
-    last_exit: Option<serde_json::Value>,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    hypervisor: String,
-    #[serde(default)]
-    vfio_devices: Vec<String>,
-    #[serde(default)]
-    nics: Vec<NicInfo>,
-    /// The node the VM is placed on (spec/clustering.md §9.1).
-    #[serde(default)]
-    node: Option<String>,
-}
-
-/// A `list` row: the project shown by name when it's known.
-#[derive(Tabled)]
-struct VmRow {
-    id: String,
-    name: String,
-    project: String,
-    state: String,
-    node: String,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    hypervisor: String,
-}
-
-/// A `nodes` row.
-#[derive(Tabled)]
-struct NodeRow {
-    id: String,
-    name: String,
-    role: String,
-    phase: String,
-    ready: String,
-    cpus: u64,
-    memory_mib: u64,
-}
-
-impl NodeRow {
-    fn from_json(n: &serde_json::Value) -> NodeRow {
-        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
-        NodeRow {
-            id: text(&n["meta"]["id"]),
-            name: text(&n["spec"]["name"]),
-            role: text(&n["spec"]["role"]),
-            phase: text(&n["status"]["phase"]),
-            ready: text(&n["status"]["ready"]),
-            cpus: n["status"]["capacity"]["cpus"].as_u64().unwrap_or(0),
-            memory_mib: n["status"]["capacity"]["memory_mib"].as_u64().unwrap_or(0),
-        }
-    }
-}
-
-/// Project names by id (best effort: an empty map when not allowed).
-async fn project_names(client: &ApiClient) -> std::collections::HashMap<String, String> {
-    client
-        .request_json::<Vec<serde_json::Value>>(Method::GET, "/projects", None)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str()?.to_string())))
-        .collect()
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct NicInfo {
-    network: String,
-    mac: String,
-    #[serde(default)]
-    port: Option<String>,
-    #[serde(default)]
-    ipv4: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Tabled)]
-struct NetworkRow {
-    name: String,
-    mode: String,
-    bridge: String,
-    port_type: String,
-    #[tabled(display_with = "display_opt_u16")]
-    #[serde(default)]
-    vlan: Option<u16>,
-    /// Owning project (project networks); host networks have none.
-    #[tabled(display_with = "display_option")]
-    #[serde(default)]
-    project: Option<String>,
-}
-
-async fn list_networks(client: &ApiClient) {
-    match client.request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None).await {
-        Ok(nets) if nets.is_empty() => println!("No networks. Create one with 'network create <name>'."),
-        Ok(mut nets) => {
-            let names = project_names(client).await;
-            for n in &mut nets {
-                if let Some(p) = n.project.as_mut() {
-                    if let Some(name) = names.get(p.as_str()) {
-                        *p = name.clone();
-                    }
-                }
-            }
-            println!("{}", Table::new(nets))
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
+use access::project_names;
 
 fn display_opt_u16(o: &Option<u16>) -> String {
     o.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
@@ -297,12 +224,18 @@ fn display_opt_u16(o: &Option<u16>) -> String {
 
 /// `--flag value` from a command's arguments.
 fn flag_value<'a>(args: &'a [&'a str], flag: &str) -> Option<&'a str> {
-    args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied()
+    args.iter()
+        .position(|a| *a == flag)
+        .and_then(|i| args.get(i + 1))
+        .copied()
 }
 
 /// Every value of a repeatable `--flag value`.
 fn flag_values<'a>(args: &[&'a str], flag: &str) -> Vec<&'a str> {
-    args.windows(2).filter(|w| w[0] == flag).map(|w| w[1]).collect()
+    args.windows(2)
+        .filter(|w| w[0] == flag)
+        .map(|w| w[1])
+        .collect()
 }
 
 /// Split a command line into words; single or double quotes keep spaces
@@ -348,301 +281,8 @@ fn split_line(line: &str) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
-/// `--graceful [secs]` from a `stop` command's arguments.
-fn graceful_stop_secs(args: &[&str]) -> Result<Option<u64>, String> {
-    const DEFAULT_SECS: u64 = 60;
-    match args {
-        [] => Ok(None),
-        ["--graceful"] => Ok(Some(DEFAULT_SECS)),
-        ["--graceful", secs] => secs
-            .parse()
-            .map(Some)
-            .map_err(|_| format!("'{}' is not a number of seconds", secs)),
-        _ => Err("usage: stop <name|id> [--graceful [secs]]".to_string()),
-    }
-}
-
 fn has_flag(args: &[&str], flag: &str) -> bool {
     args.contains(&flag)
-}
-
-async fn handle_network_add(client: &CliClient, args: &[&str]) {
-    let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]".yellow());
-        return;
-    };
-    let (mode, bridge) = if let Some(b) = flag_value(args, "--bridged") {
-        ("bridged", Some(b))
-    } else if has_flag(args, "--isolated") {
-        ("isolated", flag_value(args, "--bridge"))
-    } else {
-        ("nat", flag_value(args, "--bridge"))
-    };
-    let mut body = serde_json::json!({
-        "name": name,
-        "mode": mode,
-        "port_type": if has_flag(args, "--vhost-user") { "vhost_user" } else { "tap" },
-    });
-    if let Some(b) = bridge {
-        body["bridge"] = serde_json::json!(b);
-    }
-    // Cluster (OVN) or one node's bridge; default: the cluster's when OVN is enabled.
-    if has_flag(args, "--cluster") {
-        body["scope"] = serde_json::json!("cluster");
-    } else if has_flag(args, "--node") {
-        body["scope"] = serde_json::json!("node");
-    }
-    if let Some(s) = flag_value(args, "--subnet") {
-        body["subnet"] = serde_json::json!(s);
-    }
-    if let Some(v) = flag_value(args, "--vlan") {
-        match v.parse::<u16>() {
-            Ok(v) => body["vlan"] = serde_json::json!(v),
-            Err(_) => {
-                println!("{} --vlan must be a number", "Error:".red());
-                return;
-            }
-        }
-    }
-    match client.request_json::<NetworkRow>(Method::POST, "/networks", Some(body)).await {
-        Ok(n) => println!("{} {} ({} on {})", "Network created:".green(), n.name.yellow(), n.mode, n.bridge),
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
-async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: uplink-add <bridge> (--kernel <if> | --afxdp <if> [--xdp-mode best_effort|native|native_with_zerocopy|generic] [--rxq N] | --dpdk <bdf> --name <port> [--rxq N]) [--migrate-ip] [--force] [--accept-dhcp]";
-    let Some(bridge) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", usage.yellow());
-        return;
-    };
-    let rxq: u16 = flag_value(args, "--rxq").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let mut body = if let Some(ifname) = flag_value(args, "--kernel") {
-        serde_json::json!({"name": ifname, "kind": "kernel", "ifname": ifname})
-    } else if let Some(ifname) = flag_value(args, "--afxdp") {
-        serde_json::json!({"name": ifname, "kind": "afxdp", "ifname": ifname, "n_rxq": rxq,
-            "xdp_mode": flag_value(args, "--xdp-mode").unwrap_or("best_effort")})
-    } else if let Some(pci) = flag_value(args, "--dpdk") {
-        let Some(name) = flag_value(args, "--name") else {
-            println!("{}", usage.yellow());
-            return;
-        };
-        serde_json::json!({"name": name, "kind": "dpdk", "pci": pci, "n_rxq": rxq})
-    } else {
-        println!("{}", usage.yellow());
-        return;
-    };
-    body["migrate_ip"] = serde_json::json!(has_flag(args, "--migrate-ip"));
-    body["confirm"] = serde_json::json!(has_flag(args, "--force"));
-    body["accept_dhcp"] = serde_json::json!(has_flag(args, "--accept-dhcp"));
-    let path = format!("/ovs/bridges/{}/uplinks", bridge);
-    let res = match client.request_json::<serde_json::Value>(Method::POST, &path, Some(body)).await {
-        Ok(r) => r,
-        Err(e) => {
-            if e.contains("DHCP-managed") {
-                println!("{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.", "Error:".red(), e);
-            } else if e.contains("host_interface_in_use") {
-                println!("{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).", "Error:".red(), e);
-            } else {
-                println!("{} {}", "Error:".red(), e);
-            }
-            return;
-        }
-    };
-    finish_uplink(client, bridge, res).await;
-}
-
-/// After an uplink was added or re-applied: commit a moved IP once the API
-/// still answers (netd rolls it back otherwise).
-async fn finish_uplink(client: &CliClient, bridge: &str, res: serde_json::Value) {
-    let name = res["record"]["spec"]["name"].as_str().unwrap_or("?").to_string();
-    for w in res["live"]["warnings"].as_array().into_iter().flatten() {
-        println!("{} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
-    }
-    if res["phase"] == "pending_commit" {
-        println!("IP configuration moved to {}; checking the API is still reachable...", bridge);
-        let token = res["record"]["pending"]["token"].as_str().unwrap_or("").to_string();
-        if client.health_check().await.is_err() {
-            println!("{} API unreachable; glidex-netd will roll the change back automatically.", "Error:".red());
-            return;
-        }
-        let commit = format!("/ovs/bridges/{}/uplinks/{}/commit", bridge, name);
-        match client.request_json::<serde_json::Value>(Method::POST, &commit, Some(serde_json::json!({"token": token}))).await {
-            Ok(_) => println!("{} uplink {} on {} (IP migrated)", "Committed:".green(), name, bridge),
-            Err(e) => println!("{} {} (the change will be rolled back)", "Error:".red(), e),
-        }
-    } else {
-        println!("{} uplink {} on {}", "Added:".green(), name, bridge);
-    }
-}
-
-async fn handle_ovs(client: &CliClient, args: &[&str]) {
-    match args.first().copied() {
-        Some("status") | None => {
-            match client.request_json::<serde_json::Value>(Method::GET, "/ovs/status", None).await {
-                Ok(s) => {
-                    let netd = &s["netd"];
-                    if netd["available"] != true {
-                        println!("{} glidex-netd unavailable: {}", "netd:".bold(), netd["error"].as_str().unwrap_or("unknown").red());
-                        return;
-                    }
-                    println!("{} available (access: {})", "netd:".bold(), netd["access"].as_str().unwrap_or("?"));
-                    let h = &s["host"];
-                    let ovs = if h["ovs_installed"] == true {
-                        format!(
-                            "{} ({})",
-                            h["ovs_version"].as_str().unwrap_or("?"),
-                            if h["ovs_running"] == true { "running".green() } else { "not running".red() }
-                        )
-                    } else {
-                        "not installed".red().to_string()
-                    };
-                    println!("{} {}", "Open vSwitch:".bold(), ovs);
-                    println!("{} {}", "dnsmasq:".bold(), if h["dnsmasq"] == true { "yes".green() } else { "missing".red() });
-                    println!("{} {}", "DPDK initialized:".bold(), h["dpdk_initialized"]);
-                    if let Some(combos) = h["combinations"].as_array() {
-                        println!("{}", "Combinations:".bold());
-                        for c in combos {
-                            let missing: Vec<&str> = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-                            println!(
-                                "  {} {} {}",
-                                c["id"].as_str().unwrap_or("?"),
-                                if c["available"] == true { "available".green().to_string() } else { format!("missing: {}", missing.join(", ")).yellow().to_string() },
-                                c["description"].as_str().unwrap_or("").dimmed()
-                            );
-                        }
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some("install") => {
-            let profile = flag_value(args, "--profile").unwrap_or("kernel");
-            let body = serde_json::json!({
-                "profile": profile,
-                "source_build": has_flag(args, "--source"),
-                "confirm": has_flag(args, "--force"),
-            });
-            println!("Installing Open vSwitch ({} profile); this can take a few minutes...", profile);
-            match client.request_json::<serde_json::Value>(Method::POST, "/ovs/install", Some(body)).await {
-                Ok(r) if r["changed"] == true => println!("{} Open vSwitch {}", "Installed:".green(), r["ovs_version"].as_str().unwrap_or("?")),
-                Ok(r) => println!("{} Open vSwitch {} already satisfies the profile", "Nothing to do:".green(), r["ovs_version"].as_str().unwrap_or("?")),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some("dpdk-init") => {
-            let body = serde_json::json!({
-                "socket_mem": flag_value(args, "--socket-mem").unwrap_or("1024"),
-                "pmd_cpu_mask": flag_value(args, "--pmd-cpu-mask"),
-                "confirm": has_flag(args, "--force"),
-            });
-            println!("Enabling DPDK in ovs-vswitchd (restarts it)...");
-            match client.request_json::<()>(Method::POST, "/ovs/dpdk-init", Some(body)).await {
-                Ok(()) => println!("{} DPDK initialized", "OK:".green()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some(other) => println!("{} unknown 'ovs {}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'", "Error:".red(), other),
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct NetworkAttachmentReq {
-    network: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CredentialInfo {
-    username: String,
-    has_password: bool,
-    #[serde(default)]
-    ssh_authorized_keys: Vec<String>,
-    updated_at: u64,
-}
-
-#[derive(Tabled)]
-struct CredentialRow {
-    username: String,
-    password: &'static str,
-    ssh_keys: usize,
-    updated: String,
-}
-
-impl From<&CredentialInfo> for CredentialRow {
-    fn from(c: &CredentialInfo) -> Self {
-        Self {
-            username: c.username.clone(),
-            password: if c.has_password { "set" } else { "-" },
-            ssh_keys: c.ssh_authorized_keys.len(),
-            updated: format_unix_time(c.updated_at),
-        }
-    }
-}
-
-/// Request bodies carrying a plaintext password deliberately don't derive
-/// `Debug`, so the password can't end up in a log line by accident.
-#[derive(Serialize)]
-struct CreateCredentialRequest {
-    username: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-    ssh_authorized_keys: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct UpdateCredentialRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ssh_authorized_keys: Option<Vec<String>>,
-}
-
-#[derive(Debug, Serialize)]
-struct CreateVmRequest {
-    name: String,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    kernel_image_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    firmware: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    firmware_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cloud_init_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credential: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    rootfs_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_disk_size_gib: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_disk: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data_disks: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kernel_args: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hypervisor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    vfio_devices: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    networks: Option<Vec<NetworkAttachmentReq>>,
-}
-
-#[derive(Debug, Deserialize, Tabled)]
-struct PciDeviceInfo {
-    address: String,
-    vendor_id: String,
-    device_id: String,
-    class_id: String,
-    #[tabled(display_with = "display_option")]
-    driver: Option<String>,
-    #[tabled(display_with = "display_option")]
-    iommu_group: Option<String>,
-    #[tabled(skip)]
-    sysfs_path: String,
 }
 
 fn display_option(o: &Option<String>) -> String {
@@ -657,114 +297,11 @@ fn display_option(o: &Option<String>) -> String {
 type CliClient = ApiClient;
 
 impl ApiClient {
-    async fn list_vms(&self) -> Result<Vec<VmResponse>, String> {
-        self.request_json(Method::GET, &self.scoped("/vms"), None).await
-    }
-
-    async fn get_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::GET, &format!("/vms/{}", enc(id)), None).await
-    }
-
-    async fn create_vm(&self, request: CreateVmRequest) -> Result<VmResponse, String> {
-        let mut body = serde_json::to_value(&request).map_err(|e| e.to_string())?;
-        self.scope_body(&mut body);
-        self.request_json(Method::POST, "/vms", Some(body)).await
-    }
-
-    /// `?wait=<secs>` unless the caller asked not to wait (`--no-wait`).
-    fn waiting(path: String, wait: Option<u64>) -> String {
-        match wait {
-            Some(w) => client::add_query(&path, "wait", &w.to_string()),
-            None => path,
-        }
-    }
-
-    async fn start_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/start", enc(id)), wait), None).await
-    }
-
-    /// Stop a VM; with `graceful_secs`, power-button first and wait.
-    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>, wait: Option<u64>) -> Result<VmResponse, String> {
-        let mut path = format!("/vms/{}/stop", enc(id));
-        if let Some(s) = graceful_secs {
-            path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
-        }
-        // Waiting must cover the grace.
-        let wait = wait.map(|w| w.max(graceful_secs.unwrap_or(0) + 20).min(300));
-        self.request_json(Method::POST, &Self::waiting(path, wait), None).await
-    }
-
-    async fn pause_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/pause", enc(id)), wait), None).await
-    }
-
-    async fn delete_vm(&self, id: &str, keep_disk: bool, wait: Option<u64>) -> Result<(), String> {
-        let path = format!("/vms/{}{}", enc(id), if keep_disk { "?keep_disk=true" } else { "" });
-        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None).await.map(|_| ())
-    }
-
-    async fn vm_events(&self, id: &str) -> Result<serde_json::Value, String> {
-        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None).await
-    }
-
-    async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
-        self.request_json(Method::GET, &self.scoped("/credentials"), None).await
-    }
-
-    async fn create_credential(&self, request: &CreateCredentialRequest) -> Result<CredentialInfo, String> {
-        let mut body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        self.scope_body(&mut body);
-        self.request_json(Method::POST, "/credentials", Some(body)).await
-    }
-
-    async fn update_credential(&self, username: &str, request: &UpdateCredentialRequest) -> Result<CredentialInfo, String> {
-        let body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        self.request_json(Method::PUT, &self.scoped(&format!("/credentials/{}", enc(username))), Some(body)).await
-    }
-
-    async fn delete_credential(&self, username: &str) -> Result<(), String> {
-        self.request_json(Method::DELETE, &self.scoped(&format!("/credentials/{}", enc(username))), None).await
-    }
-
     async fn health_check(&self) -> Result<(), String> {
-        self.request_bytes(Method::GET, "/health", None).await.map(|_| ()).map_err(|e| e.message)
-    }
-
-    async fn list_pci_devices(&self) -> Result<Vec<PciDeviceInfo>, String> {
-        self.request_json(Method::GET, "/pci-devices", None).await
-    }
-
-    async fn attach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(Method::POST, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
-    }
-
-    async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(Method::DELETE, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
-    }
-
-    /// Resolve a VM identifier (name or ID) to an ID.
-    /// First tries to use it as an ID, then searches by name (within the
-    /// selected project, if any).
-    async fn resolve_vm(&self, name_or_id: &str) -> Result<String, String> {
-        if let Ok(vm) = self.get_vm(name_or_id).await {
-            return Ok(vm.id);
-        }
-        let vms = self.list_vms().await?;
-        let matches: Vec<_> = vms.iter().filter(|vm| vm.name == name_or_id).collect();
-        match matches.len() {
-            0 => Err(format!("VM '{}' not found", name_or_id)),
-            1 => Ok(matches[0].id.clone()),
-            _ => {
-                let ids: Vec<_> = matches.iter().map(|vm| format!("{} (project {})", vm.id, vm.project)).collect();
-                Err(format!(
-                    "Multiple VMs found with name '{}'. Use --project or the ID instead: {}",
-                    name_or_id,
-                    ids.join(", ")
-                ))
-            }
-        }
+        self.request_bytes(Method::GET, "/health", None)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.message)
     }
 }
 
@@ -777,263 +314,216 @@ fn format_bytes(n: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{} B", n) } else { format!("{:.1} {}", v, UNITS[u]) }
-}
-
-fn image_status(img: &serde_json::Value) -> String {
-    let st = &img["status"];
-    match st["state"].as_str().unwrap_or("?") {
-        "downloading" => {
-            let got = st["received_bytes"].as_u64().unwrap_or(0);
-            match st["total_bytes"].as_u64() {
-                Some(t) if t > 0 => format!("downloading {:.0}%", got as f64 * 100.0 / t as f64),
-                _ => format!("downloading {}", format_bytes(got)),
-            }
-        }
-        "failed" => format!("failed: {}", st["reason"].as_str().unwrap_or("")).red().to_string(),
-        "ready" => "ready".green().to_string(),
-        other => other.to_string(),
+    if u == 0 {
+        format!("{} B", n)
+    } else {
+        format!("{:.1} {}", v, UNITS[u])
     }
 }
 
-async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
-    match args.first().copied().unwrap_or("list") {
-        "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
-            Ok(items) => {
-                println!("{}", "Cloud images (image pull <key>):".bold());
-                for i in items {
-                    println!(
-                        "  {:<14} {} {}{}",
-                        i["key"].as_str().unwrap_or("?").cyan(),
-                        i["distro"].as_str().unwrap_or(""),
-                        i["release"].as_str().unwrap_or(""),
-                        if i["downloaded_image_id"].is_null() { String::new() } else { " (downloaded)".green().to_string() }
-                    );
-                }
-                if let Ok(fw) = client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/firmware-catalog", None).await {
-                    println!("{}", "UEFI firmware (image pull --firmware <key>):".bold());
-                    for i in fw {
-                        let note = if !i["downloaded_image_id"].is_null() {
-                            " (downloaded)".green().to_string()
-                        } else if let Some(h) = i["hint"].as_str() {
-                            format!(" ({})", h).yellow().to_string()
-                        } else {
-                            String::new()
-                        };
-                        println!(
-                            "  {:<14} {} [{}] {}{}",
-                            i["key"].as_str().unwrap_or("?").cyan(),
-                            i["name"].as_str().unwrap_or(""),
-                            i["hypervisor"].as_str().unwrap_or(""),
-                            i["version"].as_str().unwrap_or(""),
-                            note
-                        );
-                    }
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None).await {
-            Ok(imgs) if imgs.is_empty() => println!("No images. Pull one with 'image pull <key>' (see 'image catalog')."),
-            Ok(imgs) => {
-                for i in imgs {
-                    let src = &i["source"];
-                    let from = match src["kind"].as_str() {
-                        Some("catalog") | Some("firmware") => format!("{} {}", src["key"].as_str().unwrap_or(""), src["version"].as_str().unwrap_or("")),
-                        _ => src["url"].as_str().unwrap_or("").to_string(),
-                    };
-                    let kind = match i["hypervisor"].as_str() {
-                        Some(h) if i["kind"] == "firmware" => format!("firmware/{}", h),
-                        _ => "disk".to_string(),
-                    };
-                    println!(
-                        "  {:<20} {:<20} {:<22} {:>9}  {}{}",
-                        i["name"].as_str().unwrap_or("?").cyan(),
-                        kind,
-                        image_status(&i),
-                        format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
-                        from.trim(),
-                        if i["verified"] == true { "" } else { " (unverified)" }
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "pull" => {
-            let firmware = flag_value(args, "--firmware");
-            let Some(what) = firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--"))) else {
-                println!("{}", usage.yellow());
-                return;
-            };
-            let mut body = if firmware.is_some() {
-                serde_json::json!({ "firmware": what })
-            } else if what.contains("://") {
-                serde_json::json!({ "url": what })
-            } else {
-                serde_json::json!({ "catalog": what })
-            };
-            if let Some(h) = flag_value(args, "--firmware-for") {
-                body["kind"] = serde_json::json!("firmware");
-                body["hypervisor"] = serde_json::json!(h);
-            }
-            // A split OVMF build's variable-store template (QEMU).
-            if let Some(u) = flag_value(args, "--vars-url") {
-                body["vars_url"] = serde_json::json!(u);
-            }
-            if let Some(h) = flag_value(args, "--vars-sha256") {
-                body["vars_sha256"] = serde_json::json!(h);
-            }
-            if let Some(n) = flag_value(args, "--name") {
-                body["name"] = serde_json::json!(n);
-            }
-            if let Some(h) = flag_value(args, "--sha256") {
-                body["sha256"] = serde_json::json!(h);
-            }
-            let img = match client.request_json::<serde_json::Value>(Method::POST, "/images", Some(body)).await {
-                Ok(i) => i,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return;
-                }
-            };
-            let id = img["id"].as_str().unwrap_or("").to_string();
-            println!("Pulling {} as {} (Ctrl-C stops watching; the download continues)", what, img["name"].as_str().unwrap_or("?").yellow());
-            loop {
-                match client.request_json::<serde_json::Value>(Method::GET, &format!("/images/{}", id), None).await {
-                    Ok(i) => {
-                        let state = i["status"]["state"].as_str().unwrap_or("").to_string();
-                        print!("\r  {:<60}", image_status(&i));
-                        let _ = io::stdout().flush();
-                        if state != "downloading" && state != "verifying" {
-                            println!();
-                            if state == "ready" {
-                                println!("{} {} ({}, sha256 {})", "Image ready:".green(), i["name"].as_str().unwrap_or(""), format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)), i["sha256"].as_str().unwrap_or(""));
-                            }
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        println!("\n{} {}", "Error:".red(), e);
-                        break;
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-        "retry" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::POST, &format!("/images/{}/retry", name), None).await {
-                Ok(_) => println!("{} {} (follow it with: image list)", "Downloading again:".green(), name),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/images/{}?wait=60", name), None).await {
-                Ok(v) => print_delete_result("Image", name, &v),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        _ => println!("{}", usage.yellow()),
-    }
+/// A condition's `status`: `CONDITION_STATUS_TRUE` in the proto shape,
+/// `True` in the older REST bodies.
+fn condition_true(status: &serde_json::Value) -> bool {
+    status == "CONDITION_STATUS_TRUE" || status == "True"
 }
 
 /// One line for an object from `/watch`: its name and what it is doing.
 fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
-    let name = o["name"].as_str().unwrap_or("?").to_string();
-    let deleting = o["deleting"].as_bool().unwrap_or(false) || o["deletion_requested_at"].is_u64();
+    // A node (the proto Node) is named in its spec, an import plan
+    // (the proto ImportPlan) by the joining host.
+    let name = match kind {
+        "node" => o["spec"]["name"].as_str().or(o["meta"]["name"].as_str()),
+        "import" => o["node"].as_str(),
+        _ => o["name"].as_str(),
+    }
+    .unwrap_or("?")
+    .to_string();
+    // `NODE_PHASE_ACTIVE` → `Active`, as `nodes` prints it.
+    let title = |v: &serde_json::Value, prefix: &str| {
+        let w = v
+            .as_str()
+            .unwrap_or("")
+            .trim_start_matches(prefix)
+            .to_ascii_lowercase();
+        let mut c = w.chars();
+        c.next()
+            .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+            .unwrap_or_else(|| "?".to_string())
+    };
+    // `deletion_requested_at`: RFC 3339 in the proto shape (networks), unix
+    // seconds in the older bodies.
+    let deleting = o["deleting"].as_bool().unwrap_or(false)
+        || o["deletion_requested_at"].is_u64()
+        || o["deletion_requested_at"].is_string();
     let mut what = match kind {
+        // The proto shape (spec/grpc.md §9.1): `VM_STATE_*`, `POWER_STATE_*`.
         "vm" => {
-            let state = o["state"].as_str().unwrap_or("?");
-            match o["desired_state"].as_str() {
-                Some(d) if d != state && !(d == "stopped" && state == "created") => format!("{} → {}", state, d),
-                _ => state.to_string(),
-            }
+            let word = |v: &serde_json::Value, prefix: &str| {
+                v.as_str()
+                    .map(|s| s.trim_start_matches(prefix).to_ascii_lowercase())
+            };
+            let state = word(&o["state"], "VM_STATE_").unwrap_or_else(|| "?".to_string());
+            let desired = word(&o["desired_state"], "POWER_STATE_").unwrap_or_default();
+            vm::plain_state(&state, &desired)
         }
         "disk" => o["status"].as_str().unwrap_or("?").to_string(),
-        "image" => match o["status"]["state"].as_str().unwrap_or("?") {
-            "downloading" => match (o["status"]["received_bytes"].as_u64(), o["status"]["total_bytes"].as_u64()) {
-                (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
-                _ => "downloading".to_string(),
-            },
-            s => s.to_string(),
-        },
-        _ => o["phase"].as_str().unwrap_or("ready").replace('_', " "),
+        // The proto shape (spec/grpc.md §9.1): `IMAGE_STATE_*`, 64-bit
+        // numbers as strings.
+        "image" => {
+            let n = |v: &serde_json::Value| {
+                v.as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or(v.as_u64())
+            };
+            match o["status"]["state"]
+                .as_str()
+                .unwrap_or("?")
+                .trim_start_matches("IMAGE_STATE_")
+            {
+                "DOWNLOADING" => match (
+                    n(&o["status"]["received_bytes"]),
+                    n(&o["status"]["total_bytes"]),
+                ) {
+                    (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
+                    _ => "downloading".to_string(),
+                },
+                s => s.to_ascii_lowercase(),
+            }
+        }
+        // Nodes in the proto shape: `NODE_PHASE_*`, ready a `CONDITION_STATUS_*`.
+        "node" => {
+            let phase = title(&o["status"]["phase"], "NODE_PHASE_");
+            if condition_true(&o["status"]["ready"]) {
+                phase
+            } else {
+                format!("{}, not ready", phase)
+            }
+        }
+        // Import plans: `IMPORT_STATE_*`.
+        "import" => title(&o["state"], "IMPORT_STATE_").to_ascii_lowercase(),
+        // Networks in the proto shape: `NETWORK_PHASE_*`.
+        _ => o["phase"]
+            .as_str()
+            .unwrap_or("ready")
+            .trim_start_matches("NETWORK_PHASE_")
+            .to_ascii_lowercase()
+            .replace('_', " "),
     };
     if deleting {
         what = format!("deleting ({})", what);
     }
-    if let Some(c) = o["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        what = format!("{} — {}: {}", what, c["reason"].as_str().unwrap_or(""), c["message"].as_str().unwrap_or(""));
+    if let Some(c) = o["conditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["kind"] == "Ready" && !condition_true(&c["status"]))
+    {
+        what = format!(
+            "{} — {}: {}",
+            what,
+            c["reason"].as_str().unwrap_or(""),
+            c["message"].as_str().unwrap_or("")
+        );
     }
     (name, what)
 }
 
 /// `watch [kinds]` (spec/reconciliation.md §12.6): print changes to what
-/// the caller can see until Ctrl-C. Reconnects when the server ends a
-/// stream, printing only what changed meanwhile.
+/// the caller can see until Ctrl-C, over `glidex.watch.v1.WatchService.Watch`.
+/// Reconnects when the server ends a stream, printing only what changed
+/// meanwhile.
 async fn handle_watch(client: &ApiClient, args: &[&str]) {
+    use glidex_api::proto::glidex::watch::v1 as w;
     let kinds = args.first().copied().unwrap_or("vms,disks,images,networks");
-    let path = format!("/watch?kinds={}", kinds);
+    let mut req = w::WatchRequest::default();
+    for k in kinds.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+        let kind = match k {
+            "vm" | "vms" => w::WatchKind::WATCH_KIND_VM,
+            "disk" | "disks" => w::WatchKind::WATCH_KIND_DISK,
+            "image" | "images" => w::WatchKind::WATCH_KIND_IMAGE,
+            "network" | "networks" => w::WatchKind::WATCH_KIND_NETWORK,
+            "node" | "nodes" => w::WatchKind::WATCH_KIND_NODE,
+            "import" | "imports" => w::WatchKind::WATCH_KIND_IMPORT,
+            "cluster" => w::WatchKind::WATCH_KIND_CLUSTER,
+            "policy" => w::WatchKind::WATCH_KIND_POLICY,
+            "datastore" | "datastores" => w::WatchKind::WATCH_KIND_DATASTORE,
+            other => {
+                println!(
+                    "{} unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy, datastores)",
+                    "Error:".red()
+                );
+                return;
+            }
+        };
+        req.kinds.push(kind.into());
+    }
+    let t = match client.rpc_transport().await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("{} {}", "Error:".red(), e.message);
+            return;
+        }
+    };
+    let svc = w::WatchServiceClient::new(t.clone(), t.config());
     // What was last printed per (kind, id), to skip repeats after a reconnect.
-    let mut last: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+    let mut last: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
     let mut synced_once = false;
     println!("{} {} (Ctrl-C to stop)", "Watching".green(), kinds);
     let watch = async {
         loop {
-            let mut buf = String::new();
-            let mut ended = false;
-            let res = client
-                .stream(&path, |text| {
-                    buf.push_str(text);
-                    while let Some(end) = buf.find("\n\n") {
-                        let block: String = buf.drain(..end + 2).collect();
-                        let (mut event, mut data) = (String::new(), String::new());
-                        for line in block.lines() {
-                            if let Some(v) = line.strip_prefix("event:") {
-                                event = v.trim().to_string();
-                            } else if let Some(v) = line.strip_prefix("data:") {
-                                data.push_str(v.trim_start());
-                            }
-                        }
-                        let v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
-                        let (kind, id) = (v["kind"].as_str().unwrap_or("").to_string(), v["id"].as_str().unwrap_or("").to_string());
-                        match event.as_str() {
-                            "synced" => {
-                                if !synced_once {
-                                    println!("{} {} objects; changes follow", "Synced:".green(), last.len());
-                                    synced_once = true;
-                                }
-                            }
-                            "expired" => ended = true,
-                            "added" | "modified" => {
-                                let (name, what) = watch_summary(&kind, &v["object"]);
-                                let line = format!("{:<8} {:<24} {}", kind, name, what);
-                                if last.get(&(kind.clone(), id.clone())) != Some(&line) {
-                                    if synced_once {
-                                        println!("{}  {}", chrono_now(), line);
-                                    }
-                                    last.insert((kind, id), line);
-                                }
-                            }
-                            "deleted" => {
-                                if let Some(prev) = last.remove(&(kind.clone(), id)) {
-                                    let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
-                                    println!("{}  {:<8} {:<24} {}", chrono_now(), kind, name, "deleted".red());
-                                }
-                            }
-                            _ => {}
+            let mut stream = match svc.watch(req.clone()).await {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), tenancy::rpc_err(e));
+                    return;
+                }
+            };
+            loop {
+                let e: w::WatchResponse = match stream.message().await {
+                    Ok(Some(m)) => m.to_owned_message(),
+                    // The server ended the stream (lifetime, restart): follow on.
+                    Ok(None) | Err(_) => break,
+                };
+                let (kind, id, object) = watch_event(&e);
+                use w::WatchEventType as T;
+                match e.r#type.as_known() {
+                    Some(T::WATCH_EVENT_TYPE_SYNCED) => {
+                        if !synced_once {
+                            println!(
+                                "{} {} objects; changes follow",
+                                "Synced:".green(),
+                                last.len()
+                            );
+                            synced_once = true;
                         }
                     }
-                    !ended
-                })
-                .await;
-            if let Err(e) = res {
-                println!("{} {}", "Error:".red(), e.message);
-                return;
+                    Some(T::WATCH_EVENT_TYPE_EXPIRED) => break,
+                    Some(T::WATCH_EVENT_TYPE_ADDED | T::WATCH_EVENT_TYPE_MODIFIED) => {
+                        let (name, what) = watch_summary(&kind, &object);
+                        let line = format!("{:<8} {:<24} {}", kind, name, what);
+                        if last.get(&(kind.clone(), id.clone())) != Some(&line) {
+                            if synced_once {
+                                println!("{}  {}", chrono_now(), line);
+                            }
+                            last.insert((kind, id), line);
+                        }
+                    }
+                    Some(T::WATCH_EVENT_TYPE_DELETED) => {
+                        if let Some(prev) = last.remove(&(kind.clone(), id)) {
+                            let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
+                            println!(
+                                "{}  {:<8} {:<24} {}",
+                                chrono_now(),
+                                kind,
+                                name,
+                                "deleted".red()
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
-            // The server ended the stream (lifetime, restart): follow on.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     };
@@ -1043,192 +533,53 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// A watch event as the kind's word, the id and the object's proto JSON.
+fn watch_event(
+    e: &glidex_api::proto::glidex::watch::v1::WatchResponse,
+) -> (String, String, serde_json::Value) {
+    use glidex_api::proto::glidex::watch::v1::{
+        __buffa::oneof::watch_response::Object, WatchKind as K,
+    };
+    let kind = match e.kind.as_known() {
+        Some(K::WATCH_KIND_VM) => "vm",
+        Some(K::WATCH_KIND_DISK) => "disk",
+        Some(K::WATCH_KIND_IMAGE) => "image",
+        Some(K::WATCH_KIND_NETWORK) => "network",
+        Some(K::WATCH_KIND_NODE) => "node",
+        Some(K::WATCH_KIND_IMPORT) => "import",
+        Some(K::WATCH_KIND_CLUSTER) => "cluster",
+        Some(K::WATCH_KIND_POLICY) => "policy",
+        Some(K::WATCH_KIND_DATASTORE) => "datastore",
+        _ => "",
+    };
+    let json = |r: Result<serde_json::Value, serde_json::Error>| r.unwrap_or_default();
+    let object = match &e.object {
+        Some(Object::Vm(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Disk(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Image(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Network(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Node(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::ImportPlan(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Cluster(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Policy(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Datastore(v)) => json(serde_json::to_value(v.as_ref())),
+        None => serde_json::Value::Null,
+    };
+    (kind.to_string(), e.id.clone(), object)
+}
+
 /// `HH:MM:SS` (UTC, like `events`), for `watch` lines.
 fn chrono_now() -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let t = now % 86_400;
     format!("{:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
 }
 
 /// After a `DELETE …?wait`: gone (no body), or still being deleted by its
 /// controller (spec/reconciliation.md §6.3), with the reason it waits.
-pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value) {
-    if v.is_null() {
-        println!("{} {}", format!("{} deleted:", kind).green(), name);
-        return;
-    }
-    println!("{} {} (the control plane finishes it)", "Deleting:".yellow(), name);
-    if let Some(ready) = v["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        println!("  {} {}: {}", "Waiting:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
-    }
-}
-
-/// A disk after a write the disk controller carries out (spec/
-/// reconciliation.md §10.1): its state, and what is still pending.
-fn print_disk_result(d: &serde_json::Value) {
-    println!(
-        "  {} {} {} {}",
-        d["name"].as_str().unwrap_or("?").cyan(),
-        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
-        d["format"].as_str().unwrap_or(""),
-        d["status"].as_str().unwrap_or("")
-    );
-    if let Some(ready) = d["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        println!("  {} {}: {}", "Not there yet:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
-    }
-    for w in d["warnings"].as_array().into_iter().flatten() {
-        println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
-    }
-}
-
-async fn handle_disk(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
-    let gib = |s: &str| s.parse::<u64>().map_err(|_| format!("{} is not a whole number of GiB", s));
-    match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, &client.scoped("/disks"), None).await {
-            Ok(disks) if disks.is_empty() => println!("No disks."),
-            Ok(disks) => {
-                let vms = client.list_vms().await.unwrap_or_default();
-                for d in disks {
-                    let vm = d["attached_to"].as_str().map(|id| {
-                        vms.iter().find(|v| v.id == id).map(|v| v.name.clone()).unwrap_or_else(|| id.to_string())
-                    });
-                    let origin = match d["origin"]["kind"].as_str() {
-                        Some("image") => format!("image ({})", d["origin"]["mode"].as_str().unwrap_or("")),
-                        _ => "blank".to_string(),
-                    };
-                    println!(
-                        "  {:<20} {:>9} {:<6} {:<14} {:<7} {}",
-                        d["name"].as_str().unwrap_or("?").cyan(),
-                        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
-                        d["format"].as_str().unwrap_or(""),
-                        origin,
-                        d["status"].as_str().unwrap_or(""),
-                        vm.map(|v| format!("→ {}", v)).unwrap_or_default()
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "show" | "get" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::GET, &format!("/disks/{}", name), None).await {
-                Ok(d) => {
-                    print_disk_result(&d);
-                    println!("  path: {}", d["path"].as_str().unwrap_or(""));
-                    if let Some(b) = d["info"]["backing-filename"].as_str() {
-                        println!("  backing file: {}", b);
-                    }
-                    if d["pending_growpart"] == true {
-                        println!("  root partition grows on next boot");
-                    }
-                    let t = &d["partition_table"];
-                    match t["partitions"].as_array() {
-                        Some(parts) => {
-                            println!("  partitions ({}):", t["kind"].as_str().unwrap_or(""));
-                            for p in parts {
-                                println!(
-                                    "    {} start {:>9} size {:>9} {}{}",
-                                    p["number"],
-                                    format_bytes(p["start_bytes"].as_u64().unwrap_or(0)),
-                                    format_bytes(p["size_bytes"].as_u64().unwrap_or(0)),
-                                    p["type"].as_str().unwrap_or(""),
-                                    if p["is_root"] == true { " (root)" } else { "" }
-                                );
-                            }
-                            println!("  free at end: {}", format_bytes(t["free_tail_bytes"].as_u64().unwrap_or(0)));
-                        }
-                        None => println!("  no partition table"),
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        "create" => {
-            let Some(name) = args.get(1).filter(|a| !a.starts_with("--")) else {
-                println!("{}", usage.yellow());
-                return;
-            };
-            let mut body = serde_json::json!({ "name": name });
-            if let Some(n) = flag_value(args, "--size-gib") {
-                match gib(n) {
-                    Ok(n) => body["size_gib"] = serde_json::json!(n),
-                    Err(e) => return println!("{} {}", "Error:".red(), e),
-                }
-            }
-            if let Some(i) = flag_value(args, "--image") {
-                body["image"] = serde_json::json!(i);
-            }
-            if has_flag(args, "--full") {
-                body["clone"] = serde_json::json!("full");
-            }
-            if has_flag(args, "--raw") {
-                body["format"] = serde_json::json!("raw");
-            }
-            if has_flag(args, "--no-extend") {
-                body["extend_root"] = serde_json::json!(false);
-            }
-            client.scope_body(&mut body);
-            // Making it may wait for its image to download.
-            match client.request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body)).await {
-                Ok(d) => {
-                    println!("{}", "Disk created:".green());
-                    print_disk_result(&d);
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "resize" => match (args.get(1), args.get(2)) {
-            (Some(name), Some(size)) => {
-                let size = match gib(size) {
-                    Ok(n) => n,
-                    Err(e) => return println!("{} {}", "Error:".red(), e),
-                };
-                let mut body = serde_json::json!({ "size_gib": size });
-                if has_flag(args, "--no-extend") {
-                    body["extend_root"] = serde_json::json!(false);
-                }
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize?wait=120", name), Some(body)).await {
-                    Ok(d) => {
-                        println!("{}", "Disk resize:".green());
-                        print_disk_result(&d);
-                    }
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            _ => println!("{}", usage.yellow()),
-        },
-        "extend-root" => match args.get(1) {
-            Some(name) => {
-                let mode = if has_flag(args, "--on-boot") { "on-boot" } else { "offline" };
-                match client
-                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root?wait=120", name), Some(serde_json::json!({ "mode": mode })))
-                    .await
-                {
-                    Ok(d) => print_disk_result(&d),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", usage.yellow()),
-        },
-        "rm" | "delete" => match args.get(1) {
-            Some(name) => {
-                if prompt(&format!("Delete disk {} and its data? [y/N]: ", name)).to_lowercase() != "y" {
-                    println!("Cancelled");
-                    return;
-                }
-                match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/disks/{}", name), None).await {
-                    Ok(serde_json::Value::Null) => println!("{} {}", "Disk deleted:".green(), name),
-                    Ok(_) => println!("{} {} (once the operation on it finishes)", "Deleting:".green(), name),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", usage.yellow()),
-        },
-        _ => println!("{}", usage.yellow()),
-    }
-}
-
 fn print_help() {
     println!("{}", "Available commands:".bold());
     println!("  {}              - List all VMs", "list".cyan());
@@ -1237,20 +588,52 @@ fn print_help() {
         "  {}           - Create a new VM (interactive)",
         "create".cyan()
     );
-    println!("  {}  - Start a VM (waits until it runs; --no-wait returns at once)", "start <name|id>".cyan());
+    println!(
+        "  {}  - Start a VM (waits until it runs; --no-wait returns at once)",
+        "start <name|id>".cyan()
+    );
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
+    println!(
+        "  {} - Place a stopped or lost VM on another node (its disks on shared datastores)",
+        "place <name|id> [--node N]".cyan()
+    );
     println!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
-    println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
-    println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
-    println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
-    println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
-    println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
-    println!("  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster", "cluster".cyan());
-    println!("  {}             - List the cluster's nodes (a standalone host has one)", "nodes".cyan());
+    println!(
+        "  {} - A kernel-boot VM's kernel; change it from the next start",
+        "kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]".cyan()
+    );
+    println!(
+        "  {} - Connect to VM console (interactive)",
+        "connect <name|id>".cyan()
+    );
+    println!(
+        "  {}     - Show VM serial console log",
+        "log <name|id>".cyan()
+    );
+    println!(
+        "  {}  - What happened to a VM (starts, exits, restarts, adoptions)",
+        "events <name|id>".cyan()
+    );
+    println!(
+        "  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)",
+        "watch [vms,disks,images,networks]".cyan()
+    );
+    println!(
+        "  {} - Delete a VM (and its own root disk)",
+        "delete <name|id> [--keep-disk]".cyan()
+    );
+    println!(
+        "  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster",
+        "cluster".cyan()
+    );
+    println!(
+        "  {}             - List the cluster's nodes (a standalone host has one)",
+        "nodes".cyan()
+    );
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
@@ -1264,51 +647,182 @@ fn print_help() {
         "  {} - Detach PCI device from VM",
         "detach-device <name|id> <path>".cyan()
     );
-    println!("  {}       - List stored guest login credentials", "credentials".cyan());
-    println!("  {}    - Add a credential (interactive)", "credential-add".cyan());
-    println!("  {} - Change a credential's password", "credential-passwd <user>".cyan());
-    println!("  {} - Replace a credential's SSH keys", "credential-keys <user>".cyan());
+    println!(
+        "  {}       - List stored guest login credentials",
+        "credentials".cyan()
+    );
+    println!(
+        "  {}    - Add a credential (interactive)",
+        "credential-add".cyan()
+    );
+    println!(
+        "  {} - Change a credential's password",
+        "credential-passwd <user>".cyan()
+    );
+    println!(
+        "  {} - Replace a credential's SSH keys",
+        "credential-keys <user>".cyan()
+    );
     println!("  {}  - Delete a credential", "credential-rm <user>".cyan());
     println!("  {}          - List networks", "networks".cyan());
-    println!("  {} - Create a network (default: NAT)", "network-add <name> [--nat|--isolated|--bridged <br>]".cyan());
+    println!(
+        "  {} - Create a network (default: NAT)",
+        "network-add <name> [--nat|--isolated|--bridged <br>]".cyan()
+    );
     println!("  {}  - Delete a network", "network-rm <name>".cyan());
     println!("  {}           - List glidex OVS bridges", "bridges".cyan());
     println!("  {}  - List a bridge's uplinks", "uplinks <bridge>".cyan());
-    println!("  {} - Add an uplink (kernel/AF_XDP/DPDK)", "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan());
-    println!("  {} - Set up again an uplink rolled back at start", "uplink-reapply <bridge> <name>".cyan());
-    println!("  {} - Remove an uplink, restoring the NIC", "uplink-rm <bridge> <name>".cyan());
+    println!(
+        "  {} - Add an uplink (kernel/AF_XDP/DPDK)",
+        "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan()
+    );
+    println!(
+        "  {} - Set up again an uplink rolled back at start",
+        "uplink-reapply <bridge> <name>".cyan()
+    );
+    println!(
+        "  {} - Remove an uplink, restoring the NIC",
+        "uplink-rm <bridge> <name>".cyan()
+    );
     println!("  {}        - Host networking status", "ovs status".cyan());
-    println!("  {} - Install Open vSwitch", "ovs install [--profile kernel|dpdk] [--force]".cyan());
-    println!("  {}     - Cloud images in the built-in catalog", "image catalog".cyan());
+    println!(
+        "  {} - Install Open vSwitch",
+        "ovs install [--profile kernel|dpdk] [--force]".cyan()
+    );
+    println!(
+        "  {}     - Cloud images in the built-in catalog",
+        "image catalog".cyan()
+    );
     println!("  {}        - List downloaded images", "image list".cyan());
-    println!("  {} - Download and verify an image", "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan());
-    println!("  {} - Pull UEFI firmware VMs boot through", "image pull --firmware <key> [--name N]".cyan());
-    println!("  {} - Download firmware (QEMU: with its variable store)", "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan());
+    println!(
+        "  {} - Download and verify an image",
+        "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan()
+    );
+    println!(
+        "  {} - Pull UEFI firmware VMs boot through",
+        "image pull --firmware <key> [--name N]".cyan()
+    );
+    println!(
+        "  {} - Download firmware (QEMU: with its variable store)",
+        "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan()
+    );
+    println!(
+        "  {} - Pull a kernel image, or take it from a disk image",
+        "image pull <url> --kernel [--initrd-url U] [--cmdline C] | --kernel-from <image>".cyan()
+    );
+    println!(
+        "  {} - Take the kernel out of a disk image",
+        "image extract-kernel <name|id>".cyan()
+    );
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
+    println!(
+        "  {}    - Datastores, and what each node finds",
+        "datastore list".cyan()
+    );
+    println!(
+        "  {} - A datastore and each node's view",
+        "datastore show <name|id>".cyan()
+    );
+    println!(
+        "  {} - Register a directory under /srv/glidex",
+        "datastore create <name> --path P [--shared] [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+            .cyan()
+    );
+    println!(
+        "  {} - Change paths, nodes, the default, overcommit",
+        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit]"
+            .cyan()
+    );
+    println!(
+        "  {}  - Delete a datastore no disk is on",
+        "datastore rm <name|id>".cyan()
+    );
     println!("  {}         - List disks", "disk list".cyan());
-    println!("  {}  - Disk details and partitions", "disk show <name|id>".cyan());
-    println!("  {} - Create a disk", "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]".cyan());
-    println!("  {} - Grow or shrink a disk", "disk resize <disk> <GiB> [--no-extend]".cyan());
-    println!("  {} - Grow the root partition", "disk extend-root <disk> [--on-boot]".cyan());
+    println!(
+        "  {}  - Disk details and partitions",
+        "disk show <name|id>".cyan()
+    );
+    println!(
+        "  {} - Create a disk",
+        "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]".cyan()
+    );
+    println!(
+        "  {} - Grow or shrink a disk",
+        "disk resize <disk> <GiB> [--no-extend]".cyan()
+    );
+    println!(
+        "  {} - Move a disk to another datastore (offline)",
+        "disk move <disk> --datastore D [--node N] [--flatten]".cyan()
+    );
+    println!(
+        "  {} - Grow the root partition",
+        "disk extend-root <disk> [--on-boot]".cyan()
+    );
     println!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
     println!("  {}            - Check API server health", "health".cyan());
     println!();
     println!("{}", "Access control:".bold());
-    println!("  {}            - Who you are: method, teams, roles", "whoami".cyan());
-    println!("  {} - Log in over TCP (OIDC device flow or a pasted token)", "login --oidc | --token".cyan());
+    println!(
+        "  {}            - Who you are: method, teams, roles",
+        "whoami".cyan()
+    );
+    println!(
+        "  {} - Log in over TCP (OIDC device flow or a pasted token)",
+        "login --oidc [--connector ID] | --token".cyan()
+    );
     println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
-    println!("  {} - Login profiles for remote control planes: target, trust and token of a server, under a name", "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove".cyan());
-    println!("  {}                - Print the web UI address", "ui".cyan());
-    println!("  {} - Access tokens", "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>".cyan());
-    println!("  {} - Projects", "project list | show <p> | create <name> [--description D] | delete <p>".cyan());
-    println!("  {} - Quotas (none = unlimited)", "project quota <p> vms=10 memory_mib=none ...".cyan());
+    println!(
+        "  {} - Login profiles for remote control planes: target, trust and token of a server, under a name",
+        "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove"
+            .cyan()
+    );
+    println!(
+        "  {}                - Print the web UI address",
+        "ui".cyan()
+    );
+    println!(
+        "  {} - Access tokens",
+        "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>"
+            .cyan()
+    );
+    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|delete <t> | members|add-member|remove-member …".cyan());
+    println!(
+        "  {} - Tenants admitted on this cluster, and their caps",
+        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t>".cyan()
+    );
+    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
+    println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
+    println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
+    println!(
+        "  {} - Projects",
+        "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
+    );
+    println!(
+        "  {} - Quotas (none = unlimited)",
+        "project quota <p> vms=10 memory_mib=none ...".cyan()
+    );
     println!("  {} - Set your default project", "project use <p>".cyan());
-    println!("  {} - Project role bindings", "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan());
-    println!("  {} - Host role bindings", "system-binding list | add <role> <principal> | remove <id>".cyan());
-    println!("  {}         - Users and their identities", "user list".cyan());
-    println!("  {} - Teams", "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan());
+    println!(
+        "  {} - Project role bindings",
+        "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan()
+    );
+    println!(
+        "  {} - Host role bindings",
+        "system-binding list [--node N] | add <role> <principal> [--node N] | remove <id>".cyan()
+    );
+    println!(
+        "  {}         - Users and their identities",
+        "user list".cyan()
+    );
+    println!(
+        "  {} - Teams",
+        "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan()
+    );
     println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
-    println!("  {} - Audit log", "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan());
+    println!(
+        "  {} - Audit log",
+        "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan()
+    );
     println!(
         "  {} - Resource usage (default: this billing month by project)",
         "usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]".cyan()
@@ -1317,10 +831,23 @@ fn print_help() {
         "  {} - Average, 30-second peak and 95th percentile per billing month",
         "usage bandwidth|disk-io|compute [--month YYYY-MM] [--by project,vm,nic,network|disk] [--csv]".cyan()
     );
-    println!("  {} - A VM's current CPU, memory, NIC and disk rates", "stats <vm>".cyan());
-    println!("  {} - 5-minute series with the 95th percentile", "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan());
+    println!(
+        "  {} - A VM's current CPU, memory, NIC and disk rates",
+        "stats <vm>".cyan()
+    );
+    println!(
+        "  {} - 5-minute series with the 95th percentile",
+        "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan()
+    );
     println!("  {} - Project networks", "network create <name> --project P [--isolated] [--vhost-user] | share <net> <project-id> | unshare <net> <project-id>".cyan());
-    println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
+    println!(
+        "  {} - Shares offered to a project",
+        "network shares <p> | accept <p> <net> | leave <p> <net>".cyan()
+    );
+    println!(
+        "  {} - A network's id, mode, grants or shares",
+        "network show <net>".cyan()
+    );
     println!();
     println!("  {}              - Show this help", "help".cyan());
     println!("  {}              - Exit the CLI", "exit".cyan());
@@ -1401,8 +928,7 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
             Some(rest) => format!("{}/{}", home, rest),
             None => path.to_string(),
         };
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
+        let contents = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
         if contents.contains("PRIVATE KEY") {
             return Err(format!(
                 "{} is a private key; give the matching .pub file instead",
@@ -1422,8 +948,10 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
 
 /// The signed-in user's name (the login name for local accounts).
 async fn signed_in_name(client: &CliClient) -> Option<String> {
-    let w: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.ok()?;
-    w["user"]["display_name"].as_str().filter(|n| !n.is_empty()).map(str::to_string)
+    let w = access::who_am_i(client).await.ok()?;
+    access::user_name(&w)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
 }
 
 /// The login-credential answer: empty takes the default (if any),
@@ -1447,12 +975,19 @@ fn own_public_key_files() -> Vec<String> {
 
 fn public_key_files_in(home: &std::path::Path) -> Vec<String> {
     let dir = home.join(".ssh");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut files: Vec<String> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "pub"))
         .filter(|p| read_public_key_files(&p.to_string_lossy()).is_ok_and(|k| !k.is_empty()))
-        .map(|p| format!("~/.ssh/{}", p.file_name().unwrap_or_default().to_string_lossy()))
+        .map(|p| {
+            format!(
+                "~/.ssh/{}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })
         .collect();
     files.sort();
     files
@@ -1469,104 +1004,211 @@ fn chosen_key_files(answer: &str, defaults: &[String]) -> Option<String> {
     }
 }
 
-async fn handle_credential_add(client: &CliClient) {
-    let me = std::env::var("USER").unwrap_or_default();
-    let username = if me.is_empty() {
-        prompt("Username: ")
-    } else {
-        let u = prompt(&format!("Username [{}]: ", me));
-        if u.is_empty() { me } else { u }
-    };
-    if username.is_empty() {
-        println!("{}", "Error: username is required".red());
-        return;
-    }
-    println!("{}", "Leave the password empty for SSH-key-only login.".dimmed());
-    let password = match prompt_new_password(true) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-    // Offer your own ~/.ssh/*.pub by default.
-    let defaults = own_public_key_files();
-    let question = if defaults.is_empty() {
-        "SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ".to_string()
-    } else {
-        format!("SSH public key files (comma-separated; 'none' for no keys) [{}]: ", defaults.join(", "))
-    };
-    let keys = match chosen_key_files(&prompt_path(&question), &defaults)
-        .map(|s| read_public_key_files(&s))
-        .transpose()
-    {
-        Ok(k) => k.unwrap_or_default(),
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-    let request = CreateCredentialRequest {
-        username,
-        password,
-        ssh_authorized_keys: keys,
-    };
-    match client.create_credential(&request).await {
-        Ok(c) => println!(
-            "{} {} (password: {}, SSH keys: {})",
-            "Credential created:".green(),
-            c.username.yellow(),
-            if c.has_password { "set" } else { "none" },
-            c.ssh_authorized_keys.len()
-        ),
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
-async fn handle_credential_update(client: &CliClient, username: &str, request: UpdateCredentialRequest) {
-    match client.update_credential(username, &request).await {
-        Ok(c) => {
-            println!("{} {}", "Credential updated:".green(), c.username.yellow());
-            println!(
-                "{} Changes apply to VMs on their first boot only; running or already-provisioned VMs keep their current login.",
-                "Note:".dimmed()
-            );
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
-    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
-    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node", "cluster",
-    "attach-device", "detach-device", "credentials", "creds", "credential-add",
-    "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
-    "network-rm", "bridges", "uplinks", "uplink-add", "uplink-reapply", "uplink-rm", "ovs", "health",
-    "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
-    "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
-    "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "compute", "network",
+    "help",
+    "exit",
+    "quit",
+    "list",
+    "ls",
+    "get",
+    "create",
+    "start",
+    "place",
+    "stop",
+    "pause",
+    "kernel",
+    "events",
+    "watch",
+    "connect",
+    "console",
+    "attach",
+    "log",
+    "logs",
+    "delete",
+    "rm",
+    "pci",
+    "pci-devices",
+    "nodes",
+    "node",
+    "cluster",
+    "attach-device",
+    "detach-device",
+    "credentials",
+    "creds",
+    "credential-add",
+    "credential-passwd",
+    "credential-keys",
+    "credential-rm",
+    "networks",
+    "network-add",
+    "network-rm",
+    "bridges",
+    "uplinks",
+    "uplink-add",
+    "uplink-reapply",
+    "uplink-rm",
+    "ovs",
+    "health",
+    "image",
+    "images",
+    "disk",
+    "disks",
+    "datastore",
+    "datastores",
+    "whoami",
+    "login",
+    "logout",
+    "ui",
+    "token",
+    "tokens",
+    "project",
+    "projects",
+    "binding",
+    "bindings",
+    "system-binding",
+    "user",
+    "users",
+    "team",
+    "teams",
+    "policy",
+    "policies",
+    "audit",
+    "usage",
+    "stats",
+    "bandwidth",
+    "io",
+    "compute",
+    "network",
     "auth",
+    "tenant",
+    "tenants",
+    "admission",
+    "admissions",
+    "connector",
+    "connectors",
+    "invite",
+    "federation",
 ];
 
 /// Subcommands offered by Tab after these commands.
 const SUBCOMMANDS: &[(&str, &[&str])] = &[
-    ("image", &["catalog", "list", "pull", "rm"]),
-    ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
+    (
+        "image",
+        &["catalog", "list", "pull", "extract-kernel", "rm"],
+    ),
+    ("datastore", &["list", "show", "create", "set", "rm"]),
+    (
+        "tenant",
+        &[
+            "list",
+            "show",
+            "create",
+            "rename",
+            "suspend",
+            "resume",
+            "delete",
+            "members",
+            "add-member",
+            "remove-member",
+            "bindings",
+            "bind",
+            "unbind",
+            "device-pools",
+            "device-pool",
+        ],
+    ),
+    ("admission", &["list", "set", "remove"]),
+    (
+        "connector",
+        &["list", "show", "add", "update", "secret", "test", "remove"],
+    ),
+    ("invite", &["list", "create", "revoke"]),
+    (
+        "federation",
+        &["list", "show", "add", "enable", "disable", "remove"],
+    ),
+    (
+        "disk",
+        &[
+            "list",
+            "show",
+            "create",
+            "resize",
+            "move",
+            "extend-root",
+            "rm",
+        ],
+    ),
     ("ovs", &["status", "install", "dpdk-init"]),
-    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave", "dissolve"]),
-    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach", "import"]),
+    (
+        "cluster",
+        &[
+            "init",
+            "join",
+            "join-token",
+            "status",
+            "promote",
+            "snapshot",
+            "rotate-ca",
+            "rotate-secrets-key",
+            "rejoin",
+            "leave",
+            "dissolve",
+        ],
+    ),
+    (
+        "node",
+        &[
+            "drain",
+            "undrain",
+            "remove",
+            "forget",
+            "purge",
+            "rejoin-token",
+            "detach",
+            "import",
+            "topology",
+            "prepare-device",
+            "release-device",
+            "sriov",
+            "cordon-device",
+            "uncordon-device",
+        ],
+    ),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
-    ("auth", &["login", "logout", "status", "use", "profiles", "trust", "token", "whoami"]),
+    (
+        "auth",
+        &[
+            "login", "logout", "status", "use", "profiles", "trust", "token", "whoami",
+        ],
+    ),
     ("token", &["list", "create", "revoke"]),
-    ("project", &["list", "show", "create", "delete", "quota", "use"]),
+    (
+        "project",
+        &["list", "show", "create", "delete", "quota", "use"],
+    ),
     ("binding", &["list", "add", "remove"]),
     ("system-binding", &["list", "add", "remove"]),
     ("user", &["list"]),
-    ("team", &["list", "create", "delete", "add-member", "remove-member"]),
-    ("policy", &["list", "show", "put", "delete", "validate", "history", "reload"]),
-    ("network", &["list", "create", "rm", "share", "unshare", "shares", "accept", "leave"]),
+    (
+        "team",
+        &["list", "create", "delete", "add-member", "remove-member"],
+    ),
+    (
+        "policy",
+        &[
+            "list", "show", "put", "delete", "validate", "history", "reload",
+        ],
+    ),
+    (
+        "network",
+        &[
+            "list", "show", "create", "rm", "grant", "share", "unshare", "shares", "accept",
+            "leave",
+        ],
+    ),
 ];
 
 /// Commands whose argument at this (0-based, after the command) index is a
@@ -1578,6 +1220,7 @@ fn subcommands(cmd: &str) -> &'static [&'static str] {
     let cmd = match cmd {
         "images" => "image",
         "disks" => "disk",
+        "datastores" => "datastore",
         "tokens" => "token",
         "projects" => "project",
         "bindings" => "binding",
@@ -1586,7 +1229,11 @@ fn subcommands(cmd: &str) -> &'static [&'static str] {
         "policies" => "policy",
         c => c,
     };
-    SUBCOMMANDS.iter().find(|(c, _)| *c == cmd).map(|(_, s)| *s).unwrap_or(&[])
+    SUBCOMMANDS
+        .iter()
+        .find(|(c, _)| *c == cmd)
+        .map(|(_, s)| *s)
+        .unwrap_or(&[])
 }
 
 /// What Tab completes in the line being edited.
@@ -1678,13 +1325,20 @@ fn complete_command_line(
         words.len() - 2
     };
     if arg_index == 0 {
-        let prefix = if starting_new_word { "" } else { words[words.len() - 1] };
+        let prefix = if starting_new_word {
+            ""
+        } else {
+            words[words.len() - 1]
+        };
         let subs = subcommands(words[0]);
         if !subs.is_empty() {
             let candidates = subs
                 .iter()
                 .filter(|c| c.starts_with(prefix))
-                .map(|c| Pair { display: c.to_string(), replacement: format!("{} ", c) })
+                .map(|c| Pair {
+                    display: c.to_string(),
+                    replacement: format!("{} ", c),
+                })
                 .collect();
             return Ok((pos - prefix.len(), candidates));
         }
@@ -1704,7 +1358,8 @@ fn complete_path_list(
 ) -> rustyline::Result<(usize, Vec<Pair>)> {
     let before = &line[..pos];
     let segment_start = before.rfind(',').map(|i| i + 1).unwrap_or(0);
-    let segment_start = segment_start + (before[segment_start..].len() - before[segment_start..].trim_start().len());
+    let segment_start = segment_start
+        + (before[segment_start..].len() - before[segment_start..].trim_start().len());
     let (start, candidates) = files.complete_path(&before[segment_start..], pos - segment_start)?;
     Ok((segment_start + start, candidates))
 }
@@ -1729,11 +1384,7 @@ fn prompt_path(msg: &str) -> String {
 
 fn prompt_path_optional(msg: &str) -> Option<String> {
     let input = prompt_path(msg);
-    if input.is_empty() {
-        None
-    } else {
-        Some(input)
-    }
+    if input.is_empty() { None } else { Some(input) }
 }
 
 fn prompt(msg: &str) -> String {
@@ -1746,331 +1397,7 @@ fn prompt(msg: &str) -> String {
 
 fn prompt_optional(msg: &str) -> Option<String> {
     let input = prompt(msg);
-    if input.is_empty() {
-        None
-    } else {
-        Some(input)
-    }
-}
-
-async fn handle_create(client: &CliClient) {
-    println!("{}", "Create new VM".bold());
-    println!("{}", "-".repeat(40));
-
-    let name = prompt("VM name: ");
-    if name.is_empty() {
-        println!("{}", "Error: VM name is required".red());
-        return;
-    }
-
-    let vcpu_count: u8 = prompt("vCPU count [1]: ").parse().unwrap_or(1);
-
-    let mem_size_mib: u32 = prompt("Memory (MiB) [512]: ").parse().unwrap_or(512);
-
-    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
-        .to_lowercase()
-        .as_str()
-    {
-        "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => Some("cloudhypervisor".to_string()),
-        "qemu" | "q" => Some("qemu".to_string()),
-        other => {
-            println!(
-                "{} Unknown hypervisor '{}', using cloudhypervisor",
-                "Warning:".yellow(),
-                other
-            );
-            Some("cloudhypervisor".to_string())
-        }
-    };
-
-    // A disk image boots through UEFI firmware: a firmware image built for
-    // the hypervisor (spec images.md §7), or a host path (admins only).
-    let (firmware, firmware_path) = {
-        let ty = match hypervisor.as_deref() {
-            Some("qemu") => "qemu",
-            _ => "cloudhypervisor",
-        };
-        let ready: Vec<String> = client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .rev() // newest first
-            .filter(|i| i["kind"] == "firmware" && i["hypervisor"] == ty && i["status"]["state"] == "ready" && i["deleting"] != true)
-            .filter_map(|i| i["name"].as_str().map(str::to_string))
-            .collect();
-        if ready.is_empty() {
-            let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
-            println!("{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot", "Note:".yellow(), ty, key);
-        }
-        let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
-        let options = if ready.is_empty() { String::new() } else { format!("{}, ", ready.join(", ")) };
-        match prompt_path(&format!("UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ", options, default)).as_str() {
-            "" if default == "none" => (None, None),
-            "" => (Some(default), None),
-            "none" => (None, None),
-            s if s.starts_with('/') => (None, Some(s.to_string())),
-            s => (Some(s.to_string()), None),
-        }
-    };
-    let firmware_boot = firmware.is_some() || firmware_path.is_some();
-
-    let kernel_image_path = if firmware_boot {
-        String::new()
-    } else {
-        let path = prompt_path("Kernel image path: ");
-        if path.is_empty() {
-            println!("{}", "Error: kernel image path is required for kernel boot".red());
-            return;
-        }
-        path
-    };
-
-    // Boot disk. Firmware boot offers managed images first (spec
-    // images.md §10); kernel boot takes a bare root filesystem image.
-    let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) = (String::new(), None, None, None);
-    let mut choice = "path".to_string();
-    if firmware_boot {
-        let ready: Vec<String> = client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|i| i["status"]["state"] == "ready" && i["kind"] != "firmware")
-            .filter_map(|i| i["name"].as_str().map(str::to_string))
-            .collect();
-        let default = if ready.is_empty() { "path" } else { "image" };
-        choice = prompt(&format!("Boot disk from [image/disk/path] [{}]: ", default)).to_lowercase();
-        if choice.is_empty() {
-            choice = default.to_string();
-        }
-        match choice.as_str() {
-            "image" | "i" => {
-                if ready.is_empty() {
-                    println!("{}", "Error: no downloaded images; pull one with 'image pull <key>'".red());
-                    return;
-                }
-                let pick = prompt(&format!("Image ({}) [{}]: ", ready.join(", "), ready[0]));
-                image = Some(if pick.is_empty() { ready[0].clone() } else { pick });
-                root_disk_size_gib = match prompt("Root disk size in GiB [10]: ").as_str() {
-                    "" => None,
-                    s => match s.parse::<u64>() {
-                        Ok(n) => Some(n),
-                        Err(_) => {
-                            println!("{}", "Error: size must be a whole number of GiB".red());
-                            return;
-                        }
-                    },
-                };
-            }
-            "disk" | "d" => {
-                let d = prompt("Existing disk (name or id; see 'disk list'): ");
-                if d.is_empty() {
-                    println!("{}", "Error: a disk is required".red());
-                    return;
-                }
-                root_disk = Some(d);
-            }
-            _ => choice = "path".into(),
-        }
-    }
-    if choice == "path" {
-        // Firmware boot needs a disk with its own bootloader (e.g. a raw
-        // distro cloud image); kernel boot takes a bare root filesystem image.
-        let rootfs_prompt = if firmware_boot {
-            "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
-        } else {
-            "Root filesystem path: "
-        };
-        rootfs_path = prompt_path(rootfs_prompt);
-        if rootfs_path.is_empty() {
-            println!("{}", "Error: disk image path is required".red());
-            return;
-        }
-    }
-    let data_disks = prompt_optional("Data disks (optional, comma-separated disk names): ").map(|s| {
-        s.split(',').map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect::<Vec<_>>()
-    });
-
-    let cloud_init_path = if firmware_boot {
-        prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
-    } else {
-        None
-    };
-
-    // A stored credential is provisioned through the generated seed only.
-    let credential = if firmware_boot && cloud_init_path.is_none() {
-        let names: Vec<String> = client
-            .list_credentials()
-            .await
-            .map(|cs| cs.into_iter().map(|c| c.username).collect())
-            .unwrap_or_default();
-        if names.is_empty() {
-            println!(
-                "{} no login available: this project has no credentials, so the VM will have no way to log in (add one with 'credential-add').",
-                "Login credential:".dimmed()
-            );
-            None
-        } else {
-            // Default to the signed-in user's own credential, if the
-            // project has one by that name.
-            let mine = signed_in_name(client).await.filter(|n| names.contains(n));
-            let answer = match &mine {
-                Some(m) => prompt(&format!(
-                    "Login credential (one of: {}; 'none' for no login) [{}]: ",
-                    names.join(", "),
-                    m
-                )),
-                None => prompt(&format!("Login credential (one of: {}; empty: none, no login): ", names.join(", "))),
-            };
-            credential_choice(&answer, mine.as_deref())
-        }
-    } else {
-        None
-    };
-
-    let kernel_args = if firmware_boot {
-        None
-    } else {
-        prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
-    };
-
-    // Networks: offer the ones that exist.
-    let networks = {
-        let names: Vec<String> = client
-            .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
-            .await
-            .map(|ns| ns.into_iter().map(|n| n.name).collect())
-            .unwrap_or_default();
-        if names.is_empty() {
-            None
-        } else {
-            let default = if names.iter().any(|n| n == "default") { "default" } else { "none" };
-            let answer = prompt(&format!(
-                "Networks (comma-separated; available: {}; 'none' for no NIC) [{}]: ",
-                names.join(", "),
-                default
-            ));
-            let answer = if answer.is_empty() { default.to_string() } else { answer };
-            if answer == "none" {
-                None
-            } else {
-                Some(
-                    answer
-                        .split(',')
-                        .map(|n| n.trim())
-                        .filter(|n| !n.is_empty())
-                        .map(|n| NetworkAttachmentReq { network: n.to_string() })
-                        .collect::<Vec<_>>(),
-                )
-                .filter(|v| !v.is_empty())
-            }
-        }
-    };
-
-    let vfio_devices =
-        prompt_path_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ")
-            .map(|s| {
-                s.split(',')
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .filter(|v| !v.is_empty());
-
-    let request = CreateVmRequest {
-        name,
-        vcpu_count,
-        mem_size_mib,
-        kernel_image_path,
-        firmware,
-        firmware_path,
-        cloud_init_path,
-        credential,
-        rootfs_path,
-        image,
-        root_disk_size_gib,
-        root_disk,
-        data_disks: data_disks.filter(|v| !v.is_empty()),
-        kernel_args,
-        hypervisor,
-        vfio_devices,
-        networks,
-    };
-
-    match client.create_vm(request).await {
-        Ok(vm) => {
-            println!("{}", "VM created successfully!".green());
-            println!("  ID: {}", vm.id.yellow());
-            println!("  Name: {}", vm.name);
-            println!("  State: {}", vm.state);
-            println!("  Hypervisor: {}", vm.hypervisor);
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
-fn format_state(state: &str) -> String {
-    match state {
-        "running" => state.green().to_string(),
-        "stopped" => state.red().to_string(),
-        "paused" => state.yellow().to_string(),
-        "created" => state.blue().to_string(),
-        "failed" | "unknown" => state.red().bold().to_string(),
-        _ => state.to_string(),
-    }
-}
-
-/// `state`, plus `→ desired` while the VM is still getting there.
-fn format_vm_state(vm: &VmResponse) -> String {
-    let settled = match vm.desired_state.as_str() {
-        "" => true,
-        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
-        d => d == vm.state,
-    };
-    if settled {
-        format_state(&vm.state)
-    } else {
-        format!("{} → {}", format_state(&vm.state), vm.desired_state)
-    }
-}
-
-/// `format_vm_state` without colours, for tables.
-fn plain_vm_state(vm: &VmResponse) -> String {
-    let settled = match vm.desired_state.as_str() {
-        "" => true,
-        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
-        d => d == vm.state,
-    };
-    if settled {
-        vm.state.clone()
-    } else {
-        format!("{} → {}", vm.state, vm.desired_state)
-    }
-}
-
-/// What the controller says is in the way (the `Ready` condition), if
-/// the VM has not converged.
-fn not_ready_reason(vm: &VmResponse) -> Option<String> {
-    let ready = vm.conditions.iter().find(|c| c["kind"] == "Ready")?;
-    if ready["status"] == "True" {
-        return None;
-    }
-    let msg = ready["message"].as_str().unwrap_or("");
-    Some(format!("{}{}", ready["reason"].as_str().unwrap_or(""), if msg.is_empty() { String::new() } else { format!(": {}", msg) }))
-}
-
-/// How long lifecycle commands wait for the VM to get there, or `None`
-/// with `--no-wait` (spec/reconciliation.md §12.3).
-fn wait_secs(args: &[&str]) -> Option<u64> {
-    (!has_flag(args, "--no-wait")).then_some(60)
-}
-
-fn print_lifecycle_result(vm: &VmResponse) {
-    println!("{} VM {} is now {}", "Success:".green(), vm.name, format_vm_state(vm));
-    if let Some(r) = not_ready_reason(vm) {
-        println!("  {} {}", "Not there yet:".yellow(), r);
-    }
+    if input.is_empty() { None } else { Some(input) }
 }
 
 async fn handle_command(line: &str, client: &CliClient) -> bool {
@@ -2095,145 +1422,14 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "exit" | "quit" | "q" => return false,
 
-        "list" | "ls" => match client.list_vms().await {
-            Ok(vms) => {
-                if vms.is_empty() {
-                    println!("{}", "No VMs found".yellow());
-                } else {
-                    let names = project_names(client).await;
-                    let rows: Vec<VmRow> = vms
-                        .into_iter()
-                        .map(|vm| VmRow {
-                            state: plain_vm_state(&vm),
-                            project: names.get(&vm.project).cloned().unwrap_or(vm.project),
-                            node: vm.node.unwrap_or_default(),
-                            id: vm.id,
-                            name: vm.name,
-                            vcpu_count: vm.vcpu_count,
-                            mem_size_mib: vm.mem_size_mib,
-                            hypervisor: vm.hypervisor,
-                        })
-                        .collect();
-                    println!("{}", Table::new(rows));
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-
-        "get" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: get <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.get_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!("{}", "VM Details".bold());
-                    println!("{}", "-".repeat(40));
-                    println!("  ID:         {}", vm.id.yellow());
-                    println!("  Name:       {}", vm.name);
-                    let names = project_names(client).await;
-                    println!("  Project:    {}", names.get(&vm.project).map(|n| format!("{} ({})", n, vm.project)).unwrap_or(vm.project.clone()));
-                    println!("  State:      {}", format_vm_state(&vm));
-                    if let Some(r) = not_ready_reason(&vm) {
-                        println!("  Waiting:    {}", r);
-                    }
-                    if let Some(e) = &vm.last_exit {
-                        println!("  Last exit:  {} ({})", e["cause"].as_str().unwrap_or("?"), e["instance_id"].as_str().unwrap_or(""));
-                    }
-                    println!("  Hypervisor: {}", vm.hypervisor);
-                    println!("  vCPUs:      {}", vm.vcpu_count);
-                    println!("  Memory:     {} MiB", vm.mem_size_mib);
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO:       {}", vm.vfio_devices.join(", "));
-                    }
-                    for (i, nic) in vm.nics.iter().enumerate() {
-                        println!(
-                            "  NIC {}:      {} {} {}{}",
-                            i,
-                            nic.network.cyan(),
-                            nic.mac,
-                            nic.ipv4.as_deref().map(|ip| ip.green().to_string()).unwrap_or_else(|| "-".dimmed().to_string()),
-                            nic.port.as_deref().map(|p| format!(" ({})", p)).unwrap_or_default()
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "create" => handle_create(client).await,
-
-        "start" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: start <name|id> [--no-wait]".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.start_vm(&vm_id, wait_secs(&parts[2..])).await {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "stop" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow());
-                return true;
-            }
-            let flags: Vec<&str> = parts[2..].iter().copied().filter(|p| *p != "--no-wait").collect();
-            let graceful = match graceful_stop_secs(&flags) {
-                Ok(g) => g,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            if let Some(secs) = graceful {
-                println!("Pressing the power button; waiting up to {} s for the guest to shut down...", secs);
-            }
-            match client.stop_vm(&vm_id, graceful, wait_secs(&parts[2..])).await {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "pause" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: pause <name|id> [--no-wait]".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.pause_vm(&vm_id, wait_secs(&parts[2..])).await {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "list" | "ls" => vm::list(client).await,
+        "get" => vm::get(client, &parts[1..]).await,
+        "create" => vm::create(client).await,
+        "start" => vm::start(client, &parts[1..]).await,
+        "stop" => vm::stop(client, &parts[1..]).await,
+        "place" => vm::place(client, &parts[1..]).await,
+        "pause" => vm::pause(client, &parts[1..]).await,
+        "kernel" => vm::kernel(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
@@ -2250,35 +1446,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             handle_connect(client, &vm_id).await;
         }
 
-        "events" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: events <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.vm_events(&vm_id).await {
-                Ok(v) => {
-                    for e in v["events"].as_array().into_iter().flatten() {
-                        let reason = e["reason"].as_str().unwrap_or("");
-                        let reason = if e["kind"] == "warning" { reason.yellow().to_string() } else { reason.to_string() };
-                        println!(
-                            "{}  {:<12} {:<18} {}",
-                            format_unix_time(e["at"].as_u64().unwrap_or(0)),
-                            e["actor"].as_str().unwrap_or(""),
-                            reason,
-                            e["message"].as_str().unwrap_or("")
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "events" => vm::events(client, &parts[1..]).await,
 
         "watch" => handle_watch(client, &parts[1..]).await,
 
@@ -2297,383 +1465,83 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             handle_log(client, &vm_id).await;
         }
 
-        "delete" | "rm" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: delete <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            let keep_disk = has_flag(&parts[2..], "--keep-disk");
-            let confirm = prompt(&format!(
-                "Are you sure you want to delete VM {}{}? [y/N]: ",
-                parts[1],
-                if keep_disk { "" } else { " (and a root disk created for it)" }
-            ));
-            if confirm.to_lowercase() == "y" {
-                match client.delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..])).await {
-                    Ok(()) => println!("{} VM deleted", "Success:".green()),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            } else {
-                println!("Cancelled");
-            }
+        "delete" | "rm" => vm::delete(client, &parts[1..]).await,
+
+        "nodes" | "node" => cluster::node(client, &parts[1..]).await,
+
+        "pci" | "pci-devices" => host::pci(client, &parts[1..]).await,
+
+        "attach-device" => vm::device(client, true, &parts[1..]).await,
+        "detach-device" => vm::device(client, false, &parts[1..]).await,
+
+        "credentials" | "creds" => storage::credentials(client).await,
+
+        "credential-add" | "cred-add" => storage::credential_add(client).await,
+
+        "credential-passwd" | "cred-passwd" => {
+            storage::credential_passwd(client, parts.get(1).copied()).await
         }
 
-        "nodes" | "node" if matches!(parts.get(1), Some(&"drain") | Some(&"undrain")) => {
-            let Some(id) = parts.get(2) else {
-                println!("{}", format!("Usage: node {} <node>", parts[1]).yellow());
-                return true;
-            };
-            // Accept a node's name as well as its id.
-            let nodes: serde_json::Value = client.request_json(Method::GET, "/nodes", None).await.unwrap_or_default();
-            let found = nodes.as_array().into_iter().flatten().find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id).and_then(|n| n["meta"]["id"].as_str().map(String::from));
-            let Some(nid) = found else {
-                println!("{} no node {}", "Error:".red(), id);
-                return true;
-            };
-            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", nid, parts[1]), None).await {
-                Ok(v) => {
-                    println!("{} {} is now {}", "OK".green(), v["node"].as_str().unwrap_or(""), v["phase"].as_str().unwrap_or(""));
-                    let r = &v["remaining"];
-                    println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node" if parts.get(1) == Some(&"import") => {
-            let rest = &parts[2..];
-            let sub = rest.first().copied().unwrap_or("list");
-            let plan = rest.get(1).copied().filter(|a| !a.starts_with("--"));
-            let map_of = |flag: &str| {
-                let mut m = serde_json::Map::new();
-                for v in flag_values(rest, flag) {
-                    if let Some((a, b)) = v.split_once('=') {
-                        m.insert(a.to_string(), b.into());
-                    }
-                }
-                m
-            };
-            let result = match (sub, plan) {
-                ("list", _) => client.request_json::<serde_json::Value>(Method::GET, "/imports", None).await,
-                ("show", Some(p)) => client.request_json::<serde_json::Value>(Method::GET, &format!("/imports/{p}"), None).await,
-                ("approve", Some(p)) => {
-                    let body = serde_json::json!({ "projects": map_of("--project"), "networks": map_of("--network"), "credentials": map_of("--credential"), "over_quota": has_flag(rest, "--over-quota"), "dry_run": has_flag(rest, "--dry-run") });
-                    client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/approve"), Some(body)).await
-                }
-                ("reject", Some(p)) => client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/reject"), Some(serde_json::json!({}))).await.or_else(|e| if e.to_string().is_empty() { Ok(serde_json::Value::Null) } else { Err(e) }),
-                _ => {
-                    println!("{}", "Usage: node import list | show <plan> | approve <plan> [--project src=existing|src=new:name] [--network a=b] [--credential proj/user=new] [--over-quota] [--dry-run] | reject <plan>".yellow());
-                    return true;
-                }
-            };
-            match result {
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token") | Some(&"detach")) => {
-            let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
-                println!("{}", format!("Usage: node {} <node> [--force] [--fenced] [--raft-lost]", parts[1]).yellow());
-                return true;
-            };
-            let rest = &parts[3..];
-            let mut maps = serde_json::Map::new();
-            for m in flag_values(rest, "--map-network") {
-                if let Some((a, b)) = m.split_once('=') {
-                    maps.insert(a.to_string(), b.into());
-                }
-            }
-            let body = serde_json::json!({
-                "map_networks": maps,
-                "with_access": has_flag(rest, "--with-access"),
-                "abort": has_flag(rest, "--abort"),
-                "departed": has_flag(rest, "--departed"),
-                "timeout_secs": flag_value(rest, "--timeout").and_then(|t| t.parse::<u64>().ok()),
-                "force": has_flag(rest, "--force"),
-                "fenced": has_flag(rest, "--fenced"),
-                "raft_intact": !has_flag(rest, "--raft-lost"),
-            });
-            // The node's name goes in the path as it is: the server resolves names too.
-            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", id, parts[1]), Some(body)).await {
-                Ok(v) if parts[1] == "rejoin-token" => {
-                    println!("{}", v["token"].as_str().unwrap_or(""));
-                    eprintln!("Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}", v["node"].as_str().unwrap_or(""), v["node_id"].as_str().unwrap_or(""), if v["raft_intact"] == false { " Its Raft state will be started afresh." } else { "" });
-                }
-                Ok(v) => println!("{} {}", "OK".green(), serde_json::to_string(&v).unwrap_or_default()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node" => {
-            let path = match parts.get(1) {
-                Some(id) => format!("/nodes/{}", id),
-                None => "/nodes".to_string(),
-            };
-            match client.request_json::<serde_json::Value>(Method::GET, &path, None).await {
-                Ok(v) if v.is_array() => {
-                    let rows: Vec<NodeRow> = v.as_array().unwrap().iter().map(NodeRow::from_json).collect();
-                    println!("{}", Table::new(rows));
-                }
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
+        "credential-keys" | "cred-keys" => {
+            storage::credential_keys(client, parts.get(1).copied()).await
         }
 
-        "pci" | "pci-devices" => match client.list_pci_devices().await {
-            Ok(devices) => {
-                if devices.is_empty() {
-                    println!("{}", "No PCI devices found".yellow());
-                } else if parts.len() >= 2 {
-                    // `pci <address>` shows full details for a single device,
-                    // including the sysfs path needed for VFIO attachment.
-                    match devices.iter().find(|d| d.address == parts[1]) {
-                        Some(dev) => {
-                            println!("Address:    {}", dev.address);
-                            println!("Vendor:     {}", dev.vendor_id);
-                            println!("Device:     {}", dev.device_id);
-                            println!("Class:      {}", dev.class_id);
-                            println!("Driver:     {}", display_option(&dev.driver));
-                            println!("IOMMU:      {}", display_option(&dev.iommu_group));
-                            println!("Sysfs path: {}", dev.sysfs_path);
-                        }
-                        None => println!(
-                            "{} no PCI device with address {}",
-                            "Error:".red(),
-                            parts[1]
-                        ),
-                    }
-                } else {
-                    let table = Table::new(&devices).to_string();
-                    println!("{}", table);
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
+        "credential-rm" | "cred-rm" => storage::credential_rm(client, parts.get(1).copied()).await,
 
-        "attach-device" => {
-            if parts.len() < 3 {
-                println!(
-                    "{}",
-                    "Usage: attach-device <name|id> <device-path>".yellow()
-                );
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.attach_device(&vm_id, parts[2]).await {
-                Ok(vm) => {
-                    println!(
-                        "{} Device {} attached to VM {}",
-                        "Success:".green(),
-                        parts[2],
-                        vm.name
-                    );
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO devices: {}", vm.vfio_devices.join(", "));
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "networks" | "nets" => network::list_networks(client).await,
 
-        "detach-device" => {
-            if parts.len() < 3 {
-                println!(
-                    "{}",
-                    "Usage: detach-device <name|id> <device-path>".yellow()
-                );
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.detach_device(&vm_id, parts[2]).await {
-                Ok(vm) => {
-                    println!(
-                        "{} Device {} detached from VM {}",
-                        "Success:".green(),
-                        parts[2],
-                        vm.name
-                    );
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO devices: {}", vm.vfio_devices.join(", "));
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "credentials" | "creds" => match client.list_credentials().await {
-            Ok(creds) if creds.is_empty() => println!("No credentials stored."),
-            Ok(creds) => {
-                let rows: Vec<CredentialRow> = creds.iter().map(CredentialRow::from).collect();
-                println!("{}", Table::new(rows));
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-
-        "credential-add" | "cred-add" => handle_credential_add(client).await,
-
-        "credential-passwd" | "cred-passwd" => match parts.get(1) {
-            Some(username) => match prompt_new_password(false) {
-                Ok(password) => {
-                    let request = UpdateCredentialRequest {
-                        password,
-                        ssh_authorized_keys: None,
-                    };
-                    handle_credential_update(client, username, request).await
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: credential-passwd <user>".yellow()),
-        },
-
-        "credential-keys" | "cred-keys" => match parts.get(1) {
-            Some(username) => {
-                let input = prompt_path("SSH public key files (comma-separated; empty to remove all keys): ");
-                match read_public_key_files(&input) {
-                    Ok(keys) => {
-                        let request = UpdateCredentialRequest {
-                            password: None,
-                            ssh_authorized_keys: Some(keys),
-                        };
-                        handle_credential_update(client, username, request).await
-                    }
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", "Usage: credential-keys <user>".yellow()),
-        },
-
-        "credential-rm" | "cred-rm" => match parts.get(1) {
-            Some(username) => match client.delete_credential(username).await {
-                Ok(()) => println!("{} {}", "Credential deleted:".green(), username),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: credential-rm <user>".yellow()),
-        },
-
-        "networks" | "nets" => list_networks(client).await,
-
-        "network" | "net" => admin::network(client, &parts[1..]).await,
-        "whoami" => admin::whoami(client).await,
-        "cluster" => admin::cluster(client, &parts[1..]).await,
+        "network" | "net" => network::network(client, &parts[1..]).await,
+        "whoami" => access::whoami(client).await,
+        "cluster" => cluster::cluster(client, &parts[1..]).await,
         "auth" => admin::auth(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),
-        "token" | "tokens" => admin::token(client, &parts[1..]).await,
-        "project" | "projects" => admin::project(client, &parts[1..]).await,
-        "binding" | "bindings" => admin::binding(client, &parts[1..]).await,
-        "system-binding" => admin::system_binding(client, &parts[1..]).await,
-        "user" | "users" => admin::user(client, &parts[1..]).await,
-        "team" | "teams" => admin::team(client, &parts[1..]).await,
-        "policy" | "policies" => admin::policy(client, &parts[1..]).await,
-        "audit" => admin::audit(client, &parts[1..]).await,
-        "usage" => admin::resource_usage(client, &parts[1..]).await,
-        "stats" => admin::stats(client, &parts[1..]).await,
-        "bandwidth" => admin::series(client, "bandwidth", &parts[1..]).await,
-        "io" => admin::series(client, "io", &parts[1..]).await,
-        "compute" => admin::series(client, "compute", &parts[1..]).await,
+        "token" | "tokens" => access::token(client, &parts[1..]).await,
+        "tenant" | "tenants" => tenancy::tenant(client, &parts[1..]).await,
+        "admission" | "admissions" => tenancy::admission(client, &parts[1..]).await,
+        "connector" | "connectors" => directory::connector(client, &parts[1..]).await,
+        "invite" | "invites" | "invitation" | "invitations" => {
+            directory::invite(client, &parts[1..]).await
+        }
+        "federation" | "federations" => directory::federation(client, &parts[1..]).await,
+        "project" | "projects" => access::project(client, &parts[1..]).await,
+        "binding" | "bindings" => access::binding(client, &parts[1..]).await,
+        "system-binding" => access::system_binding(client, &parts[1..]).await,
+        "user" | "users" => access::user(client, &parts[1..]).await,
+        "team" | "teams" => access::team(client, &parts[1..]).await,
+        "policy" | "policies" => access::policy(client, &parts[1..]).await,
+        "audit" => access::audit(client, &parts[1..]).await,
+        "usage" => usage::resource_usage(client, &parts[1..]).await,
+        "stats" => usage::stats(client, &parts[1..]).await,
+        "bandwidth" => usage::series(client, "bandwidth", &parts[1..]).await,
+        "io" => usage::series(client, "io", &parts[1..]).await,
+        "compute" => usage::series(client, "compute", &parts[1..]).await,
 
-        "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
+        "network-add" | "net-add" => network::create_host(client, &parts[1..]).await,
 
         "network-rm" | "net-rm" => match parts.get(1) {
-            Some(name) => match client
-                .request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", name), None)
-                .await
-            {
-                Ok(v) => print_delete_result("Network", name, &v),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
+            Some(name) => network::delete(client, name).await,
             None => println!("{}", "Usage: network-rm <name>".yellow()),
         },
 
-        "bridges" => match client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/ovs/bridges", None)
-            .await
-        {
-            Ok(bridges) if bridges.is_empty() => println!("No glidex bridges."),
-            Ok(bridges) => {
-                for b in bridges {
-                    println!(
-                        "  {} ({}) {}",
-                        b["spec"]["name"].as_str().unwrap_or("?").cyan(),
-                        b["spec"]["datapath"].as_str().unwrap_or("?"),
-                        if b["live"].is_null() { "MISSING on host".red().to_string() } else { format!("ports: {}", b["live"]["ports"].as_array().map(|p| p.len()).unwrap_or(0)) }
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
+        "bridges" => host::bridges(client).await,
 
-        "ovs" => handle_ovs(client, &parts[1..]).await,
+        "ovs" => host::ovs(client, &parts[1..]).await,
 
-        "uplinks" => match parts.get(1) {
-            Some(bridge) => match client
-                .request_json::<Vec<serde_json::Value>>(Method::GET, &format!("/ovs/bridges/{}/uplinks", bridge), None)
-                .await
-            {
-                Ok(list) if list.is_empty() => println!("No uplinks on {}.", bridge),
-                Ok(list) => {
-                    for u in list {
-                        let spec = &u["record"]["spec"];
-                        println!(
-                            "  {} ({}) {} {}",
-                            spec["name"].as_str().unwrap_or("?").cyan(),
-                            spec["kind"].as_str().unwrap_or("?"),
-                            u["phase"].as_str().unwrap_or("?"),
-                            u["live"]["error"].as_str().map(|e| e.red().to_string()).unwrap_or_else(|| u["live"]["link_state"].as_str().unwrap_or("").to_string())
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: uplinks <bridge>".yellow()),
-        },
+        "uplinks" => host::uplinks(client, &parts[1..]).await,
 
-        "uplink-add" => handle_uplink_add(client, &parts[1..]).await,
+        "uplink-add" => host::uplink_add(client, &parts[1..]).await,
 
-        // A migration netd rolled back at start (spec/clustering-ui.md):
-        // set it up again with the gateway check and commit.
-        "uplink-reapply" => match (parts.get(1), parts.get(2)) {
-            (Some(bridge), Some(name)) => {
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/ovs/bridges/{}/uplinks/{}/reapply", bridge, name), Some(serde_json::json!({}))).await {
-                    Ok(res) => finish_uplink(client, bridge, res).await,
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            _ => println!("{}", "Usage: uplink-reapply <bridge> <name>".yellow()),
-        },
+        "uplink-reapply" => host::uplink_reapply(client, &parts[1..]).await,
 
-        "uplink-rm" => match (parts.get(1), parts.get(2)) {
-            (Some(bridge), Some(name)) => match client
-                .request_json::<()>(Method::DELETE, &format!("/ovs/bridges/{}/uplinks/{}", bridge, name), None)
-                .await
-            {
-                Ok(()) => println!("{} uplink {} (NIC restored)", "Removed:".green(), name),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            _ => println!("{}", "Usage: uplink-rm <bridge> <name>".yellow()),
-        },
+        "uplink-rm" => host::uplink_rm(client, &parts[1..]).await,
 
-        "image" | "images" => handle_image(client, &parts[1..]).await,
+        "image" | "images" => storage::image(client, &parts[1..]).await,
 
-        "disk" | "disks" => handle_disk(client, &parts[1..]).await,
+        "disk" | "disks" => storage::disk(client, &parts[1..]).await,
+
+        "datastore" | "datastores" => storage::datastore(client, &parts[1..]).await,
 
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),
@@ -2734,12 +1602,21 @@ async fn main() {
         println!("{} {}", "Profile:".dimmed(), b.cyan());
     }
     if client.is_unix() {
-        println!("{} identified by your Unix user (see 'whoami')", "Auth:".dimmed());
+        println!(
+            "{} identified by your Unix user (see 'whoami')",
+            "Auth:".dimmed()
+        );
     } else if !client.has_token() {
         if client.profile_banner().is_some() {
-            println!("{} no token in this profile; run 'auth login'", "Auth:".dimmed());
+            println!(
+                "{} no token in this profile; run 'auth login'",
+                "Auth:".dimmed()
+            );
         } else {
-            println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+            println!(
+                "{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)",
+                "Auth:".dimmed()
+            );
         }
     }
     if let Some(p) = client.project() {
@@ -2748,7 +1625,10 @@ async fn main() {
     println!("Type {} for available commands\n", "help".cyan());
 
     let mut rl = new_editor(CompletionMode::Command).expect("Failed to initialize readline");
-    println!("{} Tab completes commands and file paths.\n", "Tip:".dimmed());
+    println!(
+        "{} Tab completes commands and file paths.\n",
+        "Tip:".dimmed()
+    );
 
     loop {
         match rl.readline("gxctl> ") {
@@ -2783,19 +1663,34 @@ mod tests {
 
     #[test]
     fn credential_choice_defaults_to_mine() {
-        assert_eq!(credential_choice("", Some("alice")).as_deref(), Some("alice"));
+        assert_eq!(
+            credential_choice("", Some("alice")).as_deref(),
+            Some("alice")
+        );
         assert_eq!(credential_choice("none", Some("alice")), None);
-        assert_eq!(credential_choice("bob", Some("alice")).as_deref(), Some("bob"));
+        assert_eq!(
+            credential_choice("bob", Some("alice")).as_deref(),
+            Some("bob")
+        );
         assert_eq!(credential_choice("", None), None);
     }
 
     #[test]
     fn credential_key_file_answers() {
-        let d = vec!["~/.ssh/id_ed25519.pub".to_string(), "~/.ssh/id_rsa.pub".to_string()];
-        assert_eq!(chosen_key_files("", &d).as_deref(), Some("~/.ssh/id_ed25519.pub,~/.ssh/id_rsa.pub"));
+        let d = vec![
+            "~/.ssh/id_ed25519.pub".to_string(),
+            "~/.ssh/id_rsa.pub".to_string(),
+        ];
+        assert_eq!(
+            chosen_key_files("", &d).as_deref(),
+            Some("~/.ssh/id_ed25519.pub,~/.ssh/id_rsa.pub")
+        );
         assert_eq!(chosen_key_files("none", &d), None);
         assert_eq!(chosen_key_files("NONE", &d), None);
-        assert_eq!(chosen_key_files("/tmp/k.pub", &d).as_deref(), Some("/tmp/k.pub"));
+        assert_eq!(
+            chosen_key_files("/tmp/k.pub", &d).as_deref(),
+            Some("/tmp/k.pub")
+        );
         assert_eq!(chosen_key_files("", &[]), None);
     }
 
@@ -2804,8 +1699,16 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let ssh = dir.path().join(".ssh");
         std::fs::create_dir(&ssh).unwrap();
-        std::fs::write(ssh.join("id_ed25519.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA me@host\n").unwrap();
-        std::fs::write(ssh.join("id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        std::fs::write(
+            ssh.join("id_ed25519.pub"),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA me@host\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ssh.join("id_ed25519"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+        )
+        .unwrap();
         std::fs::write(ssh.join("bad.pub"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
         std::fs::write(ssh.join("empty.pub"), "\n").unwrap();
         let files = public_key_files_in(dir.path());
@@ -2813,12 +1716,100 @@ mod tests {
     }
 
     #[test]
-    fn graceful_stop_arguments() {
-        assert_eq!(graceful_stop_secs(&[]), Ok(None));
-        assert_eq!(graceful_stop_secs(&["--graceful"]), Ok(Some(60)));
-        assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
-        assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
-        assert!(graceful_stop_secs(&["--force"]).is_err());
+    fn watch_events_carry_the_kind_id_and_object() {
+        use glidex_api::proto::glidex::watch::v1 as w;
+        let e = w::WatchResponse {
+            r#type: w::WatchEventType::WATCH_EVENT_TYPE_ADDED.into(),
+            kind: w::WatchKind::WATCH_KIND_VM.into(),
+            id: "v1".into(),
+            object: Some(w::__buffa::oneof::watch_response::Object::Vm(Box::new(
+                glidex_api::proto::glidex::vm::v1::Vm {
+                    name: "web".into(),
+                    ..Default::default()
+                },
+            ))),
+            ..Default::default()
+        };
+        let (kind, id, object) = watch_event(&e);
+        assert_eq!((kind.as_str(), id.as_str()), ("vm", "v1"));
+        assert_eq!(watch_summary(&kind, &object).0, "web");
+    }
+
+    #[test]
+    fn watch_summary_reads_proto_vms() {
+        let vm = serde_json::json!({
+            "name": "web",
+            "state": "VM_STATE_STOPPED",
+            "desired_state": "POWER_STATE_RUNNING",
+            "generation": "3",
+            "conditions": [{
+                "kind": "Ready",
+                "status": "CONDITION_STATUS_FALSE",
+                "reason": "Starting",
+                "message": "launching"
+            }]
+        });
+        assert_eq!(
+            watch_summary("vm", &vm),
+            (
+                "web".to_string(),
+                "stopped → running — Starting: launching".to_string()
+            )
+        );
+        let vm = serde_json::json!({
+            "name": "db",
+            "state": "VM_STATE_CREATED",
+            "desired_state": "POWER_STATE_STOPPED",
+            "deleting": true,
+            "conditions": [{"kind": "Ready", "status": "CONDITION_STATUS_TRUE"}]
+        });
+        assert_eq!(watch_summary("vm", &vm).1, "deleting (created)");
+    }
+
+    #[test]
+    fn watch_summary_reads_proto_nodes_and_imports() {
+        let n = serde_json::json!({
+            "meta": {"id": "n-1", "name": "alpha", "generation": "2"},
+            "spec": {"name": "alpha", "role": "NODE_ROLE_SERVER"},
+            "status": {"phase": "NODE_PHASE_DRAINING", "ready": "CONDITION_STATUS_TRUE"},
+        });
+        assert_eq!(
+            watch_summary("node", &n),
+            ("alpha".to_string(), "Draining".to_string())
+        );
+        let n = serde_json::json!({
+            "spec": {"name": "beta"},
+            "status": {"phase": "NODE_PHASE_ACTIVE", "ready": "CONDITION_STATUS_UNKNOWN"},
+        });
+        assert_eq!(watch_summary("node", &n).1, "Active, not ready");
+        let p = serde_json::json!({
+            "plan": "p-1",
+            "node": "edge",
+            "state": "IMPORT_STATE_PENDING",
+        });
+        assert_eq!(
+            watch_summary("import", &p),
+            ("edge".to_string(), "pending".to_string())
+        );
+    }
+
+    #[test]
+    fn watch_summary_reads_proto_networks() {
+        let n = serde_json::json!({
+            "id": "6f1c0000-0000-4000-8000-000000000000",
+            "name": "web",
+            "phase": "NETWORK_PHASE_NETD_UNAVAILABLE",
+        });
+        assert_eq!(
+            watch_summary("network", &n),
+            ("web".to_string(), "netd unavailable".to_string())
+        );
+        let n = serde_json::json!({
+            "name": "web",
+            "phase": "NETWORK_PHASE_READY",
+            "deletion_requested_at": "2026-10-17T10:00:00Z",
+        });
+        assert_eq!(watch_summary("network", &n).1, "deleting (ready)");
     }
 
     fn replacements(result: rustyline::Result<(usize, Vec<Pair>)>) -> (usize, Vec<String>) {
@@ -2844,11 +1835,19 @@ mod tests {
         assert_eq!(start, 0);
         assert_eq!(
             got,
-            ["cred-add", "credential-add", "credential-keys", "credential-passwd", "credential-rm", "credentials", "creds"]
-                .iter()
-                .filter(|c| COMMANDS.contains(c))
-                .map(|c| format!("{c} "))
-                .collect::<Vec<_>>()
+            [
+                "cred-add",
+                "credential-add",
+                "credential-keys",
+                "credential-passwd",
+                "credential-rm",
+                "credentials",
+                "creds"
+            ]
+            .iter()
+            .filter(|c| COMMANDS.contains(c))
+            .map(|c| format!("{c} "))
+            .collect::<Vec<_>>()
         );
         let (_, got) = replacements(complete_command_line(&files, "", 0));
         assert_eq!(got.len(), COMMANDS.len());
@@ -2868,9 +1867,17 @@ mod tests {
 
         // ...but not the VM name, and not arguments of other commands.
         let line = format!("attach-device {base}/CLO");
-        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, &line, line.len()))
+                .1
+                .is_empty()
+        );
         let line = format!("start {base}/CLO");
-        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, &line, line.len()))
+                .1
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2909,7 +1916,11 @@ mod tests {
     fn reads_public_keys_and_refuses_private_keys() {
         let dir = tempfile::TempDir::new().unwrap();
         let public = dir.path().join("id.pub");
-        std::fs::write(&public, "# comment\nssh-ed25519 AAAA a@b\n\nssh-rsa BBBB c@d\n").unwrap();
+        std::fs::write(
+            &public,
+            "# comment\nssh-ed25519 AAAA a@b\n\nssh-rsa BBBB c@d\n",
+        )
+        .unwrap();
         let private = dir.path().join("id");
         std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\nxxx\n").unwrap();
 
@@ -2924,34 +1935,26 @@ mod tests {
     }
 
     #[test]
-    fn pci_device_info_deserializes_sysfs_path() {
-        let json = r#"{
-            "address": "0000:00:1f.0",
-            "vendor_id": "8086",
-            "device_id": "9d4e",
-            "class_id": "060100",
-            "driver": "lpc_ich",
-            "iommu_group": "5",
-            "sysfs_path": "/sys/bus/pci/devices/0000:00:1f.0"
-        }"#;
-
-        let info: PciDeviceInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(info.sysfs_path, "/sys/bus/pci/devices/0000:00:1f.0");
-        assert_eq!(info.address, "0000:00:1f.0");
-        assert_eq!(info.driver.as_deref(), Some("lpc_ich"));
-        assert_eq!(info.iommu_group.as_deref(), Some("5"));
-    }
-
-    #[test]
     fn splits_lines_with_quotes() {
         assert_eq!(split_line("  list  ").unwrap(), vec!["list"]);
         assert_eq!(
             split_line(r#"project create lab --description "Lab VMs" 'a b' c\ d"#).unwrap(),
-            vec!["project", "create", "lab", "--description", "Lab VMs", "a b", "c d"]
+            vec![
+                "project",
+                "create",
+                "lab",
+                "--description",
+                "Lab VMs",
+                "a b",
+                "c d"
+            ]
         );
         assert_eq!(split_line(r#"x """#).unwrap(), vec!["x", ""]);
         assert!(split_line("say 'oops").is_err());
-        assert_eq!(flag_values(&["--role", "a", "x", "--role", "b@p"], "--role"), vec!["a", "b@p"]);
+        assert_eq!(
+            flag_values(&["--role", "a", "x", "--role", "b@p"], "--role"),
+            vec!["a", "b@p"]
+        );
     }
 
     #[test]
@@ -2964,19 +1967,29 @@ mod tests {
         assert_eq!(start, 9);
         assert_eq!(got, vec!["quota "]);
         // Second argument: no subcommands.
-        assert!(replacements(complete_command_line(&files, "token create ", 13)).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, "token create ", 13))
+                .1
+                .is_empty()
+        );
         for (cmd, _) in SUBCOMMANDS {
             assert!(COMMANDS.contains(cmd), "{cmd} is missing from COMMANDS");
         }
     }
 
     /// A control plane (auth disabled) on a temporary api.sock.
-    async fn serve_temp() -> (tempfile::TempDir, std::path::PathBuf, tokio::sync::watch::Sender<bool>) {
-        use glidex_control_plane::api::{create_router, Listener};
+    async fn serve_temp() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        use glidex_control_plane::api::{Listener, create_router};
         use glidex_control_plane::serve::{bind_unix, serve_unix};
         use glidex_control_plane::state::VmManager;
         let dir = tempfile::TempDir::new().unwrap();
         let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        // The standalone host's own node record, as `initialize` writes it.
+        manager.report_self().unwrap();
         let sock = dir.path().join("api.sock");
         let l = bind_unix(&sock).unwrap();
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -2987,56 +2000,452 @@ mod tests {
     #[tokio::test]
     async fn api_calls_over_the_unix_socket() {
         let (_dir, sock, stop) = serve_temp().await;
-        assert_eq!(client::select_socket(None, std::slice::from_ref(&sock), client::is_socket), Some(sock.clone()));
+        assert_eq!(
+            client::select_socket(None, std::slice::from_ref(&sock), client::is_socket),
+            Some(sock.clone())
+        );
         let client = ApiClient::unix(sock);
 
         client.health_check().await.unwrap();
         assert!(client.list_vms().await.unwrap().is_empty());
 
-        let who: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.unwrap();
-        assert_eq!(who["method"], "disabled");
+        let who = access::who_am_i(&client).await.unwrap();
+        assert_eq!(who.method, "disabled");
 
-        let req = CreateCredentialRequest {
-            username: "alice".into(),
-            password: None,
-            ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza alice@host".into()],
-        };
-        let c = client.create_credential(&req).await.unwrap();
+        let c = storage::create_credential(
+            &client,
+            "alice".into(),
+            None,
+            vec!["ssh-ed25519 AAAAC3Nza alice@host".into()],
+        )
+        .await
+        .unwrap();
         assert_eq!(c.username, "alice");
         assert_eq!(c.ssh_authorized_keys.len(), 1);
+        assert_eq!(c.has_password, Some(false));
 
-        // Scoped to a project by name: ?project= on lists and /credentials/{user}.
-        let projects: Vec<serde_json::Value> = client.request_json(Method::GET, "/projects", None).await.unwrap();
-        let project = projects[0]["name"].as_str().unwrap().to_string();
+        // Scoped to a project by name: the request's `project`.
+        let projects = access::list_projects(&client).await.unwrap();
+        let project = projects[0].name.clone();
+        assert_eq!(
+            access::project_names(&client).await.get(&projects[0].id),
+            Some(&project)
+        );
+        // Teams on their RPC client, by name.
+        access::team(&client, &["create", "ops"]).await;
+        let t = client.rpc_transport().await.unwrap();
+        let teams =
+            glidex_api::proto::glidex::access::v1::TeamServiceClient::new(t.clone(), t.config());
+        let id = access::resolve_team(&teams, "ops").await.unwrap();
+        assert_eq!(access::resolve_team(&teams, &id).await.unwrap(), id);
+        assert!(access::resolve_team(&teams, "nope").await.is_err());
         client.set_project(Some(project.clone()));
-        let creds = client.list_credentials().await.unwrap();
-        assert_eq!(creds.iter().map(|c| c.username.as_str()).collect::<Vec<_>>(), ["alice"]);
-        let one: serde_json::Value = client.request_json(Method::GET, &client.scoped("/credentials/alice"), None).await.unwrap();
-        assert_eq!(one["username"], "alice");
-        assert_eq!(one["project"], projects[0]["id"]);
+        let creds = storage::list_credentials(&client).await.unwrap();
+        assert_eq!(
+            creds
+                .iter()
+                .map(|c| c.username.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+        assert_eq!(creds[0].project, projects[0].id);
+        assert!(creds[0].updated_at.is_set());
         assert!(client.list_vms().await.unwrap().is_empty());
 
         // A project that doesn't exist is an API error, rendered.
         client.set_project(Some("no-such-project".into()));
-        let e = client.list_credentials().await.unwrap_err();
-        assert!(e.starts_with("not_found:"), "{e}");
+        let e = storage::list_credentials(&client).await.unwrap_err();
+        assert!(e.contains("not_found"), "{e}");
         client.set_project(None);
 
-        let e = client.request::<serde_json::Value>(Method::GET, "/vms/nope", None).await.unwrap_err();
-        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
-        assert!(client.resolve_vm("nope").await.unwrap_err().contains("not found"));
+        // VMs on their RPC client.
+        let e = vm::rpc(&client)
+            .await
+            .unwrap()
+            .get_vm(glidex_api::proto::glidex::vm::v1::GetVmRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        assert!(
+            client
+                .get_vm("nope")
+                .await
+                .unwrap_err()
+                .contains("not_found")
+        );
+        assert!(
+            client
+                .resolve_vm("nope")
+                .await
+                .unwrap_err()
+                .contains("not found")
+        );
 
-        client.update_credential("alice", &UpdateCredentialRequest { password: None, ssh_authorized_keys: Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]) }).await.unwrap();
-        client.delete_credential("alice").await.unwrap();
-        assert!(client.list_credentials().await.unwrap().is_empty());
+        let c = storage::update_credential(
+            &client,
+            "alice",
+            None,
+            Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.ssh_authorized_keys, ["ssh-ed25519 BBBBC3Nza alice@new"]);
+        // An empty key list clears the keys: refused here, as alice has
+        // no password to fall back on.
+        let e = storage::update_credential(&client, "alice", None, Some(vec![]))
+            .await
+            .unwrap_err();
+        assert!(e.contains("invalid_credential"), "{e}");
+        storage::delete_credential(&client, "alice").await.unwrap();
+        assert!(storage::list_credentials(&client).await.unwrap().is_empty());
 
-        // The console WebSocket goes over the same socket; errors come back
-        // as API errors.
-        let e = console::open_ws(&client, "/vms/nope/console/ws").await.err().unwrap();
+        // Images and disks on their RPC clients.
+        {
+            use glidex_api::proto::glidex::storage::v1::*;
+            let t = client.rpc_transport().await.unwrap();
+            assert!(storage::list_images(&client).await.unwrap().is_empty());
+            let images = ImageServiceClient::new(t.clone(), t.config());
+            let e = images
+                .get_image(GetImageRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            // The built-in datastore is there from the start.
+            let ds = DatastoreServiceClient::new(t.clone(), t.config())
+                .list_datastores(ListDatastoresRequest::default())
+                .await
+                .unwrap()
+                .into_owned()
+                .datastores;
+            assert_eq!(ds.len(), 1);
+            assert!(ds[0].builtin && ds[0].default_for_disks);
+            let disks = DiskServiceClient::new(t.clone(), t.config());
+            let list = disks
+                .list_disks(ListDisksRequest::default())
+                .await
+                .unwrap()
+                .into_owned();
+            assert!(list.disks.is_empty());
+            let e = disks
+                .get_disk(GetDiskRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            assert!(tenancy::rpc_err(e).contains("not_found"));
+        }
+
+        // The console RPC goes over the same socket, on HTTP/2 of its own;
+        // a refusal is the call's error.
+        {
+            let (t, config) = client.stream_transport().await.unwrap();
+            let mut stream = glidex_api::proto::glidex::vm::v1::VmServiceClient::new(t, config)
+                .console()
+                .await
+                .unwrap();
+            stream
+            .send(glidex_api::proto::glidex::vm::v1::ConsoleRequest {
+                request: Some(
+                    glidex_api::proto::glidex::vm::v1::__buffa::oneof::console_request::Request::Open(
+                        Box::new(glidex_api::proto::glidex::vm::v1::ConsoleOpen {
+                            id: "nope".into(),
+                            ..Default::default()
+                        }),
+                    ),
+                ),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+            let e = stream.message().await.unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound, "{e:?}");
+        }
+        let e = console::open_console(&client, "nope").await.err().unwrap();
         assert!(e.contains("not_found"), "{e}");
-        let e = client.request_bytes(Method::GET, "/vms/nope/console/log", None).await.err().unwrap();
-        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
+        let e = vm::rpc(&client)
+            .await
+            .unwrap()
+            .get_console_log(glidex_api::proto::glidex::vm::v1::GetConsoleLogRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
 
+        // Networks on their RPC clients: by name or id.
+        let before = network::list(&client).await.unwrap().len();
+        let e = network::rpc(&client)
+            .await
+            .unwrap()
+            .get_network(glidex_api::proto::glidex::network::v1::GetNetworkRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        assert!(tenancy::rpc_err(e).contains("not_found"));
+        // (Creating one needs glidex-netd, which this test doesn't run.)
+        assert_eq!(network::list(&client).await.unwrap().len(), before);
+        let shares = glidex_api::proto::glidex::network::v1::NetworkShareServiceClient::new(
+            t.clone(),
+            t.config(),
+        )
+        .list_network_shares(
+            glidex_api::proto::glidex::network::v1::ListNetworkSharesRequest {
+                project: project.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .into_owned();
+        assert!(shares.shares.is_empty());
+        let e = network::rpc(&client)
+            .await
+            .unwrap()
+            .delete_network(
+                glidex_api::proto::glidex::network::v1::DeleteNetworkRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+
+        // Host networking and PCI devices on their RPC clients: the host
+        // this socket belongs to.
+        host::list_pci_devices(&client).await.unwrap();
+        let status = host::rpc(&client)
+            .await
+            .unwrap()
+            .get_ovs_status(glidex_api::proto::glidex::host::v1::GetOvsStatusRequest::default())
+            .await
+            .unwrap()
+            .into_owned();
+        let netd = status.netd.as_option().unwrap();
+        // Without glidex-netd (as usually under test) the status says why.
+        if netd.available != Some(true) {
+            assert!(netd.error.is_some(), "{netd:?}");
+            assert!(status.host.as_option().is_none());
+        }
+
+        // The cluster and its nodes on their RPC clients: a standalone
+        // host says so and lists its one node.
+        {
+            use glidex_api::proto::glidex::cluster::v1::*;
+            let status = cluster::rpc(&client)
+                .await
+                .unwrap()
+                .get_cluster_status(GetClusterStatusRequest::default())
+                .await
+                .unwrap()
+                .into_owned();
+            assert_eq!(status.clustered, Some(false));
+            assert_eq!(status.nodes.len(), 1, "{status:?}");
+            let nodes = cluster::list_nodes(&client).await.unwrap();
+            assert_eq!(nodes.len(), 1);
+            let id = nodes[0].meta.as_option().unwrap().id.clone();
+            let got = cluster::node_rpc(&client)
+                .await
+                .unwrap()
+                .get_node(GetNodeRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .into_owned();
+            assert_eq!(
+                got.node.as_option().unwrap().meta.as_option().unwrap().id,
+                id
+            );
+            let e = cluster::node_rpc(&client)
+                .await
+                .unwrap()
+                .get_node(GetNodeRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            // Imports need a cluster.
+            let e = cluster::import_rpc(&client)
+                .await
+                .unwrap()
+                .list_imports(ListImportsRequest::default())
+                .await
+                .unwrap_err();
+            assert!(tenancy::rpc_err(e).contains("not_clustered"));
+        }
+
+        let _ = stop.send(true);
+    }
+
+    /// The generated connectrpc clients over gxctl's own connection
+    /// (spec/grpc.md §10): the Connect protocol on api.sock.
+    #[tokio::test]
+    async fn rpc_clients_over_the_unix_socket() {
+        use glidex_api::proto::glidex::tenancy::v1::*;
+        let (_dir, sock, stop) = serve_temp().await;
+        let client = ApiClient::unix(sock);
+        let t = client.rpc_transport().await.unwrap();
+        let tenants = TenantServiceClient::new(t.clone(), t.config());
+        let created = tenants
+            .create_tenant(CreateTenantRequest {
+                slug: "acme".into(),
+                display_name: "Acme".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        let acme = created.tenant.as_option().unwrap().id.clone();
+        // The same connection carries the next call.
+        let list = tenants
+            .list_tenants(ListTenantsRequest::default())
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            list.tenants
+                .iter()
+                .map(|t| t.slug.as_str())
+                .collect::<Vec<_>>(),
+            ["acme", "admin", "default"]
+        );
+        let admissions = AdmissionServiceClient::new(t.clone(), t.config());
+        let a = admissions
+            .set_admission(SetAdmissionRequest {
+                tenant: "acme".into(),
+                cap: Quotas {
+                    vms: Some(3),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            a.admission
+                .as_option()
+                .unwrap()
+                .cap
+                .as_option()
+                .unwrap()
+                .vms,
+            Some(3)
+        );
+        // Errors arrive as connectrpc errors with the server's code.
+        let e = tenants
+            .create_tenant(CreateTenantRequest {
+                slug: "acme".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::Aborted);
+        let e = tenants
+            .get_tenant(GetTenantRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        let got = tenants
+            .get_tenant(GetTenantRequest {
+                id: acme,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(got.tenant.as_option().unwrap().display_name, "Acme");
+        let _ = stop.send(true);
+    }
+
+    /// `connector` drives ConnectorService the same way; a secret goes in
+    /// and only its status comes back.
+    #[tokio::test]
+    async fn connector_client_over_the_unix_socket() {
+        use glidex_api::proto::glidex::directory::v1::*;
+        type Settings =
+            glidex_api::proto::glidex::directory::v1::__buffa::oneof::connector::Settings;
+        let (_dir, sock, stop) = serve_temp().await;
+        let client = ApiClient::unix(sock);
+        let t = client.rpc_transport().await.unwrap();
+        let svc = ConnectorServiceClient::new(t.clone(), t.config());
+        let oidc = OidcSettings {
+            issuer: "https://idp.example".into(),
+            client_id: "glidex".into(),
+            ..Default::default()
+        };
+        let c = Connector {
+            id: "corp".into(),
+            display_name: "Corp".into(),
+            settings: Some(Settings::Oidc(Box::new(oidc))),
+            ..Default::default()
+        };
+        let made = svc
+            .create_connector(CreateConnectorRequest {
+                connector: c.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            made.connector.as_option().unwrap().secrets[0].set,
+            Some(false)
+        );
+        let req = SetSecretRequest {
+            id: "corp".into(),
+            field: "client_secret".into(),
+            value: "s3cret-value".into(),
+            ..Default::default()
+        };
+        let r = svc.set_secret(req).await.unwrap().into_owned();
+        assert_eq!(r.connector.as_option().unwrap().secrets[0].set, Some(true));
+        let got = svc
+            .get_connector(GetConnectorRequest {
+                id: "corp".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            got.connector.as_option().unwrap().secrets[0].set,
+            Some(true)
+        );
+        let e = svc
+            .get_connector(GetConnectorRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        svc.delete_connector(DeleteConnectorRequest {
+            id: "corp".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         let _ = stop.send(true);
     }
 

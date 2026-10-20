@@ -15,7 +15,10 @@ pub mod sampler;
 pub mod sources;
 pub mod storage;
 
-pub use ledger::{Delta, Flag, Ledger, LedgerSettings, MeteringError, Origin, Round, Subject, SubjectKind, UsageRecord};
+pub use ledger::{
+    Delta, Flag, Ledger, LedgerSettings, MeteringError, Origin, Round, Subject, SubjectKind,
+    UsageRecord,
+};
 
 use crate::config::MeteringConfig;
 use crate::images::Disk;
@@ -57,7 +60,10 @@ pub struct LiveStats {
 
 impl Meter {
     pub fn new(db: Arc<crate::store::Db>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
-        let ledger = Ledger::new(db, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?;
+        let ledger = Ledger::new(
+            db,
+            LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs),
+        )?;
         let boot_id = glidex_vm_shim::util::boot_id().unwrap_or_default();
         Ok(Self {
             ledger,
@@ -73,9 +79,16 @@ impl Meter {
 
     /// A node of a cluster: sample into `local`, ship to the leader, read
     /// the cluster's ledger from `central`.
-    pub fn new_clustered(central: Arc<crate::store::Db>, local: Arc<crate::store::Db>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
+    pub fn new_clustered(
+        central: Arc<crate::store::Db>,
+        local: Arc<crate::store::Db>,
+        cfg: MeteringConfig,
+    ) -> Result<Self, MeteringError> {
         let mut m = Self::new(central, cfg.clone())?;
-        m.local = Some(Ledger::new(local, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?);
+        m.local = Some(Ledger::new(
+            local,
+            LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs),
+        )?);
         Ok(m)
     }
 
@@ -103,7 +116,12 @@ impl Meter {
         // Without port counters (netd unreachable), NIC and network
         // cursors are kept: the next round's deltas cover the gap.
         let kinds: &[SubjectKind] = match snap.bridges {
-            Some(_) => &[SubjectKind::Vm, SubjectKind::Disk, SubjectKind::Nic, SubjectKind::Network],
+            Some(_) => &[
+                SubjectKind::Vm,
+                SubjectKind::Disk,
+                SubjectKind::Nic,
+                SubjectKind::Network,
+            ],
             None => &[SubjectKind::Vm, SubjectKind::Disk],
         };
         let with_cursors = self.writer().cursor_subjects(kinds)?;
@@ -114,36 +132,71 @@ impl Meter {
             net::sample_ports(&mut round, bridges, &snap.vms, &snap.networks, now)?;
         }
         if let Some(nat) = &snap.nat {
-            net::sample_nat(&mut round, nat, &snap.vms, &snap.networks, &self.boot_id, now)?;
+            net::sample_nat(
+                &mut round,
+                nat,
+                &snap.vms,
+                &snap.networks,
+                &self.boot_id,
+                now,
+            )?;
         }
         if let (Some(ct), true) = (&snap.ct, snap.bridges.is_some()) {
             // A restart of the collector since the last round is a gap in what it saw.
             let mut last = self.ct_gaps.lock().unwrap_or_else(|e| e.into_inner());
             let new_gap = matches!(*last, Some((epoch, gaps)) if epoch == ct.counters.epoch && ct.counters.gaps > gaps);
             *last = Some((ct.counters.epoch, ct.counters.gaps));
-            net::sample_ct(&mut round, &ct.counters, new_gap, &ct.reservations, &ct.vms, &snap.networks, now)?;
+            net::sample_ct(
+                &mut round,
+                &ct.counters,
+                new_gap,
+                &ct.reservations,
+                &ct.vms,
+                &snap.networks,
+                now,
+            )?;
         }
         sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
         let live = round.take_live();
         self.writer().commit(round)?;
         let mut map = self.live.lock().unwrap_or_else(|e| e.into_inner());
         // Subjects with no fresh rate this round (stopped, gone) drop out.
-        map.retain(|k, v| live.contains_key(k) || now.saturating_sub(v.sampled_at) < 2 * self.cfg.sample_secs * 1000);
+        map.retain(|k, v| {
+            live.contains_key(k)
+                || now.saturating_sub(v.sampled_at) < 2 * self.cfg.sample_secs * 1000
+        });
         for (k, (subject, values)) in live {
-            map.insert(k, LiveStats { subject, values, sampled_at: now });
+            map.insert(
+                k,
+                LiveStats {
+                    subject,
+                    values,
+                    sampled_at: now,
+                },
+            );
         }
         Ok(())
     }
 
     /// A storage pass (§5.3): `disk.stored` from measured file sizes and
     /// `image.stored` (blocking: the database).
-    pub fn sample_storage(&self, disks: &[(Disk, u64)], images: &[crate::images::Image], now: u64) -> Result<(), MeteringError> {
+    pub fn sample_storage(
+        &self,
+        disks: &[(Disk, u64)],
+        images: &[crate::images::Image],
+        now: u64,
+    ) -> Result<(), MeteringError> {
         let _one = self.round_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut round = self.writer().begin_round(now)?;
         storage::record(&mut round, disks, images, now)?;
         // Images that are gone: their cursors go with them.
-        let live: std::collections::BTreeSet<String> = images.iter().map(|i| format!("image/{}", i.id)).collect();
-        for key in self.writer().cursor_subjects(&[SubjectKind::Image])?.difference(&live) {
+        let live: std::collections::BTreeSet<String> =
+            images.iter().map(|i| format!("image/{}", i.id)).collect();
+        for key in self
+            .writer()
+            .cursor_subjects(&[SubjectKind::Image])?
+            .difference(&live)
+        {
             round.forget_subject(key);
         }
         self.writer().commit(round)
@@ -182,14 +235,28 @@ pub struct CtSnapshot {
 impl Snapshot {
     /// `kind/id` of every subject that still exists.
     fn live_subjects(&self) -> std::collections::BTreeSet<String> {
-        let mut live: std::collections::BTreeSet<String> = self.vms.iter().map(|v| format!("vm/{}", v.id)).collect();
+        let mut live: std::collections::BTreeSet<String> =
+            self.vms.iter().map(|v| format!("vm/{}", v.id)).collect();
         live.extend(self.disks.iter().map(|d| format!("disk/{}", d.id)));
-        for v in self.vms.iter().chain(self.ct.iter().flat_map(|c| c.vms.iter())) {
-            live.extend(v.status.nics.iter().map(|n| format!("nic/{}.{}", v.id, n.nic_index)));
+        for v in self
+            .vms
+            .iter()
+            .chain(self.ct.iter().flat_map(|c| c.vms.iter()))
+        {
+            live.extend(
+                v.status
+                    .nics
+                    .iter()
+                    .map(|n| format!("nic/{}.{}", v.id, n.nic_index)),
+            );
         }
         live.extend(self.networks.iter().map(|n| format!("network/{}", n.name)));
         if let Some(bridges) = &self.bridges {
-            live.extend(bridges.iter().map(|b| format!("network/bridge:{}", b.bridge)));
+            live.extend(
+                bridges
+                    .iter()
+                    .map(|b| format!("network/bridge:{}", b.bridge)),
+            );
         }
         live
     }
@@ -223,7 +290,9 @@ impl crate::state::VmManager {
     /// Build the meter anew: after this host joined or formed a cluster, its
     /// rounds go to a node-local ledger that is shipped (§13.1).
     pub(crate) fn restart_metering(&self) {
-        let Some(cfg) = self.metering_cfg.lock().unwrap().clone() else { return };
+        let Some(cfg) = self.metering_cfg.lock().unwrap().clone() else {
+            return;
+        };
         for t in std::mem::take(&mut *self.meter_tasks.lock().unwrap()) {
             t.abort();
         }
@@ -238,17 +307,21 @@ impl crate::state::VmManager {
         if self.cluster().is_none() {
             return Meter::new(central, cfg.clone());
         }
-        let local = Arc::new(crate::store::Db::create(self.data_dir.join("meter.db")).map_err(|e| MeteringError::Storage(e.to_string()))?);
+        let local = Arc::new(
+            crate::store::Db::create(self.data_dir.join("meter.db"))
+                .map_err(|e| MeteringError::Storage(e.to_string()))?,
+        );
         let meter = Meter::new_clustered(central.clone(), local.clone(), cfg.clone())?;
         // A host that metered before it joined brings its cursors along, so
         // nothing is counted twice or lost (D8).
-        if let Some(l) = meter.local_ledger() {
-            if l.is_empty_of_state()? && central.can_write() {
-                let old = meter.ledger().node_state()?;
-                if !old.cursors.is_empty() || !old.open.is_empty() {
-                    l.put_node_state(&old)?;
-                    meter.ledger().clear_node_state(&old)?;
-                }
+        if let Some(l) = meter.local_ledger()
+            && l.is_empty_of_state()?
+            && central.can_write()
+        {
+            let old = meter.ledger().node_state()?;
+            if !old.cursors.is_empty() || !old.open.is_empty() {
+                l.put_node_state(&old)?;
+                meter.ledger().clear_node_state(&old)?;
             }
         }
         Ok(meter)
@@ -274,7 +347,8 @@ impl crate::state::VmManager {
                 if meter.ledger.can_write() {
                     let m = meter.clone();
                     let upkeep = tokio::task::spawn_blocking(move || {
-                        let tz = query::parse_tz(&m.cfg.billing_timezone).unwrap_or_else(|_| query::Tz::utc());
+                        let tz = query::parse_tz(&m.cfg.billing_timezone)
+                            .unwrap_or_else(|_| query::Tz::utc());
                         retention::run(&m.ledger, &m.cfg, &tz, now_ms() / 1000)
                     });
                     if let Ok(Err(e)) = upkeep.await {
@@ -297,8 +371,17 @@ impl crate::state::VmManager {
             let period = meter.cfg.storage_secs.max(meter.cfg.sample_secs) * 1000;
             loop {
                 tokio::time::sleep(until_next(now_ms(), period)).await;
-                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(|d| storage::measurable(d) && me.is_local_disk(d)).collect();
-                let images = if meter.ledger.can_write() { me.images.list_images() } else { Vec::new() };
+                let disks: Vec<Disk> = me
+                    .images
+                    .list_disks()
+                    .into_iter()
+                    .filter(|d| storage::measurable(d) && me.is_local_disk(d))
+                    .collect();
+                let images = if meter.ledger.can_write() {
+                    me.images.list_images()
+                } else {
+                    Vec::new()
+                };
                 let paths: Vec<_> = disks.iter().map(|d| me.images.disk_path(d)).collect();
                 let m = meter.clone();
                 let done = tokio::task::spawn_blocking(move || {
@@ -338,7 +421,9 @@ impl crate::state::VmManager {
     /// Send this node's closed hours to the leader; once it has them, forget
     /// them locally (§13.1: at-least-once shipping, idempotent merge).
     pub async fn ship_ledger(&self, meter: &Arc<Meter>) -> Result<(), String> {
-        let Some(local) = meter.local_ledger() else { return Ok(()) };
+        let Some(local) = meter.local_ledger() else {
+            return Ok(());
+        };
         let export = local.export().map_err(|e| e.to_string())?;
         let node = self.local_node_id();
         let cluster = self.cluster().ok_or("not in a cluster")?;
@@ -346,7 +431,10 @@ impl crate::state::VmManager {
         if leader_here {
             let central = meter.ledger().clone_handle();
             let (n, e) = (node.clone(), export.clone());
-            tokio::task::spawn_blocking(move || central.import(&n, &e)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            tokio::task::spawn_blocking(move || central.import(&n, &e))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
         } else {
             let body = bytes::Bytes::from(serde_json::to_vec(&export).map_err(|e| e.to_string())?);
             let reply = match self.node_link() {
@@ -363,7 +451,14 @@ impl crate::state::VmManager {
 
     /// Snapshot everything and run one round (port counters from netd).
     async fn meter_round(&self, meter: &Arc<Meter>) -> Result<(), MeteringError> {
-        let vms: Vec<Vm> = self.vms.read().await.values().filter(|v| self.is_local(v)).cloned().collect();
+        let vms: Vec<Vm> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .filter(|v| self.is_local(v))
+            .cloned()
+            .collect();
         let disks = self.images.list_disks();
         let networks = self.networks.list().unwrap_or_default();
         let netd = self.netd.clone();
@@ -371,7 +466,9 @@ impl crate::state::VmManager {
         // A gateway of OVN routers counts external traffic of every VM behind it.
         let ct_inputs = if self.is_ovn_gateway() {
             let all: Vec<Vm> = self.vms.read().await.values().cloned().collect();
-            crate::ipam::list_reservations(&self.store.database()).ok().map(|r| (r, all))
+            crate::ipam::list_reservations(&self.store.database())
+                .ok()
+                .map(|r| (r, all))
         } else {
             None
         };
@@ -385,18 +482,37 @@ impl crate::state::VmManager {
             };
             // Only with port counters: NIC and network cursors are kept
             // or forgotten together (see `sample`).
-            let nat = bridges.as_ref().and_then(|_| netd.call::<Vec<NatCounter>>(glidex_netd::proto::Op::NatCounters).ok());
+            let nat = bridges.as_ref().and_then(|_| {
+                netd.call::<Vec<NatCounter>>(glidex_netd::proto::Op::NatCounters)
+                    .ok()
+            });
             let ct = ct_inputs.and_then(|(reservations, all_vms)| {
                 bridges.as_ref()?;
-                match netd.call::<glidex_ovs::ct_meter::CtCounters>(glidex_netd::proto::Op::CtExternalCounters) {
-                    Ok(counters) => Some(CtSnapshot { counters, reservations, vms: all_vms }),
+                match netd.call::<glidex_ovs::ct_meter::CtCounters>(
+                    glidex_netd::proto::Op::CtExternalCounters,
+                ) {
+                    Ok(counters) => Some(CtSnapshot {
+                        counters,
+                        reservations,
+                        vms: all_vms,
+                    }),
                     Err(e) => {
                         tracing::debug!("metering: no external counters this round: {}", e);
                         None
                     }
                 }
             });
-            m.sample(&Snapshot { vms, disks, networks, bridges, nat, ct }, now_ms())
+            m.sample(
+                &Snapshot {
+                    vms,
+                    disks,
+                    networks,
+                    bridges,
+                    nat,
+                    ct,
+                },
+                now_ms(),
+            )
         })
         .await
         .map_err(|e| MeteringError::Storage(format!("metering round panicked: {e}")))?
@@ -406,7 +522,9 @@ impl crate::state::VmManager {
     /// network deletion, uplink changes; spec/metering.md §5.4): bounded
     /// at 2 s, and never an error. Missing it costs at most one interval.
     pub async fn meter_final_sample(&self) {
-        let Some(meter) = self.meter().filter(|m| m.cfg.enabled) else { return };
+        let Some(meter) = self.meter().filter(|m| m.cfg.enabled) else {
+            return;
+        };
         match tokio::time::timeout(Duration::from_secs(2), self.meter_round(&meter)).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::warn!("metering: final sample failed: {}", e),

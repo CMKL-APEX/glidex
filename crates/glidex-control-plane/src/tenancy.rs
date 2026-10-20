@@ -8,6 +8,7 @@
 use crate::store::Db;
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -77,6 +78,10 @@ pub struct Quotas {
     /// Addresses of the site's external pool, one per VPC router with a gateway.
     #[serde(default = "default_router_quota")]
     pub external_ips: Option<u64>,
+    /// Devices of each PCI pool, by pool name; a pool not named is
+    /// unlimited (spec/host-topology.md §11).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, u64>,
 }
 
 fn default_network_quota() -> Option<u64> {
@@ -90,7 +95,12 @@ fn default_router_quota() -> Option<u64> {
 impl Quotas {
     /// Defaults for a new project: unlimited, except 2 project networks.
     pub fn new_project() -> Self {
-        Quotas { networks: default_network_quota(), routers: default_router_quota(), external_ips: default_router_quota(), ..Default::default() }
+        Quotas {
+            networks: default_network_quota(),
+            routers: default_router_quota(),
+            external_ips: default_router_quota(),
+            ..Default::default()
+        }
     }
 }
 
@@ -105,12 +115,33 @@ pub struct Usage {
     pub networks: u64,
     pub routers: u64,
     pub external_ips: u64,
+    /// Pool devices the project's VMs ask for, by pool.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, u64>,
+}
+
+impl Usage {
+    /// Add `other`'s use, as a tenant cap counts all its projects.
+    pub fn add(&mut self, other: &Usage) {
+        self.vms += other.vms;
+        self.vcpus += other.vcpus;
+        self.memory_mib += other.memory_mib;
+        self.disk_gib += other.disk_gib;
+        self.running_vms += other.running_vms;
+        self.networks += other.networks;
+        self.routers += other.routers;
+        self.external_ips += other.external_ips;
+        for (pool, n) in &other.devices {
+            *self.devices.entry(pool.clone()).or_default() += n;
+        }
+    }
 }
 
 /// One limit that a request would go over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QuotaOverrun {
-    pub resource: &'static str,
+    /// `vcpus`, ..., or `devices.<pool>`.
+    pub resource: String,
     pub limit: u64,
     pub used: u64,
     pub requested: u64,
@@ -135,7 +166,7 @@ pub enum QuotaMode {
 }
 
 /// What a request adds to a project's use.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Delta {
     pub vms: u64,
     pub vcpus: u64,
@@ -145,26 +176,59 @@ pub struct Delta {
     pub networks: u64,
     pub routers: u64,
     pub external_ips: u64,
+    /// Pool devices, by pool.
+    pub devices: BTreeMap<String, u64>,
+    /// Devices asked of each tenant pool (spec/host-topology.md §9.1a).
+    pub tenant_pools: BTreeMap<String, u64>,
 }
 
 /// Limits `delta` would exceed on top of `usage`.
 pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverrun> {
     let mut out = Vec::new();
-    let mut check = |resource: &'static str, limit: Option<u64>, used: u64, requested: u64| {
-        if let Some(limit) = limit {
-            if requested > 0 && used + requested > limit {
-                out.push(QuotaOverrun { resource, limit, used, requested });
-            }
+    let mut check = |resource: &str, limit: Option<u64>, used: u64, requested: u64| {
+        if let Some(limit) = limit
+            && requested > 0
+            && used + requested > limit
+        {
+            out.push(QuotaOverrun {
+                resource: resource.to_string(),
+                limit,
+                used,
+                requested,
+            });
         }
     };
     check("vms", quotas.vms, usage.vms, delta.vms);
     check("vcpus", quotas.vcpus, usage.vcpus, delta.vcpus);
-    check("memory_mib", quotas.memory_mib, usage.memory_mib, delta.memory_mib);
+    check(
+        "memory_mib",
+        quotas.memory_mib,
+        usage.memory_mib,
+        delta.memory_mib,
+    );
     check("disk_gib", quotas.disk_gib, usage.disk_gib, delta.disk_gib);
-    check("running_vms", quotas.running_vms, usage.running_vms, delta.running_vms);
+    check(
+        "running_vms",
+        quotas.running_vms,
+        usage.running_vms,
+        delta.running_vms,
+    );
     check("networks", quotas.networks, usage.networks, delta.networks);
     check("routers", quotas.routers, usage.routers, delta.routers);
-    check("external_ips", quotas.external_ips, usage.external_ips, delta.external_ips);
+    check(
+        "external_ips",
+        quotas.external_ips,
+        usage.external_ips,
+        delta.external_ips,
+    );
+    for (pool, &n) in &delta.devices {
+        check(
+            &format!("devices.{pool}"),
+            quotas.devices.get(pool).copied(),
+            usage.devices.get(pool).copied().unwrap_or(0),
+            n,
+        );
+    }
     out
 }
 
@@ -172,6 +236,10 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// The tenant owning it (spec/tenancy.md D1); records from before
+    /// tenants belong to `default`.
+    #[serde(default = "default_tenant")]
+    pub tenant_id: String,
     #[serde(default)]
     pub description: String,
     #[serde(default = "Quotas::new_project")]
@@ -179,10 +247,16 @@ pub struct Project {
     pub created_at: u64,
 }
 
+fn default_tenant() -> String {
+    crate::tenants::DEFAULT_TENANT.to_string()
+}
+
 pub fn validate_project_name(name: &str) -> Result<(), TenancyError> {
     let ok = !name.is_empty()
         && name.len() <= 32
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !name.starts_with('-');
     if ok {
         Ok(())
@@ -215,7 +289,9 @@ impl ProjectStore {
             let p = Project {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: DEFAULT_PROJECT_NAME.into(),
-                description: "Created at install; holds resources from before projects existed.".into(),
+                tenant_id: default_tenant(),
+                description: "Created at install; holds resources from before projects existed."
+                    .into(),
                 quotas: Quotas::new_project(),
                 created_at: now(),
             };
@@ -307,14 +383,36 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn create(&self, name: &str, description: String, quotas: Option<Quotas>) -> Result<Project, TenancyError> {
+    pub fn create(
+        &self,
+        name: &str,
+        description: String,
+        quotas: Option<Quotas>,
+    ) -> Result<Project, TenancyError> {
+        self.create_in(&default_tenant(), name, description, quotas)
+    }
+
+    /// A new project of `tenant`; names are unique per tenant
+    /// (spec/tenancy.md D24).
+    pub fn create_in(
+        &self,
+        tenant: &str,
+        name: &str,
+        description: String,
+        quotas: Option<Quotas>,
+    ) -> Result<Project, TenancyError> {
         validate_project_name(name)?;
-        if self.list()?.iter().any(|p| p.name == name) {
+        if self
+            .list()?
+            .iter()
+            .any(|p| p.name == name && p.tenant_id == tenant)
+        {
             return Err(TenancyError::AlreadyExists(name.to_string()));
         }
         let p = Project {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
+            tenant_id: tenant.to_string(),
             description,
             quotas: quotas.unwrap_or_else(Quotas::new_project),
             created_at: now(),
@@ -325,7 +423,9 @@ impl ProjectStore {
 
     pub fn delete(&self, id: &str) -> Result<(), TenancyError> {
         if id == self.default_project_id() {
-            return Err(TenancyError::Invalid("the default project can't be deleted".into()));
+            return Err(TenancyError::Invalid(
+                "the default project can't be deleted".into(),
+            ));
         }
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -367,8 +467,14 @@ mod tests {
         assert_eq!(p.quotas.networks, Some(2));
         assert_eq!(s.resolve("lab-1").unwrap(), p);
         assert_eq!(s.resolve(&p.id).unwrap(), p);
-        assert!(matches!(s.create("lab-1", String::new(), None), Err(TenancyError::AlreadyExists(_))));
-        assert!(matches!(s.create("Lab", String::new(), None), Err(TenancyError::Invalid(_))));
+        assert!(matches!(
+            s.create("lab-1", String::new(), None),
+            Err(TenancyError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            s.create("Lab", String::new(), None),
+            Err(TenancyError::Invalid(_))
+        ));
         assert!(s.delete(&s.default_project_id()).is_err());
         s.delete(&p.id).unwrap();
         assert!(matches!(s.resolve("lab-1"), Err(TenancyError::NotFound(_))));
@@ -377,7 +483,11 @@ mod tests {
     #[test]
     fn default_project_takes_site_quotas_once() {
         let (s, _d) = store();
-        let site = Quotas { vms: Some(5), networks: Some(3), ..Default::default() };
+        let site = Quotas {
+            vms: Some(5),
+            networks: Some(3),
+            ..Default::default()
+        };
         assert!(s.adopt_default_quotas(&site).unwrap());
         assert_eq!(s.resolve("default").unwrap().quotas, site);
         // An admin's later change survives the next start.
@@ -390,27 +500,124 @@ mod tests {
 
     #[test]
     fn overrun_detection() {
-        let q = Quotas { vms: Some(2), vcpus: Some(4), ..Default::default() };
-        let u = Usage { vms: 2, vcpus: 3, ..Default::default() };
-        let o = overruns(&q, &u, &Delta { vms: 1, vcpus: 1, ..Default::default() });
+        let q = Quotas {
+            vms: Some(2),
+            vcpus: Some(4),
+            ..Default::default()
+        };
+        let u = Usage {
+            vms: 2,
+            vcpus: 3,
+            ..Default::default()
+        };
+        let o = overruns(
+            &q,
+            &u,
+            &Delta {
+                vms: 1,
+                vcpus: 1,
+                ..Default::default()
+            },
+        );
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].resource, "vms");
         assert!(overruns(&q, &u, &Delta::default()).is_empty());
         // Unlimited when None.
-        assert!(overruns(&Quotas { networks: None, ..Default::default() }, &u, &Delta { networks: 9, ..Default::default() }).is_empty());
+        assert!(
+            overruns(
+                &Quotas {
+                    networks: None,
+                    ..Default::default()
+                },
+                &u,
+                &Delta {
+                    networks: 9,
+                    ..Default::default()
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn pool_quotas_count_devices_per_pool() {
+        let q = Quotas {
+            devices: [("a100".to_string(), 4)].into(),
+            ..Default::default()
+        };
+        let u = Usage {
+            devices: [("a100".to_string(), 3)].into(),
+            ..Default::default()
+        };
+        let ask = |pool: &str, n| Delta {
+            devices: [(pool.to_string(), n)].into(),
+            ..Default::default()
+        };
+        assert!(overruns(&q, &u, &ask("a100", 1)).is_empty());
+        let o = overruns(&q, &u, &ask("a100", 2));
+        assert_eq!(
+            (
+                o[0].resource.as_str(),
+                o[0].limit,
+                o[0].used,
+                o[0].requested
+            ),
+            ("devices.a100", 4, 3, 2)
+        );
+        // A pool without a quota is unlimited.
+        assert!(overruns(&q, &u, &ask("nic", 99)).is_empty());
+        // Written as a map; left out when empty.
+        let j = serde_json::to_value(&q).unwrap();
+        assert_eq!(j["devices"]["a100"], 4);
+        assert!(
+            serde_json::to_value(Quotas::default())
+                .unwrap()
+                .get("devices")
+                .is_none()
+        );
+        let mut total = Usage::default();
+        total.add(&u);
+        total.add(&u);
+        assert_eq!(total.devices["a100"], 6);
     }
 
     #[test]
     fn router_quotas_default_to_one_each() {
         let q = Quotas::new_project();
         assert_eq!((q.routers, q.external_ips), (Some(1), Some(1)));
-        let u = Usage { routers: 1, external_ips: 1, ..Default::default() };
-        let o = overruns(&q, &u, &Delta { routers: 1, external_ips: 1, ..Default::default() });
-        assert_eq!(o.iter().map(|o| o.resource).collect::<Vec<_>>(), ["routers", "external_ips"]);
+        let u = Usage {
+            routers: 1,
+            external_ips: 1,
+            ..Default::default()
+        };
+        let o = overruns(
+            &q,
+            &u,
+            &Delta {
+                routers: 1,
+                external_ips: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            o.iter().map(|o| o.resource.as_str()).collect::<Vec<_>>(),
+            ["routers", "external_ips"]
+        );
         // An internal router counts only against `routers`.
-        let o = overruns(&q, &Usage::default(), &Delta { routers: 1, ..Default::default() });
+        let o = overruns(
+            &q,
+            &Usage::default(),
+            &Delta {
+                routers: 1,
+                ..Default::default()
+            },
+        );
         assert!(o.is_empty());
         let none: Quotas = serde_json::from_str("{}").unwrap();
-        assert_eq!((none.routers, none.external_ips), (Some(1), Some(1)), "records from before the router quotas get the default");
+        assert_eq!(
+            (none.routers, none.external_ips),
+            (Some(1), Some(1)),
+            "records from before the router quotas get the default"
+        );
     }
 }

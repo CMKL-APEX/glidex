@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import { useCan, useSession } from "../session";
 import type { CredentialInfo } from "../types";
+import { tsSecs } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -16,8 +17,9 @@ function parseKeys(text: string): string[] {
     .filter((l) => l.length > 0 && !l.startsWith("#"));
 }
 
-function formatTime(secs: number): string {
-  return new Date(secs * 1000).toLocaleString();
+/** An RFC 3339 timestamp, in the browser's locale. */
+function formatTime(at: string | undefined): string {
+  return at ? new Date(tsSecs(at) * 1000).toLocaleString() : "—";
 }
 
 function PasswordFields({
@@ -176,7 +178,15 @@ function AddCredentialForm({
           <p className="mt-1 text-xs text-gray-400">Looking for your public keys…</p>
         ) : mine.available && mine.keys.length > 0 ? (
           <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
-            Filled in from your <span className="font-mono">~/.ssh/*.pub</span> ({mine.keys.length}{" "}
+            Filled in from{" "}
+            {mine.source?.startsWith("connector:") ? (
+              <>your directory account</>
+            ) : (
+              <>
+                your <span className="font-mono">~/.ssh/*.pub</span>
+              </>
+            )}{" "}
+            ({mine.keys.length}{" "}
             {mine.keys.length === 1 ? "key" : "keys"}).{" "}
             <button type="button" className="text-sky-600 hover:underline" onClick={useMyKeys}>
               Add my keys again
@@ -209,7 +219,7 @@ function EditCredentialForm({
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const { project } = useSession();
-  const [keys, setKeys] = useState(credential.ssh_authorized_keys.join("\n"));
+  const [keys, setKeys] = useState((credential.ssh_authorized_keys ?? []).join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -374,7 +384,7 @@ export default function Credentials() {
                 <tr key={c.username}>
                   <td className="px-4 py-3 font-mono">{c.username}</td>
                   <td className="px-4 py-3">{c.has_password ? "Set" : "—"}</td>
-                  <td className="px-4 py-3">{c.ssh_authorized_keys.length}</td>
+                  <td className="px-4 py-3">{c.ssh_authorized_keys?.length ?? 0}</td>
                   <td className="px-4 py-3 text-gray-500">
                     {formatTime(c.updated_at)}
                   </td>

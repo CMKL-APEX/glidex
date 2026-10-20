@@ -34,6 +34,7 @@ by later runs (flags override the saved values):
 | `--ovs-profile kernel\|dpdk` | OVS flavour (default `kernel`; `dpdk` reserves hugepages and PMD cores). A host installed with `dpdk` keeps it on re-runs (saved in `install.conf`) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
+| `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [tailscale-tls.md](tailscale-tls.md) §4.6 |
 | `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
@@ -241,6 +242,22 @@ by later runs (flags override the saved values):
       SHA-256 fingerprints of their self-signed certificates
       (spec/security.md §5.1.1), read once the services have started.
       The installer does not touch the host firewall.
+    - ([tailscale-tls.md](tailscale-tls.md) §4.6) Tailscale
+      certificate: decided by the flag, else the saved choice, else a
+      prompt (interactive, `tailscaled` reporting certificate domains,
+      default no, asked before the build), else off. When on,
+      `TS_PERMIT_CERT_UID=glidex-ui`
+      goes in `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf`
+      unless `tailscaled` already has it (nothing to do) or has it set to
+      another user (refused: nothing changed, the previous choice kept;
+      likewise without `tailscaled`), and `GLIDEX_UI_TLS_TAILSCALE=on`
+      in `glidex-ui.service.d/50-tailscale-cert.conf`. `tailscaled` is
+      restarted, and waited for, before the UI. The blurb prints
+      `https://<node>.<tailnet>.ts.net:5173` first, without a
+      fingerprint, once a handshake verified against the system trust
+      store succeeds (up to a minute), else says the certificate isn't
+      served yet. Turning it off removes only those two (marked)
+      drop-ins.
     If the previous unit ran the control plane as the invoking user, a
     note says that their `~/.glidex` data was not moved.
 14. **Save options** to `/etc/glidex/install.conf` when they changed,
@@ -367,7 +384,13 @@ removed. Order:
    `glidex-netd`, `glidex-ui`, `glidex-authd`, `glidex-vm-shim` from
    `/usr/local/bin` and `~/.local/bin`.
 4. Remove the glidex unit files (including `glidex-vm@.service` and
-   `glidex-vms.slice`), the polkit rule
+   `glidex-vms.slice`), the Tailscale certificate's drop-ins
+   `glidex-ui.service.d/50-tailscale-cert.conf` and
+   `tailscaled.service.d/50-glidex-cert.conf` while they carry the
+   installer's marker (each directory too when nothing else is in it;
+   then `systemctl try-restart tailscaled` after the `daemon-reload`; a
+   `TS_PERMIT_CERT_UID` set by hand stays),
+   the polkit rule
    `/etc/polkit-1/rules.d/50-glidex-vm.rules`, and `daemon-reload`.
    `/etc/glidex/vm-shim.json` goes with the installer's other
    configuration files.
@@ -467,7 +490,11 @@ but needs a user-supplied kernel + rootfs.
   `/etc/glidex/vm-shim.json`, `/etc/sysctl.d/90-glidex.conf`, `/etc/modules-load.d/glidex.conf`,
   `/etc/glidex/install.conf`, `/etc/glidex/authd.json` (once),
   `/etc/glidex/control-plane.json.example`, `/etc/glidex/policies/`
-  (the directory), and `/etc/pam.d/glidex` while it carries the marker
+  (the directory), `/etc/pam.d/glidex` while it carries the marker,
+  and with `--tailscale-cert` the drop-ins
+  `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf` and
+  `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf` (both
+  marked)
   (plus what package installs and `useradd`/`usermod`/`gpasswd` do).
   The uninstaller removes them. It never writes
   `/etc/glidex/control-plane.json`.
@@ -504,11 +531,33 @@ requests to a server, which authenticates them (spec/clustering-ui.md
 §3.6; `cluster.ui_relay = false` turns that off). Agents an older installer
 switched off get the UI back on the next run.
 
+## Datastores (spec/storage.md S13)
+
+The installer creates `/srv/glidex` (`root:root 0755`), and both units
+may write under it. Operators mount datastores there, owned by `glidex`
+(NFS: export the directory owned by the `glidex` uid, the same on every
+node; root squash is fine, since glidex never writes as root). Uninstall
+leaves `/srv/glidex` alone.
+
+To register datastores once the services are up:
+- `--datastore NAME=PATH` registers a shared datastore (one filesystem
+  every node mounts);
+- `--local-datastore NAME=PATH` registers one each node has its own of;
+- `--datastore-default` makes the first of them the default for new
+  disks.
+
+None of these are saved. Without them, an interactive run offers each
+mount point directly under `/srv/glidex` that isn't a datastore yet (it
+has no marker), and asks whether it becomes the default; the suggested
+answer is no.
+
 ## OVN
 
 With networking, the installer also installs OVN for cluster networks
-(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` unless the
-run joins as an agent, and `conntrack` for gateway metering. `--no-ovn` skips
+(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` on a
+server or standalone host (not on an agent: the role comes from `--join
+--role`, or on a re-run from the node's `identity.json`, read as root), and
+`conntrack` for gateway metering. `--no-ovn` skips
 them and is remembered in `install.conf`. When this run installed OVN and the
 host is in no cluster, OVN's services are stopped and disabled: Debian and
 Ubuntu start them on install, and a standalone host would only run empty
@@ -517,4 +566,38 @@ chassis, `ovn-central` on servers). Installing OVN doesn't turn it on: that is
 a cluster setting, from the Cluster page or `PUT /cluster/settings/ovn`
 (spec/clustering-ui.md §8a), refused until every node reports OVN
 installed.
+
+### Matching the cluster's ovn-northd
+
+An `ovn-controller` must be the release of the cluster's ovn-northd or
+newer. An older one can't run northd's logical flows: they use tables past
+the end of its pipeline, which it rejects ("table_id 33 is not in the valid
+range 0 to 32"), so traffic leaving a VM's switch is dropped on that node.
+Hosts on different distribution releases ship different OVN (Ubuntu 24.04:
+24.03, Ubuntu 26.04: 26.03), so on a member, after a join and on every
+re-run (a server may have been upgraded since), the installer:
+
+1. reads northd's release from the southbound database
+   (`SB_Global options:northd_internal_version`), at `ovn-remote` with the
+   node's certificate. Without `ovn-remote` yet (the cluster's OVN is off
+   here) it says so and stops; the next run matches it;
+2. stops there when the local `ovn-controller` is that release or newer;
+3. otherwise upgrades `ovn-host` (and `ovn-common`, and `ovn-central` where
+   installed): from the distribution when its candidate is new enough, else,
+   on Ubuntu, from the Ubuntu Cloud Archive pocket of this release that has
+   northd's release (else the oldest newer one), found from the archive's
+   index. That pocket goes in `/etc/apt/sources.list.d/glidex-uca-ovn.list`
+   (`ubuntu-cloud-keyring`), pinned in `/etc/apt/preferences.d/glidex-uca-ovn`
+   so that only `ovn-*` comes from it (priority 500) and nothing else does
+   (-1): its Open vSwitch would replace another vendor's (a DOCA OVS);
+4. dry-runs the upgrade and stops if it would remove any package, naming them;
+5. checks the version after the upgrade.
+
+Any other case (no apt, no such release anywhere) stops with what to install.
+The control plane enforces the same rule: a node whose `ovn-controller` is
+older than the newest OVN its servers with `ovn-central` report is refused
+for VMs on cluster networks ("its ovn-controller 24.03.8 is older than the
+cluster's ovn-northd 26.03.0: re-run glidex-install on it"), and
+`GET /cluster/settings/ovn` reports it as `outdated` (spec/clustering-ui.md
+§8a).
 

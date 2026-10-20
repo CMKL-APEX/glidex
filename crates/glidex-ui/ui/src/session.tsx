@@ -12,24 +12,39 @@ import { Loading } from "./components/Loading";
 /** Host-wide capabilities the UI shows or hides pages for, each with the
  * resource type it is checked on, as `appliesTo` in
  * policies/glidex.cedarschema has it: cluster-wide actions take `Cluster`,
- * the host's own networking `Host`. A check on a type the schema doesn't
+ * the host's own networking `Host`, users and teams the host's
+ * `Directory`, project creation a `Tenant` (spec/tenancy.md). A check on a
+ * type the schema doesn't
  * list is never allowed, so a wrong entry hides the page from everyone
  * (tests/ui_capabilities.rs in glidex-control-plane compares the two). */
+/** The entity a host capability is checked on: the host's own directory
+ * (`local`), and the `default` tenant for creating projects. */
+type HostResourceType = SingletonEntityType | "Directory" | "Tenant";
+
+function hostResource(type: HostResourceType): EntityRef {
+  if (type === "Directory") return { type, id: "local" };
+  if (type === "Tenant") return { type, id: "default" };
+  return { type };
+}
+
 const HOST_ACTION_RESOURCE = {
-  createProject: "Cluster",
-  listUsers: "Cluster",
-  manageUsers: "Cluster",
-  listTeams: "Cluster",
-  manageTeams: "Cluster",
+  createProject: "Tenant",
+  listUsers: "Directory",
+  manageUsers: "Directory",
+  listTeams: "Directory",
+  manageTeams: "Directory",
   readSystemBindings: "Cluster",
   manageSystemBindings: "Cluster",
   readPolicy: "Cluster",
   writePolicy: "Cluster",
   readAudit: "Cluster",
   readUsage: "Cluster",
-  manageAnyTokens: "Cluster",
+  manageAnyTokens: "Directory",
   createNetwork: "Host",
   readCluster: "Cluster",
+  // Datastores (spec/storage.md §13).
+  readDatastore: "Cluster",
+  manageDatastore: "Cluster",
   // Cluster operations (spec/clustering-ui.md §3.1).
   listNodes: "Cluster",
   removeNode: "Cluster",
@@ -48,7 +63,23 @@ const HOST_ACTION_RESOURCE = {
   initCluster: "Host",
   leaveCluster: "Host",
   configureOvn: "Cluster",
-} as const satisfies Record<string, SingletonEntityType>;
+  // Tenants, admissions and login connectors (spec/tenancy.md §14); the
+  // per-tenant actions are checked on each tenant by its page.
+  listTenants: "Directory",
+  createTenant: "Directory",
+  listAdmissions: "Cluster",
+  manageAdmissions: "Cluster",
+  listConnectors: "Directory",
+  createConnector: "Directory",
+  updateConnector: "Directory",
+  deleteConnector: "Directory",
+  setConnectorSecret: "Directory",
+  testConnector: "Directory",
+  readScimTokens: "Directory",
+  manageScimTokens: "Directory",
+  syncConnector: "Directory",
+  confirmConnectorSync: "Directory",
+} as const satisfies Record<string, HostResourceType>;
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;
 const HOST_ACTIONS = Object.keys(HOST_ACTION_RESOURCE) as HostAction[];
@@ -98,7 +129,7 @@ export function useCan(checks: { action: string; resource: EntityRef }[]): boole
 /** What the caller may do host- and cluster-wide; all false if the check fails. */
 async function hostCapabilities(): Promise<Record<HostAction, boolean>> {
   const allowed = await api
-    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: HOST_ACTION_RESOURCE[action] } })))
+    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: hostResource(HOST_ACTION_RESOURCE[action]) })))
     .catch(() => HOST_ACTIONS.map(() => false));
   return Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
 }
@@ -140,7 +171,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
       if (known(current)) return current;
-      if (known(me.default_project)) return me.default_project;
+      if (known(me.default_project)) return me.default_project ?? null;
       const stored = localStorage.getItem(PROJECT_KEY);
       if (known(stored)) return stored;
       return projects[0]?.id ?? null;
