@@ -1669,3 +1669,61 @@ fn devices_are_prepared_for_passthrough_and_released() {
         .unwrap_err();
     assert!(e.to_string().contains("was not prepared"), "{e}");
 }
+
+/// spec/host-topology.md §10.1: a PF's VFs are set through `sriov_numvfs`,
+/// and a prepared VF is forgotten once the change removes it.
+#[test]
+fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
+    let exec = exec();
+    let pf = "/sys/bus/pci/devices/0000:61:00.0";
+    exec.file(pf, "");
+    exec.file(&format!("{pf}/sriov_totalvfs"), "8\n");
+    exec.file(&format!("{pf}/sriov_numvfs"), "1\n");
+    exec.link(&format!("{pf}/virtfn0"), "0000:61:00.2");
+    let vf = "0000:61:00.2";
+    exec.file(&format!("/sys/bus/pci/devices/{vf}"), "");
+    exec.file(&format!("/sys/bus/pci/devices/{vf}/class"), "0x020000");
+    exec.file(
+        &format!("/sys/bus/pci/devices/{vf}/uevent"),
+        "DRIVER=mlx5_core\n",
+    );
+    exec.link(&format!("/sys/bus/pci/devices/{vf}/iommu_group"), "40");
+    exec.link(&format!("/sys/kernel/iommu_groups/40/devices/{vf}"), vf);
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    netd.handle(Op::PrepareDevice { address: vf.into() }, &peer())
+        .unwrap();
+    let s = netd
+        .handle(
+            Op::SetSriovVfs {
+                address: "0000:61:00.0".into(),
+                vfs: 4,
+            },
+            &peer(),
+        )
+        .unwrap();
+    assert_eq!(
+        (s["total"].as_u64(), s["enabled"].as_u64()),
+        (Some(8), Some(4)),
+        "{s}"
+    );
+    let listed = netd.handle(Op::ListPreparedDevices, &peer()).unwrap();
+    assert!(
+        listed.as_array().unwrap().is_empty(),
+        "the old VF went: {listed}"
+    );
+    assert!(
+        exec.calls()
+            .contains(&"rm /etc/udev/rules.d/90-glidex-vfio-40.rules".to_string())
+    );
+    let e = netd
+        .handle(
+            Op::SetSriovVfs {
+                address: "0000:61:00.0".into(),
+                vfs: 9,
+            },
+            &peer(),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("at most 8"), "{e}");
+}

@@ -87,10 +87,7 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
                     let devices: Vec<pb::PciPoolDevice> = t
                         .devices
                         .iter()
-                        .filter(|d| {
-                            p.matches
-                                .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
-                        })
+                        .filter(|d| p.matches.matches_device(d))
                         .map(|d| pb::PciPoolDevice {
                             address: d.address.clone(),
                             numa_node: d.numa_node,
@@ -264,6 +261,53 @@ pub async fn prepare_device(
                 ..Default::default()
             })
             .collect(),
+        ..Default::default()
+    })
+}
+
+/// `POST /nodes/{id}/devices/{address}/sriov` (spec/host-topology.md
+/// §10.1): set a PF's VF count on its node. Refused while a VM holds the
+/// PF or one of its VFs, as the change removes every VF.
+pub async fn set_sriov_vfs(
+    call: &Call,
+    req: pb::SetSriovVfsRequest,
+) -> ServiceResult<pb::SetSriovVfsResponse> {
+    let (id, addr) = device_target(call, req.id, &req.address)?;
+    call.detail("vfs", serde_json::json!(req.vfs));
+    let m = call.manager();
+    let loads = m.loads_by_node().await;
+    if let Some((n, load)) = loads.iter().find(|(n, _)| n.meta.id == id) {
+        let vfs: Vec<&str> = n
+            .status
+            .topology
+            .iter()
+            .flat_map(|t| t.devices.iter())
+            .filter(|d| d.physfn.as_ref().is_some_and(|p| p.address == addr))
+            .map(|d| d.address.as_str())
+            .collect();
+        if let Some((dev, vm)) = load
+            .devices
+            .iter()
+            .find(|(d, _)| **d == addr || vfs.contains(&d.as_str()))
+        {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "conflict",
+                format!("{dev} is held by VM {vm}"),
+            ));
+        }
+    }
+    let v = m
+        .node_device_op(&id, &addr, &format!("sriov-{}", req.vfs))
+        .await
+        .map_err(crate::service::host::manager_err)?;
+    let s: glidex_ovs::sriov::SriovState = serde_json::from_value(v)
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, "unavailable", e.to_string()))?;
+    Ok(pb::SetSriovVfsResponse {
+        address: s.address,
+        total: s.total,
+        enabled: s.enabled,
+        vfs: s.vfs,
         ..Default::default()
     })
 }

@@ -214,7 +214,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
   action useCredential in ["vm.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
-  action prepareDevice, releaseDevice, cordonDevice in ["host.devices", "host-scoped"]
+  action prepareDevice, releaseDevice, cordonDevice, setSriovVfs in ["host.devices", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action usePciPool in ["host.devices", "shared"]
     appliesTo { principal: [User, Token], resource: [PciPool], context: ProjectCtx };

@@ -619,6 +619,16 @@ service NodeService {
       rest: "POST /nodes/{id}/devices/{address}/prepare"
     };
   }
+  // Set a physical function's SR-IOV virtual functions (spec/host-topology.md
+  // §10.1); 0 removes them. Refused while a VM holds the PF or one of its
+  // VFs.
+  rpc SetSriovVfs(SetSriovVfsRequest) returns (SetSriovVfsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setSriovVfs"
+      kind: KIND_WRITE
+      rest: "POST /nodes/{id}/devices/{address}/sriov"
+    };
+  }
   // Put a prepared device's group back on its drivers.
   rpc ReleaseDevice(ReleaseDeviceRequest) returns (ReleaseDeviceResponse) {
     option (glidex.api.v1.op) = {
@@ -907,6 +917,21 @@ message PrepareDeviceResponse {
   string iommu_group = 2 [json_name = "iommu_group"];
   // Every function of the group that was bound.
   repeated PreparedMember members = 3;
+}
+message SetSriovVfsRequest {
+  // Node id or name.
+  string id = 1;
+  // The physical function's PCI address.
+  string address = 2;
+  uint32 vfs = 3;
+}
+message SetSriovVfsResponse {
+  string address = 1;
+  // VFs it can have, and has now.
+  uint32 total = 2;
+  uint32 enabled = 3;
+  // Their PCI addresses.
+  repeated string vfs = 4;
 }
 message ReleaseDeviceRequest {
   string id = 1;

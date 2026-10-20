@@ -133,6 +133,12 @@ pub enum Op {
         address: String,
     },
     ListPreparedDevices,
+    /// Give a physical function `vfs` SR-IOV virtual functions
+    /// (spec/host-topology.md §10.1); 0 removes them.
+    SetSriovVfs {
+        address: String,
+        vfs: u32,
+    },
 }
 
 impl Op {
@@ -192,6 +198,7 @@ impl Op {
             Op::PrepareDevice { .. } => "prepare_device",
             Op::ReleaseDevice { .. } => "release_device",
             Op::ListPreparedDevices => "list_prepared_devices",
+            Op::SetSriovVfs { .. } => "set_sriov_vfs",
         }
     }
 }

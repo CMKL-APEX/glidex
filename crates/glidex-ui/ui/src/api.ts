@@ -1005,6 +1005,8 @@ export const listProjectPciPools = (project: string) =>
 /** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/host-topology.md §5.3). */
 export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });
 export const releaseDevice = (id: string, address: string) => rpc(NodeService.method.releaseDevice, { id, address });
+/** Give a PF `vfs` SR-IOV virtual functions on its node (§10.1); 0 removes them. */
+export const setSriovVfs = (id: string, address: string, vfs: number) => rpc(NodeService.method.setSriovVfs, { id, address, vfs });
 /** No new VM gets a cordoned device (§5.4). */
 export const cordonDevice = (id: string, address: string) => rpc(NodeService.method.cordonDevice, { id, address });
 export const uncordonDevice = (id: string, address: string) => rpc(NodeService.method.uncordonDevice, { id, address });

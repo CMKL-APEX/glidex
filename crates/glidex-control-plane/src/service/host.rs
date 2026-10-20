@@ -698,6 +698,8 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                     .map(|v| pb::Sriov {
                         total_vfs: v.total_vfs,
                         enabled_vfs: v.enabled_vfs,
+                        vf_driver: v.vf_driver.clone(),
+                        ready_vfs: v.ready_vfs,
                         ..Default::default()
                     })
                     .into(),

@@ -237,6 +237,7 @@ impl Netd {
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
             Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
+            Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::ListPreparedDevices => to_value(
                 self.store
                     .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
@@ -406,6 +407,31 @@ impl Netd {
         self.store.put(DEVICES, &p.iommu_group.clone(), &p)?;
         tracing::info!(device = %address, group = %p.iommu_group, "prepared for passthrough");
         Ok(p)
+    }
+
+    /// spec/host-topology.md §10.1: set a PF's VF count. On a change every
+    /// VF it had is removed from the bus (new ones come back on their
+    /// default driver), so their prepared groups are forgotten with their
+    /// udev rules; whether a VM holds one is the control plane's to check
+    /// first.
+    fn set_sriov_vfs(
+        &self,
+        address: &str,
+        vfs: u32,
+    ) -> Result<glidex_ovs::sriov::SriovState, OvsError> {
+        let address = address.to_ascii_lowercase();
+        let before = glidex_ovs::sriov::vfs_of(self.ex(), &address);
+        let uplinks = self.dpdk_uplink_addresses()?;
+        let state = glidex_ovs::sriov::set_vfs(self.ex(), &address, vfs, &uplinks)?;
+        let gone: &[String] = if state.changed { &before } else { &[] };
+        for (group, p) in self.store.list::<glidex_ovs::vfio::Prepared>(DEVICES)? {
+            if p.members.iter().any(|m| gone.contains(&m.address)) {
+                self.ex().remove_file(std::path::Path::new(&p.udev_rule))?;
+                self.store.delete(DEVICES, &group)?;
+            }
+        }
+        tracing::info!(device = %address, vfs = state.enabled, "SR-IOV virtual functions set");
+        Ok(state)
     }
 
     /// Undo `prepare_device` for the group `address` is in.

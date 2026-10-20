@@ -1149,6 +1149,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "topology",
             "prepare-device",
             "release-device",
+            "sriov",
             "cordon-device",
             "uncordon-device",
         ],

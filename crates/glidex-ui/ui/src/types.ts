@@ -2141,7 +2141,7 @@ export interface PciFunction {
   root_port?: string;
   switch?: string;
   link?: { current_speed?: string; current_width?: number; max_speed?: string; max_width?: number };
-  sriov?: { total_vfs?: number; enabled_vfs?: number };
+  sriov?: { total_vfs?: number; enabled_vfs?: number; vf_driver?: string; ready_vfs?: number };
   physfn?: string;
   assignable?: boolean;
   ready?: boolean;

@@ -700,6 +700,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "POST",
+        "/nodes/{id}/devices/{address}/sriov",
+        "setSriovVfs",
+        post(nodes::set_sriov_vfs),
+    )
+    .add(
+        "POST",
         "/nodes/{id}/devices/{address}/cordon",
         "cordonDevice",
         post(nodes::cordon_device),

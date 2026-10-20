@@ -259,6 +259,7 @@ Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 | `node <id>` | One node in detail |
 | `node drain <node>`, `node undrain <node>` | Stop or resume placing VMs on a node |
 | `node prepare-device <node> <address>`, `node release-device <node> <address>` | Bind a device's IOMMU group to vfio-pci on its node, or put it back on its drivers |
+| `node sriov <node> <pf-address> <vfs>` | Give a physical function that many SR-IOV virtual functions (0 removes them) |
 | `node cordon-device <node> <address>`, `node uncordon-device <node> <address>` | Stop or resume giving a device to new VMs |
 | `node topology <node> [--devices]` | A node's NUMA nodes, CPUs, memory, hugepages and the devices a VM could be given, read on that node; `--devices`: the devices with their place in the PCIe tree |
 | `node remove <node> [--force]` | Remove an empty node |
