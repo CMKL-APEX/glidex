@@ -128,6 +128,12 @@ pub struct VmConfig {
     /// K4), fixed at create. Absent in older records: firmware boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generate_seed: Option<bool>,
+    /// Boot the kernel the guest installed: extract it from the root disk
+    /// before a launch when the disk changed (spec/kernel-boot.md K11,
+    /// §10.5). `kernel_image` is the kernel until the first extraction,
+    /// and the fallback.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kernel_from_disk: bool,
     /// Username of a stored credential (`credentials.rs`) that the
     /// generated cloud-init seed provisions as the guest login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,6 +423,23 @@ pub struct VmStatus {
     pub seed_growpart_seq: Option<u64>,
     #[serde(default)]
     pub never_started: bool,
+    /// The kernel extracted from the root disk that the VM boots, with
+    /// `kernel_from_disk` (spec/kernel-boot.md §10.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_kernel: Option<DiskKernel>,
+}
+
+/// The kernel a `kernel_from_disk` VM boots, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskKernel {
+    /// The kernel image (id) it boots.
+    pub image: String,
+    /// The one it booted before, kept for going back (K12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    /// The root disk file's `(size, mtime)` when it was extracted: an
+    /// unchanged disk is not extracted again.
+    pub disk_stamp: (u64, u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,6 +569,28 @@ impl Vm {
                 ..Default::default()
             },
         }
+    }
+
+    /// The kernel image the VM boots: the one extracted from its disk
+    /// with `kernel_from_disk` (spec/kernel-boot.md §10.5), else `kernel`.
+    pub fn boot_kernel(&self) -> Option<&str> {
+        match &self.status.disk_kernel {
+            Some(k) if self.spec.config.kernel_from_disk => Some(k.image.as_str()),
+            _ => self.spec.config.kernel_image.as_deref(),
+        }
+    }
+
+    /// Whether the VM boots, or keeps to go back to, image `id`
+    /// (firmware or kernel): such an image is in use (K12).
+    pub fn uses_boot_image(&self, id: &str) -> bool {
+        let c = &self.spec.config;
+        c.firmware_image.as_deref() == Some(id)
+            || c.kernel_image.as_deref() == Some(id)
+            || self
+                .status
+                .disk_kernel
+                .as_ref()
+                .is_some_and(|k| k.image == id || k.previous.as_deref() == Some(id))
     }
 
     pub fn config(&self) -> &VmConfig {

@@ -199,6 +199,21 @@ pub async fn pull_image(c: Caller, Json(v): Json<Value>) -> Result<impl IntoResp
     Ok(Proto(status, r))
 }
 
+/// `POST /vms/{id}/extract-kernel`: `202` with the kernel image, extracting.
+pub async fn extract_vm_kernel(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ExtractVmKernelRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(
+        StatusCode::ACCEPTED,
+        crate::service::vm::extract_vm_kernel(&c, req).await?,
+    ))
+}
+
 /// A deletion request the image controller finishes (spec/reconciliation.md
 /// §6.3): `204` once the image is gone (normally at once, or with `?wait`
 /// when it went in time), else `202` with it.

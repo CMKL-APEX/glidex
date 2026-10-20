@@ -13,6 +13,9 @@ use std::time::Duration;
 
 type Next = Result<Option<Duration>, VmManagerError>;
 
+/// How long a VM-owned kernel image is kept before it may go unused.
+const OWNED_KERNEL_GRACE_SECS: u64 = 300;
+
 impl VmManager {
     fn image_event(&self, id: &str, kind: EventKind, reason: &str, message: impl Into<String>) {
         let _ = self.store.push_event(
@@ -62,6 +65,28 @@ impl VmManager {
             return Ok(own.or(stores));
         }
         let extracted = matches!(img.source, crate::images::ImageSource::Extracted { .. });
+        // A kernel extracted from a VM's disk goes once no VM boots it or
+        // keeps it to go back to (spec/kernel-boot.md K12); not while young,
+        // so a new one isn't lost before its VM records it.
+        if img.owner.is_some()
+            && !matches!(img.status, ImageStatus::Extracting)
+            && crate::images::now().saturating_sub(img.created_at) > OWNED_KERNEL_GRACE_SECS
+            && !self
+                .vms
+                .read()
+                .await
+                .values()
+                .any(|v| v.uses_boot_image(&img.id))
+        {
+            self.images.request_image_delete(&img.id)?;
+            self.image_event(
+                &img.id,
+                EventKind::Normal,
+                "Unused",
+                "no VM boots this kernel any more",
+            );
+            return Ok(Some(Duration::from_secs(1)));
+        }
         match img.status.clone() {
             // A kernel extraction (spec/kernel-boot.md §10), resumed if its
             // task is gone (a restart).

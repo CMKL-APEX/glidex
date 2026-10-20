@@ -87,7 +87,7 @@ pub(crate) fn set_cond(
     }
 }
 
-fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
+pub(crate) fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
     conds.retain(|c| c.kind != kind);
 }
 
@@ -853,6 +853,33 @@ impl VmManager {
             return Ok(Some(Duration::from_secs(at - now)));
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
+
+        // A kernel the guest installed (spec/kernel-boot.md §10.5): extract
+        // it first, so the bindings below use what this records.
+        let followed: Vm;
+        let vm = if vm.config().kernel_from_disk || st.disk_kernel.is_some() {
+            if let Err(e) = self.follow_disk_kernel(vm, &mut st).await {
+                set_cond(
+                    &mut st.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "KernelNotExtracted",
+                    e.to_string(),
+                );
+                if !matches!(st.phase, VmPhase::Failed) {
+                    st.phase = VmPhase::Stopped;
+                }
+                self.write_status(&vm.id, vm.generation, st, events).await?;
+                return Ok(Some(Duration::from_secs(30)));
+            }
+            followed = Vm {
+                status: st.clone(),
+                ..vm.clone()
+            };
+            &followed
+        } else {
+            vm
+        };
 
         // Dependencies: disks, and this node's copy of the firmware or
         // kernel image.

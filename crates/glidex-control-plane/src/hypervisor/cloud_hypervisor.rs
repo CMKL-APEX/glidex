@@ -210,7 +210,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
-    (disk, format): (&str, ImageType),
+    (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
     [
@@ -230,10 +230,16 @@ pub(crate) fn extractor_args(
     .map(String::from)
     .into_iter()
     .chain([
+        // A linked disk glidex made opens its image (§10.5).
         format!(
-            "path={},readonly=on,image_type={}",
+            "path={},readonly=on,image_type={}{}",
             q(disk),
-            image_type_name(format)
+            image_type_name(format),
+            if backing_files {
+                ",backing_files=on"
+            } else {
+                ""
+            }
         ),
         format!("path={},image_type=raw", q(out)),
     ])
@@ -571,7 +577,7 @@ mod tests {
         let x = extractor_args(
             bin.to_str().unwrap(),
             ("/nonexistent/kernel", "/nonexistent/initrd"),
-            ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2),
+            ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2, false),
             "/nonexistent/out.raw",
         );
         let out = std::process::Command::new(&x[0])

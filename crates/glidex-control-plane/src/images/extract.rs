@@ -161,49 +161,110 @@ impl ImageManager {
                 "an image named {name} already exists (pass a different name, or delete it first)"
             )));
         }
-        let img = Image {
-            id: uuid::Uuid::new_v4().to_string(),
-            name,
-            kind: ImageKind::Kernel,
-            hypervisor: None,
-            source: ImageSource::Extracted {
-                image_id: src.id.clone(),
-                image_sha256: String::new(),
-                path: String::new(),
-                verified: false,
-            },
-            status: ImageStatus::Extracting,
-            format: DiskFormat::Raw,
-            virtual_size_bytes: 0,
-            file_size_bytes: 0,
-            sha256: String::new(),
-            arch: src.arch,
-            created_at: now(),
-            download: Default::default(),
-            retry_seq: 0,
-            applied_retry_seq: 0,
-            deletion_requested_at: None,
-            pinned: nodes,
-            release: Vec::new(),
-            keep_server_copy: true,
-            initrd: None,
-            cmdline: None,
-            kernel_release: None,
-            for_image: Some(src.id.clone()),
+        let mut img = extraction_record(name, src.arch, nodes);
+        img.source = ImageSource::Extracted {
+            image_id: src.id.clone(),
+            disk_id: None,
+            image_sha256: String::new(),
+            path: String::new(),
+            verified: false,
         };
+        img.for_image = Some(src.id.clone());
         self.insert_image(&img)?;
         tracing::info!(image = %img.name, from = %src.name, "kernel extraction queued");
         Ok((img, true))
     }
 
+    /// A kernel image to extract from VM `vm`'s root disk `disk`, owned by
+    /// the VM (§10.5, K12), named after it.
+    pub(crate) fn new_disk_kernel(
+        &self,
+        vm: &str,
+        vm_name: &str,
+        disk: &super::Disk,
+        arch: Arch,
+    ) -> Result<Image, ImageError> {
+        if !self.can_extract(arch) {
+            return Err(ImageError::InvalidImage(format!(
+                "kernels can't be extracted on this host for {} (no extractor, or GLIDEX_KERNEL_EXTRACTION=off)",
+                arch.as_str()
+            )));
+        }
+        let stem: String = vm_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let mut img = extraction_record(String::new(), arch, Vec::new());
+        img.name = format!("{}-kernel-{}", stem.trim_start_matches('.'), &img.id[..8]);
+        if img.name.len() > 64 {
+            img.name = format!("kernel-{}", img.id);
+        }
+        validate_name("image", &img.name)?;
+        img.source = ImageSource::Extracted {
+            image_id: String::new(),
+            disk_id: Some(disk.id.clone()),
+            image_sha256: String::new(),
+            path: String::new(),
+            verified: false,
+        };
+        img.owner = Some(vm.to_string());
+        self.insert_image(&img)?;
+        tracing::info!(image = %img.name, disk = %disk.name, "kernel extraction from a VM's disk queued");
+        Ok(img)
+    }
+
+    /// Drop kernel image `id`, record and files, as never made (a duplicate,
+    /// or a failed extraction nobody asked for).
+    pub(crate) fn discard_kernel(&self, id: &str) -> Result<(), ImageError> {
+        if let Ok(img) = self.get_image(id) {
+            self.remove_image_record(id)?;
+            for (_, p) in self.image_files(&img) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        for p in [
+            self.part_path(id),
+            self.initrd_part_path(id),
+            self.extract_out_path(id),
+        ] {
+            let _ = std::fs::remove_file(p);
+        }
+        Ok(())
+    }
+
+    /// A ready kernel image with the same kernel and initramfs as `img`
+    /// (K12: identical files are stored once).
+    pub(crate) fn same_kernel(&self, img: &Image) -> Option<Image> {
+        self.images
+            .read()
+            .unwrap()
+            .values()
+            .find(|i| {
+                i.id != img.id
+                    && i.is_kernel()
+                    && i.usable()
+                    && i.arch == img.arch
+                    && i.sha256 == img.sha256
+                    && i.initrd.as_ref().map(|f| &f.sha256)
+                        == img.initrd.as_ref().map(|f| &f.sha256)
+            })
+            .cloned()
+    }
+
     /// After the extractor ran (§10.3, §10.4): read its output disk `out`,
     /// choose the kernel, and install it and its initramfs as kernel image
     /// `id`. Returns the image with the files, release, command line and
-    /// source filled in, made from `src`. Blocking.
+    /// source filled in, made from `origin`. Blocking.
     pub(crate) fn finish_extraction(
         &self,
         id: &str,
-        src: &Image,
+        origin: &ExtractOrigin,
         out: &Path,
     ) -> Result<Image, ImageError> {
         let f = std::fs::File::open(out).map_err(io(out))?;
@@ -230,7 +291,7 @@ impl ImageManager {
         )?;
         let installed: InstalledKernel = self.install_kernel(
             id,
-            src.arch,
+            origin.arch,
             kernel_sha,
             Some(super::FileMeta {
                 sha256: initrd_sha,
@@ -249,12 +310,67 @@ impl ImageManager {
         installed.apply(&mut img);
         img.cmdline = Some(choice.cmdline);
         img.source = ImageSource::Extracted {
-            image_id: src.id.clone(),
-            image_sha256: src.sha256.clone(),
+            image_id: origin.image_id.clone(),
+            disk_id: origin.disk_id.clone(),
+            image_sha256: origin.sha256.clone(),
             path: choice.kernel.label(),
-            verified: src.verified(),
+            verified: origin.verified,
         };
         Ok(img)
+    }
+}
+
+/// What an extraction reads (§10.2): a disk image, or a VM's disk.
+#[derive(Debug, Clone)]
+pub struct ExtractOrigin {
+    /// The file the extractor gets read-only, and its format.
+    pub path: PathBuf,
+    pub format: DiskFormat,
+    /// A linked disk glidex made: its qcow2 backing file is the image's.
+    pub backing_files: bool,
+    pub arch: Arch,
+    /// The disk image, or empty for a VM's disk (`disk_id`).
+    pub image_id: String,
+    pub disk_id: Option<String>,
+    /// The image's digest (empty for a VM's disk, which the guest writes).
+    pub sha256: String,
+    /// As trusted as the image; a VM's disk never is.
+    pub verified: bool,
+}
+
+/// A new kernel image record waiting for its extraction.
+fn extraction_record(name: String, arch: Arch, nodes: Vec<String>) -> Image {
+    Image {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        kind: ImageKind::Kernel,
+        hypervisor: None,
+        source: ImageSource::Extracted {
+            image_id: String::new(),
+            disk_id: None,
+            image_sha256: String::new(),
+            path: String::new(),
+            verified: false,
+        },
+        status: ImageStatus::Extracting,
+        format: DiskFormat::Raw,
+        virtual_size_bytes: 0,
+        file_size_bytes: 0,
+        sha256: String::new(),
+        arch,
+        created_at: now(),
+        download: Default::default(),
+        retry_seq: 0,
+        applied_retry_seq: 0,
+        deletion_requested_at: None,
+        pinned: nodes,
+        release: Vec::new(),
+        keep_server_copy: true,
+        initrd: None,
+        cmdline: None,
+        kernel_release: None,
+        for_image: None,
+        owner: None,
     }
 }
 

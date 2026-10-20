@@ -548,6 +548,5 @@ impl VmManager {
 
 /// Whether `vm` boots through firmware or kernel image `id`.
 fn boots(vm: &crate::models::Vm, id: &str) -> bool {
-    let c = vm.config();
-    c.firmware_image.as_deref() == Some(id) || c.kernel_image.as_deref() == Some(id)
+    vm.uses_boot_image(id)
 }

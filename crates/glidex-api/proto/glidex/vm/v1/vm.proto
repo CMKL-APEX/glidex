@@ -322,6 +322,11 @@ message Vm {
   // Kernel image id (spec/kernel-boot.md §6).
   optional string kernel = 37;
   BootMode boot = 38;
+  // Following the guest's kernels (K11), and the kernel image extracted
+  // from its disk it boots, and the one before (K12).
+  optional bool kernel_from_disk = 39 [json_name = "kernel_from_disk"];
+  optional string booted_kernel = 40 [json_name = "booted_kernel"];
+  optional string previous_kernel = 41 [json_name = "previous_kernel"];
 }
 
 // How a VM boots (spec/kernel-boot.md).
@@ -408,6 +413,10 @@ message CreateVmRequest {
   // Generate the cloud-init seed (default: firmware boot, and kernel boot
   // of a managed kernel or root disk). Not with `cloud_init_path`.
   optional bool generate_seed = 32 [json_name = "generate_seed"];
+  // Boot the kernel the guest installed: extract it from the root disk
+  // when that changed (spec/kernel-boot.md K11). Needs `kernel` and a
+  // managed root disk.
+  optional bool kernel_from_disk = 33 [json_name = "kernel_from_disk"];
 }
 
 // The answer to a VM write (§12.3).
@@ -496,6 +505,8 @@ message VmChange {
   repeated DeviceRequest devices = 16;
   // Kernel image id or name; the VM must already boot a kernel image.
   optional string kernel = 17;
+  // Changing `kernel` without this in the mask turns it off.
+  optional bool kernel_from_disk = 18 [json_name = "kernel_from_disk"];
 }
 
 message UpdateVmRequest {
