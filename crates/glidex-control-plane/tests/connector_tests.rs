@@ -41,6 +41,8 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     cfg.auth.secrets_key = Some(dir.path().join("secrets.kek"));
+    // The mock IdP is a plain-HTTP issuer on the loopback.
+    cfg.auth.federation.allow_private_issuers = true;
     f(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
@@ -3926,6 +3928,71 @@ fn service_account(h: &H, by: &str) -> String {
         .unwrap()
         .1
         .id
+}
+
+/// Without `auth.federation.allow_private_issuers` (the default), a
+/// federation's issuer must be https with a public address: the control
+/// plane fetches from nothing on its own host or network.
+#[tokio::test]
+async fn federation_issuers_are_public_unless_allowed() {
+    let mock = idp::start().await;
+    let h = harness_with(|c| c.auth.federation.allow_private_issuers = false);
+    let admin = h.admin("fed-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let port = mock.base.rsplit(':').next().unwrap().to_string();
+    let make = |issuer: String| {
+        json!({"federation": {"id": "gh", "issuer": issuer, "audience": "glidex",
+            "rules": [{"match": {"repository": "acme/infra"}, "service_account": sa}]}})
+    };
+    // A plain-HTTP loopback issuer (the mock) is refused before it's read.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(make(mock.base.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+        "{v}"
+    );
+    // https to an address, or a name, that isn't public is never fetched.
+    for issuer in [
+        format!("https://127.0.0.1:{port}"),
+        format!("https://[::1]:{port}"),
+        "https://10.0.0.1".to_string(),
+        "https://169.254.169.254".to_string(),
+        format!("https://localhost:{port}"),
+    ] {
+        let (st, v) = h
+            .rest(
+                "POST",
+                "/tenants/default/federations",
+                Some(make(issuer.clone())),
+                &s,
+            )
+            .await;
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("issuer_unreachable")),
+            "{issuer}: {v}"
+        );
+        let m = v["message"].as_str().unwrap();
+        assert!(
+            m.contains("not a public address") || m.contains("no public address"),
+            "{issuer}: {m}"
+        );
+    }
+    let (_, v) = h
+        .rest("GET", "/tenants/default/federations", None, &s)
+        .await;
+    assert!(
+        v["federations"].as_array().is_none_or(|a| a.is_empty()),
+        "{v}"
+    );
 }
 
 /// spec/tenancy.md §9, D49–D51: a tenant's federations, their checks, and

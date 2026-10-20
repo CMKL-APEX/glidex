@@ -390,7 +390,9 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
-            issuers: Default::default(),
+            issuers: crate::directory::federation::Issuers::new(
+                config.auth.federation.allow_private_issuers,
+            ),
             federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
@@ -429,7 +431,9 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
-            issuers: Default::default(),
+            issuers: crate::directory::federation::Issuers::new(
+                config.auth.federation.allow_private_issuers,
+            ),
             federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,

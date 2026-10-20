@@ -578,9 +578,15 @@ is later.
 - **Federations** (D51): per tenant, `GET/POST /tenants/{id}/federations`,
   `GET/PATCH/DELETE …/{federation}` (`FederationService` on both
   transports), gxctl `federation list|add|update|remove`, and a card on
-  the tenant's page. `issuer` is `https` (a loopback URL for a test
-  mock); it is read at once (discovery, JWKS) and refused if it can't
-  be. Rules follow D50; their service accounts must be in the tenant's
+  the tenant's page. `issuer` is `https`; it is read at once (discovery,
+  JWKS) and refused if it can't be. Only public addresses are read:
+  the issuer's and the JWKS's host names resolve to public addresses
+  only, on every connection, and a URL naming a loopback, private,
+  link-local or unique-local address is refused, so a tenant
+  administrator can't make the control plane fetch from its own host or
+  network. `auth.federation.allow_private_issuers` lifts this, for an
+  issuer on the site's own network and for test mocks (plain HTTP on the
+  loopback). Rules follow D50; their service accounts must be in the tenant's
   projects. At most 20 federations per tenant, 50 rules each.
 - **Exchange** (RFC 8693's shape): `POST /auth/exchange`, public, form
   or JSON:
@@ -1695,7 +1701,7 @@ operator's to run. Task 2, federations:
 | Spec | Code |
 |---|---|
 | Records (§9, D50) | `directory/federation.rs`: `Federation`, `Rule` (exact claims, pinned to `repository` / `project_path` / `sub`, no `*`, `ttl_secs` 60–3600), `FederationStore` (table `federations`, directory scope; 20 per tenant, 50 rules each) |
-| D49's issuer | `federation::Issuers`: discovery (its `issuer` must be the federation's) and JWKS, `https` (a loopback mock in tests), cached an hour, read again for an unknown key id at most once a minute; a federation is refused when its issuer can't be read |
+| D49's issuer | `federation::Issuers`: discovery (its `issuer` must be the federation's) and JWKS, `https`, public addresses only (`PublicOnly` resolver, IP literals checked) unless `auth.federation.allow_private_issuers` (loopback mocks in tests), cached an hour, read again for an unknown key id at most once a minute; a federation is refused when its issuer can't be read |
 | API (D51) | `glidex/directory/v1/federations.proto`, `FederationService` on both transports (`service/federations.rs`, `api/federations.rs`), `/tenants/{id}/federations…`; actions `readTenantFederations` (tenant auditors, tenant admins, directory readers) and `manageTenantFederations` (tenant admins, directory admins; step-up); rules' service accounts must be the tenant's |
 | gxctl | `federation list|show|add|enable|disable|remove` (`--match`… `--service-account`, or `--rules-file`) |
 | Tests | `federation.rs` unit tests; `connector_tests.rs::federations_are_a_tenants_and_checked_when_made` |
