@@ -502,6 +502,7 @@ pub fn present(meter: &str, raw: u64) -> (f64, &'static str) {
         "mem.peak" => (r, "MiB"),
         "disk.alloc" | "disk.stored" | "image.stored" => (r / 3600.0 / 1024.0, "GiB-hours"),
         "vm.running" | "vm.paused" => (r / 3600.0, "hours"),
+        m if m.starts_with(super::sampler::DEVICE_ALLOC) => (r / 3600.0, "device-hours"),
         m if m.ends_with("bytes") => (r / (1u64 << 30) as f64, "GiB"),
         m if m.ends_with("iops_peak") || m.ends_with("iops_avg") => (r / 1000.0, "IOPS"),
         m if m.ends_with("kBps_peak") || m.ends_with("kBps_avg") => (r / 1000.0, "MB/s"),

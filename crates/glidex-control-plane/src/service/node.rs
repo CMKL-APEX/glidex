@@ -71,77 +71,110 @@ pub async fn get_node_topology(
 
 /// `GET /pci-pools` (spec/host-topology.md §9.1): each pool's devices on
 /// each node it is on, whether ready, cordoned or held and by what VM,
-/// and how many are free.
+/// and how many are free. `?project=`: the pools that project may use,
+/// with free counts and no devices, for anyone who can read the project.
 pub async fn list_pci_pools(
     call: &Call,
-    _req: pb::ListPciPoolsRequest,
+    req: pb::ListPciPoolsRequest,
 ) -> ServiceResult<pb::ListPciPoolsResponse> {
-    call.require(Ent::Host, EntitySet::new())?;
+    let project = match req.project.as_deref().filter(|p| !p.is_empty()) {
+        Some(key) => {
+            let pid = call.target_project(Some(key))?;
+            call.set_project(&pid);
+            call.require_readable(
+                "readProject",
+                Ent::Project(pid.clone()),
+                crate::api::project_entities(&pid),
+                "project",
+            )?;
+            Some(pid)
+        }
+        None => {
+            call.require(Ent::Host, EntitySet::new())?;
+            None
+        }
+    };
     let m = call.manager();
     let loads = m.loads_by_node().await;
-    let pools = m
-        .pci_pools()
-        .iter()
-        .map(|p| {
-            let nodes: Vec<pb::PciPoolNode> = loads
-                .iter()
-                .filter(|(n, _)| {
-                    p.nodes.is_empty()
-                        || p.nodes.iter().any(|x| *x == n.meta.id || *x == n.spec.name)
-                })
-                .filter_map(|(n, load)| {
-                    let t = n.status.topology.as_ref()?;
-                    let devices: Vec<pb::PciPoolDevice> = t
-                        .devices
-                        .iter()
-                        .filter(|d| {
-                            p.matches
-                                .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
-                        })
-                        .map(|d| pb::PciPoolDevice {
-                            address: d.address.clone(),
-                            numa_node: d.numa_node,
-                            switch: d.switch.clone(),
-                            ready: d.ready,
-                            cordoned: n.spec.cordoned_devices.contains(&d.address),
-                            holder: load.devices.get(&d.address).cloned(),
-                            ..Default::default()
-                        })
-                        .collect();
-                    if devices.is_empty() {
-                        return None;
-                    }
-                    let free = devices
-                        .iter()
-                        .filter(|d| {
-                            d.ready
-                                && !d.cordoned
-                                && crate::scheduler::device_taken(
-                                    &n.status.pci_groups,
-                                    &load.devices,
-                                    &d.address,
-                                )
-                                .is_none()
-                        })
-                        .count() as u32;
-                    Some(pb::PciPoolNode {
-                        node: n.meta.id.clone(),
-                        node_name: n.spec.name.clone(),
-                        free,
-                        devices,
+    let configured = m.pci_pools();
+    let pools = configured.iter().map(|p| {
+        let nodes: Vec<pb::PciPoolNode> = loads
+            .iter()
+            .filter(|(n, _)| {
+                p.nodes.is_empty() || p.nodes.iter().any(|x| *x == n.meta.id || *x == n.spec.name)
+            })
+            .filter_map(|(n, load)| {
+                let t = n.status.topology.as_ref()?;
+                let devices: Vec<pb::PciPoolDevice> = t
+                    .devices
+                    .iter()
+                    .filter(|d| {
+                        p.matches
+                            .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
+                    })
+                    .map(|d| pb::PciPoolDevice {
+                        address: d.address.clone(),
+                        numa_node: d.numa_node,
+                        switch: d.switch.clone(),
+                        ready: d.ready,
+                        cordoned: n.spec.cordoned_devices.contains(&d.address),
+                        holder: load.devices.get(&d.address).cloned(),
                         ..Default::default()
                     })
+                    .collect();
+                if devices.is_empty() {
+                    return None;
+                }
+                let free = devices
+                    .iter()
+                    .filter(|d| {
+                        d.ready
+                            && !d.cordoned
+                            && crate::scheduler::device_taken(
+                                &n.status.pci_groups,
+                                &load.devices,
+                                &d.address,
+                            )
+                            .is_none()
+                    })
+                    .count() as u32;
+                Some(pb::PciPoolNode {
+                    node: n.meta.id.clone(),
+                    node_name: n.spec.name.clone(),
+                    free,
+                    devices,
+                    ..Default::default()
                 })
-                .collect();
-            pb::PciPool {
-                name: p.name.clone(),
-                class: p.class.clone(),
-                free: nodes.iter().map(|n| n.free).sum(),
-                nodes,
-                ..Default::default()
-            }
-        })
-        .collect();
+            })
+            .collect();
+        pb::PciPool {
+            name: p.name.clone(),
+            class: p.class.clone(),
+            free: nodes.iter().map(|n| n.free).sum(),
+            nodes,
+            ..Default::default()
+        }
+    });
+    let pools = match &project {
+        None => pools.collect(),
+        // Only pools it may use, and no addresses or holders.
+        Some(pid) => {
+            let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(pid.clone()))];
+            pools
+                .filter(|p| {
+                    let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
+                    es.project(pid);
+                    call.allowed_action("usePciPool", e, es, with_project)
+                })
+                .map(|mut p| {
+                    for n in &mut p.nodes {
+                        n.devices.clear();
+                    }
+                    p
+                })
+                .collect()
+        }
+    };
     Ok(pb::ListPciPoolsResponse {
         pools,
         ..Default::default()

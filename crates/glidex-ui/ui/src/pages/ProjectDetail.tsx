@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { Binding, Network, NetworkShare, ProjectView, QuotaKey, Quotas, Router } from "../types";
-import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTimestamp, isClusterNetwork, networkModeLabel, notReady } from "../types";
+import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTimestamp, isClusterNetwork, networkModeLabel, notReady, quotaPools } from "../types";
 import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
@@ -34,9 +34,23 @@ const CAPS = [
 ] as const;
 type Cap = (typeof CAPS)[number];
 
-function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q: Quotas) => Promise<void>; onCancel: () => void }) {
+function QuotaEditor({
+  quotas,
+  pools,
+  onSave,
+  onCancel,
+}: {
+  quotas: Quotas;
+  /** Device pools to offer a limit for. */
+  pools: string[];
+  onSave: (q: Quotas) => Promise<void>;
+  onCancel: () => void;
+}) {
   const [values, setValues] = useState<Record<QuotaKey, string>>(
     () => Object.fromEntries(QUOTA_KEYS.map((k) => [k, quotas[k] === undefined ? "" : String(quotas[k])])) as Record<QuotaKey, string>,
+  );
+  const [devices, setDevices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(pools.map((p) => [p, quotas.devices?.[p] === undefined ? "" : String(quotas.devices[p])])),
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,6 +64,12 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
       const q: Quotas = Object.fromEntries(
         QUOTA_KEYS.filter((k) => values[k].trim() !== "").map((k) => [k, Number(values[k])]),
       );
+      const devs = Object.fromEntries(
+        Object.entries(devices)
+          .filter(([, v]) => v.trim() !== "")
+          .map(([p, v]) => [p, Number(v)]),
+      );
+      if (Object.keys(devs).length > 0) q.devices = devs;
       await onSave(q);
     } catch (err) {
       setError(errorMessage(err));
@@ -73,6 +93,22 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
               placeholder="unlimited"
               value={values[k]}
               onChange={(e) => setValues({ ...values, [k]: e.target.value })}
+            />
+          </div>
+        ))}
+        {pools.map((p) => (
+          <div key={`pool-${p}`}>
+            <label htmlFor={`quota-pool-${p}`} className="block text-sm font-medium text-gray-700">
+              Devices: {p}
+            </label>
+            <input
+              id={`quota-pool-${p}`}
+              className={inputClass}
+              type="number"
+              min={0}
+              placeholder="unlimited"
+              value={devices[p] ?? ""}
+              onChange={(e) => setDevices({ ...devices, [p]: e.target.value })}
             />
           </div>
         ))}
@@ -220,6 +256,8 @@ export default function ProjectDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingQuotas, setEditingQuotas] = useState(false);
+  /** Pools the project may use, to offer a limit for. */
+  const [pools, setPools] = useState<string[]>([]);
 
   const allowed = useCan(CAPS.map((action) => ({ action, resource: { type: "Project" as const, id } })));
   const can = (c: Cap) => !!allowed?.[CAPS.indexOf(c)];
@@ -241,6 +279,10 @@ export default function ProjectDetail() {
       .listRouters(id)
       .then(setRouters)
       .catch(() => setRouters([]));
+    api
+      .listProjectPciPools(id)
+      .then((ps) => setPools(ps.map((p) => p.name ?? "").filter(Boolean)))
+      .catch(() => setPools([]));
   }, [id]);
 
   const refreshBindings = useCallback(() => {
@@ -350,6 +392,7 @@ export default function ProjectDetail() {
         {editingQuotas ? (
           <QuotaEditor
             quotas={project.quotas ?? {}}
+            pools={[...new Set([...quotaPools(project.quotas, project.usage), ...pools])].sort()}
             onCancel={() => setEditingQuotas(false)}
             onSave={async (quotas) => {
               await api.updateProject(project.id, { quotas });
@@ -364,6 +407,14 @@ export default function ProjectDetail() {
                 <div className="text-xs text-gray-500">{QUOTA_LABELS[k]}</div>
                 <div className="text-lg">
                   <UsageCell used={project.usage?.[k]} limit={project.quotas?.[k]} />
+                </div>
+              </div>
+            ))}
+            {quotaPools(project.quotas, project.usage).map((p) => (
+              <div key={`pool-${p}`}>
+                <div className="text-xs text-gray-500">Devices: {p}</div>
+                <div className="text-lg">
+                  <UsageCell used={project.usage?.devices?.[p]} limit={project.quotas?.devices?.[p]} />
                 </div>
               </div>
             ))}

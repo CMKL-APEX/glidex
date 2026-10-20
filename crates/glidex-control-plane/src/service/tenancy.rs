@@ -47,6 +47,11 @@ pub fn quotas_to_pb(q: &crate::tenancy::Quotas) -> pb::Quotas {
         networks: c(q.networks),
         routers: c(q.routers),
         external_ips: c(q.external_ips),
+        devices: q
+            .devices
+            .iter()
+            .map(|(k, &v)| (k.clone(), v.min(u32::MAX as u64) as u32))
+            .collect(),
         ..Default::default()
     }
 }
@@ -62,6 +67,11 @@ pub fn quotas_from_pb(q: &pb::Quotas) -> crate::tenancy::Quotas {
         networks: c(q.networks),
         routers: c(q.routers),
         external_ips: c(q.external_ips),
+        devices: q
+            .devices
+            .iter()
+            .map(|(k, &v)| (k.clone(), v.into()))
+            .collect(),
     }
 }
 

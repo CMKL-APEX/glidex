@@ -18,6 +18,30 @@ const VM_GAUGES: [&str; 5] = [
 
 const MIB: u64 = 1 << 20;
 
+/// `device.alloc.<pool>`: devices of a pool a VM holds (spec/metering.md
+/// §2, spec/host-topology.md §11).
+pub const DEVICE_ALLOC: &str = "device.alloc.";
+
+/// Devices the VM holds of each pool it asks of or holds: what it was
+/// placed with, else none of a pool it asks of.
+fn pool_levels(vm: &Vm) -> std::collections::BTreeMap<String, u64> {
+    let mut out: std::collections::BTreeMap<String, u64> = vm
+        .config()
+        .devices
+        .iter()
+        .map(|d| (d.pool.clone(), 0))
+        .collect();
+    for d in vm
+        .status
+        .placement
+        .iter()
+        .flat_map(|p| p.pool_devices.iter())
+    {
+        *out.entry(d.pool.clone()).or_default() += 1;
+    }
+    out
+}
+
 pub fn vm_subject(vm: &Vm) -> Subject {
     let mut s = Subject::new(
         SubjectKind::Vm,
@@ -98,6 +122,9 @@ fn sample_vm(
         for m in VM_GAUGES {
             round.gauge_end_at(&s, m, end)?;
         }
+        for pool in pool_levels(vm).keys() {
+            round.gauge_end_at(&s, &format!("{DEVICE_ALLOC}{pool}"), end)?;
+        }
         if let Some(e) = &st.last_exit {
             consume_exit(round, vm, e, disks)?;
         }
@@ -118,6 +145,11 @@ fn sample_vm(
     ];
     for (m, level) in levels {
         round.gauge_run(&s, m, run, launched, level, since, now, prev_end)?;
+    }
+    // Held while paused too: nobody else can have them.
+    for (pool, level) in pool_levels(vm) {
+        let m = format!("{DEVICE_ALLOC}{pool}");
+        round.gauge_run(&s, &m, run, launched, level, since, now, prev_end)?;
     }
 
     let usage = match &inst.runner {
@@ -224,13 +256,19 @@ pub fn consume_exit(
         // Never sampled live: charge its allocation from launch to exit,
         // with the current sizing (pauses are unknown), once.
         let c = vm.config();
-        for (m, level) in [
-            ("vm.running", 1),
-            ("cpu.alloc", c.vcpu_count as u64),
-            ("mem.alloc", c.mem_size_mib as u64),
-        ] {
-            round.gauge_run(&s, m, &e.instance_id, launched, level, launched, at, None)?;
-            round.gauge_end_at(&s, m, at)?;
+        let mut levels = vec![
+            ("vm.running".to_string(), 1),
+            ("cpu.alloc".to_string(), c.vcpu_count as u64),
+            ("mem.alloc".to_string(), c.mem_size_mib as u64),
+        ];
+        levels.extend(
+            pool_levels(vm)
+                .into_iter()
+                .map(|(pool, n)| (format!("{DEVICE_ALLOC}{pool}"), n)),
+        );
+        for (m, level) in levels {
+            round.gauge_run(&s, &m, &e.instance_id, launched, level, launched, at, None)?;
+            round.gauge_end_at(&s, &m, at)?;
         }
         round.flag(&s, at, Flag::Interpolated);
         round.mark_run(&s, &e.instance_id);
@@ -503,6 +541,45 @@ mod tests {
         sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 120_000).unwrap();
         l.commit(r).unwrap();
         assert_eq!(totals(&l)["cpu.alloc"], 2 * 45);
+    }
+
+    #[test]
+    fn pool_devices_are_metered_per_pool_until_exit() {
+        let (_dir, l, host) = setup();
+        cgroup(&host, 0, 0);
+        let launched = T0 / 1000;
+        let placed = serde_json::json!({ "placement": { "node": "n1", "at": 0, "pool_devices": [
+            { "pool": "a100", "address": "0000:87:00.0" },
+            { "pool": "a100", "address": "0000:90:00.0" },
+        ]}});
+        let mut v = vm("running", instance("i1", launched), placed);
+        v.spec.config.devices = serde_json::from_value(serde_json::json!([
+            { "pool": "a100", "count": 2 }, { "pool": "nic" }
+        ]))
+        .unwrap();
+        let mut r = l.begin_round(T0 + 30_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 30_000).unwrap();
+        // Paused at +40 s: the devices stay held.
+        v.status.phase = VmPhase::Paused;
+        v.status.phase_since = Some(launched + 40);
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 60_000).unwrap();
+        // Exited at +75 s.
+        v.status.phase = VmPhase::Stopped;
+        v.status.instance = None;
+        v.status.last_exit = serde_json::from_value(
+            serde_json::json!({ "at": launched + 75, "instance_id": "i1", "cause": "clean_exit" }),
+        )
+        .unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 90_000).unwrap();
+        l.commit(r).unwrap();
+        let t = totals(&l);
+        assert_eq!(t["device.alloc.a100"], 2 * 75);
+        // Asked of but not placed: nothing.
+        assert_eq!(t.get("device.alloc.nic").copied().unwrap_or(0), 0);
+        assert_eq!(
+            super::super::query::present("device.alloc.a100", 2 * 3600),
+            (2.0, "device-hours")
+        );
     }
 
     /// D12: the shim's snapshot covers the tail between the last sample

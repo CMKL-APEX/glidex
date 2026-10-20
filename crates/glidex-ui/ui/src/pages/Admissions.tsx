@@ -47,7 +47,8 @@ function AdmissionForm({
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const q: TenantQuotas = {};
+    // Pool limits aren't edited here: keep them.
+    const q: TenantQuotas = admission?.cap?.devices ? { devices: admission.cap.devices } : {};
     for (const k of QUOTA_KEYS) if (cap[k].trim() !== "") q[k] = Number(cap[k]);
     try {
       await api.setAdmission(tenant.trim(), { cap: q, suspended: isSuspended });

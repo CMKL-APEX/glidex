@@ -156,6 +156,8 @@ message Quotas {
   optional uint32 networks = 6;
   optional uint32 routers = 7;
   optional uint32 external_ips = 8 [json_name = "external_ips"];
+  // Devices of each PCI pool, by pool name; a pool not named is unlimited.
+  map<string, uint32> devices = 9;
 }
 
 enum AdmissionStatus {
