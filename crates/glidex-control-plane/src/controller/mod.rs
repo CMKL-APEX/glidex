@@ -15,6 +15,7 @@ pub mod ovn;
 pub mod placement;
 pub mod queue;
 pub mod startup;
+pub mod store_copies;
 pub mod vm;
 
 use crate::config::{Config, VmRunnerKind};

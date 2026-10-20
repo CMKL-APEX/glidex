@@ -459,14 +459,23 @@ pub fn check_status_write(
                     }
                 }
                 Some(("disk", id)) => {
-                    if !get(TableId::Disks, id)?.is_some_and(|d| d["node"] == node) {
+                    if !get(TableId::Disks, id)?.is_some_and(|d| disk_is_nodes(&d, node)) {
                         return Err(format!("disk {id} is not bound to this node"));
                     }
                 }
                 _ => return Err(format!("events {key}: not a node's to write")),
             },
             (TableId::ImageCaches, _) => {
-                if !key.rsplit_once('/').is_some_and(|(_, n)| n == node) {
+                let whose = key.rsplit_once('/').map(|(_, n)| n).unwrap_or_default();
+                // A shared datastore's copy: any node that reaches it may say
+                // (spec/storage.md S9).
+                if let Some(ds) = whose.strip_prefix(crate::controller::store_copies::DS_PREFIX) {
+                    let reaches = get(TableId::DatastoreNodes, &format!("{ds}/{node}"))?
+                        .is_some_and(|r| r["reachable"] == true);
+                    if !reaches {
+                        return Err(format!("{key}: a datastore this node doesn't reach"));
+                    }
+                } else if whose != node {
                     return Err(format!("{key}: another node's image cache"));
                 }
             }

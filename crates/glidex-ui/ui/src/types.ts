@@ -446,6 +446,9 @@ export interface ImageCopy {
   bytes?: U64;
   error?: string;
   pinned?: boolean;
+  /** A shared datastore's copy (`node` empty): what linked disks there overlay (spec/storage.md S9). */
+  datastore?: string;
+  datastore_name?: string;
 }
 
 export interface ImageInfo {

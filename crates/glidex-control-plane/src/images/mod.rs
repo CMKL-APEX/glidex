@@ -685,6 +685,11 @@ pub struct ImageCopy {
     /// Kept whether or not the node needs it (§9.2.2).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// A shared datastore's copy (`node` empty), spec/storage.md S9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datastore: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datastore_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

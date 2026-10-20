@@ -54,7 +54,8 @@ impl VmManager {
             .collect()
     }
 
-    /// Every row of `image`'s copies, of nodes in the cluster or not.
+    /// Every row of `image`'s copies, of nodes in the cluster or not; not
+    /// those in shared datastores (`store_copies`).
     fn image_cache_rows(&self, image: &str) -> Vec<(String, CacheRow)> {
         let db = self.store.database();
         let Ok(txn) = db.begin_read() else {
@@ -67,8 +68,12 @@ impl VmManager {
         let mut out = Vec::new();
         if let Ok(it) = t.range(prefix.as_str()..format!("{prefix}~").as_str()) {
             for r in it.flatten() {
+                let node = &r.0.value()[prefix.len()..];
+                if node.starts_with(super::store_copies::DS_PREFIX) {
+                    continue;
+                }
                 if let Ok(row) = serde_json::from_slice::<CacheRow>(r.1.value()) {
-                    out.push((r.0.value()[prefix.len()..].to_string(), row));
+                    out.push((node.to_string(), row));
                 }
             }
         }

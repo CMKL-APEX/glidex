@@ -185,6 +185,8 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
                 bytes: c.bytes,
                 error: c.error.clone(),
                 pinned: c.pinned.then_some(true),
+                datastore: c.datastore.clone(),
+                datastore_name: c.datastore_name.clone(),
                 ..Default::default()
             })
             .collect(),

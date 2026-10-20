@@ -289,19 +289,36 @@ function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemo
   );
 }
 
-/** Where the image's file is, in a cluster: one line per node's copy. */
+/** Where the image's file is: one line per node's copy (in a cluster),
+ * and per shared datastore's copy. */
 function Copies({ img, onRemove }: { img: ImageInfo; onRemove?: (node: string) => void }) {
-  const copies = img.copies ?? [];
-  if (copies.length === 0) return null;
+  const all = img.copies ?? [];
+  const copies = all.filter((c) => !c.datastore);
+  const stores = all.filter((c) => c.datastore);
+  if (all.length === 0) return null;
   const ready = copies.filter((c) => c.state === "ready").length;
   const pending = copies.length - ready;
+  const inStores = stores.filter((c) => c.state === "ready").length;
   return (
     <details className="mt-1 text-xs text-gray-600">
       <summary className="cursor-pointer">
-        on {ready} node{ready === 1 ? "" : "s"}
+        {copies.length > 0 && `on ${ready} node${ready === 1 ? "" : "s"}`}
         {pending ? `, ${pending} on the way, going or failed` : ""}
+        {stores.length > 0 && `${copies.length > 0 ? "; " : ""}in ${inStores} shared datastore${inStores === 1 ? "" : "s"}`}
       </summary>
       <ul className="mt-1 space-y-0.5">
+        {stores.map((c) => (
+          <li key={`ds:${c.datastore}`}>
+            <span className="font-medium">datastore {c.datastore_name ?? c.datastore}</span>:{" "}
+            {c.state === "failed" ? (
+              <span className="text-red-600">failed{c.error ? `: ${c.error}` : ""}</span>
+            ) : c.state === "downloading" ? (
+              "copying"
+            ) : (
+              "ready"
+            )}
+          </li>
+        ))}
         {copies.map((c) => (
           <li key={c.node}>
             <span className="font-medium">{c.node_name ?? c.node.slice(0, 8)}</span>:{" "}

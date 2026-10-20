@@ -3380,8 +3380,9 @@ impl VmManager {
 
     /// Each node's copy of image `id`, in a cluster.
     fn image_copies(&self, id: &str) -> Vec<images::ImageCopy> {
+        let stores = self.datastore_copies(id);
         if self.cluster().is_none() {
-            return Vec::new();
+            return stores;
         }
         let mut out: Vec<images::ImageCopy> = self
             .image_caches(id)
@@ -3398,6 +3399,8 @@ impl VmManager {
                 bytes: row.bytes,
                 error: row.error,
                 pinned: false,
+                datastore: None,
+                datastore_name: None,
             })
             .collect();
         // Copies wanted on chosen nodes, and copies asked to go (§9.2.2).
@@ -3421,11 +3424,40 @@ impl VmManager {
                     bytes: 0,
                     error: String::new(),
                     pinned: true,
+                    datastore: None,
+                    datastore_name: None,
                 });
             }
         }
         out.sort_by(|a, b| a.node_name.cmp(&b.node_name));
+        out.extend(stores);
         out
+    }
+
+    /// The copies of image `id` in shared datastores (spec/storage.md S9).
+    fn datastore_copies(&self, id: &str) -> Vec<images::ImageCopy> {
+        let db = self.store.database();
+        self.store_copies(id)
+            .into_iter()
+            .map(|(ds, row)| images::ImageCopy {
+                node: String::new(),
+                node_name: None,
+                state: match row.phase {
+                    crate::controller::image_cache::CachePhase::Downloading => "downloading",
+                    crate::controller::image_cache::CachePhase::Ready => "ready",
+                    crate::controller::image_cache::CachePhase::Failed => "failed",
+                }
+                .to_string(),
+                bytes: row.bytes,
+                error: row.error,
+                pinned: false,
+                datastore_name: crate::datastore::record::find(&db, &ds)
+                    .ok()
+                    .flatten()
+                    .map(|d| d.name),
+                datastore: Some(ds),
+            })
+            .collect()
     }
 
     pub async fn list_images(&self) -> Vec<ImageResponse> {

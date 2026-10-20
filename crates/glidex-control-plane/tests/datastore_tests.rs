@@ -467,3 +467,110 @@ async fn a_shared_datastore_is_claimed_and_its_disks_are_bound_to_no_node() {
     assert_eq!(b["node_status"][0]["reason"], "NotEmpty", "{b}");
     assert!(!busy.join(".glidex-datastore").exists());
 }
+
+/// A linked disk on a shared datastore overlays the datastore's own copy of
+/// its image, made when the disk needs it and gone with the image
+/// (spec/storage.md S8, S9).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let h = harness();
+    let t = h.admin("root");
+    let dir = place("nfs-img");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "nfs-img", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    h.probed("nfs-img", &t).await;
+
+    // A ready qcow2 image on this host.
+    let id = "img-shared";
+    let images = h.app.manager.images();
+    let base = images.image_path(id);
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    let out = std::process::Command::new("qemu-img")
+        .args(["create", "-q", "-f", "qcow2"])
+        .arg(&base)
+        .arg("64M")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let sha = glidex_control_plane::images::download::sha256_path(&base).unwrap();
+    let size = std::fs::metadata(&base).unwrap().len();
+    let img = json!({
+        "id": id, "name": "base-shared", "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 64 << 20, "file_size_bytes": size, "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(id, img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    images.sync_keys(TableId::Images, &[id.to_string()]);
+
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(
+                json!({"project": h.project(), "name": "lnk", "image": id, "datastore": "nfs-img"}),
+            ),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = h.ready_disk("lnk", &t).await;
+    assert_eq!(d["origin"]["image"]["mode"], "CLONE_MODE_LINKED", "{d}");
+    // Its overlay names the datastore's copy, relative to itself.
+    let copy = dir.join("images").join(format!("{id}.qcow2"));
+    assert!(copy.exists());
+    let (s, detail) = h.rest("GET", "/disks/lnk", None, &t).await;
+    assert_eq!(s, StatusCode::OK, "{detail}");
+    assert_eq!(
+        detail["disk"]["info"]["backing_filename"],
+        format!("../images/{id}.qcow2"),
+        "{detail}"
+    );
+    let (s, i) = h.rest("GET", &format!("/images/{id}"), None, &t).await;
+    assert_eq!(s, StatusCode::OK, "{i}");
+    let copies = i["image"]["copies"].as_array().cloned().unwrap_or_default();
+    assert!(
+        copies
+            .iter()
+            .any(|c| c["datastore_name"] == "nfs-img" && c["state"] == "ready"),
+        "{i}"
+    );
+
+    // The image can't go while the disk overlays it; then its copy goes too.
+    let (s, v) = h.rest("DELETE", &format!("/images/{id}"), None, &t).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, v) = h.rest("DELETE", "/disks/lnk", None, &t).await;
+    assert!(s.is_success(), "{v}");
+    for _ in 0..200 {
+        let (s, _) = h.rest("DELETE", &format!("/images/{id}"), None, &t).await;
+        if s.is_success() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for _ in 0..200 {
+        if !copy.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!copy.exists(), "the datastore's copy goes with the image");
+}

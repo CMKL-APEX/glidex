@@ -2128,6 +2128,134 @@ async fn a_shared_datastore_serves_every_node_and_its_disks_follow_their_vm() {
     assert_eq!(launch["volume_locks"], json!([lock]), "{launch}");
 }
 
+/// A linked disk on a shared datastore, made by a node that doesn't have
+/// the image (the agent, the only node on the datastore): it brings the
+/// image into the datastore from the server, and the disk overlays that
+/// copy (spec/storage.md S8, S9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let dir = root.join(format!("nfs-img-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).unwrap();
+    // On the agent only: it is the disk's worker from the start, and the
+    // image is on the server only.
+    let body = json!({ "name": "nfs-img", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR",
+                       "nodes": ["agent1"] });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+        if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        break;
+    }
+    wait_for("the agent reaching it", || async {
+        let (_, v) = call(&server, "GET", "/datastores/nfs-img", None, &[]).await;
+        v["datastore"]["node_status"]
+            .as_array()
+            .is_some_and(|r| r.len() == 1 && r[0]["reachable"] == true)
+    })
+    .await;
+
+    // A real qcow2, on the server only.
+    let id = "img-c";
+    let base = server.manager.images().image_path(id);
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    assert!(
+        std::process::Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2"])
+            .arg(&base)
+            .arg("64M")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sha = glidex_control_plane::images::download::sha256_path(&base).unwrap();
+    let size = std::fs::metadata(&base).unwrap().len();
+    let img = json!({
+        "id": id, "name": "base-c", "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 64 << 20, "file_size_bytes": size, "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    server
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(id, img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    wait_for("the image on both nodes' records", || async {
+        server.manager.images().get_image(id).is_ok()
+            && agent.manager.images().get_image(id).is_ok()
+    })
+    .await;
+
+    // A VM on the agent with a linked disk on the shared datastore: the
+    // agent is its worker.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let mut vm = vm_body("linked-nfs", "agent1");
+    vm["data_disks"] = json!([]);
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "ld", "project": project, "image": id, "datastore": "nfs-img" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    assert_eq!(
+        d["disk"]["worker"],
+        agent.manager.local_node_id().as_str(),
+        "{d}"
+    );
+    let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    vm["data_disks"] = json!(["ld"]);
+    let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    let copy = dir.join("images").join(format!("{id}.qcow2"));
+    let file = dir.join("disks").join(format!("{disk_id}.qcow2"));
+    wait_for("the linked disk made on the datastore", || async {
+        server
+            .manager
+            .images()
+            .get_disk(&disk_id)
+            .is_ok_and(|d| d.phase == glidex_control_plane::images::DiskPhase::Ready)
+    })
+    .await;
+    assert!(copy.exists() && file.exists());
+    let (_, i) = call(&server, "GET", &format!("/images/{id}"), None, &[]).await;
+    assert!(
+        image_copies(&i)
+            .iter()
+            .any(|c| c["datastore_name"] == "nfs-img" && c["state"] == "ready"),
+        "{i}"
+    );
+    let info = std::process::Command::new("qemu-img")
+        .args(["info", "--output=json"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let info: Value = serde_json::from_slice(&info.stdout).unwrap();
+    assert_eq!(
+        info["backing-filename"],
+        format!("../images/{id}.qcow2"),
+        "{info}"
+    );
+}
+
 /// The datastore root of this test process (spec/storage.md S11), set once.
 fn datastore_root() -> &'static std::path::Path {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();

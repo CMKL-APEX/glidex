@@ -139,6 +139,14 @@ impl Datastore {
     pub fn is_shared(&self) -> bool {
         self.topology() == Topology::Shared
     }
+
+    /// `node`'s path to this datastore's copy of image `id` (S9).
+    pub fn image_copy_path(&self, node: &str, id: &str) -> PathBuf {
+        crate::paths::file_in(
+            &Path::new(self.path_for(node)).join("images"),
+            &format!("{}.qcow2", crate::images::safe_stem(id)),
+        )
+    }
 }
 
 /// What a node found when it last looked at a datastore (§4.1),
