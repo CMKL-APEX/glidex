@@ -360,7 +360,7 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
   image's own kernel is preselected (gxctl: the default): another
   image's initramfs waits for that image's root (`root=LABEL=…`) and its
   modules aren't on the disk, so picking one is deliberate and warned
-  about ("— from <image>"); *Kernel
+  about ("— from `<image>`"); *Kernel
   files on the host* (administrators, `host.paths`) shows kernel and
   initramfs path fields. The arguments field's placeholder is the
   kernel image's `cmdline`, used when left empty. *Follow the guest's
