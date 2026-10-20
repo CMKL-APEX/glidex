@@ -272,8 +272,21 @@ const OIDC_COOKIE: &str = "gx_oidc";
 pub struct OidcStartQuery {
     #[serde(default)]
     return_to: Option<String>,
-    #[serde(default)]
+    /// `reauth=1` (the web UI's step-up, spec/web-ui.md), or `true`.
+    #[serde(default, deserialize_with = "query_flag")]
     reauth: bool,
+}
+
+/// A query-string flag: `1`/`true` or `0`/`false` (empty is false).
+fn query_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let s = String::deserialize(d)?;
+    match s.as_str() {
+        "1" | "true" => Ok(true),
+        "" | "0" | "false" => Ok(false),
+        _ => Err(serde::de::Error::custom(format!(
+            "'{s}': a flag is 1, 0, true or false"
+        ))),
+    }
 }
 
 fn first_origin(app: &AppState) -> Option<&str> {
