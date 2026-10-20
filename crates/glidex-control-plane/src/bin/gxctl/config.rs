@@ -28,6 +28,32 @@ pub struct Config {
     pub profiles: BTreeMap<String, Profile>,
 }
 
+impl Config {
+    /// Take profile `name` out of the file; the current one too, leaving
+    /// none current. A profile still holding a token is refused unless
+    /// `forget_token`: the token stays valid on the server until revoked.
+    pub fn remove_profile(&mut self, name: &str, forget_token: bool) -> Result<(), String> {
+        let Some(p) = self.profiles.get(name) else {
+            return Err(format!(
+                "no profile '{name}'; the file knows: {}",
+                self.list()
+            ));
+        };
+        if p.token.is_some() && !forget_token {
+            return Err(format!(
+                "profile '{name}' still holds a token, which stays valid on the server: \
+                 revoke it first (gxctl auth logout --profile {name} --revoke), \
+                 or pass --forget-token to drop it without revoking"
+            ));
+        }
+        self.profiles.remove(name);
+        if self.current.as_deref() == Some(name) {
+            self.current = None;
+        }
+        Ok(())
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -631,6 +657,35 @@ mod tests {
             !shown.contains("gxt_secret_value") && !shown.contains("vault"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_profile_is_removed_once_its_token_is_dealt_with() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("config.json");
+        let mut c = full();
+        c.current = Some("lab".into());
+        let e = c.remove_profile("lab", false).unwrap_err();
+        assert!(
+            e.contains("still holds a token") && e.contains("--revoke"),
+            "{e}"
+        );
+        assert!(c.profiles.contains_key("lab"), "refused: nothing changed");
+        assert!(
+            c.remove_profile("ghost", true)
+                .unwrap_err()
+                .contains("no profile 'ghost'")
+        );
+        c.remove_profile("lab", true).unwrap();
+        assert!(!c.profiles.contains_key("lab"));
+        assert_eq!(c.current, None, "the current one goes with it");
+        // The file stays loadable (a current naming a missing profile isn't).
+        save_to(&p, &c).unwrap();
+        assert!(load_from(&p).unwrap().unwrap().current.is_none());
+        // A profile without a token goes at once.
+        let mut c = full();
+        c.profiles.get_mut("lab").unwrap().token = None;
+        c.remove_profile("lab", false).unwrap();
     }
 
     #[test]
