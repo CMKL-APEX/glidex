@@ -223,9 +223,9 @@ async fn main() {
     // the detached runner they are this process's children and need it.
     print_status("Checking KVM access");
     if vm_manager.runner().kind_name() == "systemd" {
-        // access(2): the VM units run as this user with these groups.
-        let rw = nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK;
-        if nix::unistd::access("/dev/kvm", rw).is_ok() {
+        // The VM units run as this user with these groups, and allow
+        // /dev/kvm where this unit doesn't: its owner, group and mode tell.
+        if glidex_control_plane::devaccess::vm_can_open(Path::new("/dev/kvm")) {
             println!("OK (VMs open it in their glidex-vm units)");
         } else if Path::new("/dev/kvm").exists() {
             println!("NO ACCESS (this user is not in the kvm group; no VM can start)");
