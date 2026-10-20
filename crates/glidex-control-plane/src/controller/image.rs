@@ -31,6 +31,8 @@ impl VmManager {
             self.prune_departed_copies(&mut img)?;
         }
         if img.deletion_requested_at.is_some() {
+            // Copies in shared datastores go too (storage.md S9).
+            self.drop_store_copies(&img)?;
             // Every node's copy goes first (§9.2); the record is the leader's to remove.
             if self.cluster().is_some() {
                 self.drop_image_cache(&img)?;
@@ -41,6 +43,7 @@ impl VmManager {
                     .image_caches(&img.id)
                     .iter()
                     .any(|(n, _)| *n != self.local_node_id())
+                    || !self.store_copies(&img.id).is_empty()
                 {
                     return Ok(Some(Duration::from_secs(5)));
                 }
@@ -51,9 +54,12 @@ impl VmManager {
             }
             return Ok(None);
         }
-        // A node that doesn't write the catalog keeps only its copy.
+        // A node that doesn't write the catalog keeps only its copy, and
+        // those of shared datastores it needs.
         if !leads {
-            return self.reconcile_image_cache(&img).await;
+            let own = self.reconcile_image_cache(&img).await?;
+            let stores = self.reconcile_store_copies(&img).await?;
+            return Ok(own.or(stores));
         }
         let extracted = matches!(img.source, crate::images::ImageSource::Extracted { .. });
         match img.status.clone() {
@@ -136,6 +142,8 @@ impl VmManager {
                 if self.cluster().is_some() {
                     self.reconcile_image_cache(&img).await?;
                 }
+                let stores = self.reconcile_store_copies(&img).await?;
+                let again = |n: Next| again(n.map(|d| d.or(stores)));
                 // Disks waiting for it.
                 for d in self.images.list_disks() {
                     if d.phase == DiskPhase::Pending

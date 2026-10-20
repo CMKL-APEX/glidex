@@ -277,6 +277,10 @@ message ImageCopy {
   string error = 5;
   // Kept whether or not the node needs it.
   optional bool pinned = 6;
+  // A copy in a shared datastore rather than on a node (`node` is empty):
+  // what linked disks there overlay (spec/storage.md S9).
+  optional string datastore = 7;
+  optional string datastore_name = 8 [json_name = "datastore_name"];
 }
 
 message Image {

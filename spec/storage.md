@@ -5,10 +5,11 @@ Status: **design (draft)**. Implemented so far:
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
   with its API, gxctl, UI and watch kind (§13);
-- S3a, shared datastores (`shared-dir`) with workers and volume locks
-  (§4.4).
+- S3, shared datastores (`shared-dir`) with workers and volume locks
+  (§4.4), and images in them for linked disks plus the installer's
+  registration (§4.5).
 
-S3b and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
+S4 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -301,9 +302,8 @@ topology `Shared`):
 - **Scheduler:** the existing `disk_reach` (§4.3) covers shared disks,
   since they are always unbound: a VM goes to a node whose row
   reaches the datastore.
-- **No linked clones yet:** a disk from an image on a shared datastore
-  is made `Full` (the image would have to be in the datastore, S8). The
-  shared image store is S3b.
+- **Linked clones:** in S3a a disk from an image on a shared datastore
+  was made `Full`. S3b adds linked clones there (§4.5).
 
 **Volume lock** (S16, §10):
 - `VolumeBinding::File` carries `lock: Option<String>`,
@@ -334,11 +334,84 @@ topology `Shared`):
   leader as its first worker. Its worker becomes the agent when a VM on
   the agent takes it, and the agent's launch file carries its lock.
 
-**Not built in S3a:**
+**Not built in S3:**
 - the leader comparing nodes' `fs_id` (`Diverged`);
 - `adopt` for a non-empty directory;
-- re-placing a VM (S4) and moving a disk (S5);
-- the installer's register-and-ask step (S3b).
+- re-placing a VM (S4) and moving a disk (S5).
+
+### 4.5 As built (S3b): images in shared datastores, the installer
+
+**The datastore's copy** (`controller/store_copies.rs`, S8, S9):
+- Path: `<path>/images/<image-id>.qcow2` (0444), from
+  `Datastore::image_copy_path`.
+- Row: `image_caches/<image>/ds:<datastore>`. Rows of this kind are
+  kept out of the per-node functions (`image_caches`, the leader's
+  pruning, `tend_image_copies`), so node copies behave as before.
+- **Who makes it:** the worker of a linked disk waiting on the datastore
+  (`stores_needing`), when the image is ready. It:
+  - takes the datastore's lock for the image
+    (`.locks/image-<id>.lock`); another node copying makes it wait;
+  - takes a file already there if its digest matches;
+  - otherwise copies from this node's own copy, else from a node with a
+    ready one (as node copies are fetched);
+  - checks the digest, renames into place, and writes the row:
+    `Downloading`, then `Ready` or `Failed`.
+- **What triggers it:** the image controller runs this on every node
+  for a ready image. A disk whose `materialize` is `NotReady` queues its
+  image's key, so the copy starts as soon as a disk needs it.
+- **Node sync:** any node whose row reaches the datastore may write
+  that datastore's copy row (`check_status_write`).
+
+**Linked disks:**
+- `materialize` overlays the datastore's copy for a linked disk on a
+  shared datastore. Until that copy exists the disk is `NotReady`
+  ("not copied into datastore D yet").
+- The overlay names the copy by the relative path
+  `../images/<id>.qcow2`, which is right from any node's mount.
+- Full clones still read this node's own copy.
+- The image can't be deleted while a linked disk uses it (images.md §3).
+
+**Deleting an image:**
+- Every node that reaches a datastore holding a copy removes the file
+  and the row (`drop_store_copies`).
+- The leader removes the row of a datastore that no longer exists.
+- In a cluster, the image record goes only once both node copies and
+  datastore copies are gone.
+
+**API and UI:** `ImageCopy` gains `datastore` and `datastore_name`,
+with `node` empty. The Images page lists datastore copies apart from
+node copies, with no Remove button: they go with the image.
+
+**Installer** (S13):
+- `--datastore NAME=PATH` registers a shared datastore;
+  `--local-datastore NAME=PATH` registers one each node has its own of.
+- `--datastore-default` makes the first of them the default for new
+  disks.
+- None of these are saved: registering is done once.
+- **Interactive run** without them: it finds the mount points directly
+  under `/srv/glidex` (`/proc/self/mountinfo`) without a marker, and
+  asks for each:
+  - whether to register it as a shared datastore;
+  - whether it becomes the default (suggested answer: no).
+- It runs `gxctl datastore create` on the local socket, retrying while
+  the control plane starts. gxctl exits 0 on errors, so the installer
+  reads its output.
+
+**Fixed from S3a:** a worker that isn't the leader couldn't record the
+events of a disk it made. The status-write rule for
+`events/disk/<id>` still checked only `node`, and now follows the
+worker too (`disk_is_nodes`). S3a's test didn't hit it, because the
+leader made the disk there.
+
+**Tests:**
+- API: `a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy`
+  checks the copy, the overlay's relative backing path, the copy in
+  `GET /images/{id}`, and the copy going with the image;
+- cluster: `a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk`.
+  The image is only on the server, and the agent, the disk's worker,
+  brings it into the datastore from the server;
+- installer: `datastores_to_register_are_one_time` and
+  `unregistered_mounts_are_those_under_the_root`.
 
 ### 4.2 Changes to `Disk` and `Image`
 
@@ -885,7 +958,7 @@ described below; fix 5 is part of S2.
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver`, with `local` built in (serde default, no migration: S3). `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. **Implemented** (as built: §7). | S0 |
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **Implemented** (§4.3, §13 as built), as S2a (resource, API) and S2b (gxctl, UI, watch). | S1 |
-| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **S3a implemented** (§4.4): all but the shared image store with linked clones and the installer step, which are **S3b**. | S2 |
+| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **Implemented** (§4.4, §4.5), as S3a (driver, workers, locks) and S3b (images in shared datastores, installer). | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |

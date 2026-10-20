@@ -531,6 +531,24 @@ requests to a server, which authenticates them (spec/clustering-ui.md
 §3.6; `cluster.ui_relay = false` turns that off). Agents an older installer
 switched off get the UI back on the next run.
 
+## Datastores (spec/storage.md S13)
+
+The installer creates `/srv/glidex` (`root:root 0755`), and both units
+may write under it. Operators mount datastores there, owned by `glidex`.
+Uninstall leaves `/srv/glidex` alone.
+
+To register datastores once the services are up:
+- `--datastore NAME=PATH` registers a shared datastore (one filesystem
+  every node mounts);
+- `--local-datastore NAME=PATH` registers one each node has its own of;
+- `--datastore-default` makes the first of them the default for new
+  disks.
+
+None of these are saved. Without them, an interactive run offers each
+mount point directly under `/srv/glidex` that isn't a datastore yet (it
+has no marker), and asks whether it becomes the default; the suggested
+answer is no.
+
 ## OVN
 
 With networking, the installer also installs OVN for cluster networks

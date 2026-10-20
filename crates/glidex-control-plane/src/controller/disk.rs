@@ -232,6 +232,10 @@ impl VmManager {
                 })
             }
             Err(ImageError::NotReady(m)) => {
+                // Its image's controller may have a copy to make for it.
+                if let DiskOrigin::Image { image_id, .. } = &latest.origin {
+                    self.queue.add(Key::Image(image_id.clone()));
+                }
                 let mut d = latest;
                 d.phase = DiskPhase::Pending;
                 set_cond(

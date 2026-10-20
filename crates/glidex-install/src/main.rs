@@ -190,6 +190,9 @@ fn main() -> Result<()> {
     if let Some(j) = &opts.join {
         join_cluster(j)?;
     }
+    if opts.services {
+        register_datastores(&opts)?;
+    }
     // A member's OVN matches the cluster's ovn-northd: after a join, and on
     // every re-run (a server may have been upgraded since).
     if opts.networking && opts.ovn && cluster_identity().is_some() {
@@ -198,6 +201,129 @@ fn main() -> Result<()> {
     let ts_domain = ts_node.and_then(|n| n.domains.into_iter().next());
     print_usage(&opts, tailscale_on.then_some(ts_domain).as_ref());
     Ok(())
+}
+
+/// Register the datastores asked for (`--datastore`), or offer the shared
+/// filesystems mounted under the datastore root that aren't one yet
+/// (spec/storage.md S13): each, and whether it becomes the default for new
+/// disks (suggested: no, `local` stays).
+fn register_datastores(opts: &Options) -> Result<()> {
+    use std::io::IsTerminal;
+    let mut regs: Vec<(DatastoreReg, bool)> = opts
+        .datastores
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.clone(), i == 0 && opts.datastore_default))
+        .collect();
+    if regs.is_empty() && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        for path in unregistered_mounts(&mounts, DATASTORE_ROOT, |p| {
+            Path::new(p).join(".glidex-datastore").exists()
+        }) {
+            let name = Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            println!();
+            println!(
+                "{} is mounted and isn't a glidex datastore yet.",
+                path.cyan()
+            );
+            if !confirm_yn(
+                &format!("Register it as shared datastore {name} (the same files on every node)?"),
+                false,
+            )? {
+                continue;
+            }
+            let default = confirm_yn(
+                "Make it the default for new disks? (otherwise local, each node's own disk, stays)",
+                false,
+            )?;
+            regs.push((
+                DatastoreReg {
+                    name,
+                    path,
+                    shared: true,
+                },
+                default,
+            ));
+        }
+    }
+    for (d, default) in regs {
+        let mut args = vec![
+            "datastore".to_string(),
+            "create".into(),
+            d.name.clone(),
+            "--path".into(),
+            d.path.clone(),
+        ];
+        if d.shared {
+            args.push("--shared".into());
+        }
+        if default {
+            args.push("--default".into());
+        }
+        // gxctl says what went wrong but exits 0: read what it printed. The
+        // control plane may still be starting.
+        let mut last = String::new();
+        let mut created = false;
+        for _ in 0..15 {
+            let out = Command::new(format!("{}/gxctl", BIN_DIR))
+                .args(&args)
+                .output()
+                .context("running gxctl")?;
+            last = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if last.contains("Datastore created") || last.contains("already exists") {
+                created = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        if created {
+            println!(
+                "{} datastore {} at {}",
+                "Registered:".green(),
+                d.name,
+                d.path
+            );
+        } else {
+            println!(
+                "{} registering datastore {}: {}",
+                "Warning:".yellow(),
+                d.name,
+                last.trim()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Mount points directly under `root` (from `/proc/self/mountinfo`) that
+/// `registered` says aren't a datastore yet.
+fn unregistered_mounts(
+    mountinfo: &str,
+    root: &str,
+    registered: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = mountinfo
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(4))
+        // mountinfo writes a space in a path as \040.
+        .map(|p| p.replace("\\040", " "))
+        .filter(|p| {
+            Path::new(p)
+                .parent()
+                .is_some_and(|parent| parent == Path::new(root))
+        })
+        .filter(|p| !registered(p))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Read a join token from `file` (which must be private) or stdin.
@@ -677,6 +803,35 @@ struct Options {
     /// (spec/tailscale-tls.md §4.6). Opt-in: `None` (nothing chosen yet)
     /// asks on an interactive run, else stays off.
     tailscale_cert: Option<bool>,
+    /// `--datastore NAME=PATH` (shared) and `--local-datastore NAME=PATH`:
+    /// register these once the services are up (spec/storage.md S13).
+    /// Never saved: done once.
+    datastores: Vec<DatastoreReg>,
+    /// `--datastore-default`: the first of them takes new disks. Never saved.
+    datastore_default: bool,
+}
+
+/// A datastore to register (spec/storage.md §13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DatastoreReg {
+    name: String,
+    path: String,
+    shared: bool,
+}
+
+impl DatastoreReg {
+    /// `NAME=PATH`.
+    fn parse(v: &str, shared: bool) -> Result<Self> {
+        let (name, path) = v
+            .split_once('=')
+            .filter(|(n, p)| !n.is_empty() && p.starts_with('/'))
+            .with_context(|| format!("{v}: give NAME=/absolute/path"))?;
+        Ok(DatastoreReg {
+            name: name.to_string(),
+            path: path.to_string(),
+            shared,
+        })
+    }
 }
 
 /// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
@@ -712,6 +867,8 @@ impl Default for Options {
             offline: false,
             prebuilt: false,
             tailscale_cert: None,
+            datastores: Vec::new(),
+            datastore_default: false,
         }
     }
 }
@@ -759,6 +916,13 @@ impl Options {
                 "--ovn" => o.ovn = true,
                 "--no-ovn" => o.ovn = false,
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
+                "--datastore" => o
+                    .datastores
+                    .push(DatastoreReg::parse(&value("--datastore")?, true)?),
+                "--local-datastore" => o
+                    .datastores
+                    .push(DatastoreReg::parse(&value("--local-datastore")?, false)?),
+                "--datastore-default" => o.datastore_default = true,
                 "--no-tailscale-cert" => o.tailscale_cert = Some(false),
                 "--join" => {
                     let server = value("--join")?;
@@ -880,6 +1044,11 @@ fn print_help() {
          \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
          \x20                            name becomes public in Certificate Transparency logs)\n\
          \x20     --no-tailscale-cert    stop doing so (default: asked once when interactive)\n\
+         \x20     --datastore NAME=PATH  register PATH (under /srv/glidex, mounted on every node:\n\
+         \x20                            NFS, CephFS) as shared datastore NAME (default: an\n\
+         \x20                            interactive run offers each such mount once)\n\
+         \x20     --local-datastore NAME=PATH  register PATH as a datastore each node has its own of\n\
+         \x20     --datastore-default    make the first of them the default for new disks\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
@@ -3355,6 +3524,61 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `--datastore` and `--local-datastore` are registered once, never
+    /// saved; a malformed one is refused (spec/storage.md S13).
+    #[test]
+    fn datastores_to_register_are_one_time() {
+        let o = Options::parse(
+            None,
+            &args(&[
+                "--datastore",
+                "nfs=/srv/glidex/nfs",
+                "--local-datastore",
+                "ssd=/srv/glidex/ssd",
+                "--datastore-default",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            o.datastores,
+            [
+                DatastoreReg {
+                    name: "nfs".into(),
+                    path: "/srv/glidex/nfs".into(),
+                    shared: true
+                },
+                DatastoreReg {
+                    name: "ssd".into(),
+                    path: "/srv/glidex/ssd".into(),
+                    shared: false
+                },
+            ]
+        );
+        assert!(o.datastore_default);
+        assert!(!o.render().contains("datastore"), "{}", o.render());
+        for bad in ["nfs", "=/srv/glidex/x", "nfs=relative"] {
+            assert!(
+                Options::parse(None, &args(&["--datastore", bad])).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// The mounts offered: directly under the root, not yet a datastore.
+    #[test]
+    fn unregistered_mounts_are_those_under_the_root() {
+        let mountinfo = "\
+22 1 8:1 / / rw - ext4 /dev/sda1 rw
+40 22 0:50 / /srv/glidex/nfs rw - nfs4 fs:/export rw
+41 22 0:51 / /srv/glidex/done rw - nfs4 fs:/other rw
+42 22 0:52 / /srv/glidex/deep/er rw - nfs4 fs:/deep rw
+43 22 0:53 / /srv/glidex/with\\040space rw - cephfs x rw
+44 22 0:54 / /mnt/elsewhere rw - nfs4 fs:/e rw
+";
+        let found = unregistered_mounts(mountinfo, "/srv/glidex", |p| p.ends_with("/done"));
+        assert_eq!(found, ["/srv/glidex/nfs", "/srv/glidex/with space"]);
     }
 
     /// `--release-hugepages` is a one-time kernel-profile action: refused

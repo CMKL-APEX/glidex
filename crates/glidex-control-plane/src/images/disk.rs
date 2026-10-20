@@ -202,10 +202,6 @@ impl ImageManager {
                     ds.name
                 )));
             }
-            // Its image would have to be in the datastore too: S3b.
-            if let DiskOrigin::Image { mode, .. } = &mut disk.origin {
-                *mode = CloneMode::Full;
-            }
             // Made by this node if it reaches the datastore, else by one that
             // does; the leader moves it later as needed (S6).
             let rows = record::rows(&self.db, &ds.id).map_err(io)?;
@@ -326,14 +322,27 @@ impl ImageManager {
                         img.name, img.status
                     )));
                 }
-                image_path = self.image_path(&img.id);
+                // A linked disk on a shared datastore overlays the
+                // datastore's own copy, which every node there sees
+                // (spec/storage.md S8); anything else this node's.
+                let store = (mode == CloneMode::Linked)
+                    .then(|| crate::datastore::record::find(&self.db, &disk.datastore))
+                    .and_then(|r| r.ok().flatten())
+                    .filter(|ds| ds.is_shared());
+                image_path = match &store {
+                    Some(ds) => ds.image_copy_path(&self.node_id.load(), &img.id),
+                    None => self.image_path(&img.id),
+                };
                 // On a node of a cluster the catalog says Ready before this
                 // node's copy has arrived (spec/clustering.md §9.2).
                 if !image_path.exists() {
-                    return Err(ImageError::NotReady(format!(
-                        "image {} has not been copied to this node yet",
-                        img.name
-                    )));
+                    return Err(ImageError::NotReady(match &store {
+                        Some(ds) => format!(
+                            "image {} has not been copied into datastore {} yet",
+                            img.name, ds.name
+                        ),
+                        None => format!("image {} has not been copied to this node yet", img.name),
+                    }));
                 }
                 let image_size = img.virtual_size_bytes;
                 if let Some(s) = spec.size_bytes.filter(|s| *s < image_size) {
