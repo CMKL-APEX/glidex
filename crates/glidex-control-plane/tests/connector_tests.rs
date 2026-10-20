@@ -2814,9 +2814,10 @@ fn jc_claims(mock: &idp::Mock, sub: &str, email: &str) -> Value {
            "email": email, "name": sub})
 }
 
-/// D41: a provisioned connector's sign-ins are its managed users' only, so
-/// a signed-in user can't add one through it: no identity is linked and no
-/// team membership comes from its groups.
+/// D41, D44: a provisioned connector's sign-ins are its managed users'
+/// only, so a signed-in user can't add one through it, pushed (SCIM) or
+/// pulled: no identity is linked, so no team membership comes from its
+/// groups and a pull never adopts the account.
 #[tokio::test]
 async fn no_sign_in_is_added_through_a_provisioned_connector() {
     let mock = idp::start().await;
@@ -2842,6 +2843,36 @@ async fn no_sign_in_is_added_through_a_provisioned_connector() {
             .unwrap()
             .iter()
             .all(|i| i.subject != "j-ada")
+    );
+
+    let workspace = json!({"accounts": "GOOGLE_ACCOUNTS_WORKSPACE", "domains": ["corp.example"]});
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gpull",
+            workspace,
+            json!({"jit": false, "provisioning": "pull",
+            "sync": {"admin_email": "admin@corp.example", "groups": ["eng@corp.example"]}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let claims = google_claims(&mock, "g-ada", "ada@corp.example", Some("corp.example"));
+    let (st, to) = link_through(&h, &mock, "gpull", &s, claims).await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (
+            StatusCode::SEE_OTHER,
+            Some("/account?link_error=not_allowed")
+        )
+    );
+    assert!(
+        h.app
+            .auth
+            .store
+            .identities_of(&ada)
+            .unwrap()
+            .iter()
+            .all(|i| i.subject != "g-ada")
     );
 }
 

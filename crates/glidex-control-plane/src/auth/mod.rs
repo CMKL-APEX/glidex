@@ -1455,8 +1455,8 @@ impl AuthService {
     /// place of them. The connector's rules apply as at a login; a sign-in
     /// that already reaches another user is refused, one that reaches this
     /// user is a no-op. A provisioned connector's sign-ins are its managed
-    /// users' only (D41), so none is added through it. Returns whether it
-    /// was added.
+    /// users' only (D41, D44), so none is added through it: a pull would
+    /// adopt the account it was added to. Returns whether it was added.
     pub fn link_external(
         &self,
         c: &crate::directory::Connector,
@@ -1466,7 +1466,7 @@ impl AuthService {
         if !c.enabled {
             return Err(AuthError::NotAllowed("this connector is disabled".into()));
         }
-        if c.provisioning == crate::directory::Provisioning::Scim {
+        if !c.provisioning.is_none() {
             return Err(AuthError::NotAllowed(
                 "this connector's users are provisioned by its IdP: a sign-in can't be added through it".into(),
             ));
