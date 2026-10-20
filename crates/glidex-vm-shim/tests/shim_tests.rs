@@ -40,6 +40,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         meter_poll_secs: 0,
         cpu_affinity: vec![],
         vcpu_pins: vec![],
+        job: false,
     }
 }
 
@@ -511,4 +512,36 @@ fn an_unbindable_affinity_fails_the_spawn() {
         .release()
         .unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
+}
+
+/// A one-shot job (spec/kernel-boot.md §10.2): no API socket to wait for;
+/// its exit is recorded as a VM's would be, and its output is in the log.
+#[test]
+fn a_job_records_its_exit() {
+    let Some(ch) = cloud_hypervisor() else { return };
+    for (args, cause) in [
+        (vec!["--version"], ExitCause::CleanExit),
+        (vec!["--no-such-option"], ExitCause::Crashed),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut argv = vec![ch.to_string_lossy().into_owned()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        let mut launch = launch_file(dir.path(), argv);
+        launch.job = true;
+        let mut shim = start_shim(dir.path(), &launch);
+        let exit = wait_exited(dir.path()).exit.unwrap();
+        assert_eq!(exit.cause, cause, "{args:?}: {:?}", exit.message);
+        wait_for("shim.sock", Duration::from_secs(5), || {
+            dir.path().join("shim.sock").exists()
+        });
+        ShimClient::connect(&dir.path().join("shim.sock"))
+            .unwrap()
+            .release()
+            .unwrap();
+        assert_eq!(wait_exit_status(&mut shim), 0);
+        if cause == ExitCause::CleanExit {
+            let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+            assert!(log.contains("cloud-hypervisor v"), "{log}");
+        }
+    }
 }

@@ -51,6 +51,7 @@ fn kind_pb(k: img::ImageKind) -> pb::ImageKind {
     match k {
         img::ImageKind::Disk => pb::ImageKind::IMAGE_KIND_DISK,
         img::ImageKind::Firmware => pb::ImageKind::IMAGE_KIND_FIRMWARE,
+        img::ImageKind::Kernel => pb::ImageKind::IMAGE_KIND_KERNEL,
     }
 }
 
@@ -104,6 +105,21 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
             expected_sha256: expected_sha256.clone(),
             ..Default::default()
         })),
+        img::ImageSource::Host { path } => Source::Host(Box::new(pb::HostSource {
+            path: path.clone(),
+            ..Default::default()
+        })),
+        img::ImageSource::Extracted {
+            image_id,
+            image_sha256,
+            path,
+            ..
+        } => Source::Extracted(Box::new(pb::ExtractedSource {
+            image_id: image_id.clone(),
+            image_sha256: image_sha256.clone(),
+            path: path.clone(),
+            ..Default::default()
+        })),
     };
     let status = match &i.status {
         img::ImageStatus::Downloading {
@@ -117,6 +133,10 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
         },
         img::ImageStatus::Verifying => pb::ImageStatus {
             state: pb::ImageState::IMAGE_STATE_VERIFYING.into(),
+            ..Default::default()
+        },
+        img::ImageStatus::Extracting => pb::ImageStatus {
+            state: pb::ImageState::IMAGE_STATE_EXTRACTING.into(),
             ..Default::default()
         },
         img::ImageStatus::Ready => pb::ImageStatus {
@@ -170,6 +190,25 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
             .collect(),
         info: i.info.as_ref().map(info_pb).into(),
         deleting: i.deleting.then_some(true),
+        for_image: i.for_image.clone(),
+        kernel: i
+            .kernel
+            .as_ref()
+            .map(|k| pb::KernelInfo {
+                release: k.release.clone(),
+                cmdline: k.cmdline.clone(),
+                initrd: k
+                    .initrd
+                    .as_ref()
+                    .map(|f| pb::FileInfo {
+                        sha256: f.sha256.clone(),
+                        size_bytes: f.size_bytes,
+                        ..Default::default()
+                    })
+                    .into(),
+                ..Default::default()
+            })
+            .into(),
         ..Default::default()
     }
 }
@@ -481,9 +520,14 @@ pub async fn pull_image(
     req: pb::PullImageRequest,
 ) -> ServiceResult<pb::PullImageResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
+    // A kernel copied from host files (spec/kernel-boot.md §4.2).
+    if req.kernel_path.is_some() || req.initrd_path.is_some() {
+        call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
+    }
     let kind = match req.kind.as_known().unwrap_or_default() {
         pb::ImageKind::IMAGE_KIND_DISK => Some(img::ImageKind::Disk),
         pb::ImageKind::IMAGE_KIND_FIRMWARE => Some(img::ImageKind::Firmware),
+        pb::ImageKind::IMAGE_KIND_KERNEL => Some(img::ImageKind::Kernel),
         pb::ImageKind::IMAGE_KIND_UNSPECIFIED => None,
     };
     let r = img::PullImageRequest {
@@ -499,6 +543,13 @@ pub async fn pull_image(
         arch: arch_of(req.arch.as_known().unwrap_or_default()).map(|a| a.as_str().to_string()),
         nodes: req.nodes,
         keep_server_copy: req.keep_server_copy,
+        initrd_url: req.initrd_url,
+        initrd_sha256: req.initrd_sha256,
+        cmdline: req.cmdline,
+        kernel_path: req.kernel_path.map(crate::models::expand_tilde),
+        initrd_path: req.initrd_path.map(crate::models::expand_tilde),
+        kernel_from: req.kernel_from,
+        with_kernel: req.with_kernel,
     };
     let (i, created) = call.manager().pull_image(r).await.map_err(manager_err)?;
     call.set_target(format!("image:{}", i.id));

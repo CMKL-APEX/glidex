@@ -99,11 +99,20 @@ impl ImageManager {
             }
             Some(key) => {
                 let img = self.get_image(key)?;
-                if img.is_firmware() {
-                    return Err(ImageError::InvalidImage(format!(
-                        "image {} is UEFI firmware, not a disk image",
-                        img.name
-                    )));
+                match img.kind {
+                    super::ImageKind::Disk => {}
+                    super::ImageKind::Firmware => {
+                        return Err(ImageError::InvalidImage(format!(
+                            "image {} is UEFI firmware, not a disk image",
+                            img.name
+                        )));
+                    }
+                    super::ImageKind::Kernel => {
+                        return Err(ImageError::InvalidImage(format!(
+                            "image {} is a kernel, not a disk image",
+                            img.name
+                        )));
+                    }
                 }
                 if img.deletion_requested_at.is_some() {
                     return Err(ImageError::NotReady(format!(

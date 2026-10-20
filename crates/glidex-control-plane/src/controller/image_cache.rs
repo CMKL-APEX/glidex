@@ -7,7 +7,7 @@
 //! has each node download from the source; copying from a holder keeps one
 //! pull per image and the same check.)
 
-use crate::images::{Image, ImageKind, ImageStatus};
+use crate::images::{Image, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
 use crate::store::{Origin, TableId};
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,7 @@ impl VmManager {
                 .values()
                 .filter(|v| {
                     v.status.placement.as_ref().map(|p| p.node.as_str()) == Some(node)
-                        && v.config().firmware_image.as_deref() == Some(img.id.as_str())
+                        && boots(v, &img.id)
                 })
                 .map(|v| format!("VM {}", v.name)),
         );
@@ -294,19 +294,15 @@ impl VmManager {
         if disks {
             return true;
         }
-        self.vms.read().await.values().any(|v| {
-            self.is_local(v) && v.config().firmware_image.as_deref() == Some(img.id.as_str())
-        })
+        self.vms
+            .read()
+            .await
+            .values()
+            .any(|v| self.is_local(v) && boots(v, &img.id))
     }
 
     fn image_files(&self, img: &Image) -> Vec<(&'static str, std::path::PathBuf)> {
-        match img.kind {
-            ImageKind::Disk => vec![("main", self.images.image_path(&img.id))],
-            ImageKind::Firmware => vec![
-                ("main", self.images.firmware_path(&img.id)),
-                ("vars", self.images.firmware_vars_template(&img.id)),
-            ],
-        }
+        self.images.image_files(img)
     }
 
     /// The node-API address of a node (other than this one) with a ready copy.
@@ -411,7 +407,11 @@ impl VmManager {
             let tmp = dest.with_extension("cache.part");
             let path = format!("/cluster/v1/images/{}/file?part={part}", img.id);
             match cluster.client.get_to_file(&holder, &path, &tmp).await {
-                Ok(404) if part == "vars" => continue,
+                // Optional parts: a firmware without a template, a kernel
+                // without an initramfs.
+                Ok(404) if part == "vars" || (part == "initrd" && img.initrd.is_none()) => {
+                    continue;
+                }
                 Ok(200) => {}
                 Ok(code) => {
                     let _ = std::fs::remove_file(&tmp);
@@ -424,8 +424,15 @@ impl VmManager {
                     break;
                 }
             }
-            if part == "main" {
-                let (t, want) = (tmp.clone(), img.sha256.clone());
+            // The parts with a recorded digest: the main file, a kernel's
+            // initramfs.
+            let want = match part {
+                "main" => Some(img.sha256.clone()),
+                "initrd" => img.initrd.as_ref().map(|i| i.sha256.clone()),
+                _ => None,
+            };
+            if let Some(want) = want {
+                let t = tmp.clone();
                 let digest =
                     tokio::task::spawn_blocking(move || crate::images::download::sha256_path(&t))
                         .await
@@ -529,6 +536,13 @@ impl VmManager {
             let _ = std::fs::remove_file(&f);
         }
         let _ = std::fs::remove_file(self.images.part_path(&img.id));
+        let _ = std::fs::remove_file(self.images.initrd_part_path(&img.id));
         self.put_cache_row(&img.id, None)
     }
+}
+
+/// Whether `vm` boots through firmware or kernel image `id`.
+fn boots(vm: &crate::models::Vm, id: &str) -> bool {
+    let c = vm.config();
+    c.firmware_image.as_deref() == Some(id) || c.kernel_image.as_deref() == Some(id)
 }

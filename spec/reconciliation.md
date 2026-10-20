@@ -410,8 +410,8 @@ Phases:
 |---|---|
 | `power`, `stop_grace_secs`, `restart_policy`, `on_host_boot` | at once |
 | `config.vfio_devices` | hot-plugged/unplugged while the guest is observed `Running`; while `Paused`, pending (`DevicesPending`) |
-| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `hugepages` | next launch; `RestartRequired=True` meanwhile |
-| `hypervisor`, `kernel_image_path`, `initrd_path`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
+| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `kernel` (a kernel image, kernel-boot.md K6), `hugepages` | next launch; `RestartRequired=True` meanwhile |
+| `hypervisor`, `kernel_image_path`, `initrd_path`, `generate_seed`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
 
 `RestartRequired` compares the spec at `generation` with the spec at
 `instance.launched_generation`, ignoring the "at once" and hot-plug
@@ -524,6 +524,12 @@ the intent record:
   run by the shim: if the hypervisor exits before its socket answers and
   its captured output contains one of the strings (case-insensitive),
   the shim runs `fallback.argv` once.
+- `job` (default `false`): a one-shot run, not a VM
+  ([kernel-boot.md §10.2](kernel-boot.md#102-run), the kernel
+  extractor). The shim reports `Running` as soon as the hypervisor
+  starts, without waiting for `api_socket`, and records its exit as for
+  a VM (`clean_exit` on status 0). Such instances are named `extract-…`
+  and are no VM's; startup's orphan scan leaves them alone.
 - The environment is not configurable: the shim starts the hypervisor
   with `LC_ALL=C`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and nothing else.
 - No secret is ever in `argv` (it is visible in `/proc`): credentials

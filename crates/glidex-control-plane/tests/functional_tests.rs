@@ -217,7 +217,8 @@ async fn kernel_or_firmware_is_required() {
         body["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("kernel_image_path")
+            .contains("a kernel or firmware is required"),
+        "{body}"
     );
 }
 
@@ -566,6 +567,25 @@ impl Console {
         }
     }
 
+    /// [`Self::expect`] without the panic: whether `needle` came in time.
+    fn try_expect(&mut self, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut chunk = [0u8; 4096];
+        loop {
+            if let Some(pos) = find(&self.buf, needle.as_bytes()) {
+                self.buf.drain(..pos + needle.len());
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            match self.stream.read(&mut chunk) {
+                Ok(n) if n > 0 => self.buf.extend_from_slice(&chunk[..n]),
+                _ => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
     /// Type slowly: the emulated 16550 UART has a small receive FIFO.
     fn send(&mut self, text: &str) {
         for b in text.bytes() {
@@ -802,6 +822,284 @@ async fn firmware_boot_e2e(hypervisor: &str) {
 
     // The credential is no longer referenced and can be removed.
     let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "downloads a catalog image and the kernel extractor, boots a real VM; needs KVM and cloud-hypervisor"]
+async fn extracted_kernel_boots_its_image() {
+    extracted_kernel_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "downloads a catalog image and the kernel extractor, boots a real VM; needs KVM and qemu-system-x86_64"]
+async fn qemu_extracted_kernel_boots_its_image() {
+    extracted_kernel_e2e("qemu").await;
+}
+
+/// Wait for image `id` to leave downloading, verifying and extracting.
+async fn settled_image(app: &Router, id: &str, timeout: Duration) -> Value {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let (status, img) = request(app, "GET", &format!("/images/{id}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{img}");
+        let img = img["image"].clone();
+        match img["status"]["state"].as_str() {
+            Some(
+                "IMAGE_STATE_DOWNLOADING" | "IMAGE_STATE_VERIFYING" | "IMAGE_STATE_EXTRACTING",
+            ) => {
+                assert!(Instant::now() < deadline, "image {id} stuck: {img}")
+            }
+            _ => return img,
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// spec/kernel-boot.md K3: pulling `GLIDEX_TEST_CATALOG` (default
+/// `ubuntu-26.04`) also extracts its kernel, through the pinned Debian
+/// extractor run as a one-shot VM job; a VM boots that kernel image with a
+/// generated seed and a credential, and `uname -r` is its release.
+async fn extracted_kernel_e2e(hypervisor: &str) {
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+    let key = std::env::var("GLIDEX_TEST_CATALOG").unwrap_or_else(|_| "ubuntu-26.04".into());
+    let (app, manager, _tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
+
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"catalog": key}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let image_id = img["image"]["id"].as_str().unwrap().to_string();
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    let kernel_id = all["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["for_image"] == image_id.as_str())
+        .unwrap_or_else(|| panic!("no kernel image for {key}: {all}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let img = settled_image(&app, &image_id, Duration::from_secs(900)).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    let k = settled_image(&app, &kernel_id, Duration::from_secs(600)).await;
+    assert_eq!(k["status"]["state"], "IMAGE_STATE_READY", "{k}");
+    assert_eq!(k["kind"], "IMAGE_KIND_KERNEL");
+    assert_eq!(k["verified"], true, "a catalog image's kernel: {k}");
+    assert_eq!(
+        k["source"]["extracted"]["image_sha256"], img["sha256"],
+        "{k}"
+    );
+    let release = k["kernel"]["release"]
+        .as_str()
+        .expect("a bzImage release")
+        .to_string();
+    let cmdline = k["kernel"]["cmdline"].as_str().unwrap().to_string();
+    assert!(
+        cmdline.contains("root=") && cmdline.ends_with("console=ttyS0"),
+        "{cmdline}"
+    );
+    eprintln!(
+        "{key}: kernel {release} from {}, cmdline {cmdline}",
+        k["source"]["extracted"]["path"]
+    );
+
+    let username = "gxextract";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let hostname = "gx-extracted";
+    let (status, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
+            "hypervisor": hypervisor_pb(hypervisor), "image": image_id, "root_disk_size_gib": 12,
+            "kernel": kernel_id, "credential": username,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let id = vm_id(&vm);
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=600"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    let want = format!("GX_{release}_ok");
+    tokio::task::spawn_blocking(move || {
+        let mut console = Console::connect(&console_path);
+        console.expect("Linux version", Duration::from_secs(120));
+        console.expect("login: ", Duration::from_secs(400));
+        // cloud-init may still be creating the user: try until it works.
+        for attempt in 0..12 {
+            std::thread::sleep(Duration::from_secs(if attempt == 0 { 2 } else { 10 }));
+            console.send("\r");
+            if !console.try_expect("login: ", Duration::from_secs(30)) {
+                continue;
+            }
+            console.send(&format!("{username}\r"));
+            if !console.try_expect("Password: ", Duration::from_secs(20)) {
+                continue;
+            }
+            console.send(&format!("{password}\r"));
+            std::thread::sleep(Duration::from_secs(3));
+            console.send("echo GX_$(uname -r)_ok\r");
+            if console.try_expect(&want, Duration::from_secs(20)) {
+                return;
+            }
+        }
+        panic!("could not log in and see {want}");
+    })
+    .await
+    .unwrap();
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for i in [&kernel_id, &image_id] {
+        let (status, body) = request(&app, "DELETE", &format!("/images/{i}?wait=60"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, cloud-hypervisor and GLIDEX_TEST_{KERNEL,INITRD,IMAGE}"]
+async fn kernel_image_boot_with_generated_cloud_init() {
+    kernel_image_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, qemu-system-x86_64 and GLIDEX_TEST_{KERNEL,INITRD,IMAGE}"]
+async fn qemu_kernel_image_boot_with_generated_cloud_init() {
+    kernel_image_e2e("qemu").await;
+}
+
+/// A kernel image (spec/kernel-boot.md K1, K2) copied from the host files
+/// `GLIDEX_TEST_KERNEL` and `GLIDEX_TEST_INITRD` boots the cloud image
+/// `GLIDEX_TEST_IMAGE` with its own command line, a generated seed and a
+/// stored credential: log in, check the running kernel is the image's,
+/// shut down on the power button.
+async fn kernel_image_e2e(hypervisor: &str) {
+    let kernel = env_path("GLIDEX_TEST_KERNEL", None);
+    let initrd = env_path("GLIDEX_TEST_INITRD", None);
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
+
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let (status, k) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "kernel_path": kernel, "initrd_path": initrd,
+            "cmdline": "root=LABEL=cloudimg-rootfs ro console=ttyS0", "name": "test-kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{k}");
+    let release = k["image"]["kernel"]["release"]
+        .as_str()
+        .expect("a bzImage carries its release")
+        .to_string();
+
+    let rootfs = tmp.path().join("rootfs.img");
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
+    std::fs::set_permissions(&rootfs, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    let username = "gxkernel";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let hostname = "gx-kernel";
+    let (status, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
+            "hypervisor": hypervisor_pb(hypervisor), "kernel": "test-kernel",
+            "rootfs_path": rootfs, "credential": username,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm_of(&vm)["boot"], "BOOT_MODE_KERNEL", "{vm}");
+    let id = vm_id(&vm);
+    let seed_path = manager.get_vm(&id).await.unwrap().default_cloud_init_path();
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(Path::new(&seed_path).exists(), "seed image not generated");
+
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    let want = format!("GX_{release}_root");
+    let console = tokio::task::spawn_blocking(move || {
+        let mut console = Console::connect(&console_path);
+        console.expect("Linux version", Duration::from_secs(60));
+        console.expect("Cloud-init v.", Duration::from_secs(300));
+        console.expect("finished", Duration::from_secs(120));
+        std::thread::sleep(Duration::from_secs(2));
+        console.send("\r");
+        console.expect(&format!("{hostname} login: "), Duration::from_secs(60));
+        console.send(&format!("{username}\r"));
+        console.expect("Password: ", Duration::from_secs(30));
+        console.send(&format!("{password}\r"));
+        console.expect(
+            &format!("{username}@{hostname}:~$ "),
+            Duration::from_secs(60),
+        );
+        console.send("echo GX_$(uname -r)_$(sudo -n true && echo root)\r");
+        console.expect(&want, Duration::from_secs(30));
+        console
+    })
+    .await
+    .unwrap();
+    drop(console);
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(state(&body), "stopped");
+    let log = String::from_utf8_lossy(
+        &std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap(),
+    )
+    .into_owned();
+    assert!(
+        log.contains("reboot: Power down"),
+        "guest did not power off cleanly:\n{log}"
+    );
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = request(&app, "DELETE", "/images/test-kernel?wait=30", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 

@@ -414,10 +414,15 @@ export interface ImageSource {
   catalog?: CatalogSource;
   url?: { url?: string; expected_sha256?: string };
   firmware?: CatalogSource;
+  /** A kernel copied from host files. */
+  host?: { path?: string };
+  /** A kernel extracted from a disk image. */
+  extracted?: { image_id?: string; image_sha256?: string; path?: string };
 }
 
-/** `IMAGE_KIND_DISK`: a cloud image disks are cloned from; `IMAGE_KIND_FIRMWARE`: UEFI firmware VMs boot through. */
-export type ImageKind = "IMAGE_KIND_DISK" | "IMAGE_KIND_FIRMWARE";
+/** `IMAGE_KIND_DISK`: a cloud image disks are cloned from; `IMAGE_KIND_FIRMWARE`: UEFI firmware VMs boot through;
+ * `IMAGE_KIND_KERNEL`: a kernel (and initramfs) VMs boot directly. */
+export type ImageKind = "IMAGE_KIND_DISK" | "IMAGE_KIND_FIRMWARE" | "IMAGE_KIND_KERNEL";
 
 export type DiskFormat = "DISK_FORMAT_QCOW2" | "DISK_FORMAT_RAW";
 
@@ -462,8 +467,12 @@ export interface ImageInfo {
   linked_disks?: string[];
   /** A firmware image carries a UEFI variable-store template (QEMU keeps a per-VM store; without one, `-bios`). */
   vars_template?: boolean;
-  /** VMs booting through this firmware image. */
+  /** VMs booting through this firmware or kernel image. */
   used_by_vms?: string[];
+  /** A kernel image's release, command line and initramfs. */
+  kernel?: { release?: string; cmdline?: string; initrd?: { sha256?: string; size_bytes?: U64 } };
+  /** The disk image a kernel image was extracted from. */
+  for_image?: string;
   /** Each node's copy (spec/clustering.md §9.2.2, spec/clustering-ui.md §5.3). */
   copies?: ImageCopy[];
   info?: ImgInfo;
@@ -475,6 +484,11 @@ export interface ImageInfo {
 export const imageState = (i: ImageInfo) => enumLabel(i.status?.state, "IMAGE_STATE_");
 
 export const isFirmware = (i: ImageInfo) => i.kind === "IMAGE_KIND_FIRMWARE";
+
+export const isKernel = (i: ImageInfo) => i.kind === "IMAGE_KIND_KERNEL";
+
+/** A cloud image disks can be made from (not firmware, not a kernel). */
+export const isDiskImage = (i: ImageInfo) => !isFirmware(i) && !isKernel(i);
 
 /** The catalog (or firmware catalog) key an image was pulled from. */
 export function sourceKey(i: ImageInfo): { kind: "catalog" | "firmware" | "url"; key?: string } | undefined {
@@ -641,7 +655,7 @@ export function diskWaiting(d: DiskInfo): boolean {
   return !d.deleting && diskPhase(d) === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
 }
 
-/** A deletion, a download or its verification in progress. */
+/** A deletion, a download, its verification or a kernel extraction in progress. */
 export function imageActivity(i: ImageInfo): string | null {
   if (i.deleting) return "Deleting";
   const state = imageState(i);
@@ -649,7 +663,7 @@ export function imageActivity(i: ImageInfo): string | null {
     const total = num(i.status?.total_bytes);
     return total ? `Downloading ${Math.floor((num(i.status?.received_bytes) * 100) / total)}%` : "Downloading";
   }
-  return state === "verifying" ? "Verifying" : null;
+  return state === "verifying" ? "Verifying" : state === "extracting" ? "Extracting" : null;
 }
 
 /** A network deletion in progress (it waits for netd, or for a VM to leave). */

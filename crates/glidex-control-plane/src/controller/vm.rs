@@ -25,6 +25,16 @@ use glidex_vm_shim::client::ShimClient;
 use glidex_vm_shim::state::{InstanceFile, Phase};
 use std::time::Duration;
 
+/// What a launch binds on this node: the root disk (with its record), the
+/// data disks, the firmware image's file, and the kernel image's files
+/// (kernel, initramfs).
+type LaunchBindings = (
+    Option<(crate::models::VolumeBinding, crate::images::Disk)>,
+    Vec<crate::models::VolumeBinding>,
+    Option<String>,
+    Option<(String, Option<String>)>,
+);
+
 /// Finalizers of a VM (§6.3), in the order they are worked off.
 pub const FINALIZER_INSTANCE: &str = "vm.instance";
 pub const FINALIZER_PORTS: &str = "vm.ports";
@@ -844,11 +854,16 @@ impl VmManager {
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
 
-        // Dependencies: disks, and this node's copy of the firmware.
-        let bindings = match self
-            .disk_bindings(vm)
-            .and_then(|(root, data)| Ok((root, data, self.firmware_binding(vm)?)))
-        {
+        // Dependencies: disks, and this node's copy of the firmware or
+        // kernel image.
+        let bindings = match self.disk_bindings(vm).and_then(|(root, data)| {
+            Ok((
+                root,
+                data,
+                self.firmware_binding(vm)?,
+                self.kernel_binding(vm)?,
+            ))
+        }) {
             Ok(b) => {
                 set_cond(
                     &mut st.conditions,
@@ -993,11 +1008,7 @@ impl VmManager {
         &self,
         vm: &Vm,
         st: &mut VmStatus,
-        (root, data, firmware): (
-            Option<(crate::models::VolumeBinding, crate::images::Disk)>,
-            Vec<crate::models::VolumeBinding>,
-            Option<String>,
-        ),
+        (root, data, firmware, kernel): LaunchBindings,
     ) -> Result<(), LaunchFailure> {
         let paths = vm.paths();
         crate::paths::ensure_vm_dir(&vm.id)
@@ -1007,6 +1018,10 @@ impl VmManager {
         config.data_disk_bindings = data;
         if firmware.is_some() {
             config.firmware_path = firmware;
+        }
+        if let Some((kernel, initrd)) = kernel {
+            config.kernel_image_path = kernel;
+            config.initrd_path = initrd;
         }
         if config.firmware_path.is_some() && vm.hypervisor() == HypervisorType::Qemu {
             config.firmware_vars_path = Some(self.firmware_vars_path(&vm.id));
@@ -1021,7 +1036,7 @@ impl VmManager {
         // 5.1 the cloud-init seed (regenerated on every launch).
         let mut growpart_disk = None;
         let mut growpart_seq = None;
-        if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
+        if config.generates_seed() {
             let seed_path = paths.cloud_init.clone();
             let mut seed = match &config.credential {
                 Some(username) => {
@@ -1178,6 +1193,7 @@ impl VmManager {
             meter_poll_secs: settings.meter_poll_secs,
             cpu_affinity: cpu_affinity.clone(),
             vcpu_pins: launch_pins,
+            job: false,
         };
         launch
             .write(&paths.launch)
