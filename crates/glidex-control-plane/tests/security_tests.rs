@@ -2518,3 +2518,101 @@ async fn pools_are_granted_and_hand_out_devices() {
     let (_, v, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
     assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
 }
+
+/// spec/host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
+/// and the PF's VF count can't change while a VM holds one of them; only
+/// net-admins may change it.
+#[tokio::test]
+async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{PhysFn, Sriov, SummaryDevice, TopologySummary};
+    let pools = vec![PciPool {
+        name: "cx7-vfs".into(),
+        class: Some("nic".into()),
+        matches: PoolMatch {
+            vf_of: Some(Box::new(PoolMatch {
+                vendor_id: Some("0x15b3".into()),
+                device_id: Some("0x1021".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+    }];
+    let h = harness_with(|c| {
+        c.pci.pools = pools.clone();
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("cx7-vfs".into()),
+            projects: vec!["pa".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    let mut cfg = Config::default();
+    cfg.pci.pools = pools;
+    h.app.manager.configure(&cfg);
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let pf = SummaryDevice {
+        address: "0000:61:00.0".into(),
+        vendor_id: "0x15b3".into(),
+        device_id: "0x1021".into(),
+        class_id: "0x020000".into(),
+        sriov: Some(Sriov {
+            total_vfs: 16,
+            enabled_vfs: 1,
+            ready_vfs: 1,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let vf = SummaryDevice {
+        address: "0000:61:00.2".into(),
+        vendor_id: "0x15b3".into(),
+        device_id: "0x101e".into(),
+        class_id: "0x020000".into(),
+        ready: true,
+        physfn: Some(PhysFn {
+            address: pf.address.clone(),
+            vendor_id: pf.vendor_id.clone(),
+            device_id: pf.device_id.clone(),
+            class_id: pf.class_id.clone(),
+        }),
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![pf, vf],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+    let pa = h.project("pa");
+    let (alice, net) = (h.user("alice"), h.user("net"));
+    h.link(
+        "role.owner",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    h.link("role.net-admin", Ent::User(net.clone()), Ent::Cluster);
+    let (a, na) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&net)));
+    let mut body = vm_body("v1", "pa");
+    body["devices"] = json!([{ "pool": "cx7-vfs" }]);
+    let (s, v, _) = h.call("POST", "/vms", Some(body), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["vm"]["pool_devices"][0]["address"], "0000:61:00.2",
+        "the VF, not the PF: {v}"
+    );
+    let path = "/nodes/local/devices/0000:61:00.0/sriov";
+    let (s, _, _) = h.call("POST", path, Some(json!({ "vfs": 0 })), &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "owners don't change VFs");
+    let (s, v, _) = h.call("POST", path, Some(json!({ "vfs": 0 })), &na).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v.to_string().contains("0000:61:00.2 is held by VM v1"),
+        "{v}"
+    );
+}

@@ -1003,4 +1003,20 @@ Where HT2 differs from the design above, and why:
   done: `max` on `tenant_grants` (a tenant's grant has no size yet, so a
   tenant pool can't be checked against one); the `devices.<pool>` cap
   is the bound.
+- **HT5** (§10.1): netd op `set_sriov_vfs` (`glidex_ovs::sriov`) writes
+  `sriov_numvfs`, through 0 when the PF had some, and forgets prepared
+  groups of the VFs a change removes (every one: the kernel recreates
+  them). `POST /nodes/{id}/devices/{pf}/sriov {vfs}` (`setSriovVfs`,
+  `host.devices`) runs on the PF's node through the device-op path
+  (`/cluster/v1/devices/{pf}/sriov-<N>`), refused (`409`) while a VM's
+  claims hold the PF or a VF the node's summary lists; afterwards the
+  node runs `prepare: true` again and reports. The tree's `sriov` gains
+  `vf_driver` and `ready_vfs`; a PF with VFs enabled is not ready ("pass
+  those through instead"). The summary keeps VFs only once ready (on
+  `vfio-pci`): unbound ones are the PF's counts, which bounds the
+  summary to what an operator dedicated. Summary devices carry
+  `physfn` (address and ids) and PFs `sriov`, and pools match VFs with
+  `match.vf_of`, a nested match of the PF (empty is refused). Not done:
+  per-VF MAC, VLAN and spoof checking (§13), and VFs across reboots
+  (the installer's `--vfio-devices`, with `sriov_numvfs`).
 

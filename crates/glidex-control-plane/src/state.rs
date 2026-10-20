@@ -3937,11 +3937,19 @@ impl VmManager {
         op: &str,
     ) -> Result<serde_json::Value, VmManagerError> {
         let r = device_op_on(&self.netd, address, op)?;
-        // Readiness changed: pools see it at once (§9).
+        self.after_device_op(op);
+        Ok(r)
+    }
+
+    /// Readiness changed: pools see it at once (§9). New VFs of a
+    /// `prepare: true` pool are bound first (§10.1).
+    fn after_device_op(&self, op: &str) {
+        if op.starts_with("sriov-") {
+            self.prepare_pools();
+        }
         if let Err(e) = self.report_self() {
             tracing::warn!("reporting this node after a device {op}: {e}");
         }
-        Ok(r)
     }
 
     /// `prepare` or `release` node `id`'s device `address`: here, or on that
@@ -3957,9 +3965,7 @@ impl VmManager {
             let r = tokio::task::spawn_blocking(move || device_op_on(&netd, &a, &o))
                 .await
                 .map_err(|e| VmManagerError::Network(NetError::Unavailable(e.to_string())))??;
-            if let Err(e) = self.report_self() {
-                tracing::warn!("reporting this node after a device {op}: {e}");
-            }
+            self.after_device_op(op);
             return Ok(r);
         }
         let unavailable = |m: String| VmManagerError::Network(NetError::Unavailable(m));
@@ -5283,12 +5289,16 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
 }
 
 /// `prepare` or `release` PCI device `address` through `netd`
-/// (spec/host-topology.md §5.3).
+/// (spec/host-topology.md §5.3), or `sriov-<N>`: give the PF N VFs
+/// (§10.1).
 fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
     let address = address.to_string();
     let r = match op {
         "prepare" => netd.call(Op::PrepareDevice { address }),
         "release" => netd.call(Op::ReleaseDevice { address }),
+        _ if let Some(vfs) = op.strip_prefix("sriov-").and_then(|n| n.parse().ok()) => {
+            netd.call(Op::SetSriovVfs { address, vfs })
+        }
         _ => {
             return Err(VmManagerError::Network(NetError::Invalid(format!(
                 "no device op {op}"

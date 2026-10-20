@@ -10,6 +10,8 @@ interface DeviceOps {
   manage: boolean;
   cordoned: Set<string>;
   run: (op: "prepare" | "release" | "cordon" | "uncordon", address: string) => void;
+  /** Set a PF's SR-IOV virtual functions (§10.1). */
+  sriov: (address: string, current: number, total: number) => void;
   busy: string | null;
 }
 
@@ -39,6 +41,15 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
           <span className="ml-auto flex gap-2">
             {d.driver !== "vfio-pci" ? button("prepare", "Prepare") : button("release", "Release")}
             {cordoned ? button("uncordon", "Uncordon") : button("cordon", "Cordon")}
+            {d.sriov && (
+              <button
+                className="text-xs text-sky-700 hover:underline disabled:opacity-50"
+                disabled={ops.busy !== null}
+                onClick={() => ops.sriov(d.address, d.sriov?.enabled_vfs ?? 0, d.sriov?.total_vfs ?? 0)}
+              >
+                {ops.busy === `sriov:${d.address}` ? "…" : "VFs…"}
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -48,6 +59,7 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
         {d.switch && ` · switch ${d.switch}`}
         {d.link && ` · ${d.link.current_speed} x${d.link.current_width}`}
         {d.sriov && ` · VFs ${d.sriov.enabled_vfs ?? 0}/${d.sriov.total_vfs ?? 0}`}
+        {d.sriov && (d.sriov.enabled_vfs ?? 0) > 0 && ` (${d.sriov.ready_vfs ?? 0} ready${d.sriov.vf_driver ? `, on ${d.sriov.vf_driver}` : ""})`}
       </div>
       {!d.ready && (d.not_ready ?? []).length > 0 && <div className="text-xs text-amber-700">{(d.not_ready ?? []).join("; ")}</div>}
     </li>
@@ -72,6 +84,7 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
     };
   }, [node, tick]);
   const ops: DeviceOps = {
+    sriov: () => {},
     manage,
     cordoned: new Set(cordoned),
     busy,
@@ -90,6 +103,29 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
         setBusy(null);
       }
     },
+  };
+  ops.sriov = async (address, current, total) => {
+    const answer = prompt(
+      `Virtual functions for ${address} (0-${total}, now ${current}). Changing the number removes every VF it has; one a VM holds refuses it.`,
+      String(current),
+    );
+    if (answer === null) return;
+    const vfs = Number(answer);
+    if (!Number.isInteger(vfs) || vfs < 0 || vfs > total) {
+      setError(`${answer}: a number from 0 to ${total}`);
+      return;
+    }
+    setBusy(`sriov:${address}`);
+    setError(null);
+    try {
+      await api.setSriovVfs(node, address, vfs);
+      setTick((x) => x + 1);
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
   };
   if (error && !t) {
     return (

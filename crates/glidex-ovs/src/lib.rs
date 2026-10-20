@@ -22,6 +22,7 @@ pub mod net;
 pub mod nic;
 pub mod ovn;
 pub mod source_build;
+pub mod sriov;
 pub mod stats;
 pub mod tuning;
 pub mod uplink;

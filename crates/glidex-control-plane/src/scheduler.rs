@@ -216,10 +216,7 @@ pub fn pick_pool_devices(
         let mut free: Vec<&crate::topology::SummaryDevice> = t
             .devices
             .iter()
-            .filter(|d| {
-                p.matches
-                    .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
-            })
+            .filter(|d| p.matches.matches_device(d))
             .filter(|d| {
                 d.ready
                     && !n.spec.cordoned_devices.contains(&d.address)
@@ -1622,6 +1619,7 @@ mod tests {
             numa_node: Some(numa),
             switch: Some(sw.into()),
             ready: true,
+            ..Default::default()
         };
         let t = n.status.topology.as_mut().unwrap();
         t.devices = vec![
@@ -1637,6 +1635,7 @@ mod tests {
                 numa_node: Some(1),
                 switch: Some("s2".into()),
                 ready: true,
+                ..Default::default()
             },
         ];
         for d in t.devices.clone() {

@@ -44,6 +44,21 @@ pub struct SummaryDevice {
     pub switch: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ready: bool,
+    /// A virtual function: its physical function (§10.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physfn: Option<PhysFn>,
+    /// A physical function: its VFs, as counts (§4.1, §10.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sriov: Option<Sriov>,
+}
+
+/// A VF's physical function, as pools match it (`match.vf_of`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhysFn {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
 }
 
 impl TopologyTree {
@@ -54,34 +69,50 @@ impl TopologyTree {
             .iter()
             .filter(|d| d.assignable && !d.ready)
             .filter(|d| {
-                !d.not_ready
-                    .iter()
-                    .any(|w| w.starts_with("no IOMMU group") || w.contains("OVS-DPDK uplink"))
+                !d.not_ready.iter().any(|w| {
+                    w.starts_with("no IOMMU group")
+                        || w.contains("OVS-DPDK uplink")
+                        || w.contains("virtual functions")
+                })
             })
             .filter(|d| {
-                pools.iter().any(|p| {
-                    p.matches
-                        .matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
-                })
+                let s = self.summary_of(d);
+                pools.iter().any(|p| p.matches.matches_device(&s))
             })
             .map(|d| d.address.clone())
             .collect()
     }
 
-    /// The assignable devices, for the summary.
+    /// `d` as the summary has it.
+    fn summary_of(&self, d: &PciFunction) -> SummaryDevice {
+        SummaryDevice {
+            address: d.address.clone(),
+            vendor_id: d.vendor_id.clone(),
+            device_id: d.device_id.clone(),
+            class_id: d.class_id.clone(),
+            numa_node: d.numa_node,
+            switch: d.switch.clone(),
+            ready: d.ready,
+            physfn: d.physfn.as_ref().map(|pf| {
+                let f = self.devices.iter().find(|x| x.address == *pf);
+                PhysFn {
+                    address: pf.clone(),
+                    vendor_id: f.map(|f| f.vendor_id.clone()).unwrap_or_default(),
+                    device_id: f.map(|f| f.device_id.clone()).unwrap_or_default(),
+                    class_id: f.map(|f| f.class_id.clone()).unwrap_or_default(),
+                }
+            }),
+            sriov: d.sriov.clone(),
+        }
+    }
+
+    /// The assignable devices, for the summary. VFs only once ready (a
+    /// host may have hundreds; the rest are counts on their PF, §4.1).
     pub fn summary_devices(&self) -> Vec<SummaryDevice> {
         self.devices
             .iter()
-            .filter(|d| d.assignable)
-            .map(|d| SummaryDevice {
-                address: d.address.clone(),
-                vendor_id: d.vendor_id.clone(),
-                device_id: d.device_id.clone(),
-                class_id: d.class_id.clone(),
-                numa_node: d.numa_node,
-                switch: d.switch.clone(),
-                ready: d.ready,
-            })
+            .filter(|d| d.assignable && (d.physfn.is_none() || d.ready))
+            .map(|d| self.summary_of(d))
             .collect()
     }
 }
@@ -397,6 +428,16 @@ pub struct Sriov {
     /// A physical function: VFs it can have, and has.
     pub total_vfs: u32,
     pub enabled_vfs: u32,
+    /// The driver its first VF is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vf_driver: Option<String>,
+    /// VFs bound to `vfio-pci`, which may be passed through.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ready_vfs: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One PCI function in the tree.
@@ -609,6 +650,12 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             if ctx.dpdk_uplinks.contains(&r.address) {
                 not_ready.push("it is an OVS-DPDK uplink".to_string());
             }
+            if let Some(s) = r.sriov.as_ref().filter(|s| s.enabled_vfs > 0) {
+                not_ready.push(format!(
+                    "its {} virtual functions are enabled: pass those through instead",
+                    s.enabled_vfs
+                ));
+            }
             if r.numa_node.is_none() && multi_numa {
                 warnings.push(TopologyWarning {
                     kind: "numa_unknown".into(),
@@ -659,6 +706,20 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
         });
     }
     devices.sort_by(|a, b| a.address.cmp(&b.address));
+    // Each PF's VFs that may be passed through.
+    let ready_vfs: BTreeMap<String, u32> = devices
+        .iter()
+        .filter(|d| d.ready)
+        .filter_map(|d| d.physfn.clone())
+        .fold(BTreeMap::new(), |mut m, pf| {
+            *m.entry(pf).or_default() += 1;
+            m
+        });
+    for d in &mut devices {
+        if let Some(s) = d.sriov.as_mut() {
+            s.ready_vfs = ready_vfs.get(&d.address).copied().unwrap_or(0);
+        }
+    }
     warnings.dedup();
     TopologyTree {
         summary,
@@ -722,6 +783,8 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
             sriov: num("sriov_totalvfs").filter(|t| *t > 0).map(|t| Sriov {
                 total_vfs: t,
                 enabled_vfs: num("sriov_numvfs").unwrap_or(0),
+                vf_driver: link_name(&dir.join("virtfn0"), "driver"),
+                ready_vfs: 0,
             }),
             physfn: link_name(&dir, "physfn"),
             aer: read_aer(&address),
@@ -950,6 +1013,7 @@ mod tests {
         nic.sriov = Some(Sriov {
             total_vfs: 16,
             enabled_vfs: 0,
+            ..Default::default()
         });
         let raw = vec![
             raw(
@@ -1039,6 +1103,97 @@ mod tests {
         assert_eq!(nic.switch, gpu.switch, "peer-close: one switch");
         assert_eq!(func(&t, "0000:07:00.0").switch, None);
         assert!(!func(&t, "0000:81:00.0").assignable, "bridges aren't");
+    }
+
+    /// A ConnectX PF with two VFs: one on vfio-pci, one on its NIC driver.
+    fn sriov_tree() -> TopologyTree {
+        let mut pf = raw(
+            "pci0000:60/0000:60:01.1/0000:61:00.0",
+            "0x020000",
+            Some("mlx5_core"),
+            Some("50"),
+            Some(0),
+        );
+        pf.vendor_id = "0x15b3".into();
+        pf.device_id = "0x1021".into();
+        pf.sriov = Some(Sriov {
+            total_vfs: 16,
+            enabled_vfs: 2,
+            vf_driver: Some("vfio-pci".into()),
+            ready_vfs: 0,
+        });
+        let vf = |a: &str, driver: &str, group: &str| {
+            let mut v = raw(
+                &format!("pci0000:60/0000:60:01.1/{a}"),
+                "0x020000",
+                Some(driver),
+                Some(group),
+                Some(0),
+            );
+            v.vendor_id = "0x15b3".into();
+            v.device_id = "0x101e".into();
+            v.physfn = Some("0000:61:00.0".into());
+            v
+        };
+        let raw = vec![
+            raw(
+                "pci0000:60/0000:60:01.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("49"),
+                Some(0),
+            ),
+            pf,
+            vf("0000:61:00.2", "vfio-pci", "51"),
+            vf("0000:61:00.3", "mlx5_core", "52"),
+        ];
+        let ctx = ReadyContext {
+            iommu: true,
+            ..Default::default()
+        };
+        build_tree(TopologySummary::default(), &raw, &ctx)
+    }
+
+    #[test]
+    fn vfs_are_devices_and_their_pf_is_counted_not_offered() {
+        let t = sriov_tree();
+        let pf = func(&t, "0000:61:00.0");
+        assert!(!pf.ready);
+        assert!(
+            pf.not_ready
+                .iter()
+                .any(|w| w.contains("2 virtual functions")),
+            "{:?}",
+            pf.not_ready
+        );
+        assert_eq!(pf.sriov.as_ref().unwrap().ready_vfs, 1);
+        assert!(func(&t, "0000:61:00.2").ready);
+        // The summary: the PF (with its counts) and the ready VF only.
+        let s = t.summary_devices();
+        let addrs: Vec<&str> = s.iter().map(|d| d.address.as_str()).collect();
+        assert_eq!(addrs, ["0000:61:00.0", "0000:61:00.2"]);
+        let vf = &s[1];
+        assert_eq!(vf.physfn.as_ref().unwrap().device_id, "0x1021");
+        // A pool of the PF's VFs takes the VF, not the PF.
+        let vfs = crate::config::PoolMatch {
+            vf_of: Some(Box::new(crate::config::PoolMatch {
+                vendor_id: Some("0x15b3".into()),
+                device_id: Some("0x1021".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(vfs.matches_device(vf));
+        assert!(!vfs.matches_device(&s[0]));
+        // prepare: true binds the other VF, never the PF.
+        let pool = crate::config::PciPool {
+            name: "cx7-vfs".into(),
+            class: Some("nic".into()),
+            matches: vfs,
+            nodes: vec![],
+            prepare: true,
+        };
+        assert_eq!(t.to_prepare(std::slice::from_ref(&pool)), ["0000:61:00.3"]);
     }
 
     #[test]

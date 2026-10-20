@@ -296,6 +296,38 @@ devices from a pool, and the scheduler picks them. Pools are defined in
 - Metering counts `device.alloc.<pool>`: devices held, in device-hours,
   from the VM's start to its exit (paused too).
 
+## SR-IOV virtual functions
+
+A NIC (or GPU) with SR-IOV can be split into virtual functions (VFs),
+each passed through to its own VM. `gxctl node topology <node>
+--devices` shows a physical function's `vfs enabled/total` and how many
+are ready.
+
+```bash
+gxctl node sriov gpu-01 0000:61:00.0 8     # 8 VFs on the PF
+gxctl node sriov gpu-01 0000:61:00.0 0     # none
+```
+
+(`POST /nodes/{id}/devices/{pf}/sriov` with `{"vfs": 8}`, `net-admin`
+or `system-admin`; also the **VFs…** button on the node page.) A change
+removes every VF the PF had, so it is refused while a VM holds the PF or
+one of its VFs, and for a PF that is an OVS-DPDK uplink. VFs don't
+survive a reboot by themselves.
+
+A PF with VFs enabled is no longer offered itself (passing it through
+would take its VFs with it). A pool takes VFs with `match.vf_of`, which
+matches their PF:
+
+```json
+{ "name": "cx7-vfs", "class": "nic", "prepare": true,
+  "match": { "vf_of": { "vendor_id": "0x15b3", "device_id": "0x1021" } } }
+```
+
+New VFs come up on the NIC's own driver; `prepare: true` binds a pool's
+VFs to `vfio-pci` at start and right after `node sriov`. Only VFs on
+`vfio-pci` are listed as pool devices. A VF inherits its PF's NUMA node.
+Its MAC, VLAN and spoof checking are the PF's defaults for now.
+
 ## Device health and cordoning
 
 Each node reads its devices' PCIe error counters (AER), shown in

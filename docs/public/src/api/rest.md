@@ -450,6 +450,7 @@ Administrator operations; see [Clusters](../operator-guide/clusters.md).
 | `GET` | `/nodes/{id}` | Get a node |
 | `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
 | `POST` | `/nodes/{id}/devices/{address}/prepare` | Bind a device's IOMMU group to vfio-pci on its node |
+| `POST` | `/nodes/{id}/devices/{address}/sriov` | Set a physical function's SR-IOV virtual functions: `{"vfs": N}` (0 removes them) |
 | `POST` | `/nodes/{id}/devices/{address}/release` | Put a prepared device back on its drivers |
 | `POST` | `/nodes/{id}/devices/{address}/cordon` | No new VM gets the device |
 | `POST` | `/nodes/{id}/devices/{address}/uncordon` | Give it to new VMs again |

@@ -56,6 +56,25 @@ pub async fn pci_pools(
     Ok(Proto(StatusCode::OK, svc::list_pci_pools(&c, req).await?))
 }
 
+#[derive(serde::Deserialize)]
+pub struct SriovBody {
+    vfs: u32,
+}
+
+pub async fn set_sriov_vfs(
+    c: Caller,
+    Path((id, address)): Path<(String, String)>,
+    Json(b): Json<SriovBody>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::SetSriovVfsRequest {
+        id,
+        address,
+        vfs: b.vfs,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::set_sriov_vfs(&c, req).await?))
+}
+
 pub async fn prepare_device(
     c: Caller,
     Path((id, address)): Path<(String, String)>,

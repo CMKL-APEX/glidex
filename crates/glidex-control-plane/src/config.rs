@@ -346,6 +346,10 @@ pub struct PoolMatch {
     pub class_code: Option<String>,
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// Virtual functions of the physical functions this matches
+    /// (spec/host-topology.md §10.1); the other keys then match the VF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vf_of: Option<Box<PoolMatch>>,
 }
 
 fn hex_id(s: &str) -> String {
@@ -358,6 +362,19 @@ impl PoolMatch {
             && self.device_id.is_none()
             && self.class_code.is_none()
             && self.addresses.is_empty()
+            && self.vf_of.is_none()
+    }
+
+    /// Whether a device of a node's summary is the pool's: its own ids,
+    /// and with `vf_of`, a VF of a matching PF.
+    pub fn matches_device(&self, d: &crate::topology::SummaryDevice) -> bool {
+        self.matches(&d.address, &d.vendor_id, &d.device_id, &d.class_id)
+            && self.vf_of.as_deref().is_none_or(|pf| {
+                d.physfn.as_ref().is_some_and(|p| {
+                    !pf.is_empty()
+                        && pf.matches(&p.address, &p.vendor_id, &p.device_id, &p.class_id)
+                })
+            })
     }
 
     /// Whether a device with these ids at `address` is the pool's.
@@ -397,6 +414,12 @@ impl PciConfig {
             if p.matches.is_empty() {
                 return Err(format!(
                     "pci.pools: pool {} matches every device; give it a match",
+                    p.name
+                ));
+            }
+            if p.matches.vf_of.as_deref().is_some_and(|pf| pf.is_empty()) {
+                return Err(format!(
+                    "pci.pools: pool {}: vf_of matches every PF; give it ids or addresses",
                     p.name
                 ));
             }
@@ -653,6 +676,7 @@ mod tests {
                 device_id: None,
                 class_code: Some("0x0302".into()),
                 addresses: vec![],
+                vf_of: None,
             },
             nodes: vec![],
             prepare: false,

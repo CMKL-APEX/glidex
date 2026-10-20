@@ -682,6 +682,16 @@ pub(crate) fn topology_lines(
             }
             if let Some(v) = d.sriov.as_option() {
                 l.push_str(&format!("  vfs {}/{}", v.enabled_vfs, v.total_vfs));
+                if v.enabled_vfs > 0 {
+                    l.push_str(&format!(
+                        " ({} ready{})",
+                        v.ready_vfs,
+                        v.vf_driver
+                            .as_deref()
+                            .map(|d| format!(", on {d}"))
+                            .unwrap_or_default()
+                    ));
+                }
             }
             if let Some(a) = d.aer.as_option()
                 && (a.correctable + a.nonfatal + a.fatal) > 0
@@ -787,6 +797,34 @@ pub async fn node(client: &ApiClient, args: &[&str]) {
             }
         }
         Some("import") => imports(client, &args[1..]).await,
+        Some("sriov") => {
+            let (Some(node), Some(address), Some(Ok(vfs))) = (
+                args.get(1),
+                args.get(2),
+                args.get(3).map(|n| n.parse::<u32>()),
+            ) else {
+                return usage("Usage: node sriov <node> <pf-address> <vfs>");
+            };
+            let s = svc!(node_rpc(client));
+            let v = answer!(s.set_sriov_vfs(SetSriovVfsRequest {
+                id: node.to_string(),
+                address: address.to_string(),
+                vfs,
+                ..Default::default()
+            }));
+            println!(
+                "{} {} has {}/{} virtual functions{}",
+                "OK".green(),
+                v.address,
+                v.enabled,
+                v.total,
+                if v.vfs.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", v.vfs.join(", "))
+                }
+            );
+        }
         Some(op @ ("prepare-device" | "release-device" | "cordon-device" | "uncordon-device")) => {
             let (Some(node), Some(address)) = (args.get(1), args.get(2)) else {
                 return usage(&format!("Usage: node {op} <node> <pci-address>"));

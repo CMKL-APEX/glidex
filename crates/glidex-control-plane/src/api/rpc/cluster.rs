@@ -206,6 +206,14 @@ impl NodeService for Svc {
         op_async!(self, ctx, req, node::list_pci_pools)
     }
 
+    async fn set_sriov_vfs(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetSriovVfsRequest>,
+    ) -> ServiceResult<SetSriovVfsResponse> {
+        op_async!(self, ctx, req, node::set_sriov_vfs)
+    }
+
     async fn prepare_device(
         &self,
         ctx: RequestContext,

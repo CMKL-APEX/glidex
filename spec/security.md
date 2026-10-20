@@ -684,7 +684,7 @@ Rules for the schema:
 | `network.manage` | project | Create and delete the project's own NAT and isolated networks |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
 | `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /host/topology` and `GET /nodes/{id}/topology` (`readHostTopology`), `GET /system/reconcile` (`readSystemStatus`) |
-| `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, host-topology.md §5.3–5.4) |
+| `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, host-topology.md §5.3–5.4); `setSriovVfs` (`POST /nodes/{id}/devices/{pf}/sriov`, §10.1) |
 | `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |

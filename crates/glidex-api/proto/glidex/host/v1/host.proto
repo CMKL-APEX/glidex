@@ -483,6 +483,10 @@ message PcieLink {
 message Sriov {
   uint32 total_vfs = 1 [json_name = "total_vfs"];
   uint32 enabled_vfs = 2 [json_name = "enabled_vfs"];
+  // The driver its first VF is on.
+  optional string vf_driver = 3 [json_name = "vf_driver"];
+  // VFs bound to vfio-pci, which may be passed through.
+  uint32 ready_vfs = 4 [json_name = "ready_vfs"];
 }
 
 message PciFunction {
