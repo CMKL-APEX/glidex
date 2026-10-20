@@ -116,7 +116,9 @@ fn yes() -> bool {
     true
 }
 
-/// A test mock's issuer: plain HTTP on the loopback only.
+/// A test mock's issuer: plain HTTP on the loopback only. The record's
+/// own check lets it through; it is used only with
+/// `auth.federation.allow_private_issuers` (`Issuers::allows_private`).
 pub fn is_loopback(url: &str) -> bool {
     url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")
 }
@@ -399,30 +401,105 @@ const REFETCH_SECS: u64 = 60;
 /// Discovery and JWKS of federation issuers, cached per issuer.
 pub struct Issuers {
     http: reqwest::Client,
+    /// `auth.federation.allow_private_issuers`: off, only public addresses
+    /// are fetched from.
+    allow_private: bool,
     cache: Mutex<HashMap<String, IssuerKeys>>,
 }
 
-impl Default for Issuers {
-    fn default() -> Self {
-        Issuers {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
-            cache: Mutex::new(HashMap::new()),
+/// Whether `ip` is on the public internet: not loopback, private,
+/// link-local, unique-local, shared (CGNAT), unspecified, broadcast or
+/// multicast, whether written as IPv4 or IPv4-mapped IPv6.
+pub fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)))
         }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public(IpAddr::V4(v4)),
+            None => {
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local())
+            }
+        },
+    }
+}
+
+/// Resolves issuer host names to their public addresses only, so a name
+/// can't lead the control plane to its own host or network, whenever it
+/// is looked up.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|a| is_public(a.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err(format!("{host} has no public address").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
     }
 }
 
 impl Issuers {
+    pub fn new(allow_private: bool) -> Self {
+        let mut b = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none());
+        if !allow_private {
+            b = b.dns_resolver(Arc::new(PublicOnly));
+        }
+        Issuers {
+            http: b.build().unwrap_or_default(),
+            allow_private,
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Whether plain-HTTP loopback issuers (test mocks) are let in.
+    pub fn allows_private(&self) -> bool {
+        self.allow_private
+    }
+
     async fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
-        let r = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("can't reach {url}: {}", e.without_url()))?;
+        // A URL naming an address skips the resolver: check it here.
+        if !self.allow_private {
+            let ip = reqwest::Url::parse(url).ok().and_then(|u| {
+                let h = u.host_str()?.trim_start_matches('[').trim_end_matches(']');
+                h.parse::<std::net::IpAddr>().ok()
+            });
+            if ip.is_some_and(|ip| !is_public(ip)) {
+                return Err(format!("{url} is not a public address"));
+            }
+        }
+        let r = self.http.get(url).send().await.map_err(|e| {
+            // The resolver's refusal says so; anything else stays vague.
+            let mut cause: Option<&dyn std::error::Error> = Some(&e);
+            while let Some(c) = cause {
+                if c.to_string().ends_with("has no public address") {
+                    return format!("{url} has no public address");
+                }
+                cause = c.source();
+            }
+            format!("can't reach {url}: {}", e.without_url())
+        })?;
         if !r.status().is_success() {
             return Err(format!("{url} answered {}", r.status().as_u16()));
         }
@@ -449,7 +526,7 @@ impl Issuers {
             .get("jwks_uri")
             .and_then(|v| v.as_str())
             .ok_or("its discovery document has no jwks_uri")?;
-        if !(jwks_uri.starts_with("https://") || is_loopback(jwks_uri)) {
+        if !(jwks_uri.starts_with("https://") || (self.allow_private && is_loopback(jwks_uri))) {
             return Err("its jwks_uri isn't https".into());
         }
         let jwks: jsonwebtoken::jwk::JwkSet =
@@ -554,5 +631,62 @@ mod tests {
         let mut f = fed();
         f.id = "Bad Id".into();
         assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn only_public_addresses_are_public() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "140.82.112.3",
+            "8.8.8.8",
+            "100.128.0.1",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(is_public(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[tokio::test]
+    async fn issuers_fetch_only_from_public_addresses_unless_allowed() {
+        let strict = Issuers::new(false);
+        assert!(!strict.allows_private());
+        for url in [
+            "https://127.0.0.1:1",
+            "https://[::1]:1",
+            "https://10.0.0.1",
+            "http://169.254.169.254",
+        ] {
+            let e = strict.fetch(url).await.err().unwrap();
+            assert!(e.contains("not a public address"), "{url}: {e}");
+        }
+        let e = strict.fetch("https://localhost:1").await.err().unwrap();
+        assert!(e.contains("has no public address"), "localhost: {e}");
+        // Allowed, the same address is tried (and here, finds nothing).
+        let e = Issuers::new(true)
+            .fetch("http://127.0.0.1:1")
+            .await
+            .err()
+            .unwrap();
+        assert!(!e.contains("not a public address"), "{e}");
     }
 }

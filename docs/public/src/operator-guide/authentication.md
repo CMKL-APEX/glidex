@@ -560,6 +560,16 @@ discovery must be reachable by glidex, for example published with
 projected token with audience `glidex`, and rules on `sub`
 (`system:serviceaccount:<namespace>:<name>`).
 
+**Issuers on your own network.** Glidex reads an issuer's discovery and
+keys only from public addresses: an issuer whose host resolves only to
+loopback, private, link-local or unique-local addresses (a self-hosted
+GitLab on the LAN, an internal Kubernetes API) is refused with
+`issuer_unreachable` (*has no public address*). To trust one, set
+`auth.federation.allow_private_issuers` to `true` in
+`/etc/glidex/control-plane.json` and restart the control plane. That
+lets every tenant administrator point a federation at internal
+addresses, so turn it on only when you need it.
+
 ## Sessions and re-authentication
 
 A web UI login starts a session, kept in a cookie. It ends after

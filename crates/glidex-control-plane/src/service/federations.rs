@@ -118,18 +118,21 @@ fn check_service_accounts(call: &Call, tenant: &str, f: &Federation) -> ServiceR
 
 /// The issuer answers now (D49): its discovery and its keys.
 async fn check_issuer(call: &Call, issuer: &str) -> ServiceResult<()> {
-    call.auth()
-        .issuers
-        .fetch(issuer)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "issuer_unreachable",
-                format!("the issuer can't be read: {e}"),
-            )
-        })
+    let issuers = &call.auth().issuers;
+    if !issuer.starts_with("https://") && !issuers.allows_private() {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_federation",
+            "issuer is an https URL (the issuer's own, as its tokens carry it)",
+        ));
+    }
+    issuers.fetch(issuer).await.map(|_| ()).map_err(|e| {
+        err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "issuer_unreachable",
+            format!("the issuer can't be read: {e}"),
+        )
+    })
 }
 
 pub fn list_federations(

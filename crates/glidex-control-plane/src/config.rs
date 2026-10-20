@@ -127,6 +127,19 @@ pub struct AuthConfig {
     /// systemd credential `secrets-kek` wins when present. The control
     /// plane defaults it to `secrets.kek` beside its database.
     pub secrets_key: Option<PathBuf>,
+    pub federation: FederationConfig,
+}
+
+/// Workload federations (spec/tenancy.md §9).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct FederationConfig {
+    /// Let a federation's issuer be on this host or the site's own
+    /// network: plain-HTTP loopback issuers, and issuers or JWKS whose
+    /// addresses are loopback, private, link-local or unique-local. Off:
+    /// a tenant administrator can't make the control plane fetch from
+    /// addresses that aren't public.
+    pub allow_private_issuers: bool,
 }
 
 impl AuthConfig {
