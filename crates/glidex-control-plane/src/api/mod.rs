@@ -2288,7 +2288,7 @@ fn agent_login_hint(m: &crate::state::VmManager) -> String {
         .cloned()
         .unwrap_or_else(|| "https://<server>:8841".into());
     format!(
-        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})",
+        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login --url {url}` (servers: {})",
         if servers.is_empty() {
             "unknown".into()
         } else {

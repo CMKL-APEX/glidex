@@ -46,7 +46,7 @@ see [Maintenance](maintenance.md#logs).
 | --- | --- |
 | Permission denied on `/run/glidex-cp/api.sock` | You aren't in `glidex-users` (or `glidex-admin`), or you were added and haven't logged out and back in since. Check with `id`. |
 | Connection refused on `https://localhost:8841`, or `unauthenticated` without `--url` | With no local socket, `gxctl` falls back to TCP on this host. The control plane isn't running (`systemctl status glidex-control-plane`), or `/run/glidex-cp/api.sock` is missing. |
-| `this host is a cluster agent: it has no local API` | Expected on an agent. Use a server: `gxctl auth login https://<server>:8841`. |
+| `this host is a cluster agent: it has no local API` | Expected on an agent. Use a server: `gxctl auth login --url https://<server>:8841` (this works on the agent itself). |
 | `unauthenticated` over TCP | No token, or an expired one. `gxctl login --oidc` or `--token`, or `gxctl auth login`. |
 | A TLS or certificate error over TCP | See [Certificate fingerprints](#certificate-fingerprints). |
 

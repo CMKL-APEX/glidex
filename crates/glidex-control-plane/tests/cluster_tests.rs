@@ -4854,7 +4854,7 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
         body["message"]
             .as_str()
             .unwrap()
-            .contains("gxctl auth login https://127.0.0.1:8841"),
+            .contains("gxctl auth login --url https://127.0.0.1:8841"),
         "{body}"
     );
 
