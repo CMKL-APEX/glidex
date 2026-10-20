@@ -1379,7 +1379,7 @@ pub async fn console_target(
     let (e, es) = vm_entities(&vm);
     call.require_visible("readVm", e, es, "VM")?;
     use crate::auth::Method;
-    if matches!(call.p.method, Method::Pam | Method::Oidc)
+    if matches!(call.p.method, Method::Pam | Method::Oidc | Method::Passkey)
         && !ticket.is_some_and(|t| call.auth().redeem_ticket(&call.p, &vm.id, t))
     {
         return Err(ServiceError::new(

@@ -128,6 +128,8 @@ tables! {
     Federations = 52 => "federations",
     // The tokens exchanges gave, and the workload tokens they used (§9, D48).
     FederatedTokens = 53 => "federated_tokens",
+    // Passkeys and users' WebAuthn handles (spec/passkeys.md).
+    Passkeys = 54 => "passkeys",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -148,7 +150,7 @@ impl TableId {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
-            | FederatedTokens => Scope::Directory,
+            | FederatedTokens | Passkeys => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }
