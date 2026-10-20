@@ -18,13 +18,14 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// In stop order: the UI, the control plane (stops VMs), glidex-authd,
-/// then netd.
+/// In stop order: the UI, the control plane (stops VMs), glidex-authd and
+/// glidex-stord, then netd.
 pub const UNITS: &[&str] = &[
     "glidex-ui.service",
     "glidex-control-plane.service",
     "glidex-authd.service",
     "glidex-authd.socket",
+    "glidex-stord.service",
     "glidex-netd.service",
 ];
 /// Units of the pinned OVS source build (removed only with --remove-ovs).
@@ -39,6 +40,7 @@ pub const BINARIES: &[&str] = &[
     "glidex-netd",
     "glidex-ui",
     "glidex-authd",
+    "glidex-stord",
     "glidex-vm-shim",
 ];
 /// The VM unit template and its slice (spec/reconciliation.md §13).
@@ -72,6 +74,7 @@ pub const STATE_DIRS: &[&str] = &[
     "/run/glidex",
     "/run/glidex-cp",
     "/run/glidex-authd",
+    "/run/glidex-stord",
 ];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
 pub const DISTRO_OVS_PACKAGES: &[&str] = &["openvswitch-switch-dpdk", "openvswitch-switch"];

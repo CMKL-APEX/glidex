@@ -34,8 +34,13 @@ impl VmManager {
             self.prune_departed_copies(&mut img)?;
         }
         if img.deletion_requested_at.is_some() {
-            // Copies in shared datastores go too (storage.md S9).
+            // Copies in shared datastores go too (storage.md S9), and this
+            // node's image volumes in lvm datastores (§11.1): no linked disk
+            // uses them any more.
             self.drop_store_copies(&img)?;
+            let m = self.arc();
+            let image = img.id.clone();
+            let _ = tokio::task::spawn_blocking(move || m.drop_image_volumes(&image)).await;
             // Every node's copy goes first (§9.2); the record is the leader's to remove.
             if self.cluster().is_some() {
                 self.drop_image_cache(&img)?;

@@ -903,7 +903,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
 
 // ---- datastores (spec/storage.md §13) -------------------------------------
 
-const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> --path P [--shared] [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
 
 /// `--node-path NODE=PATH`, repeated.
 fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
@@ -950,13 +950,25 @@ fn print_datastore(d: &Datastore) {
     if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED) {
         println!("  shared: the same files from every node (one mount)");
     }
-    if !d.builtin {
+    if d.driver.as_known() == Some(DatastoreDriver::DATASTORE_DRIVER_LVM) {
+        println!(
+            "  lvm: volume group {}, thin pool {}",
+            d.volume_group, d.thin_pool
+        );
+        let mut nv: Vec<_> = d.node_paths.iter().collect();
+        nv.sort();
+        for (n, vg) in nv {
+            println!("  volume group on {n}: {vg}");
+        }
+    } else if !d.builtin {
         println!("  path: {}", d.path);
         let mut np: Vec<_> = d.node_paths.iter().collect();
         np.sort();
         for (n, p) in np {
             println!("  path on {n}: {p}");
         }
+    }
+    if !d.builtin {
         println!(
             "  nodes: {}",
             if d.nodes.is_empty() {
@@ -1067,11 +1079,17 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         "create" => {
-            let (Some(name), Some(path)) = (
-                args.get(1).filter(|a| !a.starts_with("--")),
-                flag_value(args, "--path"),
-            ) else {
+            let name = args.get(1).filter(|a| !a.starts_with("--"));
+            // `--lvm VG/POOL` instead of `--path` (spec/storage.md §11.1).
+            let lvm = flag_value(args, "--lvm").map(|v| v.split_once('/'));
+            let (Some(name), Some(path)) = (name, flag_value(args, "--path").or(lvm.map(|_| "")))
+            else {
                 return usage(u);
+            };
+            let (volume_group, thin_pool) = match lvm {
+                Some(Some((vg, pool))) => (vg.to_string(), pool.to_string()),
+                Some(None) => return err("--lvm VG/POOL: name the volume group and its thin pool"),
+                None => (String::new(), String::new()),
             };
             let node_paths = match node_paths(args) {
                 Ok(p) => p,
@@ -1079,13 +1097,17 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             };
             let req = CreateDatastoreRequest {
                 name: name.to_string(),
-                driver: if has_flag(args, "--shared") {
+                driver: if lvm.is_some() {
+                    DatastoreDriver::DATASTORE_DRIVER_LVM
+                } else if has_flag(args, "--shared") {
                     DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR
                 } else {
                     DatastoreDriver::DATASTORE_DRIVER_DIR
                 }
                 .into(),
                 path: path.to_string(),
+                volume_group,
+                thin_pool,
                 node_paths: node_paths.into_iter().collect(),
                 nodes: flag_value(args, "--nodes")
                     .map(node_list)

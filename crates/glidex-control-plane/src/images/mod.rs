@@ -1329,6 +1329,13 @@ impl ImageManager {
         if !ds.on_node(&node) {
             return Err(missing("which this node isn't on"));
         }
+        if let crate::datastore::record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
+            return Ok(Arc::new(crate::datastore::lvm::LvmDriver::new(
+                ds.path_for(&node).to_string(),
+                thin_pool.clone(),
+                crate::datastore::lvm::socket_path(),
+            )));
+        }
         let root = std::path::Path::new(ds.path_for(&node));
         let dir = root.join("disks");
         crate::paths::checked_path(&dir).map_err(ImageError::Io)?;

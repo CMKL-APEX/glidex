@@ -1147,6 +1147,15 @@ impl VmManager {
             let new = if ds.is_builtin() {
                 // `local` is the disk directory, wherever it is.
                 probe::probe_dir(&self.images.settings.disk_dir, now)
+            } else if let (true, record::DriverSpec::Lvm { thin_pool, .. }) =
+                (ds.on_node(&me), &ds.driver)
+            {
+                crate::datastore::lvm::probe(
+                    ds.path_for(&me),
+                    thin_pool,
+                    &crate::datastore::lvm::socket_path(),
+                    now,
+                )
             } else if ds.on_node(&me) {
                 probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {

@@ -288,6 +288,32 @@ impl VmManager {
     }
 }
 
+impl VmManager {
+    /// Remove image `id`'s volume from every lvm datastore on this node
+    /// (spec/storage.md §11.1). One a snapshot still uses stays (stord says
+    /// busy); deleting the image waited for its linked disks. Blocks.
+    pub(crate) fn drop_image_volumes(&self, id: &str) {
+        use crate::datastore::lvm;
+        let me = self.local_node_id();
+        let Ok(all) = record::list(&self.store.database()) else {
+            return;
+        };
+        for ds in all.iter().filter(|d| d.on_node(&me)) {
+            let record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver else {
+                continue;
+            };
+            let d = lvm::LvmDriver::new(
+                ds.path_for(&me).to_string(),
+                thin_pool.clone(),
+                lvm::socket_path(),
+            );
+            if let Err(e) = d.delete_image_volume(id) {
+                tracing::warn!(image = %id, datastore = %ds.name, "removing the image volume: {}", e);
+            }
+        }
+    }
+}
+
 /// Whether the file at `p` has digest `want` (any, when the image has none).
 async fn digest_ok(p: &Path, want: &str) -> bool {
     if want.is_empty() {

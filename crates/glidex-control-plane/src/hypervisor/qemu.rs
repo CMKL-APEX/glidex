@@ -124,7 +124,7 @@ impl QemuDisk {
     fn blockdev(&self, node: &str) -> String {
         let read_only = self.disk.read_only;
         let mut file = serde_json::json!({
-            "driver": "file",
+            "driver": if self.disk.block { "host_device" } else { "file" },
             "filename": self.disk.path,
             "read-only": read_only,
         });
@@ -132,7 +132,9 @@ impl QemuDisk {
             file["cache"] = serde_json::json!({"direct": true});
             file["aio"] = "native".into();
         }
-        if self.disk.shared {
+        // A block volume: this node's QEMU alone may open it (spec/storage.md
+        // §19, H6).
+        if self.disk.shared || self.disk.block {
             file["locking"] = "on".into();
         }
         // A disk we couldn't probe is opened raw; never left to QEMU's own
@@ -773,13 +775,24 @@ mod tests {
                 backing_files: false,
                 lock: Some("/srv/glidex/nfs/.locks/data.lock".into()),
             },
+            // An LVM volume: a block device, locked (§19, H6).
+            VolumeBinding::Block {
+                path: "/dev/vg0/gx-d-1".into(),
+            },
         ];
         let args = spec(&config).args();
         let blockdevs: Vec<serde_json::Value> = values(&args, "-blockdev")
             .iter()
             .map(|b| serde_json::from_str(b).unwrap())
             .collect();
-        assert_eq!(blockdevs.len(), 4);
+        assert_eq!(blockdevs.len(), 5);
+        assert_eq!(
+            blockdevs[3],
+            serde_json::json!({
+                "driver": "raw", "node-name": "disk3", "read-only": false,
+                "file": {"driver": "host_device", "filename": "/dev/vg0/gx-d-1", "read-only": false, "locking": "on"}
+            })
+        );
         assert_eq!(
             blockdevs[0],
             serde_json::json!({
@@ -792,11 +805,11 @@ mod tests {
         assert!(blockdevs[1].as_object().unwrap().contains_key("backing"));
         assert!(!blockdevs[2].as_object().unwrap().contains_key("backing"));
         assert_eq!(blockdevs[2]["driver"], "raw");
-        // Image locking on for the shared disk only.
+        // Image locking on for the shared disk and the block volume only.
         assert_eq!(blockdevs[2]["file"]["locking"], "on");
         assert!(blockdevs[1]["file"].get("locking").is_none());
-        assert_eq!(blockdevs[3]["file"]["filename"], "/tmp/seed,1.img");
-        assert_eq!(blockdevs[3]["read-only"], true);
+        assert_eq!(blockdevs[4]["file"]["filename"], "/tmp/seed,1.img");
+        assert_eq!(blockdevs[4]["read-only"], true);
         let devices: Vec<&str> = values(&args, "-device")
             .into_iter()
             .filter(|d| d.starts_with("virtio-blk-pci"))
@@ -808,6 +821,7 @@ mod tests {
                 "virtio-blk-pci,drive=disk1,id=vd1",
                 "virtio-blk-pci,drive=disk2,id=vd2",
                 "virtio-blk-pci,drive=disk3,id=vd3",
+                "virtio-blk-pci,drive=disk4,id=vd4",
             ]
         );
     }

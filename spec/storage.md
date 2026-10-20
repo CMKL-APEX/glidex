@@ -1,6 +1,6 @@
 # Datastores
 
-Status: **S0–S5 implemented; S6–S7 design.** Implemented:
+Status: **S0–S5 implemented; S6 in progress (S6a, S6b built); S7 design.** Implemented:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
@@ -9,7 +9,11 @@ Status: **S0–S5 implemented; S6–S7 design.** Implemented:
   (§4.4), and images in them for linked disks plus the installer's
   registration (§4.5);
 - S4, placing a stopped or lost VM again (§9);
-- S5, moving a disk between datastores (§8.3).
+- S5, moving a disk between datastores (§8.3);
+- S6a, `glidex-stord` (§11.1), its unit and the installer's
+  `--stord-allow-vg`;
+- S6b, `lvm` datastores: the driver, block bindings and device access
+  (§11.1 as built).
 
 S6 and everything after it is still design. The milestones are S0–S7
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
@@ -72,11 +76,14 @@ later milestones (§11, §12).
 | S9 | **A shared datastore holds one copy of each image it needs** (`image_caches/<image>/ds:<datastore>`). A `node-local` one keeps a copy on each node (`.../<node>`, as today). | This is the "shared image store" of clustering.md §18 without a new service. Images stay cluster records. Only where their files live changes. |
 | S10 | **Moving a VM stays explicit and offline**, and needs every disk on a shared datastore. A **stopped** VM can be re-placed (`POST /vms/{id}/place`). A **`Lost`** VM can be re-placed after `node forget --fenced`. Nothing moves automatically. | D8 still holds: a partitioned node may still be running the VM. Today only the operator's `--fenced` statement establishes that it isn't. Hypervisor file locks (§10) are a second check, not the guarantee. |
 | S11 | **Mount points live under one root, `/srv/glidex/<name>`**, which both units list as `ReadWritePaths=-/srv/glidex`. Paths outside it are refused unless an operator adds a drop-in. | Registering a datastore through the API must not require editing systemd units on every node, and the control plane can't widen its own sandbox (security.md §10). |
-| S12 | **Block volumes and a privileged storage helper come later** (`glidex-stord`, §11), on the netd pattern. | Mapping LUNs, activating LVs and `rbd map` need root. The unprivileged control plane asks a small root daemon, as it does with netd for networking. |
+| S12 | **Block volumes and a privileged storage helper come with S6** (`glidex-stord`, §11, S17–S19), on the netd pattern. | Mapping LUNs, activating LVs and `rbd map` need root. The unprivileged control plane asks a small root daemon, as it does with netd for networking. |
 | S13 | **New disks default to `local`, even once a shared datastore exists.** The operator moves the default with `default_for` (`gxctl datastore set <name> --default disks`). When the installer registers a shared datastore, it asks whether that datastore should become the default; the suggested answer is no. | `local` is what every existing install uses, and it is the fastest store. Choosing shared storage (VMs can move, at network-storage speed) is the operator's call, made once, not something glidex decides for them. |
 | S14 | **A datastore has one path, which each node may override** (`node_paths: {node: path}`). A node without an override uses `path`. Every path, default or override, is under the S11 root. | Most sites mount the same export at the same place everywhere, so one path covers them. Some nodes can't (an existing mount, a different vendor agent layout). Overrides cost little: backing paths are relative (S8), and the marker plus `fs_id` (§4.1) prove that every node's path reaches the same filesystem. |
 | S15 | **Per-datastore quotas are queued, not built now.** Project `disk_gib` stays cluster-wide across all datastores. | No site has a scarce fast datastore yet. When one does, the quota follows tenancy.md's per-cluster model (T6): `disk_gib` per project per datastore, checked where `disk_gib` is checked today. |
 | S16 | **glidex locks shared volumes itself** (§10): an OFD lock on `<root>/.locks/<disk-id>.lock`, taken by the shim before the hypervisor starts and by the worker around disk operations. | Placement and claims can't stop a node that was partitioned and kept running (D8). Cloud Hypervisor's own lock comes too late for qcow2, because it repairs a dirty image before locking it (§19, H2). A separate lock file works the same for both hypervisors and for `qemu-img`. |
+| S17 | **Block volumes go through `glidex-stord`, a root helper on netd's model** (§11.1): a Unix socket for the `glidex` group, newline JSON with a `hello` handshake, peer-uid authorization and a per-op policy. It acts only on volume groups the operator lists in `/etc/glidex/stord.json` (`allowed_vgs`), and only on logical volumes named `gx-d-<disk-id>` or `gx-i-<image-id>`. | Creating and activating LVs needs root, and the control plane must stay unprivileged. The allow-list and the name rule mean a compromised control plane can make and remove glidex's own volumes, but can't touch the host's root LV or another application's. |
+| S18 | **Device access is per VM** (§11.1). At activation stord makes the LV's device node `glidex:glidex 0600`. Before a VM starts, stord writes a drop-in for its `glidex-vm@<id>` unit, `DeviceAllow=` for exactly its volumes, and reloads systemd. The control plane's own unit gets `DeviceAllow=block-device-mapper rw`, to make and edit glidex-owned volumes; file ownership is what limits it. | `DevicePolicy=closed` on the VM unit then still keeps each hypervisor to its own disks. `systemctl set-property` is not used: its reset line drops the unit's own devices (`/dev/kvm`) (§19, H5). |
+| S19 | **The first block driver is `lvm`: node-local LVM-thin** in a volume group and thin pool the operator made (§11.1). Volumes are raw. A linked disk is a thin snapshot of the node's image LV; a full one is a copy. Disks grow, and never shrink. glidex takes no volume lock of its own on them: on one node the hypervisors' own locks refuse a second instance (§19, H6). `shared-lvm` and `rbd` come later. | Thin pools give the same thin, overcommitted, fast-clone behaviour as qcow2 files, on the device a site gives VMs. Raw block devices carry no qcow2 metadata, so H2's refcount rewrite can't happen. |
 
 ## 3. What changes, at a glance
 
@@ -825,10 +832,11 @@ nodes from writing one disk. Three more layers back them up:
    (sanlock-style leases, RBD exclusive locks) comes with fencing
    (clustering.md §18).
 
-## 11. Later: block drivers and `glidex-stord`
+## 11. Block drivers and `glidex-stord`
 
-The design is only sketched here, so the interface (§7) and the record
-(§4) stay right:
+S6 builds `glidex-stord` and the `lvm` driver (§11.1). The rest of this
+section is still a sketch, so the interface (§7) and the record (§4)
+stay right:
 
 - **`lvm` (node-local), LVM-thin:**
   - volumes are LVs and are always raw;
@@ -852,6 +860,121 @@ The design is only sketched here, so the interface (§7) and the record
 - **Block volumes and partition edits:** with no qcow2, shrink is
   refused, `extend-root offline` works on the device, and metering's
   `disk.stored` comes from the driver (thin-pool usage, `rbd du`).
+
+### 11.1 Design (S6): `glidex-stord` and `lvm`
+
+**The operator prepares the volume group** (S19). glidex never touches
+physical volumes:
+
+```bash
+sudo vgcreate vg-glidex /dev/nvme1n1
+sudo lvcreate --type thin-pool -l 95%FREE -n pool vg-glidex
+```
+
+and lists it in `/etc/glidex/stord.json` (`{"allowed_vgs":
+["vg-glidex"]}`, or the installer's `--stord-allow-vg vg-glidex`).
+
+**The datastore** (S2): driver `lvm`, topology `node-local`, with
+`vg` and `thin_pool` instead of `path`; `nodes` limits it as for `dir`.
+Every node on it must have a VG of that name (`node_vgs` overrides it
+per node, as `node_paths` does for `dir`).
+
+**`glidex-stord`** (S17), `crates/glidex-stord`:
+- **Sockets:** `/run/glidex-stord/stord.sock` (`root:glidex 0660`; its own runtime directory, apart from netd's `/run/glidex`), and
+  `stord-admin.sock` for `glidex-admin` when that group exists, as netd.
+- **Protocol:** netd's (§7.3 of networking.md): one request per line,
+  `{id, op, args, on_behalf_of?}`, `hello {protocol}` first.
+- **State:** none of its own. The volumes are in LVM, and the devices
+  each VM may open are its drop-ins, under `/run`, which a reboot clears.
+- **Checks on every op:** the VG is in `allowed_vgs`; a volume name is
+  `gx-d-<uuid>` or `gx-i-<id>` (`[A-Za-z0-9._-]`, no `..`); a thin pool
+  name is a plain LVM name. Anything else is refused before any command
+  runs.
+- **Ops:**
+
+  | Op | Does |
+  |---|---|
+  | `hello`, `probe` | Handshake; which LVM tools there are, and their version |
+  | `pool_status {vg, pool}` | Whether the VG is allowed and both exist; pool size, data and metadata use |
+  | `list_volumes {vg}` | glidex's LVs: name, size, origin, active, open, data use |
+  | `create_volume {vg, pool, name, size_bytes}` | A thin LV, not skipped at activation, activated and handed to `glidex` |
+  | `snapshot_volume {vg, origin, name, size_bytes}` | A thin snapshot of an image LV (`--setactivationskip n`), grown to `size_bytes` |
+  | `seal_volume {vg, name}` | Make an image LV read-only once filled |
+  | `extend_volume {vg, name, size_bytes}` | `lvextend`; never smaller |
+  | `activate {vg, name}`, `deactivate {vg, name}` | `lvchange -ay -K` and `chown glidex:glidex`, `chmod 0600`; or `-an` |
+  | `delete_volume {vg, name}` | Refused while open, or while a snapshot uses it; then `lvremove` |
+  | `allow_devices {vm_id, devices}` | Write `/run/systemd/system/glidex-vm@<id>.service.d/50-glidex-volumes.conf` with one `DeviceAllow=<dev> rw` each, then `systemctl daemon-reload`; an empty list removes it |
+
+**The driver** (`datastore/lvm.rs`, the §7 trait), run on the disk's
+node:
+- `create_volume`, blank: `create_volume`. From an image, **full**: a
+  new volume, then `qemu-img convert -n --target-is-zero -O raw` from
+  this node's verified image file into it. **Linked**: a thin snapshot of
+  the node's image LV `gx-i-<image>`, which is made the first time from
+  the image file the same way and sealed (under a per-image lock on the
+  node). `prepare` (extend-root) runs on the device.
+- `expand_volume`: `extend_volume`. `shrink_volume`: refused.
+- `delete_volume`: `deactivate`, then `delete_volume`.
+- `stage`: `activate`, which returns the device:
+  `VolumeBinding::Block { dev: /dev/<vg>/<lv> }`.
+- `copy_in` (moves, §8.3): a new volume, then `qemu-img convert` into it
+  (always flattened); moving off `lvm` converts the device into a file.
+- `capacity`: `pool_status`. `disk.stored` (metering): the LV's size ×
+  its data use.
+- **Partition edits** (extend-root, shrink checks): on a block binding,
+  `partition::edit` uses its shadow file for raw too: `growpart` can't
+  work on a device-mapper device that has no partition devices (§19, H7).
+
+**Launch** (VM controller, on the node): `stage` each block volume,
+then `allow_devices` for the VM before the unit starts. Stopping a VM
+leaves its volumes active; deleting a disk deactivates and removes its
+volume. The VM's drop-in goes with the VM. Under the process runner
+(tests), ownership alone gives access.
+
+**Hypervisors:** Cloud Hypervisor `--disk path=<dev>,image_type=raw`;
+QEMU `driver: host_device`, `locking: on`, `cache.direct: on`.
+
+**The probe** (§4.1): a node asks stord for `pool_status`. Reasons:
+`StordUnavailable`, `NotAllowed` (VG not in `allowed_vgs`),
+`NoVolumeGroup`, `NoThinPool`. Free space is the pool's.
+
+**Image deletion:** every node removes its image LVs that no snapshot
+uses (`list_volumes`), as `drop_store_copies` does for shared copies.
+Linked disks keep the image from being deleted (images.md §3).
+
+**As built (S6b):**
+- **API:** driver `DATASTORE_DRIVER_LVM` with `volume_group` and
+  `thin_pool` (`path` empty); `node_paths` names each node's own volume
+  group. Record: `DriverSpec::Lvm {vg, thin_pool, node_vgs}`. gxctl
+  `datastore create NAME --lvm VG/POOL`; the Datastores page's form has
+  *LVM-thin on each node*.
+- **Disks** on it are raw: a request for qcow2 is refused, and a linked
+  disk may be raw there (a thin snapshot).
+- **Volumes are built under `gx-d-<id>.new`** and renamed into place
+  (stord `rename_volume`), so a volume under the disk's own name is
+  complete, as a file is after its rename: a crash part way leaves the
+  `.new` one, which the next attempt removes. An image volume left
+  unsealed is made again.
+- **`exists`** asks stord (an inactive volume has no device node);
+  `stage` activates.
+- **Launch:** the VM controller sends `allow_devices` with the VM's
+  block volumes before the unit starts (with none, only where stord
+  runs); deleting the VM sends an empty list.
+- **The control plane's unit** has `DeviceAllow=block-device-mapper rw`
+  (S18).
+- **Probe:** a node's row path is `<vg>/<pool>`; free space is the
+  pool's; a pool whose metadata is 80% full gets a warning.
+- **Not yet:** moves to and from `lvm` (the driver's `copy_in` is there,
+  but the move's record still keeps the source's format), metering's
+  `disk.stored` for volumes, and a VM booted from a volume under the
+  systemd runner on a host install (the pieces were checked one by one,
+  §19 H5–H6). Those are S6c.
+- **Tests:** API `lvm_datastores_name_a_volume_group_and_keep_raw_disks`;
+  ignored `lvm_disks_on_a_real_pool` (with a running stord and a VG: a
+  blank volume grown and not shrunk, a linked disk as a snapshot with
+  its root partition extended through the shadow file, both removed and
+  the image volume with the image) and stord's `real_lvm`, both passed
+  on a loop-device VG; hypervisor argument tests for block disks.
 
 ## 12. CSI
 
@@ -1063,7 +1186,7 @@ described below; fix 5 is part of S2.
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **Implemented** (§4.4, §4.5), as S3a (driver, workers, locks) and S3b (images in shared datastores, installer). | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced`. **Implemented** (§9 as built). | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores). **Implemented** (§8.3 as built); between nodes goes through a shared datastore. | S3 |
-| S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |
+| S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer) and S6b the `lvm` datastore, block bindings and device access, **implemented**; S6c moves to and from `lvm`, metering, and a VM booted from a volume on a host install. Then `shared-lvm` and `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 
@@ -1188,3 +1311,43 @@ two separate clients. Everything was removed afterwards.
   `O_CREAT | O_EXCL`.
 - Every name had exactly one winner (1000 each, none created twice and
   none lost), and every file held its winner's mark.
+
+**H4. LVM-thin (S6, on a 4 GiB loop VG).**
+- A thin snapshot of a thin LV is created with the activation-skip flag
+  (`lvs` attr `…k`). It needs `lvchange -ay -K`, or
+  `--setactivationskip n` when it is made.
+- A snapshot of a read-only (`lvchange -p r`) image LV is writable, and
+  can be grown with `lvextend` past its origin's size.
+- `qemu-img convert -n` into a fresh thin LV writes the zeros too (the
+  pool's use grew by the image's whole size); `--target-is-zero` skips
+  them.
+
+**H5. Device ownership and `DeviceAllow`.**
+- A `chown`ed LV device node keeps its owner across `lvextend` and a
+  udev `change` event, but a new activation makes a fresh `root:disk`
+  node, possibly with another minor. So stord sets the owner at every
+  activation.
+- With `DevicePolicy=closed`, `DeviceAllow=/dev/<vg>/<lv> rw` (the
+  symlink), `/dev/dm-N` and `block-device-mapper` all let a `glidex`
+  process open the LV; without one, `Permission denied`.
+- A drop-in in `/run/systemd/system/<unit>.service.d/` adds to the unit's
+  own `DeviceAllow=` list, after `daemon-reload`.
+- `systemctl set-property --runtime` writes `DeviceAllow=` (reset)
+  before its entries: clearing it removed the unit's own devices too.
+  Not used (S18).
+
+**H6. Hypervisors on an LV.**
+- Cloud Hypervisor (`path=/dev/<vg>/<lv>,image_type=raw`) and QEMU
+  (`host_device`, `locking=on`), as `glidex` in a unit allowed only
+  `/dev/kvm` and the LV, booted a kernel that saw it as `vda`.
+- A second instance on the same LV is refused by both: Cloud Hypervisor
+  `LockDiskImage { error: AlreadyLocked }`, QEMU `Failed to get "write"
+  lock`.
+
+**H7. Partition tools on an LV.**
+- `sgdisk` and `qemu-img`/`qemu-io` work on the device as `glidex`.
+- `growpart` on the device fails ("failed to get start and end for
+  /dev/dm-61"): it looks for the partition's own device, which an
+  unmapped LV doesn't have. On a regular file it works, so block
+  volumes take `partition::edit`'s shadow-file path.
+

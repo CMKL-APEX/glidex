@@ -53,6 +53,11 @@ const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.servi
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
 const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
+const STORD_UNIT: &str = "/etc/systemd/system/glidex-stord.service";
+/// glidex-stord's settings: the volume groups it may use
+/// (spec/storage.md S17). The administrator's; the installer only adds the
+/// `--stord-allow-vg` ones.
+pub(crate) const STORD_CONFIG: &str = "/etc/glidex/stord.json";
 /// One instance per running VM, started by the control plane over D-Bus
 /// (spec/reconciliation.md §13).
 pub(crate) const VM_UNIT: &str = "/etc/systemd/system/glidex-vm@.service";
@@ -169,7 +174,7 @@ fn main() -> Result<()> {
     }
     let mut tailscale_on = false;
     if opts.services {
-        install_service_config()?;
+        install_service_config(&opts, &mut changed)?;
         let ts = install_services(
             &changed,
             user.as_deref(),
@@ -809,6 +814,10 @@ struct Options {
     datastores: Vec<DatastoreReg>,
     /// `--datastore-default`: the first of them takes new disks. Never saved.
     datastore_default: bool,
+    /// `--stord-allow-vg VG`: volume groups glidex-stord may make volumes
+    /// in, added to stord.json (spec/storage.md §11.1). Never saved: the
+    /// file keeps them.
+    stord_allow_vgs: Vec<String>,
 }
 
 /// A datastore to register (spec/storage.md §13).
@@ -869,6 +878,7 @@ impl Default for Options {
             tailscale_cert: None,
             datastores: Vec::new(),
             datastore_default: false,
+            stord_allow_vgs: Vec::new(),
         }
     }
 }
@@ -923,6 +933,18 @@ impl Options {
                     .datastores
                     .push(DatastoreReg::parse(&value("--local-datastore")?, false)?),
                 "--datastore-default" => o.datastore_default = true,
+                "--stord-allow-vg" => {
+                    let vg = value("--stord-allow-vg")?;
+                    if vg.is_empty()
+                        || vg.starts_with('-')
+                        || !vg
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b))
+                    {
+                        bail!("--stord-allow-vg {vg}: not a volume group name");
+                    }
+                    o.stord_allow_vgs.push(vg);
+                }
                 "--no-tailscale-cert" => o.tailscale_cert = Some(false),
                 "--join" => {
                     let server = value("--join")?;
@@ -1049,6 +1071,9 @@ fn print_help() {
          \x20                            interactive run offers each such mount once)\n\
          \x20     --local-datastore NAME=PATH  register PATH as a datastore each node has its own of\n\
          \x20     --datastore-default    make the first of them the default for new disks\n\
+         \x20     --stord-allow-vg VG    let glidex-stord make LVM-thin volumes in volume group VG\n\
+         \x20                            (added to /etc/glidex/stord.json; the VG and its thin\n\
+         \x20                            pool are yours to make: spec/storage.md §11.1)\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
@@ -1993,6 +2018,9 @@ struct Changes {
     ui: bool,
     netd: bool,
     authd: bool,
+    stord: bool,
+    /// stord.json changed: stord reads it at start.
+    stord_config: bool,
 }
 
 /// `cloud-hypervisor v53.0` (possibly with a suffix) → `v53.0`.
@@ -2200,7 +2228,7 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "glidex-vm-shim",
     ];
     if opts.services {
-        args.extend(["-p", "glidex-authd"]);
+        args.extend(["-p", "glidex-authd", "-p", "glidex-stord"]);
     }
     args
 }
@@ -2260,9 +2288,10 @@ fn binaries(opts: &Options) -> Vec<&'static str> {
     if opts.networking {
         v.push("glidex-netd");
     }
-    // The root PAM helper only serves the control plane's unit.
+    // The root PAM and storage helpers only serve the control plane's unit.
     if opts.services {
         v.push("glidex-authd");
+        v.push("glidex-stord");
     }
     v
 }
@@ -2279,6 +2308,7 @@ fn install_binaries(opts: &Options, user_home: &Path, changed: &mut Changes) -> 
                 "glidex-ui" => changed.ui = true,
                 "glidex-netd" => changed.netd = true,
                 "glidex-authd" => changed.authd = true,
+                "glidex-stord" => changed.stord = true,
                 _ => {}
             }
         } else {
@@ -3071,7 +3101,7 @@ fn policy_dir_ok(stat: Option<&str>) -> bool {
 /// /etc/glidex/authd.json (once), control-plane.json.example (never
 /// control-plane.json itself: defaults apply), and the site policy
 /// directory.
-fn install_service_config() -> Result<()> {
+fn install_service_config(opts: &Options, changed: &mut Changes) -> Result<()> {
     section("Configuration");
     let root = workspace_root();
     let template =
@@ -3097,6 +3127,12 @@ fn install_service_config() -> Result<()> {
     } else {
         sudo_write(AUTHD_CONFIG, AUTHD_CONFIG_DEFAULT)?;
         println!("{} {}", "Created:".green(), AUTHD_CONFIG);
+    }
+    let current = fs::read_to_string(STORD_CONFIG).ok();
+    if let Some(text) = stord_config(current.as_deref(), &opts.stord_allow_vgs)? {
+        sudo_write(STORD_CONFIG, &text)?;
+        changed.stord_config = true;
+        println!("{} {}", "Updated:".green(), STORD_CONFIG);
     }
     if install_if_changed(
         &root.join("packaging/control-plane.json.example"),
@@ -3138,6 +3174,35 @@ fn install_service_config() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// stord.json with `add` in its `allowed_vgs`: `None` when nothing changes.
+/// Without the file it is written only when there is something to allow,
+/// so a host without LVM never gets one (no volume group is the default).
+fn stord_config(current: Option<&str>, add: &[String]) -> Result<Option<String>> {
+    let mut v: serde_json::Value = match current {
+        Some(t) => serde_json::from_str(t).with_context(|| format!("{STORD_CONFIG}: not JSON"))?,
+        None if add.is_empty() => return Ok(None),
+        None => serde_json::json!({}),
+    };
+    let obj = v
+        .as_object_mut()
+        .with_context(|| format!("{STORD_CONFIG}: not a JSON object"))?;
+    let list = obj
+        .entry("allowed_vgs")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .with_context(|| format!("{STORD_CONFIG}: allowed_vgs is not a list"))?;
+    let before = list.len();
+    for vg in add {
+        if !list.iter().any(|x| x == vg.as_str()) {
+            list.push(serde_json::json!(vg));
+        }
+    }
+    if current.is_some() && list.len() == before {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::to_string_pretty(&v)? + "\n"))
 }
 
 /// What to do with glidex-authd's units: (start or restart the socket,
@@ -3206,8 +3271,14 @@ fn install_services(
         AUTHD_SERVICE_UNIT,
         "0644",
     )?;
+    let stord_unit_changed = install_if_changed(
+        &root.join("packaging/glidex-stord.service"),
+        STORD_UNIT,
+        "0644",
+    )?;
     let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
+        || stord_unit_changed
         || ui_unit_changed
         || authd_socket_changed
         || authd_service_changed
@@ -3224,6 +3295,7 @@ fn install_services(
         apply_vm_accounting();
     }
     enable_unit("glidex-authd.socket")?;
+    enable_unit("glidex-stord.service")?;
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
 
@@ -3237,6 +3309,16 @@ fn install_services(
     }
     println!(
         "{} glidex-authd.socket (/run/glidex-authd/auth.sock)",
+        "Running:".green()
+    );
+    // glidex-stord before the control plane too. Restarting it is safe: it
+    // keeps no state, and running VMs hold their devices open.
+    let stord = "glidex-stord.service";
+    if changed.stord || changed.stord_config || stord_unit_changed || !unit_active(stord) {
+        sudo(&argv(&["systemctl", "restart", stord]))?;
+    }
+    println!(
+        "{} glidex-stord (/run/glidex-stord/stord.sock)",
         "Running:".green()
     );
 
@@ -4188,6 +4270,7 @@ mod tests {
             "ProtectHome=yes",
             "ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex",
             "DevicePolicy=closed",
+            "DeviceAllow=block-device-mapper rw",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
             "LockPersonality=yes",
             "RestrictSUIDSGID=yes",
@@ -4203,12 +4286,14 @@ mod tests {
             "consoles are reached through the API now"
         );
         // Hypervisors run in the glidex-vm units (spec/reconciliation.md
-        // §13.3): this one opens no device and serves no vhost-user socket.
-        for key in [
-            "DeviceAllow=",
-            "ReadWritePaths=-/run/glidex/vhost",
-            "KillMode=",
-        ] {
+        // §13.3): this one opens no device but LVM volumes (S18) and serves
+        // no vhost-user socket.
+        assert_eq!(
+            s.iter().filter(|l| l.starts_with("DeviceAllow=")).count(),
+            1,
+            "only block-device-mapper"
+        );
+        for key in ["ReadWritePaths=-/run/glidex/vhost", "KillMode="] {
             assert!(
                 !s.iter().any(|l| l.starts_with(key)),
                 "{key} is for the VM units"
@@ -4411,6 +4496,46 @@ mod tests {
     }
 
     #[test]
+    fn stord_config_only_adds_volume_groups() {
+        // No file and nothing to allow: none written (no VG is the default).
+        assert_eq!(stord_config(None, &[]).unwrap(), None);
+        let first = stord_config(None, &["vg-glidex".into()]).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["allowed_vgs"], serde_json::json!(["vg-glidex"]));
+        // The administrator's other settings stay; a VG already there is no change.
+        let theirs = r#"{"allowed_vgs": ["vg-glidex"], "owner": "glidex"}"#;
+        assert_eq!(
+            stord_config(Some(theirs), &["vg-glidex".into()]).unwrap(),
+            None
+        );
+        let more = stord_config(Some(theirs), &["vg2".into()])
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&more).unwrap();
+        assert_eq!(v["allowed_vgs"], serde_json::json!(["vg-glidex", "vg2"]));
+        assert_eq!(v["owner"], "glidex");
+        assert!(stord_config(Some("not json"), &["vg2".into()]).is_err());
+    }
+
+    #[test]
+    fn stord_unit_is_notify_and_sandboxed() {
+        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-stord.service"))
+            .unwrap();
+        let s = settings(&unit);
+        for line in [
+            "Type=notify",
+            "ExecStart=/usr/local/bin/glidex-stord",
+            "RuntimeDirectory=glidex-stord",
+            "ProtectSystem=strict",
+            "ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system",
+            "NoNewPrivileges=yes",
+            "Before=glidex-control-plane.service",
+        ] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
+    }
+
+    #[test]
     fn binaries_follow_options() {
         assert_eq!(
             binaries(&Options::default()),
@@ -4420,7 +4545,8 @@ mod tests {
                 "glidex-ui",
                 "glidex-vm-shim",
                 "glidex-netd",
-                "glidex-authd"
+                "glidex-authd",
+                "glidex-stord"
             ]
         );
         let no_net = Options {
@@ -4433,6 +4559,7 @@ mod tests {
             ..Options::default()
         };
         assert!(!binaries(&no_services).contains(&"glidex-authd"));
+        assert!(!binaries(&no_services).contains(&"glidex-stord"));
         assert!(
             build_args(&Options::default())
                 .windows(2)

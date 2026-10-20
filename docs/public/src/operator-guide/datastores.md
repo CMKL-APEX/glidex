@@ -7,6 +7,9 @@ own disk directory on each node. You can register more:
 - a **node-local** datastore (driver `dir`): a directory each node has its
   own of, such as a faster SSD. A disk on it lives on one node, and its
   VM runs there;
+- an **LVM-thin** datastore (driver `lvm`): a volume group and thin pool
+  on each node. A disk on it is a raw logical volume on one node, and
+  its VM runs there (see [LVM-thin](#lvm-thin));
 - a **shared** datastore (driver `shared-dir`): one filesystem that every
   node mounts, such as NFS or CephFS. A disk on it isn't tied to a node,
   so its VM can run on any node that reaches the datastore, and can be
@@ -357,6 +360,54 @@ commands and what is refused.
 - A disk can't go straight from one node's datastore to another node's
   (for example from `local` on node1 to `local` on node2): move it to a
   shared datastore, then from there.
+
+## LVM-thin
+
+An LVM-thin datastore keeps each disk as a raw thin volume in a volume
+group you made on every node, through `glidex-stord`, a small root helper
+the installer sets up. glidex never touches physical volumes, and stord
+acts only on the volume groups you allow and only on its own volumes
+(named `gx-d-…` and `gx-i-…`).
+
+1. On each node, make a volume group and a thin pool for glidex alone:
+
+   ```bash
+   sudo vgcreate vg-glidex /dev/nvme1n1
+   sudo lvcreate --type thin-pool -l 95%FREE -n pool vg-glidex
+   ```
+
+2. Allow it, by re-running the installer with `--stord-allow-vg
+   vg-glidex`, or by adding it to `/etc/glidex/stord.json` and
+   restarting `glidex-stord`:
+
+   ```json
+   { "allowed_vgs": ["vg-glidex"] }
+   ```
+
+3. Register it:
+
+   ```bash
+   gxctl datastore create fast --lvm vg-glidex/pool
+   ```
+
+   In the web UI: **Add datastore**, *LVM-thin on each node*. A node
+   whose volume group is named otherwise: `--node-path node3=vg-nvme`.
+
+What is different from a directory:
+
+- disks are always raw; a linked disk is a thin snapshot of the image's
+  volume on that node, made from the image the first time;
+- disks grow but never shrink;
+- each VM's unit may open exactly its own volumes;
+- when the pool's metadata is 80% full, the datastore shows a warning:
+  extend it with `lvextend --poolmetadatasize`.
+
+| Reason | Meaning |
+|---|---|
+| `StordUnavailable` | `glidex-stord` isn't running on this node |
+| `NotAllowed` | The volume group isn't in `/etc/glidex/stord.json` |
+| `NoVolumeGroup` | No volume group of that name on this node |
+| `NoThinPool` | The volume group has no thin pool of that name |
 
 ## Images on a shared datastore
 

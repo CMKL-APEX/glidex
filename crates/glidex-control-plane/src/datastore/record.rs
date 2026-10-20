@@ -67,6 +67,15 @@ pub enum DriverSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,
     },
+    /// LVM-thin on each node: a volume group and thin pool the operator
+    /// made, through glidex-stord (spec/storage.md §11.1, S19).
+    Lvm {
+        vg: String,
+        thin_pool: String,
+        /// Node id → that node's volume group, overriding `vg`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        node_vgs: BTreeMap<String, String>,
+    },
 }
 
 /// Where a datastore's volumes can be reached from (S4).
@@ -79,12 +88,14 @@ pub enum Topology {
 }
 
 impl DriverSpec {
-    /// The datastore's path, and each node's own (S14).
+    /// The datastore's path, and each node's own (S14). For `lvm`: its
+    /// volume group, and each node's own.
     pub fn paths(&self) -> (&String, &BTreeMap<String, String>) {
         match self {
             DriverSpec::Dir { path, node_paths } | DriverSpec::SharedDir { path, node_paths } => {
                 (path, node_paths)
             }
+            DriverSpec::Lvm { vg, node_vgs, .. } => (vg, node_vgs),
         }
     }
 
@@ -93,7 +104,13 @@ impl DriverSpec {
             DriverSpec::Dir { node_paths, .. } | DriverSpec::SharedDir { node_paths, .. } => {
                 node_paths
             }
+            DriverSpec::Lvm { node_vgs, .. } => node_vgs,
         }
+    }
+
+    /// Volumes are block devices (raw), not files.
+    pub fn is_block(&self) -> bool {
+        matches!(self, DriverSpec::Lvm { .. })
     }
 }
 
@@ -123,7 +140,8 @@ impl Datastore {
         self.nodes.is_empty() || self.nodes.iter().any(|n| n == node)
     }
 
-    /// `node`'s path to it: its override, else the datastore's path.
+    /// `node`'s path to it: its override, else the datastore's path (for
+    /// `lvm`, the node's volume group).
     pub fn path_for(&self, node: &str) -> &str {
         let (path, node_paths) = self.driver.paths();
         node_paths.get(node).unwrap_or(path)
@@ -131,7 +149,7 @@ impl Datastore {
 
     pub fn topology(&self) -> Topology {
         match self.driver {
-            DriverSpec::Dir { .. } => Topology::NodeLocal,
+            DriverSpec::Dir { .. } | DriverSpec::Lvm { .. } => Topology::NodeLocal,
             DriverSpec::SharedDir { .. } => Topology::Shared,
         }
     }
@@ -259,6 +277,17 @@ fn validate(ds: &Datastore, others: &[Datastore], root: &Path) -> Result<(), Dat
             "a datastore named {} already exists",
             ds.name
         )));
+    }
+    if let DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
+        let (vg, node_vgs) = ds.driver.paths();
+        for (what, n) in std::iter::once(("volume group", vg))
+            .chain(node_vgs.values().map(|v| ("volume group", v)))
+            .chain(std::iter::once(("thin pool", thin_pool)))
+        {
+            glidex_stord::names::lvm_name(what, n)
+                .map_err(|e| DatastoreError::Invalid(e.to_string()))?;
+        }
+        return Ok(());
     }
     let (path, node_paths) = ds.driver.paths();
     check_path(path, root)?;

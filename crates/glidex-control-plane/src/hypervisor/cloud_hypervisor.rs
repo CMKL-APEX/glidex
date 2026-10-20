@@ -397,17 +397,24 @@ mod tests {
             backing_files: true,
             lock: None,
         });
-        c.data_disk_bindings = vec![VolumeBinding::File {
-            path: "/disks/data.raw".into(),
-            format: DiskFormat::Raw,
-            backing_files: false,
-            lock: None,
-        }];
+        c.data_disk_bindings = vec![
+            VolumeBinding::File {
+                path: "/disks/data.raw".into(),
+                format: DiskFormat::Raw,
+                backing_files: false,
+                lock: None,
+            },
+            // An LVM volume (spec/storage.md §19, H6).
+            VolumeBinding::Block {
+                path: "/dev/vg0/gx-d-1".into(),
+            },
+        ];
         assert_eq!(
             values(&args(&c, "/s"), "--disk"),
             [
                 "path=/disks/root.qcow2,image_type=qcow2,backing_files=on",
                 "path=/disks/data.raw,image_type=raw",
+                "path=/dev/vg0/gx-d-1,image_type=raw",
                 "path=\"/run/x,y/seed.img\",readonly=on,image_type=raw",
             ]
         );

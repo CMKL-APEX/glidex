@@ -715,3 +715,239 @@ async fn disks_move_between_datastores() {
     let path = PathBuf::from(detail["disk"]["path"].as_str().unwrap());
     assert_eq!(path.parent().unwrap(), ssd.join("disks"));
 }
+
+/// An `lvm` datastore (spec/storage.md §11.1): a volume group and thin
+/// pool instead of a path, and its disks are raw. Without glidex-stord (or
+/// with the group not allowed) no node reaches it.
+#[tokio::test(flavor = "multi_thread")]
+async fn lvm_datastores_name_a_volume_group_and_keep_raw_disks() {
+    let h = harness();
+    let t = h.admin("root");
+    for bad in [
+        json!({"name": "thin", "driver": "DATASTORE_DRIVER_LVM", "volume_group": "vg0"}),
+        json!({"name": "thin", "driver": "DATASTORE_DRIVER_LVM", "volume_group": "vg0", "thin_pool": "pool", "path": "/srv/glidex/x"}),
+        json!({"name": "thin", "driver": "DATASTORE_DRIVER_LVM", "volume_group": "vg/0", "thin_pool": "pool"}),
+    ] {
+        let (s, v) = h.rest("POST", "/datastores", Some(bad), &t).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "thin", "driver": "DATASTORE_DRIVER_LVM",
+                        "volume_group": "gx-no-such-vg", "thin_pool": "pool"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let ds = &v["datastore"];
+    assert_eq!(ds["volume_group"], "gx-no-such-vg");
+    assert_eq!(ds["thin_pool"], "pool");
+    assert_eq!(ds["topology"], "DATASTORE_TOPOLOGY_NODE_LOCAL");
+    assert!(ds["path"].as_str().unwrap_or("").is_empty(), "{v}");
+    let d = h.probed("thin", &t).await;
+    let row = &d["node_status"][0];
+    assert!(!flag(&row["reachable"]), "{d}");
+    assert!(
+        ["StordUnavailable", "NotAllowed", "NoVolumeGroup"]
+            .contains(&row["reason"].as_str().unwrap_or("")),
+        "{d}"
+    );
+    assert_eq!(row["path"], "gx-no-such-vg/pool");
+
+    // Raw, whatever the request leaves out; qcow2 refused.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(
+                json!({"project": h.project(), "name": "lv1", "size_gib": 1, "datastore": "thin",
+                        "format": "DISK_FORMAT_QCOW2"}),
+            ),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(
+                json!({"project": h.project(), "name": "lv1", "size_gib": 1, "datastore": "thin"}),
+            ),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["disk"]["format"], "DISK_FORMAT_RAW", "{v}");
+}
+
+/// The `lvm` driver against a real glidex-stord and volume group (spec/
+/// storage.md §11.1, §19 H4–H7). Ignored by default; run with a stord whose
+/// stord.json allows the group and hands devices to this test's user:
+///
+/// ```text
+/// GLIDEX_STORD_SOCKET=/run/gx-s6-test/stord/stord.sock GLIDEX_STORD_VG=gx-test \
+///   GLIDEX_STORD_POOL=pool cargo test -p glidex-control-plane --test datastore_tests \
+///   lvm_disks_on_a_real_pool -- --ignored
+/// ```
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn lvm_disks_on_a_real_pool() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let vg = std::env::var("GLIDEX_STORD_VG").expect("GLIDEX_STORD_VG");
+    let pool = std::env::var("GLIDEX_STORD_POOL").expect("GLIDEX_STORD_POOL");
+    let h = harness();
+    let t = h.admin("root");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(
+                json!({"name": "real-thin", "driver": "DATASTORE_DRIVER_LVM",
+                        "volume_group": vg, "thin_pool": pool}),
+            ),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = h.probed("real-thin", &t).await;
+    assert!(flag(&d["node_status"][0]["reachable"]), "{d}");
+
+    // A blank disk: a volume, grown, never shrunk, removed.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"project": h.project(), "name": "lvb", "size_gib": 1, "datastore": "real-thin"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["disk"]["id"].as_str().unwrap().to_string();
+    let disk = h.ready_disk("lvb", &t).await;
+    assert_eq!(disk["path"], format!("/dev/{vg}/gx-d-{id}"), "{disk}");
+    assert_eq!(num(&disk["size_bytes"]), 1 << 30);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks/lvb/resize?wait=60",
+            Some(json!({"size_gib": 2})),
+            &t,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (_, v) = h.rest("GET", "/disks/lvb", None, &t).await;
+    assert_eq!(num(&v["disk"]["size_bytes"]), 2 << 30, "{v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks/lvb/resize",
+            Some(json!({"size_gib": 1})),
+            &t,
+        )
+        .await;
+    assert!(s.is_client_error(), "a volume can't shrink: {v}");
+
+    // A linked disk from an image with a partition: a thin snapshot of the
+    // node's image volume, its root partition extended into the new space.
+    let img_id = format!("img-lvm-{}", uuid::Uuid::new_v4().simple());
+    let images = h.app.manager.images();
+    let base = images.image_path(&img_id);
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    let raw = base.with_extension("raw");
+    let sh = |cmd: &mut std::process::Command| assert!(cmd.status().unwrap().success(), "{cmd:?}");
+    sh(std::process::Command::new("truncate")
+        .args(["-s", "64M"])
+        .arg(&raw));
+    sh(std::process::Command::new("sgdisk")
+        .args(["-o", "-n", "1:2048:+32M", "-t", "1:8300"])
+        .stdout(std::process::Stdio::null())
+        .arg(&raw));
+    sh(std::process::Command::new("qemu-img")
+        .args(["convert", "-q", "-f", "raw", "-O", "qcow2"])
+        .arg(&raw)
+        .arg(&base));
+    let sha = glidex_control_plane::images::download::sha256_path(&base).unwrap();
+    let img = json!({
+        "id": img_id, "name": img_id, "kind": "disk",
+        "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 64 << 20,
+        "file_size_bytes": std::fs::metadata(&base).unwrap().len(), "sha256": sha,
+        "arch": "x86_64", "created_at": 1,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(img_id.as_str(), img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    images.sync_keys(TableId::Images, std::slice::from_ref(&img_id));
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(
+                json!({"project": h.project(), "name": "lvl", "image": img_id,
+                        "size_bytes": 128 << 20, "datastore": "real-thin"}),
+            ),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    h.ready_disk("lvl", &t).await;
+    let (_, v) = h.rest("GET", "/disks/lvl", None, &t).await;
+    let root = &v["disk"]["partition_table"]["partitions"][0];
+    // Grown from 32 MiB to the end, less the GPT backup.
+    assert!(num(&root["size_bytes"]) > 120 << 20, "{v}");
+    let mut c = glidex_stord::client::Client::connect(std::path::Path::new(
+        &std::env::var("GLIDEX_STORD_SOCKET").unwrap(),
+    ))
+    .unwrap();
+    let vols: Vec<glidex_stord::proto::Volume> = c
+        .call(glidex_stord::proto::Op::ListVolumes { vg: vg.clone() })
+        .unwrap();
+    let image_vol = format!("gx-i-{img_id}");
+    let lvl = vols
+        .iter()
+        .find(|v| v.origin.as_deref() == Some(image_vol.as_str()))
+        .unwrap_or_else(|| panic!("a snapshot of {image_vol}: {vols:?}"));
+    assert!(lvl.name.starts_with("gx-d-"));
+
+    // Gone with the disks; the image volume with the image.
+    for name in ["lvb", "lvl"] {
+        let (s, v) = h.rest("DELETE", &format!("/disks/{name}"), None, &t).await;
+        assert!(s.is_success(), "{v}");
+    }
+    for _ in 0..200 {
+        let (s, _) = h.rest("GET", "/disks/lvl", None, &t).await;
+        if s == StatusCode::NOT_FOUND {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (s, v) = h
+        .rest("DELETE", &format!("/images/{img_id}"), None, &t)
+        .await;
+    assert!(s.is_success(), "{v}");
+    for _ in 0..200 {
+        let vols: Vec<glidex_stord::proto::Volume> = c
+            .call(glidex_stord::proto::Op::ListVolumes { vg: vg.clone() })
+            .unwrap();
+        if !vols
+            .iter()
+            .any(|v| v.name == image_vol || v.name == format!("gx-d-{id}"))
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("volumes left in {vg}");
+}

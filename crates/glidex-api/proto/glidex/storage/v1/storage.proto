@@ -813,6 +813,9 @@ enum DatastoreDriver {
   // One filesystem every node mounts (NFS, CephFS, a vendor's), the same
   // files from each; claimed with a marker file (spec/storage.md S5).
   DATASTORE_DRIVER_SHARED_DIR = 2;
+  // LVM-thin on each node, through glidex-stord: raw volumes in a volume
+  // group and thin pool the operator made (spec/storage.md §11.1).
+  DATASTORE_DRIVER_LVM = 3;
 }
 
 enum DatastoreTopology {
@@ -864,6 +867,11 @@ message Datastore {
   repeated DatastoreNode node_status = 12 [json_name = "node_status"];
   // Disks on it.
   uint32 disks = 13;
+  // `lvm`: the volume group on every node without its own (`node_paths`
+  // then names each node's volume group), and its thin pool. `path` is
+  // empty.
+  string volume_group = 14 [json_name = "volume_group"];
+  string thin_pool = 15 [json_name = "thin_pool"];
 }
 
 message ListDatastoresRequest {}
@@ -888,6 +896,10 @@ message CreateDatastoreRequest {
   optional bool default_for_disks = 6 [json_name = "default_for_disks"];
   // Default: on.
   optional bool overcommit = 7;
+  // `lvm` instead of `path`: the volume group (`node_paths`: each node's
+  // own) and its thin pool.
+  string volume_group = 8 [json_name = "volume_group"];
+  string thin_pool = 9 [json_name = "thin_pool"];
 }
 message CreateDatastoreResponse {
   Datastore datastore = 1;

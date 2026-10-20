@@ -59,7 +59,10 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   const [onNodes, setOnNodes] = useState<string[]>([]);
   const [paths, setPaths] = useState("");
   const [isDefault, setIsDefault] = useState(false);
-  const [shared, setShared] = useState(false);
+  const [kind, setKind] = useState<"dir" | "shared" | "lvm">("dir");
+  const [vg, setVg] = useState("");
+  const [pool, setPool] = useState("");
+  const lvm = kind === "lvm";
   const [overcommit, setOvercommit] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -73,12 +76,11 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
     try {
       await api.createDatastore({
         name,
-        path: path || `${ROOT}/${name}`,
+        ...(lvm ? { lvm: true, volume_group: vg, thin_pool: pool } : { path: path || `${ROOT}/${name}`, shared: kind === "shared" }),
         node_paths,
         nodes: onNodes,
         default_for_disks: isDefault,
         overcommit,
-        shared,
       });
       onDone();
     } catch (err) {
@@ -90,18 +92,55 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   return (
     <form onSubmit={submit} className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="flex space-x-4 text-sm">
+        {(
+          [
+            ["dir", "Directory on each node"],
+            ["shared", "Shared filesystem"],
+            ["lvm", "LVM-thin on each node"],
+          ] as const
+        ).map(([k, label]) => (
+          <label key={k} className="flex items-center space-x-1">
+            <input type="radio" name="kind" checked={kind === k} onChange={() => setKind(k)} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
       <p className="text-sm text-gray-600">
-        A directory under <span className="font-mono">{ROOT}</span> on each node, owned by the glidex user: a local disk or a
-        mount you made (NFS, CephFS, a vendor's agent). glidex never mounts it; each node checks it and says what it finds.
+        {lvm ? (
+          <>
+            A volume group and thin pool you made on each node, allowed in glidex-stord's{" "}
+            <span className="font-mono">/etc/glidex/stord.json</span>. Disks are raw volumes in it; each node checks it and says
+            what it finds.
+          </>
+        ) : (
+          <>
+            A directory under <span className="font-mono">{ROOT}</span> on each node, owned by the glidex user: a local disk or a
+            mount you made (NFS, CephFS, a vendor's agent). glidex never mounts it; each node checks it and says what it finds.
+          </>
+        )}
       </p>
       <div>
         <label className="block text-sm font-medium text-gray-700">Name</label>
         <input className={inputClass} required pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]{0,63}" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700">Path</label>
-        <input className={`${inputClass} font-mono`} placeholder={`${ROOT}/${name || "<name>"}`} value={path} onChange={(e) => setPath(e.target.value)} />
-      </div>
+      {lvm ? (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Volume group</label>
+            <input className={`${inputClass} font-mono`} required placeholder="vg-glidex" value={vg} onChange={(e) => setVg(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Thin pool</label>
+            <input className={`${inputClass} font-mono`} required placeholder="pool" value={pool} onChange={(e) => setPool(e.target.value)} />
+          </div>
+        </div>
+      ) : (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Path</label>
+          <input className={`${inputClass} font-mono`} placeholder={`${ROOT}/${name || "<name>"}`} value={path} onChange={(e) => setPath(e.target.value)} />
+        </div>
+      )}
       {dir.clustered && dir.nodes.size > 0 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Nodes</label>
@@ -122,24 +161,25 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
       )}
       {dir.clustered && (
         <div>
-          <label className="block text-sm font-medium text-gray-700">Paths of their own</label>
+          <label className="block text-sm font-medium text-gray-700">{lvm ? "Volume groups of their own" : "Paths of their own"}</label>
           <textarea
             className={`${inputClass} font-mono text-xs`}
             rows={2}
-            placeholder={`node-2=${ROOT}/fast-ssd`}
+            placeholder={lvm ? "node-2=vg-nvme" : `node-2=${ROOT}/fast-ssd`}
             value={paths}
             onChange={(e) => setPaths(e.target.value)}
           />
-          <p className="text-xs text-gray-500">One node=path per line, for nodes that mount it somewhere else.</p>
+          <p className="text-xs text-gray-500">
+            {lvm ? "One node=volume-group per line, for nodes whose group is named otherwise." : "One node=path per line, for nodes that mount it somewhere else."}
+          </p>
         </div>
       )}
-      <label className="flex items-start space-x-2 text-sm">
-        <input type="checkbox" className="mt-1" checked={shared} onChange={(e) => setShared(e.target.checked)} />
-        <span>
-          Shared: one filesystem every node mounts (NFS, CephFS). Disks on it aren't tied to a node, and their VMs can run on
-          any node that reaches it. The directory must be empty; glidex marks it as this datastore's.
-        </span>
-      </label>
+      {kind === "shared" && (
+        <p className="text-sm text-gray-600">
+          Shared: one filesystem every node mounts (NFS, CephFS). Disks on it aren't tied to a node, and their VMs can run on any
+          node that reaches it. The directory must be empty; glidex marks it as this datastore's.
+        </p>
+      )}
       <label className="flex items-center space-x-2 text-sm">
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
         <span>New disks go here unless they name a datastore</span>
@@ -169,7 +209,16 @@ function Detail({ d }: { d: Datastore }) {
       {!d.builtin && (
         <div className="space-y-1">
           <div>
-            Path: <span className="font-mono text-xs">{d.path}</span>
+            {d.driver === "DATASTORE_DRIVER_LVM" ? (
+              <>
+                LVM-thin: <span className="font-mono text-xs">{d.volume_group}</span> pool{" "}
+                <span className="font-mono text-xs">{d.thin_pool}</span>
+              </>
+            ) : (
+              <>
+                Path: <span className="font-mono text-xs">{d.path}</span>
+              </>
+            )}
           </div>
           {own.map(([n, p]) => (
             <div key={n}>
@@ -296,7 +345,7 @@ export default function Datastores() {
                       {d.default_for_disks && <span className="ml-2 text-xs text-green-700">default for disks</span>}
                       {!d.overcommit && <span className="ml-2 text-xs text-amber-700">no overcommit</span>}
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs">{d.builtin ? "each node's disk directory" : d.path}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{d.builtin ? "each node's disk directory" : d.driver === "DATASTORE_DRIVER_LVM" ? `lvm ${d.volume_group}/${d.thin_pool}` : d.path}</td>
                     <td className={`px-4 py-3 ${r.ok < r.all ? "text-amber-700" : ""}`}>
                       {r.all === 0 ? "—" : `${r.ok} of ${r.all}`}
                     </td>

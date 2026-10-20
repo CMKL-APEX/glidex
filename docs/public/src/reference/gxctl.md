@@ -134,7 +134,7 @@ Private key files are refused before anything is sent. See
 | `disk rm <disk>` | Delete after confirmation |
 | `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` |
 | `datastore show <datastore>`, `get` | Id, paths, nodes, overcommit, disks, and each node's view: free space, why it can't reach it, or mount warnings |
-| `datastore create <name> --path P [--shared] [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore under `/srv/glidex` (`system-admin`). `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path; `--default`: the default for new disks |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
 | `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit (`system-admin`) |
 | `datastore rm <datastore>`, `delete` | Delete one no disk is on, without confirmation; its files stay (`system-admin`) |
 
