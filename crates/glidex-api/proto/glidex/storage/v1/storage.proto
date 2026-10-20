@@ -488,6 +488,15 @@ service DiskService {
       rest: "POST /disks"
     };
   }
+  // Move the disk to another datastore, offline (spec/storage.md §8.3):
+  // the node that has it copies it there, then removes the old file.
+  rpc MoveDisk(MoveDiskRequest) returns (MoveDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "moveDisk"
+      kind: KIND_WRITE
+      rest: "POST /disks/{id}/move"
+    };
+  }
   rpc ResizeDisk(ResizeDiskRequest) returns (ResizeDiskResponse) {
     option (glidex.api.v1.op) = {
       action: "resizeDisk"
@@ -628,6 +637,8 @@ message Disk {
   // the disk's file, its VM's when placed (spec/storage.md S6).
   optional string worker = 25;
   optional string worker_name = 26 [json_name = "worker_name"];
+  // A move asked for and not done yet: the datastore it goes to.
+  optional string moving_to = 27 [json_name = "moving_to"];
 }
 
 message ListDisksRequest {
@@ -690,6 +701,25 @@ message ExtendRootRequest {
   optional uint32 wait_secs = 3 [json_name = "wait_secs"];
 }
 message ExtendRootResponse {
+  Disk disk = 1;
+  optional bool settled = 2;
+}
+
+message MoveDiskRequest {
+  string id = 1;
+  // Datastore id or name.
+  string datastore = 2;
+  // For a node-local destination: its node, which must be the node that
+  // has the disk now (a disk goes between two nodes' own datastores in two
+  // moves, through a shared one).
+  optional string node = 3;
+  // A linked disk becomes standalone instead of overlaying the
+  // destination's copy of its image.
+  optional bool flatten = 4;
+  // Wait this long (at most 300 s) for the move to finish.
+  optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+}
+message MoveDiskResponse {
   Disk disk = 1;
   optional bool settled = 2;
 }

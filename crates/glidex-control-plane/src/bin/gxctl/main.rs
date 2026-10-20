@@ -739,6 +739,10 @@ fn print_help() {
         "disk resize <disk> <GiB> [--no-extend]".cyan()
     );
     println!(
+        "  {} - Move a disk to another datastore (offline)",
+        "disk move <disk> --datastore D [--node N] [--flatten]".cyan()
+    );
+    println!(
         "  {} - Grow the root partition",
         "disk extend-root <disk> [--on-boot]".cyan()
     );
@@ -1104,7 +1108,15 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("invite", &["list", "create", "revoke"]),
     (
         "disk",
-        &["list", "show", "create", "resize", "extend-root", "rm"],
+        &[
+            "list",
+            "show",
+            "create",
+            "resize",
+            "move",
+            "extend-root",
+            "rm",
+        ],
     ),
     ("ovs", &["status", "install", "dpdk-init"]),
     (

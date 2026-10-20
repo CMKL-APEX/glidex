@@ -212,6 +212,14 @@ impl DiskService for Svc {
         disk_write!(self, ctx, req, svc::resize_disk, ResizeDiskResponse)
     }
 
+    async fn move_disk(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, MoveDiskRequest>,
+    ) -> ServiceResult<MoveDiskResponse> {
+        disk_write!(self, ctx, req, svc::move_disk, MoveDiskResponse)
+    }
+
     async fn extend_root(
         &self,
         ctx: RequestContext,

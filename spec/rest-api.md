@@ -165,6 +165,7 @@ reported as `404`.
 | `GET` / `POST` | `/disks[?wait=N]` | `list_disks` / `create_disk` | List; create blank or from an image (`201`, made by the disk controller; below) |
 | `GET` / `DELETE` | `/disks/{id}` | `get_disk` / `delete_disk` | Details + partition table; delete (`204`, or `202` while an operation on it finishes; `409` while attached) |
 | `POST` | `/disks/{id}/resize[?wait=N]` | `resize_disk` | Grow (extends root) or shrink (never into a partition); `202`, applied by the disk controller |
+| `POST` | `/disks/{id}/move` | `move_disk` | Body `{datastore, node?, flatten?, wait_secs?}`: copy a disk that no running VM uses to another datastore, by the node that has it; a linked disk is rebased or flattened. Answers `{disk, settled}`; while moving, the disk shows `moving_to` (spec/storage.md §8.3). `moveDisk`, plus `useDatastore` on the destination |
 | `POST` | `/disks/{id}/extend-root[?wait=N]` | `extend_root` | Grow the root partition, `offline` or `on-boot`; `202`, applied by the disk controller |
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
 | `GET` | `/networks/{id}/events` | `network_events` | The network's last 50 events (`readNetwork`) |

@@ -2591,6 +2591,13 @@ impl VmManager {
             if let Some(op) = self.images.busy_op(&d.id) {
                 return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
             }
+            if let Some(m) = &d.moving {
+                return Err(ImageError::NotReady(format!(
+                    "disk {} is moving to datastore {}",
+                    d.name, m.datastore
+                ))
+                .into());
+            }
             let b = self.images.driver(&d)?.stage(&d)?;
             Ok((b, d))
         };
@@ -2917,6 +2924,12 @@ impl VmManager {
                         return Err(invalid(format!("disk {} listed twice", d.name)));
                     }
                     ids.push(d.id.clone());
+                    if d.moving.is_some() {
+                        return Err(invalid(format!(
+                            "disk {} is moving to another datastore",
+                            d.name
+                        )));
+                    }
                     // A disk is a local file: it goes where its VM is (D6).
                     let vm_node = cur.status.placement.as_ref().map(|p| p.node.clone());
                     if let (Some(dn), Some(vn)) = (&d.node, &vm_node)
@@ -3281,6 +3294,7 @@ impl VmManager {
                     images::DiskPhase::Ready => {
                         decided_pending
                             || (d.resize.is_none()
+                                && d.moving.is_none()
                                 && d.extend_root
                                     .is_none_or(|e| e.seq <= d.applied_extend_root_seq))
                     }
@@ -3788,6 +3802,9 @@ impl VmManager {
                 ImageError::InUse(format!("disk {} is being deleted", current.name)).into(),
             );
         }
+        if current.moving.is_some() {
+            return Err(ImageError::InUse(format!("disk {} is moving", current.name)).into());
+        }
         if !matches!(
             current.phase,
             images::DiskPhase::Ready | images::DiskPhase::Resizing
@@ -3865,6 +3882,9 @@ impl VmManager {
         mode: ExtendMode,
     ) -> Result<DiskResponse, VmManagerError> {
         let current = self.images.get_disk(key)?;
+        if current.moving.is_some() {
+            return Err(ImageError::InUse(format!("disk {} is moving", current.name)).into());
+        }
         if current.phase != images::DiskPhase::Ready || current.deletion_requested_at.is_some() {
             return Err(ImageError::NotReady(format!(
                 "disk {} is {:?}",

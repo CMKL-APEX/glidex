@@ -387,6 +387,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "POST",
+        "/disks/{id}/move",
+        "moveDisk",
+        post(storage::move_disk),
+    )
+    .add(
+        "POST",
         "/disks/{id}/resize",
         "resizeDisk",
         post(storage::resize_disk),

@@ -5417,3 +5417,144 @@ async fn the_secrets_key_rotates_on_every_server() {
     // A follower doesn't rotate itself.
     assert!(cluster(&cps[other]).rotate_secrets_key().await.is_err());
 }
+
+/// Moving a disk (spec/storage.md §8.3): an agent's node-local disk goes to
+/// a shared datastore, copied by the agent, and its VM can then be placed
+/// on the server; a datastore the agent doesn't reach is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywhere() {
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let server_id = server.manager.local_node_id();
+    let agent_id = agent.manager.local_node_id();
+    let server_name = server
+        .manager
+        .nodes()
+        .get(&server_id)
+        .unwrap()
+        .unwrap()
+        .spec
+        .name;
+    let nfs = root.join(format!("nfs-mv-{}", uuid::Uuid::new_v4().simple()));
+    let ssd = root.join(format!("ssd-mv-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&nfs).unwrap();
+    std::fs::create_dir(&ssd).unwrap();
+    for body in [
+        json!({ "name": "nfs-mv", "path": nfs, "driver": "DATASTORE_DRIVER_SHARED_DIR" }),
+        json!({ "name": "ssd-mv", "path": ssd, "nodes": [server_name] }),
+    ] {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+            if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            break;
+        }
+    }
+    wait_for("both nodes reaching nfs-mv", || async {
+        let (_, v) = call(&server, "GET", "/datastores/nfs-mv", None, &[]).await;
+        v["datastore"]["node_status"]
+            .as_array()
+            .is_some_and(|r| r.len() == 2 && r.iter().all(|r| r["reachable"] == true))
+    })
+    .await;
+    wait_for("the server reaching ssd-mv", || async {
+        let (_, v) = call(&server, "GET", "/datastores/ssd-mv", None, &[]).await;
+        v["datastore"]["node_status"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|r| r["reachable"] == true))
+    })
+    .await;
+
+    // A local disk on the agent, under a VM there that never started.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "al", "project": project, "size_gib": 1 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    let vm = json!({ "name": "al-vm", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
+                     "kernel_image_path": "/path/to/vmlinux", "root_disk": "al", "node": "agent1" });
+    let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm_id = vm_of(&v)["id"].as_str().unwrap().to_string();
+    wait_for("the disk made on the agent", || async {
+        server
+            .manager
+            .images()
+            .get_disk(&disk_id)
+            .is_ok_and(|d| d.phase == glidex_control_plane::images::DiskPhase::Ready)
+    })
+    .await;
+    let images = agent.manager.images();
+    let old = images.disk_path(&images.get_disk(&disk_id).unwrap());
+
+    // Refused: a datastore only the server reaches, from the agent's disk.
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/disks/al/move",
+        Some(json!({ "datastore": "ssd-mv" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    // Refused: asking for the server's own copy (two steps, by shared).
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/disks/al/move",
+        Some(json!({ "datastore": "local", "node": server_name })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+
+    // To the shared datastore: the agent copies it and stays its worker.
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/disks/al/move",
+        Some(json!({ "datastore": "nfs-mv", "wait_secs": 60 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    wait_for("the move to finish", || async {
+        server
+            .manager
+            .images()
+            .get_disk(&disk_id)
+            .is_ok_and(|d| d.moving.is_none() && d.node.is_none())
+    })
+    .await;
+    let d = server.manager.images().get_disk(&disk_id).unwrap();
+    assert_eq!(d.worker.as_deref(), Some(agent_id.as_str()), "{d:?}");
+    assert!(
+        agent.manager.images().disk_path(&d).starts_with(&nfs),
+        "{d:?}"
+    );
+    wait_for("the agent's old file removed", || async { !old.exists() }).await;
+
+    // Now its VM goes to the server.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{vm_id}/place"),
+        Some(json!({ "node": server_name })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(vm_of(&v)["node"], server_id.as_str(), "{v}");
+}

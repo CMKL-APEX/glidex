@@ -475,6 +475,26 @@ pub struct Disk {
     /// on the disk's file now, its VM's when placed (spec/storage.md S6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// A move to another datastore asked for and not done yet
+    /// (spec/storage.md §8.3); its `mover` makes the copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moving: Option<MoveSpec>,
+}
+
+/// `POST /disks/{id}/move` (spec/storage.md §8.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MoveSpec {
+    pub datastore: String,
+    /// The node a node-local destination is on; `None` for a shared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// The node that holds the file now and reaches the destination: it
+    /// copies, records the move and removes the old file.
+    pub mover: String,
+    /// Copy a linked disk as a standalone one instead of rebasing it onto
+    /// the destination's copy of its image.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flatten: bool,
 }
 
 fn local_datastore() -> String {
@@ -516,6 +536,7 @@ impl Disk {
             node: None,
             datastore: local_datastore(),
             worker: None,
+            moving: None,
         }
     }
 
@@ -790,6 +811,7 @@ pub struct DiskResponse {
     pub datastore: String,
     pub worker: Option<String>,
     pub worker_name: Option<String>,
+    pub moving_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1645,6 +1667,7 @@ impl ImageManager {
                         .flatten()
                 })
                 .map(|n| n.spec.name),
+            moving_to: d.moving.as_ref().map(|m| m.datastore.clone()),
         }
     }
 

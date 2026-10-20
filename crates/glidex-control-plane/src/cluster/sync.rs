@@ -427,7 +427,7 @@ pub fn check_status_write(
                 }
                 if let Op::Put { value, .. } = op {
                     let new: Value = serde_json::from_slice(value).map_err(|e| e.to_string())?;
-                    check_disk_status_only(&cur, &new)?;
+                    check_disk_status_only(&cur, &new, node)?;
                 }
             }
             (TableId::Networks, op) => {
@@ -586,22 +586,66 @@ fn check_vm_status_only(cur: &Value, new: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn check_disk_status_only(cur: &Value, new: &Value) -> Result<(), String> {
-    same_except(
-        cur,
-        new,
-        &[
-            "size_bytes",
-            "phase",
-            "conditions",
-            "pending_growpart",
-            "applied_extend_root_seq",
-            "attached_to",
-            "create",
-            "resize",
-            "extend_root",
-        ],
-    )?;
+/// What a mover may write: the move done exactly as asked (the datastore
+/// and node it names, itself the worker of a shared one, linked made full
+/// only when flattening), or ended with the disk where it was.
+fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> {
+    let m = &cur["moving"];
+    if !new["moving"].is_null() && new["moving"] != *m {
+        return Err("a node may only end a move".into());
+    }
+    if new["datastore"] == cur["datastore"] {
+        if new["node"] != cur["node"]
+            || new["worker"] != cur["worker"]
+            || new["origin"] != cur["origin"]
+        {
+            return Err("a move that didn't happen changes nothing".into());
+        }
+        return Ok(());
+    }
+    if !new["moving"].is_null() || new["datastore"] != m["datastore"] || new["node"] != m["node"] {
+        return Err("not the move that was asked for".into());
+    }
+    let worker = if m["node"].is_null() {
+        Value::from(node)
+    } else {
+        Value::Null
+    };
+    if new["worker"] != worker {
+        return Err("a moved disk's worker is its mover, on a shared datastore".into());
+    }
+    if new["origin"] != cur["origin"] {
+        let mut full = cur["origin"].clone();
+        full["mode"] = "full".into();
+        if m["flatten"] != true || new["origin"] != full {
+            return Err("only a flattened move makes a disk full".into());
+        }
+    }
+    Ok(())
+}
+
+fn check_disk_status_only(cur: &Value, new: &Value, node: &str) -> Result<(), String> {
+    let mut allowed = vec![
+        "size_bytes",
+        "phase",
+        "conditions",
+        "pending_growpart",
+        "applied_extend_root_seq",
+        "attached_to",
+        "create",
+        "resize",
+        "extend_root",
+    ];
+    // A move's mover records it, or ends it (spec/storage.md §8.3).
+    let m = &cur["moving"];
+    let mover = !m.is_null() && m["mover"] == node;
+    if mover {
+        allowed.extend(["moving", "datastore", "node", "worker", "origin"]);
+    }
+    same_except(cur, new, &allowed)?;
+    if mover {
+        check_move_write(cur, new, node)?;
+    }
     // Requests are the API's to make, the node's to complete.
     for f in ["create", "resize", "extend_root"] {
         if !new[f].is_null() && cur[f] != new[f] {

@@ -332,6 +332,19 @@ pub async fn resize_disk(
     Ok(disk_reply(r, StatusCode::OK, StatusCode::ACCEPTED))
 }
 
+pub async fn move_disk(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::MoveDiskRequest = body(v)?;
+    req.id = id;
+    req.wait_secs = req.wait_secs.or(w.secs());
+    let r = svc::move_disk(&c, req).await?;
+    Ok(disk_reply(r, StatusCode::OK, StatusCode::ACCEPTED))
+}
+
 pub async fn extend_root(
     c: Caller,
     Path(id): Path<String>,

@@ -8,9 +8,10 @@ Status: **design (draft)**. Implemented so far:
 - S3, shared datastores (`shared-dir`) with workers and volume locks
   (§4.4), and images in them for linked disks plus the installer's
   registration (§4.5);
-- S4, placing a stopped or lost VM again (§9).
+- S4, placing a stopped or lost VM again (§9);
+- S5, moving a disk between datastores (§8.3).
 
-S5 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
+S6 and everything after it is still design. The milestones are S0–S7 (§16). Decisions S13–S16
 and the host checks in §19 settle most of the first draft's questions;
 the one still open is in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
@@ -665,6 +666,55 @@ unchanged.
 This also gives clustering.md §18's "moving resources between hosts"
 for node-local disks: moving from `local` on node A to `local` on node B.
 
+**As built (S5).** One node, the **mover**, does the whole move: it
+holds the source file and reaches the destination. There is no copy
+over the cluster port.
+- **Who moves it** (`VmManager::move_disk`):
+  - standalone: this node;
+  - a node-local disk: its `node`;
+  - a shared disk: its `worker` if that reaches the destination, else a
+    node reaching both datastores (the VM's node when the disk's VM is
+    placed).
+- **Node-local to another node's node-local is refused**, with the hint
+  to move it to a shared datastore first and then from there. `node`
+  may only name the mover. The between-nodes copy above is not built.
+- **Refused also:** a disk being deleted, already moving, not `Ready`,
+  or in use by a running VM; the datastore it is on already; a VM whose
+  node wouldn't reach the disk where it goes; a destination without
+  overcommit that lacks the space on the mover.
+- **The record:** `Disk.moving = {datastore, node, mover, flatten}`
+  instead of a `Moving` phase; the API shows it as `moving_to`. The
+  disk stays `Ready`. Attach, resize, extend-root and boot refuse a
+  moving disk. A shared source's `worker` becomes the mover, and the
+  leader doesn't pick another worker while it moves.
+- **The copy** (`StorageDriver::copy_in`, `images::disk::move_volume`):
+  - under both volume locks (S16);
+  - into a temporary file in the destination, by `qemu-img convert`
+    when flattening, else a sparse copy;
+  - checked (`qemu-img check`) and renamed into place;
+  - a linked disk not flattened is rebased (`qemu-img rebase -u`) onto
+    the destination's image: the shared datastore's copy, by the
+    relative path `../images/<id>.qcow2`, or the mover's own copy. A
+    copy into a shared datastore is made first, as for a new linked
+    disk (§4.5); until then the move waits (`MovePending`, retried
+    every 5 s).
+- **Then:** one write sets `datastore`, `node`, `worker` (the mover on
+  a shared destination), the origin's mode (`full` when flattened) and
+  clears `moving`; the event is `Moved`. The mover then deletes the
+  source file. A failed copy clears `moving` with a `MoveFailed` event
+  and leaves the disk where it was.
+- **Node sync:** the mover writes the record as status
+  (`check_move_write`): only to the exact `moving` spec, with no other
+  change.
+- **API:** `POST /disks/{id}/move {datastore, node?, flatten?,
+  wait_secs?}` (`moveDisk`, in `disk.write`; the caller also needs
+  `useDatastore` on the destination). gxctl `disk move NAME
+  --datastore D [--node N] [--flatten]` waits up to 300 s. The Disks
+  page has a Move form when there is more than one datastore.
+- **Tests:** API `disks_move_between_datastores` (blank disk to shared
+  and back, a linked disk rebased then flattened, refusals); cluster
+  `a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywhere`.
+
 ## 9. Placement after creation: re-placing VMs
 
 - **Stopped VM:** `POST /vms/{id}/place {node?}`. Allowed when every disk is on a shared datastore, or is node-local and already on the target node.
@@ -1006,7 +1056,7 @@ described below; fix 5 is part of S2.
 | S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11). **Implemented** (§4.3, §13 as built), as S2a (resource, API) and S2b (gxctl, UI, watch). | S1 |
 | S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, glidex's volume lock (S16), and the installer's register-and-ask step (S13). **Implemented** (§4.4, §4.5), as S3a (driver, workers, locks) and S3b (images in shared datastores, installer). | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced`. **Implemented** (§9 as built). | S3 |
-| S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
+| S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores). **Implemented** (§8.3 as built); between nodes goes through a shared datastore. | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
