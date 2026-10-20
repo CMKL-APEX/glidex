@@ -54,10 +54,13 @@ loader would boot, with `console=` replaced by `console=ttyS0`. So the
 kernel always matches the modules on the image's disk.
 
 - A pull with a `name` names the kernel image `<name>-kernel`.
-- `"with_kernel": false` skips the extraction; `"with_kernel": true`
-  extracts from a URL pull too (off by default for URLs).
+- `gxctl image pull <key> --no-kernel` (`"with_kernel": false`) skips
+  the extraction; `"with_kernel": true` extracts from a URL pull too
+  (off by default for URLs). `gxctl image pull` waits through
+  *extracting* and prints the kernel's release and command line.
 - To take the kernel out of an image you already have, including one
-  pulled from a URL:
+  pulled from a URL: **Extract kernel** on the image under **Images**,
+  `gxctl image extract-kernel my-image`, or
 
   ```bash
   curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -81,6 +84,14 @@ the web UI or `gxctl image retry <name>` runs it again.
 
 ### From a URL
 
+```
+gxctl> image pull https://images.example.org/vmlinuz-6.8.0-147-generic --kernel --sha256 <sha256> \
+         --initrd-url https://images.example.org/initrd.img-6.8.0-147-generic --initrd-sha256 <sha256> \
+         --cmdline "root=LABEL=cloudimg-rootfs ro console=ttyS0"
+```
+
+or over the API:
+
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
   -X POST https://host.example.org:8841/images -d '{
@@ -101,6 +112,13 @@ image, in `unpacked/`.
 
 An administrator who may use host paths can copy a kernel from files
 on the host into the library:
+
+```
+gxctl> image pull --kernel-path /srv/kernels/vmlinuz-custom --initrd-path /srv/kernels/initrd-custom \
+         --cmdline "root=/dev/vda1 ro console=ttyS0"
+```
+
+or over the API:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -173,10 +191,18 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   Until it has one, the VM waits with the condition `DisksReady`
   `False` (*kernel &lt;name&gt; has not been copied to this node yet*).
 
-<!-- TODO(verify): the web UI's create form and gxctl create offer only host paths for kernel boot (no kernel image picker, no initramfs field); update this page when they gain one. -->
-The web UI's **Direct kernel boot** and `gxctl create` (answer `none`
-at the firmware prompt) take host paths only: see
-[Host paths](#host-paths). To boot a kernel image, use the API.
+**Web UI:** **Create VM**, **Boot Mode** **Direct kernel boot**. The
+**Kernel** choice replaces **UEFI Firmware**: pick a kernel image (the
+chosen image's own kernel comes first; **Extract it from the image**
+makes one when it has none). **Kernel Arguments** show and default to
+the kernel image's command line. **Follow the guest's kernel** turns on
+[following](#following-the-guests-kernel). The boot disk and login
+credential work as with firmware.
+
+**gxctl:** in `gxctl create`, answer `kernel` at *UEFI firmware*, then
+pick the kernel image at *Kernel* (the boot image's kernel is the
+default), and answer *Follow the guest's kernel*. *Kernel arguments*
+default to the kernel image's command line.
 
 ### Host paths
 
@@ -189,10 +215,11 @@ directly instead of a kernel image:
 | `initrd_path` | Its initramfs, optional; distro kernels need one. Only with `kernel_image_path`. |
 | `rootfs_path` | A root filesystem or disk image, used as is. Over the API, `image` and `root_disk` work too. |
 
-In the web UI: **Boot Mode** **Direct kernel boot**, then **Kernel
-Image Path**, **Root Filesystem Path** and **Kernel Arguments**. In
-`gxctl create`, answer `none` at *UEFI firmware*, then give the
-*Kernel image path*, *Root filesystem path* and *Kernel arguments*.
+In the web UI: **Direct kernel boot**, then **Kernel** **Kernel files on
+the host**, with the kernel and initramfs paths; a root filesystem file
+is the boot disk's path source. In `gxctl create`, answer `kernel` at
+*UEFI firmware*, give a host path at *Kernel*, then the *Initramfs path*
+(optional).
 
 Host paths can't be changed after create. A VM with a host-path kernel
 and a host-path root filesystem gets no generated seed, so it can't
@@ -241,7 +268,9 @@ A Cloud Hypervisor VM created by an earlier version of Glidex keeps the
 
 A kernel-booted VM boots the kernel Glidex hands the hypervisor, so a
 kernel the guest installs doesn't boot by itself. To boot it anyway,
-turn on `kernel_from_disk`:
+turn on `kernel_from_disk`: **Follow the guest's kernel** on the VM's
+**Kernel** panel or in the create form, `gxctl kernel my-vm --follow on`,
+or:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -287,16 +316,17 @@ mask to keep following on.
 ### Extract once
 
 To take the guest's kernel without following it, extract it once from
-a stopped VM:
+a stopped VM: **Extract from its disk now** on the VM's page, or
 
-```bash
-curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
-  -X POST https://host.example.org:8841/vms/<id>/extract-kernel
+```
+gxctl> kernel my-vm --extract
 ```
 
-The answer is `202` with a new kernel image, *extracting*. Wait for it
-to be ready (`GET /images/<image-id>`), then set it as the VM's
-`kernel` with `PATCH`.
+which waits until the new kernel image is ready and prints how to use
+it (`kernel my-vm --set <kernel image>`). Over the API,
+`POST /vms/<id>/extract-kernel` answers `202` with the new kernel image,
+*extracting*; wait for it to be ready (`GET /images/<image-id>`), then
+set it as the VM's `kernel` with `PATCH`.
 
 - It needs the `editor` role in the VM's project.
 - The VM must be stopped (`409 conflict` otherwise), boot a kernel
@@ -327,7 +357,18 @@ kept while a VM needs it.
 ## Change a VM's kernel
 
 `kernel` can be changed on a stopped or running VM that boots a kernel
-image; it applies at the next start:
+image; it applies at the next start. On the VM's page, **Kernel** shows
+the kernel image (and, when following the guest, the one it boots and
+the one before); pick another and **Use from the next start**. With
+gxctl:
+
+```
+gxctl> kernel my-vm                              # the kernel, booted and previous
+gxctl> kernel my-vm --set ubuntu-26.04-kernel
+gxctl> kernel my-vm --follow on                  # or off
+```
+
+Over the API:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -347,8 +388,6 @@ changed.
   variables.
 - Kernel extraction runs on x86_64 hosts only. Elsewhere, add kernel
   images from a URL or host files.
-- The web UI and `gxctl` don't yet pick kernel images, show a VM's
-  kernel, or extract kernels; use the API for those.
 - With a host-path kernel, the file must exist on the VM's node; Glidex
   doesn't copy it.
 
