@@ -66,7 +66,7 @@ Rate limit: 10 sign-in attempts a minute per client address.
   (`PATCH /users/{id}/passkeys/{passkey}`, one's own), and
   `DeletePasskey` (`DELETE …`, one's own or `manageUsers`; P4). A
   passkey is also listed among the user's identities, labelled
-  "Passkey: <name>".
+  "Passkey: `<name>`".
 
 ## 4. UI
 
