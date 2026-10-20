@@ -58,7 +58,9 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 
 With **Direct kernel boot**, the form asks for a **Kernel** instead of
 **UEFI Firmware**: a kernel image (the one taken from the chosen image
-comes first; **Extract it from the image** makes it if there is none),
+comes first and is the only one preselected; **Extract it from the
+image** makes it if there is none. Another image's kernel usually won't
+boot this one: its initramfs waits for that image's root disk),
 or, for administrators, **Kernel files on the host** (kernel and
 initramfs paths). **Kernel Arguments** default to the kernel image's own
 command line. **Follow the guest's kernel** boots the kernel the guest
