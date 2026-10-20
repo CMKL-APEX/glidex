@@ -590,11 +590,14 @@ is later.
   token_type: "Bearer", expires_in}`, and errors as RFC 6749 does
   (`400 invalid_request`, `400 invalid_grant`). 30 exchanges a minute
   per federation.
-- **The token** (D48): a `gxt_` token of kind `federated`, recording
-  the federation, the rule, the service account and the external
-  subject (`sub`, and `repository` / `ref` / `environment` when
-  present) for audit. It authenticates as the service account. Listed
-  under the service account while it lives; revocable like any token.
+- **The token** (D48): a `gxt_` secret kept by its hash in
+  `federated_tokens` (not an API token record), with the federation,
+  the rule's fingerprint, the service account and the external subject
+  (`sub`, and `repository` / `ref` / `environment` / `project_path` /
+  `workflow` when present). It authenticates as the service account
+  while it lives and the service account, the federation (enabled) and
+  that rule still exist; there is nothing else to revoke. Audit entries
+  name the service account's token and the federated token's id.
 - **Audit:** every exchange, granted or not, as `system:federation:<id>`
   with the external subject and claims it matched on, never the JWT.
 
@@ -1691,6 +1694,16 @@ Task 5, docs and the UI e2e:
 | API (D51) | `glidex/directory/v1/federations.proto`, `FederationService` on both transports (`service/federations.rs`, `api/federations.rs`), `/tenants/{id}/federations…`; actions `readTenantFederations` (tenant auditors, tenant admins, directory readers) and `manageTenantFederations` (tenant admins, directory admins; step-up); rules' service accounts must be the tenant's |
 | gxctl | `federation list|show|add|enable|disable|remove` (`--match`… `--service-account`, or `--rules-file`) |
 | Tests | `federation.rs` unit tests; `connector_tests.rs::federations_are_a_tenants_and_checked_when_made` |
+
+Task 3, the exchange:
+
+| Spec | Code |
+|---|---|
+| `POST /auth/exchange` (§9) | `api/exchange.rs` (public; form or JSON; `Cache-Control: no-store`); `directory/exchange.rs`: RFC 8693's `grant_type` and `subject_token_type`, `federation=<tenant slug>/<id>`, 30 a minute per federation (`429 slow_down`) |
+| D49 | the issuer's cached keys (`Issuers::keys`, read again for an unknown `kid`), RS256 or ES256, `iss` and `aud` the federation's, `exp`, `iat`, `nbf` with 60 s leeway, at most an hour long |
+| D50 | the first rule whose exact claims hold; its service account still the tenant's and live; every refusal the same `400 invalid_grant`, the reason in the audit (`system:federation:<slug>/<id>`, `exchangeToken`) |
+| D48 | `FederatedTokens::mint` refuses a `jti` (or the token's hash) already exchanged; `AuthService::federated_principal`: the service account's `Token` as principal, while the federated token, the service account, the enabled federation and the rule's fingerprint hold; `Principal.federated` in audit; TTL the rule's, never past the service account's expiry |
+| Tests | `connector_tests.rs::a_workload_token_is_exchanged_once_for_its_service_account` against the mock issuer |
 
 **T4** (pull sync from Google Workspace) is implemented: tasks 1–5 of
 §18. The checks of [idp-checks.md](idp-checks.md) against a real

@@ -112,6 +112,9 @@ pub struct Principal {
     pub peer_uid: Option<u32>,
     /// A multi-factor browser login. Tokens, peer and PAM logins never are.
     pub mfa: bool,
+    /// The federated token this request came with (spec/tenancy.md D48):
+    /// it acts as `token`, its service account; audit names both.
+    pub federated: Option<String>,
 }
 
 impl Principal {
@@ -145,6 +148,7 @@ impl Principal {
             csrf: None,
             peer_uid: None,
             mfa: false,
+            federated: None,
         }
     }
 
@@ -180,6 +184,7 @@ impl Principal {
             "user": self.user.as_ref().map(|u| &u.id),
             "name": self.user.as_ref().map(|u| &u.display_name),
             "token": self.token.as_ref().map(|t| &t.id),
+            "federated": self.federated,
             "method": self.method.as_str(),
             "session": self.session_hash.as_ref().map(|h| &h[..12]),
         })
@@ -256,6 +261,8 @@ pub struct AuthService {
     pub federations: crate::directory::federation::FederationStore,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
+    /// The tokens exchanges gave (D48).
+    pub federated_tokens: crate::directory::federation::FederatedTokens,
     /// Tests: the source every pull reads instead of its IdP.
     sync_source: Mutex<Option<Arc<dyn crate::directory::sync::Source>>>,
     /// One OIDC client per connector, rebuilt when its record changes.
@@ -384,6 +391,7 @@ impl AuthService {
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
             issuers: Default::default(),
+            federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
@@ -422,6 +430,7 @@ impl AuthService {
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
             issuers: Default::default(),
+            federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,
@@ -998,6 +1007,7 @@ impl AuthService {
             csrf: None,
             peer_uid: Some(uid),
             mfa: false,
+            federated: None,
         }))
     }
 
@@ -1049,6 +1059,7 @@ impl AuthService {
             csrf: Some(s.csrf),
             peer_uid: None,
             mfa: s.mfa,
+            federated: None,
         }))
     }
 
@@ -1064,7 +1075,7 @@ impl AuthService {
         }
         let hash = sha256_hex(secret.as_bytes());
         let Some(mut t) = self.store.token_by_hash(&hash)? else {
-            return Ok(None);
+            return self.federated_principal(&hash, transport, ip);
         };
         let now = store::now();
         if t.expires_at <= now {
@@ -1104,6 +1115,71 @@ impl AuthService {
             csrf: None,
             peer_uid: None,
             mfa: false,
+            federated: None,
+        }))
+    }
+
+    /// A federated token's principal (spec/tenancy.md D48): its service
+    /// account, while the token, the service account, the federation and
+    /// the rule that gave it all still hold.
+    fn federated_principal(
+        &self,
+        hash: &str,
+        transport: Transport,
+        ip: Option<IpAddr>,
+    ) -> Result<Option<Principal>, AuthError> {
+        let Some(f) = self
+            .federated_tokens
+            .by_hash(hash)
+            .map_err(|e| AuthError::Invalid(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let now = store::now();
+        if f.expires_at <= now {
+            return Ok(None);
+        }
+        let Some((tenant, id)) = f.federation.split_once('/') else {
+            return Ok(None);
+        };
+        let still = self
+            .federations
+            .get(tenant, id)
+            .map_err(|e| AuthError::Invalid(e.to_string()))?
+            .is_some_and(|fed| {
+                fed.enabled
+                    && fed.rules.iter().any(|r| {
+                        r.fingerprint() == f.rule && r.service_account == f.service_account
+                    })
+            });
+        if !still {
+            return Ok(None);
+        }
+        let Some((_, sa)) = self.store.token_by_id(&f.service_account)? else {
+            return Ok(None);
+        };
+        if sa.expires_at <= now || !matches!(sa.kind, TokenKind::ServiceAccount { .. }) {
+            return Ok(None);
+        }
+        let narrowed = self
+            .store
+            .links()?
+            .iter()
+            .any(|l| l.link.principal == Ent::Token(sa.id.clone()));
+        Ok(Some(Principal {
+            user: None,
+            token: Some(sa),
+            token_narrowed: narrowed,
+            teams: Vec::new(),
+            method: Method::Token,
+            transport,
+            authenticated_at: now,
+            source_ip: ip,
+            session_hash: None,
+            csrf: None,
+            peer_uid: None,
+            mfa: false,
+            federated: Some(f.id),
         }))
     }
 
@@ -1126,6 +1202,7 @@ impl AuthService {
             csrf: None,
             peer_uid: None,
             mfa: false,
+            federated: None,
         };
         Ok(match e {
             Ent::User(id) => match self.store.user(id)? {

@@ -3994,3 +3994,228 @@ async fn federations_are_a_tenants_and_checked_when_made() {
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
+
+/// A GitHub Actions-shaped OIDC token from the mock, signed with its key.
+fn workload_jwt(mock: &idp::Mock, extra: Value) -> String {
+    let mut c = json!({"iss": mock.base, "aud": "glidex", "sub": "repo:acme/infra:ref:refs/heads/main",
+        "repository": "acme/infra", "ref": "refs/heads/main", "workflow": "deploy",
+        "iat": now(), "nbf": now(), "exp": now() + 300, "jti": uuid::Uuid::new_v4().to_string()});
+    for (k, v) in extra.as_object().unwrap() {
+        c[k] = v.clone();
+    }
+    idp::sign(c, "k1")
+}
+
+/// spec/tenancy.md §9, D48–D50: a workload's JWT for a short-lived token
+/// acting as one service account; every refusal looks the same; the
+/// token ends with its federation, rule and service account.
+#[tokio::test]
+async fn a_workload_token_is_exchanged_once_for_its_service_account() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("x-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let project = h.app.manager.projects().resolve("default").unwrap().id;
+    h.app
+        .auth
+        .add_link(
+            "role.viewer",
+            Ent::Token(sa.clone()),
+            Ent::Project(project.clone()),
+            "test",
+        )
+        .unwrap();
+    let rule = json!([{"match": {"repository": "acme/infra", "ref": "refs/heads/main"}, "service_account": sa, "ttl_secs": 600}]);
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(json!({"federation": {"id": "gh", "issuer": mock.base,
+            "audience": "glidex", "rules": rule}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let form = |jwt: &str, fed: &str| {
+        format!(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token={jwt}\
+             &subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Ajwt&federation={fed}"
+        )
+    };
+    let post = |body: String| {
+        let h = &h;
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/auth/exchange")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap();
+            let (st, v, hd) = h.send(req).await;
+            (st, v, hd)
+        }
+    };
+
+    let jwt = workload_jwt(&mock, json!({}));
+    let (st, v, hd) = post(form(&jwt, "default%2Fgh")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(hd.get("cache-control").unwrap(), "no-store");
+    assert_eq!(
+        (v["token_type"].as_str(), v["expires_in"].as_u64()),
+        (Some("Bearer"), Some(600))
+    );
+    assert_eq!(
+        v["issued_token_type"],
+        "urn:ietf:params:oauth:token-type:access_token"
+    );
+    let tok = v["access_token"].as_str().unwrap().to_string();
+    assert!(tok.starts_with("gxt_"));
+    // It acts as the service account: its links, nothing more.
+    let (st, w) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::OK, "{w}");
+    assert!(w.to_string().contains(&sa), "{w}");
+    let (st, _) = h
+        .rest("GET", &format!("/projects/{project}"), None, &tok)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h
+        .rest("POST", "/projects", Some(json!({"name": "nope"})), &tok)
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Once (D48).
+    let (st, again, _) = post(form(&jwt, "default%2Fgh")).await;
+    assert_eq!(
+        (st, again["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    // Every refusal says the same (D50).
+    for (bad, why) in [
+        (
+            workload_jwt(&mock, json!({"repository": "acme/infra-fork"})),
+            "another repository",
+        ),
+        (
+            workload_jwt(&mock, json!({"ref": "refs/heads/dev"})),
+            "another branch",
+        ),
+        (
+            workload_jwt(&mock, json!({"aud": "something-else"})),
+            "another audience",
+        ),
+        (
+            workload_jwt(&mock, json!({"iss": "https://evil.example"})),
+            "another issuer",
+        ),
+        (
+            workload_jwt(
+                &mock,
+                json!({"exp": now() - 300, "iat": now() - 600, "nbf": now() - 600}),
+            ),
+            "expired",
+        ),
+        (
+            workload_jwt(&mock, json!({"exp": now() + 7200})),
+            "longer than an hour",
+        ),
+        (
+            format!("{}x", workload_jwt(&mock, json!({}))),
+            "a broken signature",
+        ),
+    ] {
+        let (st, v, _) = post(form(&bad, "default%2Fgh")).await;
+        assert_eq!((st, &v), (StatusCode::BAD_REQUEST, &again), "{why}");
+    }
+    let (st, v, _) = post(form(&workload_jwt(&mock, json!({})), "default%2Fnope")).await;
+    assert_eq!(
+        (st, &v),
+        (StatusCode::BAD_REQUEST, &again),
+        "no such federation"
+    );
+    // A malformed request says so.
+    let (st, v, _) = post("grant_type=password".into()).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_request"))
+    );
+    // JSON works too.
+    let (st, v) = h
+        .rest("POST", "/auth/exchange", Some(json!({"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": workload_jwt(&mock, json!({})), "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "federation": "default/gh"})), "")
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // It ends with its federation…
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": false}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "disabled federation");
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": true}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::OK, "enabled again");
+    // …its rule…
+    let (st, _) = h
+        .rest("PATCH", "/tenants/default/federations/gh", Some(json!({"changes": {"rules":
+            [{"match": {"repository": "acme/infra", "ref": "refs/heads/release"}, "service_account": sa}]}})), &s)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "its rule changed");
+    // …and its service account.
+    let (_, v, _) = post(form(
+        &workload_jwt(&mock, json!({"ref": "refs/heads/release"})),
+        "default%2Fgh",
+    ))
+    .await;
+    let tok2 = v["access_token"].as_str().unwrap().to_string();
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok2).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("DELETE", &format!("/tokens/{sa}"), None, &s).await;
+    assert!(st.is_success(), "{st}");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok2).await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "the service account was revoked"
+    );
+
+    // Audited as the federation, never with the JWT.
+    let (_, a) = h.rest("GET", "/audit?limit=200", None, &s).await;
+    let text = a.to_string();
+    assert!(
+        text.contains("system:federation:default/gh") && text.contains("no rule matches"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&jwt[jwt.len() - 40..]),
+        "no JWT in the audit"
+    );
+
+    // 30 a minute per federation.
+    let mut limited = false;
+    for _ in 0..40 {
+        let (st, _, _) = post(form("x.y.z", "default%2Fratelimited")).await;
+        if st == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited);
+}
