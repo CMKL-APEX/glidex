@@ -193,9 +193,13 @@ interface TableProps {
   clustered?: boolean;
   onCopy?: (img: ImageInfo) => void;
   onRemoveCopy?: (img: ImageInfo, node: string) => void;
+  /** Disk images: take the kernel out of one (spec/kernel-boot.md §10),
+   * offered when no kernel image comes from it yet. */
+  onExtractKernel?: (img: ImageInfo) => void;
+  hasKernel?: (img: ImageInfo) => boolean;
 }
 
-function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemoveCopy }: TableProps) {
+function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemoveCopy, onExtractKernel, hasKernel }: TableProps) {
   // Firmware and kernels are booted through, so VMs are their users.
   const firmware = kind === "firmware";
   const boot = kind !== "disk";
@@ -258,6 +262,11 @@ function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemo
                 </td>
                 <td className="px-4 py-3 text-xs font-mono">{users.join(", ") || "—"}</td>
                 <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                  {onExtractKernel && imageState(img) === "ready" && !img.deleting && !hasKernel?.(img) && (
+                    <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => onExtractKernel(img)}>
+                      Extract kernel
+                    </button>
+                  )}
                   {clustered && onCopy && imageState(img) === "ready" && !img.deleting && (
                     <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => onCopy(img)}>
                       Copy to node…
@@ -525,6 +534,16 @@ export default function Images() {
     }
   };
 
+  const extractKernel = async (img: ImageInfo) => {
+    setError(null);
+    try {
+      await api.pullImage({ kernel_from: img.id });
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start the kernel extraction");
+    }
+  };
+
   const remove = async (img: ImageInfo) => {
     const what =
       imageState(img) === "downloading" ? "Cancel the download of" : isFirmware(img) ? "Delete firmware" : isKernel(img) ? "Delete kernel" : "Delete image";
@@ -607,7 +626,10 @@ export default function Images() {
           </select>
         </div>
       )}
-      <h2 className="text-lg font-semibold text-gray-800 mb-3">Cloud image catalog</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">Cloud image catalog</h2>
+      <p className="text-sm text-gray-500 mb-3">
+        Pulling an image also extracts its kernel, for VMs that boot it directly (listed under Kernels).
+      </p>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         {catalog.map((c) => (
           <div key={c.key} className={cardClass}>
@@ -675,7 +697,17 @@ export default function Images() {
           No images yet. Pull one from the catalog above.
         </div>
       ) : (
-        <ImageTable images={diskImages} kind="disk" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable
+          images={diskImages}
+          kind="disk"
+          onRetry={retry}
+          onRemove={remove}
+          clustered={dir.clustered}
+          onCopy={setCopying}
+          onRemoveCopy={removeCopy}
+          onExtractKernel={(img) => void extractKernel(img)}
+          hasKernel={(img) => kernelImages.some((k) => k.for_image === img.id)}
+        />
       )}
 
       <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Firmware</h2>

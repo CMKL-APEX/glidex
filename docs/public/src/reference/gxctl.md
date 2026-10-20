@@ -82,6 +82,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
+| `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
 | `events <vm>` | What happened to the VM: starts, exits, restarts |
 | `connect <vm>`, `console`, `attach` | Serial console; `Ctrl+]` detaches |
@@ -116,6 +117,10 @@ Private key files are refused before anything is sent. See
 | `image pull <catalog-key\|https-url> [--name N] [--sha256 H]` | Download and verify an image, showing progress |
 | `image pull --firmware <key> [--name N]` | Download UEFI firmware from the catalog (`cloudhv-edk2`, `ovmf`) |
 | `image pull <url> --firmware-for <cloudhypervisor\|qemu> [--vars-url U] [--vars-sha256 H]` | Download firmware from a URL (QEMU: with its variable store) |
+| `image pull <key> --no-kernel` | Pull a catalog image without taking its kernel out |
+| `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline C]` | Download a kernel image |
+| `image pull --kernel-path P [--initrd-path P] [--cmdline C]` | Copy a kernel image from host files (administrators) |
+| `image extract-kernel <image>` | Take the kernel out of a disk image |
 | `image retry <image>` | Download a failed image again |
 | `image rm <image>` | Delete an image |
 | `disk list`, `disks` | List disks |

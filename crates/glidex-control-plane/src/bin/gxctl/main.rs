@@ -603,6 +603,10 @@ fn print_help() {
     );
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
     println!(
+        "  {} - A kernel-boot VM's kernel; change it from the next start",
+        "kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -701,6 +705,14 @@ fn print_help() {
     println!(
         "  {} - Download firmware (QEMU: with its variable store)",
         "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan()
+    );
+    println!(
+        "  {} - Pull a kernel image, or take it from a disk image",
+        "image pull <url> --kernel [--initrd-url U] [--cmdline C] | --kernel-from <image>".cyan()
+    );
+    println!(
+        "  {} - Take the kernel out of a disk image",
+        "image extract-kernel <name|id>".cyan()
     );
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
     println!(
@@ -1004,6 +1016,7 @@ const COMMANDS: &[&str] = &[
     "place",
     "stop",
     "pause",
+    "kernel",
     "events",
     "watch",
     "connect",
@@ -1078,7 +1091,10 @@ const COMMANDS: &[&str] = &[
 
 /// Subcommands offered by Tab after these commands.
 const SUBCOMMANDS: &[(&str, &[&str])] = &[
-    ("image", &["catalog", "list", "pull", "rm"]),
+    (
+        "image",
+        &["catalog", "list", "pull", "extract-kernel", "rm"],
+    ),
     ("datastore", &["list", "show", "create", "set", "rm"]),
     (
         "tenant",
@@ -1407,6 +1423,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "stop" => vm::stop(client, &parts[1..]).await,
         "place" => vm::place(client, &parts[1..]).await,
         "pause" => vm::pause(client, &parts[1..]).await,
+        "kernel" => vm::kernel(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {

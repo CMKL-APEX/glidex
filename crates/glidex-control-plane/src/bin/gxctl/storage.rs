@@ -332,7 +332,7 @@ fn image_status(img: &Image) -> String {
 
 /// `image …`
 pub async fn image(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
+    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--no-kernel] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull <url> --kernel [--sha256 H] [--initrd-url U [--initrd-sha256 H]] [--cmdline S] | pull --kernel-path P [--initrd-path P] [--cmdline S] | pull --firmware <key> [--name N] | extract-kernel <image> [--name N] | retry <name|id> | rm <name|id>";
     let t = match rpc(client).await {
         Ok(t) => t,
         Err(e) => return err(e),
@@ -433,21 +433,49 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
             }
             Err(e) => err(rpc_err(e)),
         },
-        "pull" => {
+        "pull" | "extract-kernel" => {
             let firmware = flag_value(args, "--firmware");
-            let Some(what) =
-                firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
+            // A kernel extracted from a disk image (spec/kernel-boot.md §10).
+            let kernel_from = flag_value(args, "--kernel-from").or_else(|| {
+                (args[0] == "extract-kernel")
+                    .then(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
+                    .flatten()
+            });
+            // A kernel copied from host files (administrators).
+            let kernel_path = flag_value(args, "--kernel-path");
+            let Some(what) = firmware
+                .or(kernel_from)
+                .or(kernel_path)
+                .or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
             else {
                 return usage(u);
             };
             let mut req = PullImageRequest::default();
             if firmware.is_some() {
                 req.firmware = Some(what.into());
+            } else if kernel_from.is_some() {
+                req.kernel_from = Some(what.into());
+            } else if kernel_path.is_some() {
+                req.kernel_path = Some(what.into());
+                req.initrd_path = flag_value(args, "--initrd-path").map(String::from);
             } else if what.contains("://") {
                 req.url = Some(what.into());
             } else {
                 req.catalog = Some(what.into());
             }
+            if args.contains(&"--kernel") {
+                req.kind = ImageKind::IMAGE_KIND_KERNEL.into();
+            }
+            if req.url.is_some() || req.kernel_path.is_some() {
+                req.initrd_url = flag_value(args, "--initrd-url").map(String::from);
+                req.initrd_sha256 = flag_value(args, "--initrd-sha256").map(String::from);
+                req.cmdline = flag_value(args, "--cmdline").map(String::from);
+            }
+            if args.contains(&"--no-kernel") {
+                req.with_kernel = Some(false);
+            }
+            // The server extracts a catalog image's kernel unless asked not to.
+            let brings_kernel = req.catalog.is_some() && req.with_kernel != Some(false);
             if let Some(h) = flag_value(args, "--firmware-for") {
                 let Some(h) = parse_hypervisor(h) else {
                     return err(format!(
@@ -490,16 +518,35 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
                             state,
                             Some(ImageState::IMAGE_STATE_DOWNLOADING)
                                 | Some(ImageState::IMAGE_STATE_VERIFYING)
+                                | Some(ImageState::IMAGE_STATE_EXTRACTING)
                         ) {
                             println!();
                             if state == Some(ImageState::IMAGE_STATE_READY) {
-                                println!(
-                                    "{} {} ({}, sha256 {})",
-                                    "Image ready:".green(),
-                                    i.name,
-                                    format_bytes(i.virtual_size_bytes),
-                                    i.sha256
-                                );
+                                match i.kernel.as_option() {
+                                    Some(k) => println!(
+                                        "{} {} ({}{})",
+                                        "Kernel ready:".green(),
+                                        i.name,
+                                        k.release.as_deref().unwrap_or("no release"),
+                                        k.cmdline
+                                            .as_deref()
+                                            .map(|c| format!(", cmdline {c}"))
+                                            .unwrap_or_default()
+                                    ),
+                                    None => println!(
+                                        "{} {} ({}, sha256 {})",
+                                        "Image ready:".green(),
+                                        i.name,
+                                        format_bytes(i.virtual_size_bytes),
+                                        i.sha256
+                                    ),
+                                }
+                                if brings_kernel {
+                                    println!(
+                                        "  Its kernel is being extracted as {}-kernel (see 'image list').",
+                                        i.name
+                                    );
+                                }
                             }
                             break;
                         }

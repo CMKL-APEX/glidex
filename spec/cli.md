@@ -105,6 +105,7 @@ name (ids when `/projects` isn't readable).
 | `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
+| `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/kernel-boot.md §10.5) |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
@@ -123,6 +124,8 @@ name (ids when `/projects` isn't readable).
 | `image catalog` | `GET /images/catalog` |
 | `image list` / `images` | `GET /images` |
 | `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
+| `image pull <key> [--no-kernel]`, `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline S]`, `image pull --kernel-path P [--initrd-path P]` | Kernel images (spec/kernel-boot.md §4.2): a catalog pull brings its kernel unless `--no-kernel`; waits through `Extracting` and prints the release and command line |
+| `image extract-kernel <image>` | `POST /images` with `kernel_from`, then polls until ready |
 | `image retry <name\|id>` | `POST /images/{id}/retry`: download a failed image again (follow it with `image list`) |
 | `image rm <image>` | `DELETE /images/{id}?wait=60`; prints `Image deleted:` once gone, else `Deleting:` with the reason it waits |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |

@@ -26,8 +26,16 @@ test("offers firmware boot through the hypervisor's firmware image", async ({ pa
   }
 
   await field(page, "Boot Mode").selectOption("kernel");
-  await expect(page.getByText("Kernel Image Path")).toBeVisible();
+  await expect(page.getByTestId("kernel-image")).toBeVisible();
   await expect(page.getByText("UEFI Firmware", { exact: true })).toBeHidden();
+  // A kernel image boots a seeded cloud image: still asks for a login.
+  await expect(page.getByText("Login Credential")).toBeVisible();
+
+  // Kernel files on the host and a disk path: nothing to seed.
+  await field(page, "Kernel").selectOption("path");
+  await expect(page.getByText("Kernel Image Path")).toBeVisible();
+  await expect(page.getByText("Initramfs Path (optional)")).toBeVisible();
+  await field(page, "Boot Disk").selectOption("path");
   await expect(page.getByText("Login Credential")).toBeHidden();
 });
 
@@ -93,6 +101,33 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
   await expect(vmCard(page, `form-${hypervisor}`)).toContainText(LABEL[hypervisor]);
   const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
   expect(vm?.hypervisor).toBe(PROTO_HYPERVISOR[hypervisor]);
+});
+
+test("submits kernel files on the host", async ({ page, hypervisor }) => {
+  await field(page, "VM Name").fill(`form-${hypervisor}`);
+  await field(page, "Hypervisor Backend").selectOption(hypervisor);
+  await field(page, "Boot Mode").selectOption("kernel");
+  await field(page, "Kernel").selectOption("path");
+  await field(page, "Kernel Image Path").fill("/nonexistent/vmlinuz");
+  await field(page, "Initramfs Path (optional)").fill("/nonexistent/initrd.img");
+  await field(page, "Boot Disk").selectOption("path");
+  await field(page, "Disk Image Path").fill("/nonexistent/disk.img");
+  await page.getByTestId("kernel-args").fill("console=ttyS0 root=/dev/vda");
+
+  const [body] = await Promise.all([
+    waitForRpc(page, "glidex.vm.v1.VmService/CreateVm"),
+    page.getByRole("button", { name: "Create VM", exact: true }).click(),
+  ]);
+  expect(body).toMatchObject({
+    kernel_image_path: "/nonexistent/vmlinuz",
+    initrd_path: "/nonexistent/initrd.img",
+    rootfs_path: "/nonexistent/disk.img",
+    kernel_args: "console=ttyS0 root=/dev/vda",
+  });
+  expect(body.firmware).toBeUndefined();
+  expect(body.kernel).toBeUndefined();
+  expect(body.kernel_from_disk).toBeUndefined();
+  await expect(vmCard(page, `form-${hypervisor}`)).toBeVisible();
 });
 
 test("starts it now with the chosen restart behaviour", async ({ page, hypervisor }) => {

@@ -56,8 +56,19 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
 
-With **Direct kernel boot**, the form asks for a **Kernel Image Path**,
-a **Root Filesystem Path** and optional **Kernel Arguments** instead.
+With **Direct kernel boot**, the form asks for a **Kernel** instead of
+**UEFI Firmware**: a kernel image (the one taken from the chosen image
+comes first; **Extract it from the image** makes it if there is none),
+or, for administrators, **Kernel files on the host** (kernel and
+initramfs paths). **Kernel Arguments** default to the kernel image's own
+command line. **Follow the guest's kernel** boots the kernel the guest
+installs (see [Firmware or kernel boot](#firmware-or-kernel-boot)). The
+boot disk and login credential work as with firmware.
+
+On the VM's page, **Kernel** shows the kernel image (and, when following
+the guest, the kernel it boots and the one before), lets you pick
+another one with **Use from the next start**, and **Extract from its
+disk now** while the VM is stopped.
 
 ### gxctl
 
@@ -70,7 +81,7 @@ VM name: web-1
 vCPU count [1]: 2
 Memory (MiB) [512]: 2048
 Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
-UEFI firmware [cloudhv-edk2, 'none' for kernel boot, or a host path] [cloudhv-edk2]:
+UEFI firmware [cloudhv-edk2, 'kernel' for direct kernel boot, or a host path] [cloudhv-edk2]:
 Boot disk from [image/disk/path] [image]:
 Image (ubuntu-26.04) [ubuntu-26.04]:
 Root disk size in GiB [10]: 20
@@ -80,6 +91,13 @@ Login credential (one of: alice; 'none' for no login) [alice]:
 Networks (comma-separated; available: default, lab; 'none' for no NIC) [default]:
 VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
 ```
+
+For a direct kernel boot, answer `kernel` at the firmware prompt: gxctl
+then asks for a kernel image (the one from the boot image is the
+default), whether to follow the guest's kernel, and offers the kernel's
+command line as the default arguments. Later, `kernel web-1` shows the
+VM's kernel; `kernel web-1 --set <image>` and `--follow on|off` change
+it from the next start, and `--extract` takes the kernel on its disk.
 
 The VM is created stopped; start it with `start web-1`. `gxctl create`
 doesn't ask for a node, a restart policy or a host-boot policy: they

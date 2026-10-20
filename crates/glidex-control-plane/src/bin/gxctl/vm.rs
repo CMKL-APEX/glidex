@@ -5,12 +5,13 @@
 use crate::client::{ApiClient, RpcTransport};
 use crate::tenancy::{err, rpc_err, usage};
 use crate::{
-    credential_choice, format_unix_time, has_flag, project_names, prompt, prompt_optional,
-    prompt_path, prompt_path_optional, signed_in_name, storage,
+    credential_choice, flag_value, format_unix_time, has_flag, project_names, prompt,
+    prompt_optional, prompt_path, prompt_path_optional, signed_in_name, storage,
 };
 use buffa::{EnumValue, Enumeration};
 use colored::Colorize;
 use glidex_api::proto::glidex::common::v1::{ConditionStatus, EventKind, Hypervisor};
+use glidex_api::proto::glidex::storage::v1::Image;
 use glidex_api::proto::glidex::vm::v1::*;
 use tabled::{Table, Tabled};
 
@@ -700,46 +701,31 @@ pub async fn create(client: &ApiClient) {
             format!("{}, ", ready.join(", "))
         };
         match prompt_path(&format!(
-            "UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ",
+            "UEFI firmware [{}'kernel' for direct kernel boot, or a host path] [{}]: ",
             options, default
         ))
         .as_str()
         {
             "" if default == "none" => (None, None),
             "" => (Some(default), None),
-            "none" => (None, None),
+            "none" | "kernel" => (None, None),
             s if s.starts_with('/') => (None, Some(s.to_string())),
             s => (Some(s.to_string()), None),
         }
     };
     let firmware_boot = firmware.is_some() || firmware_path.is_some();
+    let all_images = storage::list_images(client).await.unwrap_or_default();
 
-    let kernel_image_path = if firmware_boot {
-        String::new()
-    } else {
-        let path = prompt_path("Kernel image path: ");
-        if path.is_empty() {
-            println!(
-                "{}",
-                "Error: kernel image path is required for kernel boot".red()
-            );
-            return;
-        }
-        path
-    };
-
-    // Boot disk. Firmware boot offers managed images first (spec
-    // images.md §10); kernel boot takes a bare root filesystem image.
+    // Boot disk: a managed image or disk first (spec images.md §10), for
+    // either boot mode (spec kernel-boot.md §6).
     let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) =
         (String::new(), None, None, None);
-    let mut choice = "path".to_string();
-    if firmware_boot {
-        let ready: Vec<String> = storage::list_images(client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|i| storage::is_ready(i) && !storage::is_firmware(i))
-            .map(|i| i.name)
+    let mut choice;
+    {
+        let ready: Vec<String> = all_images
+            .iter()
+            .filter(|i| storage::is_ready(i) && !storage::is_firmware(i) && !storage::is_kernel(i))
+            .map(|i| i.name.clone())
             .collect();
         let default = if ready.is_empty() { "path" } else { "image" };
         choice =
@@ -786,11 +772,11 @@ pub async fn create(client: &ApiClient) {
     }
     if choice == "path" {
         // Firmware boot needs a disk with its own bootloader (e.g. a raw
-        // distro cloud image); kernel boot takes a bare root filesystem image.
+        // distro cloud image); kernel boot takes a root filesystem or disk.
         let rootfs_prompt = if firmware_boot {
             "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
         } else {
-            "Root filesystem path: "
+            "Root filesystem or disk image path: "
         };
         rootfs_path = prompt_path(rootfs_prompt);
         if rootfs_path.is_empty() {
@@ -798,6 +784,75 @@ pub async fn create(client: &ApiClient) {
             return;
         }
     }
+
+    // The kernel (kernel boot): a kernel image, the one extracted from the
+    // chosen image first (spec kernel-boot.md K3), or host files.
+    let (mut kernel, mut kernel_image_path, mut initrd_path, mut kernel_from_disk) =
+        (None, String::new(), None, None);
+    let mut kernel_cmdline = None;
+    if !firmware_boot {
+        let chosen = image
+            .as_deref()
+            .and_then(|k| all_images.iter().find(|i| i.name == k || i.id == k));
+        let mut kernels: Vec<&Image> = all_images
+            .iter()
+            .filter(|i| storage::is_kernel(i) && storage::is_ready(i) && i.deleting != Some(true))
+            .collect();
+        kernels.sort_by_key(|k| k.for_image.as_deref() != chosen.map(|c| c.id.as_str()));
+        if let Some(c) = chosen
+            && !kernels
+                .iter()
+                .any(|k| k.for_image.as_deref() == Some(c.id.as_str()))
+        {
+            println!(
+                "{} no kernel from {} yet; extract one with 'image extract-kernel {}'",
+                "Note:".yellow(),
+                c.name,
+                c.name
+            );
+        }
+        let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
+        let default = names.first().copied().unwrap_or("");
+        let answer = prompt_path(&format!(
+            "Kernel [{}a host path] [{}]: ",
+            if names.is_empty() {
+                String::new()
+            } else {
+                format!("{}, or ", names.join(", "))
+            },
+            default
+        ));
+        let answer = if answer.is_empty() {
+            default.to_string()
+        } else {
+            answer
+        };
+        if answer.is_empty() {
+            println!("{}", "Error: a kernel is required for kernel boot".red());
+            return;
+        }
+        if answer.starts_with('/') {
+            kernel_image_path = answer;
+            initrd_path = prompt_path_optional("Initramfs path (optional): ");
+        } else {
+            kernel_cmdline = kernels
+                .iter()
+                .find(|k| k.name == answer || k.id == answer)
+                .and_then(|k| k.kernel.as_option())
+                .and_then(|k| k.cmdline.clone());
+            kernel = Some(answer);
+            if choice != "path" {
+                let follow = prompt(
+                    "Follow the guest's kernel (use the one installed on the disk, before each start) [y/N]: ",
+                );
+                kernel_from_disk =
+                    matches!(follow.to_lowercase().as_str(), "y" | "yes").then_some(true);
+            }
+        }
+    }
+    // The generated seed (and so a credential) comes with firmware boot, a
+    // kernel image or a managed root disk (spec kernel-boot.md K4).
+    let seeded = firmware_boot || kernel.is_some() || choice != "path";
     let data_disks: Vec<String> =
         prompt_optional("Data disks (optional, comma-separated disk names): ")
             .map(|s| {
@@ -808,14 +863,14 @@ pub async fn create(client: &ApiClient) {
             })
             .unwrap_or_default();
 
-    let cloud_init_path = if firmware_boot {
+    let cloud_init_path = if seeded {
         prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
     } else {
         None
     };
 
     // A stored credential is provisioned through the generated seed only.
-    let credential = if firmware_boot && cloud_init_path.is_none() {
+    let credential = if seeded && cloud_init_path.is_none() {
         let names: Vec<String> = storage::list_credentials(client)
             .await
             .map(|cs| cs.into_iter().map(|c| c.username).collect())
@@ -850,9 +905,12 @@ pub async fn create(client: &ApiClient) {
     let kernel_args = if firmware_boot {
         None
     } else {
-        prompt_optional(
-            "Kernel arguments (optional, default: console=ttyS0 root=/dev/vda reboot=k panic=1): ",
-        )
+        prompt_optional(&format!(
+            "Kernel arguments (optional, default: {}): ",
+            kernel_cmdline
+                .as_deref()
+                .unwrap_or("console=ttyS0 root=/dev/vda reboot=k panic=1")
+        ))
     };
 
     // Networks: offer the ones that exist.
@@ -913,6 +971,9 @@ pub async fn create(client: &ApiClient) {
         vcpu_count: vcpu_count.into(),
         mem_size_mib,
         kernel_image_path,
+        initrd_path,
+        kernel,
+        kernel_from_disk,
         firmware,
         firmware_path,
         cloud_init_path,
@@ -992,5 +1053,149 @@ mod tests {
         assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
         assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
         assert!(graceful_stop_secs(&["--force"]).is_err());
+    }
+}
+
+/// `kernel <name|id> [--set <image>] [--follow on|off] [--extract]`: a
+/// kernel-boot VM's kernel image, the one it boots when following the
+/// guest's kernel, and changing them from the next start
+/// (spec/kernel-boot.md K6, K11, §10.5).
+pub async fn kernel(client: &ApiClient, args: &[&str]) {
+    let u = "Usage: kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]";
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let rest = &args[1..];
+    let set = flag_value(rest, "--set");
+    let follow = match flag_value(rest, "--follow") {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(_) => return usage(u),
+    };
+    let images = || async {
+        crate::storage::list_images(client)
+            .await
+            .unwrap_or_default()
+    };
+    let label = |all: &[glidex_api::proto::glidex::storage::v1::Image], id: &str| {
+        all.iter()
+            .find(|i| i.id == id)
+            .map(
+                |i| match i.kernel.as_option().and_then(|k| k.release.as_deref()) {
+                    Some(r) => format!("{} ({r})", i.name),
+                    None => i.name.clone(),
+                },
+            )
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    if has_flag(rest, "--extract") {
+        let t = match client.rpc_transport().await {
+            Ok(t) => t,
+            Err(e) => return err(e.message),
+        };
+        let svc =
+            glidex_api::proto::glidex::storage::v1::ImageServiceClient::new(t.clone(), t.config());
+        let img = match svc
+            .extract_vm_kernel(
+                glidex_api::proto::glidex::storage::v1::ExtractVmKernelRequest {
+                    id: vm_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(r) => r
+                .into_owned()
+                .image
+                .as_option()
+                .cloned()
+                .unwrap_or_default(),
+            Err(e) => return err(rpc_err(e)),
+        };
+        println!(
+            "Extracting the kernel on its disk as {}…",
+            img.name.yellow()
+        );
+        for _ in 0..90 {
+            let all = images().await;
+            match all.iter().find(|i| i.id == img.id) {
+                Some(i) if crate::storage::is_ready(i) => {
+                    println!(
+                        "{} {}; use it with 'kernel {} --set {}'",
+                        "Kernel ready:".green(),
+                        label(&all, &i.id),
+                        args[0],
+                        i.name
+                    );
+                    return;
+                }
+                Some(i) if i.status.as_option().is_some_and(|s| {
+                    s.state.as_known()
+                        != Some(glidex_api::proto::glidex::storage::v1::ImageState::IMAGE_STATE_EXTRACTING)
+                }) =>
+                {
+                    return err(format!(
+                        "extraction failed: {}",
+                        i.status.as_option().map(|s| s.reason.clone()).unwrap_or_default()
+                    ));
+                }
+                None => return err("the kernel image is gone"),
+                _ => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+            }
+        }
+        return err("still extracting; see 'image list'");
+    }
+
+    if set.is_some() || follow.is_some() {
+        let mut paths = Vec::new();
+        let mut change = VmChange::default();
+        if let Some(k) = set {
+            change.kernel = Some(k.to_string());
+            paths.push("kernel".to_string());
+        }
+        if let Some(f) = follow {
+            change.kernel_from_disk = Some(f);
+            paths.push("kernel_from_disk".to_string());
+        }
+        let svc = match rpc(client).await {
+            Ok(s) => s,
+            Err(e) => return err(e),
+        };
+        let req = UpdateVmRequest {
+            id: vm_id.clone(),
+            change: change.into(),
+            update_mask: buffa_types::google::protobuf::FieldMask {
+                paths,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        if let Err(e) = svc.update_vm(req).await {
+            return err(rpc_err(e));
+        }
+        println!("{} from the next start", "Changed:".green());
+    }
+
+    let vm = match client.get_vm(&vm_id).await {
+        Ok(vm) => vm,
+        Err(e) => return err(e),
+    };
+    let Some(k) = vm.kernel.as_deref() else {
+        println!("{} doesn't boot a kernel image", vm.name);
+        return;
+    };
+    let all = images().await;
+    println!("Kernel:  {}", label(&all, k));
+    if vm.kernel_from_disk == Some(true) {
+        println!(
+            "Follows the guest's kernel: boots {}",
+            label(&all, vm.booted_kernel.as_deref().unwrap_or(k))
+        );
+        if let Some(p) = vm.previous_kernel.as_deref() {
+            println!("Previous: {}", label(&all, p));
+        }
     }
 }

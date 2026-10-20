@@ -152,6 +152,9 @@ including one pulled from a URL:
 curl … -X POST /images -d '{"kernel_from": "my-image"}'
 ```
 
+or **Extract kernel** on the image under **Images**, or `gxctl image
+extract-kernel my-image`. `gxctl image pull <key> --no-kernel` skips it.
+
 glidex reads the image inside a small, network-less VM it builds from
 pinned Debian packages the first time (a 35 MB download), never on the
 host. Hosts that can't download it can turn this off with
