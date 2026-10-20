@@ -476,7 +476,11 @@ node by default, `GLIDEX_MAX_EXTRACTIONS`). It holds the disk image
   (`clean_exit` on status 0). The control plane starts it through the
   runner, polls `instance.json`, kills it after 120 s, then releases the
   shim and removes the instance directory. Startup's orphan scan leaves
-  `extract-*` units and directories alone.
+  `extract-*` units and directories alone. Its unit is
+  `glidex-vm@extract-<image id>.service`, which the polkit rule allows
+  beside the VMs' `glidex-vm@<uuid>.service` (reconciliation.md §13.2);
+  installs before that rule change refuse it ("Access denied requiring
+  interactive authentication") until the installer is re-run.
 - The preferred hypervisor that is installed (Cloud Hypervisor, else
   QEMU), 1 vCPU, 1 GiB, no NIC, no API socket, no seed.
 - Disk 0: the image's file, read-only (QEMU: `backing` null).

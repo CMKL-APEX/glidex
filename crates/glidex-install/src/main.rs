@@ -4162,6 +4162,8 @@ mod tests {
         );
         assert!(rule.contains(r#"subject.user == "glidex""#) && !rule.contains("@USER@"));
         assert!(rule.contains(r#"["start", "stop", "kill"]"#));
+        // VM units, and kernel extraction jobs (spec/kernel-boot.md §10.2).
+        assert!(rule.contains(r"/^glidex-vm@(extract-)?[0-9a-f]{8}-"));
         let list: serde_json::Value =
             serde_json::from_str(&shim_allowlist(|p| p == "/usr/local/bin/cloud-hypervisor"))
                 .unwrap();
