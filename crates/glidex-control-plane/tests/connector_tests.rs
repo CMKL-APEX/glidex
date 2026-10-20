@@ -41,6 +41,8 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     cfg.auth.secrets_key = Some(dir.path().join("secrets.kek"));
+    // The mock IdP is a plain-HTTP issuer on the loopback.
+    cfg.auth.federation.allow_private_issuers = true;
     f(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
@@ -1011,6 +1013,52 @@ async fn oidc_login_through_an_api_connector() {
         )
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// The web UI's step-up (spec/web-ui.md): `reauth=1` on a connector's
+/// start sends the browser to a fresh login at the IdP.
+#[tokio::test]
+async fn a_step_up_through_a_connector_asks_the_idp_for_a_fresh_login() {
+    let mock = idp::start().await;
+    let h = harness();
+    h.oidc_connector(&mock, "corp", json!({"default_tenant": "default"}))
+        .await;
+    for (q, fresh) in [
+        ("reauth=1", true),
+        ("reauth=true", true),
+        ("reauth=0", false),
+        ("", false),
+    ] {
+        let (s, v, headers) = h
+            .send(
+                Request::get(format!("/auth/c/corp/start?return_to=/nodes&{q}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(s, StatusCode::SEE_OTHER, "{q}: {v}");
+        let loc =
+            reqwest::Url::parse(headers.get(header::LOCATION).unwrap().to_str().unwrap()).unwrap();
+        let p: std::collections::HashMap<_, _> = loc.query_pairs().into_owned().collect();
+        assert_eq!(
+            p.get("prompt").map(String::as_str) == Some("login"),
+            fresh,
+            "{q}: {loc}"
+        );
+        assert_eq!(
+            p.get("max_age").map(String::as_str) == Some("0"),
+            fresh,
+            "{q}: {loc}"
+        );
+    }
+    let (s, _, _) = h
+        .send(
+            Request::get("/auth/c/corp/start?reauth=maybe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3862,4 +3910,456 @@ async fn a_google_pull_reads_the_directory_api() {
     let (_, v) = h.rest("POST", "/connectors/gpull/sync", None, &s).await;
     assert_eq!(v["status"]["state"], "SYNC_STATE_FAILED", "{v}");
     assert!(!h.app.auth.store.user(&ada.id).unwrap().unwrap().disabled);
+}
+
+/// A service account of the default tenant's default project.
+fn service_account(h: &H, by: &str) -> String {
+    let p = h.app.manager.projects().resolve("default").unwrap();
+    h.app
+        .auth
+        .create_token(
+            "ci",
+            TokenKind::ServiceAccount { project: p.id },
+            by,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .1
+        .id
+}
+
+/// Without `auth.federation.allow_private_issuers` (the default), a
+/// federation's issuer must be https with a public address: the control
+/// plane fetches from nothing on its own host or network.
+#[tokio::test]
+async fn federation_issuers_are_public_unless_allowed() {
+    let mock = idp::start().await;
+    let h = harness_with(|c| c.auth.federation.allow_private_issuers = false);
+    let admin = h.admin("fed-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let port = mock.base.rsplit(':').next().unwrap().to_string();
+    let make = |issuer: String| {
+        json!({"federation": {"id": "gh", "issuer": issuer, "audience": "glidex",
+            "rules": [{"match": {"repository": "acme/infra"}, "service_account": sa}]}})
+    };
+    // A plain-HTTP loopback issuer (the mock) is refused before it's read.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(make(mock.base.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+        "{v}"
+    );
+    // https to an address, or a name, that isn't public is never fetched.
+    for issuer in [
+        format!("https://127.0.0.1:{port}"),
+        format!("https://[::1]:{port}"),
+        "https://10.0.0.1".to_string(),
+        "https://169.254.169.254".to_string(),
+        format!("https://localhost:{port}"),
+    ] {
+        let (st, v) = h
+            .rest(
+                "POST",
+                "/tenants/default/federations",
+                Some(make(issuer.clone())),
+                &s,
+            )
+            .await;
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("issuer_unreachable")),
+            "{issuer}: {v}"
+        );
+        let m = v["message"].as_str().unwrap();
+        assert!(
+            m.contains("not a public address") || m.contains("no public address"),
+            "{issuer}: {m}"
+        );
+    }
+    let (_, v) = h
+        .rest("GET", "/tenants/default/federations", None, &s)
+        .await;
+    assert!(
+        v["federations"].as_array().is_none_or(|a| a.is_empty()),
+        "{v}"
+    );
+}
+
+/// spec/tenancy.md §9, D49–D51: a tenant's federations, their checks, and
+/// who may manage them.
+#[tokio::test]
+async fn federations_are_a_tenants_and_checked_when_made() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("fed-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let fed = |rules: Value| {
+        json!({"federation": {"id": "gh", "display_name": "GitHub Actions", "issuer": mock.base,
+            "audience": "glidex", "rules": rules}})
+    };
+    let good = json!([{"match": {"repository": "acme/infra", "ref": "refs/heads/main"}, "service_account": sa}]);
+    // Each refusal says why.
+    for (rules, why) in [
+        (
+            json!([{"match": {"ref": "refs/heads/main"}, "service_account": sa}]),
+            "no pinned claim",
+        ),
+        (
+            json!([{"match": {"repository": "acme/*"}, "service_account": sa}]),
+            "a wildcard",
+        ),
+        (
+            json!([{"match": {"repository": "acme/infra"}, "service_account": "nope"}]),
+            "no such service account",
+        ),
+        (
+            json!([{"match": {"repository": "acme/infra"}, "service_account": sa, "ttl_secs": 9000}]),
+            "too long",
+        ),
+    ] {
+        let (st, v) = h
+            .rest("POST", "/tenants/default/federations", Some(fed(rules)), &s)
+            .await;
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+            "{why}: {v}"
+        );
+    }
+    // The issuer is read at once.
+    let mut bad = fed(good.clone());
+    bad["federation"]["issuer"] = json!("http://127.0.0.1:9");
+    let (st, v) = h
+        .rest("POST", "/tenants/default/federations", Some(bad), &s)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("issuer_unreachable")),
+        "{v}"
+    );
+    // Managing is a step-up action.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &h.token(&admin),
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("reauth_required")),
+        "{v}"
+    );
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["federation"]["rules"][0]["match"]["repository"],
+        "acme/infra"
+    );
+    assert_eq!(v["federation"]["kind"], "jwt");
+    let (st, _) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(fed(good.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // Another tenant's service account isn't this tenant's to give.
+    let (st, v) = h
+        .rest("POST", "/tenants", Some(json!({"slug": "other"})), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let mut other = fed(good.clone());
+    other["federation"]["id"] = json!("gh2");
+    let (st, _) = h
+        .rest("POST", "/tenants/other/federations", Some(other), &s)
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Update: what is named changes; disable; delete.
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": false, "audience": "glidex-ci"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (
+            v["federation"]["enabled"].as_bool(),
+            v["federation"]["audience"].as_str()
+        ),
+        (Some(false), Some("glidex-ci"))
+    );
+    assert_eq!(v["federation"]["issuer"], mock.base.as_str());
+    let (_, v) = h
+        .rest("GET", "/tenants/default/federations", None, &s)
+        .await;
+    assert_eq!(v["federations"].as_array().unwrap().len(), 1);
+    // Somebody outside the tenant reads nothing.
+    let bob = h.user("bob");
+    let (st, _) = h
+        .rest("GET", "/tenants/default/federations", None, &h.token(&bob))
+        .await;
+    assert!(
+        st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND,
+        "{st}"
+    );
+    let (st, _) = h
+        .rest("DELETE", "/tenants/default/federations/gh", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, _) = h
+        .rest("GET", "/tenants/default/federations/gh", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// A GitHub Actions-shaped OIDC token from the mock, signed with its key.
+fn workload_jwt(mock: &idp::Mock, extra: Value) -> String {
+    let mut c = json!({"iss": mock.base, "aud": "glidex", "sub": "repo:acme/infra:ref:refs/heads/main",
+        "repository": "acme/infra", "ref": "refs/heads/main", "workflow": "deploy",
+        "iat": now(), "nbf": now(), "exp": now() + 300, "jti": uuid::Uuid::new_v4().to_string()});
+    for (k, v) in extra.as_object().unwrap() {
+        c[k] = v.clone();
+    }
+    idp::sign(c, "k1")
+}
+
+/// spec/tenancy.md §9, D48–D50: a workload's JWT for a short-lived token
+/// acting as one service account; every refusal looks the same; the
+/// token ends with its federation, rule and service account.
+#[tokio::test]
+async fn a_workload_token_is_exchanged_once_for_its_service_account() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.admin("x-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let project = h.app.manager.projects().resolve("default").unwrap().id;
+    h.app
+        .auth
+        .add_link(
+            "role.viewer",
+            Ent::Token(sa.clone()),
+            Ent::Project(project.clone()),
+            "test",
+        )
+        .unwrap();
+    let rule = json!([{"match": {"repository": "acme/infra", "ref": "refs/heads/main"}, "service_account": sa, "ttl_secs": 600}]);
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(json!({"federation": {"id": "gh", "issuer": mock.base,
+            "audience": "glidex", "rules": rule}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let form = |jwt: &str, fed: &str| {
+        format!(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token={jwt}\
+             &subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Ajwt&federation={fed}"
+        )
+    };
+    let post = |body: String| {
+        let h = &h;
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/auth/exchange")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap();
+            let (st, v, hd) = h.send(req).await;
+            (st, v, hd)
+        }
+    };
+
+    let jwt = workload_jwt(&mock, json!({}));
+    let (st, v, hd) = post(form(&jwt, "default%2Fgh")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(hd.get("cache-control").unwrap(), "no-store");
+    assert_eq!(
+        (v["token_type"].as_str(), v["expires_in"].as_u64()),
+        (Some("Bearer"), Some(600))
+    );
+    assert_eq!(
+        v["issued_token_type"],
+        "urn:ietf:params:oauth:token-type:access_token"
+    );
+    let tok = v["access_token"].as_str().unwrap().to_string();
+    assert!(tok.starts_with("gxt_"));
+    // It acts as the service account: its links, nothing more.
+    let (st, w) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::OK, "{w}");
+    assert!(w.to_string().contains(&sa), "{w}");
+    let (st, _) = h
+        .rest("GET", &format!("/projects/{project}"), None, &tok)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h
+        .rest("POST", "/projects", Some(json!({"name": "nope"})), &tok)
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Once (D48).
+    let (st, again, _) = post(form(&jwt, "default%2Fgh")).await;
+    assert_eq!(
+        (st, again["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    // Every refusal says the same (D50).
+    for (bad, why) in [
+        (
+            workload_jwt(&mock, json!({"repository": "acme/infra-fork"})),
+            "another repository",
+        ),
+        (
+            workload_jwt(&mock, json!({"ref": "refs/heads/dev"})),
+            "another branch",
+        ),
+        (
+            workload_jwt(&mock, json!({"aud": "something-else"})),
+            "another audience",
+        ),
+        (
+            workload_jwt(&mock, json!({"iss": "https://evil.example"})),
+            "another issuer",
+        ),
+        (
+            workload_jwt(
+                &mock,
+                json!({"exp": now() - 300, "iat": now() - 600, "nbf": now() - 600}),
+            ),
+            "expired",
+        ),
+        (
+            workload_jwt(&mock, json!({"exp": now() + 7200})),
+            "longer than an hour",
+        ),
+        (
+            format!("{}x", workload_jwt(&mock, json!({}))),
+            "a broken signature",
+        ),
+    ] {
+        let (st, v, _) = post(form(&bad, "default%2Fgh")).await;
+        assert_eq!((st, &v), (StatusCode::BAD_REQUEST, &again), "{why}");
+    }
+    let (st, v, _) = post(form(&workload_jwt(&mock, json!({})), "default%2Fnope")).await;
+    assert_eq!(
+        (st, &v),
+        (StatusCode::BAD_REQUEST, &again),
+        "no such federation"
+    );
+    // A malformed request says so.
+    let (st, v, _) = post("grant_type=password".into()).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_request"))
+    );
+    // JSON works too.
+    let (st, v) = h
+        .rest("POST", "/auth/exchange", Some(json!({"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": workload_jwt(&mock, json!({})), "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "federation": "default/gh"})), "")
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // It ends with its federation…
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": false}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "disabled federation");
+    let (st, _) = h
+        .rest(
+            "PATCH",
+            "/tenants/default/federations/gh",
+            Some(json!({"changes": {"enabled": true}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::OK, "enabled again");
+    // …its rule…
+    let (st, _) = h
+        .rest("PATCH", "/tenants/default/federations/gh", Some(json!({"changes": {"rules":
+            [{"match": {"repository": "acme/infra", "ref": "refs/heads/release"}, "service_account": sa}]}})), &s)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "its rule changed");
+    // …and its service account.
+    let (_, v, _) = post(form(
+        &workload_jwt(&mock, json!({"ref": "refs/heads/release"})),
+        "default%2Fgh",
+    ))
+    .await;
+    let tok2 = v["access_token"].as_str().unwrap().to_string();
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok2).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h.rest("DELETE", &format!("/tokens/{sa}"), None, &s).await;
+    assert!(st.is_success(), "{st}");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &tok2).await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "the service account was revoked"
+    );
+
+    // Audited as the federation, never with the JWT.
+    let (_, a) = h.rest("GET", "/audit?limit=200", None, &s).await;
+    let text = a.to_string();
+    assert!(
+        text.contains("system:federation:default/gh") && text.contains("no rule matches"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&jwt[jwt.len() - 40..]),
+        "no JWT in the audit"
+    );
+
+    // 30 a minute per federation.
+    let mut limited = false;
+    for _ in 0..40 {
+        let (st, _, _) = post(form("x.y.z", "default%2Fratelimited")).await;
+        if st == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited);
 }

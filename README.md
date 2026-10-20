@@ -1,204 +1,257 @@
 # Glidex
 
-A Rust control plane for KVM virtual machines on
-[Cloud Hypervisor](https://www.cloudhypervisor.org/) (default) or
-[QEMU](https://www.qemu.org/), with a REST API, a web UI and a CLI (`gxctl`).
+Glidex runs virtual machines on your own Linux hosts. A *virtual machine*
+(VM) is a complete computer, with its own operating system, that runs as
+a program on a real one. Glidex starts, stops and keeps track of your VMs
+for you, on one host or on many hosts joined into a cluster.
+
+It is for people who run their own servers (a lab, a team, a small
+cloud) and want a simple way to hand out VMs: a web UI for everyday
+work, the `gxctl` command-line tool for the terminal, and REST and RPC
+APIs for scripts. Under the hood it uses KVM, with
+[Cloud Hypervisor](https://www.cloudhypervisor.org/) (the default) or
+[QEMU](https://www.qemu.org/). It is written in Rust.
+
+The full documentation is at
+<https://cmkl-apex.github.io/glidex/docs/>; its source is in
+[docs/public](docs/public/src/SUMMARY.md).
 
 ## Features
 
-- **Two hypervisors, one feature set**: Cloud Hypervisor and QEMU both boot
-  distro cloud images via UEFI (`CLOUDHV.fd` / OVMF), take networks, disks
-  and VFIO devices, and support pause/resume and graceful shutdown
-- **Images and disks**: pull checksum-verified cloud images from a built-in
-  catalog; thin root disks per VM, grown with their root partition
-- **Guest logins**: stored credentials (password hash + SSH keys) applied by
-  an auto-generated cloud-init seed
-- **Networking**: Open vSwitch via a root helper (`glidex-netd`): NAT
-  networks with DHCP, bridged uplinks (kernel, AF_XDP, DPDK), tap and
-  vhost-user NICs
-- **Console**: serial console in the browser or `gxctl`, logged to disk,
-  shared by any number of clients
-- **Projects and access**: projects with quotas and members, Cedar
-  policies, API tokens and OIDC, an audit log
-- **Clustering**: many hosts as one. Servers keep the cluster's state in a
-  Raft-replicated store; agents only run VMs. Nodes join with a one-time
-  token over mutual TLS (the cluster's own CA, rotated without downtime);
-  a scheduler places VMs and explains its choice; nodes drain, leave and
-  rejoin; a standalone host's VMs and disks can be imported into a
-  cluster, and a node detached with its resources. Every node serves the
-  web UI and relays it to a server
-- **Cluster networks on OVN**: networks that span every node, with
-  Geneve tunnels between them (and their status in the UI). NAT networks
-  leave through a shared edge on failover gateway nodes, with defaults
-  suggested from what the nodes report; a project can have its own
-  routers, each with its own outside address, and attach NAT or isolated
-  networks to them. Host uplinks, physical networks and each node's
-  `br-int` datapath are set from the UI, and an uplink that took the
-  host's address is re-applied, or rolled back, safely at boot
+**VMs**
 
-## Documentation
+- Cloud Hypervisor or QEMU, with the same features on both, including pause, resume and graceful shutdown ([Virtual machines](docs/public/src/user-guide/vms.md)).
+- Boot through UEFI firmware, or boot a Linux kernel directly ([Kernel boot](docs/public/src/user-guide/kernel-boot.md)).
+- A serial console in the browser or in `gxctl`, shared and logged to disk ([Console](docs/public/src/user-guide/console.md)).
+- Guest logins (username, password, SSH keys) set up for you by cloud-init ([Guest credentials](docs/public/src/user-guide/credentials.md)).
 
-The user and operator documentation is in [docs/public](docs/public/src/SUMMARY.md)
-(an [mdBook](https://rust-lang.github.io/mdBook/): `mdbook serve docs/public`):
-a [quick start](docs/public/src/quick-start.md), a
-[user guide](docs/public/src/user-guide/README.md), an
-[operator guide](docs/public/src/operator-guide/README.md), and references
-for [gxctl](docs/public/src/reference/gxctl.md) and the
-[API](docs/public/src/api/README.md). The design specs for contributors are
-in [spec/](spec/README.md); [docs/README.md](docs/README.md) explains the
-split.
+**Images and storage**
 
-## Install
+- Checksum-verified cloud images (Ubuntu, Debian, Fedora) from a built-in catalog, or from any HTTPS URL ([Images and disks](docs/public/src/user-guide/images-and-disks.md)).
+- A thin root disk per VM, plus data disks you attach to VMs.
+- Datastores: the directories that hold disks and images, local to a node or shared by every node, with disks you can move between them ([Datastores](docs/public/src/operator-guide/datastores.md)).
 
-It needs Linux with KVM (`/dev/kvm`), `sudo`, `git` and a Rust toolchain
-(`cargo`, e.g. from [rustup.rs](https://rustup.rs)) to run the installer;
-the installer keeps Rust up to date afterwards.
+**Networking**
+
+- NAT, isolated and bridged networks on Open vSwitch ([Networks](docs/public/src/user-guide/networks.md), [Host networking](docs/public/src/operator-guide/host-networking.md)).
+- Fast paths for bridged uplinks (kernel, AF_XDP, DPDK) and vhost-user VM ports.
+
+**Hardware**
+
+- PCI passthrough (VFIO) of devices such as GPUs and NICs, with device pools the scheduler picks from ([PCI passthrough](docs/public/src/operator-guide/pci-passthrough.md)).
+- A view of each host's NUMA nodes, CPUs, memory and hugepages, and VMs on dedicated CPUs ([Host resources](docs/public/src/operator-guide/host-resources.md)).
+
+**People and access**
+
+- Projects with members, teams, roles and quotas, Cedar policies and an audit log ([Projects](docs/public/src/user-guide/projects.md), [Access control](docs/public/src/operator-guide/access-control.md)).
+- Sign-in with local accounts, OIDC single sign-on, Google or JumpCloud ([Authentication](docs/public/src/operator-guide/authentication.md#login-connectors)).
+- Users from your identity provider: SCIM provisioning, Google Workspace directory sync, and invitations ([SCIM](docs/public/src/operator-guide/authentication.md#provisioning-with-scim), [Invitations](docs/public/src/operator-guide/authentication.md#invitations)).
+- HTTPS everywhere: a self-signed certificate by default, or your own, or a Tailscale one ([TLS](docs/public/src/operator-guide/tls.md)).
+- Metered CPU, memory, disk and network use ([Usage](docs/public/src/user-guide/usage.md)).
+
+**Clusters**
+
+- Many hosts act as one: a replicated store, one-time join tokens over mutual TLS, a scheduler that explains where it put each VM, and nodes you can drain and rejoin ([Clusters](docs/public/src/operator-guide/clusters.md)).
+- Networks that span every node with OVN, shared NAT gateways and per-project routers ([Cluster networks on OVN](docs/public/src/operator-guide/clusters.md#cluster-networks-on-ovn)).
+
+## Quick start
+
+This takes one Linux host from nothing to a running VM. It is the short
+version of the [full quick start](docs/public/src/quick-start.md), which
+explains each step.
+
+### 1. Check the requirements
+
+You need:
+
+- Linux on x86_64 or aarch64 with KVM. Check that `/dev/kvm` exists:
+  `ls -l /dev/kvm`.
+- A package manager the installer knows: `apt-get`, `dnf`/`yum` or `pacman`.
+- An account that can use `sudo`.
+- `git`, and a Rust toolchain to run the installer. Get Rust from
+  [rustup.rs](https://rustup.rs):
+
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+  Rust needs a C linker; on Debian or Ubuntu, `sudo apt install build-essential`.
+- Internet access, to download packages, hypervisors and images.
+
+### 2. Install
 
 ```bash
 git clone https://github.com/CMKL-APEX/glidex.git && cd glidex
-cargo run -p glidex-install                   # install, or update everything
-cargo run -p glidex-install -- uninstall      # --dry-run shows what would go
+cargo run -p glidex-install
 ```
 
-The installer asks nothing but your sudo password. It installs what is
-missing and updates what is outdated: system packages, Rust, Bun, Cloud
-Hypervisor and its firmware (pinned versions, downloads checked against
-pinned sha256s), QEMU with OVMF, VM networking (Open vSwitch,
-`glidex-netd`), and the glidex binaries. The control plane runs as a
-sandboxed systemd unit under the `glidex` system user (data in
-`/var/lib/glidex-control-plane/.glidex`), the web UI as `glidex-ui`, and
-`glidex-authd` checks local passwords (PAM). You are added to
-`glidex-users` and `glidex-admin` (gxctl on `/run/glidex-cp/api.sock`)
-and taken out of `glidex` if an earlier install put you there; log out
-and back in afterwards. Defaults need no config file;
-`/etc/glidex/control-plane.json.example` lists the settings. Re-run it
-to update. `--no-qemu`, `--no-networking` and `--no-services` opt out;
-Open vSwitch uses the kernel datapath unless `--ovs-profile dpdk`
-(choices are remembered for later runs; `--help` for all). See
-[Installation](docs/public/src/operator-guide/installation.md).
+The installer asks for your sudo password. It installs the hypervisors,
+Open vSwitch, the Glidex services and the web UI, and keeps Rust up to
+date from then on. At the end it prints the web UI address and two
+certificate fingerprints. Keep them for step 4.
 
-## Run
+Run the same command again later to update. See
+[Installation](docs/public/src/operator-guide/installation.md) for its
+options.
 
-With the systemd units, glidex already runs: the web UI is on
-`https://<host>:5173` and the API on `https://<host>:8841`. To run it
-yourself instead:
+### 3. Log out and back in
+
+The installer adds you to the `glidex-users` and `glidex-admin` groups.
+They let you use `gxctl` and make you an administrator. Linux only
+applies new groups to new logins, so log out and back in (or reconnect
+your SSH session). Then check:
+
+```bash
+gxctl whoami
+```
+
+On the host, `gxctl` needs no login: it knows you by your Unix account.
+
+### 4. Open the web UI
+
+Open `https://host.example.org:5173` (your host's name or address). The
+installer doesn't open firewall ports: to reach the UI from another
+machine, allow TCP 5173 yourself.
+
+The UI uses a self-signed certificate, so your browser shows a warning.
+Before you accept it, compare the certificate's SHA-256 fingerprint in
+the browser with the `web UI certificate SHA-256` line the installer
+printed. Accept only if they match. See
+[TLS](docs/public/src/operator-guide/tls.md) to use your own certificate
+or a Tailscale one instead.
+
+Sign in with your Unix username and password.
+
+### 5. Create your first VM
+
+Each step shows the `gxctl` command, then the same thing in the web UI.
+
+1. **Create a NAT network.** A *NAT network* is a private network for
+   your VMs: they get an address from Glidex and reach the internet
+   through the host. Glidex creates none by itself. Name it `default`
+   and VM forms pick it for you.
+
+   ```bash
+   gxctl network-add default
+   ```
+
+   Web UI: **Networking** → **Add Network**, name `default`, **Create**.
+
+2. **Pull a cloud image.** A *cloud image* is a ready-made disk with an
+   operating system, published by a Linux distribution for VMs like
+   these.
+
+   ```bash
+   gxctl image catalog            # what you can pull
+   gxctl image pull ubuntu-26.04
+   ```
+
+   Web UI: **Images** → **Cloud image catalog** → **Pull**.
+
+3. **Add a credential.** A *credential* is the username, password
+   and/or SSH keys you log in to the VM with. Without one, nobody can
+   log in. Give it a password to log in on the console.
+
+   ```bash
+   gxctl credential-add           # asks for a username, password and SSH keys
+   ```
+
+   Web UI: **Credentials** → **Add Credential**.
+
+4. **Create and start a VM.** `gxctl create` asks its questions one by
+   one; press Enter to take the default. Give it a name such as
+   `my-vm`, 2 vCPUs, 2048 MiB of memory and a 20 GiB root disk, and
+   keep the defaults for the rest (the image, your credential and the
+   `default` network).
+
+   ```bash
+   gxctl create
+   gxctl start my-vm
+   gxctl list
+   ```
+
+   Web UI: **VMs** → **+ Create VM**, fill in the form, check **Start it
+   now**, **Create VM**.
+
+5. **Open the console.** Wait for the first boot to finish, then log in
+   with your credential. Press `Ctrl+]` to detach; the VM keeps running.
+
+   ```bash
+   gxctl connect my-vm
+   ```
+
+   Web UI: **Open Console** on the VM's card.
+
+6. **Stop it.** `--graceful` presses the VM's power button and waits up
+   to 60 seconds before it stops the VM.
+
+   ```bash
+   gxctl stop my-vm --graceful
+   ```
+
+   Web UI: **Shut down** on the VM's card.
+
+`gxctl` with no arguments opens an interactive shell with Tab
+completion; type `help` there. `gxctl delete my-vm` removes the VM and
+its root disk.
+
+### The same over the API
+
+From another machine, use the API on port 8841 with a token
+(`gxctl token create <name>` prints one) and the API's certificate
+(`/run/glidex-cp/tls.crt` on the host). Values from a fixed list take
+their full names, such as `HYPERVISOR_QEMU`:
+
+```bash
+curl --cacert tls.crt -H "Authorization: Bearer <token>" \
+  -X POST https://host.example.org:8841/vms \
+  -H 'Content-Type: application/json' -d '{
+  "name": "my-vm", "vcpu_count": 2, "mem_size_mib": 2048,
+  "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR", "image": "ubuntu-26.04",
+  "root_disk_size_gib": 20, "credential": "<credential>",
+  "networks": [{"network": "default"}]
+}'
+```
+
+See the [REST API](docs/public/src/api/rest.md) for more.
+
+## Next steps
+
+- [Concepts](docs/public/src/concepts.md): how projects, images, disks,
+  networks and VMs fit together.
+- [User guide](docs/public/src/user-guide/README.md): VMs, images and
+  disks, credentials, networks, projects, the console and usage.
+  [Logging in](docs/public/src/user-guide/logging-in.md) covers `gxctl`
+  from another machine.
+- [Operator guide](docs/public/src/operator-guide/README.md): installing
+  and running hosts, including
+  [clusters](docs/public/src/operator-guide/clusters.md),
+  [networking](docs/public/src/operator-guide/host-networking.md) and
+  [authentication](docs/public/src/operator-guide/authentication.md).
+- [gxctl reference](docs/public/src/reference/gxctl.md): every command.
+- [API reference](docs/public/src/api/README.md): the REST and RPC APIs.
+
+To read the docs locally: `mdbook serve docs/public`.
+
+## Development
+
+### Running from source
+
+The installer runs Glidex as systemd services. To work on it, you can
+run the pieces yourself instead. Stop the services first
+(`sudo systemctl stop glidex-control-plane glidex-ui`), since they use
+the same ports.
 
 ```bash
 cargo run --bin glidex-control-plane   # API on https://localhost:8841
-cargo run -p glidex-ui -- --dev        # web UI (Vite, hot reload) on https://localhost:5173
+cargo run -p glidex-ui -- --dev        # web UI with hot reload on https://localhost:5173
 cargo run --bin gxctl                  # CLI
 ```
 
-Both serve HTTPS on every address of the host. Unless you configure a
-certificate (`tls` in `/etc/glidex/control-plane.json`;
-`GLIDEX_UI_TLS_CERT` / `GLIDEX_UI_TLS_KEY` for the UI), each one
-generates a self-signed certificate on first start and prints its SHA-256
-fingerprint (so does the installer): compare it with what your browser
-shows before accepting the warning. On a host on a Tailscale tailnet with
-HTTPS certificates, the web UI can instead serve the node's Let's Encrypt
-certificate at `https://<node>.<tailnet>.ts.net:5173`, trusted by browsers
-with no warning (installer option `--tailscale-cert`; see
-[Tailscale certificates](docs/public/src/operator-guide/tls.md#tailscale-certificates)).
-`listen` / `GLIDEX_LISTEN` and
-`GLIDEX_UI_LISTEN` narrow the addresses; plain HTTP (`"tls": "off"`,
-`GLIDEX_UI_TLS=off`) is only allowed on loopback. The installer doesn't
-touch the firewall.
+A control plane you start yourself keeps its data in `~/.glidex` and its
+socket in `$XDG_RUNTIME_DIR/glidex`, where `gxctl` finds it.
 
-The API also listens on `api.sock` in its run directory
-(`/run/glidex-cp/api.sock` under systemd, for members of
-`glidex-users`); every request is authenticated. See
-[TLS](docs/public/src/operator-guide/tls.md) and
-[Authentication](docs/public/src/operator-guide/authentication.md).
-
-`gxctl` talks to the control plane's Unix socket (`/run/glidex-cp/api.sock`,
-or the one a hand-started control plane creates under `$XDG_RUNTIME_DIR/glidex`)
-and you're identified by your Unix account: no login. From another
-machine, `gxctl auth login --url https://host:8841 --profile lab --oidc`
-(or `--pam-user <user>`, or `--token` with the token on stdin) saves a
-token in a login profile in `~/.config/glidex/config.json`, and pins the
-server's certificate after showing you its fingerprint. Once a profile
-exists, `gxctl` uses profiles instead of the local socket. Tokens expire
-(`gxctl token create`: 90 days unless you ask otherwise). See
-[Logging in](docs/public/src/user-guide/logging-in.md). `--project <p>` picks the
-project; `whoami`, `project`, `token`, `binding`, `team`, `policy` and
-`audit` manage access ([gxctl](docs/public/src/reference/gxctl.md),
-[Access control](docs/public/src/operator-guide/access-control.md)).
-
-## Your first VM
-
-```
-gxctl> image pull ubuntu-26.04
-gxctl> credential-add                 # username, password and/or SSH keys
-gxctl> create                         # pick a hypervisor, "image", the credential
-gxctl> start my-vm
-gxctl> connect my-vm                  # Ctrl+] detaches
-gxctl> stop my-vm --graceful          # power button, then stop after 60 s
-```
-
-Or over the API, with a token (`gxctl token create`):
-
-```bash
-api() { curl --cacert /run/glidex-cp/tls.crt -H "Authorization: Bearer $GLIDEX_TOKEN" "$@"; }
-api -X POST https://localhost:8841/images -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
-api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{
-  "name": "my-vm", "vcpu_count": 2, "mem_size_mib": 2048,
-  "hypervisor": "qemu", "image": "ubuntu-26.04", "root_disk_size_gib": 20,
-  "credential": "alice", "networks": [{"network": "lab"}]
-}'
-api -X POST https://localhost:8841/vms/<id>/start
-api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
-```
-
-- `hypervisor` is `cloudhypervisor` (default) or `qemu`. With an `image`
-  or `root_disk`, the VM boots through UEFI firmware, a *firmware image*
-  managed like the cloud images. The control plane imports the
-  installer's pinned `CLOUDHV.fd` (`cloudhv-edk2`) and the host's OVMF
-  (`ovmf`) once at its first start; otherwise pull them with
-  `gxctl image pull --firmware cloudhv-edk2` / `--firmware ovmf`, or from
-  the Images page. The newest one for the hypervisor
-  is used unless you pass `firmware` (an image name or id); pass
-  `kernel_image_path` for a direct kernel boot. Paths you pass are opened
-  by the control plane, so under the units they must be readable by the
-  `glidex` user (your home directory usually isn't).
-- Without a stored credential, the guest's `cloud` user has no SSH keys
-  and a locked password: nobody can log in, so add a credential.
-  `cloud_init_path` replaces the generated seed.
-- Give the root disk a size (`root_disk_size_gib`, or type one at
-  `gxctl create`'s prompt): without one, the disk is the size of the image.
-- Networks: glidex creates none by itself. Add one first with
-  `gxctl network-add` or the web UI's Networking page (e.g. a NAT network
-  `lab`); a network named `default` is preselected in the VM form. Only
-  your default project can use a new network until you grant it to others
-  (`gxctl network grant`).
-
-## A cluster
-
-Every host gets glidex from the installer as above (with OVN, unless
-`--no-ovn`). On the first host:
-
-```bash
-gxctl cluster init --force            # this host becomes a cluster of one (a server)
-umask 077; gxctl cluster join-token --role agent > join.token   # shown once
-```
-
-Copy `join.token` to the next host over a secure channel (mode 0600), then
-there:
-
-```bash
-cargo run -p glidex-install -- --join <first-host>:8842 --token-file join.token
-```
-
-The token is read from a file or stdin, never from the command line, and
-used once. `--role server` adds a server (run three for a quorum), and
-`--import` (with a token made with `--allow-import`) brings the host's
-existing VMs and disks along once an administrator approves the plan. The web UI's Cluster page shows the
-nodes, adds more (`gxctl cluster status`, `gxctl node …` from the CLI),
-and turns OVN on for networks that span the nodes: its OVN settings
-suggest the shared edge (physical network, gateway nodes, the LAN's
-addresses) from what the nodes report. A project's routers are on its
-project page. See [Clusters](docs/public/src/operator-guide/clusters.md).
-
-## Tests
+### Tests
 
 ```bash
 cargo test                                    # unit and API tests, no VMs
@@ -211,36 +264,47 @@ GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.img \
 scripts/dev/ui-e2e.sh -i ~/images/ubuntu-cloudimg.img
 
 # A two-node cluster with OVN, nested in VMs of this host's glidex
-# (nested KVM, ~9 GiB; GLIDEX_E2E_NETWORK names a node NAT network the
-# host can reach, if there is no `default`):
+# (nested KVM, ~9 GiB of memory, 10-20 minutes):
 cargo test -p glidex-e2e --test nested_cluster -- --ignored --nocapture
 ```
 
-The boot, NAT, vhost-user and catalog tests run on both hypervisors
-(`qemu_*` variants). The network tests need `glidex-netd`'s full access,
-which only the `glidex` group has (the installer takes you out of it): run
-them with it, e.g. `sudo -u $USER -g glidex env PATH=$PATH HOME=$HOME cargo test …`. Some need more setup: `GLIDEX_TEST_DPDK=1` with
-OVS-DPDK for vhost-user, and a fake LAN (`sudo scripts/dev/fake-lan-setup.sh`,
-`GLIDEX_TEST_LAN=1`) for the uplink tests. See [crates/glidex-ui/e2e/README.md](crates/glidex-ui/e2e/README.md)
-for the UI suite.
+The network tests need the `glidex` group, which the installer takes you
+out of: run them with
+`sudo -u $USER -g glidex env PATH=$PATH HOME=$HOME cargo test …`. The
+vhost-user tests need `GLIDEX_TEST_DPDK=1` and OVS-DPDK; the uplink tests
+need a fake LAN (`sudo scripts/dev/fake-lan-setup.sh`,
+`GLIDEX_TEST_LAN=1`). See
+[crates/glidex-ui/e2e/README.md](crates/glidex-ui/e2e/README.md) for the
+UI suite.
 
-## Layout
+### Repository layout
 
 ```
 crates/
-  glidex-control-plane/   server (REST API, VM state, hypervisor backends) and gxctl
+  glidex-control-plane/   the server (API, VM state, scheduler) and gxctl
+  glidex-api/             protos, generated RPC messages and clients
+  glidex-vm-shim/         per-VM supervisor: runs the hypervisor, owns its console
+  glidex-hv-client/       clients for Cloud Hypervisor's API and QEMU's QMP
   glidex-netd/            root helper for host networking
   glidex-ovs/             Open vSwitch, NAT, uplinks and VM ports
-  glidex-ovn/             OVN northbound: cluster networks, the edge, routers
-  glidex-e2e/             cluster end-to-end tests (nested VMs)
-  glidex-install/         installer / uninstaller
+  glidex-ovn/             OVN: cluster networks, the edge, routers
+  glidex-authd/           root helper that checks local passwords (PAM)
+  glidex-tls/             TLS certificates
+  glidex-install/         installer and uninstaller
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)
-docs/                     user and operator docs (docs/public), book config
-spec/                     design docs, start with spec/README.md
+  glidex-e2e/             cluster end-to-end tests (nested VMs)
+docs/                     user and operator docs (docs/public)
+spec/                     design docs
 LICENSES/                 MIT and Apache-2.0 texts, COPYRIGHT
 scripts/dev/              test helpers
 ```
+
+### Contributing
+
+The design specs are in [spec/](spec/README.md); start with its README.
+[docs/README.md](docs/README.md) explains how they differ from the user
+docs.
 
 ## License
 

@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -259,6 +259,28 @@ async fn tofu_verdict(urls: &[String]) -> String {
             Err(_) => "the server did not answer the unverified probe".into(),
         },
         Err(_) => "the unverified probe could not connect".into(),
+    }
+}
+
+/// The name `auth login --save` gives a new profile: a host name's first
+/// label (`gpu-dev2.example.net` → `gpu-dev2`), or the whole of an address,
+/// its dots or colons as dashes (`172.19.36.18` → `172-19-36-18`).
+fn profile_name_for(host: &str) -> String {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return bare
+            .split(['.', ':'])
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+    }
+    let n: String = host
+        .chars()
+        .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+        .collect();
+    match n.trim_matches('-') {
+        "" => host.to_string(),
+        n => n.to_string(),
     }
 }
 
@@ -332,16 +354,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                         "which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host",
                     );
                 }
-                let host = config::url_host(&urls[0]);
-                let mut n: String = host
-                    .chars()
-                    .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
-                    .collect();
-                n = n.trim_matches('-').to_string();
-                if n.is_empty() {
-                    n = host;
-                }
-                name = Some(n);
+                name = Some(profile_name_for(&config::url_host(&urls[0])));
                 None
             }
         }
@@ -917,6 +930,29 @@ fn auth_profiles(args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
+    if args.first() == Some(&"remove") {
+        let Some(name) = args.get(1).filter(|n| !n.starts_with("--")) else {
+            return usage("Usage: auth profiles remove <name> [--forget-token]");
+        };
+        let Some(mut c) = cfg else {
+            return err("no config file yet: there is no profile to remove");
+        };
+        let was_current = c.current.as_deref() == Some(*name);
+        if let Err(e) = c.remove_profile(name, has_flag(args, "--forget-token")) {
+            return err(e);
+        }
+        if let Err(e) = config::save(&c) {
+            return err(e);
+        }
+        println!("{} profile '{name}' removed", "OK:".green());
+        if was_current {
+            println!(
+                "{} no profile is current now: gxctl auth use <profile>",
+                "Info:".cyan()
+            );
+        }
+        return;
+    }
     let Some(c) = cfg.as_ref() else {
         return println!(
             "no config file yet (log in first: gxctl auth login --url … --profile P --save)"
@@ -1170,6 +1206,19 @@ pub fn ui() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_profiles_are_named_for_their_host() {
+        assert_eq!(
+            profile_name_for("gpu-dev2.cloudforest-cloud.ts.net"),
+            "gpu-dev2"
+        );
+        assert_eq!(profile_name_for("prism1"), "prism1");
+        // An address is named whole, not cut at its first dot.
+        assert_eq!(profile_name_for("172.19.36.18"), "172-19-36-18");
+        assert_eq!(profile_name_for("[fd00::1]"), "fd00-1");
+        assert_eq!(profile_name_for("fd00::1"), "fd00-1");
+    }
 
     #[test]
     fn positional_arguments_skip_flags_and_their_values() {

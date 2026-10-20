@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import * as api from "../api";
+import PasskeyButton from "../components/PasskeyButton";
 import { isOidcKind, offersSso, type AuthMethods } from "../types";
 
 const inputClass =
@@ -120,7 +121,9 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
           </div>
         )}
         {sso && <SsoButtons methods={methods} />}
-        {none && (
+        {methods.passkeys && (methods.pam || sso) && <div className="my-3" />}
+        {methods.passkeys && <PasskeyButton onDone={onLoggedIn} />}
+        {none && !methods.passkeys && (
           <p className="text-sm text-gray-600">
             No login method is enabled on this host. Ask an administrator, or use <code>gxctl</code> on the host.
           </p>

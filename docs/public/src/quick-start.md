@@ -14,7 +14,8 @@ and the [Operator guide](operator-guide/README.md).
 - A package manager the installer knows: `apt-get`, `dnf`/`yum` or
   `pacman`.
 - An account with `sudo` rights. The installer asks for your sudo
-  password and nothing else.
+  password, and nothing else unless the host is on a Tailscale tailnet
+  (see step 3).
 - `git`, and a Rust toolchain to run the installer from source (for
   example from [rustup.rs](https://rustup.rs)). The installer then
   installs or updates everything else, including Rust itself.
@@ -110,6 +111,15 @@ the host:
 sudo openssl x509 -in /var/lib/glidex-ui/tls/ui.crt -noout -fingerprint -sha256
 ```
 
+On a host on a [Tailscale](https://tailscale.com) tailnet with HTTPS
+certificates, the installer asks once whether the web UI should serve
+the node's Tailscale certificate (`--tailscale-cert` turns it on
+without asking). With it on, open the `https://<node>.<tailnet>.ts.net:5173`
+address the installer printed: browsers trust that certificate, so
+there is no warning and no fingerprint to compare. Other names and
+addresses keep the self-signed certificate. See
+[Tailscale certificates](operator-guide/tls.md#tailscale-certificates).
+
 Sign in with your Unix username and password. The header shows the
 pages you can use (**VMs**, **Images**, **Disks**, **Credentials**,
 **Networking**, **Projects** and, as an administrator, more) and a
@@ -203,9 +213,8 @@ VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
 VM created successfully!
 ```
 
-Type the root disk size rather than taking the default: an empty answer
-makes the disk the size of the image itself.
-<!-- TODO(verify): gxctl prompts "Root disk size in GiB [10]" but an empty answer sends no size, and the server then sizes the disk to the image's virtual size, not 10 GiB. -->
+An empty answer for the root disk size gives 10 GiB, or the image's own
+size if that is larger.
 
 The VM is created stopped. Start it; `start` waits until it runs:
 

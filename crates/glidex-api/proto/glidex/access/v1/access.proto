@@ -229,6 +229,33 @@ service UserService {
       rest: "POST /users/{id}/identities"
     };
   }
+  // A user's passkeys (spec/passkeys.md): one's own with
+  // `manageOwnSignIns`, anyone's with `listUsers`. Never their keys.
+  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listUsers"
+      kind: KIND_READ
+      rest: "GET /users/{id}/passkeys"
+    };
+  }
+  // One's own passkey's name.
+  rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "PATCH /users/{id}/passkeys/{passkey}"
+    };
+  }
+  // One's own (`manageOwnSignIns`, step-up) or anyone's (`manageUsers`).
+  // A user keeps another sign-in method, or a second passkey: `409
+  // last_identity` otherwise (P4).
+  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "DELETE /users/{id}/passkeys/{passkey}"
+    };
+  }
   rpc UnlinkIdentity(UnlinkIdentityRequest) returns (UnlinkIdentityResponse) {
     option (glidex.api.v1.op) = {
       action: "manageUsers"
@@ -338,6 +365,46 @@ message DeleteUserResponse {
   uint32 teams = 5;
   uint32 tenants = 6;
 }
+
+// A passkey (spec/passkeys.md P1); never its key.
+message Passkey {
+  // The credential id, base64url.
+  string id = 1;
+  string name = 2;
+  // `ES256`, `EdDSA` or `RS256`.
+  string algorithm = 3;
+  // The authenticator syncs it (a backed-up passkey).
+  optional bool backed_up = 4 [json_name = "backed_up"];
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+  google.protobuf.Timestamp last_used_at = 6 [json_name = "last_used_at"];
+}
+
+message ListPasskeysRequest {
+  // The user's id.
+  string id = 1;
+}
+message ListPasskeysResponse {
+  repeated Passkey passkeys = 1;
+  // The relying-party id passkeys are made for; absent when it isn't set
+  // and each web UI name has its own.
+  optional string rp_id = 2 [json_name = "rp_id"];
+}
+
+message RenamePasskeyRequest {
+  string id = 1;
+  string passkey = 2;
+  // 1-64 characters.
+  string name = 3;
+}
+message RenamePasskeyResponse {
+  Passkey passkey = 1;
+}
+
+message DeletePasskeyRequest {
+  string id = 1;
+  string passkey = 2;
+}
+message DeletePasskeyResponse {}
 
 message UnlinkIdentityRequest {
   string id = 1;

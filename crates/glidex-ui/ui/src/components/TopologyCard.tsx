@@ -153,12 +153,14 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {numa.map((n) => {
+          // Proto JSON leaves a zero out: node 0 comes without an id.
+          const id = n.id ?? 0;
           const cpus = (n.cores ?? []).flatMap((c) => c.threads ?? []);
-          const mine = devices.filter((d) => d.numa_node === n.id);
+          const mine = devices.filter((d) => d.numa_node === id);
           const hp = Object.entries(n.hugepages ?? {});
           return (
-            <div key={n.id} className="border border-gray-200 rounded-lg p-3">
-              <div className="font-medium text-gray-900">NUMA node {n.id}</div>
+            <div key={id} className="border border-gray-200 rounded-lg p-3">
+              <div className="font-medium text-gray-900">NUMA node {id}</div>
               <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-xs">
                 <dt className="text-gray-500">CPUs</dt>
                 <dd className="font-mono break-all">

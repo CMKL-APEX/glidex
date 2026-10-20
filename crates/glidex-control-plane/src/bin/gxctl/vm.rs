@@ -812,7 +812,15 @@ pub async fn create(client: &ApiClient) {
             );
         }
         let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
-        let default = names.first().copied().unwrap_or("");
+        // Another image's kernel is never the default: its initramfs looks
+        // for that image's root, and its modules aren't on this disk.
+        let default = match chosen {
+            Some(c) => kernels
+                .iter()
+                .find(|k| k.for_image.as_deref() == Some(c.id.as_str()))
+                .map_or("", |k| k.name.as_str()),
+            None => names.first().copied().unwrap_or(""),
+        };
         let answer = prompt_path(&format!(
             "Kernel [{}a host path] [{}]: ",
             if names.is_empty() {
@@ -835,9 +843,22 @@ pub async fn create(client: &ApiClient) {
             kernel_image_path = answer;
             initrd_path = prompt_path_optional("Initramfs path (optional): ");
         } else {
-            kernel_cmdline = kernels
-                .iter()
-                .find(|k| k.name == answer || k.id == answer)
+            let picked = kernels.iter().find(|k| k.name == answer || k.id == answer);
+            if let (Some(c), Some(k)) = (chosen, picked)
+                && let Some(other) = k.for_image.as_deref().filter(|f| *f != c.id)
+            {
+                let from = all_images
+                    .iter()
+                    .find(|i| i.id == other)
+                    .map_or(other, |i| i.name.as_str());
+                println!(
+                    "{} {} was taken from {from}; {} may not boot with it",
+                    "Warning:".yellow(),
+                    k.name,
+                    c.name
+                );
+            }
+            kernel_cmdline = picked
                 .and_then(|k| k.kernel.as_option())
                 .and_then(|k| k.cmdline.clone());
             kernel = Some(answer);
@@ -1008,54 +1029,6 @@ pub async fn create(client: &ApiClient) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn device_requests_parse() {
-        let r = parse_device_requests("a100:2:switch, cx7 ,");
-        assert_eq!(r.len(), 2);
-        assert_eq!(
-            (r[0].pool.as_str(), r[0].count, r[0].same_switch),
-            ("a100", 2, true)
-        );
-        assert_eq!(
-            (r[1].pool.as_str(), r[1].count, r[1].same_switch),
-            ("cx7", 1, false)
-        );
-        assert!(parse_device_requests("").is_empty());
-    }
-
-    use super::*;
-
-    #[test]
-    fn enum_words_are_the_old_lower_case_names() {
-        let s: EnumValue<VmState> = VmState::VM_STATE_RUNNING.into();
-        assert_eq!(enum_word(&s, "VM_STATE_"), "running");
-        let s: EnumValue<VmState> = VmState::VM_STATE_UNSPECIFIED.into();
-        assert_eq!(enum_word(&s, "VM_STATE_"), "");
-        let c: EnumValue<ExitCause> = ExitCause::EXIT_CAUSE_CLEAN_EXIT.into();
-        assert_eq!(enum_word(&c, "EXIT_CAUSE_"), "clean_exit");
-    }
-
-    #[test]
-    fn plain_state_shows_where_the_vm_is_going() {
-        assert_eq!(plain_state("created", "stopped"), "created");
-        assert_eq!(plain_state("running", "running"), "running");
-        assert_eq!(plain_state("stopped", "running"), "stopped → running");
-        assert_eq!(plain_state("running", ""), "running");
-    }
-
-    #[test]
-    fn graceful_stop_arguments() {
-        assert_eq!(graceful_stop_secs(&[]), Ok(None));
-        assert_eq!(graceful_stop_secs(&["--graceful"]), Ok(Some(60)));
-        assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
-        assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
-        assert!(graceful_stop_secs(&["--force"]).is_err());
-    }
-}
-
 /// `kernel <name|id> [--set <image>] [--follow on|off] [--extract]`: a
 /// kernel-boot VM's kernel image, the one it boots when following the
 /// guest's kernel, and changing them from the next start
@@ -1197,5 +1170,53 @@ pub async fn kernel(client: &ApiClient, args: &[&str]) {
         if let Some(p) = vm.previous_kernel.as_deref() {
             println!("Previous: {}", label(&all, p));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn device_requests_parse() {
+        let r = parse_device_requests("a100:2:switch, cx7 ,");
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            (r[0].pool.as_str(), r[0].count, r[0].same_switch),
+            ("a100", 2, true)
+        );
+        assert_eq!(
+            (r[1].pool.as_str(), r[1].count, r[1].same_switch),
+            ("cx7", 1, false)
+        );
+        assert!(parse_device_requests("").is_empty());
+    }
+
+    use super::*;
+
+    #[test]
+    fn enum_words_are_the_old_lower_case_names() {
+        let s: EnumValue<VmState> = VmState::VM_STATE_RUNNING.into();
+        assert_eq!(enum_word(&s, "VM_STATE_"), "running");
+        let s: EnumValue<VmState> = VmState::VM_STATE_UNSPECIFIED.into();
+        assert_eq!(enum_word(&s, "VM_STATE_"), "");
+        let c: EnumValue<ExitCause> = ExitCause::EXIT_CAUSE_CLEAN_EXIT.into();
+        assert_eq!(enum_word(&c, "EXIT_CAUSE_"), "clean_exit");
+    }
+
+    #[test]
+    fn plain_state_shows_where_the_vm_is_going() {
+        assert_eq!(plain_state("created", "stopped"), "created");
+        assert_eq!(plain_state("running", "running"), "running");
+        assert_eq!(plain_state("stopped", "running"), "stopped → running");
+        assert_eq!(plain_state("running", ""), "running");
+    }
+
+    #[test]
+    fn graceful_stop_arguments() {
+        assert_eq!(graceful_stop_secs(&[]), Ok(None));
+        assert_eq!(graceful_stop_secs(&["--graceful"]), Ok(Some(60)));
+        assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
+        assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
+        assert!(graceful_stop_secs(&["--force"]).is_err());
     }
 }

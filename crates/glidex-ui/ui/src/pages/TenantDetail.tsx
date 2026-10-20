@@ -6,6 +6,7 @@ import { TENANT_ROLES, entityLabel, formatTimestamp, isOidcKind } from "../types
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import AddBindingForm from "../components/AddBindingForm";
+import FederationsCard from "../components/FederationsCard";
 import { Loading } from "../components/Loading";
 import {
   BindingTable,
@@ -41,6 +42,8 @@ const CAPS = [
   "manageTenantInvitations",
   "readTenantDevicePools",
   "manageTenantDevicePools",
+  "readTenantFederations",
+  "manageTenantFederations",
 ] as const;
 type Cap = (typeof CAPS)[number];
 
@@ -699,6 +702,8 @@ export default function TenantDetail() {
       {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
 
       {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
+
+      {can("readTenantFederations") && <FederationsCard tenant={tenant} canManage={can("manageTenantFederations")} />}
 
       {canReadBindings && (
         <Card title="Tenant roles">

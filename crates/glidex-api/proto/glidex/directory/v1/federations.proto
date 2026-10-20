@@ -1,0 +1,128 @@
+// Workload federations (spec/tenancy.md §9, D48–D51): a tenant trusts a
+// JWT issuer (GitHub Actions, GitLab CI, Kubernetes, …), and a token from
+// it whose claims match a rule is exchanged (`POST /auth/exchange`) for a
+// short-lived token acting as one of the tenant's service accounts.
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+service FederationService {
+  // A tenant's federations.
+  rpc ListFederations(ListFederationsRequest) returns (ListFederationsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantFederations"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/federations"
+    };
+  }
+  rpc GetFederation(GetFederationRequest) returns (GetFederationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantFederations"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/federations/{federation}"
+    };
+  }
+  // The issuer is read at once (discovery and keys): `422
+  // issuer_unreachable` when it can't be. Rules name service accounts of
+  // the tenant's projects.
+  rpc CreateFederation(CreateFederationRequest) returns (CreateFederationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantFederations"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/federations"
+    };
+  }
+  rpc UpdateFederation(UpdateFederationRequest) returns (UpdateFederationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantFederations"
+      kind: KIND_WRITE
+      rest: "PATCH /tenants/{id}/federations/{federation}"
+    };
+  }
+  rpc DeleteFederation(DeleteFederationRequest) returns (DeleteFederationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantFederations"
+      kind: KIND_WRITE
+      rest: "DELETE /tenants/{id}/federations/{federation}"
+    };
+  }
+}
+
+// One mapping (D50): claims that must hold exactly, and the service
+// account a matching token acts as.
+message FederationRule {
+  // Claim name → the exact value. At least one of `repository`,
+  // `project_path` or `sub`.
+  map<string, string> match = 1;
+  // The service account's token id.
+  string service_account = 2 [json_name = "service_account"];
+  // 60–3600; default 900.
+  optional uint32 ttl_secs = 3 [json_name = "ttl_secs"];
+}
+
+message Federation {
+  // [a-z0-9-]{1,48}, unique in the tenant.
+  string id = 1;
+  // Output only.
+  string tenant_id = 2 [json_name = "tenant_id"];
+  // `jwt`.
+  string kind = 3;
+  string display_name = 4 [json_name = "display_name"];
+  // The issuer, as its tokens carry it: `https://…`.
+  string issuer = 5;
+  // What the workload asks its issuer for (GitHub's `audience`, GitLab's
+  // `id_tokens.aud`).
+  string audience = 6;
+  optional bool enabled = 7;
+  // Ordered: the first that matches maps the token.
+  repeated FederationRule rules = 8;
+  // Output only.
+  string created_by = 9 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 10 [json_name = "created_at"];
+  google.protobuf.Timestamp updated_at = 11 [json_name = "updated_at"];
+}
+
+message ListFederationsRequest {
+  // Tenant id or slug.
+  string tenant = 1;
+}
+message ListFederationsResponse {
+  repeated Federation federations = 1;
+}
+
+message GetFederationRequest {
+  string tenant = 1;
+  string federation = 2;
+}
+message GetFederationResponse {
+  Federation federation = 1;
+}
+
+message CreateFederationRequest {
+  string tenant = 1;
+  Federation federation = 2;
+}
+message CreateFederationResponse {
+  Federation federation = 1;
+}
+
+message UpdateFederationRequest {
+  string tenant = 1;
+  string federation = 2;
+  Federation changes = 3;
+  // The fields of `changes` to set; without one, those present.
+  google.protobuf.FieldMask update_mask = 4 [json_name = "update_mask"];
+}
+message UpdateFederationResponse {
+  Federation federation = 1;
+}
+
+message DeleteFederationRequest {
+  string tenant = 1;
+  string federation = 2;
+}
+message DeleteFederationResponse {}

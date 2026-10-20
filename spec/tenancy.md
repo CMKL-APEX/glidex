@@ -1,6 +1,6 @@
 # Tenants, directories and operators (design)
 
-Status: **design**; T0–T4 are implemented on one directory and one
+Status: **design**; T0–T5 are implemented on one directory and one
 cluster (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
@@ -369,6 +369,8 @@ Without linking, one person signing in two ways is two users.
   can't sign in anyway): then an administrator may take its last one, so
   that its person can add it to the user they really are (a Google login
   that made a second user before linking existed).
+- **Passkeys** are sign-in methods too ([passkeys.md](passkeys.md)):
+  identities of provider `passkey`, added only by their user.
 - **Labels:** `pam` is a host account's password ("Local password"),
   `unix` the host's local socket ("Host socket": gxctl on the host, no
   password), `conn:<id>` a connector by its display name. An
@@ -576,9 +578,15 @@ is later.
 - **Federations** (D51): per tenant, `GET/POST /tenants/{id}/federations`,
   `GET/PATCH/DELETE …/{federation}` (`FederationService` on both
   transports), gxctl `federation list|add|update|remove`, and a card on
-  the tenant's page. `issuer` is `https` (a loopback URL for a test
-  mock); it is read at once (discovery, JWKS) and refused if it can't
-  be. Rules follow D50; their service accounts must be in the tenant's
+  the tenant's page. `issuer` is `https`; it is read at once (discovery,
+  JWKS) and refused if it can't be. Only public addresses are read:
+  the issuer's and the JWKS's host names resolve to public addresses
+  only, on every connection, and a URL naming a loopback, private,
+  link-local or unique-local address is refused, so a tenant
+  administrator can't make the control plane fetch from its own host or
+  network. `auth.federation.allow_private_issuers` lifts this, for an
+  issuer on the site's own network and for test mocks (plain HTTP on the
+  loopback). Rules follow D50; their service accounts must be in the tenant's
   projects. At most 20 federations per tenant, 50 rules each.
 - **Exchange** (RFC 8693's shape): `POST /auth/exchange`, public, form
   or JSON:
@@ -591,11 +599,14 @@ is later.
   token_type: "Bearer", expires_in}`, and errors as RFC 6749 does
   (`400 invalid_request`, `400 invalid_grant`). 30 exchanges a minute
   per federation.
-- **The token** (D48): a `gxt_` token of kind `federated`, recording
-  the federation, the rule, the service account and the external
-  subject (`sub`, and `repository` / `ref` / `environment` when
-  present) for audit. It authenticates as the service account. Listed
-  under the service account while it lives; revocable like any token.
+- **The token** (D48): a `gxt_` secret kept by its hash in
+  `federated_tokens` (not an API token record), with the federation,
+  the rule's fingerprint, the service account and the external subject
+  (`sub`, and `repository` / `ref` / `environment` / `project_path` /
+  `workflow` when present). It authenticates as the service account
+  while it lives and the service account, the federation (enabled) and
+  that rule still exist; there is nothing else to revoke. Audit entries
+  name the service account's token and the federated token's id.
 - **Audit:** every exchange, granted or not, as `system:federation:<id>`
   with the external subject and claims it matched on, never the JWT.
 
@@ -1466,8 +1477,8 @@ T6–T7 get their own task lists when they start; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T4 are implemented; T5 is in progress (its tasks in §18); T2b, T4b,
-T6 and T7 are not started. What
+T0–T5 are implemented (T5: kind `jwt`); T2b, T4b, T6 and T7 are not
+started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1651,7 +1662,7 @@ users and teams:
 | D20 in one write | `IdentityStore::deprovision`: disabled, sessions, personal tokens, the connector's memberships; an administrator's stop stays the reason |
 | Field ownership (§8.3) | `service/access.rs`: `409 managed_by_connector` for a managed user's name, enabling one its IdP disabled, deleting an enabled one, a managed team's name or deletion, and a provisioned connector's memberships; an administrator may disable a managed user |
 | Deleting a connector (§8.3) | `IdentityStore::release_connector` (one write); `DeleteConnectorRequest.users` (`disable` / `detach`), `DeleteConnectorResponse.{users, teams}`; gxctl `connector remove --detach-users`; the Connectors page asks for a SCIM connector |
-| UI | the Access page: "managed by <connector>", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
+| UI | the Access page: "managed by `<connector>`", "disabled by its IdP", no Enable or Delete where the IdP decides; a managed team shows where it comes from and can't be deleted |
 | Tests | `connector_tests.rs::managed_users_and_teams_belong_to_their_connector` |
 
 Task 3, SCIM tokens:
@@ -1682,6 +1693,37 @@ Task 5, docs and the UI e2e:
 | Operator guide | `operator-guide/authentication.md`, "Provisioning with SCIM": the connector, tokens, JumpCloud's Identity Management, what deactivating and removing do; "Making the endpoint reachable": a reverse proxy, or a Tailscale Funnel of the SCIM path alone (Funnel publishes only ports 443, 8443 and 10000, so it fronts the web UI's 5173) |
 | Real-IdP checks | [idp-checks.md](idp-checks.md) "JumpCloud SCIM" |
 | UI e2e | `connectors.spec.ts`: a SCIM connector's token; users and groups pushed over SCIM show as the connector's, and its deactivation as the IdP's |
+
+**T5** (workload federation, kind `jwt`) is implemented: tasks 1–4 of
+§18. The GitHub Actions check of [idp-checks.md](idp-checks.md) is the
+operator's to run. Task 2, federations:
+
+| Spec | Code |
+|---|---|
+| Records (§9, D50) | `directory/federation.rs`: `Federation`, `Rule` (exact claims, pinned to `repository` / `project_path` / `sub`, no `*`, `ttl_secs` 60–3600), `FederationStore` (table `federations`, directory scope; 20 per tenant, 50 rules each) |
+| D49's issuer | `federation::Issuers`: discovery (its `issuer` must be the federation's) and JWKS, `https`, public addresses only (`PublicOnly` resolver, IP literals checked) unless `auth.federation.allow_private_issuers` (loopback mocks in tests), cached an hour, read again for an unknown key id at most once a minute; a federation is refused when its issuer can't be read |
+| API (D51) | `glidex/directory/v1/federations.proto`, `FederationService` on both transports (`service/federations.rs`, `api/federations.rs`), `/tenants/{id}/federations…`; actions `readTenantFederations` (tenant auditors, tenant admins, directory readers) and `manageTenantFederations` (tenant admins, directory admins; step-up); rules' service accounts must be the tenant's |
+| gxctl | `federation list|show|add|enable|disable|remove` (`--match`… `--service-account`, or `--rules-file`) |
+| Tests | `federation.rs` unit tests; `connector_tests.rs::federations_are_a_tenants_and_checked_when_made` |
+
+Task 3, the exchange:
+
+| Spec | Code |
+|---|---|
+| `POST /auth/exchange` (§9) | `api/exchange.rs` (public; form or JSON; `Cache-Control: no-store`); `directory/exchange.rs`: RFC 8693's `grant_type` and `subject_token_type`, `federation=<tenant slug>/<id>`, 30 a minute per federation (`429 slow_down`) |
+| D49 | the issuer's cached keys (`Issuers::keys`, read again for an unknown `kid`), RS256 or ES256, `iss` and `aud` the federation's, `exp`, `iat`, `nbf` with 60 s leeway, at most an hour long |
+| D50 | the first rule whose exact claims hold; its service account still the tenant's and live; every refusal the same `400 invalid_grant`, the reason in the audit (`system:federation:<slug>/<id>`, `exchangeToken`) |
+| D48 | `FederatedTokens::mint` refuses a `jti` (or the token's hash) already exchanged; `AuthService::federated_principal`: the service account's `Token` as principal, while the federated token, the service account, the enabled federation and the rule's fingerprint hold; `Principal.federated` in audit; TTL the rule's, never past the service account's expiry |
+| Tests | `connector_tests.rs::a_workload_token_is_exchanged_once_for_its_service_account` against the mock issuer |
+
+Task 4, UI and docs:
+
+| Spec | Code |
+|---|---|
+| UI | `components/FederationsCard.tsx` on the tenant's page: the federations with their rules, enable / disable / delete; adding one (GitHub Actions and GitLab presets, the audience, rules of exact claims, the tenant's service accounts to pick from, the lifetime); how a job uses it (the exchange, for GitHub with its OIDC request) |
+| Operator guide | `operator-guide/authentication.md`, "Workload federation": what it gives and when it ends, gxctl, the exchange, and GitHub Actions, GitLab CI and Kubernetes examples |
+| Real check | [idp-checks.md](idp-checks.md) "GitHub Actions workload federation", through a tunnel that publishes only the exchange and `whoami` |
+| UI e2e | `federation.spec.ts`: a federation made on the page against an issuer the test serves, a job's JWT exchanged and used, another job refused, and the token ended by disabling it |
 
 **T4** (pull sync from Google Workspace) is implemented: tasks 1–5 of
 §18. The checks of [idp-checks.md](idp-checks.md) against a real

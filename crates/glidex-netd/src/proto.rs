@@ -141,7 +141,36 @@ pub enum Op {
     },
 }
 
+/// Fields whose values never go to the log: private keys and PEM
+/// material (`ensure_ovn_chassis`, `ensure_ovn_central`), and tokens.
+fn is_secret_field(name: &str) -> bool {
+    name.ends_with("_pem") || ["token", "password", "secret", "private_key"].contains(&name)
+}
+
+fn redact(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m.iter_mut() {
+                if is_secret_field(k) {
+                    *x = Value::String("[REDACTED]".into());
+                } else {
+                    redact(x);
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(redact),
+        _ => {}
+    }
+}
+
 impl Op {
+    /// The operation as JSON for the request log, with secrets left out.
+    pub fn log_args(&self) -> String {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        redact(&mut v);
+        v.to_string()
+    }
+
     /// Allowed on the world-accessible status socket (spec decision 7).
     pub fn is_status(&self) -> bool {
         matches!(self, Op::Hello { .. } | Op::Probe)
@@ -406,6 +435,36 @@ pub struct ReconcileReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_request_log_leaves_out_keys_and_pem() {
+        let r: Request = serde_json::from_value(serde_json::json!({
+            "id": 1, "op": "ensure_ovn_chassis", "args": {
+                "spec": { "chassis": "node:n1", "sb_remotes": ["ssl:192.0.2.1:6642"],
+                          "encap_ip": "192.0.2.2", "bridge_mappings": {}, "datapath": "system" },
+                "certs": { "key_pem": "-----BEGIN PRIVATE KEY-----\nDUMMY\n-----END PRIVATE KEY-----\n",
+                           "cert_pem": "CERT", "ca_pem": "CA" },
+            }
+        }))
+        .unwrap();
+        let log = r.op.log_args();
+        assert!(
+            !log.contains("PRIVATE KEY") && !log.contains("DUMMY"),
+            "{log}"
+        );
+        assert!(!log.contains("CERT") && !log.contains("\"CA\""), "{log}");
+        assert!(
+            log.contains("node:n1") && log.contains("[REDACTED]"),
+            "{log}"
+        );
+        // Ops without secrets are logged whole.
+        let r: Request = serde_json::from_str(
+            r#"{"id":2,"op":"detach_vm_port","args":{"vm_id":"abc","nic_index":0}}"#,
+        )
+        .unwrap();
+        let logged: Value = serde_json::from_str(&r.op.log_args()).unwrap();
+        assert_eq!(logged, serde_json::to_value(&r.op).unwrap());
+    }
 
     #[test]
     fn wire_format() {

@@ -51,6 +51,30 @@ A password, a key, or both is required. If you have a local account on
 the host, the form fills in your username and the public keys in your
 `~/.ssh/*.pub`.
 
+### SSH keys from your organisation's directory
+
+If you sign in through your organisation's Google Workspace, your
+operator may have Glidex read your SSH public keys from your Google
+account (see [SSH keys from
+Google](../operator-guide/authentication.md#ssh-keys-from-google)).
+Then **Add Credential** fills those keys in, and says *Filled in from
+your directory account*; choose the username yourself.
+
+- Your keys are kept in Google: ask whoever manages your Google
+  account to add or change them. Glidex picks up a change at its next
+  read, every 15 minutes unless the operator chose otherwise.
+- Only public keys are used; anything else in that field is ignored.
+- A local account on the host comes first: if you have one, the form
+  offers the keys in its `~/.ssh/*.pub` instead, even if there are
+  none.
+- The keys are copied into the credential when you save it, like keys
+  you paste. Changing them in Google later doesn't change the
+  credential, nor VMs that already booted with it: replace the
+  credential's keys with **Edit**, and change `authorized_keys` inside
+  those guests yourself.
+- `gxctl credential-add` doesn't use them: it offers the `.pub` files of
+  the machine you run it on.
+
 **gxctl:**
 
 ```text
@@ -112,9 +136,10 @@ When you create a VM that boots a cloud image:
 - **API**: `"credential": "alice"` in `POST /vms`.
 
 A credential only works with the seed Glidex generates: a VM that
-brings its own seed, or boots host kernel files with a root filesystem
-file path, can't use one. A kernel image or a managed boot disk gets the
-seed as with firmware.
+brings its own seed (`cloud_init_path`), or boots host kernel files with
+a root filesystem file path, can't use one. A
+[kernel image](kernel-boot.md) or a managed boot disk gets the seed as
+with firmware.
 
 ## Your own cloud-init seed
 
