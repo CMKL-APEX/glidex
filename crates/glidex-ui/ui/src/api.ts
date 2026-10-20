@@ -480,6 +480,92 @@ export async function loginPam(username: string, password: string): Promise<WhoA
   return w;
 }
 
+// ---- passkeys (spec/passkeys.md) --------------------------------------------
+// The ceremonies are REST: WebAuthn's own JSON, binary fields base64url.
+
+const fromB64url = (s: string): ArrayBuffer => {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "="));
+  const out = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+  return out.buffer;
+};
+const toB64url = (buf: ArrayBuffer | null | undefined): string | undefined => {
+  if (!buf) return undefined;
+  let s = "";
+  for (const c of new Uint8Array(buf)) s += String.fromCharCode(c);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/** Whether this browser can make and use passkeys. */
+export const passkeysSupported = () => typeof window !== "undefined" && !!window.PublicKeyCredential && !!navigator.credentials;
+
+/** Sign in with a passkey: the browser asks which, with the user's PIN,
+ * fingerprint or face. */
+export async function loginPasskey(): Promise<WhoAmI> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/passkeys/login/start", {}, { quiet401: true });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.get({
+    publicKey: { ...pk, challenge: fromB64url(pk.challenge), allowCredentials: [] },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was chosen");
+  const r = cred.response as AuthenticatorAssertionResponse;
+  const w = await request<WhoAmI>(
+    "POST",
+    "/auth/passkeys/login/finish",
+    {
+      id: cred.id,
+      rawId: toB64url(cred.rawId),
+      type: cred.type,
+      response: {
+        clientDataJSON: toB64url(r.clientDataJSON),
+        authenticatorData: toB64url(r.authenticatorData),
+        signature: toB64url(r.signature),
+        userHandle: toB64url(r.userHandle),
+      },
+    },
+    { quiet401: true },
+  );
+  setCsrf(w.csrf);
+  return w;
+}
+
+/** Add a passkey named `name` to the signed-in user (a recent login
+ * first: the re-auth dialog asks). */
+export async function addPasskey(name: string): Promise<void> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/passkeys/register/start", { name });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.create({
+    publicKey: {
+      ...pk,
+      challenge: fromB64url(pk.challenge),
+      user: { ...pk.user, id: fromB64url(pk.user.id) },
+      excludeCredentials: (pk.excludeCredentials ?? []).map((c: { id: string; type: "public-key" }) => ({ ...c, id: fromB64url(c.id) })),
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was made");
+  const r = cred.response as AuthenticatorAttestationResponse;
+  await request("POST", "/auth/passkeys/register/finish", {
+    id: cred.id,
+    rawId: toB64url(cred.rawId),
+    type: cred.type,
+    response: { clientDataJSON: toB64url(r.clientDataJSON), attestationObject: toB64url(r.attestationObject) },
+  });
+}
+
+export interface Passkey {
+  id: string;
+  name: string;
+  algorithm?: string;
+  backed_up?: boolean;
+  created_at?: string;
+  last_used_at?: string;
+}
+export const listPasskeys = (user: string) =>
+  rpc(UserService.method.listPasskeys, { id: user }).then((r) => ({ passkeys: (r.passkeys ?? []) as Passkey[], rpId: r.rp_id }));
+export const renamePasskey = (user: string, passkey: string, name: string) =>
+  rpc(UserService.method.renamePasskey, { id: user, passkey, name }).then((r) => r.passkey as Passkey);
+export const deletePasskey = (user: string, passkey: string) => rpc(UserService.method.deletePasskey, { id: user, passkey }).then(none);
+
 /** Leave the page for the identity provider: connector `connector`, or
  *  the first OIDC connector. */
 /** Add a sign-in through `connector` to the signed-in user (spec/tenancy.md

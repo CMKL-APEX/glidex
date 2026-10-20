@@ -3,6 +3,7 @@ import * as api from "../api";
 import { isOidcKind } from "../types";
 import { Card, ErrorBanner, PageHeader, dangerLink, errorMessage, secondaryButton, signInLabel } from "../components/ui";
 import ConfirmDialog from "../components/ConfirmDialog";
+import PasskeysCard from "../components/PasskeysCard";
 import { useConnectorNames, useNodeNames } from "../hooks";
 import { useSession } from "../session";
 
@@ -109,6 +110,7 @@ export default function Account() {
           </div>
         )}
       </Card>
+      {methods.passkeys && user && <PasskeysCard user={user.id} onChange={refresh} />}
       {removing && (
         <ConfirmDialog
           title="Remove a sign-in method"

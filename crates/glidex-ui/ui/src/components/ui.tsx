@@ -133,6 +133,7 @@ export function signInLabel(
     }
     return base;
   }
+  if (provider === "passkey") return "Passkey";
   if (provider.startsWith("conn:")) {
     const id = provider.slice(5);
     return connectors[id] ?? id;
