@@ -844,17 +844,24 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
-| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
 **Paths.** Any explicit `kernel_image_path`, `initrd_path`, `rootfs_path` or
 `cloud_init_path` needs `useHostPath`, and so does any `firmware_path`.
 Managed disks are named with `image`, `root_disk` and `data_disks`
-instead, and firmware with `firmware` (a firmware image, `readImage`). Paths into the disk or image directories are not
+instead, firmware with `firmware` and kernels with `kernel` (a firmware or
+kernel image, `readImage`). Pulling a kernel image from host files
+(`POST /images` with `kernel_path` or `initrd_path`) needs `useHostPath`
+too; VMs then boot it with `readImage` only. Kernels extracted from a
+disk image (`kernel_from`, and catalog pulls) are read by a network-less
+extractor VM in a `glidex-vm@` unit, never by the control plane: the
+host only parses the extractor's length-checked output stream
+([kernel-boot.md](kernel-boot.md) K9, §10). Paths into the disk or image directories are not
 treated as managed: they would reach other projects' disks, or let a VM
 write to a shared base image.
 

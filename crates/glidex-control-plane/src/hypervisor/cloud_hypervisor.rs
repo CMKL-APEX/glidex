@@ -204,6 +204,43 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     a
 }
 
+/// The kernel extractor's run (spec/kernel-boot.md §10.2): the appliance,
+/// the image read-only, the raw output disk, the serial port on stdio; no
+/// API socket, no NIC, 1 vCPU and 1 GiB.
+pub(crate) fn extractor_args(
+    bin: &str,
+    (kernel, initrd): (&str, &str),
+    (disk, format): (&str, ImageType),
+    out: &str,
+) -> Vec<String> {
+    [
+        bin,
+        "--cpus",
+        "boot=1",
+        "--memory",
+        "size=1024M",
+        "--kernel",
+        kernel,
+        "--initramfs",
+        initrd,
+        "--cmdline",
+        crate::images::extractor::CMDLINE,
+        "--disk",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        format!(
+            "path={},readonly=on,image_type={}",
+            q(disk),
+            image_type_name(format)
+        ),
+        format!("path={},image_type=raw", q(out)),
+    ])
+    .chain(["--serial", "tty", "--console", "off"].map(String::from))
+    .collect()
+}
+
 pub struct CloudHypervisorDriver;
 
 impl HypervisorDriver for CloudHypervisorDriver {
@@ -527,6 +564,29 @@ mod tests {
             mtu: Some(1500),
         }];
         let api = dir.path().join("api.sock");
+        // The kernel extractor's command line parses too (§10.2).
+        let x = extractor_args(
+            bin.to_str().unwrap(),
+            ("/nonexistent/kernel", "/nonexistent/initrd"),
+            ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2),
+            "/nonexistent/out.raw",
+        );
+        let out = std::process::Command::new(&x[0])
+            .args(&x[1..])
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success());
+        assert!(
+            !err.contains("ParsingConfig") && !err.contains("required arguments"),
+            "{err}"
+        );
+        assert!(
+            x.contains(
+                &"path=\"/nonexistent/a,b/disk.qcow2\",readonly=on,image_type=qcow2".to_string()
+            ),
+            "{x:?}"
+        );
         // Firmware boot, then kernel boot with an initramfs.
         let mut kernel = c.clone();
         kernel.firmware_path = None;

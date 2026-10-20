@@ -134,6 +134,51 @@ each VM gets its own copy of it.
 A new VM uses the newest firmware image for its hypervisor unless you
 pick another when creating it (see [Virtual machines](vms.md)).
 
+## Kernel images
+
+A VM can also boot a kernel directly, without firmware: a *kernel image*
+is a kernel, an optional initramfs and the kernel command line VMs get
+by default.
+
+**From a cloud image.** Pulling a catalog image also takes the kernel
+out of it: a second image, `<image>-kernel`, appears and becomes ready
+a few seconds after the image (state *extracting* meanwhile). It is the
+kernel the image's own bootloader would boot, with its initramfs and
+command line (`root=…`, then `console=ttyS0`). To skip it, pull with
+`"with_kernel": false`; to take the kernel of any other disk image,
+including one pulled from a URL:
+
+```bash
+curl … -X POST /images -d '{"kernel_from": "my-image"}'
+```
+
+glidex reads the image inside a small, network-less VM it builds from
+pinned Debian packages the first time (a 35 MB download), never on the
+host. Hosts that can't download it can turn this off with
+`GLIDEX_KERNEL_EXTRACTION=off`.
+
+**From a URL**:
+
+```bash
+curl … -X POST /images -d '{
+  "url": "https://example.org/vmlinuz-6.8.0-147-generic", "sha256": "<sha256>",
+  "kind": "IMAGE_KIND_KERNEL",
+  "initrd_url": "https://example.org/initrd.img-6.8.0-147-generic", "initrd_sha256": "<sha256>",
+  "cmdline": "root=LABEL=cloudimg-rootfs ro console=ttyS0"
+}'
+```
+
+or, for an administrator, from files on the host (`"kernel_path"`,
+`"initrd_path"`, `"cmdline"`). Kernel images appear under **Images**,
+*Kernels*, with their release; `gxctl image list` shows them as
+`kernel <release>`. Like firmware, a kernel image can't be deleted while
+a VM boots it.
+
+Use the kernel the cloud image was built with: the guest loads the
+kernel's modules from its own disk. Extraction does that for you; for a
+URL, Ubuntu publishes each build's kernel and initramfs next to the
+image, in `unpacked/`.
+
 ## Disks
 
 ### Creating a disk

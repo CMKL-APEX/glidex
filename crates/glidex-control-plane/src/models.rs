@@ -113,11 +113,21 @@ pub struct VmConfig {
     /// Firmware image (id) the VM boots through; see spec/images.md §7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_image: Option<String>,
-    /// cloud-init NoCloud seed disk attached alongside the rootfs. For
-    /// firmware boots without one, a default seed is generated at start
-    /// time (see `cloud_init.rs`).
+    /// Kernel image (id) the VM boots directly (spec/kernel-boot.md §6).
+    /// Its files fill `kernel_image_path` and `initrd_path`, as a firmware
+    /// image fills `firmware_path`: replaced at launch with the placed
+    /// node's copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_image: Option<String>,
+    /// cloud-init NoCloud seed disk attached alongside the rootfs. Without
+    /// one, a default seed is generated at start time (`cloud_init.rs`)
+    /// when [`Self::generates_seed`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init_path: Option<String>,
+    /// Whether the VM controller generates the seed (spec/kernel-boot.md
+    /// K4), fixed at create. Absent in older records: firmware boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate_seed: Option<bool>,
     /// Username of a stored credential (`credentials.rs`) that the
     /// generated cloud-init seed provisions as the guest login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +196,15 @@ pub struct VmConfig {
     /// `start_vm`; never persisted. `None`: found next to the code file.
     #[serde(skip)]
     pub firmware_vars_template: Option<String>,
+}
+
+impl VmConfig {
+    /// Whether the VM controller generates a cloud-init seed for it: never
+    /// with a custom `cloud_init_path`; else as recorded at create, or,
+    /// for records from before that, on firmware boot.
+    pub fn generates_seed(&self) -> bool {
+        self.cloud_init_path.is_none() && self.generate_seed.unwrap_or(self.firmware_path.is_some())
+    }
 }
 
 /// What a hypervisor needs to open one managed disk (spec/storage.md §7).
@@ -575,6 +594,8 @@ impl Vm {
 pub struct DiskSelection {
     /// Firmware image id/name.
     pub firmware: Option<String>,
+    /// Kernel image id/name (spec/kernel-boot.md §6).
+    pub kernel: Option<String>,
     pub image: Option<String>,
     pub root_disk_size_gib: Option<u64>,
     pub root_disk: Option<String>,

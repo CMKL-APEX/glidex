@@ -5,6 +5,7 @@
 use super::catalog::{self, Arch, ChecksumSource, HashAlgo, VersionSource};
 use super::firmware::{self, FirmwareSource, MAX_FIRMWARE_SIZE};
 use super::qemu_img::{self, DiskFormat};
+use super::{FileMeta, kernel};
 use super::{
     Image, ImageError, ImageKind, ImageManager, ImageSource, ImageStatus, PullImageRequest, now,
     validate_name,
@@ -193,6 +194,34 @@ impl ImageManager {
         self: &Arc<Self>,
         req: PullImageRequest,
     ) -> Result<(Image, bool), ImageError> {
+        // A kernel extracted from a disk image (spec/kernel-boot.md §10).
+        if let Some(from) = &req.kernel_from {
+            if req.catalog.is_some()
+                || req.url.is_some()
+                || req.firmware.is_some()
+                || req.kernel_path.is_some()
+                || req.initrd_path.is_some()
+                || req.initrd_url.is_some()
+                || req.cmdline.is_some()
+                || req.with_kernel.is_some()
+                || req.hypervisor.is_some()
+                || req.kind.is_some_and(|k| k != ImageKind::Kernel)
+            {
+                return Err(ImageError::InvalidImage(
+                    "kernel_from takes a disk image and, optionally, name and nodes".into(),
+                ));
+            }
+            return self.pull_kernel_from(from, req.name.clone(), req.nodes.clone());
+        }
+        if req.with_kernel.is_some()
+            && (req.firmware.is_some()
+                || req.kernel_path.is_some()
+                || req.kind.is_some_and(|k| k != ImageKind::Disk))
+        {
+            return Err(ImageError::InvalidImage(
+                "with_kernel is for a disk image pull (catalog or url)".into(),
+            ));
+        }
         // In a cluster the leader downloads for any node's architecture (§9.2.1).
         let arch = match req.arch.as_deref() {
             Some(a) => Arch::parse(a).ok_or_else(|| {
@@ -207,6 +236,60 @@ impl ImageManager {
                 "hypervisor is only for a firmware download (kind: firmware)".into(),
             ));
         }
+        // A kernel image (spec/kernel-boot.md §4.2): a URL download, or a
+        // copy of host files.
+        let kernel = req.kind == Some(ImageKind::Kernel) || req.kernel_path.is_some();
+        if req.kernel_path.is_some() && req.kind.is_some_and(|k| k != ImageKind::Kernel) {
+            return Err(ImageError::InvalidImage(
+                "kernel_path makes a kernel image (kind: kernel)".into(),
+            ));
+        }
+        if !kernel
+            && (req.initrd_url.is_some()
+                || req.initrd_sha256.is_some()
+                || req.initrd_path.is_some()
+                || req.cmdline.is_some())
+        {
+            return Err(ImageError::InvalidImage(
+                "initrd_url, initrd_sha256, initrd_path and cmdline are for a kernel image (kind: kernel)"
+                    .into(),
+            ));
+        }
+        if let Some(c) = &req.cmdline {
+            crate::hypervisor::check_kernel_args(c)
+                .map_err(|e| ImageError::InvalidImage(format!("cmdline: {e}")))?;
+        }
+        if req.initrd_path.is_some() && req.kernel_path.is_none() {
+            return Err(ImageError::InvalidImage(
+                "initrd_path goes with kernel_path".into(),
+            ));
+        }
+        let initrd_sha256 = req.initrd_sha256.as_deref().map(parse_sha256).transpose()?;
+        let initrd_url = match &req.initrd_url {
+            None if initrd_sha256.is_some() => {
+                return Err(ImageError::InvalidImage(
+                    "initrd_sha256 needs initrd_url".into(),
+                ));
+            }
+            None => None,
+            Some(_) if req.url.is_none() => {
+                return Err(ImageError::InvalidImage(
+                    "initrd_url is for a kernel download (url, kind: kernel)".into(),
+                ));
+            }
+            Some(u) => {
+                let parsed = reqwest::Url::parse(u)
+                    .map_err(|e| ImageError::InvalidImage(format!("bad initrd_url: {}", e)))?;
+                let (p, allow) = (parsed.clone(), self.settings.allow_private_urls);
+                tokio::task::spawn_blocking(move || check_url(&p, allow))
+                    .await
+                    .map_err(|e| ImageError::Io(e.to_string()))?
+                    .map_err(|e| ImageError::InvalidImage(format!("initrd_url: {}", e)))?;
+                Some(parsed.to_string())
+            }
+        };
+        // Host files a kernel image is copied from: `(kernel, initramfs)`.
+        let mut kernel_import: Option<(std::path::PathBuf, Option<std::path::PathBuf>)> = None;
         let vars_sha256 = req.vars_sha256.as_deref().map(parse_sha256).transpose()?;
         let vars_url = match &req.vars_url {
             None if vars_sha256.is_some() => return Err(ImageError::InvalidImage("vars_sha256 needs vars_url".into())),
@@ -304,6 +387,32 @@ impl ImageManager {
                     "kind: firmware takes a url or a firmware key, not a catalog key".into(),
                 ));
             }
+            (None, None, None) if req.kernel_path.is_some() => {
+                let path = req.kernel_path.clone().unwrap_or_default();
+                if !path.starts_with('/')
+                    || req
+                        .initrd_path
+                        .as_ref()
+                        .is_some_and(|p| !p.starts_with('/'))
+                {
+                    return Err(ImageError::InvalidImage(
+                        "kernel_path and initrd_path must be absolute".into(),
+                    ));
+                }
+                kernel_import =
+                    Some((path.clone().into(), req.initrd_path.clone().map(Into::into)));
+                ImageSource::Host { path }
+            }
+            (Some(_), None, None) if kernel => {
+                return Err(ImageError::InvalidImage(
+                    "kind: kernel takes a url or kernel_path, not a catalog key".into(),
+                ));
+            }
+            (_, _, _) if req.kernel_path.is_some() => {
+                return Err(ImageError::InvalidImage(
+                    "kernel_path copies a host file: no catalog, firmware or url with it".into(),
+                ));
+            }
             (Some(key), None, None) => {
                 let entry = catalog::find(key).ok_or_else(|| {
                     ImageError::InvalidImage(format!("unknown catalog image: {}", key))
@@ -355,7 +464,9 @@ impl ImageManager {
                 ));
             }
         };
-        let kind = if hypervisor.is_some() {
+        let kind = if kernel {
+            ImageKind::Kernel
+        } else if hypervisor.is_some() {
             ImageKind::Firmware
         } else {
             ImageKind::Disk
@@ -379,6 +490,14 @@ impl ImageManager {
                         key.clone()
                     }
                 }
+                // A kernel's file name carries its release
+                // (`vmlinuz-6.8.0-147-generic`): keep all of it.
+                ImageSource::Url { url, .. } if kernel => kernel_name(catalog::url_file_name(url)),
+                ImageSource::Host { path } => {
+                    kernel_name(path.rsplit('/').next().unwrap_or_default())
+                }
+                // `kernel_from` names its own (extract.rs).
+                ImageSource::Extracted { .. } => "kernel".to_string(),
                 ImageSource::Url { url, .. } => {
                     let file = catalog::url_file_name(url);
                     let stem = file.split('.').next().unwrap_or(file);
@@ -432,10 +551,15 @@ impl ImageManager {
                 url: match &source {
                     ImageSource::Url { url, .. } => url.clone(),
                     ImageSource::Firmware { url, .. } if import.is_none() => url.clone(),
-                    ImageSource::Firmware { .. } | ImageSource::Catalog { .. } => String::new(),
+                    ImageSource::Firmware { .. }
+                    | ImageSource::Catalog { .. }
+                    | ImageSource::Host { .. }
+                    | ImageSource::Extracted { .. } => String::new(),
                 },
                 vars_url,
                 vars_sha256,
+                initrd_url,
+                initrd_sha256,
                 ..Default::default()
             },
             source,
@@ -443,10 +567,10 @@ impl ImageManager {
                 received_bytes: 0,
                 total_bytes: None,
             },
-            format: if kind == ImageKind::Firmware {
-                DiskFormat::Raw
-            } else {
+            format: if kind == ImageKind::Disk {
                 DiskFormat::Qcow2
+            } else {
+                DiskFormat::Raw
             },
             virtual_size_bytes: 0,
             file_size_bytes: 0,
@@ -459,7 +583,25 @@ impl ImageManager {
             pinned: req.nodes.clone(),
             release: Vec::new(),
             keep_server_copy: req.keep_server_copy.unwrap_or(true),
+            initrd: None,
+            cmdline: req.cmdline.clone(),
+            kernel_release: None,
+            for_image: None,
         };
+        if let Some((kernel_file, initrd_file)) = kernel_import {
+            // Copied before the record exists, so a failure leaves nothing.
+            let (mgr, id, arch) = (self.clone(), img.id.clone(), img.arch);
+            let installed = tokio::task::spawn_blocking(move || {
+                mgr.import_kernel(&id, arch, &kernel_file, initrd_file.as_deref())
+            })
+            .await
+            .map_err(|e| ImageError::Io(e.to_string()))??;
+            installed.apply(&mut img);
+            img.status = ImageStatus::Ready;
+            self.insert_image(&img)?;
+            tracing::info!(image = %img.name, source = ?img.source, "kernel imported");
+            return Ok((img, true));
+        }
         if let Some((code, vars)) = import {
             // A local copy: made before the record exists, so a failure
             // leaves nothing behind.
@@ -566,6 +708,20 @@ impl ImageManager {
     /// and the controller that resumes one race for the same image, and two
     /// downloads into one `.part` file fail each other.
     pub(crate) fn spawn_download(self: &Arc<Self>, id: String) {
+        let mgr = self.clone();
+        let task_id = id.clone();
+        self.spawn_task(id, async move { mgr.run_download(&task_id).await });
+    }
+
+    /// Run `work` for image `id` unless a task for it already runs (a
+    /// download, or an extraction, spec/kernel-boot.md §10). If it fails,
+    /// its temporary files go and an image still in progress is `Failed`;
+    /// never one that finished.
+    pub(crate) fn spawn_task(
+        self: &Arc<Self>,
+        id: String,
+        work: impl std::future::Future<Output = Result<(), ImageError>> + Send + 'static,
+    ) {
         let mut tasks = self.tasks.lock().unwrap();
         if tasks.contains_key(&id) {
             return;
@@ -573,16 +729,23 @@ impl ImageManager {
         let mgr = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let result = mgr.run_download(&task_id).await;
+            let result = work.await;
             mgr.tasks.lock().unwrap().remove(&task_id);
             if let Err(e) = result {
-                tracing::warn!(image = %task_id, "image download failed: {}", e);
-                let _ = std::fs::remove_file(mgr.part_path(&task_id));
-                // Only a download still in progress fails; never one that finished.
+                tracing::warn!(image = %task_id, "image download or extraction failed: {}", e);
+                for p in [
+                    mgr.part_path(&task_id),
+                    mgr.initrd_part_path(&task_id),
+                    mgr.extract_out_path(&task_id),
+                ] {
+                    let _ = std::fs::remove_file(p);
+                }
                 if let Some(mut img) = mgr.get_image(&task_id).ok().filter(|i| {
                     matches!(
                         i.status,
-                        ImageStatus::Downloading { .. } | ImageStatus::Verifying
+                        ImageStatus::Downloading { .. }
+                            | ImageStatus::Verifying
+                            | ImageStatus::Extracting
                     )
                 }) {
                     img.status = ImageStatus::Failed {
@@ -604,6 +767,11 @@ impl ImageManager {
             .await
             .map_err(|e| ImageError::Io(e.to_string()))?;
         let mut img = self.get_image(id)?;
+        if matches!(img.source, ImageSource::Extracted { .. }) {
+            return Err(ImageError::InvalidImage(
+                "an extracted kernel is not downloaded".into(),
+            ));
+        }
 
         if img.download.url.is_empty() {
             self.resolve_catalog(&mut img).await?;
@@ -655,6 +823,34 @@ impl ImageManager {
                 "checksum mismatch (expected {}, got {})",
                 want, got
             )));
+        }
+
+        if img.is_kernel() {
+            let initrd = match img.download.initrd_url.clone() {
+                Some(url) => Some(
+                    self.fetch_to_file(
+                        "initrd_url",
+                        &url,
+                        img.download.initrd_sha256.as_deref(),
+                        &self.initrd_part_path(id),
+                        self.settings.max_initrd_size,
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
+            let (mgr, id_owned, arch) = (self.clone(), id.to_string(), img.arch);
+            let installed = tokio::task::spawn_blocking(move || {
+                mgr.install_kernel(&id_owned, arch, sha256, initrd)
+            })
+            .await
+            .map_err(|e| ImageError::Io(e.to_string()))??;
+            let mut img = self.get_image(id)?;
+            installed.apply(&mut img);
+            img.status = ImageStatus::Ready;
+            self.put_image(&img)?;
+            tracing::info!(image = %img.name, release = ?img.kernel_release, "kernel image ready");
+            return Ok(());
         }
 
         let mgr = self.clone();
@@ -763,10 +959,10 @@ impl ImageManager {
             }
         }
         let total = resp.content_length().map(|n| n + *received);
-        let limit = if img.is_firmware() {
-            MAX_FIRMWARE_SIZE
-        } else {
-            self.settings.max_image_size.saturating_mul(2)
+        let limit = match img.kind {
+            ImageKind::Firmware => MAX_FIRMWARE_SIZE,
+            ImageKind::Kernel => self.settings.max_kernel_size,
+            ImageKind::Disk => self.settings.max_image_size.saturating_mul(2),
         };
         if let Some(t) = total
             && t > limit
@@ -1056,6 +1252,161 @@ impl ImageManager {
         Ok((size, sha256_file(&dest)?))
     }
 
+    /// Fetch a second file of an image (a kernel's initramfs) into `dest`:
+    /// one attempt (the image can be retried), at most `limit` bytes,
+    /// checked against `sha256` when given.
+    async fn fetch_to_file(
+        &self,
+        label: &str,
+        url: &str,
+        sha256: Option<&str>,
+        dest: &Path,
+        limit: u64,
+    ) -> Result<FileMeta, ImageError> {
+        let dl = |e: reqwest::Error| ImageError::Download(format!("{label}: {e}"));
+        let io = |e: std::io::Error| ImageError::Io(format!("{}: {}", dest.display(), e));
+        let resp = self.http.get(url).send().await.map_err(dl)?;
+        if !resp.status().is_success() {
+            return Err(ImageError::Download(format!(
+                "{label}: HTTP {} from {url}",
+                resp.status()
+            )));
+        }
+        if resp.content_length().is_some_and(|n| n > limit) {
+            return Err(ImageError::InvalidImage(format!(
+                "{label}: over the {limit} byte limit"
+            )));
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(dest)
+            .map_err(io)?;
+        let mut hashers = Hashers::new(None);
+        let mut size = 0u64;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(dl)?;
+            size += chunk.len() as u64;
+            if size > limit {
+                return Err(ImageError::InvalidImage(format!(
+                    "{label}: over the {limit} byte limit"
+                )));
+            }
+            file.write_all(&chunk).map_err(io)?;
+            hashers.update(&chunk);
+        }
+        file.sync_all().map_err(io)?;
+        if size == 0 {
+            return Err(ImageError::InvalidImage(format!("{label}: empty file")));
+        }
+        let (got, _) = hashers.finish(None);
+        if let Some(want) = sha256
+            && got != want
+        {
+            return Err(ImageError::InvalidImage(format!(
+                "{label}: checksum mismatch (expected {want}, got {got})"
+            )));
+        }
+        Ok(FileMeta {
+            sha256: got,
+            size_bytes: size,
+        })
+    }
+
+    /// Install a downloaded kernel (`<id>.qcow2.part`) and its initramfs
+    /// (`<id>.initrd.part`, when there is one): the header must be a
+    /// kernel for `arch` (K8). The initramfs is moved first, so a kernel
+    /// file in place means a complete image. Blocking.
+    pub(super) fn install_kernel(
+        &self,
+        id: &str,
+        arch: Arch,
+        sha256: String,
+        initrd: Option<FileMeta>,
+    ) -> Result<InstalledKernel, ImageError> {
+        let part = self.part_path(id);
+        let io = |p: &Path, e: std::io::Error| ImageError::Io(format!("{}: {}", p.display(), e));
+        let size = std::fs::metadata(&part).map_err(|e| io(&part, e))?.len();
+        let header = check_kernel_file(&part, size, arch, self.settings.max_kernel_size)?;
+        if initrd.is_some() {
+            let from = self.initrd_part_path(id);
+            std::fs::set_permissions(&from, std::fs::Permissions::from_mode(0o444))
+                .map_err(|e| io(&from, e))?;
+            std::fs::rename(&from, self.kernel_initrd_path(id)).map_err(|e| io(&from, e))?;
+        }
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o444))
+            .map_err(|e| io(&part, e))?;
+        std::fs::rename(&part, self.kernel_path(id)).map_err(|e| io(&part, e))?;
+        Ok(InstalledKernel {
+            size,
+            sha256,
+            release: header.release,
+            initrd,
+        })
+    }
+
+    /// Copy a host kernel (and initramfs) into a kernel image, read-only,
+    /// with the same checks as a download. Blocking.
+    fn import_kernel(
+        &self,
+        id: &str,
+        arch: Arch,
+        kernel_file: &Path,
+        initrd_file: Option<&Path>,
+    ) -> Result<InstalledKernel, ImageError> {
+        let io = |p: &Path, e: std::io::Error| ImageError::Io(format!("{}: {}", p.display(), e));
+        let copy = |from: &Path, to: &Path, limit: u64| -> Result<FileMeta, ImageError> {
+            let size = std::fs::metadata(from).map_err(|e| io(from, e))?.len();
+            if size == 0 || size > limit {
+                return Err(ImageError::InvalidImage(format!(
+                    "{} is {} bytes (limit {})",
+                    from.display(),
+                    size,
+                    limit
+                )));
+            }
+            let name = to.file_name().and_then(|n| n.to_str()).unwrap_or(id);
+            let tmp = self.settings.image_dir.join(format!(".{}.import", name));
+            std::fs::copy(from, &tmp).map_err(|e| io(from, e))?;
+            let sha256 = sha256_file(&tmp)?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444))
+                .map_err(|e| io(&tmp, e))?;
+            std::fs::rename(&tmp, to).map_err(|e| io(to, e))?;
+            Ok(FileMeta {
+                sha256,
+                size_bytes: size,
+            })
+        };
+        let size = std::fs::metadata(kernel_file)
+            .map_err(|e| io(kernel_file, e))?
+            .len();
+        let header = check_kernel_file(kernel_file, size, arch, self.settings.max_kernel_size)?;
+        let initrd = match initrd_file {
+            Some(f) => Some(copy(
+                f,
+                &self.kernel_initrd_path(id),
+                self.settings.max_initrd_size,
+            )?),
+            None => None,
+        };
+        let dest = self.kernel_path(id);
+        match copy(kernel_file, &dest, self.settings.max_kernel_size) {
+            Ok(k) => Ok(InstalledKernel {
+                size: k.size_bytes,
+                sha256: k.sha256,
+                release: header.release,
+                initrd,
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_file(self.kernel_initrd_path(id));
+                Err(e)
+            }
+        }
+    }
+
     /// Steps 4–6 of spec §5, blocking. Returns the final `qemu-img info`
     /// and the sha256 of the installed file.
     fn verify_and_install(
@@ -1113,9 +1464,88 @@ impl ImageManager {
     }
 }
 
+/// What installing a kernel image found.
+pub(super) struct InstalledKernel {
+    pub(super) size: u64,
+    pub(super) sha256: String,
+    pub(super) release: Option<String>,
+    pub(super) initrd: Option<FileMeta>,
+}
+
+impl InstalledKernel {
+    pub(super) fn apply(self, img: &mut Image) {
+        img.virtual_size_bytes = self.size;
+        img.file_size_bytes = self.size + self.initrd.as_ref().map_or(0, |i| i.size_bytes);
+        img.sha256 = self.sha256;
+        img.format = DiskFormat::Raw;
+        img.kernel_release = self.release;
+        img.initrd = self.initrd;
+    }
+}
+
+/// A kernel file's size and header (K8), for an image of `arch`.
+fn check_kernel_file(
+    path: &Path,
+    size: u64,
+    arch: Arch,
+    limit: u64,
+) -> Result<kernel::KernelHeader, ImageError> {
+    if size == 0 || size > limit {
+        return Err(ImageError::InvalidImage(format!(
+            "kernel is {size} bytes (limit {limit})"
+        )));
+    }
+    let mut head = vec![0u8; kernel::HEADER_LEN.min(size as usize)];
+    std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+        .map_err(|e| ImageError::Io(format!("{}: {}", path.display(), e)))?;
+    let header = kernel::inspect(&head)?;
+    if header.arch != arch {
+        return Err(ImageError::InvalidImage(format!(
+            "the kernel is for {}, the image for {}",
+            header.arch.as_str(),
+            arch.as_str()
+        )));
+    }
+    Ok(header)
+}
+
+/// A kernel image's default name from its file name: all of it (the
+/// release is in it), cut to a valid image name.
+fn kernel_name(file: &str) -> String {
+    let name: String = file
+        .trim_start_matches('.')
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    if name.is_empty() {
+        "kernel".to_string()
+    } else {
+        name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_names_keep_the_release() {
+        assert_eq!(
+            kernel_name("vmlinuz-6.8.0-147-generic"),
+            "vmlinuz-6.8.0-147-generic"
+        );
+        assert_eq!(kernel_name("..vmlinuz+x"), "vmlinuz-x");
+        assert_eq!(kernel_name(""), "kernel");
+        assert_eq!(kernel_name(&"a".repeat(100)).len(), 64);
+    }
 
     #[test]
     fn private_addresses() {

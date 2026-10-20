@@ -361,7 +361,7 @@ The image-cache controller (`controller/image_cache.rs`) works per
 the fetching node: another shared datastore it mounts, or a peer over
 the cluster port, as today. sha256 is checked either way.
 
-**Firmware images** follow the same rule. Launch resolves the firmware
+**Firmware and kernel images** ([kernel-boot.md](kernel-boot.md) §4) follow the same rule. Launch resolves the firmware
 path on the placed node (§15, bug 1).
 
 **Linked overlays.** New overlays are created with a relative backing

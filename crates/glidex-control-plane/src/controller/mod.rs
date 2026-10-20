@@ -7,6 +7,7 @@
 //! delays convergence until the next resync.
 
 pub mod disk;
+pub mod extract;
 pub mod image;
 pub mod image_cache;
 pub mod network;

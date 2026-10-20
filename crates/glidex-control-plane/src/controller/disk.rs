@@ -84,7 +84,10 @@ impl VmManager {
             let waiting = match self.images.get_image(image_id) {
                 Ok(img) => match img.status {
                     ImageStatus::Ready => None,
-                    ImageStatus::Downloading { .. } | ImageStatus::Verifying => Some((
+                    // Extracting: only a kernel image, never a disk's source.
+                    ImageStatus::Downloading { .. }
+                    | ImageStatus::Verifying
+                    | ImageStatus::Extracting => Some((
                         "ImageNotReady",
                         format!("waiting for image {} to download", img.name),
                         false,

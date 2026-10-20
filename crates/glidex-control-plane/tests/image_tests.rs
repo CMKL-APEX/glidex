@@ -187,6 +187,15 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("backing.qcow2".to_string(), fx.with_backing.clone());
     files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
     files.insert("vars.fd".to_string(), VARS.to_vec());
+    files.insert(
+        "vmlinuz-6.8.0-1-generic".to_string(),
+        bzimage("6.8.0-1-generic"),
+    );
+    files.insert(
+        "vmlinuz-6.9.0-2-generic".to_string(),
+        bzimage("6.9.0-2-generic"),
+    );
+    files.insert("initrd.img".to_string(), INITRD.to_vec());
     let hits = Arc::new(AtomicUsize::new(0));
     let st = Served {
         files: Arc::new(files),
@@ -204,6 +213,10 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // Every test sets the same value, so parallel tests don't race on it.
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1") };
+    // Never download the kernel extractor here; extraction runs in the
+    // ignored functional tests (spec/kernel-boot.md §10).
+    // SAFETY: as above.
+    unsafe { std::env::set_var("GLIDEX_KERNEL_EXTRACTION", "off") };
     let manager = common::with_db_path(dir.join("test.db")).unwrap();
     // Disks are made, resized and extended by the disk controller
     // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
@@ -349,6 +362,36 @@ async fn wait_image(app: &Router, id: &str) -> Value {
 const FIRMWARE: &[u8] = &[0x5a; 64 * 1024];
 /// A stand-in UEFI variable-store template.
 const VARS: &[u8] = &[0xa5; 16 * 1024];
+/// A stand-in initramfs (never booted).
+const INITRD: &[u8] = &[0x37; 48 * 1024];
+
+/// A stand-in kernel (never booted): an x86_64 bzImage header, boot
+/// protocol 2.15, carrying `release`.
+fn bzimage(release: &str) -> Vec<u8> {
+    let mut b = vec![0u8; 32 * 1024];
+    b[0x202..0x206].copy_from_slice(b"HdrS");
+    b[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes());
+    b[0x236..0x238].copy_from_slice(&0x7fu16.to_le_bytes());
+    b[0x20e..0x210].copy_from_slice(&0x200u16.to_le_bytes());
+    let v = format!("{release} (buildd@test) #1 SMP");
+    b[0x400..0x400 + v.len()].copy_from_slice(v.as_bytes());
+    b
+}
+
+/// Pull a served kernel with `initrd.img`, as a kernel image.
+async fn pull_kernel(app: &Router, base: &str, file: &str, name: &str) -> Value {
+    let body = json!({
+        "url": format!("{base}/{file}"), "kind": "IMAGE_KIND_KERNEL", "name": name,
+        "sha256": sha256_hex(&bzimage(file.trim_start_matches("vmlinuz-"))),
+        "initrd_url": format!("{base}/initrd.img"), "initrd_sha256": sha256_hex(INITRD),
+        "cmdline": "root=LABEL=cloudimg-rootfs ro console=ttyS0",
+    });
+    let (status, img) = request(app, "POST", "/images", Some(body)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    img
+}
 
 /// Pull `fw.fd` as a firmware image for `hypervisor`.
 /// A hypervisor's short name (`qemu`, `cloudhypervisor`) as its proto name.
@@ -1557,5 +1600,409 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
             .unwrap()
             .len(),
         540672
+    );
+}
+
+/// Kernel images (spec/kernel-boot.md K1): a URL download with its
+/// initramfs, checked digests and header, never a disk source.
+#[tokio::test]
+async fn kernel_images_are_downloaded_and_checked() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+
+    let k = pull_kernel(&app, &base, "vmlinuz-6.8.0-1-generic", "k1").await;
+    assert_eq!(k["kind"], "IMAGE_KIND_KERNEL", "{k}");
+    assert_eq!(k["verified"], true, "{k}");
+    assert_eq!(k["kernel"]["release"], "6.8.0-1-generic", "{k}");
+    assert_eq!(
+        k["kernel"]["cmdline"],
+        "root=LABEL=cloudimg-rootfs ro console=ttyS0"
+    );
+    assert_eq!(k["kernel"]["initrd"]["sha256"], sha256_hex(INITRD), "{k}");
+    let path = k["path"].as_str().unwrap();
+    assert!(path.ends_with(".kernel"), "{path}");
+    let initrd = path.replace(".kernel", ".initrd");
+    assert_eq!(std::fs::read(&initrd).unwrap(), INITRD);
+    use std::os::unix::fs::PermissionsExt;
+    for f in [path, initrd.as_str()] {
+        let mode = std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o444, "{f}");
+    }
+
+    // The default name keeps the release; no initrd is fine.
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "url": format!("{base}/vmlinuz-6.9.0-2-generic"), "kind": "IMAGE_KIND_KERNEL"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["name"], "vmlinuz-6.9.0-2-generic", "{img}");
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    assert!(img["kernel"]["initrd"].is_null(), "{img}");
+    assert_eq!(img["verified"], false, "no digest given: {img}");
+
+    // A wrong initramfs digest, and a file that isn't a kernel, fail the image.
+    let (_, bad) = request(&app, "POST", "/images", Some(json!({
+        "url": format!("{base}/vmlinuz-6.8.0-1-generic"), "kind": "IMAGE_KIND_KERNEL", "name": "bad-initrd",
+        "initrd_url": format!("{base}/initrd.img"), "initrd_sha256": sha256_hex(b"other"),
+    }))).await;
+    let bad = wait_image(&app, bad["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(bad["status"]["state"], "IMAGE_STATE_FAILED", "{bad}");
+    assert!(
+        bad["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("initrd_url: checksum mismatch"),
+        "{bad}"
+    );
+    let (_, junk) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "url": format!("{base}/fw.fd"), "kind": "IMAGE_KIND_KERNEL", "name": "junk"
+        })),
+    )
+    .await;
+    let junk = wait_image(&app, junk["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(junk["status"]["state"], "IMAGE_STATE_FAILED", "{junk}");
+    assert!(
+        junk["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a kernel"),
+        "{junk}"
+    );
+    assert!(
+        !tmp.path().join("images").read_dir().unwrap().any(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.ends_with(".part")
+        }),
+        "no partial files left"
+    );
+
+    // Kernel-only fields need a kernel; the command line is checked.
+    for body in [
+        json!({"url": format!("{base}/good.qcow2"), "initrd_url": format!("{base}/initrd.img")}),
+        json!({"url": format!("{base}/good.qcow2"), "cmdline": "ro"}),
+        json!({"url": format!("{base}/vmlinuz-6.8.0-1-generic"), "kind": "IMAGE_KIND_KERNEL", "cmdline": "a\nb"}),
+        json!({"url": format!("{base}/vmlinuz-6.8.0-1-generic"), "kind": "IMAGE_KIND_KERNEL", "initrd_sha256": sha256_hex(INITRD)}),
+        json!({"kernel_path": "relative/vmlinuz"}),
+        json!({"initrd_path": "/boot/initrd.img"}),
+    ] {
+        let (status, err) = request(&app, "POST", "/images", Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {err}");
+    }
+
+    // Never the source of a disk.
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({"name": "d", "image": "k1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(
+        err["message"].as_str().unwrap().contains("is a kernel"),
+        "{err}"
+    );
+
+    // Deleted with both files.
+    let (status, _) = request(&app, "DELETE", "/images/k1?wait=30", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!std::path::Path::new(path).exists() && !std::path::Path::new(&initrd).exists());
+}
+
+/// A kernel copied from host files (spec/kernel-boot.md §4.2): ready at
+/// once, recorded as a host source, unverified.
+#[tokio::test]
+async fn kernel_images_from_host_files() {
+    let tmp = TempDir::new().unwrap();
+    let (app, _manager) = create_app(tmp.path());
+    let kernel = tmp.path().join("vmlinuz-6.8.0-3-generic");
+    let initrd = tmp.path().join("initrd.img-6.8.0-3-generic");
+    std::fs::write(&kernel, bzimage("6.8.0-3-generic")).unwrap();
+    std::fs::write(&initrd, INITRD).unwrap();
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "kernel_path": kernel, "initrd_path": initrd
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = image_of(&img);
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    assert_eq!(img["name"], "vmlinuz-6.8.0-3-generic");
+    assert_eq!(
+        img["source"]["host"]["path"],
+        kernel.to_str().unwrap(),
+        "{img}"
+    );
+    assert_eq!(img["verified"], false);
+    assert_eq!(img["kernel"]["release"], "6.8.0-3-generic");
+    assert_eq!(img["kernel"]["initrd"]["sha256"], sha256_hex(INITRD));
+
+    // Not a kernel: refused before any record exists.
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "kernel_path": initrd, "name": "nope"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, _) = request(&app, "GET", "/images/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// VMs boot kernel images (spec/kernel-boot.md K2): no firmware needed for
+/// an image VM, the kernel's command line by default, a generated seed
+/// and so a credential, in-use protection, and a PATCH to another kernel.
+#[tokio::test]
+async fn vms_boot_kernel_images() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    let k1 = pull_kernel(&app, &base, "vmlinuz-6.8.0-1-generic", "k1").await;
+    let k2 = pull_kernel(&app, &base, "vmlinuz-6.9.0-2-generic", "k2").await;
+    let (status, c) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({
+            "username": "kuser", "password": "a-long-enough-password"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{c}");
+
+    // No firmware image exists: kernel boot doesn't need one.
+    let (status, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": "kb", "vcpu_count": 1, "mem_size_mib": 512, "image": "base",
+            "root_disk_size_gib": 1, "kernel": "k1", "credential": "kuser"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let v = vm_of(&vm);
+    assert_eq!(v["kernel"], k1["id"], "{vm}");
+    assert_eq!(v["boot"], "BOOT_MODE_KERNEL", "{vm}");
+    assert!(v["firmware"].is_null(), "{vm}");
+    assert!(
+        v["warnings"].is_null(),
+        "the kernel's cmdline has a root=: {vm}"
+    );
+    let id = id_of(&vm);
+    let c = manager.get_vm(&id).await.unwrap().spec.config;
+    assert_eq!(c.kernel_image.as_deref(), k1["id"].as_str());
+    assert_eq!(c.kernel_image_path, k1["path"].as_str().unwrap());
+    assert_eq!(
+        c.initrd_path.as_deref(),
+        Some(
+            k1["path"]
+                .as_str()
+                .unwrap()
+                .replace(".kernel", ".initrd")
+                .as_str()
+        )
+    );
+    assert_eq!(c.kernel_args, "root=LABEL=cloudimg-rootfs ro console=ttyS0");
+    assert_eq!(c.generate_seed, Some(true));
+    assert!(c.generates_seed());
+    assert!(c.firmware_path.is_none());
+
+    // One boot mode; a kernel image isn't firmware, nor the other way round.
+    let fw = pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+    for (body, what) in [
+        (
+            json!({"kernel": "k1", "firmware": "edk2"}),
+            "kernel and firmware",
+        ),
+        (
+            json!({"kernel": "k1", "kernel_image_path": "/k"}),
+            "two kernels",
+        ),
+        (json!({"kernel": "edk2"}), "firmware as a kernel"),
+        (json!({"firmware": "k1"}), "a kernel as firmware"),
+        (
+            json!({"kernel": "k1", "generate_seed": true, "cloud_init_path": "/seed.img"}),
+            "two seeds",
+        ),
+    ] {
+        let mut b = json!({"name": "x", "vcpu_count": 1, "mem_size_mib": 512, "image": "base"});
+        b.as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        let (status, err) = request(&app, "POST", "/vms", Some(b)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {err}");
+    }
+
+    // Explicit arguments win; without root= on a cloud image, a warning.
+    let (status, vm2) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": "kb2", "vcpu_count": 1, "mem_size_mib": 512, "image": "base",
+            "root_disk_size_gib": 1, "kernel": "k1", "kernel_args": "console=ttyS0"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm2}");
+    assert!(
+        vm_of(&vm2)["warnings"].to_string().contains("no root="),
+        "{vm2}"
+    );
+
+    // In use: the kernel stays.
+    let (status, err) = request(&app, "DELETE", "/images/k1", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    let (_, img) = request(&app, "GET", "/images/k1", None).await;
+    assert_eq!(img["image"]["used_by_vms"], json!(["kb", "kb2"]), "{img}");
+
+    // Another kernel at the next launch (K6), the same architecture.
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({
+            "change": {"kernel": "k2"}, "update_mask": "kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(vm_of(&body)["kernel"], k2["id"], "{body}");
+    let c = manager.get_vm(&id).await.unwrap().spec.config;
+    assert_eq!(c.kernel_image_path, k2["path"].as_str().unwrap());
+    // Not to firmware, and not on a VM without a kernel image.
+    let (status, err) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({
+            "change": {"kernel": "edk2"}, "update_mask": "kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, fwvm) = request(&app, "POST", "/vms", Some(json!({
+        "name": "fwvm", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{fwvm}");
+    assert_eq!(vm_of(&fwvm)["boot"], "BOOT_MODE_FIRMWARE", "{fwvm}");
+    assert_eq!(vm_of(&fwvm)["firmware"], fw["id"]);
+    let (status, err) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{}", id_of(&fwvm)),
+        Some(json!({
+            "change": {"kernel": "k2"}, "update_mask": "kernel"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, err) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({
+            "change": {}, "update_mask": "generate_seed"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+
+    // k1 is used by kb2 only now.
+    let (_, img) = request(&app, "GET", "/images/k1", None).await;
+    assert_eq!(img["image"]["used_by_vms"], json!(["kb2"]), "{img}");
+}
+
+/// `kernel_from` and `with_kernel` (spec/kernel-boot.md §10, K10), on a
+/// host where extraction is off: refused clearly, and a disk pull that
+/// asks for its kernel still pulls the disk.
+#[tokio::test]
+async fn kernel_extraction_requests() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"kernel_from": "base"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("can't be extracted"),
+        "{err}"
+    );
+    for body in [
+        json!({"kernel_from": "base", "url": format!("{base}/good.qcow2")}),
+        json!({"kernel_from": "base", "cmdline": "ro"}),
+        json!({"kernel_from": "base", "kind": "IMAGE_KIND_DISK"}),
+        json!({"kernel_from": "edk2"}),
+        json!({"kernel_from": "nope"}),
+        json!({"firmware": "cloudhv-edk2", "with_kernel": true}),
+        json!({"url": format!("{base}/vmlinuz-6.8.0-1-generic"), "kind": "IMAGE_KIND_KERNEL", "with_kernel": true}),
+    ] {
+        let (status, err) = request(&app, "POST", "/images", Some(body.clone())).await;
+        assert!(status.is_client_error(), "{body}: {status} {err}");
+    }
+
+    // The disk comes anyway; no kernel record without an extractor.
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "url": format!("{base}/good.qcow2"), "name": "with-k", "with_kernel": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    assert!(
+        !items(&all, "images")
+            .iter()
+            .any(|i| i["kind"] == "IMAGE_KIND_KERNEL"),
+        "{all}"
     );
 }
