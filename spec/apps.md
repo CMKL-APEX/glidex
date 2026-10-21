@@ -61,7 +61,7 @@ applications as a **layer above it**:
 | A8 | Secrets for people | Credentials an application must show its users (a database password, a first kubeconfig) are **sealed outputs** of the instance: stored sealed with the directory's data key (tenancy.md §13), shown only with **`readAppSecrets`**, every read audited. Where a guest system can trust the directory instead (Kubernetes' OIDC authentication, after T6), it does, and there is no secret to show. | Few secrets, each read on purpose and recorded. |
 | A9 | Quotas | An instance's VMs, disks and addresses count against its project's quotas like any others. The descriptor's estimate is checked before creating, so a create that can't fit is refused at once instead of failing halfway. | No new quota system. |
 | A10 | First applications | **Single-VM PostgreSQL** first (§8): small, and it exercises every part. Then **Kubernetes** (§9). | Prove the layer on something simple before the hard one. |
-| A11 | Kubernetes approach | A **Cluster API infrastructure provider** for glidex, run in a management cluster the apps service operates, with the kubeadm bootstrap and control-plane providers (§9). | Creation, upgrades, scaling and node repair come from the Kubernetes ecosystem's standard machinery (as OpenStack Magnum's Cluster API driver and Rancher do) instead of being rewritten here. To confirm (§12). |
+| A11 | Kubernetes approach | A **Cluster API infrastructure provider** for glidex, run in a management cluster the apps service operates, with the kubeadm bootstrap and control-plane providers (§9). | Creation, upgrades, scaling and node repair come from the Kubernetes ecosystem's standard machinery (as OpenStack Magnum's Cluster API driver and Rancher do) instead of being rewritten here. Decided for now (§12); our own kubeadm controller stays the fallback if running a management cluster proves too costly. |
 
 ## 3. How the pieces fit
 
@@ -315,10 +315,11 @@ interfaces.
 
 ## 12. Open questions
 
-1. **Kubernetes through Cluster API (A11)** needs a management cluster
-   the operator runs. The alternative is a smaller controller in
-   `glidex-apps` that drives kubeadm itself (no management cluster, but
-   upgrades and node repair written here). Recommendation: Cluster API.
+1. *Settled:* **Kubernetes through Cluster API (A11)**, for now, with a
+   management cluster run by the apps service. A controller in
+   `glidex-apps` driving kubeadm itself (no management cluster, upgrades
+   and node repair written here) is the fallback, revisited if the
+   management cluster's operation proves too costly in A3.
 2. **Where `glidex-apps` runs in a cluster of servers:** on every server
    with a lease per instance (recommended), or on one.
 3. **Who enables applications:** per cluster by operators (proposed),
