@@ -2,12 +2,13 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::tenancy;
+use crate::service::{directories, tenancy};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::tenancy::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = TenantServiceExt::register(Svc::new(app), router);
+    let router = DirectoryServiceExt::register(Svc::new(app), router);
     AdmissionServiceExt::register(Svc::new(app), router)
 }
 
@@ -182,5 +183,32 @@ impl AdmissionService for Svc {
         req: ServiceRequest<'_, RemoveAdmissionRequest>,
     ) -> ServiceResult<RemoveAdmissionResponse> {
         op!(self, ctx, req, tenancy::remove_admission)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl DirectoryService for Svc {
+    async fn list_directories(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListDirectoriesRequest>,
+    ) -> ServiceResult<ListDirectoriesResponse> {
+        op!(self, ctx, req, directories::list_directories)
+    }
+
+    async fn create_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateDirectoryRequest>,
+    ) -> ServiceResult<CreateDirectoryResponse> {
+        op!(self, ctx, req, directories::create_directory)
+    }
+
+    async fn delete_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteDirectoryRequest>,
+    ) -> ServiceResult<DeleteDirectoryResponse> {
+        op!(self, ctx, req, directories::delete_directory)
     }
 }

@@ -1840,7 +1840,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-and task 4a.
+and tasks 4a–4b.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1874,3 +1874,10 @@ Task 4a, records in one directory:
 | Membership | `AuthService::principal_directory`: members and role holders of a tenant, team or project must be of its directory (another's answer as missing, `400`) |
 | Tests | `connector_tests.rs::hosted_directories_dont_see_each_other` (a second directory made with `TenantStore::create_directory`) |
 | Not yet | Audit per directory, and hosted directories' own login (4c) |
+
+Task 4b, creating directories:
+
+| Spec | Code |
+|---|---|
+| D59 | `glidex.tenancy.v1.DirectoryService` (`service/directories.rs`): `ListDirectories` (`listDirectories`, `GET /directories`), `CreateDirectory` and `DeleteDirectory` (`manageDirectories`, step-up, in `cluster.directories` of `role.system-admin`); create makes the directory and its owner tenant in one write (`TenantStore::create_directory`), its first signing key, and the invitation (`role.tenant-admin` of the owner tenant, sign-in `passkey`), the link from the web UI's published address; delete refuses `local` and a directory with users, connectors or projects (`directory_not_empty`), and removes its tenants, invitations, keys and data key; gxctl `directory list|create|delete` |
+| Tests | `connector_tests.rs::the_operator_creates_and_deletes_directories` |

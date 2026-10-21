@@ -1327,6 +1327,24 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/directories",
+        "listDirectories",
+        get(tenants::list_directories),
+    )
+    .add(
+        "POST",
+        "/directories",
+        "manageDirectories",
+        post(tenants::create_directory),
+    )
+    .add(
+        "DELETE",
+        "/directories/{id}",
+        "manageDirectories",
+        delete(tenants::delete_directory),
+    )
+    .add(
+        "GET",
         "/admissions",
         "listAdmissions",
         get(tenants::list_admissions),

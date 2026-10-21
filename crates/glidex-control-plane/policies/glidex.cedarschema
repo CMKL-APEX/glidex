@@ -94,7 +94,7 @@ namespace Glidex {
   action "image.manage" in ["role.image-admin"];
   action "datastore.manage" in ["role.system-admin"];
   action "policy.write" in ["role.system-admin", "step-up"];
-  action "host.paths", "quota.exceed", "cluster.admissions" in ["role.system-admin"];
+  action "host.paths", "quota.exceed", "cluster.admissions", "cluster.directories" in ["role.system-admin"];
   // Tenants and directories (spec/tenancy.md §10.5).
   action "tenant.read" in ["role.tenant-auditor"];
   action "tenant.members", "tenant.projects", "tenant.federations" in ["role.tenant-admin"];
@@ -194,6 +194,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action confirmConnectorSync in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // Directories the host serves (spec/tenancy.md D59): the operator's.
+  action listDirectories in ["host.read", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action manageDirectories in ["cluster.directories", "step-up", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action listAdmissions in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageAdmissions in ["cluster.admissions", "step-up", "host-scoped"]

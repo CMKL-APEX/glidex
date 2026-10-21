@@ -554,6 +554,9 @@ UI's Host pages send it.
 | `POST` | `/tenants/{id}/invitations` | Invite an email address (`{email, role, connector, days}`); the link is returned once |
 | `DELETE` | `/invitations/{id}` | Revoke an invitation |
 | `GET` | `/admissions` | Tenants admitted on this site, with their caps |
+| `GET` | `/directories` | The directories this host serves (`id`, `name`, `issuer`, `created_at`); the operator's, who sees nothing inside them |
+| `POST` | `/directories` | `{id, name, owner, admin_email, days?}` → `201 {directory, invitation_link}`: a directory, its owner tenant, and an invitation for its first administrator, who signs in with a passkey; the link is shown once. Needs a recent login |
+| `DELETE` | `/directories/{id}` | Delete a directory nobody uses yet (no user, connector or project: else `409 directory_not_empty`); `local` stays. Needs a recent login |
 | `PUT` | `/admissions/{tenant}` | Admit a tenant or change its cap |
 | `DELETE` | `/admissions/{tenant}` | Remove an admission |
 | `GET` | `/connectors` | List login connectors |

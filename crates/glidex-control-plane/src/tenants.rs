@@ -469,6 +469,43 @@ impl TenantStore {
         Ok((d, t))
     }
 
+    /// Whether any project belongs to `tenant`.
+    pub fn has_projects(&self, tenant: &str) -> Result<bool, TenantError> {
+        Ok(self
+            .read_all::<crate::tenancy::Project>(PROJECTS)?
+            .iter()
+            .any(|p| p.tenant_id == tenant))
+    }
+
+    /// Remove hosted directory `id` and its tenants (the caller checked
+    /// that nothing else is left in it). Never `local`.
+    pub fn delete_directory(&self, id: &str) -> Result<(), TenantError> {
+        if id == LOCAL_DIRECTORY {
+            return Err(TenantError::Invalid(
+                "directory local can't be deleted".into(),
+            ));
+        }
+        let tenants: Vec<String> = self
+            .list()?
+            .into_iter()
+            .filter(|t| t.directory_id == id)
+            .map(|t| t.id)
+            .collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut d = txn.open_table(DIRECTORIES)?;
+            if d.remove(id)?.is_none() {
+                return Err(TenantError::NotFound(format!("directory {id}")));
+            }
+            let mut t = txn.open_table(TENANTS)?;
+            for k in &tenants {
+                t.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Fix `id`'s issuer URL (D52); the first one written stays unless
     /// `replace`.
     pub fn set_issuer(

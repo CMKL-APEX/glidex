@@ -440,6 +440,9 @@ same ids and names.
 | `AdmissionService` | `ListAdmissions` | `GET /admissions` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
+| `DirectoryService` | `ListDirectories` | `GET /directories` |
+|  | `CreateDirectory` | `POST /directories` |
+|  | `DeleteDirectory` | `DELETE /directories/{id}` |
 
 ### `glidex.directory.v1`
 
