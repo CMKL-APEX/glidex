@@ -368,6 +368,22 @@ pub struct PciPool {
     /// (spec/host-topology.md §5.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prepare: bool,
+    /// What a VM gets per device it asks of the pool by `gpus`, unless it
+    /// sizes itself (spec/gpu-vms.md §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_device: Option<PerDevice>,
+}
+
+/// A VM's share per device of a pool (spec/gpu-vms.md §6).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerDevice {
+    pub vcpus: u32,
+    pub memory_mib: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hugepages: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_policy: Option<crate::models::CpuPolicy>,
 }
 
 /// Which devices are a pool's: every key given must match.
@@ -723,6 +739,7 @@ mod tests {
             },
             nodes: vec![],
             prepare: false,
+            per_device: None,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],

@@ -152,6 +152,7 @@ fixed list take their full names, as in the table below
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
 | NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node; `NUMA_POLICY_ALIGNED`: across exactly its devices' NUMA nodes. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
+| GPUs | `gpus` | `{"count": 4, "pool": "a100"}`: that many GPUs, NUMA-aligned, the VM sized from the pool unless you size it. See [GPUs](#gpus). |
 | Device pools | `devices` | `[{"pool": "a100", "count": 1, "same_switch": false}]`: devices the scheduler picks from a pool your project may use; shown as `pool_devices`. See [Devices from a pool](#devices-from-a-pool). Changeable; applies at the next start. |
 | CPU policy | `cpu_policy` | `CPU_POLICY_SHARED` (default) or `CPU_POLICY_DEDICATED`: each vCPU on a host CPU of its own. Changeable; applies at the next start. |
 
@@ -334,6 +335,37 @@ A pool your tenant set up for some of its projects (a **tenant pool**)
 is asked for by its own name; the VM shows the cluster pool it draws
 from and `tenant_pool`. Devices from pools are metered
 (`device.alloc.<pool>`, see [Usage](usage.md)).
+
+#### GPUs
+
+For GPUs there's a shorter way: ask for a count and let the pool size
+the VM.
+
+```json
+{"name": "train-1", "image": "ubuntu-24.04", "gpus": {"count": 4, "pool": "a100"}}
+```
+
+- **Expansion:** `gpus` becomes a pool request for that many devices,
+  with `numa_policy: NUMA_POLICY_ALIGNED` (see [NUMA and dedicated
+  CPUs](#numa-and-dedicated-cpus)). vCPUs, memory, hugepages and the
+  CPU policy come from what the operator set per device on the pool,
+  times the count.
+- **Your values win:** `vcpu_count`, `mem_size_mib`, `numa_policy` or
+  `cpu_policy` you give yourself are kept.
+- **No pool named:** the project's only GPU pool is used. With several,
+  the request is refused and the error names them.
+- **On the VM:** it keeps `gpus` and shows what it came to (`devices`,
+  the policies, the sizing). `gxctl get <vm>` prints `GPUs:` and each
+  NUMA node's share.
+- **gxctl:** `gxctl create` asks "GPUs" (`4`, `4:a100`) before vCPUs
+  and memory. An empty vCPU or memory answer then takes the pool's
+  sizing.
+- **Web UI:** a GPU pool's count in **Device Pools** fills in the vCPU
+  and memory fields from the pool, until you change them by hand.
+- **Refusals** (`400`): a count of 0; no pool named when there are
+  several; a pool without per-device sizing and no `vcpu_count` /
+  `mem_size_mib`; `"nvlink": true`, until the cluster has an NVLink
+  fabric.
 
 ## Lifecycle
 

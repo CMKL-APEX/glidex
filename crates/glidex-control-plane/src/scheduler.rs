@@ -1799,6 +1799,7 @@ mod tests {
                 },
                 nodes: vec![],
                 prepare: false,
+                per_device: None,
             },
             count,
             same_switch,

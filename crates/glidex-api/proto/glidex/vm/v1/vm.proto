@@ -343,6 +343,9 @@ message Vm {
   optional string previous_kernel = 41 [json_name = "previous_kernel"];
   // NUMA_POLICY_ALIGNED over several NUMA nodes: each node's share.
   repeated NumaShare numa = 42;
+  // What it asked for with `gpus`, expanded into devices, policies and
+  // sizing above.
+  GpuRequest gpus = 43;
 }
 
 // How a VM boots (spec/kernel-boot.md).
@@ -364,6 +367,16 @@ message DeviceRequest {
   // Set by the server when `pool` named a tenant pool: that tenant pool,
   // with `pool` its cluster pool (spec/host-topology.md §9.1a).
   optional string tenant_pool = 4 [json_name = "tenant_pool"];
+}
+
+// N GPUs from a pool (spec/gpu-vms.md §3).
+message GpuRequest {
+  uint32 count = 1;
+  // Default: the project's only GPU pool (class "gpu").
+  optional string pool = 2;
+  // One NVLink fabric partition (spec/gpu-vms.md §7); refused until the
+  // cluster has a fabric.
+  optional bool nvlink = 3;
 }
 
 // A device picked for a pool request.
@@ -433,6 +446,9 @@ message CreateVmRequest {
   // when that changed (spec/kernel-boot.md K11). Needs `kernel` and a
   // managed root disk.
   optional bool kernel_from_disk = 33 [json_name = "kernel_from_disk"];
+  // N GPUs: expands to a pool request, NUMA_POLICY_ALIGNED and the pool's
+  // per-device sizing; fields given here win (spec/gpu-vms.md §3).
+  GpuRequest gpus = 34;
 }
 
 // The answer to a VM write (§12.3).
@@ -461,6 +477,8 @@ message PreviewPlacementRequest {
   NumaPolicy numa_policy = 12 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 13 [json_name = "cpu_policy"];
   repeated DeviceRequest devices = 14;
+  // As CreateVmRequest.gpus.
+  GpuRequest gpus = 15;
 }
 message NodeFit {
   string id = 1;

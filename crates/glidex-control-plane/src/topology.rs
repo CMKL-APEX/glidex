@@ -1214,6 +1214,7 @@ mod tests {
             matches: vfs,
             nodes: vec![],
             prepare: true,
+            per_device: None,
         };
         assert_eq!(t.to_prepare(std::slice::from_ref(&pool)), ["0000:61:00.3"]);
     }
@@ -1264,6 +1265,7 @@ mod tests {
             },
             nodes: vec![],
             prepare: true,
+            per_device: None,
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(

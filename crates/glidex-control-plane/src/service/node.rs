@@ -128,6 +128,8 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
                 class: p.class.clone(),
                 free: nodes.iter().map(|n| n.free).sum(),
                 nodes,
+                per_device_vcpus: p.per_device.as_ref().map(|d| d.vcpus),
+                per_device_memory_mib: p.per_device.as_ref().map(|d| d.memory_mib),
                 ..Default::default()
             }
         })
@@ -196,6 +198,14 @@ pub async fn list_pci_pools(
                         .iter()
                         .find(|c| c.name == t.from)
                         .and_then(|c| c.class.clone()),
+                    per_device_vcpus: all
+                        .iter()
+                        .find(|c| c.name == t.from)
+                        .and_then(|c| c.per_device_vcpus),
+                    per_device_memory_mib: all
+                        .iter()
+                        .find(|c| c.name == t.from)
+                        .and_then(|c| c.per_device_memory_mib),
                     free: if t.ungranted {
                         0
                     } else {

@@ -296,6 +296,8 @@ export interface CreateVmRequest {
   vfio_devices?: string[];
   /** Devices asked for by pool; the scheduler picks them (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  gpus?: { count: number; pool?: string; nvlink?: boolean };
   /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
   power?: ProtoPowerState;
   /** After a crash: restart (default) or leave it stopped. */

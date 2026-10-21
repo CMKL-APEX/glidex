@@ -177,6 +177,10 @@ pub struct VmConfig {
     /// scheduler picks them, `vfio_devices` names them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<DeviceRequest>,
+    /// `gpus`, as asked: already expanded into `devices`, the policies and
+    /// the sizing; kept to show and to expand again (spec/gpu-vms.md §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<GpuRequest>,
     /// At launch: the host NUMA node guest RAM is bound to, and the host
     /// CPU of each vCPU (dedicated), from the placement. Never persisted.
     #[serde(skip)]
@@ -337,6 +341,16 @@ fn one() -> u32 {
 pub struct PoolDevice {
     pub pool: String,
     pub address: String,
+}
+
+/// N GPUs from a pool (spec/gpu-vms.md §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuRequest {
+    pub count: u32,
+    /// The pool it resolved to.
+    pub pool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvlink: Option<bool>,
 }
 
 /// One host NUMA node's share of an `aligned` VM: guest NUMA node `i` of
