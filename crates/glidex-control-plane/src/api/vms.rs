@@ -414,7 +414,13 @@ fn pool_grants<'a>(
 pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
     pool_grants(c, name)
         .flat_map(|g| g.tenants.iter())
-        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .filter_map(|t| {
+            c.auth()
+                .tenants
+                .resolve_in(c.p.directory_id(), t)
+                .ok()
+                .map(|t| t.id)
+        })
         .collect()
 }
 
@@ -455,7 +461,13 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
     let tenants: Vec<String> = allow
         .iter()
         .flat_map(|g| g.tenants.iter())
-        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .filter_map(|t| {
+            c.auth()
+                .tenants
+                .resolve_in(c.p.directory_id(), t)
+                .ok()
+                .map(|t| t.id)
+        })
         .collect();
     let mut es = EntitySet::new();
     es.pci_device(node, bdf, &grants, &tenants);

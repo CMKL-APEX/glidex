@@ -746,6 +746,7 @@ mod tests {
     fn user(a: &UserAttrs) -> User {
         let mut u = User {
             id: "u1".into(),
+            directory_id: crate::auth::store::local_directory(),
             display_name: String::new(),
             disabled: !a.active,
             default_project: None,

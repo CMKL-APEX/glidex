@@ -625,6 +625,7 @@ pub fn access_principal(
     }
     let teams = app.auth.store.teams_of(&user.id).ok()?;
     Some(Principal {
+        directory: user.directory_id.clone(),
         user: Some(user),
         token: None,
         token_narrowed: false,

@@ -211,6 +211,8 @@ pub fn unlimited() -> Quotas {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub directory: Option<Directory>,
+    /// Every directory hosted here, `local` included (D27, D58).
+    pub directories: Vec<Directory>,
     pub tenants: Vec<Tenant>,
     pub admissions: Vec<Admission>,
     pub members: Vec<Member>,
@@ -234,6 +236,14 @@ impl Snapshot {
             .as_ref()
             .map(|d| d.owner_tenant.as_str())
             .unwrap_or(ADMIN_TENANT)
+    }
+
+    /// Directory `id`'s owner tenant.
+    pub fn owner_of(&self, id: &str) -> Option<&str> {
+        self.directories
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.owner_tenant.as_str())
     }
 }
 
@@ -400,6 +410,7 @@ impl TenantStore {
     pub fn snapshot(&self) -> Result<Snapshot, TenantError> {
         Ok(Snapshot {
             directory: self.directory()?,
+            directories: self.directories()?,
             tenants: self.list()?,
             admissions: self.admissions()?,
             members: self.read_all(MEMBERS)?,
@@ -414,6 +425,48 @@ impl TenantStore {
 
     pub fn get_directory(&self, id: &str) -> Result<Option<Directory>, TenantError> {
         Ok(self.directories()?.into_iter().find(|d| d.id == id))
+    }
+
+    /// A new hosted directory `id` (D27, D59) and its owner tenant `owner`,
+    /// in one write.
+    pub fn create_directory(
+        &self,
+        id: &str,
+        name: &str,
+        owner: &str,
+    ) -> Result<(Directory, Tenant), TenantError> {
+        validate_slug(id)?;
+        validate_slug(owner)?;
+        if self.get_directory(id)?.is_some() {
+            return Err(TenantError::AlreadyExists(format!("directory {id}")));
+        }
+        let at = now();
+        let t = Tenant {
+            id: uuid::Uuid::new_v4().to_string(),
+            directory_id: id.into(),
+            slug: owner.into(),
+            display_name: name.into(),
+            owns_directory: true,
+            operator: false,
+            suspended: false,
+            created_at: at,
+        };
+        let d = Directory {
+            id: id.into(),
+            name: name.into(),
+            owner_tenant: t.id.clone(),
+            created_at: at,
+            issuer: None,
+        };
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(DIRECTORIES)?
+                .insert(id, serde_json::to_vec(&d)?.as_slice())?;
+            txn.open_table(TENANTS)?
+                .insert(t.id.as_str(), serde_json::to_vec(&t)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok((d, t))
     }
 
     /// Fix `id`'s issuer URL (D52); the first one written stays unless
@@ -460,12 +513,20 @@ impl TenantStore {
         Ok(self.list()?.into_iter().find(|t| t.id == id))
     }
 
-    /// A tenant by id or by slug.
+    /// A tenant by id or by slug, slugs being `local`'s.
     pub fn resolve(&self, key: &str) -> Result<Tenant, TenantError> {
+        self.resolve_in(LOCAL_DIRECTORY, key)
+    }
+
+    /// A tenant by id, or by its slug in `directory` (D24).
+    pub fn resolve_in(&self, directory: &str, key: &str) -> Result<Tenant, TenantError> {
         let all = self.list()?;
         all.iter()
             .find(|t| t.id == key)
-            .or_else(|| all.iter().find(|t| t.slug == key))
+            .or_else(|| {
+                all.iter()
+                    .find(|t| t.slug == key && t.directory_id == directory)
+            })
             .cloned()
             .ok_or_else(|| TenantError::NotFound(key.to_string()))
     }
@@ -518,13 +579,28 @@ impl TenantStore {
         display_name: String,
         operator: bool,
     ) -> Result<Tenant, TenantError> {
+        self.create_in(LOCAL_DIRECTORY, slug, display_name, operator)
+    }
+
+    /// A tenant of `directory`; its slug is unique there (D24).
+    pub fn create_in(
+        &self,
+        directory: &str,
+        slug: &str,
+        display_name: String,
+        operator: bool,
+    ) -> Result<Tenant, TenantError> {
         validate_slug(slug)?;
-        if self.list()?.iter().any(|t| t.slug == slug || t.id == slug) {
+        if self
+            .list()?
+            .iter()
+            .any(|t| t.id == slug || (t.slug == slug && t.directory_id == directory))
+        {
             return Err(TenantError::AlreadyExists(slug.to_string()));
         }
         let t = Tenant {
             id: uuid::Uuid::new_v4().to_string(),
-            directory_id: LOCAL_DIRECTORY.into(),
+            directory_id: directory.into(),
             slug: slug.into(),
             display_name,
             owns_directory: false,

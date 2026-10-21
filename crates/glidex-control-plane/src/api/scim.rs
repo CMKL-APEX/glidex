@@ -319,7 +319,7 @@ pub async fn users(
             |c, base| {
                 let a = UserAttrs::from_json(&json_body(&body)?)?;
                 let provider = c.identity_provider();
-                app.auth.store.scim(&c.id, |tx| {
+                app.auth.store.scim(&c.directory_id, &c.id, |tx| {
                     unique_user_name(tx, &a.user_name, None)?;
                     // A connector that had JIT before SCIM: its user is adopted,
                     // not made twice.
@@ -338,6 +338,7 @@ pub async fn users(
                         1 => found.remove(0),
                         _ => User {
                             id: uuid::Uuid::new_v4().to_string(),
+                            directory_id: c.directory_id.clone(),
                             display_name: String::new(),
                             disabled: false,
                             default_project: None,
@@ -410,7 +411,7 @@ pub async fn user(
         } else {
             json_body(&body)?
         };
-        app.auth.store.scim(&c.id, |tx| {
+        app.auth.store.scim(&c.directory_id, &c.id, |tx| {
             let mut u = managed_user(tx, &uid)?;
             if method == Method::DELETE {
                 // D42: disabled, and no longer the IdP's.
@@ -494,7 +495,7 @@ pub async fn groups(
             Some("scimCreateGroup"),
             |c, base| {
                 let a = GroupAttrs::from_json(&json_body(&body)?)?;
-                app.auth.store.scim(&c.id, |tx| {
+                app.auth.store.scim(&c.directory_id, &c.id, |tx| {
                     unique_group(tx, &a.display_name, None)?;
                     let now = crate::auth::store::now();
                     let g = ScimGroup {
@@ -566,7 +567,7 @@ pub async fn group(
         } else {
             json_body(&body)?
         };
-        app.auth.store.scim(&c.id, |tx| {
+        app.auth.store.scim(&c.directory_id, &c.id, |tx| {
             let mut g = tx
                 .groups()?
                 .into_iter()

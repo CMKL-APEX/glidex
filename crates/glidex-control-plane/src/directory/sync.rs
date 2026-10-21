@@ -356,6 +356,7 @@ fn apply_op(tx: &ScimTx<'_>, c: &Connector, op: &Op) -> Result<(), SyncError> {
         Op::Create(id, su) => {
             let mut u = User {
                 id: id.clone(),
+                directory_id: c.directory_id.clone(),
                 display_name: String::new(),
                 disabled: false,
                 default_project: None,
@@ -531,14 +532,14 @@ async fn run_once(
 /// go last, in their own write.
 pub fn apply(auth: &AuthService, c: &Connector, p: &Plan) -> Result<(), SyncError> {
     for chunk in p.ops.chunks(CHUNK) {
-        auth.store.scim(&c.id, |tx| {
+        auth.store.scim(&c.directory_id, &c.id, |tx| {
             for op in chunk {
                 apply_op(tx, c, op)?;
             }
             Ok::<_, SyncError>(())
         })?;
     }
-    auth.store.scim(&c.id, |tx| {
+    auth.store.scim(&c.directory_id, &c.id, |tx| {
         let keep: BTreeSet<&str> = p.groups.iter().map(|g| g.id.as_str()).collect();
         for g in tx.groups()? {
             if !keep.contains(g.id.as_str()) {
@@ -629,6 +630,7 @@ mod tests {
     fn managed(id: &str, ext: &str, disabled: Option<DisabledReason>) -> User {
         User {
             id: id.into(),
+            directory_id: crate::auth::store::local_directory(),
             display_name: ext.to_uppercase(),
             disabled: disabled.is_some(),
             default_project: None,
