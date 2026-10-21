@@ -896,6 +896,7 @@ async fn oidc_login_through_an_api_connector() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,
@@ -2239,6 +2240,7 @@ async fn deleting_a_user_takes_what_is_its_alone() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![auth::store::TeamMember {
                 user_id: bob.clone(),
@@ -2502,6 +2504,7 @@ async fn managed_users_and_teams_belong_to_their_connector() {
         store
             .put_team(&Team {
                 id: id.into(),
+                directory_id: "local".into(),
                 name: name.into(),
                 members: vec![
                     TeamMember {
@@ -4780,4 +4783,172 @@ async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
         (StatusCode::BAD_REQUEST, Some("invalid_grant")),
         "{v}"
     );
+}
+
+/// spec/tenancy.md D58: two directories on one host. Each administrator
+/// sees and changes only its own directory's users, teams, tenants and
+/// connectors; the other's records answer as missing; nobody becomes a
+/// member of the other directory's tenants.
+#[tokio::test]
+async fn hosted_directories_dont_see_each_other() {
+    let h = harness();
+    let root = h.admin("root");
+    let local_admin = h.session(&root);
+    let alice = h.user("alice");
+    // A second directory, `acme`, with its own administrator.
+    let (_, owner) = h
+        .app
+        .auth
+        .tenants
+        .create_directory("acme", "Acme", "acme-admin")
+        .unwrap();
+    let bob = h
+        .app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "bob", "bob", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .tenants
+        .add_member(&owner.id, Ent::User(bob.clone()), "test")
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(bob.clone()),
+            Ent::Directory("acme".into()),
+            "test",
+        )
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(bob.clone()),
+            Ent::Tenant(owner.id.clone()),
+            "test",
+        )
+        .unwrap();
+    let acme_admin = h.session(&bob);
+
+    let ids = |v: &Value, list: &str| -> Vec<String> {
+        v[list]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x["id"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Users: each sees its own.
+    let (s, v) = h.rest("GET", "/users", None, &acme_admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v, "users"), vec![bob.clone()], "{v}");
+    let (_, v) = h.rest("GET", "/users", None, &local_admin).await;
+    let local_users = ids(&v, "users");
+    assert!(
+        local_users.contains(&alice) && !local_users.contains(&bob),
+        "{v}"
+    );
+    // Another directory's user is missing, not forbidden.
+    let (s, _) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{alice}"),
+            Some(json!({"display_name": "x"})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = h
+        .rest("DELETE", &format!("/users/{bob}"), None, &local_admin)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Teams made by each stay in its directory.
+    let (s, t) = h
+        .rest(
+            "POST",
+            "/teams",
+            Some(json!({"name": "acme-ops"})),
+            &acme_admin,
+        )
+        .await;
+    assert!(s.is_success(), "{t}");
+    let team = t["team"]["id"].as_str().unwrap().to_string();
+    let (_, v) = h.rest("GET", "/teams", None, &local_admin).await;
+    assert!(!ids(&v, "teams").contains(&team), "{v}");
+    let (_, v) = h.rest("GET", "/teams", None, &acme_admin).await;
+    assert_eq!(ids(&v, "teams"), vec![team.clone()], "{v}");
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/teams/{team}/members"),
+            Some(json!({"user": alice})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "alice isn't acme's");
+
+    // Tenants and connectors.
+    let (_, v) = h.rest("GET", "/tenants", None, &acme_admin).await;
+    assert_eq!(ids(&v, "tenants"), vec![owner.id.clone()], "{v}");
+    let (_, v) = h.rest("GET", "/tenants", None, &local_admin).await;
+    assert!(!ids(&v, "tenants").contains(&owner.id), "{v}");
+    let (_, v) = h.rest("GET", "/connectors", None, &acme_admin).await;
+    assert!(
+        ids(&v, "connectors").is_empty(),
+        "the host's connectors aren't acme's: {v}"
+    );
+    // The same slug can live in both directories.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "shared"})),
+            &local_admin,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "shared"})),
+            &acme_admin,
+        )
+        .await;
+    assert!(s.is_success(), "a slug is per directory: {v}");
+
+    // Nobody joins the other directory's tenants.
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{}/members", owner.id),
+            Some(json!({"principal": {"type": "User", "id": alice}})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/tenants/default/members",
+            Some(json!({"principal": {"type": "User", "id": bob}})),
+            &local_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // And neither administrates the other's directory or tenants.
+    let (s, _) = h
+        .rest("GET", &format!("/tenants/{}", owner.id), None, &local_admin)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = h.rest("GET", "/tenants/admin", None, &acme_admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

@@ -1300,6 +1300,7 @@ async fn pam_login_provisions_on_first_login() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,
@@ -1769,6 +1770,7 @@ async fn oidc_code_flow_with_pkce() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,

@@ -4,7 +4,7 @@
 //! else.
 
 use super::{Call, ServiceError, ServiceResult};
-use crate::api::{auth_error, directory_ent};
+use crate::api::auth_error;
 use crate::authz::{Ent, EntitySet, TENANT_ROLES};
 use crate::tenants::{self, AdmissionStatus, TenantError};
 use axum::http::StatusCode;
@@ -160,19 +160,15 @@ fn tenant_pb(call: &Call, t: &tenants::Tenant) -> ServiceResult<pb::Tenant> {
     })
 }
 
-fn principal_exists(call: &Call, e: &Ent) -> ServiceResult<()> {
-    let s = &call.auth().store;
-    let ok = match e {
-        Ent::User(id) => s.user(id).map_err(|e| auth_error(e.into()))?.is_some(),
-        Ent::Team(id) => {
-            id.starts_with("unix:") || s.team(id).map_err(|e| auth_error(e.into()))?.is_some()
-        }
-        Ent::Token(id) => s
-            .token_by_id(id)
-            .map_err(|e| auth_error(e.into()))?
-            .is_some(),
-        _ => false,
-    };
+/// `e` exists in `directory`: nobody is a member or holds a role in
+/// another directory's tenant (D3, D58); another directory's principals
+/// answer as missing.
+fn principal_exists(call: &Call, e: &Ent, directory: &str) -> ServiceResult<()> {
+    let ok = call
+        .auth()
+        .principal_directory(e)
+        .map_err(auth_error)?
+        .is_some_and(|d| d == directory);
     if ok {
         Ok(())
     } else {
@@ -188,7 +184,11 @@ fn principal_exists(call: &Call, e: &Ent) -> ServiceResult<()> {
 /// projects, security.md §7.4).
 pub(crate) fn visible(call: &Call, key: &str) -> ServiceResult<tenants::Tenant> {
     let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "tenant not found");
-    let t = call.auth().tenants.resolve(key).map_err(|_| not_found())?;
+    let t = call
+        .auth()
+        .tenants
+        .resolve_in(call.p.directory_id(), key)
+        .map_err(|_| not_found())?;
     call.set_target(format!("tenant:{}", t.id));
     call.require_visible(
         "readTenant",
@@ -206,9 +206,10 @@ pub fn list_tenants(
     req: pb::ListTenantsRequest,
 ) -> ServiceResult<pb::ListTenantsResponse> {
     let all = call.auth().tenants.list().map_err(tenant_error)?;
-    let everyone = call.allowed("listTenants", directory_ent(), EntitySet::new());
+    let everyone = call.allowed("listTenants", call.directory_ent(), EntitySet::new());
     let visible: Vec<_> = all
         .into_iter()
+        .filter(|t| t.directory_id == call.p.directory_id())
         .filter(|t| {
             everyone || call.allowed("readTenant", Ent::Tenant(t.id.clone()), EntitySet::new())
         })
@@ -254,11 +255,16 @@ pub fn create_tenant(
     call: &Call,
     req: pb::CreateTenantRequest,
 ) -> ServiceResult<pb::CreateTenantResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let t = call
         .auth()
         .tenants
-        .create(&req.slug, req.display_name, req.operator.unwrap_or(false))
+        .create_in(
+            call.p.directory_id(),
+            &req.slug,
+            req.display_name,
+            req.operator.unwrap_or(false),
+        )
         .map_err(tenant_error)?;
     call.set_target(format!("tenant:{}", t.id));
     call.detail("slug", serde_json::json!(t.slug));
@@ -415,7 +421,7 @@ pub fn add_member(call: &Call, req: pb::AddMemberRequest) -> ServiceResult<pb::A
     let principal = entity_from(req.principal.as_option().ok_or_else(|| {
         ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
     })?)?;
-    principal_exists(call, &principal)?;
+    principal_exists(call, &principal, &t.directory_id)?;
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();
     let m = call
@@ -517,7 +523,7 @@ pub fn add_binding(
     let principal = entity_from(req.principal.as_option().ok_or_else(|| {
         ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
     })?)?;
-    principal_exists(call, &principal)?;
+    principal_exists(call, &principal, &t.directory_id)?;
     call.detail("role", serde_json::json!(req.role));
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();

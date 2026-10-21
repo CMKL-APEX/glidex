@@ -123,20 +123,26 @@ pub struct Principal {
     /// The federated token this request came with (spec/tenancy.md D48):
     /// it acts as `token`, its service account; audit names both.
     pub federated: Option<String>,
+    /// The directory it belongs to (D58): its user's, or its service
+    /// account's project's.
+    #[serde(default = "store::local_directory")]
+    pub directory: String,
 }
 
 impl Principal {
     /// The directory the principal belongs to (spec/tenancy.md §6). A host
     /// hosts one directory until directories and clusters come apart (T6).
     pub fn directory_id(&self) -> &str {
-        crate::tenants::LOCAL_DIRECTORY
+        &self.directory
     }
 
     /// The synthetic principal of [`AuthService::disabled`].
     pub fn system() -> Self {
         Principal {
+            directory: store::local_directory(),
             user: Some(User {
                 id: "system".into(),
+                directory_id: store::local_directory(),
                 display_name: "system".into(),
                 disabled: false,
                 default_project: None,
@@ -852,16 +858,40 @@ impl AuthService {
         wanted.extend(project_tenants);
         wanted.extend(tenants.iter().cloned());
         wanted.extend(owner.iter().cloned());
+        // The directory the request is about (D58): the one it names, else
+        // its resource's tenant's, else the caller's own.
+        let directory = match resource {
+            Ent::Directory(d) => d.clone(),
+            _ => owner
+                .as_deref()
+                .and_then(|t| snap.tenant(t))
+                .map(|t| t.directory_id.clone())
+                .unwrap_or_else(|| p.directory_id().to_string()),
+        };
         wanted.push(snap.operator.clone());
         wanted.push(snap.owner().to_string());
+        if let Some(o) = snap.owner_of(&directory) {
+            wanted.push(o.to_string());
+        }
         wanted.sort();
         wanted.dedup();
-        let directory = snap
-            .directory
-            .as_ref()
-            .map(|d| d.id.clone())
-            .unwrap_or_else(|| LOCAL_DIRECTORY.to_string());
-        es.directory(&directory, snap.owner());
+        // Every directory the request's tenants are in, with its owner.
+        let mut dirs: Vec<String> = wanted
+            .iter()
+            .filter_map(|t| snap.tenant(t).map(|r| r.directory_id.clone()))
+            .collect();
+        dirs.push(directory.clone());
+        dirs.push(LOCAL_DIRECTORY.to_string());
+        dirs.sort();
+        dirs.dedup();
+        for d in &dirs {
+            let owner = snap.owner_of(d).unwrap_or(if d == LOCAL_DIRECTORY {
+                snap.owner()
+            } else {
+                ""
+            });
+            es.directory(d, owner);
+        }
         for t in &wanted {
             match snap.tenant(t) {
                 Some(rec) => es.tenant(
@@ -1022,6 +1052,7 @@ impl AuthService {
             teams.push(authz::BREAK_GLASS_TEAM.into());
         }
         Ok(Some(Principal {
+            directory: u.directory_id.clone(),
             user: Some(u),
             token: None,
             token_narrowed: false,
@@ -1036,6 +1067,46 @@ impl AuthService {
             mfa: false,
             federated: None,
         }))
+    }
+
+    /// The directory of a user, team or token (D58); `None` when it
+    /// doesn't exist. Host groups (`unix:`) are `local`'s.
+    pub fn principal_directory(&self, e: &Ent) -> Result<Option<String>, AuthError> {
+        Ok(match e {
+            Ent::User(id) => self.store.user(id)?.map(|u| u.directory_id),
+            Ent::Team(id) if id.starts_with("unix:") => Some(store::local_directory()),
+            Ent::Team(id) => self.store.team(id)?.map(|t| t.directory_id),
+            Ent::Token(id) => self
+                .store
+                .token_by_id(id)?
+                .map(|(_, t)| self.token_directory(&t, None)),
+            _ => None,
+        })
+    }
+
+    /// A token's directory (D58): its owner's, or its service account's
+    /// project's tenant's.
+    pub fn token_directory(&self, t: &Token, owner: Option<&User>) -> String {
+        if let Some(u) = owner {
+            return u.directory_id.clone();
+        }
+        match &t.kind {
+            TokenKind::Personal { owner } => self
+                .store
+                .user(owner)
+                .ok()
+                .flatten()
+                .map(|u| u.directory_id)
+                .unwrap_or_else(store::local_directory),
+            TokenKind::ServiceAccount { project } => self
+                .tenants
+                .project_tenant(project)
+                .ok()
+                .flatten()
+                .and_then(|t| self.tenants.get(&t).ok().flatten())
+                .map(|t| t.directory_id)
+                .unwrap_or_else(store::local_directory),
+        }
     }
 
     /// The principal for a session cookie value.
@@ -1074,6 +1145,7 @@ impl AuthService {
             _ => Method::Pam,
         };
         Ok(Some(Principal {
+            directory: user.directory_id.clone(),
             user: Some(user),
             token: None,
             token_narrowed: false,
@@ -1130,6 +1202,7 @@ impl AuthService {
             self.store.put_token(&hash, &t)?;
         }
         Ok(Some(Principal {
+            directory: self.token_directory(&t, user.as_ref()),
             user,
             token: Some(t),
             token_narrowed: narrowed,
@@ -1194,6 +1267,7 @@ impl AuthService {
             .iter()
             .any(|l| l.link.principal == Ent::Token(sa.id.clone()));
         Ok(Some(Principal {
+            directory: self.token_directory(&sa, None),
             user: None,
             token: Some(sa),
             token_narrowed: narrowed,
@@ -1217,6 +1291,11 @@ impl AuthService {
                     teams: Vec<String>,
                     narrowed: bool,
                     method: Method| Principal {
+            directory: match (&user, &token) {
+                (Some(u), _) => u.directory_id.clone(),
+                (None, Some(t)) => self.token_directory(t, None),
+                _ => store::local_directory(),
+            },
             user,
             token,
             token_narrowed: narrowed,
@@ -1494,7 +1573,8 @@ impl AuthService {
         }
         let user = self
             .store
-            .user_for_identity(
+            .user_for_identity_in(
+                &c.directory_id,
                 &provider,
                 &id.subject,
                 &id.display_name,
@@ -2294,6 +2374,7 @@ mod tests {
         s.store
             .put_team(&store::Team {
                 id: "t1".into(),
+                directory_id: store::local_directory(),
                 name: "lab".into(),
                 members: vec![],
                 created_at: 0,

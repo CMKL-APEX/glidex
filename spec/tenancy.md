@@ -1839,7 +1839,8 @@ Task 5, SSH keys from Google:
 | "My SSH keys" | `UserService.GetMySshKeys` answers them, `source: connector:<id>`, when the host has no local login for the user (a local account's keys come first, `source: local`); the credential form says where they came from |
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
-**T6** (directories and clusters apart) is in progress: tasks 1–3 of §18.
+**T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
+and task 4a.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1862,3 +1863,14 @@ Task 3, the directory as OpenID provider:
 | Tests | `op.rs` unit tests (redirects, PKCE vectors of RFC 7636, codes, device grants, rotation and reuse, limits); `connector_tests.rs::the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens` |
 | gxctl (D57) | `auth login --directory [ID]` (`bin/gxctl/dirlogin.rs`): the device grant, the profile's `directory` (the refresh token, the `resource`, when the access token expires) and the access token as its `token`; `refresh_if_due` before each run renews it 2 minutes before it expires, sending no credential |
 | Web UI | `/device` (`pages/Device.tsx`): a user code, checked and approved or denied by the signed-in user; `/?next=/d/…` goes back to the authorize request after a login (`session.tsx`); e2e `device-login.spec.ts` |
+
+Task 4a, records in one directory:
+
+| Spec | Code |
+|---|---|
+| D58 | `User.directory_id` and `Team.directory_id` (`local` by default, so older records need no migration); `Principal::directory_id`: its user's, or its token's (`AuthService::token_directory`: the owner's, or the service account's project's tenant's); users made by a connector's login (`user_for_identity_in`), SCIM (`ScimTx::directory`) or a pull get the connector's directory, by the API the caller's |
+| Context | `Caller::directory_ent`: every directory request (users, teams, connectors, tenants, tokens, signing keys) is about the caller's directory; `complete_tenancy` decides it as the resource's (a `Directory`, or its tenant's), else the caller's, and adds each involved directory with its owner tenant (`Snapshot::directories`, `owner_of`) |
+| Filters | lists keep the caller's directory (`list_users`, `list_teams`, `list_tokens`, `list_connectors`, `list_tenants`); another directory's user, team or connector answers `404` (`user_here`, `team`, `get_visible`); tenant slugs resolve in the caller's directory (`TenantStore::resolve_in`) and are unique there (`create_in`) |
+| Membership | `AuthService::principal_directory`: members and role holders of a tenant, team or project must be of its directory (another's answer as missing, `400`) |
+| Tests | `connector_tests.rs::hosted_directories_dont_see_each_other` (a second directory made with `TenantStore::create_directory`) |
+| Not yet | Audit per directory, and hosted directories' own login (4c) |

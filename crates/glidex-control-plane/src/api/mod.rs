@@ -1974,6 +1974,12 @@ impl Caller {
         &self.app.auth
     }
 
+    /// The directory a request about directory records is about: the
+    /// caller's own (spec/tenancy.md D58).
+    pub fn directory_ent(&self) -> Ent {
+        Ent::Directory(self.p.directory_id().to_string())
+    }
+
     /// Ask Cedar, recording the decision for the audit entry.
     /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
     fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
@@ -2281,11 +2287,6 @@ pub(crate) fn auth_error(e: AuthError) -> ApiErr {
 }
 
 // ---- entities for Cedar ---------------------------------------------------
-
-/// The directory this host hosts (spec/tenancy.md D32).
-pub(crate) fn directory_ent() -> Ent {
-    Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into())
-}
 
 pub(crate) fn project_entities(project: &str) -> EntitySet {
     let mut es = EntitySet::new();
