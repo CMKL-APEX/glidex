@@ -181,6 +181,10 @@ pub struct VmConfig {
     /// CPU of each vCPU (dedicated), from the placement. Never persisted.
     #[serde(skip)]
     pub host_numa_node: Option<u32>,
+    /// At launch, `aligned` over several NUMA nodes: the placement's shares,
+    /// one guest NUMA node each. Never persisted.
+    #[serde(skip)]
+    pub host_numa: Vec<NumaShare>,
     #[serde(skip)]
     pub vcpu_pins: Vec<u32>,
     /// Host-side NIC bindings from glidex-netd, filled in by `start_vm`
@@ -293,6 +297,10 @@ pub struct Placement {
     /// §6), under a NUMA policy that fitted one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numa_node: Option<u32>,
+    /// `aligned` over several NUMA nodes: each node's share, in guest NUMA
+    /// node order (spec/gpu-vms.md §4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub numa: Vec<NumaShare>,
     /// Dedicated: the host CPUs the VM holds, vCPU `i` on `cpus[i]`; with
     /// whole cores, the idle siblings follow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -331,6 +339,19 @@ pub struct PoolDevice {
     pub address: String,
 }
 
+/// One host NUMA node's share of an `aligned` VM: guest NUMA node `i` of
+/// the VM is `numa[i]` (spec/gpu-vms.md §4).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumaShare {
+    /// The host NUMA node.
+    pub node: u32,
+    pub vcpus: u32,
+    pub memory_mib: u64,
+    /// PCI addresses of the VM's devices on that node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
+}
+
 /// spec/host-topology.md H5: `preferred` keeps memory (and CPUs and
 /// devices) on one host NUMA node when one fits, `strict` refuses a node
 /// where they can't be.
@@ -341,6 +362,10 @@ pub enum NumaPolicy {
     None,
     Preferred,
     Strict,
+    /// Exactly the NUMA nodes of the VM's devices, with its vCPUs and
+    /// memory split between them by their device counts, and the same
+    /// layout in the guest (spec/gpu-vms.md §4–§5).
+    Aligned,
 }
 
 impl NumaPolicy {

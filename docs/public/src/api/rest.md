@@ -297,7 +297,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
 | `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path` |
-| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU and `devices` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned` and `pool_devices` |
+| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU and `devices` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
 | `GET` | `/vms/{id}` | Get a VM |
 | `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy` and `devices` |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |

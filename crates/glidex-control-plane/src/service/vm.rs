@@ -76,6 +76,7 @@ fn numa_pb(p: m::NumaPolicy) -> pb::NumaPolicy {
         m::NumaPolicy::None => pb::NumaPolicy::NUMA_POLICY_NONE,
         m::NumaPolicy::Preferred => pb::NumaPolicy::NUMA_POLICY_PREFERRED,
         m::NumaPolicy::Strict => pb::NumaPolicy::NUMA_POLICY_STRICT,
+        m::NumaPolicy::Aligned => pb::NumaPolicy::NUMA_POLICY_ALIGNED,
     }
 }
 
@@ -84,7 +85,18 @@ fn numa_of(p: pb::NumaPolicy) -> Option<m::NumaPolicy> {
         pb::NumaPolicy::NUMA_POLICY_NONE => Some(m::NumaPolicy::None),
         pb::NumaPolicy::NUMA_POLICY_PREFERRED => Some(m::NumaPolicy::Preferred),
         pb::NumaPolicy::NUMA_POLICY_STRICT => Some(m::NumaPolicy::Strict),
+        pb::NumaPolicy::NUMA_POLICY_ALIGNED => Some(m::NumaPolicy::Aligned),
         pb::NumaPolicy::NUMA_POLICY_UNSPECIFIED => None,
+    }
+}
+
+fn numa_share_pb(s: &m::NumaShare) -> pb::NumaShare {
+    pb::NumaShare {
+        node: s.node,
+        vcpus: s.vcpus,
+        memory_mib: s.memory_mib,
+        devices: s.devices.clone(),
+        ..Default::default()
     }
 }
 
@@ -217,6 +229,13 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         numa_policy: numa_pb(config.numa_policy).into(),
         cpu_policy: cpu_pb(config.cpu_policy).into(),
         numa_node: vm.status.placement.as_ref().and_then(|p| p.numa_node),
+        numa: vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.numa.iter())
+            .map(numa_share_pb)
+            .collect(),
         cpus: vm
             .status
             .placement
@@ -570,6 +589,7 @@ pub async fn preview_placement(
                 numa_node: f.numa_node,
                 cpus: f.cpus,
                 pool_devices: f.pool_devices.iter().map(pool_device_pb).collect(),
+                numa: f.numa.iter().map(numa_share_pb).collect(),
                 ..Default::default()
             })
             .collect(),
@@ -698,6 +718,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         cpu_policy: cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
         devices: pool_requests,
         host_numa_node: None,
+        host_numa: Vec::new(),
         vcpu_pins: Vec::new(),
         firmware_image: None,
         kernel_image: None,

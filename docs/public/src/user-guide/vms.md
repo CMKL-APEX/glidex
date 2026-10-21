@@ -151,7 +151,7 @@ fixed list take their full names, as in the table below
 | Node | `node` | Clusters: pin the VM to a node (name or id). Fixed, except by [placing the VM again](#placement-on-a-cluster). |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
-| NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
+| NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node; `NUMA_POLICY_ALIGNED`: across exactly its devices' NUMA nodes. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
 | Device pools | `devices` | `[{"pool": "a100", "count": 1, "same_switch": false}]`: devices the scheduler picks from a pool your project may use; shown as `pool_devices`. See [Devices from a pool](#devices-from-a-pool). Changeable; applies at the next start. |
 | CPU policy | `cpu_policy` | `CPU_POLICY_SHARED` (default) or `CPU_POLICY_DEDICATED`: each vCPU on a host CPU of its own. Changeable; applies at the next start. |
 
@@ -555,6 +555,22 @@ on the same node. Two settings ask for that:
     devices on two NUMA nodes, a device whose firmware gives no NUMA
     node, or no node with the memory (and CPUs) left. On a cluster the
     VM waits for a node; on a single host the create is refused (`409`).
+  - `NUMA_POLICY_ALIGNED` is for VMs whose devices are on more than one
+    NUMA node, say 4 GPUs on a host with 2 per node. The VM spans
+    exactly its devices' NUMA nodes. Its vCPUs and memory are split
+    between them by their device counts: 4 GPUs on nodes 5 and 7 with 16
+    vCPUs and 128 GiB give 8 vCPUs and 64 GiB on each.
+    - The guest sees the same layout: a NUMA node per host node, with its
+      vCPUs, memory and GPUs. `numactl -H` and `nvidia-smi topo -m` in
+      the guest match the host.
+    - Devices picked from a pool fill as few NUMA nodes as can hold them,
+      so 2 GPUs go to one node.
+    - A node whose share doesn't fit refuses the host, naming the node.
+    - The VM shows its split as `numa` (one entry per guest node: host
+      node, vCPUs, memory, devices), and the web UI shows it as **NUMA
+      layout**.
+    - With devices on one node only, it is like `STRICT`. With no devices,
+      it is like `PREFERRED`.
 - `cpu_policy: CPU_POLICY_DEDICATED` gives each vCPU a host CPU of its
   own, which no other VM uses. It implies `NUMA_POLICY_PREFERRED`. By
   default a dedicated VM takes whole cores: both hyperthreads of a core,

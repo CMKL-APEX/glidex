@@ -1110,22 +1110,34 @@ impl VmManager {
                 config.hugepages = kib != crate::models::SMALL_PAGE_KIB;
                 if config.hugepages {
                     config.hugepage_size = Some(crate::models::hugepage_size_name(kib));
-                    let need = config.mem_size_mib as u64;
-                    let numa = vm.status.placement.as_ref().and_then(|p| p.numa_node);
-                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
-                        .await
-                        .map_err(before_intent)?;
-                    if spare < need {
-                        return Err(before_intent(
-                            crate::hypervisor::HypervisorError::Unsupported(format!(
-                                "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
-                                crate::models::hugepage_size_name(kib),
-                                numa.map(|n| format!(" on NUMA node {n}"))
-                                    .unwrap_or_default(),
-                                spare,
-                                need
-                            )),
-                        ));
+                    // Per NUMA node it is bound to: one, each share of an
+                    // `aligned` VM, or none (host-wide).
+                    let placement = vm.status.placement.as_ref();
+                    let wants: Vec<(Option<u32>, u64)> = match placement {
+                        Some(p) if !p.numa.is_empty() => p
+                            .numa
+                            .iter()
+                            .map(|s| (Some(s.node), s.memory_mib))
+                            .collect(),
+                        p => vec![(p.and_then(|p| p.numa_node), config.mem_size_mib as u64)],
+                    };
+                    for (numa, need) in wants {
+                        let spare =
+                            blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
+                                .await
+                                .map_err(before_intent)?;
+                        if spare < need {
+                            return Err(before_intent(
+                                crate::hypervisor::HypervisorError::Unsupported(format!(
+                                    "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
+                                    crate::models::hugepage_size_name(kib),
+                                    numa.map(|n| format!(" on NUMA node {n}"))
+                                        .unwrap_or_default(),
+                                    spare,
+                                    need
+                                )),
+                            ));
+                        }
                     }
                 }
             }
@@ -1151,6 +1163,12 @@ impl VmManager {
             .map(|p| (p.numa_node, p.cpus.clone()))
             .unwrap_or_default();
         config.host_numa_node = numa;
+        config.host_numa = vm
+            .status
+            .placement
+            .as_ref()
+            .map(|p| p.numa.clone())
+            .unwrap_or_default();
         // The devices picked for its pool requests (spec/host-topology.md §9).
         for d in vm
             .status

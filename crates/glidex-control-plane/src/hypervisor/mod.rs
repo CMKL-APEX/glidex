@@ -365,6 +365,33 @@ pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
     Ok(())
 }
 
+/// An `aligned` VM's guest NUMA nodes (spec/gpu-vms.md §5): for each share
+/// of `config.host_numa`, its vCPU range (first, last) and the VFIO devices
+/// (as `config.vfio_devices` names them) on that host node.
+pub(crate) fn guest_numa_layout(config: &VmConfig) -> Vec<(u32, u32, Vec<String>)> {
+    let mut first = 0u32;
+    config
+        .host_numa
+        .iter()
+        .map(|s| {
+            let last = first + s.vcpus.max(1) - 1;
+            let devices = config
+                .vfio_devices
+                .iter()
+                .filter(|p| {
+                    s.devices
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&vfio_bdf(p)))
+                })
+                .cloned()
+                .collect();
+            let r = (first, last, devices);
+            first = last + 1;
+            r
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

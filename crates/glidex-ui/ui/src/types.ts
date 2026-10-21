@@ -96,6 +96,8 @@ export interface VmResponse {
   /** Devices asked for by pool, and those the scheduler picked (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
   pool_devices?: { pool: string; address: string }[];
+  /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/gpu-vms.md §4). */
+  numa?: { node?: number; vcpus?: number; memory_mib?: number; devices?: string[] }[];
   credential?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
