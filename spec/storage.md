@@ -944,6 +944,15 @@ QEMU `driver: host_device`, `locking: on`, `cache.direct: on`.
 uses (`list_volumes`), as `drop_store_copies` does for shared copies.
 Linked disks keep the image from being deleted (images.md §3).
 
+**Datastore deletion:** each node's probe lists the image volumes it
+keeps in the datastore (`NodeRow.image_volumes`, the API's
+`DatastoreNode.image_volumes`). Deleting the datastore is refused
+(`409`, naming the images and nodes) while any row lists one, in the
+same write that checks for disks: nothing would remove them afterwards.
+They go when their images are deleted, or by hand (`lvremove`); the
+next probe (within a minute) then lets the delete through. Found on the
+host check after S6.
+
 **As built (S6b):**
 - **API:** driver `DATASTORE_DRIVER_LVM` with `volume_group` and
   `thin_pool` (`path` empty); `node_paths` names each node's own volume

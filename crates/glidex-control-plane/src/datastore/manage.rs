@@ -244,7 +244,22 @@ impl VmManager {
             )
             .into());
         }
-        record::delete(&db, &ds.id)?;
+        let nodes = self.nodes();
+        let node_name = |id: &str| {
+            nodes
+                .get(id)
+                .ok()
+                .flatten()
+                .map(|n| n.spec.name)
+                .unwrap_or_else(|| id.to_string())
+        };
+        let image_name = |id: &str| {
+            self.images
+                .get_image(id)
+                .map(|i| i.name)
+                .unwrap_or_else(|_| id.to_string())
+        };
+        record::delete(&db, &ds.id, &node_name, &image_name)?;
         Ok(())
     }
 }

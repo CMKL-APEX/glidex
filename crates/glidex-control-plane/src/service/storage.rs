@@ -973,6 +973,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
                 free_bytes: r.free_bytes,
                 checked_at: crate::service::common::ts_opt(r.checked_at).into(),
                 warnings: r.warnings.clone(),
+                image_volumes: r.image_volumes.clone(),
                 ..Default::default()
             })
             .collect(),

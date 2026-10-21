@@ -269,6 +269,9 @@ pub struct NodeStatus {
     pub advertise: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_ip: Option<IpAddr>,
+    /// A server's web UI address (spec/host-page.md W3); agents publish none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_url: Option<String>,
     #[serde(default)]
     pub versions: Versions,
     #[serde(default)]
@@ -327,6 +330,7 @@ impl Node {
                 raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
+                ui_url: None,
                 versions: Versions {
                     glidex: env!("CARGO_PKG_VERSION").into(),
                     ..Default::default()
@@ -534,6 +538,7 @@ impl NodeStore {
         node.status.topology = probe.topology;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
+        node.status.ui_url = probe.ui_url;
         if node != before || self.get(id)?.is_none() {
             node.meta.resource_version += 1;
             self.put(&node)?;
@@ -554,6 +559,8 @@ pub struct SelfProbe {
     pub topology: Option<crate::topology::TopologySummary>,
     /// `ovn-controller`'s version, when OVN is installed.
     pub ovn_version: Option<String>,
+    /// This server's web UI address (spec/host-page.md W3).
+    pub ui_url: Option<String>,
 }
 
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
@@ -673,6 +680,7 @@ impl SelfProbe {
             pci_groups,
             topology: crate::topology::read(),
             ovn_version: program_version("ovn-controller"),
+            ui_url: None,
         }
     }
 }

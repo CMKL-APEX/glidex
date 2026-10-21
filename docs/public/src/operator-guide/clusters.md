@@ -18,9 +18,11 @@ Every node runs the same software and runs VMs. A node is one of:
   Raft, and serves the API. Servers sign node certificates and run OVN's
   databases when OVN is on.
 - **Agent**: only runs VMs. It has no API of its own: `gxctl` on an
-  agent says so and points you to a server. Its web UI still works; it
-  relays every request to a server, which authenticates it, so you log
-  in there with the servers' users.
+  agent says so and points you to a server. Opening an agent's web UI
+  takes you to a server's web UI, at that agent's Host page; you log in
+  there, with SSO, passkeys or the servers' users. Each host's page
+  (**Hosts** in the menu) manages its Open vSwitch, bridges and uplinks
+  from any server.
 
 The servers that vote in Raft are *voters*. A cluster keeps working
 while a majority of voters is up, so run 1, 3 or 5 servers: 3 survive
@@ -380,6 +382,25 @@ gxctl cluster rotate-secrets-key
 
 If a server can't be reached, it stops before re-wrapping anything; run
 it again.
+
+## The web UI's address
+
+Agents send browsers to a server's web UI, at the address that server
+publishes. By default it is what its glidex-ui answers on: its Tailscale
+name when the Tailscale certificate is on, else the first name in
+`GLIDEX_UI_HOSTS`, else the host's full name, with port 5173.
+
+Behind a load balancer, set the same address on every server, in
+`/etc/glidex/control-plane.json`:
+
+```json
+{ "cluster": { "ui_url": "https://glidex.example.com" } }
+```
+
+That address is then also an accepted origin, the default SSO callback
+(register it once with your IdP), and a name each server's web UI
+answers to. Agents of an older version still relay their web UI to the
+servers until they are upgraded.
 
 ## Rolling upgrades
 

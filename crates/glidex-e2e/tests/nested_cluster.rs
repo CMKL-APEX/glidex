@@ -332,7 +332,8 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     ));
     let token = h1.check("gxctl cluster join-token --role agent 2>/dev/null");
     // Through the installer, as an agent host is set up for real: it must
-    // leave the agent's web UI on (spec/clustering-ui.md §3.6).
+    // leave the agent's web UI on, to send browsers to a server
+    // (spec/host-page.md W5).
     let root = workspace_root().display().to_string();
     let joined = h2.run_with_input(
         &format!(
@@ -708,7 +709,9 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     assert_eq!(pv["nodes"].as_array().unwrap().len(), 2, "{pv}");
     assert!(pv["pick"].is_string(), "{pv}");
 
-    step("the agent's web UI is relayed to the server (spec/clustering-ui.md §3.6)");
+    step(
+        "the agent's web UI sends browsers to the server's, which acts on the agent (spec/host-page.md)",
+    );
     let ui = check_agent_ui(
         &h1,
         &h2,
@@ -719,8 +722,10 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         &format!("gxe2e-{tag}-h2"),
     );
 
-    step("the agent's only NIC on a bridge with its address, through its UI, survives a reboot");
-    check_single_nic_uplink_survives_a_reboot(&h2, &ui);
+    step(
+        "the agent's only NIC on a bridge with its address, from the server's UI, survives a reboot",
+    );
+    check_single_nic_uplink_survives_a_reboot(&h2, &n2, &ui);
 
     // spec/clustering-ui.md §8a: the agent's uplink bridge as the physical
     // network, the suggested shared edge taken as is, and a guest on the
@@ -1153,6 +1158,22 @@ fn ui_curl_csrf(
     stream_secs: Option<u32>,
     csrf: Option<&str>,
 ) -> (u16, String, String) {
+    ui_curl_on(jar, base, method, path, body, stream_secs, csrf, None)
+}
+
+/// As `ui_curl_csrf`, for node `target`'s host (`X-Glidex-Target-Node`,
+/// spec/host-page.md W2).
+#[allow(clippy::too_many_arguments)]
+fn ui_curl_on(
+    jar: &std::path::Path,
+    base: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    stream_secs: Option<u32>,
+    csrf: Option<&str>,
+    target: Option<&str>,
+) -> (u16, String, String) {
     let mut c = Command::new("curl");
     c.args(["-s", "-k", "-i", "-X", method, "-b"])
         .arg(jar)
@@ -1161,6 +1182,9 @@ fn ui_curl_csrf(
         .args(["-H", &format!("Origin: {base}")]);
     if let Some(x) = csrf {
         c.args(["-H", &format!("X-Glidex-CSRF: {x}")]);
+    }
+    if let Some(t) = target {
+        c.args(["-H", &format!("X-Glidex-Target-Node: {t}")]);
     }
     if let Some(t) = stream_secs {
         c.args(["-N", "--max-time", &t.to_string()]);
@@ -1204,8 +1228,10 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// Log in through h2's (the agent's) glidex-ui as the test's user, made a PAM
-/// user with a throwaway password on h1 (the server that authenticates).
+/// spec/host-page.md: h2's (the agent's) glidex-ui sends browsers to h1's
+/// (the server's), at h2's Host page, and serves no API. The test's user,
+/// made a PAM user with a throwaway password on h1, logs in there; h1's
+/// UI runs host-only requests on h2 when they name it (W2).
 fn check_agent_ui(
     h1: &Ssh,
     h2: &Ssh,
@@ -1215,15 +1241,48 @@ fn check_agent_ui(
     n2: &str,
     h2_name: &str,
 ) -> (std::path::PathBuf, String, String) {
+    let agent = format!("https://{}:5173", h2.host);
+    let jar = dir.join("ui-cookies");
+    // The agent learns h1's published address within glidex-ui's report
+    // interval (30 s), then redirects.
+    let location = wait_for(
+        "h2's web UI to send browsers to a server",
+        Duration::from_secs(120),
+        || {
+            let (s, head, _) = ui_curl(&jar, &agent, "GET", "/", None, None);
+            (s == 307)
+                .then(|| header(&head, "location").map(String::from))
+                .flatten()
+        },
+    );
+    assert!(
+        location.starts_with("https://") && location.ends_with(&format!("/hosts/{n2}")),
+        "to h2's Host page on a server: {location}"
+    );
+    let (s, head, _) = ui_curl(&jar, &agent, "GET", "/vms/x?tab=disks", None, None);
+    assert_eq!(s, 307);
+    assert!(
+        header(&head, "location").is_some_and(|l| l.ends_with("/vms/x?tab=disks")),
+        "the path is kept: {head}"
+    );
+    let (s, _, body) = ui_curl(&jar, &agent, "GET", "/api/vms", None, None);
+    assert_eq!(s, 421, "the agent serves no API: {body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"], "use_a_server", "{v}");
+    let server_ui = location
+        .trim_end_matches(&format!("/hosts/{n2}"))
+        .to_string();
+    assert_eq!(v["details"]["location"], server_ui.as_str(), "{v}");
+
+    // The published address is h1's name, which the test runner may not
+    // resolve: talk to h1's UI by its address, as the browser would by name.
+    let base = format!("https://{}:5173", h1.host);
     let password = uuid::Uuid::new_v4().simple().to_string();
     let out = h1.run_with_input("sudo chpasswd", format!("{user}:{password}\n").as_bytes());
     assert!(out.status.success(), "setting a login password on h1");
-    let base = format!("https://{}:5173", h2.host);
-    let jar = dir.join("ui-cookies");
-    wait_for("h2's web UI", Duration::from_secs(60), || {
+    wait_for("h1's web UI", Duration::from_secs(60), || {
         (ui_curl(&jar, &base, "GET", "/api/health", None, None).0 == 200).then_some(())
     });
-
     let (s, _, body) = ui_curl(
         &jar,
         &base,
@@ -1236,7 +1295,7 @@ fn check_agent_ui(
     assert_eq!(
         s,
         200,
-        "PAM login through the agent's UI: {}",
+        "PAM login on the server's UI: {}",
         body.chars().take(300).collect::<String>()
     );
     let csrf = serde_json::from_str::<Value>(&body)
@@ -1244,24 +1303,33 @@ fn check_agent_ui(
         .and_then(|v| v["csrf"].as_str().map(String::from))
         .unwrap_or_default();
 
-    let (s, head, body) = ui_curl(&jar, &base, "GET", "/api/cluster/status", None, None);
+    let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/cluster/status", None, None);
     assert_eq!(s, 200, "{body}");
     let v: Value = serde_json::from_str(&body).unwrap();
-    // The server answers, about the node whose UI it is ("this node").
-    assert_eq!(
-        header(&head, "x-glidex-served-by"),
-        Some(n1),
-        "cluster reads are the server's"
-    );
-    assert_eq!(v["node_id"], n2, "this node is the agent: {v}");
-    assert_eq!(v["served_by"]["node_id"], n1, "{v}");
+    assert_eq!(v["node_id"], n1, "this node is the server: {v}");
 
-    let (s, head, _) = ui_curl(&jar, &base, "GET", "/api/system/reconcile", None, None);
+    let (s, head, _) = ui_curl_on(
+        &jar,
+        &base,
+        "GET",
+        "/api/system/reconcile",
+        None,
+        None,
+        None,
+        Some(n2),
+    );
     assert_eq!(s, 200);
     assert_eq!(
         header(&head, "x-glidex-served-by"),
         Some(n2),
-        "host-local reads run on the agent"
+        "host-only reads naming the agent run there"
+    );
+    let (s, head, _) = ui_curl(&jar, &base, "GET", "/api/system/reconcile", None, None);
+    assert_eq!(s, 200);
+    assert_eq!(
+        header(&head, "x-glidex-served-by"),
+        None,
+        "and otherwise on the server"
     );
 
     let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/vms", None, None);
@@ -1273,33 +1341,23 @@ fn check_agent_ui(
         .expect("e2e-b listed");
     assert_eq!(b["node"], n2);
     assert_eq!(b["node_name"], h2_name);
-
-    // The live stream comes through the relay as it happens, not at the end.
-    let (s, _, body) = ui_curl(
-        &jar,
-        &base,
-        "GET",
-        "/api/watch?kinds=nodes,cluster,policy",
-        None,
-        Some(8),
-    );
-    assert_eq!(s, 200);
-    assert!(
-        body.contains("event: synced") && body.contains("\"kind\":\"node\""),
-        "watch through the relay: {}",
-        body.chars().take(400).collect::<String>()
-    );
     (jar, base, csrf)
 }
 
-/// spec/clustering-ui.md (uplinks): through the agent's UI, put its only NIC
-/// on a bridge with its address, reboot it, and find it reachable with the
-/// address re-applied on the bridge (netd's start-up re-apply).
-fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf, String, String)) {
+/// spec/clustering-ui.md (uplinks): from the server's UI, naming the agent
+/// (spec/host-page.md W2), put its only NIC on a bridge with its address,
+/// reboot it, and find it reachable with the address re-applied on the
+/// bridge (netd's start-up re-apply).
+fn check_single_nic_uplink_survives_a_reboot(
+    h2: &Ssh,
+    n2: &str,
+    ui: &(std::path::PathBuf, String, String),
+) {
     let (jar, base, csrf) = ui;
+    let on = Some(n2);
     let nic = h2.check("ip -j route show default | python3 -c 'import json,sys; print(json.load(sys.stdin)[0][\"dev\"])'").trim().to_string();
     let addr = h2.check(&format!("ip -4 -j addr show dev {nic} | python3 -c 'import json,sys; print(json.load(sys.stdin)[0][\"addr_info\"][0][\"local\"])'")).trim().to_string();
-    let (s, _, b) = ui_curl_csrf(
+    let (s, _, b) = ui_curl_on(
         jar,
         base,
         "POST",
@@ -1307,11 +1365,12 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         Some(&json!({ "name": "gxbr-up", "datapath": "system" })),
         None,
         Some(csrf),
+        on,
     );
     assert!(s == 200 || s == 201, "bridge on the agent: {s} {b}");
     // A DHCP-managed address is refused unless accepted (the nested VMs use DHCP).
     let body = json!({ "name": nic, "kind": "kernel", "ifname": nic, "migrate_ip": true, "confirm": true });
-    let (s, _, b) = ui_curl_csrf(
+    let (s, _, b) = ui_curl_on(
         jar,
         base,
         "POST",
@@ -1319,11 +1378,12 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         Some(&body),
         None,
         Some(csrf),
+        on,
     );
     assert_eq!(s, 409, "a DHCP address needs an explicit yes: {b}");
     let mut body = body;
     body["accept_dhcp"] = json!(true);
-    let (s, _, b) = ui_curl_csrf(
+    let (s, _, b) = ui_curl_on(
         jar,
         base,
         "POST",
@@ -1331,6 +1391,7 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         Some(&body),
         None,
         Some(csrf),
+        on,
     );
     assert_eq!(s, 202, "pending commit: {b}");
     let res: Value = serde_json::from_str(&b).unwrap();
@@ -1338,7 +1399,7 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         .as_str()
         .unwrap()
         .to_string();
-    let (s, _, b) = ui_curl_csrf(
+    let (s, _, b) = ui_curl_on(
         jar,
         base,
         "POST",
@@ -1346,6 +1407,7 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         Some(&json!({ "token": token })),
         None,
         Some(csrf),
+        on,
     );
     assert_eq!(s, 200, "commit: {b}");
     assert!(
@@ -1372,18 +1434,23 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
         up.lines().any(|l| l.trim() == nic),
         "{nic} is back on the bridge: {up}"
     );
-    wait_for("h2's UI", Duration::from_secs(120), || {
-        (ui_curl(jar, base, "GET", "/api/health", None, None).0 == 200).then_some(())
-    });
-    let (s, _, b) = ui_curl(
-        jar,
-        base,
-        "GET",
-        "/api/ovs/bridges/gxbr-up/uplinks",
-        None,
-        None,
+    let b = wait_for(
+        "the server to reach h2 again",
+        Duration::from_secs(120),
+        || {
+            let (s, _, b) = ui_curl_on(
+                jar,
+                base,
+                "GET",
+                "/api/ovs/bridges/gxbr-up/uplinks",
+                None,
+                None,
+                None,
+                on,
+            );
+            (s == 200).then_some(b)
+        },
     );
-    assert_eq!(s, 200, "{b}");
     let list: Value = serde_json::from_str(&b).unwrap();
     assert!(
         list["uplinks"][0]["record"].is_object()

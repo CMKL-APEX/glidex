@@ -8,18 +8,16 @@ import type {
   NetworkMode,
   NetworkScope,
   Router,
-  OvsProfile,
   OvsStatus,
   PortType,
 } from "../types";
-import { isClusterNetwork, netdAccessLabel, networkModeLabel, networkPhaseLabel, networkUsableBy, notReady, portTypeLabel } from "../types";
+import { isClusterNetwork, networkModeLabel, networkPhaseLabel, networkUsableBy, notReady, portTypeLabel } from "../types";
 import { useLiveRefresh } from "../live";
 import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
 import { NetworkOvnDialog } from "../components/OvnViews";
-import BridgesCard from "../components/BridgesCard";
 import { useNodes } from "../nodes";
 
 const inputClass =
@@ -30,180 +28,6 @@ function errorText(e: unknown): string {
     return `${e.message} (missing: ${e.details.missing.join(", ")})`;
   }
   return e instanceof Error ? e.message : String(e);
-}
-
-function Badge({ ok, children }: { ok: boolean; children: React.ReactNode }) {
-  return (
-    <span
-      className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-        ok ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"
-      }`}
-    >
-      {children}
-    </span>
-  );
-}
-
-function StatusPanel({
-  status,
-  onInstall,
-}: {
-  status: OvsStatus;
-  onInstall: () => void;
-}) {
-  if (!status.netd.available) {
-    return (
-      <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800">
-        glidex-netd is not reachable ({status.netd.error ?? "unknown error"}).
-        Install it with <code>glidex-install</code> and make sure the control
-        plane's user is in the <code>glidex</code> group.
-      </div>
-    );
-  }
-  const host = status.host ?? {};
-  return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-      <div className="flex items-center justify-between">
-        <div className="space-y-1 text-sm">
-          <p>
-            <span className="text-gray-500">Open vSwitch:</span>{" "}
-            {host.ovs_installed ? (
-              <>
-                <span className="font-medium">{host.ovs_version}</span>{" "}
-                <Badge ok={!!host.ovs_running}>
-                  {host.ovs_running ? "running" : "not running"}
-                </Badge>
-              </>
-            ) : (
-              <Badge ok={false}>not installed</Badge>
-            )}
-          </p>
-          <p>
-            <span className="text-gray-500">glidex-netd access:</span>{" "}
-            <Badge ok={status.netd.access === "NETD_ACCESS_FULL"}>{netdAccessLabel(status.netd.access)}</Badge>
-          </p>
-          {(host.firewalls ?? []).length > 0 && (
-            <p className="text-yellow-700">
-              Active firewall ({host.firewalls?.join(", ")}) may drop forwarded
-              NAT traffic; allow the NAT subnets there.
-            </p>
-          )}
-        </div>
-        {status.netd.access === "NETD_ACCESS_FULL" && (
-          <button
-            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
-            onClick={onInstall}
-          >
-            {host.ovs_installed ? "Install / switch profile" : "Install Open vSwitch"}
-          </button>
-        )}
-      </div>
-      <table className="w-full text-sm mt-4">
-        <tbody className="divide-y divide-gray-100">
-          {(host.combinations ?? []).map((c) => (
-            <tr key={c.id}>
-              <td className="py-2 pr-3 font-mono">{c.id}</td>
-              <td className="py-2 pr-3">{c.description}</td>
-              <td className="py-2 text-right">
-                {c.available ? (
-                  <Badge ok>available</Badge>
-                ) : (
-                  <span className="text-xs text-gray-500">
-                    missing: {(c.missing ?? []).join(", ")}
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function InstallDialog({
-  onClose,
-  onDone,
-}: {
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [profile, setProfile] = useState<OvsProfile>("OVS_PROFILE_KERNEL");
-  const [impact, setImpact] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const run = async (confirm: boolean) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.installOvs(profile, confirm);
-      onDone();
-    } catch (e) {
-      if (e instanceof ApiRequestError && e.code === "confirmation_required") {
-        setImpact(e.details?.impact ?? e.message);
-      } else {
-        setError(errorText(e));
-      }
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title="Install Open vSwitch" onClose={onClose}>
-      <div className="space-y-4">
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {impact ? (
-          <>
-            <p className="text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-              {impact}
-            </p>
-            <div className="flex justify-end space-x-3">
-              <button className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onClose}>
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 text-sm text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
-                disabled={busy}
-                onClick={() => run(true)}
-              >
-                {busy ? "Installing..." : "Restart and install"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Profile</label>
-              <select
-                className={`${inputClass} bg-white`}
-                value={profile}
-                onChange={(e) => setProfile(e.target.value as OvsProfile)}
-              >
-                <option value="OVS_PROFILE_KERNEL">kernel (NAT, bridged, AF_XDP with tap)</option>
-                <option value="OVS_PROFILE_DPDK">dpdk (vhost-user, DPDK uplinks)</option>
-              </select>
-              <p className="mt-1 text-xs text-gray-500">
-                Installs distribution packages; may take a few minutes.
-              </p>
-            </div>
-            <div className="flex justify-end space-x-3">
-              <button className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onClose}>
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50"
-                disabled={busy}
-                onClick={() => run(false)}
-              >
-                {busy ? "Installing..." : "Install"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </Modal>
-  );
 }
 
 /** Where a new network goes: `""` is a host network (net-admin), else a
@@ -519,7 +343,6 @@ export default function Networking() {
   const [networks, setNetworks] = useState<Network[]>([]);
   const [bridges, setBridges] = useState<BridgeRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [installing, setInstalling] = useState(false);
   const [adding, setAdding] = useState(false);
   // Host admins see every network; others the ones their project can use.
   const shown = hostView ? networks : networks.filter((n) => networkUsableBy(n, project));
@@ -597,7 +420,7 @@ export default function Networking() {
     setAdding(false);
     if (requested !== null) setParams({}, { replace: true });
   };
-  const { clustered } = useNodes();
+  const { clustered, self } = useNodes();
   const [ovnOf, setOvnOf] = useState<Network | null>(null);
   // Without host rights, a network is shown by how this project gets it.
   const scope = (n: Network) =>
@@ -611,7 +434,7 @@ export default function Networking() {
           <p className="text-gray-500 mt-1">
             {hostView === false
               ? `Networks the project ${projectName(project)} can attach VMs to.`
-              : "Open vSwitch bridges and the networks VMs attach to."}
+              : "The networks VMs attach to."}
           </p>
         </div>
         {canAdd && (
@@ -631,7 +454,16 @@ export default function Networking() {
       {hostView === null ? (
         <LoadingCard />
       ) : (
-        status && <StatusPanel status={status} onInstall={() => setInstalling(true)} />
+        hostView && (
+          <p className="text-sm text-gray-600" data-testid="host-networking-link">
+            {status?.host?.ovs_running ? "Open vSwitch runs on this host." : "Open vSwitch isn't running on this host."}{" "}
+            {clustered ? "Each host's Open vSwitch, bridges and uplinks are on its page: " : "Its Open vSwitch, bridges and uplinks are on "}
+            <Link to={self ? `/hosts/${encodeURIComponent(self)}` : "/hosts"} className="text-sky-700 hover:underline">
+              {clustered ? "Hosts" : "the Host page"}
+            </Link>
+            .
+          </p>
+        )
       )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -703,17 +535,6 @@ export default function Networking() {
         </table>
       </div>
 
-      {hostView && <BridgesCard bridges={bridges} onChanged={refresh} />}
-
-      {installing && (
-        <InstallDialog
-          onClose={() => setInstalling(false)}
-          onDone={() => {
-            setInstalling(false);
-            refresh();
-          }}
-        />
-      )}
       {adding && (
         <Modal title="Add Network" onClose={closeForm}>
           <AddNetworkForm

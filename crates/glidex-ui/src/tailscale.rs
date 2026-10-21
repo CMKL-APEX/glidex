@@ -57,6 +57,11 @@ impl Held {
             .any(|n| n.eq_ignore_ascii_case(name))
     }
 
+    /// The first name, the one this UI reports (spec/host-page.md W3).
+    pub fn first(&self) -> Option<String> {
+        self.0.read().unwrap().first().cloned()
+    }
+
     fn set(&self, names: Vec<String>) {
         *self.0.write().unwrap() = names;
     }

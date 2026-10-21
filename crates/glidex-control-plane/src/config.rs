@@ -624,6 +624,12 @@ impl Config {
             cfg.auth.allowed_origins = glidex_tls::LocalNames::discover().origins(UI_PORT);
             cfg.auth.origins_from_host = true;
         }
+        // A published address (a load balancer) is an origin too, and
+        // first: the OIDC callback's default (spec/host-page.md W4).
+        if let Some(o) = cfg.cluster.ui_origin() {
+            cfg.auth.allowed_origins.retain(|a| *a != o);
+            cfg.auth.allowed_origins.insert(0, o);
+        }
         Ok(cfg)
     }
 

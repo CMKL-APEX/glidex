@@ -1474,6 +1474,8 @@ export interface NodeRecord {
     raft_id?: U64;
     advertise?: string;
     tunnel_ip?: string;
+    /** A server's web UI address (spec/host-page.md W3). */
+    ui_url?: string;
     versions?: { glidex?: string; ovs?: string; ovn?: string };
     capacity?: NodeResources;
     allocatable?: NodeResources;
