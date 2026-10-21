@@ -310,9 +310,9 @@ missing KVM, missing firmware and other launch-time errors.
 
 ### Default kernel args
 
-`HypervisorType::default_kernel_args` is
-`"console=ttyS0 root=/dev/vda reboot=k panic=1"` for both backends
-(`DEFAULT_KERNEL_ARGS`). Cloud Hypervisor's used to be `console=hvc0 …`;
+`HypervisorType::default_kernel_args(arch)` is
+`"console=ttyS0 root=/dev/vda reboot=k panic=1"` for both backends,
+`console=ttyAMA0` on aarch64 (`hypervisor::default_kernel_args`). Cloud Hypervisor's used to be `console=hvc0 …`;
 VMs created with it keep it in their stored `kernel_args`, so they keep
 the virtio console. The serial port shows the kernel from its first
 line, where `hvc0` shows nothing until the virtio driver is up.

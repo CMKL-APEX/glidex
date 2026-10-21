@@ -1599,6 +1599,7 @@ dependencies = [
  "connectrpc-reflection",
  "dirs",
  "ed25519-dalek",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
  "glidex-api",
@@ -1652,6 +1653,7 @@ dependencies = [
  "x509-parser",
  "zbus",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]

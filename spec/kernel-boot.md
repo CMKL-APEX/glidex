@@ -60,15 +60,15 @@ same disk handling.
 | K2 | Default boot mode | Unchanged. An `image`/`root_disk` VM boots through firmware unless the request names a kernel (`kernel` or `kernel_image_path`). Giving both a kernel and a firmware, from either kind of source, is `400 invalid_config`. Today the firmware silently wins. |
 | K3 | Kernel/rootfs match | A kernel for a disk image is **extracted from that image** (§10), so it is the build the image's own bootloader would boot, with its own modules in `/lib/modules/<release>`. No other build is ever substituted. The Ubuntu-only download of `unpacked/` files (first draft) is dropped: extraction gives the same bytes (F-K7) and works for every distro. |
 | K4 | Seed | The VM controller generates the cloud-init seed on kernel boot too. The rule is stored on the VM as `generate_seed` (§6.3), so existing kernel-boot VMs don't gain a disk on upgrade. Credentials require a generated seed, not firmware boot. |
-| K5 | Console | The **last `console=`** on the command line picks the device: `hvc<n>` → virtio console, anything else (or none) → serial port. Both backends do the same. New VMs default to `console=ttyS0`, so early boot output and panics are visible under Cloud Hypervisor too. |
+| K5 | Console | The **last `console=`** on the command line picks the device: `hvc<n>` → virtio console, anything else (or none) → serial port. Both backends do the same. New VMs default to the serial port, `console=ttyS0` (`console=ttyAMA0`, Cloud Hypervisor's PL011, on aarch64), so early boot output and panics are visible under Cloud Hypervisor too. |
 | K6 | Kernel updates | **Settled: yes.** Kernel boot runs the kernel glidex hands to the hypervisor, so a kernel the guest installs itself doesn't boot on its own. `kernel` may be changed on a stopped or running VM and takes effect at the next launch (`RestartRequired`). A host-side update is a pull (or an extraction from the VM's disk, §10.5) and a PATCH. Switching between firmware and kernel boot stays immutable. |
 | K7 | Command line | `kernel_args` defaults to the kernel image's `cmdline`, else the hypervisor default. It is one argv element, at most 2047 bytes (x86 `COMMAND_LINE_SIZE` less the NUL), with no control characters (`400 invalid_config`). |
-| K8 | Formats | Kernel: x86_64 bzImage (`HdrS` at 0x202) or ELF `vmlinux`; aarch64 `Image` (`ARM\x64` at 0x38) or EFI-stub `Image`. Anything else is refused at verify. An initramfs is not parsed; only its size is checked. |
+| K8 | Formats | Kernel: x86_64 bzImage (`HdrS` at 0x202) or ELF `vmlinux`; aarch64 `Image` (`ARM\x64` at 0x38) or EFI-stub `Image`. An aarch64 kernel wrapped as distributions ship it is unwrapped when installed, to the plain `Image` Cloud Hypervisor boots: a stub PE whose `.linux` section holds the kernel (Ubuntu's), the kernel's own EFI zboot image (`zimg`; gzip or zstd payload) and a gzip stream, nested at most four deep, never decompressing past the size limit. The image's size and sha256 are the installed file's; a host file is unwrapped into a copy, never changed. Anything else is refused at verify. An initramfs is not parsed; only its size is checked. |
 | K9 | Extraction | A disk image's filesystems are read **inside a VM**, never on the host: glidex boots a pinned extractor kernel and initramfs with the image attached read-only and no network, and the extractor writes the boot files to a second, raw disk in a simple stream format the host parses with strict limits (§10). No new host packages, no root, no loop devices, and the host never parses an untrusted filesystem. |
 | K10 | Catalog pulls | **Settled: yes.** `POST /images {"catalog": …}` also extracts the image's kernel once it is `Ready` (`with_kernel`, default `true` for catalog pulls and `false` for URL pulls). The kernel is a separate image record (`<image name>-kernel`). A failed extraction fails only that record; the disk image stays `Ready` and firmware boot is unaffected. |
 | K11 | Guest kernel updates | **Opt-in** per VM (`kernel_from_disk`, §10.5): before each launch glidex extracts the kernel from the VM's own root disk, so kernels the guest installs boot like they would under a bootloader. Off by default: the VM boots the kernel image it names. |
 | K12 | Kernel versions | Kernel images are **never replaced in place**. A newer build, or a kernel a guest installed, is a new record; every VM keeps the version it names until it is changed (K6). Identical files are stored once: extraction reuses a kernel image with the same kernel and initrd digests. Kernels extracted for one VM (`owner`) keep its current and previous version, and are deleted when no VM uses them (§10.5). |
-| K13 | Extractor source | A Debian cloud kernel (`linux-image-<version>-cloud-amd64`; arm64 later) and `busybox-static` from `snapshot.debian.org`, sha256-pinned, with the initramfs written by glidex (§10.1). |
+| K13 | Extractor source | A Debian cloud kernel (`linux-image-<version>-cloud-amd64`, `-cloud-arm64` on aarch64) and `busybox-static` from `snapshot.debian.org`, sha256-pinned, with the initramfs written by glidex (§10.1). |
 
 ## 3. Verified facts
 
@@ -270,9 +270,11 @@ means `Virtio`; any other value, or no `console=` at all, means
 
 Existing VMs: their stored `kernel_args` already say `console=hvc0`
 (Cloud Hypervisor) or `console=ttyS0` (QEMU), so each gets the device
-it has today. `HypervisorType::default_kernel_args` becomes
-`console=ttyS0 root=/dev/vda reboot=k panic=1` for **both** backends;
-the hypervisor-specific default goes away.
+it has today. `HypervisorType::default_kernel_args(arch)` becomes
+`console=ttyS0 root=/dev/vda reboot=k panic=1` for **both** backends,
+with `console=ttyAMA0` on aarch64; the hypervisor-specific default goes
+away. The architecture is a kernel image's, else the pinned node's (its
+reported `arch`), else the host's.
 
 The shim, the console proxy and the ring buffer don't change. They see
 the hypervisor's stdio either way ([console.md](console.md#physical-io)).
@@ -444,8 +446,10 @@ release bump is a new directory.
 - **Source (K13):** Debian trixie's **cloud** kernel package
   `linux-image-6.12.107+deb13-cloud-amd64` (34 MB, against 108 MB for the
   generic flavour) and `busybox-static` 1.37.0-6+b9, from
-  `snapshot.debian.org`. The packages and every file taken from them
-  (the kernel, twelve modules, busybox) are sha256-pinned and unpacked
+  `snapshot.debian.org`; on aarch64 the same versions' arm64 builds
+  (`-cloud-arm64`, 28 MB, whose kernel is an uncompressed EFI-stub
+  `Image` the hypervisor boots directly). The packages and every file
+  taken from them (the kernel, the modules, busybox) are sha256-pinned and unpacked
   with `firmware::extract_deb`, so the archive's pool dropping the
   version never matters.
 - **Initramfs:** glidex writes a `newc` cpio itself: `/bin/busybox`,
@@ -454,13 +458,16 @@ release bump is a new directory.
   those this build doesn't have built in: `virtio_blk`, `xfs`, `btrfs`,
   `vfat` and `fat`, NLS `cp437`, `iso8859-1`, `utf8` and `ascii` (FAT's
   default iocharset is a module here), and their dependencies
-  (`libcrc32c`, `xor`, `raid6_pq`). Debian ships no `modules.dep` (it is
+  (`libcrc32c`, `xor`, `raid6_pq`; on arm64 `xor` also needs
+  `xor_neon`). Debian ships no `modules.dep` (it is
   made at install time), so the load order is pinned and each module's
   own `depends=` is checked against it when the appliance is built. ext4
   is built in. 13 MB in all.
-- **Architectures:** x86_64 only so far; an aarch64 pin is a table entry
-  (`EXTRACTORS`). Without one, `kernel_from` is refused and catalog pulls
-  don't extract.
+- **Architectures:** x86_64 and aarch64, one pin each (`EXTRACTORS`).
+  The extractor runs under KVM, so an image's kernel is extracted only on
+  a host of its architecture: elsewhere, as for an architecture without a
+  pin, `kernel_from` is refused with the reason and catalog pulls don't
+  extract (`extraction_refused`).
 - `GLIDEX_KERNEL_EXTRACTION=off` turns extraction off on a host (an
   air-gapped one, or tests).
 
@@ -486,11 +493,14 @@ node by default, `GLIDEX_MAX_EXTRACTIONS`). It holds the disk image
   installs before that rule change refuse it ("Access denied requiring
   interactive authentication") until the installer is re-run.
 - The preferred hypervisor that is installed (Cloud Hypervisor, else
-  QEMU), 1 vCPU, 1 GiB, no NIC, no API socket, no seed.
+  QEMU, which glidex runs on x86_64 only), 1 vCPU, 1 GiB, no NIC, no API
+  socket, no seed.
 - Disk 0: the image's file, read-only (QEMU: `backing` null).
   Disk 1: `<image dir>/.<kernel image id>.extract.raw`, sparse, 2 GiB,
   `0600`, removed afterwards.
-- Kernel command line `console=ttyS0 panic=-1 quiet`; the console log's
+- Kernel command line `console=<serial> panic=-1 quiet`, the serial
+  port being `ttyS0` on x86_64 and Cloud Hypervisor's PL011, `ttyAMA0`,
+  on aarch64; the console log's
   last 4 KiB go into the image's failure reason.
 
 ### 10.3 Output stream
@@ -521,8 +531,10 @@ path: files are kept in memory or written under the image's id.
   `kernel_release` must equal `<v>`.
 - **Command line:** the BLS entry for `<v>` (`options`), else the first
   `grub.cfg` `linux` line naming `vmlinuz-<v>`. glidex drops
-  `BOOT_IMAGE=`, every `console=` and `earlyprintk=`, and appends
-  `console=ttyS0`. No `root=` is found → `Failed` ("no boot
+  `BOOT_IMAGE=`, every `console=` and `earlyprintk=`, and appends the
+  serial console: `console=ttyS0`, or `console=ttyAMA0` for an aarch64
+  image (K5 then puts the console on the serial port either way). No
+  `root=` is found → `Failed` ("no boot
   configuration names the root"); the files are not kept.
 - `root=UUID=…`, `PARTUUID=…` or `LABEL=…` stay valid for every disk
   cloned from the image: linked and full clones and offline root growth

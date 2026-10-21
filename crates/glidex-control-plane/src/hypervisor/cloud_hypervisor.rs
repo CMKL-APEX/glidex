@@ -210,6 +210,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
+    cmdline: &str,
     (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
@@ -224,7 +225,7 @@ pub(crate) fn extractor_args(
         "--initramfs",
         initrd,
         "--cmdline",
-        crate::images::extractor::CMDLINE,
+        cmdline,
         "--disk",
     ]
     .map(String::from)
@@ -584,6 +585,7 @@ mod tests {
         let x = extractor_args(
             bin.to_str().unwrap(),
             ("/nonexistent/kernel", "/nonexistent/initrd"),
+            "console=ttyS0 panic=-1 quiet",
             ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2, false),
             "/nonexistent/out.raw",
         );

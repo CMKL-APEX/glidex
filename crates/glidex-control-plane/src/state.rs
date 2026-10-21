@@ -2081,7 +2081,7 @@ impl VmManager {
                 config.kernel_args = k
                     .cmdline
                     .clone()
-                    .unwrap_or_else(|| config.hypervisor.default_kernel_args().to_string());
+                    .unwrap_or_else(|| config.hypervisor.default_kernel_args(k.arch));
             }
         }
         // A managed root disk is a cloud image: firmware boot unless the
@@ -2225,6 +2225,20 @@ impl VmManager {
         // `spec.node`: an optional pin, by id or name.
         if let Some(want) = &opts.node {
             vm.spec.node = Some(self.resolve_node(want)?);
+        }
+        // A kernel from a host path that names no arguments: the default
+        // for the architecture it runs on, its pinned node's (else this
+        // host's), whose serial port differs (spec/kernel-boot.md K5).
+        if vm.spec.config.kernel_args.is_empty() {
+            let arch = vm
+                .spec
+                .node
+                .as_deref()
+                .and_then(|id| self.nodes.get(id).ok().flatten())
+                .and_then(|n| crate::images::catalog::Arch::parse(&n.status.features.arch))
+                .or_else(crate::images::catalog::Arch::host)
+                .unwrap_or(crate::images::catalog::Arch::X86_64);
+            vm.spec.config.kernel_args = vm.spec.config.hypervisor.default_kernel_args(arch);
         }
         // A device another VM on the node claims (spec/host-topology.md
         // §8.4). Unpinned in a cluster, the node isn't known yet: the
@@ -3633,8 +3647,8 @@ impl VmManager {
         let (name, nodes) = (req.name.clone(), req.nodes.clone());
         let (img, created) = self.images.pull_image(req).await?;
         if created && img.kind == images::ImageKind::Disk && with_kernel {
-            if !self.images.can_extract(img.arch) {
-                tracing::info!(image = %img.name, "no kernel extracted: no extractor on this host");
+            if let Some(why) = self.images.extraction_refused(img.arch) {
+                tracing::info!(image = %img.name, "no kernel extracted: {why}");
             } else {
                 let kernel_name = name.map(|n| {
                     let mut k = format!("{n}-kernel");

@@ -468,7 +468,9 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
   `initrd_path` adds an initramfs to `kernel_image_path` (a host path,
   `useHostPath`). `kernel_args` defaults to `console=ttyS0 root=/dev/vda
-  reboot=k panic=1`; at most 2047 bytes, no control characters. The last
+  reboot=k panic=1` (`console=ttyAMA0` for a VM on an aarch64 node: a
+  kernel image's architecture, else the pinned node's, else the
+  host's); at most 2047 bytes, no control characters. The last
   `console=` picks the console device: `hvc0` is the virtio console,
   anything else the serial port.
 - `firmware` boots the disk through UEFI firmware instead of a kernel:

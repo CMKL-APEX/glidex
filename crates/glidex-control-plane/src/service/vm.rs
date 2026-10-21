@@ -680,15 +680,10 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
         credential: req.credential,
         rootfs_path: m::expand_tilde(req.rootfs_path),
-        // With a kernel image, its command line is the default; the
-        // manager fills it in (spec/kernel-boot.md K7).
-        kernel_args: req.kernel_args.unwrap_or_else(|| {
-            if req.kernel.is_some() {
-                String::new()
-            } else {
-                hypervisor.default_kernel_args().to_string()
-            }
-        }),
+        // The manager fills in the default (spec/kernel-boot.md K7): a
+        // kernel image's command line, else the default for the
+        // architecture the VM runs on.
+        kernel_args: req.kernel_args.unwrap_or_default(),
         hypervisor,
         vfio_devices: req.vfio_devices,
         networks: req.networks.iter().map(attachment_of).collect(),

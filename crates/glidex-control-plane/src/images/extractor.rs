@@ -34,104 +34,220 @@ pub struct ExtractorPin {
     pub modules: &'static [(&'static str, DebFile)],
 }
 
-#[cfg(test)]
-const KMOD: &str = "usr/lib/modules/6.12.107+deb13-cloud-amd64/kernel";
-
+/// A module of kernel release `$release`, at its path in the package.
 macro_rules! module {
-    ($name:literal, $path:literal, $sha:literal) => {
+    ($release:literal, $name:literal, $path:literal, $sha:literal) => {
         (
             $name,
             DebFile {
-                path: concat!("usr/lib/modules/6.12.107+deb13-cloud-amd64/kernel/", $path),
+                path: concat!("usr/lib/modules/", $release, "/kernel/", $path),
                 sha256: $sha,
             },
         )
     };
 }
 
-pub const EXTRACTORS: &[ExtractorPin] = &[ExtractorPin {
-    arch: Arch::X86_64,
-    version: "6.12.107+deb13-cloud-amd64",
-    kernel_deb: (
-        "https://snapshot.debian.org/archive/debian/20260907T023910Z/pool/main/l/linux-signed-amd64/linux-image-6.12.107%2Bdeb13-cloud-amd64_6.12.107-1_amd64.deb",
-        "04434ff520f860423eafe4203d986a35682ce73c2f71baa39e988ca0da93ac91",
-    ),
-    busybox_deb: (
-        "https://snapshot.debian.org/archive/debian/20260712T202631Z/pool/main/b/busybox/busybox-static_1.37.0-6%2Bb9_amd64.deb",
-        "598a3fd92bdafc34cd81196b2952ad36e910e47a4ecf162f8ce5e8e262598e53",
-    ),
-    kernel: DebFile {
-        path: "boot/vmlinuz-6.12.107+deb13-cloud-amd64",
-        sha256: "d1bc2c60a78ae6979736d081bc3c90e45ace6baf414f767dff588e319d3492bd",
+pub const EXTRACTORS: &[ExtractorPin] = &[
+    ExtractorPin {
+        arch: Arch::X86_64,
+        version: "6.12.107+deb13-cloud-amd64",
+        kernel_deb: (
+            "https://snapshot.debian.org/archive/debian/20260907T023910Z/pool/main/l/linux-signed-amd64/linux-image-6.12.107%2Bdeb13-cloud-amd64_6.12.107-1_amd64.deb",
+            "04434ff520f860423eafe4203d986a35682ce73c2f71baa39e988ca0da93ac91",
+        ),
+        busybox_deb: (
+            "https://snapshot.debian.org/archive/debian/20260712T202631Z/pool/main/b/busybox/busybox-static_1.37.0-6%2Bb9_amd64.deb",
+            "598a3fd92bdafc34cd81196b2952ad36e910e47a4ecf162f8ce5e8e262598e53",
+        ),
+        kernel: DebFile {
+            path: "boot/vmlinuz-6.12.107+deb13-cloud-amd64",
+            sha256: "d1bc2c60a78ae6979736d081bc3c90e45ace6baf414f767dff588e319d3492bd",
+        },
+        busybox: DebFile {
+            path: "usr/bin/busybox",
+            sha256: "7ae95c260622412ceba6eb9f45d68f616cdc091a1d71d6c0a08b5875bb2c31dd",
+        },
+        modules: &[
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "virtio_blk",
+                "drivers/block/virtio_blk.ko.xz",
+                "d84a7dcde87c778579075d924acc5b2b4c58fc49d35a0ef5bea3b59189a8862a"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "libcrc32c",
+                "lib/libcrc32c.ko.xz",
+                "b37c48ce6bd849097609b07d160ec7782d146dfb7d7c9b5b400090c5b9018cdf"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "xfs",
+                "fs/xfs/xfs.ko.xz",
+                "50b939397be0e6813b1b09bf8332b8149dbd9a01d60a270fc740cf46e5f77569"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "xor",
+                "crypto/xor.ko.xz",
+                "cfcada8fc4507909cc37ff7b108413a95d474f93bde40d1b223ef370663d5fe4"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "raid6_pq",
+                "lib/raid6/raid6_pq.ko.xz",
+                "e65dfa3b06d5c6dea36a9f68341b6548d9f8c660518f20f8ca233827d53b2ec5"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "btrfs",
+                "fs/btrfs/btrfs.ko.xz",
+                "006522d240a7f8c6c9dae18a64dfc1594ae2bb410d297a092dc8a7ceeb44df62"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "fat",
+                "fs/fat/fat.ko.xz",
+                "8b23296829aad47a64db2cd58ebc4df0bbbf652a89d7ba48a49d49de1b4b2433"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "vfat",
+                "fs/fat/vfat.ko.xz",
+                "76a13dd499fd3b96f5e37dd8a1507693ebbb17feb116ea651c3a88bd9d01b70d"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "nls_cp437",
+                "fs/nls/nls_cp437.ko.xz",
+                "680185868bfa5c96cd5ae13240c571a90c556e87edb946ff57b61f188f796a48"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "nls_iso8859_1",
+                "fs/nls/nls_iso8859-1.ko.xz",
+                "78c3b2ee8af2a73688e756004959c285d67e3a094a29c56d00c45849e34f7f5d"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "nls_utf8",
+                "fs/nls/nls_utf8.ko.xz",
+                "4083c1496be5eb3bd34b44c32a3eeba8cf19d8b372b0c920c3b8dba274b55a56"
+            ),
+            // FAT's default iocharset (`ascii`) is a module in this build.
+            module!(
+                "6.12.107+deb13-cloud-amd64",
+                "nls_ascii",
+                "fs/nls/nls_ascii.ko.xz",
+                "969737a5c36c0a2fcdfeccf68e827036ea40016979dbee1043287b05aa3af692"
+            ),
+        ],
     },
-    busybox: DebFile {
-        path: "usr/bin/busybox",
-        sha256: "7ae95c260622412ceba6eb9f45d68f616cdc091a1d71d6c0a08b5875bb2c31dd",
+    // aarch64: the same packages' arm64 builds. The kernel is an
+    // uncompressed EFI-stub `Image`, which both hypervisors boot directly.
+    ExtractorPin {
+        arch: Arch::Aarch64,
+        version: "6.12.107+deb13-cloud-arm64",
+        kernel_deb: (
+            "https://snapshot.debian.org/archive/debian/20260907T023910Z/pool/main/l/linux-signed-arm64/linux-image-6.12.107%2Bdeb13-cloud-arm64_6.12.107-1_arm64.deb",
+            "a1bbfc22454e984feba6353f957152ef416728b627ec0cf94d3ac04b18c14d84",
+        ),
+        busybox_deb: (
+            "https://snapshot.debian.org/archive/debian/20260712T202631Z/pool/main/b/busybox/busybox-static_1.37.0-6%2Bb9_arm64.deb",
+            "c833be48abfa16bc19c4966ec93e289ff1ce5d2f1476cad3a57bd105378cd15c",
+        ),
+        kernel: DebFile {
+            path: "boot/vmlinuz-6.12.107+deb13-cloud-arm64",
+            sha256: "f671b4c0ebd29ef90f9ac0d2e82eb3b7826130f7882d6f5172180fcfb5d7452b",
+        },
+        busybox: DebFile {
+            path: "usr/bin/busybox",
+            sha256: "7d93682be37cf6ed46699f6fff546b80bf133cf8ec342c2d04bc23387f78bc34",
+        },
+        modules: &[
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "virtio_blk",
+                "drivers/block/virtio_blk.ko.xz",
+                "35196eeb7d5ad657b21b9f372d6dce0ac6fed8c801ba1a98d68c32ed206d77c3"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "libcrc32c",
+                "lib/libcrc32c.ko.xz",
+                "d5a695d868b0d46350497c28e37c2eb69b72b9955e715f1b2ecc60c3bbb04df2"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "xfs",
+                "fs/xfs/xfs.ko.xz",
+                "09ff7f27236da8297998ab3afaa6d689bf764e0c5e01d639a680350fb2ae4185"
+            ),
+            // arm64's NEON xor, which `xor` depends on here.
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "xor_neon",
+                "arch/arm64/lib/xor-neon.ko.xz",
+                "e1cfabc6074d0b8893512a0353fc127fd61ef0c16b9fe8d069fecc59bb2909d8"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "xor",
+                "crypto/xor.ko.xz",
+                "26a081041aa3b024f8416db4226b7388a69276b5624fb21ac4e3472ae58e1dbf"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "raid6_pq",
+                "lib/raid6/raid6_pq.ko.xz",
+                "b1346a938a85b5b3e1232aa57e02079921d4a434b0ae790ba8770fb39d272a78"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "btrfs",
+                "fs/btrfs/btrfs.ko.xz",
+                "04b5dc32febe5771180c7852d826a4d318daf3ad3ce0e224ffda25e2a06e0992"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "fat",
+                "fs/fat/fat.ko.xz",
+                "dabbe826c0b6a9be530bf0100c07c683a23382bd818d8aef19df1bf180e40eaf"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "vfat",
+                "fs/fat/vfat.ko.xz",
+                "d7f9aa25999e7c5c6ce9c6de4c0918949e22fa2b3110fc5c9b66a7bb5337f001"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "nls_cp437",
+                "fs/nls/nls_cp437.ko.xz",
+                "a37d3516d0cc07f381eed4848c76540bbe5142051bb5b3e333d9fc21d7515c48"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "nls_iso8859_1",
+                "fs/nls/nls_iso8859-1.ko.xz",
+                "05a6d2565e0805dc21c4e5b99338a01c3c9fba7dcfc29e998ead782cab9f84f1"
+            ),
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "nls_utf8",
+                "fs/nls/nls_utf8.ko.xz",
+                "f9db9fdc14c3e5bae6244faf741dafc621da1e59c60e18850481dce5c99ef5e1"
+            ),
+            // FAT's default iocharset (`ascii`) is a module in this build.
+            module!(
+                "6.12.107+deb13-cloud-arm64",
+                "nls_ascii",
+                "fs/nls/nls_ascii.ko.xz",
+                "287cd943e7479f690ecc735a45c016c95ac7a70513330c8b79b996fe9cec0c9f"
+            ),
+        ],
     },
-    modules: &[
-        module!(
-            "virtio_blk",
-            "drivers/block/virtio_blk.ko.xz",
-            "d84a7dcde87c778579075d924acc5b2b4c58fc49d35a0ef5bea3b59189a8862a"
-        ),
-        module!(
-            "libcrc32c",
-            "lib/libcrc32c.ko.xz",
-            "b37c48ce6bd849097609b07d160ec7782d146dfb7d7c9b5b400090c5b9018cdf"
-        ),
-        module!(
-            "xfs",
-            "fs/xfs/xfs.ko.xz",
-            "50b939397be0e6813b1b09bf8332b8149dbd9a01d60a270fc740cf46e5f77569"
-        ),
-        module!(
-            "xor",
-            "crypto/xor.ko.xz",
-            "cfcada8fc4507909cc37ff7b108413a95d474f93bde40d1b223ef370663d5fe4"
-        ),
-        module!(
-            "raid6_pq",
-            "lib/raid6/raid6_pq.ko.xz",
-            "e65dfa3b06d5c6dea36a9f68341b6548d9f8c660518f20f8ca233827d53b2ec5"
-        ),
-        module!(
-            "btrfs",
-            "fs/btrfs/btrfs.ko.xz",
-            "006522d240a7f8c6c9dae18a64dfc1594ae2bb410d297a092dc8a7ceeb44df62"
-        ),
-        module!(
-            "fat",
-            "fs/fat/fat.ko.xz",
-            "8b23296829aad47a64db2cd58ebc4df0bbbf652a89d7ba48a49d49de1b4b2433"
-        ),
-        module!(
-            "vfat",
-            "fs/fat/vfat.ko.xz",
-            "76a13dd499fd3b96f5e37dd8a1507693ebbb17feb116ea651c3a88bd9d01b70d"
-        ),
-        module!(
-            "nls_cp437",
-            "fs/nls/nls_cp437.ko.xz",
-            "680185868bfa5c96cd5ae13240c571a90c556e87edb946ff57b61f188f796a48"
-        ),
-        module!(
-            "nls_iso8859_1",
-            "fs/nls/nls_iso8859-1.ko.xz",
-            "78c3b2ee8af2a73688e756004959c285d67e3a094a29c56d00c45849e34f7f5d"
-        ),
-        module!(
-            "nls_utf8",
-            "fs/nls/nls_utf8.ko.xz",
-            "4083c1496be5eb3bd34b44c32a3eeba8cf19d8b372b0c920c3b8dba274b55a56"
-        ),
-        // FAT's default iocharset (`ascii`) is a module in this build.
-        module!(
-            "nls_ascii",
-            "fs/nls/nls_ascii.ko.xz",
-            "969737a5c36c0a2fcdfeccf68e827036ea40016979dbee1043287b05aa3af692"
-        ),
-    ],
-}];
+];
 
 /// The extractor for `arch`, when one is pinned.
 pub fn pin_for(arch: Arch) -> Option<&'static ExtractorPin> {
@@ -142,7 +258,9 @@ pub fn pin_for(arch: Arch) -> Option<&'static ExtractorPin> {
 pub const INIT: &str = include_str!("extractor-init.sh");
 
 /// The appliance's kernel command line.
-pub const CMDLINE: &str = "console=ttyS0 panic=-1 quiet";
+pub fn cmdline(arch: Arch) -> String {
+    format!("console={} panic=-1 quiet", arch.serial_console())
+}
 
 /// Build the appliance from the two packages: `(kernel, initramfs)`.
 /// Every file is checked against its pinned digest, the modules are
@@ -407,10 +525,12 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
 /// on the same partition first); then its command line from the boot
 /// configs, which `text` reads (BLS entry, else the first `grub.cfg`
 /// `linux` line for it). `BOOT_IMAGE=`, `console=`, `earlyprintk=` and
-/// GRUB variables are dropped, `console=ttyS0` appended; without a
+/// GRUB variables are dropped, the serial console appended (`console=ttyS0`,
+/// `ttyAMA0` on aarch64: [`Arch::serial_console`]); without a
 /// `root=` the extraction fails.
 pub fn choose(
     entries: &[StreamEntry],
+    arch: Arch,
     mut text: impl FnMut(&StreamEntry) -> Result<String, ImageError>,
 ) -> Result<Choice, ImageError> {
     let mut candidates: Vec<(String, &StreamEntry, &StreamEntry)> = entries
@@ -485,7 +605,8 @@ pub fn choose(
             "the boot configuration for {kernel_file} names no root="
         )));
     }
-    kept.push("console=ttyS0");
+    let console = format!("console={}", arch.serial_console());
+    kept.push(&console);
     Ok(Choice {
         version,
         kernel: kernel.clone(),
@@ -614,9 +735,13 @@ mod tests {
     }
 
     fn pick(files: &[(&str, &str)]) -> Result<Choice, ImageError> {
+        pick_for(Arch::X86_64, files)
+    }
+
+    fn pick_for(arch: Arch, files: &[(&str, &str)]) -> Result<Choice, ImageError> {
         let (e, s) = layout(files);
         let mut c = Cursor::new(s);
-        choose(&e, |x| {
+        choose(&e, arch, |x| {
             Ok(String::from_utf8_lossy(&read_entry(&mut c, x)?).into_owned())
         })
     }
@@ -693,6 +818,30 @@ mod tests {
         );
     }
 
+    /// aarch64's serial port is the PL011, `ttyAMA0`: for the extracted
+    /// kernel's command line and the extractor's own.
+    #[test]
+    fn the_console_is_the_architectures_serial_port() {
+        let files = [
+            (
+                "vda1:/boot/grub/grub.cfg",
+                "linux /boot/vmlinuz-6.12.0 root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0\n",
+            ),
+            ("vda1:/boot/vmlinuz-6.12.0", "K"),
+            ("vda1:/boot/initrd.img-6.12.0", "I"),
+        ];
+        assert_eq!(
+            pick_for(Arch::Aarch64, &files).unwrap().cmdline,
+            "root=LABEL=cloudimg-rootfs ro console=ttyAMA0"
+        );
+        assert_eq!(
+            pick_for(Arch::X86_64, &files).unwrap().cmdline,
+            "root=LABEL=cloudimg-rootfs ro console=ttyS0"
+        );
+        assert_eq!(cmdline(Arch::Aarch64), "console=ttyAMA0 panic=-1 quiet");
+        assert_eq!(cmdline(Arch::X86_64), "console=ttyS0 panic=-1 quiet");
+    }
+
     #[test]
     fn newest_kernel_with_an_initramfs() {
         let cfg = "menuentry a {\n linux /boot/vmlinuz-6.1.10 root=/dev/vda1 ro\n}\nmenuentry b {\n linux /boot/vmlinuz-6.1.9 root=/dev/vda1 ro quiet\n}\n";
@@ -756,11 +905,13 @@ mod tests {
                 assert_eq!(sha.len(), 64);
             }
             assert!(p.kernel.path.ends_with(p.version));
+            let kmod = format!("usr/lib/modules/{}/kernel/", p.version);
             for (name, f) in p.modules {
-                assert!(f.path.starts_with(KMOD), "{name}");
+                assert!(f.path.starts_with(&kmod), "{name}");
                 assert_eq!(f.sha256.len(), 64, "{name}");
             }
         }
         assert!(pin_for(Arch::X86_64).is_some());
+        assert!(pin_for(Arch::Aarch64).is_some());
     }
 }
