@@ -4,6 +4,7 @@
 //! control plane, plus the server internals (used by the binary and tests).
 
 pub mod auth;
+pub mod boot;
 pub mod client;
 pub mod proto;
 pub mod sd;

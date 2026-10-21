@@ -60,14 +60,33 @@ echo 0000:41:00.0 | sudo tee /sys/bus/pci/devices/0000:41:00.0/driver/unbind
 echo 0000:41:00.0 | sudo tee /sys/bus/pci/drivers_probe
 ```
 
-This doesn't survive a reboot. To make it permanent, use your
-distribution's way (for example `options vfio-pci ids=10de:2204` in
-`/etc/modprobe.d/`, with the vendor and device ids from `gxctl pci`, and
-`vfio-pci` in `/etc/modules-load.d/`). For a GPU, also keep the host's
-own driver from claiming it first.
+This doesn't survive a reboot. To keep it, let the installer do it at
+every boot:
 
-The installer loads `vfio-pci` at boot only for the `dpdk` OVS profile
-(for DPDK NICs); for passthrough, load it yourself.
+```bash
+glidex-install --vfio-devices a100                 # a pool from control-plane.json
+glidex-install --vfio-devices 0000:41:00.0,0000:42:00.0
+glidex-install --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
+glidex-install --no-vfio-devices                   # stop doing it
+```
+
+- `glidex-vfio-boot.service` runs early at boot, before glidex-netd,
+  the control plane and libvirt. It sets the VF counts first, then binds
+  each selected device (and its IOMMU group) to `vfio-pci`, with the
+  same udev rule and refusals as **Prepare**. Pools are copied as their
+  `match`, so re-run the installer after changing one.
+- **A device already on `vfio-pci` is never touched**, so a running VM
+  keeps its device.
+- The installer only records the settings and enables the unit; they
+  apply at the next boot. `--now` applies them at once as well. Even
+  then, a VF count whose physical function has a VF on `vfio-pci` is
+  left as it is, since changing it would remove that VF from its VM.
+- The settings are in `/etc/glidex/vfio-devices.json`, and `vfio-pci`
+  is loaded from `/etc/modules-load.d/glidex-vfio.conf`. Uninstall
+  removes both; devices stay where they are until the next boot.
+- For a GPU whose host driver loads first (`nvidia`, `nouveau`),
+  binding at boot takes it from that driver. Make sure nothing on the
+  host uses it.
 
 ### Let the `glidex` user open it
 
@@ -272,8 +291,9 @@ gxctl node sriov gpu-01 0000:61:00.0 0     # none
 (`POST /nodes/{id}/devices/{pf}/sriov` with `{"vfs": 8}`, `net-admin`
 or `system-admin`; also the **VFs…** button on the node page.) A change
 removes every VF the PF had, so it is refused while a VM holds the PF or
-one of its VFs, and for a PF that is an OVS-DPDK uplink. VFs don't
-survive a reboot by themselves.
+one of its VFs, and for a PF that is an OVS-DPDK uplink. To keep a VF
+count across reboots, give it to the installer: `--sriov
+0000:61:00.0=8` (see [Bind the device to `vfio-pci`](#bind-the-device-to-vfio-pci) above).
 
 A PF with VFs enabled is no longer offered itself (passing it through
 would take its VFs with it). A pool takes VFs with `match.vf_of`, which

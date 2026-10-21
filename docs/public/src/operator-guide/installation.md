@@ -104,6 +104,10 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
 | `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
 | `--datastore-default` | Make the first of these datastores the default for new disks. Not saved. |
+| `--vfio-devices LIST` | Bind these to `vfio-pci` at every boot, before any VM starts: pools of `control-plane.json` or PCI addresses, comma-separated. A device already on `vfio-pci` is left alone. See [PCI passthrough](pci-passthrough.md). |
+| `--sriov PF=N` | Give physical function `PF` `N` SR-IOV VFs at every boot, before the binding. Repeatable. |
+| `--no-vfio-devices` | Stop both at boot (what is bound now stays so until the next boot). |
+| `--now` | Apply `--vfio-devices` and `--sriov` now as well, not only at the next boot. Not saved. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |
 

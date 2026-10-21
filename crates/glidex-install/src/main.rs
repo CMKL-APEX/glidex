@@ -49,6 +49,12 @@ const UI_ASSET_DIR: &str = "/usr/local/share/glidex/ui";
 const INSTALL_CONF: &str = "/etc/glidex/install.conf";
 
 const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
+/// Applies `--vfio-devices` / `--sriov` at boot (spec/gpu-vms.md §10).
+const VFIO_BOOT_UNIT: &str = "/etc/systemd/system/glidex-vfio-boot.service";
+/// Loads vfio-pci at boot for it.
+pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
+/// Where pools are defined (`pci.pools`).
+const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
@@ -818,6 +824,36 @@ struct Options {
     /// in, added to stord.json (spec/storage.md §11.1). Never saved: the
     /// file keeps them.
     stord_allow_vgs: Vec<String>,
+    /// `--vfio-devices a100,0000:87:00.0`: pools (control-plane.json) or PCI
+    /// addresses bound to vfio-pci at boot (spec/gpu-vms.md §10).
+    vfio_devices: Vec<String>,
+    /// `--sriov PF=N`: VF counts set at boot, before the binding.
+    sriov: Vec<(String, u32)>,
+    /// `--now`: apply the boot devices now as well. Never saved.
+    vfio_now: bool,
+}
+
+/// `a,b , c` → `[a, b, c]`.
+fn split_list(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// `0000:61:00.0=8` → (PF, VF count).
+fn parse_sriov(v: &str) -> Result<(String, u32)> {
+    let (pf, n) = v
+        .split_once('=')
+        .with_context(|| format!("--sriov {v}: give PF=COUNT, e.g. 0000:61:00.0=8"))?;
+    let pf = pf.trim().to_ascii_lowercase();
+    glidex_ovs::nic::validate_bdf(&pf).map_err(|e| anyhow::anyhow!("--sriov {v}: {e}"))?;
+    let n = n
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("--sriov {v}: the count is a number"))?;
+    Ok((pf, n))
 }
 
 /// A datastore to register (spec/storage.md §13).
@@ -879,6 +915,9 @@ impl Default for Options {
             datastores: Vec::new(),
             datastore_default: false,
             stord_allow_vgs: Vec::new(),
+            vfio_devices: Vec::new(),
+            sriov: Vec::new(),
+            vfio_now: false,
         }
     }
 }
@@ -899,6 +938,13 @@ impl Options {
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
                 "ovn" => o.ovn = v == "true",
                 "tailscale_cert" => o.tailscale_cert = Some(v == "true"),
+                "vfio_devices" => o.vfio_devices = split_list(v),
+                "sriov" => {
+                    o.sriov = split_list(v)
+                        .iter()
+                        .filter_map(|s| parse_sriov(s).ok())
+                        .collect()
+                }
                 _ => {}
             }
         }
@@ -946,6 +992,25 @@ impl Options {
                     o.stord_allow_vgs.push(vg);
                 }
                 "--no-tailscale-cert" => o.tailscale_cert = Some(false),
+                "--vfio-devices" => {
+                    let list = split_list(&value("--vfio-devices")?);
+                    if list.is_empty() {
+                        bail!("--vfio-devices needs pools or PCI addresses (or --no-vfio-devices)");
+                    }
+                    o.vfio_devices = list;
+                }
+                "--sriov" => {
+                    for s in split_list(&value("--sriov")?) {
+                        let (pf, n) = parse_sriov(&s)?;
+                        o.sriov.retain(|(p, _)| *p != pf);
+                        o.sriov.push((pf, n));
+                    }
+                }
+                "--no-vfio-devices" => {
+                    o.vfio_devices.clear();
+                    o.sriov.clear();
+                }
+                "--now" => o.vfio_now = true,
                 "--join" => {
                     let server = value("--join")?;
                     o.join
@@ -1031,6 +1096,13 @@ impl Options {
         if let Some(t) = self.tailscale_cert {
             text.push_str(&format!("tailscale_cert={t}\n"));
         }
+        if !self.vfio_devices.is_empty() {
+            text.push_str(&format!("vfio_devices={}\n", self.vfio_devices.join(",")));
+        }
+        if !self.sriov.is_empty() {
+            let s: Vec<String> = self.sriov.iter().map(|(p, n)| format!("{p}={n}")).collect();
+            text.push_str(&format!("sriov={}\n", s.join(",")));
+        }
         text
     }
 
@@ -1074,6 +1146,11 @@ fn print_help() {
          \x20     --stord-allow-vg VG    let glidex-stord make LVM-thin volumes in volume group VG\n\
          \x20                            (added to /etc/glidex/stord.json; the VG and its thin\n\
          \x20                            pool are yours to make: spec/storage.md §11.1)\n\
+         \x20     --vfio-devices LIST    bind these to vfio-pci at every boot, before any VM starts:\n\
+         \x20                            pools of control-plane.json or PCI addresses, comma-separated\n\
+         \x20     --sriov PF=N           give physical function PF N SR-IOV VFs at every boot\n\
+         \x20     --no-vfio-devices      stop doing both at boot\n\
+         \x20     --now                  also apply them now (never touches a device on vfio-pci)\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
@@ -2598,6 +2675,133 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+// --- Boot devices (spec/gpu-vms.md §10) ---
+
+/// The boot settings for `--vfio-devices` and `--sriov`: addresses as they
+/// are, pools as their `match` in control-plane.json. `None`: nothing set.
+fn boot_devices_config(
+    devices: &[String],
+    sriov: &[(String, u32)],
+    cp_config: Option<&str>,
+) -> Result<Option<glidex_ovs::boot_devices::BootDevices>> {
+    use glidex_ovs::boot_devices::{BootDevices, Selector, SriovSetting};
+    if devices.is_empty() && sriov.is_empty() {
+        return Ok(None);
+    }
+    let mut addresses = Vec::new();
+    let mut select = Vec::new();
+    for d in devices {
+        if glidex_ovs::nic::validate_bdf(d).is_ok() {
+            addresses.push(d.to_ascii_lowercase());
+            continue;
+        }
+        let cp: serde_json::Value = match cp_config {
+            Some(t) => serde_json::from_str(t).with_context(|| format!("{CP_CONFIG}: not JSON"))?,
+            None => bail!(
+                "--vfio-devices {d}: no {CP_CONFIG} to find pool {d} in; name PCI addresses (0000:87:00.0) instead"
+            ),
+        };
+        let pool = cp["pci"]["pools"]
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["name"] == d.as_str()))
+            .with_context(|| {
+                format!("--vfio-devices {d}: not a PCI address, and {CP_CONFIG} has no pool {d}")
+            })?;
+        let m: Selector = serde_json::from_value(pool["match"].clone())
+            .with_context(|| format!("pool {d}: its match isn't one glidex-netd can apply"))?;
+        select.push(m);
+    }
+    if !addresses.is_empty() {
+        select.push(Selector {
+            addresses,
+            ..Default::default()
+        });
+    }
+    Ok(Some(BootDevices {
+        sriov: sriov
+            .iter()
+            .map(|(pf, vfs)| SriovSetting {
+                pf: pf.clone(),
+                vfs: *vfs,
+            })
+            .collect(),
+        select,
+    }))
+}
+
+/// Write the boot settings and enable the unit that applies them, or take
+/// them away. Nothing is changed on the host now unless `--now`: the
+/// settings apply at the next boot, before any VM starts.
+fn setup_boot_devices(opts: &Options) -> Result<()> {
+    use glidex_ovs::boot_devices::{Action, BOOT_DEVICES_FILE, plan_devices};
+    let cp = fs::read_to_string(CP_CONFIG).ok();
+    let Some(cfg) = boot_devices_config(&opts.vfio_devices, &opts.sriov, cp.as_deref())? else {
+        if Path::new(BOOT_DEVICES_FILE).exists() || Path::new(VFIO_BOOT_UNIT).exists() {
+            if unit_enabled("glidex-vfio-boot.service") {
+                sudo(&argv(&["systemctl", "disable", "glidex-vfio-boot.service"]))?;
+            }
+            sudo(&argv(&[
+                "rm",
+                "-f",
+                BOOT_DEVICES_FILE,
+                VFIO_BOOT_UNIT,
+                VFIO_MODULES,
+            ]))?;
+            sudo(&argv(&["systemctl", "daemon-reload"]))?;
+            println!(
+                "{} boot devices (what is bound now stays so until the next boot)",
+                "Removed:".green()
+            );
+        }
+        return Ok(());
+    };
+    section("Boot devices (vfio-pci, SR-IOV)");
+    let text = serde_json::to_string_pretty(&cfg)? + "\n";
+    if fs::read_to_string(BOOT_DEVICES_FILE).ok().as_deref() != Some(text.as_str()) {
+        sudo_write(BOOT_DEVICES_FILE, &text)?;
+        println!("{} {}", "Updated:".green(), BOOT_DEVICES_FILE);
+    }
+    if fs::read_to_string(VFIO_MODULES).ok().as_deref() != Some("vfio-pci\n") {
+        sudo_write(VFIO_MODULES, "vfio-pci\n")?;
+    }
+    if install_if_changed(
+        &workspace_root().join("packaging/glidex-vfio-boot.service"),
+        VFIO_BOOT_UNIT,
+        "0644",
+    )? {
+        sudo(&argv(&["systemctl", "daemon-reload"]))?;
+    }
+    // Enabled, not started: it runs at boot, before netd and any VM.
+    enable_unit("glidex-vfio-boot.service")?;
+    for (pf, n) in &opts.sriov {
+        println!("  SR-IOV: {pf} gets {n} VFs");
+    }
+    let exec = glidex_ovs::SystemExec::new();
+    for (address, action) in plan_devices(&exec, &cfg) {
+        match action {
+            Action::AlreadyVfio => println!("  {address}: on vfio-pci already (left as it is)"),
+            Action::Bind { from } => println!(
+                "  {address}: bound to vfio-pci (now on {})",
+                from.as_deref().unwrap_or("no driver")
+            ),
+        }
+    }
+    if opts.vfio_now {
+        // netd is up: it applies through its own ops, sparing any device on
+        // vfio-pci and any VF count with a VF on vfio-pci.
+        sudo(&argv(&[
+            &format!("{BIN_DIR}/glidex-netd"),
+            "--boot-devices",
+        ]))?;
+    } else {
+        println!(
+            "{} at the next boot, before netd and any VM starts (or re-run with --now)",
+            "Applies:".green()
+        );
+    }
+    Ok(())
+}
+
 // --- Networking ---
 
 /// VM networking (spec §13): OVS, host settings, the glidex-netd service,
@@ -2687,6 +2891,9 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     } else {
         println!("{} glidex-netd", "Running:".green());
     }
+
+    // Devices for VMs from boot: VF counts and vfio-pci bindings.
+    setup_boot_devices(opts)?;
 
     // 4. Tap devices: cloud-hypervisor brings them up itself. Replacing the
     //    binary drops the capability, so check every run.
@@ -2969,6 +3176,10 @@ fn write_sysctls(wanted: &[(&str, String)]) -> Result<()> {
 }
 
 // --- systemd ---
+
+fn unit_enabled(unit: &str) -> bool {
+    succeeds("systemctl", &["is-enabled", "--quiet", unit])
+}
 
 fn unit_active(unit: &str) -> bool {
     succeeds("systemctl", &["is-active", "--quiet", unit])
@@ -3661,6 +3872,98 @@ mod tests {
 ";
         let found = unregistered_mounts(mountinfo, "/srv/glidex", |p| p.ends_with("/done"));
         assert_eq!(found, ["/srv/glidex/nfs", "/srv/glidex/with space"]);
+    }
+
+    #[test]
+    fn vfio_devices_and_sriov_are_saved_and_cleared() {
+        let o = Options::parse(
+            None,
+            &args(&[
+                "--vfio-devices",
+                "a100, 0000:87:00.0",
+                "--sriov",
+                "0000:61:00.0=8",
+                "--sriov",
+                "0000:61:00.0=4,0000:62:00.0=2",
+                "--now",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(o.vfio_devices, ["a100", "0000:87:00.0"]);
+        assert_eq!(
+            o.sriov,
+            [
+                ("0000:61:00.0".to_string(), 4),
+                ("0000:62:00.0".to_string(), 2)
+            ],
+            "the last count for a PF wins"
+        );
+        assert!(o.vfio_now);
+        // Saved for re-runs, except --now.
+        let again = Options::parse(Some(&o.render()), &[]).unwrap();
+        assert_eq!(
+            (again.vfio_devices.clone(), again.sriov.clone()),
+            (o.vfio_devices.clone(), o.sriov.clone())
+        );
+        assert!(!again.vfio_now);
+        let off = Options::parse(Some(&o.render()), &args(&["--no-vfio-devices"])).unwrap();
+        assert!(off.vfio_devices.is_empty() && off.sriov.is_empty());
+        assert!(!off.render().contains("vfio_devices") && !off.render().contains("sriov"));
+        for bad in [
+            &["--sriov", "0000:61:00.0"][..],
+            &["--sriov", "nope=2"],
+            &["--sriov", "0000:61:00.0=x"],
+            &["--vfio-devices", " , "],
+        ] {
+            assert!(Options::parse(None, &args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn boot_devices_take_pools_as_their_match_and_addresses_as_they_are() {
+        let cp = r#"{"pci":{"pools":[
+            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"}},
+            {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3","device_id":"0xa2dc"}},"prepare":true}
+        ]}}"#;
+        assert_eq!(
+            boot_devices_config(&[], &[], Some(cp)).unwrap(),
+            None,
+            "nothing set"
+        );
+        let c = boot_devices_config(
+            &[
+                "a100".into(),
+                "cx7-vfs".into(),
+                "0000:87:00.0".into(),
+                "0000:90:00.0".into(),
+            ],
+            &[("0000:61:00.0".into(), 8)],
+            Some(cp),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.select.len(), 3, "{c:?}");
+        assert_eq!(c.select[0].device_id.as_deref(), Some("0x20b0"));
+        assert!(c.select[1].vf_of.is_some());
+        assert_eq!(c.select[2].addresses, ["0000:87:00.0", "0000:90:00.0"]);
+        assert_eq!(
+            (c.sriov[0].pf.as_str(), c.sriov[0].vfs),
+            ("0000:61:00.0", 8)
+        );
+        let e = boot_devices_config(&["h100".into()], &[], Some(cp))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no pool h100"), "{e}");
+        let e = boot_devices_config(&["a100".into()], &[], None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("PCI addresses"), "{e}");
+        // Addresses need no control-plane.json.
+        assert!(
+            boot_devices_config(&["0000:87:00.0".into()], &[], None)
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// `--release-hugepages` is a one-time kernel-profile action: refused

@@ -1808,3 +1808,85 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     assert_eq!(h["226"][0]["uid"], 9869, "{h}");
     assert!(h.get("236").is_none(), "{h}");
 }
+
+/// spec/gpu-vms.md §10: boot settings bind the selected devices that aren't
+/// on vfio-pci, never touch one that is, and (outside boot) leave a VF
+/// count alone while one of its VFs is on vfio-pci.
+#[test]
+fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
+    use glidex_ovs::boot_devices::{BootDevices, Selector, SriovSetting};
+    let exec = exec();
+    for (bdf, group, driver) in [
+        ("0000:87:00.0", "226", "nvidia"),
+        ("0000:90:00.0", "236", "vfio-pci"),
+    ] {
+        let d = format!("/sys/bus/pci/devices/{bdf}");
+        exec.file(&d, "");
+        exec.file(&format!("{d}/vendor"), "0x10de\n");
+        exec.file(&format!("{d}/device"), "0x20b0\n");
+        exec.file(&format!("{d}/class"), "0x030200\n");
+        exec.file(&format!("{d}/uevent"), &format!("DRIVER={driver}\n"));
+        exec.link(&format!("{d}/driver"), driver);
+        exec.link(&format!("{d}/iommu_group"), group);
+        exec.link(
+            &format!("/sys/kernel/iommu_groups/{group}/devices/{bdf}"),
+            bdf,
+        );
+    }
+    // A PF with 2 VFs, one of them on vfio-pci.
+    let pf = "/sys/bus/pci/devices/0000:61:00.0";
+    exec.file(pf, "");
+    exec.file(&format!("{pf}/sriov_totalvfs"), "16\n");
+    exec.file(&format!("{pf}/sriov_numvfs"), "2\n");
+    exec.link(&format!("{pf}/virtfn0"), "0000:61:00.2");
+    exec.link(&format!("{pf}/virtfn1"), "0000:61:00.3");
+    exec.file("/sys/bus/pci/devices/0000:61:00.3", "");
+    exec.link("/sys/bus/pci/devices/0000:61:00.3/driver", "vfio-pci");
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    let cfg = BootDevices {
+        sriov: vec![SriovSetting {
+            pf: "0000:61:00.0".into(),
+            vfs: 8,
+        }],
+        select: vec![Selector {
+            vendor_id: Some("0x10de".into()),
+            ..Default::default()
+        }],
+    };
+    let r = netd.apply_boot_devices(&cfg, false);
+    assert_eq!(r.bound, ["0000:87:00.0"], "{r:?}");
+    assert!(r.failed.is_empty(), "{r:?}");
+    assert!(
+        r.skipped
+            .iter()
+            .any(|(a, why)| a == "0000:90:00.0" && why.contains("already on vfio-pci")),
+        "{r:?}"
+    );
+    assert!(
+        r.skipped
+            .iter()
+            .any(|(a, why)| a == "0000:61:00.0" && why.contains("0000:61:00.3")),
+        "outside boot the VF count waits: {r:?}"
+    );
+    assert!(r.sriov.is_empty(), "{r:?}");
+    let writes: Vec<String> = exec
+        .writes()
+        .into_iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+    assert!(
+        !writes.iter().any(|w| w.contains("0000:90:00.0")),
+        "{writes:?}"
+    );
+    assert!(
+        !writes.iter().any(|w| w.ends_with("sriov_numvfs")),
+        "{writes:?}"
+    );
+    // Recorded like prepare_device, so release works.
+    let listed = netd.handle(Op::ListPreparedDevices, &peer()).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    // At boot the VF count is set.
+    let r = netd.apply_boot_devices(&cfg, true);
+    assert_eq!(r.sriov, [("0000:61:00.0".to_string(), 8)], "{r:?}");
+}
