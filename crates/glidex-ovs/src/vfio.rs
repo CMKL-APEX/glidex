@@ -41,9 +41,11 @@ pub fn iommu_group(exec: &dyn Exec, bdf: &str) -> Option<String> {
     exec.link_name(&dev_dir(bdf).join("iommu_group"))
 }
 
-/// The functions of IOMMU group `group` a VM takes with it: all but
-/// bridges (class `0x06…`), which stay with the host.
-pub fn group_members(exec: &dyn Exec, group: &str) -> Vec<String> {
+/// The functions of IOMMU group `group` a VM takes with it when it is
+/// given `bdf`: `bdf` itself, whatever its class (an NVSwitch is class
+/// `0x0680`, a bridge class), and the others but bridges and other
+/// platform functions (class `0x06…`), which stay with the host.
+pub fn group_members(exec: &dyn Exec, group: &str, bdf: &str) -> Vec<String> {
     exec.list_dir(
         &Path::new("/sys/kernel/iommu_groups")
             .join(group)
@@ -51,6 +53,9 @@ pub fn group_members(exec: &dyn Exec, group: &str) -> Vec<String> {
     )
     .into_iter()
     .filter(|a| {
+        if a.eq_ignore_ascii_case(bdf) {
+            return true;
+        }
         let class = exec
             .read_file(&dev_dir(a).join("class"))
             .unwrap_or_default();
@@ -133,7 +138,7 @@ pub fn refusal(exec: &dyn Exec, bdf: &str, dpdk_uplinks: &[String]) -> Option<St
         .map(|e| e.to_string())
         .or_else(|| {
             let group = iommu_group(exec, bdf)?;
-            group_members(exec, &group).into_iter().find_map(|m| {
+            group_members(exec, &group, bdf).into_iter().find_map(|m| {
                 if dpdk_uplinks.iter().any(|u| u.eq_ignore_ascii_case(&m)) {
                     return Some(format!("{m} is an OVS-DPDK uplink"));
                 }
@@ -175,7 +180,7 @@ pub fn prepare(
         return Err(OvsError::conflict(why));
     }
     let mut members = Vec::new();
-    for m in group_members(exec, &group) {
+    for m in group_members(exec, &group, bdf) {
         let driver = nic::pci_driver(exec, &m)?;
         if driver.as_deref() != Some("vfio-pci") {
             nic::bind_driver(exec, &m, "vfio-pci")?;
@@ -332,6 +337,37 @@ mod tests {
         assert!(!h.contains_key("40") && !h.contains_key("99"));
         assert!(group_holders(&exec, &[]).is_empty());
         assert_eq!(h["30"][0].to_string(), "qemu-kvm-one (pid 37226)");
+    }
+
+    #[test]
+    fn an_nvswitch_is_prepared_though_its_class_is_a_bridge_s() {
+        // Class 0x0680 ("other bridge"), alone in its group: preparing it
+        // binds it, where skipping every 0x06 class bound nothing.
+        let exec = RecordingExec::new();
+        let bdf = "0000:c4:00.0";
+        exec.file(&format!("/sys/bus/pci/devices/{bdf}"), "");
+        exec.file(&format!("/sys/bus/pci/devices/{bdf}/class"), "0x068000");
+        exec.file(
+            &format!("/sys/bus/pci/devices/{bdf}/uevent"),
+            "DRIVER=nvidia-nvswitch\n",
+        );
+        exec.link(&format!("/sys/bus/pci/devices/{bdf}/iommu_group"), "178");
+        exec.link(&format!("/sys/kernel/iommu_groups/178/devices/{bdf}"), bdf);
+        let p = prepare(&exec, bdf, &[], "glidex").unwrap();
+        assert_eq!(
+            p.members,
+            vec![Member {
+                address: bdf.into(),
+                previous_driver: Some("nvidia-nvswitch".into()),
+            }]
+        );
+        // Asked for something else in the group, a 0x06 function stays.
+        let host = host();
+        assert_eq!(
+            group_members(&host, "30", "0000:07:00.0"),
+            ["0000:07:00.0", "0000:07:00.1"],
+            "the root port (0x0604) stays with the host"
+        );
     }
 
     #[test]

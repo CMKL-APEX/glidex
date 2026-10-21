@@ -261,11 +261,40 @@ GPU identity in shared mode.)
 
 ### 8.2 FM on the host instead
 
-For a host that already runs FM, like prism1, `fabric.where: host` uses
-the host's FM in `FABRIC_MODE=1` through `glidex-fabricd` running on the
-host (same ops, Unix socket instead of vsock). glidex switching an
-existing FM from mode 0 to 1 requires stopping it, so it is an operator
-step, not done by the installer.
+A node's fabric has a **manager**, `service-vm` (§8) or `host`. Both
+answer the same `glidex-fabricd` ops (§8.1), so the scheduler (§9) and
+the VM controller don't care which.
+
+| | `service-vm` | `host` |
+|---|---|---|
+| NVSwitches | on `vfio-pci`, passed to the service VM (`--vfio-devices`, §10) | on the host's `nvidia-nvswitch` driver |
+| NVIDIA software | in the service VM image: switch driver, FM, `glidex-fabricd` | on the host: the driver's switch module, `nvidia-fabricmanager` (the operator's packages) |
+| FM mode | `FABRIC_MODE=1`, set in the image | `FABRIC_MODE=1` in the host's `fabricmanager.cfg`, set by the operator |
+| `glidex-fabricd` | in the service VM, on vsock | on the host as `glidex-fabricd.service` (root), on `/run/glidex-fabric/fabric.sock` (`root:glidex 0660`), talking to FM's command socket (`FM_CMD_UNIX_DOMAIN_SOCKET`, or `127.0.0.1:6666`) |
+| Versions | FM matches the image's switch driver; tenant VMs bring their own GPU driver | FM matches the host's driver package, and the host upgrade moves both |
+| The host kernel | stock | carries NVIDIA's switch module |
+
+- **Choosing.** The operator chooses per node: `glidex-install
+  --fabric host|service-vm|off`, saved in install.conf and reported in
+  node status as `fabric.manager`.
+  - `host` installs and enables `glidex-fabricd.service`, but **never
+    changes FM's mode or restarts it**. It checks
+    `fabricmanager.cfg`, and while it says `FABRIC_MODE=0` the node
+    reports `FabricReady=False` ("host Fabric Manager runs in bare-metal
+    mode").
+  - `service-vm` needs the NVSwitches in `--vfio-devices`, and refuses
+    while the host's `nvidia-fabricmanager` runs (both can't own the
+    switches).
+- **The same partitions either way.** In both, glidex activates a
+  partition before a VM starts and deactivates it after. Only who
+  answers changes.
+- **Another hypervisor on the host** (prism1's OpenNebula) is where
+  `host` needs care. Its VMs share the same FM. In shared mode, a GPU
+  may need an activated partition to work at all (§13 question 1). If
+  it does, switching the host FM to mode 1 would leave the other
+  hypervisor's GPU VMs without one, since it doesn't activate
+  partitions. So on such a host, `host` is for when glidex owns the
+  board's GPUs, or after question 1 is answered.
 
 ## 9. Partitions in the VM's life
 
@@ -324,8 +353,9 @@ glidex-install --no-vfio-devices                    # remove what it wrote
   reads or changes it; tenants can't see or reach it. The vsock path is
   host-local, between the node's control plane and its own system VM.
 - **NVSwitches** are never offered to tenant pools: class `0x0680` from
-  NVIDIA is excluded from `assignable`. A node with a fabric marks them
-  `held by: system/fabric-manager`.
+  NVIDIA is excluded from `assignable`, and the topology marks them
+  `fabric` (shown on the host page and in `gxctl node topology`). A
+  node with a fabric marks them `held by: system/fabric-manager`.
 - **FM's command port.** With FM on the host (§8.2), it stays bound to
   `127.0.0.1` or a Unix socket.
 - **`--vfio-devices`** writes root-owned files only, and refuses devices
@@ -357,6 +387,17 @@ glidex-install --no-vfio-devices                    # remove what it wrote
    OpenNebula's VMs share (they get no NVLink now, §2.2).
 
 ## 14. Implementation notes
+
+- **Before GV5:**
+  - **The topology marks NVSwitches.** NVIDIA vendor and class `0x0680`
+    set `PciFunction.fabric` (proto `fabric`, 19). The host page's
+    Topology card lists them under "NVLink fabric" with driver, IOMMU
+    group and NUMA node, and `gxctl node topology` prints an `nvlink
+    fabric` section.
+  - **`vfio::group_members` always keeps the device asked for.**
+    `0x0680` is a bridge class, and the members skipped every `0x06…`
+    function, so preparing an NVSwitch bound nothing. Other `0x06…`
+    functions of a group still stay with the host.
 
 - **GV2** (§3, §6):
   - **Pool sizing.** Pools take `per_device {vcpus, memory_mib,

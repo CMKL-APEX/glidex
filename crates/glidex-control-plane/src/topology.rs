@@ -472,6 +472,11 @@ pub struct PciFunction {
     pub physfn: Option<String>,
     /// A device a VM could be given (§3.3).
     pub assignable: bool,
+    /// Part of the host's NVLink fabric: an NVIDIA NVSwitch. Never given to
+    /// a tenant VM; Fabric Manager, on the host or in a service VM, owns it
+    /// (spec/gpu-vms.md §7, §11).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fabric: bool,
     /// For an assignable device: ready for passthrough (§5.1), else why not.
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -543,6 +548,12 @@ fn is_bridge(class: &str) -> bool {
 /// when the rest of their IOMMU group is passed through.
 fn is_bridge_class(class: &str) -> bool {
     class.trim_start_matches("0x").starts_with("06")
+}
+
+/// An NVIDIA NVSwitch: vendor 0x10de, class 0x0680 ("other bridge").
+fn is_nvswitch(vendor: &str, class: &str) -> bool {
+    vendor.trim_start_matches("0x").eq_ignore_ascii_case("10de")
+        && class.trim_start_matches("0x").starts_with("0680")
 }
 
 fn is_gpu(class: &str) -> bool {
@@ -706,6 +717,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             sriov: r.sriov.clone(),
             physfn: r.physfn.clone(),
             assignable,
+            fabric: is_nvswitch(&r.vendor_id, &r.class_id),
             ready: assignable && not_ready.is_empty(),
             not_ready,
             aer: r.aer,
@@ -1233,6 +1245,51 @@ mod tests {
                 .any(|s| s.address == "0000:87:00.0" && !s.ready),
             "pools see it as not ready"
         );
+    }
+
+    #[test]
+    fn nvswitches_are_the_fabric_not_devices_for_vms() {
+        let raw = vec![
+            raw(
+                "pci0000:c0/0000:c0:01.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("177"),
+                Some(5),
+            ),
+            raw(
+                "pci0000:c0/0000:c0:01.1/0000:c4:00.0",
+                "0x068000",
+                Some("nvidia-nvswitch"),
+                Some("178"),
+                Some(5),
+            ),
+            raw(
+                "pci0000:c0/0000:c0:01.1/0000:c5:00.0",
+                "0x030200",
+                Some("vfio-pci"),
+                Some("179"),
+                Some(5),
+            ),
+        ];
+        let t = build_tree(
+            TopologySummary::default(),
+            &raw,
+            &ReadyContext {
+                iommu: true,
+                ..Default::default()
+            },
+        );
+        let sw = func(&t, "0000:c4:00.0");
+        assert!(sw.fabric && !sw.assignable, "{sw:?}");
+        assert!(
+            !t.summary_devices()
+                .iter()
+                .any(|d| d.address == "0000:c4:00.0")
+        );
+        let gpu = func(&t, "0000:c5:00.0");
+        assert!(!gpu.fabric && gpu.assignable);
+        assert!(!func(&t, "0000:c0:01.1").fabric, "a root port isn't");
     }
 
     #[test]

@@ -139,6 +139,7 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
   const devices = (t.devices ?? []).filter((d) => d.assignable);
   const reserved = Object.keys(t.summary?.reserved_cpus ?? {}).map(Number);
   const loose = devices.filter((d) => d.numa_node === undefined);
+  const fabric = (t.devices ?? []).filter((d) => d.fabric);
   return (
     <Card title={`Topology (${numa.length} NUMA ${numa.length === 1 ? "node" : "nodes"})`}>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
@@ -194,6 +195,32 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
           <ul className="text-sm">
             {loose.map((d) => (
               <Device key={d.address} d={d} ops={ops} />
+            ))}
+          </ul>
+        </div>
+      )}
+      {fabric.length > 0 && (
+        <div className="mt-4">
+          <div className="text-sm font-medium text-gray-900">
+            NVLink fabric ({fabric.length} NVSwitch{fabric.length === 1 ? "" : "es"})
+          </div>
+          <p className="text-xs text-gray-500">
+            Fabric Manager owns these, on the host or in a service VM; they are never given to a VM.
+          </p>
+          <ul className="text-sm">
+            {fabric.map((d) => (
+              <li key={d.address} className="py-1 border-t border-gray-100 first:border-t-0">
+                <span className="font-mono">{d.address}</span>{" "}
+                <span className="text-gray-600">NVSwitch</span>{" "}
+                <span className="font-mono text-xs text-gray-400">
+                  {(d.vendor_id ?? "").replace(/^0x/, "")}:{(d.device_id ?? "").replace(/^0x/, "")}
+                </span>
+                <div className="text-xs text-gray-500">
+                  {d.driver ?? "no driver"}
+                  {d.iommu_group && ` · IOMMU group ${d.iommu_group}`}
+                  {d.numa_node !== undefined && ` · NUMA node ${d.numa_node}`}
+                </div>
+              </li>
             ))}
           </ul>
         </div>
