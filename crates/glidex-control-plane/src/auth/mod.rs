@@ -73,6 +73,8 @@ pub enum Method {
     /// A passkey (spec/passkeys.md): user-verified, so multi-factor.
     Passkey,
     Token,
+    /// An access token of a directory hosted here (spec/tenancy.md D56).
+    Directory,
     Disabled,
 }
 
@@ -84,6 +86,7 @@ impl Method {
             Method::Oidc => "oidc",
             Method::Passkey => "passkey",
             Method::Token => "token",
+            Method::Directory => "directory",
             Method::Disabled => "disabled",
         }
     }
@@ -267,6 +270,10 @@ pub struct AuthService {
     /// Passkeys (spec/passkeys.md), and their ceremonies in progress.
     pub passkeys: passkeys::PasskeyStore,
     pub ceremonies: passkeys::Ceremonies,
+    /// The directory as an OpenID provider (D54–D57): codes and device
+    /// grants in progress, and refresh tokens.
+    pub op_pending: crate::directory::op::Pending,
+    pub refresh_tokens: crate::directory::op::RefreshTokens,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -400,6 +407,8 @@ impl AuthService {
             federations: crate::directory::federation::FederationStore::new(db.clone()),
             passkeys: passkeys::PasskeyStore::new(db.clone()),
             ceremonies: Default::default(),
+            op_pending: Default::default(),
+            refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -443,6 +452,8 @@ impl AuthService {
             federations: crate::directory::federation::FederationStore::new(db.clone()),
             passkeys: passkeys::PasskeyStore::new(db.clone()),
             ceremonies: Default::default(),
+            op_pending: Default::default(),
+            refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),

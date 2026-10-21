@@ -4457,3 +4457,327 @@ async fn a_directory_publishes_its_issuer_and_keys() {
     let (s, _) = h.rest("GET", "/directory/keys", None, &h.token(&bob)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// RFC 7636: a verifier and its S256 challenge.
+fn pkce() -> (String, String) {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let verifier = format!("v-{}", "x".repeat(50));
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+fn form(pairs: &[(&str, &str)]) -> String {
+    let mut s = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in pairs {
+        s.append_pair(k, v);
+    }
+    s.finish()
+}
+
+impl H {
+    async fn post_form(&self, path: &str, pairs: &[(&str, &str)]) -> (StatusCode, Value) {
+        let (s, v, _) = self
+            .send(
+                Request::post(path)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form(pairs)))
+                    .unwrap(),
+            )
+            .await;
+        (s, v)
+    }
+
+    /// `GET path` as `who`; the `Location` it answers.
+    async fn location(&self, path: &str, who: &str) -> (StatusCode, String) {
+        let b = self.with_auth(Request::get(path), who);
+        let (s, _, h) = self.send(b.body(Body::empty()).unwrap()).await;
+        (
+            s,
+            h.get(header::LOCATION)
+                .map(|v| v.to_str().unwrap().to_string())
+                .unwrap_or_default(),
+        )
+    }
+}
+
+fn query_of(location: &str) -> std::collections::HashMap<String, String> {
+    let u = url::Url::parse(location).unwrap();
+    u.query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
+}
+
+/// spec/tenancy.md D54–D57: the code flow with PKCE for gxctl, through the
+/// browser session at this host; tokens for this cluster; refresh rotation
+/// and reuse; the device grant; a disabled user; revocation.
+#[tokio::test]
+async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    h.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", glidex_control_plane::auth::store::now())
+        .unwrap();
+    let alice = h.user("alice");
+    let browser = h.session(&alice);
+    let (verifier, challenge) = pkce();
+    let cb = "http://127.0.0.1:53999/callback";
+    let authorize = format!(
+        "/d/local/authorize?{}",
+        form(&[
+            ("response_type", "code"),
+            ("client_id", "gxctl"),
+            ("redirect_uri", cb),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "openid offline_access"),
+            ("state", "st-1"),
+        ])
+    );
+    // Without a session the web UI logs in first and comes back.
+    let (s, loc) = h.location(&authorize, "").await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(loc.starts_with("/?next=%2Fd%2Flocal%2Fauthorize"), "{loc}");
+    // Not a loopback redirect: shown, never followed.
+    let (s, _) = h
+        .location(
+            &authorize.replace("127.0.0.1%3A53999", "evil.example"),
+            &browser,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // With one, the code goes back to gxctl's loopback listener.
+    let (s, loc) = h.location(&authorize, &browser).await;
+    assert_eq!(s, StatusCode::SEE_OTHER, "{loc}");
+    assert!(loc.starts_with(cb), "{loc}");
+    let q = query_of(&loc);
+    assert_eq!(q["state"], "st-1");
+    let code = q["code"].clone();
+
+    let cluster = "urn:glidex:cluster:local";
+    let exchange = |code: String, verifier: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", "gxctl"),
+                    ("code", &code),
+                    ("redirect_uri", cb),
+                    ("code_verifier", &verifier),
+                    ("resource", cluster),
+                ],
+            )
+            .await
+        }
+    };
+    // A wrong verifier spends the code.
+    let (s, v) = exchange(code.clone(), format!("w-{}", "y".repeat(50))).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    let (s, v) = exchange(code, verifier.clone()).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+    let (_, loc) = h.location(&authorize, &browser).await;
+    let (s, tok) = exchange(query_of(&loc)["code"].clone(), verifier).await;
+    assert_eq!(s, StatusCode::OK, "{tok}");
+    let refresh = tok["refresh_token"].as_str().unwrap().to_string();
+    let access = tok["access_token"].as_str().unwrap().to_string();
+    assert!(
+        refresh.starts_with("gxr_") && tok["id_token"].is_string(),
+        "{tok}"
+    );
+    assert_eq!(tok["expires_in"], 3600);
+
+    // This cluster takes the access token as alice, a directory login.
+    let (s, me) = h.rest("GET", "/auth/whoami", None, &access).await;
+    assert_eq!(s, StatusCode::OK, "{me}");
+    assert_eq!(
+        (me["user"]["id"].as_str(), me["method"].as_str()),
+        (Some(alice.as_str()), Some("directory")),
+        "{me}"
+    );
+    // Another cluster's audience is refused at the directory.
+    let (s, v) = h
+        .post_form(
+            "/d/local/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", "gxctl"),
+                ("refresh_token", &refresh),
+                ("resource", "urn:glidex:cluster:elsewhere"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_target"))
+    );
+
+    // Refresh: a new token each time; the old one again ends the chain.
+    let refresh_with = |r: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", "gxctl"),
+                    ("refresh_token", &r),
+                    ("resource", cluster),
+                ],
+            )
+            .await
+        }
+    };
+    let (s, t2) = refresh_with(refresh.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{t2}");
+    let r2 = t2["refresh_token"].as_str().unwrap().to_string();
+    assert_ne!(r2, refresh);
+    let a2 = t2["access_token"].as_str().unwrap().to_string();
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a2).await.0,
+        StatusCode::OK
+    );
+    let (s, v) = refresh_with(refresh).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "reused"
+    );
+    assert_eq!(
+        refresh_with(r2).await.0,
+        StatusCode::BAD_REQUEST,
+        "the chain ended"
+    );
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a2).await.0,
+        StatusCode::UNAUTHORIZED,
+        "and its access tokens with it"
+    );
+
+    // The device grant: gxctl asks, alice approves in the web UI.
+    let device = || {
+        let h = &h;
+        async move {
+            h.post_form("/d/local/device_authorization", &[("client_id", "gxctl")])
+                .await
+        }
+    };
+    let (s, d) = device().await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    assert_eq!(
+        d["verification_uri"], "https://glidex.example.org/device",
+        "{d}"
+    );
+    let dc = d["device_code"].as_str().unwrap().to_string();
+    let uc = d["user_code"].as_str().unwrap().to_string();
+    let poll = |dc: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                    ("client_id", "gxctl"),
+                    ("device_code", &dc),
+                ],
+            )
+            .await
+        }
+    };
+    let (_, v) = poll(dc.clone()).await;
+    assert_eq!(v["error"], "authorization_pending", "{v}");
+    // A token can't approve a login.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/d/local/device/answer",
+            Some(json!({"user_code": uc, "approve": true})),
+            &h.token(&alice),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/d/local/device/inspect",
+            Some(json!({"user_code": uc.to_lowercase()})),
+            &browser,
+        )
+        .await;
+    assert_eq!(
+        (s, v["client_id"].as_str()),
+        (StatusCode::OK, Some("gxctl")),
+        "{v}"
+    );
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/d/local/device/answer",
+            Some(json!({"user_code": uc, "approve": true})),
+            &browser,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Past the polling interval, the tokens come.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let mut got = Value::Null;
+    for _ in 0..8 {
+        let (s, v) = poll(dc.clone()).await;
+        if s == StatusCode::OK {
+            got = v;
+            break;
+        }
+        assert_eq!(v["error"], "slow_down", "{v}");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let r3 = got["refresh_token"]
+        .as_str()
+        .expect("device tokens")
+        .to_string();
+    assert!(
+        got.get("access_token").is_none(),
+        "no resource asked: {got}"
+    );
+    let (s, t3) = refresh_with(r3.clone()).await;
+    assert_eq!(s, StatusCode::OK);
+    let a3 = t3["access_token"].as_str().unwrap().to_string();
+    let r4 = t3["refresh_token"].as_str().unwrap().to_string();
+
+    // Revoking ends the chain; disabling the user ends what's left.
+    let (s, _) = h.post_form("/d/local/revoke", &[("token", &r4)]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a3).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, d) = device().await;
+    let uc = d["user_code"].as_str().unwrap().to_string();
+    h.rest(
+        "POST",
+        "/d/local/device/answer",
+        Some(json!({"user_code": uc, "approve": true})),
+        &browser,
+    )
+    .await;
+    let (s, t5) = poll(d["device_code"].as_str().unwrap().to_string()).await;
+    assert_eq!(s, StatusCode::OK, "{t5}");
+    let mut u = h.app.auth.store.user(&alice).unwrap().unwrap();
+    u.disabled = true;
+    h.app.auth.store.put_user(&u).unwrap();
+    let (s, v) = refresh_with(t5["refresh_token"].as_str().unwrap().to_string()).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+}

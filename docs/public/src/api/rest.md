@@ -506,6 +506,10 @@ them to the node being managed).
 | `POST` | `/directory/keys/rotate` | A new active signing key; the previous one stays published until its tokens expire. Needs a recent login |
 | `GET` | `/d/{directory}/.well-known/openid-configuration` | Public: the directory's OIDC discovery document (`issuer`, `jwks_uri`, ES256) |
 | `GET` | `/d/{directory}/jwks.json` | Public: the directory's signing keys as a JWKS, cacheable for 5 minutes |
+| `GET` | `/d/{directory}/authorize` | Public, OAuth 2.0: the code flow with PKCE (S256) for client `gxctl` and a loopback `redirect_uri` (`http://127.0.0.1:<port>/…`); approved by the browser's session, or the web UI logs in first |
+| `POST` | `/d/{directory}/device_authorization` | Public, RFC 8628: `client_id=gxctl` → `{device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval}`; the code is approved on the web UI's `/device` page |
+| `POST` | `/d/{directory}/token` | Public, form-encoded: `grant_type` `authorization_code`, `refresh_token` or `urn:ietf:params:oauth:grant-type:device_code`, `client_id=gxctl`; `resource=urn:glidex:cluster:<id>` adds an access token for that cluster. Answers `{refresh_token, id_token, access_token?, expires_in?}`; a refresh token works once, and using an old one again ends its chain. Errors are OAuth's (`invalid_grant`, `invalid_target`, `authorization_pending`, `slow_down`, …) |
+| `POST` | `/d/{directory}/revoke` | Public, RFC 7009: `token=<refresh token>` ends its chain and the access tokens it gave |
 | `GET` | `/tenants/{id}/members` | List explicit members |
 | `POST` | `/tenants/{id}/members` | Add a member |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |

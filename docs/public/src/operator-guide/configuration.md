@@ -53,6 +53,7 @@ sudo systemctl restart glidex-control-plane
 | `auth.pam` | object | see below | Local accounts (the `file-pam` login connector). |
 | `auth.oidc` | object | see below | Single sign-on through an OpenID Connect provider (the `file-oidc` connector). |
 | `auth.issuer_base` | string | unset | Where this host's directories issue tokens from, `https://host[:port][/path]`: each directory's issuer is `<base>/d/<directory>` (`/d/local` for this host's). Unset: the web UI's published address (`cluster.ui_url`, else what the web UI reports). A directory's issuer is fixed when it first issues a token; set this before then if the web UI's address isn't the one relying parties should use. |
+| `auth.access_token_ttl_minutes` | int | `60` | How long the access tokens a directory gives for a cluster last, 5–720 minutes. |
 | `auth.secrets_key` | path | `secrets.kek` beside the database | File holding the key that encrypts connector secrets. The `secrets-kek` credential wins when present. |
 | `auth.federation.allow_private_issuers` | bool | `false` | Let a [workload federation](workload-federation.md#the-issuer)'s issuer be on this host or the site's network. Off, an issuer must be `https` with public addresses: names that resolve only to loopback, private, link-local or unique-local addresses, and URLs naming such an address, are refused. Turn it on for an issuer on your own network (a self-hosted GitLab, a Kubernetes cluster's issuer); it also lets plain-HTTP loopback issuers in, for tests. |
 

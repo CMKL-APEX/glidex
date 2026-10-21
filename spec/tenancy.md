@@ -131,7 +131,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D54 | Clients | A directory's OAuth clients: **`gxctl`**, built in and public (device grant, RFC 8628; authorization code with PKCE and a loopback redirect, RFC 8252), and **clusters**, confidential, which authenticate with a key of their own (`private_key_jwt`). The cluster on the directory's own control plane is registered at first start; other clusters are registered by the handshake (§12.1). | Native apps can't keep a secret; a cluster's key never leaves it. |
 | D55 | Tokens a directory issues | **ID tokens** (`aud` = the client). **Access tokens**: JWTs with `aud` = one cluster's id, `sub`, `sid`, `auth_time`, `amr`, valid `access_token_ttl` (default 1 h, at most 12 h). **Refresh tokens**: opaque, stored hashed, rotated on every use; reusing an old one revokes the whole chain. They last 30 days unused and ≤ 90 days in all, clamped by `token_max_days` (D20), and end with the user's sessions, when the user is disabled (D20), and at logout. | Audience-bound, short-lived tokens are verified offline (§7.3); a stolen refresh token is caught by rotation. |
 | D56 | A cluster and its own directory | Until the handshake exists (T6.5), a cluster accepts access tokens only from a directory hosted on its own control plane, verified against that directory's keys with no feed. Such a token acts as its user, like a session: method `directory`, `mfa` from `amr`. A browser on that cluster keeps logging in directly, with no redirect: the authorization flow serves gxctl, and later the clusters whose directory is elsewhere. | T6.2–T6.3 are useful on one host, and nothing changes for today's UI. |
-| D57 | gxctl and directories | `gxctl auth login --directory <issuer>` logs in at the directory with the device grant (or the browser and a loopback redirect, `--browser`) and keeps the **refresh token** in the profile (gxctl-auth.md A3). Before calling a cluster it gets an access token for that cluster from the directory's token endpoint (`resource` = the cluster's URL, RFC 8707), cached until shortly before `exp`. The directory lists the clusters its user can reach (§7.2). | One login reaches every cluster; what gxctl holds can't be replayed to another cluster (§7.3). |
+| D57 | gxctl and directories | `gxctl auth login --directory <issuer>` logs in at the directory with the device grant (or the browser and a loopback redirect, `--browser`) and keeps the **refresh token** in the profile (gxctl-auth.md A3). Before calling a cluster it gets an access token for that cluster from the directory's token endpoint (`resource` = `urn:glidex:cluster:<cluster id>`, RFC 8707; the id, not a URL, since a cluster has several), cached until shortly before `exp`. The directory lists the clusters its user can reach (§7.2). | One login reaches every cluster; what gxctl holds can't be replayed to another cluster (§7.3). |
 
 ## 3. Threat model additions
 
@@ -1825,7 +1825,8 @@ Task 5, SSH keys from Google:
 | "My SSH keys" | `UserService.GetMySshKeys` answers them, `source: connector:<id>`, when the host has no local login for the user (a local account's keys come first, `source: local`); the credential form says where they came from |
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
-**T6** (directories and clusters apart) is in progress: tasks 1–2 of §18.
+**T6** (directories and clusters apart) is in progress: tasks 1–2 of §18,
+and task 3's server side.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1836,3 +1837,14 @@ Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 | Discovery | `GET /d/{dir}/.well-known/openid-configuration` and `GET /d/{dir}/jwks.json`, public, `Cache-Control: public, max-age=300`; `404` for another directory, `503 no_issuer` without a public address |
 | API | `SigningKeyService.ListSigningKeys` (`readSigningKeys`, `GET /directory/keys`) and `RotateSigningKey` (`rotateSigningKey`, step-up, in `directory.keys` of `role.directory-admin`; `POST /directory/keys/rotate`); gxctl `directory keys [rotate]` |
 | Tests | `issuer.rs` unit tests (a token verified with `jsonwebtoken` against the JWKS, rotation and retention, separate directories); `connector_tests.rs::a_directory_publishes_its_issuer_and_keys` |
+
+Task 3, the directory as OpenID provider (server side; gxctl and the web
+UI's pages follow):
+
+| Spec | Code |
+|---|---|
+| D54 | The built-in public client `gxctl` (`directory/op.rs::GXCTL`): the code flow with PKCE S256 and a loopback redirect (`op::loopback_redirect`, RFC 8252 §7.3), and the device grant. Clusters as clients come with the handshake (task 5) |
+| Endpoints | `api/op.rs`, under each issuer: `GET /d/{dir}/authorize` (the browser's session at this host approves; without one, `303 /?next=…` for the web UI to log in and come back), `POST /d/{dir}/device_authorization`, `POST /d/{dir}/token` (`authorization_code`, `refresh_token`, `device_code`; `resource=urn:glidex:cluster:<id>` adds an access token), `POST /d/{dir}/revoke`; the web UI's `POST /d/{dir}/device/inspect` and `…/device/answer` (signed in, never a token); all in the discovery document. Codes and device grants live in memory on the server that issued them (`op::Pending`), 5 and 10 minutes, single use |
+| D55 | ID tokens (`aud` = the client, `sid`, `auth_time`, `amr`, 1 h); access tokens (`typ: at+jwt`, `aud` = the cluster id, `local` on a standalone host, `auth.access_token_ttl_minutes`, default 60, 5–720); refresh tokens `gxr_…` in `refresh_tokens` (directory scope) by SHA-256, chained by `family`: each use replaces the token, a replaced one coming back ends the chain (audited `directoryRefresh` `refresh_reused`); 30 days unused, at most 90 days, or the user's connectors' `token_max_days` unless one provisions them; ended when an administrator disables the user or ends its sessions, refused for a disabled user |
+| D56 | `api::op::access_principal`: a bearer JWT of a directory hosted here, its key published, `iss` its fixed issuer, `aud` this cluster, its chain alive, the user enabled; `Method::Directory`, `mfa` from the token, step-up from `auth_time` |
+| Tests | `op.rs` unit tests (redirects, PKCE vectors of RFC 7636, codes, device grants, rotation and reuse, limits); `connector_tests.rs::the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens` |

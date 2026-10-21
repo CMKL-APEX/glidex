@@ -75,6 +75,7 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rustls-native-certs = "0.8"
 percent-encoding = "2"
+url = "2"
 # Replicated control plane (spec/clustering.md D1); pinned, upgrades reviewed like the CH/OVS pins.
 async-trait = "0.1"
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }

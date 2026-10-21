@@ -132,6 +132,8 @@ tables! {
     Passkeys = 54 => "passkeys",
     // Each directory's token signing keys, the private half sealed (D53).
     SigningKeys = 55 => "signing_keys",
+    // The directory's refresh tokens, by hash (D55).
+    RefreshTokens = 56 => "refresh_tokens",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -152,7 +154,7 @@ impl TableId {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
-            | FederatedTokens | Passkeys | SigningKeys => Scope::Directory,
+            | FederatedTokens | Passkeys | SigningKeys | RefreshTokens => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }
