@@ -17,6 +17,7 @@ pub mod google_directory;
 pub mod invitations;
 pub mod issuer;
 pub mod oidc;
+pub mod op;
 pub mod presets;
 pub mod scim;
 pub mod scim_tokens;

@@ -104,9 +104,19 @@ pub async fn discovery(State(app): State<AppState>, Path(dir): Path<String>) -> 
     cached(json!({
         "issuer": iss,
         "jwks_uri": format!("{iss}/jwks.json"),
+        "authorization_endpoint": format!("{iss}/authorize"),
+        "token_endpoint": format!("{iss}/token"),
+        "device_authorization_endpoint": format!("{iss}/device_authorization"),
+        "revocation_endpoint": format!("{iss}/revoke"),
         "response_types_supported": ["code"],
+        "grant_types_supported": [
+            "authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"
+        ],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": [crate::directory::issuer::ALG],
+        "scopes_supported": ["openid", "offline_access"],
     }))
 }
 

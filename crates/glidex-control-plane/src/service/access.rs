@@ -819,6 +819,8 @@ pub fn update_user(
                 u.disabled = req.disabled;
                 if req.disabled {
                     s.remove_sessions_of(&u.id).map_err(store_err)?;
+                    // And its directory refresh tokens (D55).
+                    let _ = call.auth().refresh_tokens.end_user(&u.id);
                 }
             }
             other => return Err(bad(format!("can't change {other}"))),
@@ -979,6 +981,7 @@ pub fn unlink_identity(
     }
     if req.end_sessions == Some(true) && !own {
         let n = s.remove_sessions_of(&req.id).map_err(store_err)?;
+        let _ = call.auth().refresh_tokens.end_user(&req.id);
         call.detail("sessions_ended", serde_json::json!(n));
     }
     Ok(pb::UnlinkIdentityResponse::default())

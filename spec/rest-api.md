@@ -222,6 +222,9 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `GET` | `/directory/keys` | `SigningKeyService.ListSigningKeys` | The directory's issuer URL and signing keys ([tenancy.md](tenancy.md) D52, D53): `{keys: [{kid, alg, created_at, retired_at, published_until, active}], issuer, issuer_fixed}`; `readSigningKeys` |
 | `POST` | `/directory/keys/rotate` | `RotateSigningKey` | `{key}`; `rotateSigningKey` (step-up) |
 | `GET` | `/d/{dir}/.well-known/openid-configuration`, `/d/{dir}/jwks.json` | — | Public, HTTP only: discovery and JWKS (D53); `404` for a directory this host doesn't serve, `503 no_issuer` when it has no public address |
+| `GET` | `/d/{dir}/authorize` | — | Public, HTTP only: the code flow with PKCE for `gxctl` (D54); `303` to the loopback `redirect_uri` with `code` and `state`, or to `/?next=…` without a session |
+| `POST` | `/d/{dir}/device_authorization`, `/d/{dir}/token`, `/d/{dir}/revoke` | — | Public, HTTP only, form-encoded, OAuth errors (D55, D57) |
+| `POST` | `/d/{dir}/device/inspect`, `/d/{dir}/device/answer` | — | Signed in (a browser session; a token is refused): what a user code is for, and approving or denying it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
 

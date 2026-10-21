@@ -134,6 +134,9 @@ pub struct AuthConfig {
     /// `<base>/d/<directory>` (spec/tenancy.md D52). Unset: the web UI's
     /// published address (host-page.md W3).
     pub issuer_base: Option<String>,
+    /// How long a directory's access tokens last, 5–720 minutes (default
+    /// 60, D55).
+    pub access_token_ttl_minutes: Option<u64>,
     pub federation: FederationConfig,
 }
 
@@ -708,6 +711,13 @@ impl Config {
         }
         self.metering.check()?;
         self.cluster.check()?;
+        if self
+            .auth
+            .access_token_ttl_minutes
+            .is_some_and(|m| !(5..=720).contains(&m))
+        {
+            return Err("auth.access_token_ttl_minutes must be 5-720".into());
+        }
         if let Some(b) = &self.auth.issuer_base {
             issuer_base(b)
                 .ok_or("auth.issuer_base must be https://host[:port][/path], with no query")?;

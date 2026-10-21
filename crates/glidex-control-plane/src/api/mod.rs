@@ -19,6 +19,7 @@ mod invitations;
 pub mod issuer;
 mod net;
 pub(crate) mod nodes;
+pub mod op;
 mod passkeys;
 mod rates;
 pub mod relay;
@@ -838,6 +839,28 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         get(issuer::discovery),
     )
     .add("GET", "/d/{dir}/jwks.json", PUBLIC, get(issuer::jwks))
+    // The directory as an OpenID provider (D54–D57).
+    .add("GET", "/d/{dir}/authorize", PUBLIC, get(op::authorize))
+    .add(
+        "POST",
+        "/d/{dir}/device_authorization",
+        PUBLIC,
+        post(op::device_authorization),
+    )
+    .add("POST", "/d/{dir}/token", PUBLIC, post(op::token))
+    .add("POST", "/d/{dir}/revoke", PUBLIC, post(op::revoke))
+    .add(
+        "POST",
+        "/d/{dir}/device/inspect",
+        AUTHENTICATED,
+        post(op::device_inspect),
+    )
+    .add(
+        "POST",
+        "/d/{dir}/device/answer",
+        AUTHENTICATED,
+        post(op::device_answer),
+    )
     // Passkeys (spec/passkeys.md): the browser's ceremonies.
     .add(
         "POST",
@@ -1669,7 +1692,15 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 }
                 let ip = client_ip(req.extensions(), &headers, listener);
                 if let Some(token) = bearer(&headers) {
-                    match app.auth.token_principal(&token, Transport::Tcp, ip) {
+                    // A directory's access token (D56), else a glidex token.
+                    let jwt =
+                        !token.starts_with(auth::TOKEN_PREFIX) && token.matches('.').count() == 2;
+                    let found = if jwt {
+                        Ok(op::access_principal(&app, &token, Transport::Tcp, ip))
+                    } else {
+                        app.auth.token_principal(&token, Transport::Tcp, ip)
+                    };
+                    match found {
                         Ok(Some(p)) => Ok(Some(p)),
                         Ok(None) => {
                             return plain_error(
@@ -2384,6 +2415,10 @@ mod tests {
                 "/auth/exchange",
                 "/d/{dir}/.well-known/openid-configuration",
                 "/d/{dir}/jwks.json",
+                "/d/{dir}/authorize",
+                "/d/{dir}/device_authorization",
+                "/d/{dir}/token",
+                "/d/{dir}/revoke",
                 "/auth/passkeys/login/start",
                 "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",
