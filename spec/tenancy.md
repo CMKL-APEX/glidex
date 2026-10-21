@@ -141,6 +141,10 @@ organizations that **operate** it, and lets each keep its own identity.
 | D64 | The offer token | `gxo_` + base64url of `{cluster_id, cluster_name, api, tls_sha256, tenant, directory, offer, secret, expires_at}`: the cluster's API address and certificate fingerprint, the tenant slug and directory issuer it is for, the offer's id and a one-time secret (stored hashed), 7 days. Shown once. It is not a credential to the cluster's API: it only lets that directory redeem that offer. | Everything the directory needs to reach and pin the cluster, in one string an operator can send by email or chat. |
 | D65 | Redeeming | At the directory, the tenant's admin runs `gxctl tenant opt-in --offer <token>` (`optInCluster` on the tenant, step-up). The directory checks the token names its issuer and this tenant, connects to `api` pinning `tls_sha256`, and posts `POST /trust/v1/redeem {offer, secret, issuer, directory, tenant, jwks, tls_sha256}` signed with its key. The cluster checks the secret (once), that issuer and tenant match the offer, and that the assertion verifies against the `jwks` sent; it stores a **`TrustedDirectory`** (`issuer`, `directory`, its keys, its TLS pin) and marks the admission `admitted`. It answers `{cluster_id, cluster_key}` (the cluster's public JWK). The directory stores a **`TrustedCluster`** (`cluster_id`, name, `api`, TLS pin, the cluster key, the tenant's opt-in) and registers the cluster as its client (D54, `private_key_jwt` with that key). Either fails: nothing is kept on either side. | One round trip, initiated by the side whose administrator decides to opt in; both pins and both keys exchanged at once. |
 | D66 | Ending trust | Either side removes its record (`gxctl admission remove` at the cluster, `gxctl tenant opt-out --cluster <id>` at the directory) and tells the other (`POST /trust/v1/end`, signed); the other side drops its record when told, or when the other next refuses it. A cluster with no admitted tenant of a directory left forgets that `TrustedDirectory`. | Each organization can leave without the other's cooperation. |
+| D67 | The feed, as snapshots | A cluster pulls `GET /d/<dir>/feed/v1?revision=<r>` from each directory it trusts every 30 s (and when told to), signed with its key (D63). The answer is the **filtered snapshot** of that directory for that cluster (the tenants opted in to it and admitted there; their projects; the users and teams who are members of them, with id, name and `disabled`; the role links on those tenants and projects; the directory's JWKS; the `sid`s ended in the last 12 h), with a `revision` (its SHA-256), or `304` when the cluster's `revision` is current. Never a connector secret, an identity, a credential or another tenant's record. Incremental write sets may come later behind the same endpoint. | Simple, self-healing (each answer is complete), and small for tenants of up to thousands of users. |
+| D68 | The replica | The cluster keeps the snapshot in its own tables as records of the trusted directory (`directory_id` = its `trusted-<hash>` id, D65): users, teams, memberships, tenants, projects and links, replaced in one write per new revision; nothing writes them but the feed. Authorization then works for those users as for local ones. A user missing from the replica, or `disabled` there, has no session or token on the cluster; an ended `sid` ends the cluster sessions made from it. | One authorization path; a cluster cut off keeps what it last knew (D13, task 7). |
+| D69 | Tokens and sessions from a trusted directory | The cluster accepts access tokens (D55) of a trusted directory, checked against the JWKS of its last feed, `aud` its cluster id, the user in the replica and enabled. The directory's token endpoint gives access tokens for a cluster in its `TrustedCluster` records to members of the tenants opted in to it. For the browser, the cluster is the directory's OIDC client `cluster:<id>`: its login page offers "Sign in with <directory>" for each trusted directory, the code flow (PKCE) goes to the directory with the cluster's callback, and the token request is signed with the cluster key (`private_key_jwt`); the ID token gives a **cluster session** bound to its `sid`. The callback is registered at the handshake (the redeem sends `ui_callback`). | gxctl and browsers reach other organizations' clusters with one login at their own directory (§7.1, §7.2). |
+| D70 | Reports back | With each feed pull the cluster posts what it holds for each of the directory's tenants: admission status and cap, and counts of VMs, disks and networks (`POST /d/<dir>/feed/v1/report`, signed). The directory keeps the last report on its `TrustedCluster`, and the tenant's page shows it. | A tenant sees where its resources are without logging in to every cluster. |
 
 ## 3. Threat model additions
 
@@ -1473,14 +1477,17 @@ useful on one host first):
      `admission offer`, `tenant opt-in|opt-out`, `trust list`; the §17
      offer tests between two control planes in one process (refused for
      the wrong tenant, the wrong directory, twice, after expiry).
-6. **Feeds and cluster sessions**:
-   - the filtered feed (`/d/<id>/feed/v1`, snapshots, `feed_state`)
-     and the cluster's read-only replica;
-   - admission reports back;
-   - browser login at a directory elsewhere, giving a cluster session
-     from its ID token (§7.1);
-   - logout and disable reaching clusters;
-   - the §17 feed and token tests.
+6. **Feeds and cluster sessions** (D67–D70), in three steps:
+   - **6a** the feed and the replica (D67, D68), and access tokens of a
+     trusted directory (D69's first part: the directory's token
+     endpoint for trusted clusters, the cluster checking them); gxctl
+     logging in at the directory and reaching the other cluster; tests
+     between two control planes.
+   - **6b** browser login at a directory elsewhere (D69's second part):
+     the cluster as OIDC client with `private_key_jwt`, its login page's
+     trusted directories, cluster sessions from ID tokens, ended `sid`s
+     and disabled users ending them; UI e2e.
+   - **6c** reports back (D70), the tenant page's clusters, docs.
 7. **Partitions**: `max_staleness` per directory, refusing that
    directory's credentials past it, `X-Glidex-Directory-Lag`, API
    tokens' `clusters` (§7.4); the §17 partition tests.
