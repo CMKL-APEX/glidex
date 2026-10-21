@@ -78,6 +78,17 @@ fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
     serde_json::to_value(v).map_err(|e| OvsError::Io(e.to_string()))
 }
 
+/// What [`Netd::apply_boot_devices`] did.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BootReport {
+    /// PF → VFs it has now.
+    pub sriov: Vec<(String, u32)>,
+    pub bound: Vec<String>,
+    /// Address → why it was left as it was.
+    pub skipped: Vec<(String, String)>,
+    pub failed: Vec<(String, String)>,
+}
+
 impl Netd {
     pub fn new(
         exec: Arc<dyn Exec>,
@@ -459,6 +470,46 @@ impl Netd {
             ))),
             None => Ok(()),
         }
+    }
+
+    /// spec/gpu-vms.md §10: apply the boot settings: VF counts first, then
+    /// bind the selected devices that aren't on `vfio-pci` yet, recording
+    /// each like `prepare_device`. A device already on `vfio-pci` is left
+    /// alone; outside boot, a VF count whose PF has a VF on `vfio-pci` is
+    /// left too (a change would take it from its VM).
+    pub fn apply_boot_devices(
+        &self,
+        cfg: &glidex_ovs::boot_devices::BootDevices,
+        at_boot: bool,
+    ) -> BootReport {
+        use glidex_ovs::boot_devices::{Action, plan_devices, sriov_change_refusal};
+        let mut report = BootReport::default();
+        for s in &cfg.sriov {
+            let pf = s.pf.to_ascii_lowercase();
+            if let Some(why) = sriov_change_refusal(self.ex(), &pf, at_boot) {
+                let current = glidex_ovs::sriov::vfs_of(self.ex(), &pf).len() as u32;
+                if current != s.vfs {
+                    report
+                        .skipped
+                        .push((pf, format!("VF count left at {current}: {why}")));
+                    continue;
+                }
+            }
+            match self.set_sriov_vfs(&pf, s.vfs) {
+                Ok(st) => report.sriov.push((pf, st.enabled)),
+                Err(e) => report.failed.push((pf, e.to_string())),
+            }
+        }
+        for (address, action) in plan_devices(self.ex(), cfg) {
+            match action {
+                Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
+                Action::Bind { .. } => match self.prepare_device(&address) {
+                    Ok(_) => report.bound.push(address),
+                    Err(e) => report.failed.push((address, e.to_string())),
+                },
+            }
+        }
+        report
     }
 
     /// Undo `prepare_device` for the group `address` is in.

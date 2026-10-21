@@ -1,6 +1,6 @@
 # GPU VMs
 
-Status: **design** (§12 milestones). Builds on
+Status: **design; GV3 implemented** (§12 milestones, §14 notes). Builds on
 [host-topology.md](host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [hypervisors.md](hypervisors.md)
 (command lines) and [installer.md](installer.md).
@@ -355,3 +355,33 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 5. prism1 today: should FM move into a service VM, or should the host
    FM switch to shared mode (§8.2)? Either stops the host FM, which
    OpenNebula's VMs share (they get no NVLink now, §2.2).
+
+## 14. Implementation notes
+
+- **GV3** (§10):
+  - **Where the logic is.** `glidex_ovs::boot_devices` holds the settings
+    (`BootDevices`: `sriov` and `select`) and the pure parts: a
+    `Selector` with a pool `match`'s JSON shape, the plan of what
+    binding would do, and the "VF in use" check. `glidex-netd
+    --boot-devices [FILE]` applies them.
+  - **Two paths.** With netd not running (boot: the unit is `Before=`
+    netd, the control plane, `libvirtd` and `virtqemud`),
+    `Netd::apply_boot_devices` runs directly and records each binding in
+    netd's store like `prepare_device`. With netd up (the installer's
+    `--now`), `glidex_netd::boot::apply_live` sends `set_sriov_vfs` and
+    `prepare_device` to netd.
+  - **Not `driverctl`.** Bindings use netd's prepare code, so the udev
+    rules and the refusals are the same as for **Prepare**.
+  - **What is never touched.** A device already on `vfio-pci`, which a
+    VM may hold. Outside boot, a VF count whose PF has a VF on
+    `vfio-pci`.
+  - **The installer** resolves pools to their `match` from
+    control-plane.json when it writes `/etc/glidex/vfio-devices.json`,
+    so a changed pool needs a re-run. It writes `vfio-pci` to its own
+    `/etc/modules-load.d/glidex-vfio.conf`, separate from the DPDK
+    profile's file, which that profile removes. It enables the unit
+    without starting it.
+  - **Uninstall** stops the unit (unbinding nothing) and removes the
+    unit, the settings and the module file.
+  - **Not done:** the reboot test on prism1 (scheduled with its owner).
+    NVSwitches for a service VM come with GV5.

@@ -9,6 +9,7 @@
 //! tagged (`external_ids:glidex-owner=glidex` in OVSDB, the `inet glidex`
 //! nftables table, files under its own directories).
 
+pub mod boot_devices;
 pub mod bridge;
 pub mod ct_meter;
 pub mod exec;

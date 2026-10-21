@@ -35,6 +35,8 @@ by later runs (flags override the saved values):
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
 | `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [tailscale-tls.md](tailscale-tls.md) §4.6 |
+| `--vfio-devices LIST` / `--sriov PF=N` / `--no-vfio-devices` | devices bound to `vfio-pci` and SR-IOV VF counts at every boot, by `glidex-vfio-boot.service` ([gpu-vms.md](gpu-vms.md) §10). Saved as `vfio_devices=` and `sriov=`; recorded and enabled only, applied at the next boot |
+| `--now` | apply `--vfio-devices` / `--sriov` now as well, through netd's ops (never saved) |
 | `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
@@ -266,6 +268,10 @@ by later runs (flags override the saved values):
 ## Boot sequence (systemd)
 
 ```
+systemd-modules-load.service (vfio-pci from /etc/modules-load.d/glidex-vfio.conf)
+  → glidex-vfio-boot.service       root, oneshot, only with /etc/glidex/vfio-devices.json:
+                                   VF counts, then vfio-pci bindings; before netd,
+                                   the control plane and libvirtd
 network-online.target
   → Open vSwitch (openvswitch-switch / openvswitch / glidex-ovs-vswitchd)
   → glidex-netd.service            root, Type=notify

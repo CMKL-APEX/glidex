@@ -111,6 +111,51 @@ fn main() {
         std::process::exit(1);
     }
 
+    // `--boot-devices [FILE]`: apply the boot settings (VF counts,
+    // vfio-pci bindings) and exit (spec/gpu-vms.md §10). netd running: its
+    // ops, as the installer's `--now`; else directly, as
+    // glidex-vfio-boot.service does before netd starts.
+    if let Some(i) = std::env::args().position(|a| a == "--boot-devices") {
+        let path = std::env::args()
+            .nth(i + 1)
+            .filter(|a| !a.starts_with("--"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(glidex_ovs::boot_devices::BOOT_DEVICES_FILE));
+        let cfg = match glidex_ovs::boot_devices::load(&path) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                println!("no boot devices ({})", path.display());
+                return;
+            }
+            Err(e) => {
+                eprintln!("glidex-netd: {e}");
+                std::process::exit(1);
+            }
+        };
+        let (full, _) = glidex_netd::client::socket_paths(&config.run_dir);
+        let report = match glidex_netd::client::Client::connect(&full) {
+            Ok(mut client) => glidex_netd::boot::apply_live(exec.as_ref(), &cfg, |op| {
+                client
+                    .call_value(op, std::time::Duration::from_secs(120))
+                    .map_err(|e| e.to_string())
+            }),
+            Err(_) => match Netd::new(exec, Arc::new(DnsmasqSupervisor::new()), config.clone()) {
+                Ok(n) => n.apply_boot_devices(&cfg, true),
+                Err(e) => {
+                    eprintln!("glidex-netd: {e}");
+                    std::process::exit(1);
+                }
+            },
+        };
+        // Partly applied is still applied: what failed stays on its driver
+        // and is reported; the rest of the boot goes on.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
+        return;
+    }
+
     let netd = match Netd::new(exec, Arc::new(DnsmasqSupervisor::new()), config.clone()) {
         Ok(n) => Arc::new(n),
         Err(e) => {
@@ -118,6 +163,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+
     if let Some(gid) = group_gid {
         let _ = nix::unistd::chown(
             &config.run_dir.join("vhost"),
