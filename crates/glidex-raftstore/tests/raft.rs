@@ -202,3 +202,37 @@ async fn membership_changes_under_load() {
     c.converge(&voters, leader).await;
     assert!(c.same_data(&voters));
 }
+
+/// A write set over the schema's limit is refused before it is proposed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn write_sets_over_the_schemas_limit_are_refused() {
+    let c = TestCluster::new(1).await;
+    c.put(1, "small", "v").unwrap();
+    let big = "x".repeat(100 * 1024);
+    assert!(matches!(
+        c.put(1, "big", &big),
+        Err(StoreError::TooLarge(_))
+    ));
+}
+
+/// A member that has stopped refuses writes, and lets go of its store: the
+/// store can be opened again once the member is dropped (the store holds
+/// the member through its replicator, which would otherwise keep both).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_member_lets_go_of_its_store() {
+    let c = TestCluster::new(1).await;
+    c.put(1, "k", "v").unwrap();
+    let path = c.by_id(1).dir.join("store.db");
+    c.kill(1).await;
+    assert!(matches!(
+        c.put(1, "k2", "v"),
+        Err(StoreError::NotLeader { .. })
+    ));
+    let glidex_raftstore::testing::TestCluster {
+        mesh, nodes, root, ..
+    } = c;
+    drop(nodes);
+    drop(mesh);
+    glidex_raftstore::store::Db::<Test>::create(&path).expect("the store was closed");
+    drop(root);
+}

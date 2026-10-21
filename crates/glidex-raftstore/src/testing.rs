@@ -52,6 +52,8 @@ impl Schema for Test {
     const SYSTEM: TestOrigin = TestOrigin::System;
     const SNAPSHOT_MAGIC: &'static [u8; 8] = b"RSTEST1\n";
     const CHECK_ENV: &'static str = "GLIDEX_CHECK_WRITE_SETS";
+    /// Small, so the limit is easy to reach in a test.
+    const MAX_WRITE_SET_BYTES: usize = 64 * 1024;
 
     fn table_name(t: TestTable) -> &'static str {
         match t {
