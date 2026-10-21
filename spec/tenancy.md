@@ -1860,7 +1860,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-tasks 4 and 5.
+tasks 4 and 5, and task 6a.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1878,7 +1878,7 @@ Task 3, the directory as OpenID provider:
 |---|---|
 | D54 | The built-in public client `gxctl` (`directory/op.rs::GXCTL`): the code flow with PKCE S256 and a loopback redirect (`op::loopback_redirect`, RFC 8252 §7.3), and the device grant. Clusters as clients come with the handshake (task 5) |
 | Endpoints | `api/op.rs`, under each issuer: `GET /d/{dir}/authorize` (the browser's session at this host approves; without one, `303 /?next=…` for the web UI to log in and come back), `POST /d/{dir}/device_authorization`, `POST /d/{dir}/token` (`authorization_code`, `refresh_token`, `device_code`; `resource=urn:glidex:cluster:<id>` adds an access token), `POST /d/{dir}/revoke`; the web UI's `POST /d/{dir}/device/inspect` and `…/device/answer` (signed in, never a token); all in the discovery document. Codes and device grants live in memory on the server that issued them (`op::Pending`), 5 and 10 minutes, single use |
-| D55 | ID tokens (`aud` = the client, `sid`, `auth_time`, `amr`, 1 h); access tokens (`typ: at+jwt`, `aud` = the cluster id, `local` on a standalone host, `auth.access_token_ttl_minutes`, default 60, 5–720); refresh tokens `gxr_…` in `refresh_tokens` (directory scope) by SHA-256, chained by `family`: each use replaces the token, a replaced one coming back ends the chain (audited `directoryRefresh` `refresh_reused`); 30 days unused, at most 90 days, or the user's connectors' `token_max_days` unless one provisions them; ended when an administrator disables the user or ends its sessions, refused for a disabled user |
+| D55 | ID tokens (`aud` = the client, `sid`, `auth_time`, `amr`, 1 h); access tokens (`typ: at+jwt`, `aud` = the cluster id (a standalone host's own random `standalone-<uuid>`, made once in `meta`), `auth.access_token_ttl_minutes`, default 60, 5–720); refresh tokens `gxr_…` in `refresh_tokens` (directory scope) by SHA-256, chained by `family`: each use replaces the token, a replaced one coming back ends the chain (audited `directoryRefresh` `refresh_reused`); 30 days unused, at most 90 days, or the user's connectors' `token_max_days` unless one provisions them; ended when an administrator disables the user or ends its sessions, refused for a disabled user |
 | D56 | `api::op::access_principal`: a bearer JWT of a directory hosted here, its key published, `iss` its fixed issuer, `aud` this cluster, its chain alive, the user enabled; `Method::Directory`, `mfa` from the token, step-up from `auth_time` |
 | Tests | `op.rs` unit tests (redirects, PKCE vectors of RFC 7636, codes, device grants, rotation and reuse, limits); `connector_tests.rs::the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens` |
 | gxctl (D57) | `auth login --directory [ID]` (`bin/gxctl/dirlogin.rs`): the device grant, the profile's `directory` (the refresh token, the `resource`, when the access token expires) and the access token as its `token`; `refresh_if_due` before each run renews it 2 minutes before it expires, sending no credential |
@@ -1934,3 +1934,13 @@ Task 5b, redeeming and ending trust:
 | D66 | `TenantService.OptOutCluster` and `POST /trust/v1/end` at the cluster; `RemoveAdmission` of a remote tenant and `POST /d/{dir}/trust/v1/end` at the directory; each side forgets its record when the other tells it; one `403 trust_refused` for every refused peer request, the reason audited |
 | CLI | gxctl `admission offer|offers|revoke-offer|directories`, `tenant clusters|opt-in|opt-out` |
 | Tests | `trust_tests.rs::an_offer_is_redeemed_between_two_control_planes` (two control planes over HTTPS in one process: wrong tenant, wrong directory, twice, unsigned, expired, both sides' records, opting out) |
+
+Task 6a, the feed, the replica and trusted directories' tokens:
+
+| Spec | Code |
+|---|---|
+| D67 | At the directory `POST /d/{dir}/feed/v1 {cluster_id, revision}` (signed by the cluster's key, `purpose: feed`): `api::trust::snapshot_for` builds rows (`trust::Row`: table, key, value) of `tenants` opted in to that cluster, their `projects`, `tenant_members` and `policy_links`, and the `users` and `teams` they name (users cut to id, name, `disabled`; teams without `managed`), plus the directory's JWKS; `revision` is their SHA-256 (`trust::revision_of`); `304` when the cluster's is current |
+| D68 | At the cluster `api::trust::pull_feed` (every 30 s on the leader or a standalone host, `spawn_feeds`): the revision checked against the content, `localize` (users, teams and tenants named as the trusted directory's `trusted-<hash>`; only its admitted tenants' projects, members and links, and only tenant roles on those tenants or project roles on their projects), `TrustStore::apply_feed` (one write: the last feed's rows out, these in, refusing to overwrite any record that isn't that directory's replica; `feed_state`, cluster scope), the policies reloaded, the directory's keys updated; `drop_replica` when trust ends |
+| D69 (tokens) | The directory's token endpoint gives access tokens for a `TrustedCluster` to members of its opted-in tenants (else `invalid_target`); the cluster takes them (`api::op::trusted_access_principal`: picked by `iss`, verified with its last feed's JWKS, `aud` its cluster id, the user in the replica and enabled). A standalone host's cluster id is now `standalone-<uuid>` (`TenantStore::standalone_id`), so no two hosts take each other's tokens |
+| Tests | `trust.rs::a_feed_never_overwrites_this_hosts_records`; `trust_tests.rs::the_feed_brings_a_trusted_directorys_people_to_the_cluster` (before a feed refused, after it the replica and a member's token working with her project role, a non-member refused, `304`, disabling reaching the cluster) |
+| Not yet | gxctl reaching another organization's cluster with its own directory's login (task 8), ended `sid`s in the feed (6b) |

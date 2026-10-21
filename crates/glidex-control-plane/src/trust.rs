@@ -15,6 +15,51 @@ const TRUSTED_CLUSTERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tru
 /// What a peer request asks for (an assertion's `purpose`, D63).
 pub const REDEEM: &str = "redeem";
 pub const END: &str = "end";
+pub const FEED: &str = "feed";
+
+const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
+
+/// The tables a feed carries rows of (D67), by name.
+pub const FEED_TABLES: [&str; 6] = [
+    "users",
+    "teams",
+    "tenants",
+    "tenant_members",
+    "projects",
+    "policy_links",
+];
+
+fn table(name: &str) -> Option<TableDefinition<'static, &'static str, &'static [u8]>> {
+    FEED_TABLES
+        .iter()
+        .find(|t| **t == name)
+        .map(|t| TableDefinition::new(t))
+}
+
+/// One record of a feed: the table, its key there, its value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Row {
+    pub table: String,
+    pub key: String,
+    pub value: Value,
+}
+
+/// A directory's filtered snapshot for one cluster (D67).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub revision: String,
+    pub jwks: Value,
+    pub rows: Vec<Row>,
+}
+
+/// What the cluster last applied from a trusted directory (D68).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FeedState {
+    pub revision: String,
+    /// `(table, key)` of every row it wrote.
+    pub rows: Vec<(String, String)>,
+    pub applied_at: u64,
+}
 
 /// An offer token's prefix.
 pub const OFFER_PREFIX: &str = "gxo_";
@@ -240,9 +285,157 @@ impl TrustStore {
     }
 }
 
+/// A snapshot's revision: the SHA-256 of what it holds.
+pub fn revision_of(jwks: &Value, rows: &[Row]) -> String {
+    crate::auth::sha256_hex(
+        serde_json::to_string(&(jwks, rows))
+            .unwrap_or_default()
+            .as_bytes(),
+    )
+}
+
+impl TrustStore {
+    /// Every row of feed table `name`, as `(key, value)`.
+    pub fn raw_rows(&self, name: &str) -> Result<Vec<(String, Value)>, StoreError> {
+        let def = table(name).ok_or_else(|| StoreError(format!("not a feed table: {name}")))?;
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for e in t.iter()? {
+            let (k, v) = e?;
+            out.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+        }
+        Ok(out)
+    }
+
+    pub fn feed_state(&self, trusted: &str) -> Result<FeedState, StoreError> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(FEED_STATE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(FeedState::default()),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(match t.get(trusted)? {
+            Some(v) => serde_json::from_slice(v.value())?,
+            None => FeedState::default(),
+        })
+    }
+
+    /// Replace trusted directory `d`'s replica with `rows` in one write
+    /// (D68): the rows the last feed wrote go, these come. A row that would
+    /// overwrite a record that isn't this directory's replica is refused,
+    /// and so is the whole snapshot.
+    pub fn apply_feed(
+        &self,
+        d: &TrustedDirectory,
+        snap: &Snapshot,
+        now: u64,
+    ) -> Result<usize, StoreError> {
+        let old = self.feed_state(&d.id)?;
+        let mine: std::collections::HashSet<(String, String)> = old.rows.iter().cloned().collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        let mut written = Vec::new();
+        {
+            for (tname, key) in &old.rows {
+                if let Some(def) = table(tname) {
+                    txn.open_table(def)?.remove(key.as_str())?;
+                }
+            }
+            for r in &snap.rows {
+                let def = table(&r.table)
+                    .ok_or_else(|| StoreError(format!("a feed row of table {}", r.table)))?;
+                let mut t = txn.open_table(def)?;
+                let ours = mine.contains(&(r.table.clone(), r.key.clone()));
+                if !ours && t.get(r.key.as_str())?.is_some() {
+                    return Err(StoreError(format!(
+                        "the feed would overwrite {} {} of this host",
+                        r.table, r.key
+                    )));
+                }
+                t.insert(r.key.as_str(), serde_json::to_vec(&r.value)?.as_slice())?;
+                written.push((r.table.clone(), r.key.clone()));
+            }
+            let st = FeedState {
+                revision: snap.revision.clone(),
+                rows: written.clone(),
+                applied_at: now,
+            };
+            txn.open_table(FEED_STATE)?
+                .insert(d.id.as_str(), serde_json::to_vec(&st)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(written.len())
+    }
+
+    /// Forget trusted directory `id`'s replica (trust ended, D66).
+    pub fn drop_replica(&self, id: &str) -> Result<(), StoreError> {
+        let old = self.feed_state(id)?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            for (tname, key) in &old.rows {
+                if let Some(def) = table(tname) {
+                    txn.open_table(def)?.remove(key.as_str())?;
+                }
+            }
+            txn.open_table(FEED_STATE)?.remove(id)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_feed_never_overwrites_this_hosts_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(crate::store::Db::create(dir.path().join("t.db")).unwrap());
+        let s = TrustStore::new(db.clone());
+        let auth = crate::auth::store::IdentityStore::new(db).unwrap();
+        let local = auth
+            .user_for_identity("pam", "root", "root", None, true)
+            .unwrap()
+            .unwrap();
+        let d = TrustedDirectory {
+            id: "trusted-x".into(),
+            issuer: "https://acme.example/d/local".into(),
+            directory: "local".into(),
+            api: String::new(),
+            tls_sha256: String::new(),
+            jwks: Value::Null,
+            tenants: vec![],
+            created_at: 0,
+        };
+        let row = |key: &str| Row {
+            table: "users".into(),
+            key: key.into(),
+            value: serde_json::json!({ "id": key, "directory_id": "trusted-x", "display_name": "x", "created_at": 0 }),
+        };
+        let snap = |rows: Vec<Row>| Snapshot {
+            revision: "r".into(),
+            jwks: Value::Null,
+            rows,
+        };
+        // The host's own user can't be replaced by a directory's row.
+        assert!(s.apply_feed(&d, &snap(vec![row(&local.id)]), 1).is_err());
+        assert_eq!(auth.user(&local.id).unwrap().unwrap().directory_id, "local");
+        // Its own rows are replaced, and dropped with the replica.
+        assert_eq!(s.apply_feed(&d, &snap(vec![row("u1")]), 1).unwrap(), 1);
+        assert_eq!(
+            s.apply_feed(&d, &snap(vec![row("u1"), row("u2")]), 2)
+                .unwrap(),
+            2
+        );
+        assert!(auth.user("u2").unwrap().is_some());
+        s.drop_replica("trusted-x").unwrap();
+        assert!(auth.user("u1").unwrap().is_none() && auth.user("u2").unwrap().is_none());
+    }
 
     #[test]
     fn offer_tokens_round_trip_and_refuse_junk() {

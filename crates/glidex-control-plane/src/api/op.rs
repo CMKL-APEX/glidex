@@ -36,12 +36,16 @@ pub const ACCESS_TYP: &str = "at+jwt";
 const ID_TOKEN_SECS: u64 = 3600;
 
 /// The id access tokens for this cluster carry as `aud`: its cluster id,
-/// `local` for a standalone host.
+/// or a standalone host's own (`standalone-<uuid>`, made once).
 pub fn cluster_id(app: &AppState) -> String {
-    app.manager
-        .cluster()
-        .map(|c| c.identity.cluster_id.clone())
-        .unwrap_or_else(|| crate::tenants::LOCAL_DIRECTORY.into())
+    match app.manager.cluster() {
+        Some(c) => c.identity.cluster_id.clone(),
+        None => app
+            .auth
+            .tenants
+            .standalone_id()
+            .unwrap_or_else(|_| crate::tenants::LOCAL_DIRECTORY.into()),
+    }
 }
 
 /// Access tokens' lifetime (D55: default 1 h, at most 12 h).
@@ -140,18 +144,26 @@ fn chain_max_secs(app: &AppState, user: &str) -> u64 {
     (days * 86_400).min(op::REFRESH_MAX_SECS)
 }
 
-/// The cluster a `resource` names: only this one until the handshake
-/// (D56); `Err` for anything else.
-fn audience(app: &AppState, resource: Option<&String>) -> Result<Option<String>, Response> {
+/// The cluster a `resource` names: this one, or one directory `dir`
+/// trusts (D69; who may have its tokens is checked when they are made);
+/// `Err` for anything else.
+fn audience(
+    app: &AppState,
+    dir: &str,
+    resource: Option<&String>,
+) -> Result<Option<String>, Response> {
     let Some(r) = resource.filter(|r| !r.is_empty()) else {
         return Ok(None);
     };
     match r.strip_prefix(CLUSTER_URN) {
         Some(id) if id == cluster_id(app) => Ok(Some(id.to_string())),
+        Some(id) if app.auth.trust.cluster(dir, id).ok().flatten().is_some() => {
+            Ok(Some(id.to_string()))
+        }
         _ => Err(oauth_err(
             StatusCode::BAD_REQUEST,
             "invalid_target",
-            "resource must be urn:glidex:cluster:<this cluster's id>",
+            "resource must be urn:glidex:cluster:<id> of this cluster or one this directory trusts",
         )),
     }
 }
@@ -185,6 +197,34 @@ fn token_response(
             Err(e) => return e.into_response(),
         }
     }
+    // Another organization's cluster: only for members of the tenants
+    // opted in to it (D69).
+    let aud = match aud {
+        Some(a) if a != cluster_id(app) => {
+            let ok = app
+                .auth
+                .trust
+                .cluster(dir, &a)
+                .ok()
+                .flatten()
+                .is_some_and(|c| {
+                    c.tenants.iter().any(|t| {
+                        app.auth
+                            .is_member(&crate::authz::Ent::User(r.user_id.clone()), t)
+                            .unwrap_or(false)
+                    })
+                });
+            if !ok {
+                return oauth_err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_target",
+                    "none of your tenants uses that cluster",
+                );
+            }
+            Some(a)
+        }
+        other => other,
+    };
     if let Some(aud) = aud {
         let ttl = access_ttl(app);
         let claims = json!({
@@ -432,7 +472,7 @@ pub async fn token(
             "unknown client_id",
         );
     }
-    let aud = match audience(&app, f.get("resource")) {
+    let aud = match audience(&app, &dir, f.get("resource")) {
         Ok(a) => a,
         Err(r) => return r,
     };
@@ -595,6 +635,12 @@ pub fn access_principal(
     if header.typ.as_deref() != Some(ACCESS_TYP) {
         return None;
     }
+    // A directory this cluster trusts (D69), by its token's issuer.
+    if let Some(iss) = unverified_issuer(jwt)
+        && let Ok(Some(d)) = app.auth.trust.directory_by_issuer(&iss)
+    {
+        return trusted_access_principal(app, jwt, &d, transport, ip);
+    }
     let kid = header.kid?;
     let (dir, _) = kid.split_once(':')?;
     let d = hosted(app, dir)?;
@@ -621,6 +667,60 @@ pub fn access_principal(
     }
     let user = app.auth.store.user(c["sub"].as_str()?).ok()??;
     if user.disabled {
+        return None;
+    }
+    let teams = app.auth.store.teams_of(&user.id).ok()?;
+    Some(Principal {
+        directory: user.directory_id.clone(),
+        user: Some(user),
+        token: None,
+        token_narrowed: false,
+        teams,
+        method: Method::Directory,
+        transport,
+        authenticated_at: c["auth_time"].as_u64().unwrap_or(0),
+        source_ip: ip,
+        session_hash: None,
+        csrf: None,
+        peer_uid: None,
+        mfa: c["glidex"]["mfa"].as_bool().unwrap_or(false),
+        federated: None,
+    })
+}
+
+/// A JWT's `iss`, unverified: only to pick the keys to verify it with.
+fn unverified_issuer(jwt: &str) -> Option<String> {
+    use base64::Engine as _;
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    v["iss"].as_str().map(String::from)
+}
+
+/// The principal for an access token of trusted directory `d` (D69):
+/// signed with a key of its last feed, for this cluster, its user in the
+/// replica and enabled.
+fn trusted_access_principal(
+    app: &AppState,
+    jwt: &str,
+    d: &crate::trust::TrustedDirectory,
+    transport: Transport,
+    ip: Option<std::net::IpAddr>,
+) -> Option<Principal> {
+    let header = jsonwebtoken::decode_header(jwt).ok()?;
+    let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(d.jwks.clone()).ok()?;
+    let jwk = set.find(header.kid.as_deref()?)?;
+    let dk = jsonwebtoken::DecodingKey::from_jwk(jwk).ok()?;
+    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    v.set_audience(&[cluster_id(app)]);
+    v.set_issuer(&[d.issuer.as_str()]);
+    v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+    v.leeway = 30;
+    let c = jsonwebtoken::decode::<Value>(jwt, &dk, &v).ok()?.claims;
+    let user = app.auth.store.user(c["sub"].as_str()?).ok()??;
+    if user.disabled || user.directory_id != d.id {
         return None;
     }
     let teams = app.auth.store.teams_of(&user.id).ok()?;

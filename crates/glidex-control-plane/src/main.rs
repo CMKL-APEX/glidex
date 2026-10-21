@@ -410,10 +410,13 @@ async fn main() {
     glidex_control_plane::directory::issuer::spawn(auth.clone());
 
     vm_manager.set_secrets_key(auth.clone());
-    let router = api::router(Arc::new(api::App {
+    let app_state = Arc::new(api::App {
         manager: vm_manager.clone(),
         auth,
-    }));
+    });
+    // Feeds from the directories this cluster trusts (spec/tenancy.md D67).
+    api::trust::spawn_feeds(app_state.clone());
+    let router = api::router(app_state);
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());
 

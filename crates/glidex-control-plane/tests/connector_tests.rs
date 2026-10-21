@@ -4559,7 +4559,10 @@ async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
     assert_eq!(q["state"], "st-1");
     let code = q["code"].clone();
 
-    let cluster = "urn:glidex:cluster:local";
+    let cluster_id = glidex_control_plane::api::op::cluster_id(&h.app);
+    assert!(cluster_id.starts_with("standalone-"), "{cluster_id}");
+    let cluster = format!("urn:glidex:cluster:{cluster_id}");
+    let cluster = cluster.as_str();
     let exchange = |code: String, verifier: String| {
         let h = &h;
         async move {
