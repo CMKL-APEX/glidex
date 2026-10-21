@@ -668,6 +668,11 @@ impl ApiClient {
         *self.token.lock().unwrap() = t;
     }
 
+    /// The credential, removed (put it back with `set_token`).
+    pub fn take_token(&self) -> Option<Zeroizing<String>> {
+        self.token.lock().unwrap().take()
+    }
+
     /// The `--project` / `project use` choice for this session.
     pub fn project(&self) -> Option<String> {
         self.project.lock().unwrap().clone()

@@ -67,7 +67,9 @@ the `https://` URL.
 2. The login page offers what `methods` says: a PAM form
    (`POST /auth/login {method: "pam", username, password}`) and/or
    **Sign in with SSO** (`location = /api/auth/oidc/start?return_to=<path>`;
-   the control plane redirects back with the session cookie).
+   the control plane redirects back with the session cookie). A page
+   opened as `/?next=/d/…` (a directory's authorize request that needed
+   a login, spec/tenancy.md D54) goes back to `next` once signed in.
 3. The `gx_session` cookie is `HttpOnly; SameSite=Strict`; the page never
    sees it. The client keeps the session's `csrf` value (from `whoami` or
    the login response) and sends it as `X-Glidex-CSRF` on every non-GET.
@@ -182,6 +184,7 @@ ui/src/
 | `/hosts` | `Hosts` (shown with `listNodes`): a standalone host's page, else the Cluster page's node list (spec/host-page.md W1) |
 | `/hosts/:id` | `HostDetail` (spec/host-page.md W1, clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
 | `/cluster/nodes/:id` | Redirects to `/hosts/:id` |
+| `/device` | `Device`: approve or deny a directory's device login (`?directory=…&code=…`, spec/tenancy.md D54) |
 | `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 

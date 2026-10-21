@@ -11,6 +11,7 @@ mod cluster;
 mod config;
 mod console;
 mod directory;
+mod dirlogin;
 mod host;
 mod network;
 mod storage;
@@ -1600,6 +1601,9 @@ async fn main() {
     // before any command runs (§4.1): the binding mismatch is a wall
     // between the operator and a repurposed or hostile machine, so not
     // even a one-shot command slips past it.
+    if !needs_no_session(&cli.command) {
+        dirlogin::refresh_if_due(&client, cli.profile.as_deref()).await;
+    }
     if let Err(e) = client.preflight().await {
         eprintln!("{} {}", "Error:".red(), e);
         std::process::exit(2);
