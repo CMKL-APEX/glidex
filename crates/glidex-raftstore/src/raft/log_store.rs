@@ -1,11 +1,13 @@
-//! The Raft log in its own ReDB file, `raft/log.redb` (§6.2), so purging the
-//! log never touches the state machine. Entries are fsynced before they are
+//! The Raft log in its own ReDB file (glidex: `raft/log.redb`, §6.2), so
+//! purging the log never touches the state machine. Entries are fsynced before they are
 //! acknowledged: a ReDB commit is durable.
 
 use super::types::*;
+use crate::store::Schema;
 use openraft::storage::{LogFlushed, LogState, RaftLogReader, RaftLogStorage};
 use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,17 +18,26 @@ const VOTE: &str = "vote";
 const COMMITTED: &str = "committed";
 const PURGED: &str = "last_purged";
 
-#[derive(Clone)]
-pub struct LogStore {
+pub struct LogStore<S: Schema> {
     db: Arc<redb::Database>,
+    schema: PhantomData<S>,
+}
+
+impl<S: Schema> Clone for LogStore<S> {
+    fn clone(&self) -> Self {
+        LogStore {
+            db: self.db.clone(),
+            schema: PhantomData,
+        }
+    }
 }
 
 fn s<T>(r: Result<T, impl std::fmt::Display>) -> Result<T, StorageError> {
     r.map_err(io_err)
 }
 
-impl LogStore {
-    pub fn open(path: &Path) -> Result<LogStore, StorageError> {
+impl<S: Schema> LogStore<S> {
+    pub fn open(path: &Path) -> Result<LogStore<S>, StorageError> {
         if let Some(dir) = path.parent() {
             s(std::fs::create_dir_all(dir))?;
         }
@@ -39,7 +50,10 @@ impl LogStore {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
-        Ok(LogStore { db: Arc::new(db) })
+        Ok(LogStore {
+            db: Arc::new(db),
+            schema: PhantomData,
+        })
     }
 
     fn kv<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>, StorageError> {
@@ -78,11 +92,11 @@ impl LogStore {
     }
 }
 
-impl RaftLogReader<TypeConfig> for LogStore {
+impl<S: Schema> RaftLogReader<TypeConfig<S>> for LogStore<S> {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + openraft::OptionalSend>(
         &mut self,
         range: RB,
-    ) -> Result<Vec<openraft::Entry<TypeConfig>>, StorageError> {
+    ) -> Result<Vec<openraft::Entry<TypeConfig<S>>>, StorageError> {
         let db = self.db.clone();
         let bounds = (range.start_bound().cloned(), range.end_bound().cloned());
         tokio::task::spawn_blocking(move || {
@@ -100,16 +114,16 @@ impl RaftLogReader<TypeConfig> for LogStore {
     }
 }
 
-impl RaftLogStorage<TypeConfig> for LogStore {
-    type LogReader = LogStore;
+impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
+    type LogReader = LogStore<S>;
 
-    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError> {
+    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig<S>>, StorageError> {
         let last_purged_log_id: Option<LogId> = self.kv(PURGED)?;
         let txn = s(self.db.begin_read())?;
         let t = s(txn.open_table(LOG))?;
         let last = match s(t.last())? {
             Some((_, v)) => {
-                let e: openraft::Entry<TypeConfig> = s(serde_json::from_slice(v.value()))?;
+                let e: openraft::Entry<TypeConfig<S>> = s(serde_json::from_slice(v.value()))?;
                 Some(e.log_id)
             }
             None => last_purged_log_id,
@@ -149,10 +163,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfig>,
+        callback: LogFlushed<TypeConfig<S>>,
     ) -> Result<(), StorageError>
     where
-        I: IntoIterator<Item = openraft::Entry<TypeConfig>> + openraft::OptionalSend,
+        I: IntoIterator<Item = openraft::Entry<TypeConfig<S>>> + openraft::OptionalSend,
         I::IntoIter: openraft::OptionalSend,
     {
         let rows: Vec<(u64, Vec<u8>)> = entries

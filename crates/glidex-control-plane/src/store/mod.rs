@@ -15,7 +15,7 @@ use thiserror::Error;
 
 mod db;
 pub use db::{
-    Applied, Bell, Consistency, Db, Def, Forwarder, LAST_APPLIED, LAST_MEMBERSHIP,
+    Applied, Bell, Consistency, Db, Def, Forwarder, Glidex, LAST_APPLIED, LAST_MEMBERSHIP,
     MAX_WRITE_SET_BYTES, MIRROR_REVISION, Mirror, Op, Origin, RecTable, Replicator, SnapshotView,
     StoreError, Submitted, TableId, Tx, WRITE_SET_FORMAT, WriteSet, new_bell, ring,
 };

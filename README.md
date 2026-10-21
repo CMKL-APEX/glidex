@@ -290,6 +290,7 @@ crates/
   glidex-ovn/             OVN: cluster networks, the edge, routers
   glidex-authd/           root helper that checks local passwords (PAM)
   glidex-tls/             TLS certificates
+  glidex-raftstore/       replicated ReDB store on Raft (shared with hyperstor)
   glidex-install/         installer and uninstaller
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)

@@ -69,11 +69,15 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
   (bumping `generation`) together with an event. Holds no process
   handles; host actions on VMs (hypervisors, VM ports) happen in the
   controller, never on the request path.
-- **`store/`** — `Db` (`store/db.rs`): the only way to write the ReDB
-  database. A write is a `Tx` that records every `put`/`delete`, so the
-  change is a `WriteSet` a replicated store can propose to Raft
+- **`store/`** — `Db`: the only way to write the ReDB database. A write
+  is a `Tx` that records every `put`/`delete`, so the change is a
+  `WriteSet` a replicated store can propose to Raft
   ([clustering.md §6.1](clustering.md#61-store-api-milestone-c0)); it
-  also owns the change bell and `subscribe`. `VmStore` (`store/mod.rs`):
+  also owns the change bell and `subscribe`. The store and its Raft
+  integration are the `glidex-raftstore` crate, shared with hyperstor;
+  `store/db.rs` is glidex's schema for it (the `TableId` list, their
+  `Scope`, the write `Origin`s) and the names `Db`, `Tx` and `WriteSet`
+  for glidex's instances. `VmStore` (`store/mod.rs`):
   the `vms` table as `{meta, spec, status}` envelopes, the `events`
   rings, the schema version and its migration
   ([data-model.md](data-model.md#persistence-schema)).
@@ -110,8 +114,11 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
   instances). See [images.md](images.md).
 
 Outside the control plane: `crates/glidex-vm-shim` (the per-VM
-supervisor, [reconciliation.md §8.3](reconciliation.md#83-shim-process))
-and `crates/glidex-hv-client` (CH HTTP and QMP clients, used by both).
+supervisor, [reconciliation.md §8.3](reconciliation.md#83-shim-process)),
+`crates/glidex-hv-client` (CH HTTP and QMP clients, used by both), and
+`crates/glidex-raftstore` (the replicated ReDB store: write sets, the
+Raft log, state machine, snapshots and transport, and an in-process test
+cluster with fault injection; also used by hyperstor's map service).
 
 ## Data flow: "create and start a VM"
 

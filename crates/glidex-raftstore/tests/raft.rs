@@ -1,7 +1,7 @@
 //! Raft over an in-process mesh with fault injection (spec/clustering.md §15).
 
-use glidex_control_plane::cluster::raft::testing::TestCluster;
-use glidex_control_plane::store::StoreError;
+use glidex_raftstore::store::{StoreError, definition};
+use glidex_raftstore::testing::{Test, TestCluster, TestOrigin, TestTable};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -69,14 +69,11 @@ async fn a_partitioned_leaders_writes_are_rejected() {
     let stale = {
         let db = c.by_id(old).db.clone();
         tokio::task::spawn_blocking(move || {
-            db.write(
-                glidex_control_plane::store::Origin::Api,
-                |tx| -> Result<(), StoreError> {
-                    tx.open_table(glidex_control_plane::store::TableId::Meta.definition())?
-                        .insert("stale", b"x".as_slice())?;
-                    Ok(())
-                },
-            )
+            db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert("stale", b"x".as_slice())?;
+                Ok(())
+            })
         })
     };
     c.put(new, "fresh", "2").unwrap();
@@ -159,14 +156,11 @@ async fn membership_changes_under_load() {
         tokio::task::spawn_blocking(move || {
             let mut n = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let r = db.write(
-                    glidex_control_plane::store::Origin::Api,
-                    |tx| -> Result<(), StoreError> {
-                        tx.open_table(glidex_control_plane::store::TableId::Meta.definition())?
-                            .insert(&format!("w{n}"), b"1".as_slice())?;
-                        Ok(())
-                    },
-                );
+                let r = db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                    tx.open_table(definition::<Test>(TestTable::Data))?
+                        .insert(&format!("w{n}"), b"1".as_slice())?;
+                    Ok(())
+                });
                 if r.is_ok() {
                     n += 1;
                 }

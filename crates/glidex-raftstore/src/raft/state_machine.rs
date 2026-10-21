@@ -1,34 +1,48 @@
-//! The state machine is the existing ReDB database (D1): applying an entry
+//! The state machine is the store's ReDB database ([`Db`]): applying an entry
 //! is a pure byte operation, done in the same transaction that advances
 //! `last_applied` (§6.2). A crash therefore never applies an entry twice or
 //! skips one.
 
 use super::types::*;
-use crate::store::{Db, LAST_APPLIED, LAST_MEMBERSHIP, StoreError, TableId, WriteSet};
+use crate::store::{
+    Db, LAST_APPLIED, LAST_MEMBERSHIP, Schema, StoreError, WRITE_SET_FORMAT, WriteSet, definition,
+};
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine, Snapshot};
 use openraft::{EntryPayload, StoredMembership};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct StateMachine {
-    db: Arc<Db>,
+pub struct StateMachine<S: Schema> {
+    db: Arc<Db<S>>,
     /// Where received snapshots land before they are installed.
     dir: PathBuf,
+}
+
+impl<S: Schema> Clone for StateMachine<S> {
+    fn clone(&self) -> Self {
+        StateMachine {
+            db: self.db.clone(),
+            dir: self.dir.clone(),
+        }
+    }
 }
 
 fn s<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<T, StorageError> {
     r.map_err(io_err)
 }
 
-fn put_meta(txn: &redb::WriteTransaction, key: &str, value: &[u8]) -> Result<(), StoreError> {
-    txn.open_table(TableId::RaftMeta.definition())?
+fn put_meta<S: Schema>(
+    txn: &redb::WriteTransaction,
+    key: &str,
+    value: &[u8],
+) -> Result<(), StoreError> {
+    txn.open_table(definition::<S>(S::LOCAL))?
         .insert(key, value)?;
     Ok(())
 }
 
-impl StateMachine {
-    pub fn new(db: Arc<Db>, dir: PathBuf) -> StateMachine {
+impl<S: Schema> StateMachine<S> {
+    pub fn new(db: Arc<Db<S>>, dir: PathBuf) -> StateMachine<S> {
         StateMachine { db, dir }
     }
 
@@ -47,7 +61,7 @@ impl StateMachine {
         Ok((applied, membership))
     }
 
-    fn snapshot_now(&self) -> Result<Option<Snapshot<TypeConfig>>, StorageError> {
+    fn snapshot_now(&self) -> Result<Option<Snapshot<TypeConfig<S>>>, StorageError> {
         let view = s(self.db.snapshot_view())?;
         let Some(applied) = &view.last_applied else {
             return Ok(None);
@@ -72,10 +86,10 @@ impl StateMachine {
     }
 }
 
-pub struct Builder(StateMachine);
+pub struct Builder<S: Schema>(StateMachine<S>);
 
-impl RaftSnapshotBuilder<TypeConfig> for Builder {
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError> {
+impl<S: Schema> RaftSnapshotBuilder<TypeConfig<S>> for Builder<S> {
+    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig<S>>, StorageError> {
         // A snapshot is a view of the live database (§6.2): there is nothing
         // to build ahead of time, so this only records a position.
         match self.0.snapshot_now()? {
@@ -88,8 +102,8 @@ impl RaftSnapshotBuilder<TypeConfig> for Builder {
     }
 }
 
-impl RaftStateMachine<TypeConfig> for StateMachine {
-    type SnapshotBuilder = Builder;
+impl<S: Schema> RaftStateMachine<TypeConfig<S>> for StateMachine<S> {
+    type SnapshotBuilder = Builder<S>;
 
     async fn applied_state(
         &mut self,
@@ -99,7 +113,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<()>, StorageError>
     where
-        I: IntoIterator<Item = openraft::Entry<TypeConfig>> + openraft::OptionalSend,
+        I: IntoIterator<Item = openraft::Entry<TypeConfig<S>>> + openraft::OptionalSend,
         I::IntoIter: openraft::OptionalSend,
     {
         let entries: Vec<_> = entries.into_iter().collect();
@@ -111,8 +125,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 let (ws, membership) = match e.payload {
                     EntryPayload::Blank => (
                         WriteSet {
-                            format: crate::store::WRITE_SET_FORMAT,
-                            origin: crate::store::Origin::System,
+                            format: WRITE_SET_FORMAT,
+                            origin: S::SYSTEM,
                             ops: Vec::new(),
                         },
                         None,
@@ -122,8 +136,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         let stored = StoredMembership::new(Some(e.log_id), m);
                         (
                             WriteSet {
-                                format: crate::store::WRITE_SET_FORMAT,
-                                origin: crate::store::Origin::System,
+                                format: WRITE_SET_FORMAT,
+                                origin: S::SYSTEM,
                                 ops: Vec::new(),
                             },
                             Some(s(serde_json::to_vec(&stored))?),
@@ -131,9 +145,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     }
                 };
                 s(db.apply(&ws, e.log_id.index, |txn| {
-                    put_meta(txn, LAST_APPLIED, &log_id_json)?;
+                    put_meta::<S>(txn, LAST_APPLIED, &log_id_json)?;
                     if let Some(m) = &membership {
-                        put_meta(txn, LAST_MEMBERSHIP, m)?;
+                        put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
                     }
                     Ok(())
                 }))?;
@@ -149,14 +163,14 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         Builder(self.clone())
     }
 
-    async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotHandle>, StorageError> {
+    async fn begin_receiving_snapshot(&mut self) -> Result<Box<SnapshotHandle<S>>, StorageError> {
         Ok(Box::new(SnapshotHandle::default()))
     }
 
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta,
-        snapshot: Box<SnapshotHandle>,
+        snapshot: Box<SnapshotHandle<S>>,
     ) -> Result<(), StorageError> {
         let path = snapshot
             .file
@@ -173,14 +187,14 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             s(db.install_dump(&mut f, index, |txn| {
                 // `last_applied` of a snapshot with no log id is "none".
                 match &meta.last_log_id {
-                    Some(l) => put_meta(txn, LAST_APPLIED, &s2(serde_json::to_vec(l))?)?,
+                    Some(l) => put_meta::<S>(txn, LAST_APPLIED, &s2(serde_json::to_vec(l))?)?,
                     None => {
                         let _ = &applied;
-                        txn.open_table(TableId::RaftMeta.definition())?
+                        txn.open_table(definition::<S>(S::LOCAL))?
                             .remove(LAST_APPLIED)?;
                     }
                 }
-                put_meta(txn, LAST_MEMBERSHIP, &membership)
+                put_meta::<S>(txn, LAST_MEMBERSHIP, &membership)
             }))?;
             let _ = std::fs::remove_file(&path);
             Ok(())
@@ -189,7 +203,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         .map_err(io_err)?
     }
 
-    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot<TypeConfig>>, StorageError> {
+    async fn get_current_snapshot(
+        &mut self,
+    ) -> Result<Option<Snapshot<TypeConfig<S>>>, StorageError> {
         self.snapshot_now()
     }
 }
