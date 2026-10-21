@@ -97,7 +97,7 @@ namespace Glidex {
   action "host.paths", "quota.exceed", "cluster.admissions", "cluster.directories" in ["role.system-admin"];
   // Tenants and directories (spec/tenancy.md §10.5).
   action "tenant.read" in ["role.tenant-auditor"];
-  action "tenant.members", "tenant.projects", "tenant.federations" in ["role.tenant-admin"];
+  action "tenant.members", "tenant.projects", "tenant.federations", "tenant.clusters" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
   action "directory.users", "directory.tenants", "directory.connectors", "directory.keys" in ["role.directory-admin"];
 
@@ -169,6 +169,11 @@ namespace Glidex {
   action readTenantFederations in ["tenant.read", "tenant.federations", "directory.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantFederations in ["tenant.federations", "directory.tenants", "step-up", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // Clusters of other organizations a tenant uses (spec/tenancy.md D65).
+  action readTenantClusters in ["tenant.read", "tenant.clusters", "directory.read", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  action manageTenantClusters in ["tenant.clusters", "step-up", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
   action listConnectors, readConnector in ["directory.read", "directory-scoped"]

@@ -383,6 +383,34 @@ gxctl cluster rotate-secrets-key
 If a server can't be reached, it stops before re-wrapping anything; run
 it again.
 
+## Admitting another organization's tenant
+
+A tenant whose directory is elsewhere (another organization's glidex,
+or a host that serves its directory) uses this cluster after a
+handshake: you offer, its administrator accepts at their directory.
+
+```bash
+# On this cluster, as its operator: who, and which directory (its issuer)
+gxctl admission offer acme --directory https://id.acme.example/d/acme
+```
+
+It prints an offer token (`gxo_…`) once. Send it to the tenant's
+administrator; they run, at their directory:
+
+```bash
+gxctl tenant opt-in acme --offer gxo_…
+```
+
+Their directory calls this cluster's API (the address in the token:
+`cluster.api_url`, else the web UI's host on port 8841), pinning its
+certificate; both sides keep the other's keys and certificate from then
+on. `gxctl admission directories` lists the directories this cluster
+trusts; `gxctl admission remove <tenant>` ends a tenant's admission and
+tells its directory; the tenant can opt out from its side too
+(`gxctl tenant opt-out acme --cluster <id>`). An offer works once and
+lasts 7 days (`--days`, at most 30); `gxctl admission offers` and
+`revoke-offer` manage open ones.
+
 ## The web UI's address
 
 Agents send browsers to a server's web UI, at the address that server

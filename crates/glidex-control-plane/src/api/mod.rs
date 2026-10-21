@@ -27,6 +27,7 @@ mod rpc;
 mod scim;
 mod storage;
 mod tenants;
+pub mod trust;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
@@ -849,6 +850,15 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add("POST", "/d/{dir}/token", PUBLIC, post(op::token))
     .add("POST", "/d/{dir}/revoke", PUBLIC, post(op::revoke))
+    // Trust between organizations (D63–D66): peer assertions, not users.
+    .add("POST", "/trust/v1/redeem", PUBLIC, post(trust::redeem))
+    .add("POST", "/trust/v1/end", PUBLIC, post(trust::end_at_cluster))
+    .add(
+        "POST",
+        "/d/{dir}/trust/v1/end",
+        PUBLIC,
+        post(trust::end_at_directory),
+    )
     .add(
         "POST",
         "/d/{dir}/device/inspect",
@@ -1373,6 +1383,30 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/admissions/offers",
         "listAdmissions",
         get(tenants::list_offers),
+    )
+    .add(
+        "GET",
+        "/admissions/directories",
+        "listAdmissions",
+        get(tenants::list_trusted_directories),
+    )
+    .add(
+        "GET",
+        "/tenants/{id}/clusters",
+        "readTenantClusters",
+        get(tenants::list_tenant_clusters),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/clusters",
+        "manageTenantClusters",
+        post(tenants::opt_in_cluster),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}/clusters/{cluster}",
+        "manageTenantClusters",
+        delete(tenants::opt_out_cluster),
     )
     .add(
         "DELETE",
@@ -2469,6 +2503,9 @@ mod tests {
                 "/d/{dir}/device_authorization",
                 "/d/{dir}/token",
                 "/d/{dir}/revoke",
+                "/trust/v1/redeem",
+                "/trust/v1/end",
+                "/d/{dir}/trust/v1/end",
                 "/auth/passkeys/login/start",
                 "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",

@@ -119,6 +119,10 @@ tables! {
     ClusterKeys = 57 => "cluster_keys",
     // Admissions offered to other directories' tenants (D64).
     AdmissionOffers = 58 => "admission_offers",
+    // Directories of other organizations this cluster trusts (D65).
+    TrustedDirectories = 59 => "trusted_directories",
+    // Clusters of other organizations a directory's tenants use (D65).
+    TrustedClusters = 60 => "trusted_clusters",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -139,7 +143,9 @@ impl TableId {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
-            | FederatedTokens | Passkeys | SigningKeys | RefreshTokens => Scope::Directory,
+            | FederatedTokens | Passkeys | SigningKeys | RefreshTokens | TrustedClusters => {
+                Scope::Directory
+            }
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

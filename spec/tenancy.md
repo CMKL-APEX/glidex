@@ -1853,7 +1853,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-task 4 (4a–4d) and task 5a.
+tasks 4 and 5.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1918,3 +1918,12 @@ Task 5a, peer assertions and offers:
 | D63 | The cluster key: `directory/issuer.rs`'s keys under owner `CLUSTER_OWNER` in `cluster_keys` (cluster scope), made and rotated by the same upkeep; `directory/peer.rs`: `assertion` (ES256, `typ: glidex-peer+jwt`, `iss`, `aud`, `purpose`, 60 s, `jti`), `verify` against a pinned JWKS (time from the caller's clock, the purpose, at most 60 s, once: `Replays`), `post` (HTTPS with the server's leaf pinned by SHA-256, `ClientTls::with_trust`) |
 | D64 | `tenants::Offer` in `admission_offers` (cluster scope: tenant slug, directory issuer, cap, the secret's hash, expiry, `redeemed_at`); `AdmissionService.OfferAdmission` / `ListOffers` / `RevokeOffer` (`/admissions/offers`); `trust::OfferToken` (`gxo_…`): cluster id and name, `api` (`cluster.api_url`, else the web UI's host on the API's port), the API certificate's SHA-256, tenant, directory, offer id and secret; gxctl `admission offer|offers|revoke-offer` |
 | Tests | `peer.rs` and `trust.rs` unit tests; `connector_tests.rs::an_admission_is_offered_to_another_directorys_tenant` |
+
+Task 5b, redeeming and ending trust:
+
+| Spec | Code |
+|---|---|
+| D65 | `trust::TrustedDirectory` (`trusted_directories`, cluster scope: issuer, its id there, its API and certificate pin, its JWKS, the admitted tenants as `RemoteTenant`s; its records' id `trusted-<hash>`) and `trust::TrustedCluster` (`trusted_clusters`, directory scope: the cluster's id, name, API, pin, JWKS, opted-in tenants; also its client registration); at the cluster `POST /trust/v1/redeem` (`api/trust.rs`: the offer open, its secret, issuer and tenant as offered, the assertion against the JWKS sent; the offer spent first, then the trusted directory, `TenantStore::admit_remote`, and the cluster key's JWKS in the answer); at the directory `TenantService.OptInCluster` (`manageTenantClusters`, step-up: the token's directory and tenant checked, the issuer fixed, a signed redeem with the cluster's certificate pinned) and `ListTenantClusters`; `AdmissionService.ListTrustedDirectories` |
+| D66 | `TenantService.OptOutCluster` and `POST /trust/v1/end` at the cluster; `RemoveAdmission` of a remote tenant and `POST /d/{dir}/trust/v1/end` at the directory; each side forgets its record when the other tells it; one `403 trust_refused` for every refused peer request, the reason audited |
+| CLI | gxctl `admission offer|offers|revoke-offer|directories`, `tenant clusters|opt-in|opt-out` |
+| Tests | `trust_tests.rs::an_offer_is_redeemed_between_two_control_planes` (two control planes over HTTPS in one process: wrong tenant, wrong directory, twice, unsigned, expired, both sides' records, opting out) |
