@@ -237,10 +237,19 @@ impl VmManager {
     }
 
     /// Kernel image `img`, extracting on `node` (§10.2): recorded from the
-    /// node's cache row once it is done; placed again if the node left.
+    /// node's cache row once it is done; placed again if the node left
+    /// (failed, when its disk was there).
     fn follow_extraction(&self, img: &mut Image, node: &str) -> Next {
         let name = match self.copy_node(node) {
             Ok(n) => n.spec.name,
+            Err(e) if img.extracted_from_disk() => {
+                // The disk was on that node.
+                img.status = ImageStatus::Failed {
+                    reason: format!("the node with its disk is gone ({e})"),
+                };
+                self.images.put_image(img)?;
+                return Ok(None);
+            }
             Err(e) => {
                 img.extract_node = None;
                 self.images.put_image(img)?;
@@ -296,7 +305,8 @@ impl VmManager {
     }
 
     /// A node's round for kernel image `img`, extracting: run here when the
-    /// leader chose this node (§10.2), once the disk image's copy is here.
+    /// leader chose this node (§10.2), once the disk image's copy is here,
+    /// or when it is from one of this node's VM disks (§10.5).
     pub(crate) fn extract_for_leader(&self, img: &Image) -> Next {
         if self.images.download_running(&img.id) {
             return Ok(Some(Duration::from_secs(10)));
@@ -311,6 +321,12 @@ impl VmManager {
             return Ok(None);
         }
         let have = match &img.source {
+            ImageSource::Extracted {
+                disk_id: Some(d), ..
+            } => self
+                .images
+                .get_disk(d)
+                .is_ok_and(|d| self.images.disk_path(&d).exists()),
             ImageSource::Extracted { image_id, .. } => self.images.image_path(image_id).exists(),
             _ => false,
         };
@@ -366,30 +382,37 @@ impl VmManager {
     ) -> Result<(ExtractedKernel, u64), ImageError> {
         let img = self.images.get_image(id)?;
         let ImageSource::Extracted {
-            image_id,
-            disk_id: None,
-            ..
+            image_id, disk_id, ..
         } = &img.source
         else {
             return Err(ImageError::InvalidImage(format!(
-                "{} is not extracted from a disk image",
+                "{} is not extracted",
                 img.name
             )));
         };
-        let src = self
-            .images
-            .get_image(image_id)
-            .map_err(|_| ImageError::NotReady("the disk image it comes from was deleted".into()))?;
-        let _hold = self.images.hold_image(&src.id);
-        let origin = ExtractOrigin {
-            path: self.images.image_path(&src.id),
-            format: src.format,
-            backing_files: false,
-            arch: src.arch,
-            image_id: src.id.clone(),
-            disk_id: None,
-            sha256: src.sha256.clone(),
-            verified: src.verified(),
+        // A VM's disk (§10.5), busy for the run; else a disk image, held.
+        let (origin, _busy, _hold) = match disk_id {
+            Some(d) => {
+                let (origin, busy, _) = self.disk_origin(&img, d)?;
+                (origin, Some(busy), None)
+            }
+            None => {
+                let src = self.images.get_image(image_id).map_err(|_| {
+                    ImageError::NotReady("the disk image it comes from was deleted".into())
+                })?;
+                let hold = self.images.hold_image(&src.id);
+                let origin = ExtractOrigin {
+                    path: self.images.image_path(&src.id),
+                    format: src.format,
+                    backing_files: false,
+                    arch: src.arch,
+                    image_id: src.id.clone(),
+                    disk_id: None,
+                    sha256: src.sha256.clone(),
+                    verified: src.verified(),
+                };
+                (origin, None, Some(hold))
+            }
         };
         let done = self.extract_files(id, &origin).await;
         if done.is_err() {
@@ -418,6 +441,24 @@ impl VmManager {
         dedupe: bool,
     ) -> Result<String, ImageError> {
         let img = self.images.get_image(id)?;
+        let (origin, _busy, name) = self.disk_origin(&img, disk_id)?;
+        let done = self.extract_into(id, &origin, &name).await?;
+        if let Some(same) = self.images.same_kernel(&done).filter(|_| dedupe) {
+            self.images.discard_kernel(id)?;
+            tracing::info!(kernel = %same.name, "the extracted kernel is already stored");
+            return Ok(same.id);
+        }
+        Ok(id.to_string())
+    }
+
+    /// What a run for kernel image `img` reads from VM disk `disk_id`
+    /// (§10.5), and the disk's name. The disk is busy while the guard is
+    /// held, so its VM can't start meanwhile.
+    fn disk_origin(
+        &self,
+        img: &Image,
+        disk_id: &str,
+    ) -> Result<(ExtractOrigin, crate::images::BusyGuard, String), ImageError> {
         let disk = self
             .images
             .get_disk(disk_id)
@@ -425,11 +466,11 @@ impl VmManager {
         let path = self.images.disk_path(&disk);
         if !path.exists() {
             return Err(ImageError::NotReady(format!(
-                "disk {}'s file is not on this server",
+                "disk {}'s file is not on this node",
                 disk.name
             )));
         }
-        let _busy = self.images.begin(&disk.id, "extract-kernel")?;
+        let busy = self.images.begin(&disk.id, "extract-kernel")?;
         let origin = ExtractOrigin {
             path,
             format: disk.format,
@@ -440,13 +481,7 @@ impl VmManager {
             sha256: String::new(),
             verified: false,
         };
-        let done = self.extract_into(id, &origin, &disk.name).await?;
-        if let Some(same) = self.images.same_kernel(&done).filter(|_| dedupe) {
-            self.images.discard_kernel(id)?;
-            tracing::info!(kernel = %same.name, "the extracted kernel is already stored");
-            return Ok(same.id);
-        }
-        Ok(id.to_string())
+        Ok((origin, busy, disk.name))
     }
 
     /// Run the extractor on `origin` and install the result as kernel
@@ -613,20 +648,6 @@ impl VmManager {
             .into());
         }
         let disk = self.images.get_disk(&disk_id)?;
-        // On a node-local datastore, the disk's node reads it; on a shared
-        // one, any node that reaches the datastore (spec/storage.md §5).
-        if disk
-            .node
-            .as_deref()
-            .is_some_and(|n| n != self.local_node_id())
-            || self.images.driver(&disk).is_err()
-        {
-            return Err(ImageError::InUse(format!(
-                "disk {} is not reachable from this node: ask a server on a node that has it",
-                disk.name
-            ))
-            .into());
-        }
         if disk.moving.is_some() {
             return Err(ImageError::Busy(format!(
                 "disk {} is being moved to another datastore",
@@ -637,7 +658,41 @@ impl VmManager {
         let arch = self
             .vm_arch(c, std::slice::from_ref(&disk))
             .unwrap_or(crate::images::catalog::Arch::X86_64);
-        let img = self.images.new_disk_kernel(&vm.id, &vm.name, &disk, arch)?;
+        // On a node-local datastore, the disk's node reads it (§10.2); on a
+        // shared one, any node that reaches the datastore (spec/storage.md §5).
+        if let Some(n) = disk.node.as_deref().filter(|n| *n != self.local_node_id()) {
+            let node = self.copy_node(n)?;
+            if !Self::extracts_on(&node, arch) {
+                return Err(ImageError::InUse(format!(
+                    "disk {} is on {}, which can't extract {} kernels now (not ready, or no KVM)",
+                    disk.name,
+                    node.spec.name,
+                    arch.as_str()
+                ))
+                .into());
+            }
+            let img =
+                self.images
+                    .new_disk_kernel(&vm.id, &vm.name, &disk, arch, Some(&node.meta.id))?;
+            self.queue.add(Key::Image(img.id.clone()));
+            return Ok(img);
+        }
+        if self.images.driver(&disk).is_err() {
+            return Err(ImageError::InUse(format!(
+                "disk {} is not reachable from this node: ask a server on a node that has it",
+                disk.name
+            ))
+            .into());
+        }
+        if let Some(why) = self.images.extraction_refused(arch) {
+            return Err(ImageError::InvalidImage(format!(
+                "kernels can't be extracted here: {why}"
+            ))
+            .into());
+        }
+        let img = self
+            .images
+            .new_disk_kernel(&vm.id, &vm.name, &disk, arch, None)?;
         self.spawn_extraction(&img.id);
         Ok(img)
     }
@@ -646,21 +701,22 @@ impl VmManager {
     /// kernel from its root disk when the disk changed since the last time,
     /// and record what it boots in `st.disk_kernel`. A failure keeps the
     /// kernel it has (condition `KernelExtracted=False`); `Err` only when
-    /// there is none to boot.
+    /// there is none to boot. `false` while another node records it: the
+    /// launch waits.
     pub(crate) async fn follow_disk_kernel(
         &self,
         vm: &crate::models::Vm,
         st: &mut crate::models::VmStatus,
-    ) -> Result<(), crate::state::VmManagerError> {
+    ) -> Result<bool, crate::state::VmManagerError> {
         use crate::controller::vm::{clear_cond, set_cond};
         use crate::models::{DiskKernel, Tristate};
         let c = vm.config();
         if !c.kernel_from_disk {
             st.disk_kernel = None;
-            return Ok(());
+            return Ok(true);
         }
         let Some(disk_id) = c.root_disk.clone() else {
-            return Ok(());
+            return Ok(true);
         };
         let disk = self.images.get_disk(&disk_id)?;
         // Not made yet, busy, or moving (spec/storage.md §8.3): the disk
@@ -669,7 +725,7 @@ impl VmManager {
             || self.images.busy_op(&disk.id).is_some()
             || disk.moving.is_some()
         {
-            return Ok(());
+            return Ok(true);
         }
         let stamp = std::fs::metadata(self.images.disk_path(&disk))
             .map(|m| {
@@ -680,7 +736,7 @@ impl VmManager {
         if st.disk_kernel.as_ref().is_some_and(|k| {
             k.disk_stamp == stamp && self.images.get_image(&k.image).is_ok_and(|i| i.usable())
         }) {
-            return Ok(());
+            return Ok(true);
         }
         let current = st
             .disk_kernel
@@ -690,16 +746,31 @@ impl VmManager {
         let arch = self
             .vm_arch(c, std::slice::from_ref(&disk))
             .unwrap_or(crate::images::catalog::Arch::X86_64);
-        let result = async {
-            let img = self.images.new_disk_kernel(&vm.id, &vm.name, &disk, arch)?;
-            let id = img.id.clone();
-            let r = self.extract_from_disk(&id, &disk.id, true).await;
-            if r.is_err() {
-                let _ = self.images.discard_kernel(&id);
+        let result = if !self.store.database().can_write() {
+            // The leader records it (§10.2).
+            match self.disk_kernel_for_leader(vm, &disk, arch, stamp.1) {
+                Some(r) => r,
+                None => return Ok(false),
             }
-            r
-        }
-        .await;
+        } else {
+            async {
+                if let Some(why) = self.images.extraction_refused(arch) {
+                    return Err(ImageError::InvalidImage(format!(
+                        "kernels can't be extracted here: {why}"
+                    )));
+                }
+                let img = self
+                    .images
+                    .new_disk_kernel(&vm.id, &vm.name, &disk, arch, None)?;
+                let id = img.id.clone();
+                let r = self.extract_from_disk(&id, &disk.id, true).await;
+                if r.is_err() {
+                    let _ = self.images.discard_kernel(&id);
+                }
+                r
+            }
+            .await
+        };
         match result {
             Ok(kernel) => {
                 clear_cond(&mut st.conditions, "KernelExtracted");
@@ -735,7 +806,7 @@ impl VmManager {
                     previous,
                     disk_stamp: stamp,
                 });
-                Ok(())
+                Ok(true)
             }
             Err(e) => {
                 set_cond(
@@ -755,11 +826,71 @@ impl VmManager {
                     ),
                 );
                 if current.is_some() {
-                    Ok(())
+                    Ok(true)
                 } else {
                     Err(e.into())
                 }
             }
+        }
+    }
+
+    /// On a node that doesn't write the catalog: the kernel of VM `vm`'s
+    /// root disk `disk`, extracted here and recorded by the leader (§10.2,
+    /// §10.5). The newest such kernel image made since the disk last
+    /// changed (`modified`) is the disk's: its id once `Ready` (a stored
+    /// twin's, K12), its failure once `Failed`. Otherwise one is created to
+    /// extract here, and `None` while it runs.
+    fn disk_kernel_for_leader(
+        &self,
+        vm: &crate::models::Vm,
+        disk: &crate::images::Disk,
+        arch: Arch,
+        modified: u64,
+    ) -> Option<Result<String, ImageError>> {
+        let me = self.local_node_id();
+        let latest = self
+            .images
+            .list_images()
+            .into_iter()
+            .filter(|i| {
+                i.owner.as_deref() == Some(vm.id.as_str())
+                    && i.extract_node.as_deref() == Some(me.as_str())
+                    && i.deletion_requested_at.is_none()
+                    && matches!(&i.source, ImageSource::Extracted { disk_id: Some(d), .. } if *d == disk.id)
+            })
+            .max_by_key(|i| i.created_at);
+        match latest {
+            Some(i) if i.status == ImageStatus::Extracting => return None,
+            Some(i) if i.created_at >= modified && i.status == ImageStatus::Ready => {
+                return Some(Ok(self
+                    .images
+                    .same_kernel(&i)
+                    .map(|same| same.id)
+                    .unwrap_or(i.id)));
+            }
+            Some(Image {
+                status: ImageStatus::Failed { reason },
+                created_at,
+                ..
+            }) if created_at >= modified => {
+                return Some(Err(ImageError::InvalidImage(reason)));
+            }
+            _ => {}
+        }
+        if let Some(why) = self.images.extraction_refused(arch) {
+            return Some(Err(ImageError::InvalidImage(format!(
+                "kernels can't be extracted here: {why}"
+            ))));
+        }
+        match self
+            .images
+            .new_disk_kernel(&vm.id, &vm.name, disk, arch, Some(&me))
+        {
+            Ok(img) => {
+                self.queue.add(Key::Image(img.id));
+                None
+            }
+            Err(e) => Some(Err(e)),
         }
     }
 

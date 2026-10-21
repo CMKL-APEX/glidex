@@ -5669,39 +5669,19 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
     use glidex_control_plane::images::ImageStatus;
     use glidex_control_plane::store::{Origin, TableId};
     use sha2::{Digest, Sha256};
-    use std::io::Write;
     let _one = serial().await;
     let (server, agent) = server_and_agent().await;
     let agent_id = agent.manager.local_node_id();
 
     // The other architecture than this host's: the server can't extract it.
-    let (arch, kernel) = if std::env::consts::ARCH == "aarch64" {
-        ("x86_64", {
-            let mut b = vec![0u8; 32 * 1024];
-            b[0x202..0x206].copy_from_slice(b"HdrS");
-            b[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes());
-            b[0x236..0x238].copy_from_slice(&0x7fu16.to_le_bytes());
-            b
-        })
+    let arch = if std::env::consts::ARCH == "aarch64" {
+        "x86_64"
     } else {
-        ("aarch64", {
-            let mut b = vec![0u8; 8192];
-            b[..2].copy_from_slice(b"MZ");
-            b[0x38..0x3c].copy_from_slice(b"ARM\x64");
-            b
-        })
+        "aarch64"
     };
     // The agent says it is of that architecture, with KVM.
     let db = server.manager.database();
-    let raw = {
-        let txn = db.begin_read().unwrap();
-        let t = txn.open_table(TableId::Nodes.definition()).unwrap();
-        t.get(agent_id.as_str()).unwrap().unwrap().value().to_vec()
-    };
-    let mut n: Value = serde_json::from_slice(&raw).unwrap();
-    n["status"]["features"]["arch"] = json!(arch);
-    n["status"]["features"]["kvm"] = json!(true);
-
+    let n = node_with(&server, &agent_id, arch);
     // A disk image only the agent has.
     let data = vec![3u8; 64 * 1024];
     let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
@@ -5758,32 +5738,10 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
 
     // The extractor, standing in on the agent: it fails first.
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (f, k) = (fail.clone(), kernel.clone());
     agent
         .manager
         .images()
-        .set_extractor_job(Arc::new(move |disk, out| {
-            assert!(disk.exists(), "the disk image is on the node");
-            if f.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err("the appliance stopped".into());
-            }
-            let mut o = std::fs::OpenOptions::new()
-                .write(true)
-                .open(out)
-                .map_err(|e| e.to_string())?;
-            let mut put = |name: &str, d: &[u8]| {
-                o.write_all(format!("GXFILE vda1:/boot/{name} {}\n", d.len()).as_bytes())
-                    .and_then(|_| o.write_all(d))
-            };
-            put("vmlinuz-6.12.0-test", &k).map_err(|e| e.to_string())?;
-            put("initrd.img-6.12.0-test", b"initrd").map_err(|e| e.to_string())?;
-            put(
-                "grub/grub.cfg",
-                b"\tlinux /boot/vmlinuz-6.12.0-test root=LABEL=cloudimg-rootfs ro\n",
-            )
-            .map_err(|e| e.to_string())?;
-            o.write_all(b"GXEND\n").map_err(|e| e.to_string())
-        }));
+        .set_extractor_job(fake_extractor(arch, Some(fail.clone())));
 
     let (s, v) = call(
         &server,
@@ -5848,4 +5806,239 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
     // It stays Ready: the agent's copy counts.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(state(id.clone()).await.status, ImageStatus::Ready);
+}
+
+/// A kernel for `arch` that passes the header check (K8): a bzImage with a
+/// 64-bit entry, or an arm64 `Image`.
+fn test_kernel(arch: &str) -> Vec<u8> {
+    if arch == "x86_64" {
+        let mut b = vec![0u8; 32 * 1024];
+        b[0x202..0x206].copy_from_slice(b"HdrS");
+        b[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes());
+        b[0x236..0x238].copy_from_slice(&0x7fu16.to_le_bytes());
+        b
+    } else {
+        let mut b = vec![0u8; 8192];
+        b[..2].copy_from_slice(b"MZ");
+        b[0x38..0x3c].copy_from_slice(b"ARM\x64");
+        b
+    }
+}
+
+/// Node `id`'s record, saying it is of `arch` with KVM (written back by the
+/// caller; the node reports itself again only every two minutes).
+fn node_with(cp: &Cp, id: &str, arch: &str) -> Value {
+    use glidex_control_plane::store::TableId;
+    let db = cp.manager.database();
+    let txn = db.begin_read().unwrap();
+    let t = txn.open_table(TableId::Nodes.definition()).unwrap();
+    let mut n: Value = serde_json::from_slice(t.get(id).unwrap().unwrap().value()).unwrap();
+    n["status"]["features"]["arch"] = json!(arch);
+    n["status"]["features"]["kvm"] = json!(true);
+    n
+}
+
+/// The extractor appliance, standing in (spec/kernel-boot.md §10.3): it
+/// writes a stream with a kernel for `arch`, its initrd and a grub.cfg, or
+/// fails while `fail` is set.
+fn fake_extractor(
+    arch: &str,
+    fail: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> glidex_control_plane::images::ExtractorJob {
+    use std::io::Write;
+    let kernel = test_kernel(arch);
+    Arc::new(move |disk, out| {
+        assert!(disk.exists(), "the disk is on the node");
+        if fail
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err("the appliance stopped".into());
+        }
+        let mut o = std::fs::OpenOptions::new()
+            .write(true)
+            .open(out)
+            .map_err(|e| e.to_string())?;
+        let mut put = |name: &str, d: &[u8]| {
+            o.write_all(format!("GXFILE vda1:/boot/{name} {}\n", d.len()).as_bytes())
+                .and_then(|_| o.write_all(d))
+        };
+        put("vmlinuz-6.12.0-test", &kernel).map_err(|e| e.to_string())?;
+        put("initrd.img-6.12.0-test", b"initrd").map_err(|e| e.to_string())?;
+        put(
+            "grub/grub.cfg",
+            b"\tlinux /boot/vmlinuz-6.12.0-test root=LABEL=cloudimg-rootfs ro\n",
+        )
+        .map_err(|e| e.to_string())?;
+        o.write_all(b"GXEND\n").map_err(|e| e.to_string())
+    })
+}
+
+/// A VM on an agent with `kernel_from_disk` gets its kernel from its root
+/// disk there: the agent creates the kernel image, extracts it and reports
+/// it, and the leader records it (spec/kernel-boot.md §10.2, §10.5). The
+/// server asks the disk's node for `extract-kernel` too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
+    use glidex_control_plane::images::ImageStatus;
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let agent_id = agent.manager.local_node_id();
+    let arch = std::env::consts::ARCH;
+    let n = node_with(&server, &agent_id, arch);
+    // A kernel image to start from, and the agent with KVM.
+    let kernel = test_kernel(arch);
+    let sha =
+        glidex_control_plane::cluster::pki::hex(&<sha2::Sha256 as sha2::Digest>::digest(&kernel));
+    let k0 = json!({
+        "id": "k0", "name": "k0", "kind": "kernel", "source": { "kind": "url", "url": "http://example.invalid/k", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": kernel.len(), "file_size_bytes": kernel.len(), "sha256": sha,
+        "arch": arch, "created_at": 1,
+    });
+    server
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Nodes.definition())?
+                    .insert(agent_id.as_str(), n.to_string().as_bytes())?;
+                tx.open_table(TableId::Images.definition())?
+                    .insert("k0", k0.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    for cp in [&server, &agent] {
+        let p = cp.manager.images().image_file(
+            &cp.manager
+                .images()
+                .get_image("k0")
+                .unwrap_or_else(|_| serde_json::from_value(k0.clone()).unwrap()),
+        );
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, &kernel).unwrap();
+    }
+    agent
+        .manager
+        .images()
+        .set_extractor_job(fake_extractor(arch, None));
+
+    // A VM on the agent, its root disk made there.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "kd", "project": project, "size_gib": 1 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    let vm = json!({ "name": "kd-vm", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
+                     "kernel": "k0", "root_disk": "kd", "kernel_from_disk": true, "node": "agent1" });
+    let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm_id = vm_of(&v)["id"].as_str().unwrap().to_string();
+    wait_for("the disk made on the agent", || async {
+        server
+            .manager
+            .images()
+            .get_disk(&disk_id)
+            .is_ok_and(|d| d.phase == glidex_control_plane::images::DiskPhase::Ready)
+    })
+    .await;
+
+    // `extract-kernel` from the server: the agent extracts, the leader records.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{vm_id}/extract-kernel"),
+        None,
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    let id = v["image"]["id"].as_str().unwrap().to_string();
+    let get = |id: String| {
+        let m = server.manager.clone();
+        async move { m.images().get_image(&id).unwrap() }
+    };
+    wait_for("the kernel from the disk", || async {
+        get(id.clone()).await.status == ImageStatus::Ready
+    })
+    .await;
+    let img = get(id.clone()).await;
+    assert_eq!(img.extract_node.as_deref(), Some(agent_id.as_str()));
+    assert_eq!(img.owner.as_deref(), Some(vm_id.as_str()));
+    assert!(agent.manager.images().image_file(&img).exists());
+    assert!(!server.manager.images().image_file(&img).exists());
+
+    // Started, the VM takes its kernel from the disk on the agent: the one
+    // just extracted, as the disk hasn't changed since.
+    let (s, v) = call(&server, "POST", &format!("/vms/{vm_id}/start"), None, &[]).await;
+    assert!(s.is_success(), "{s} {v}");
+    let booted = || async {
+        server
+            .manager
+            .get_vm(&vm_id)
+            .await
+            .ok()
+            .and_then(|v| v.status.disk_kernel)
+    };
+    wait_for("the VM's kernel from its disk", || async {
+        booted().await.is_some()
+    })
+    .await;
+    let first = booted().await.unwrap();
+    assert_eq!(first.image, id);
+    let owned = || {
+        server
+            .manager
+            .images()
+            .list_images()
+            .into_iter()
+            .filter(|i| i.id != id && i.owner.as_deref() == Some(vm_id.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert!(owned().is_empty(), "{:?}", owned());
+
+    // The disk changes (the guest ran): at the next launch the agent makes
+    // a kernel image of its own, extracts it, and the leader records it.
+    // Its files are the stored one's, so the VM boots that (K12).
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let images = agent.manager.images();
+    std::fs::File::options()
+        .write(true)
+        .open(images.disk_path(&images.get_disk(&disk_id).unwrap()))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now())
+        .unwrap();
+    wait_for("the agent's own kernel image, Ready", || async {
+        owned().iter().any(|i| i.status == ImageStatus::Ready)
+    })
+    .await;
+    let made = owned();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert_eq!(made[0].extract_node.as_deref(), Some(agent_id.as_str()));
+    assert_eq!(made[0].sha256, img.sha256);
+    wait_for("the VM's kernel for the changed disk", || async {
+        booted()
+            .await
+            .is_some_and(|k| k.disk_stamp != first.disk_stamp)
+    })
+    .await;
+    let v = server.manager.get_vm(&vm_id).await.unwrap();
+    assert_eq!(v.status.disk_kernel.unwrap().image, id);
+    assert!(
+        !v.status
+            .conditions
+            .iter()
+            .any(|c| c.kind == "KernelExtracted" && c.reason == "ExtractFailed"),
+        "{:?}",
+        v.status.conditions
+    );
 }

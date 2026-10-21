@@ -320,6 +320,17 @@ fn is_true(b: &bool) -> bool {
 }
 
 impl Image {
+    /// A kernel extracted from a VM's disk (§10.5), not a disk image.
+    pub fn extracted_from_disk(&self) -> bool {
+        matches!(
+            self.source,
+            ImageSource::Extracted {
+                disk_id: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Whether the file was checked against a digest the caller or vendor
     /// published (catalog images always are).
     pub fn verified(&self) -> bool {

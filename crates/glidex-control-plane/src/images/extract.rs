@@ -189,19 +189,16 @@ impl ImageManager {
     }
 
     /// A kernel image to extract from VM `vm`'s root disk `disk`, owned by
-    /// the VM (§10.5, K12), named after it.
+    /// the VM (§10.5, K12), named after it; on `node` when not here (the
+    /// disk's node, §10.2). The caller checks that it can be extracted.
     pub(crate) fn new_disk_kernel(
         &self,
         vm: &str,
         vm_name: &str,
         disk: &super::Disk,
         arch: Arch,
+        node: Option<&str>,
     ) -> Result<Image, ImageError> {
-        if let Some(why) = self.extraction_refused(arch) {
-            return Err(ImageError::InvalidImage(format!(
-                "kernels can't be extracted here: {why}"
-            )));
-        }
         let stem: String = vm_name
             .chars()
             .map(|c| {
@@ -226,6 +223,7 @@ impl ImageManager {
             verified: false,
         };
         img.owner = Some(vm.to_string());
+        img.extract_node = node.map(str::to_string);
         self.insert_image(&img)?;
         tracing::info!(image = %img.name, disk = %disk.name, "kernel extraction from a VM's disk queued");
         Ok(img)

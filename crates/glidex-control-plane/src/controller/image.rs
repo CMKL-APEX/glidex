@@ -128,8 +128,12 @@ impl VmManager {
                 let _ = std::fs::remove_file(self.images.part_path(&img.id));
                 let _ = std::fs::remove_file(self.images.initrd_part_path(&img.id));
                 // Placed again (§10.2): the node that tried forgets its result.
-                if let Some(node) = img.extract_node.take() {
+                // One from a VM's disk runs where the disk is, again.
+                if let Some(node) = img.extract_node.clone() {
                     self.put_cache_row_of(&img.id, &node, None)?;
+                    if !img.extracted_from_disk() {
+                        img.extract_node = None;
+                    }
                 }
                 self.images.put_image(&img)?;
                 self.image_event(

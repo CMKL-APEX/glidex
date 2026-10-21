@@ -577,10 +577,12 @@ that disk.
 `ImageService.ExtractVmKernel`) answers `202` with a new kernel image,
 `extracting`; poll it, then PATCH the VM's `kernel` to it. The VM must
 be stopped (`409` otherwise), boot a kernel image and have a managed
-root disk (`400`); in a cluster, a server on a node that reaches the
-disk must answer (`409` names the disk otherwise), and a disk being moved
-is `409` too. The image is kept even if it duplicates a
-stored one: the caller holds its id.
+root disk (`400`); a disk being moved is `409`. In a cluster, a disk on
+another node is extracted there: the image records that node in
+`extract_node`, which runs it and reports as in §10.2 (`409` when that
+node isn't ready or has no KVM). A disk no node of this server's reaches
+otherwise is `409`, naming it. The image is kept even if it duplicates
+a stored one: the caller holds its id.
 
 **Every launch (K11, opt-in).** `VmConfig.kernel_from_disk` (default
 `false`; next launch) needs a kernel image (`kernel`) and a managed root
@@ -604,6 +606,19 @@ controller:
    anyway: condition `KernelExtracted=False` with the reason, event
    `KernelExtractFailed`; the next launch tries again. Only a VM with no
    kernel at all fails to launch (`Ready=False/KernelNotExtracted`).
+
+**On a node that doesn't write the catalog** (an agent, or a server
+that isn't the leader), step 3 goes through the leader (§10.2). The node
+creates the kernel image itself, `extracting` with `extract_node` set to
+itself: the one catalog write a node may make (clustering.md §8.3), and
+only for a kernel from the disk of a VM placed on it. It runs the
+extractor and reports in its cache row, and the leader records the
+image. Meanwhile the launch waits (`KernelExtracted=Unknown/Extracting`).
+The newest such image made since the disk's file last changed is the
+disk's: `Ready`, the VM boots it (or a stored twin, K12); `Failed`, step
+4 applies with its reason, and the disk must change before it is tried
+again. A twin it doesn't boot, or a failed one, is dropped once unused
+(K12's grace period).
 
 Why status: the controller writing the spec would bump the generation
 and fight `RestartRequired`, and the user's choice would be lost.
