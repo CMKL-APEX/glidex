@@ -362,3 +362,226 @@ pub async fn login_finish(
     );
     Ok(with_cookie(r, "", 0, secure))
 }
+
+// ---- a passkey invitation's first passkey (spec/tenancy.md D60) ------------
+
+#[derive(Deserialize)]
+pub struct InviteStart {
+    invitation: String,
+}
+
+#[derive(Deserialize)]
+pub struct InviteFinish {
+    invitation: String,
+    credential: CredentialJson,
+}
+
+fn invitation_refused() -> ApiErr {
+    err(
+        StatusCode::NOT_FOUND,
+        "not_found",
+        "no such invitation, or it was taken or expired",
+    )
+}
+
+/// The open passkey invitation `s` names.
+fn passkey_invitation(
+    app: &AppState,
+    s: &str,
+) -> Result<
+    (
+        crate::directory::invitations::InviteToken,
+        crate::directory::invitations::Invitation,
+    ),
+    ApiErr,
+> {
+    let token =
+        crate::directory::invitations::InviteToken::parse(s).ok_or_else(invitation_refused)?;
+    let inv = app
+        .auth
+        .invitations
+        .open(&token)
+        .ok()
+        .flatten()
+        .filter(|i| i.connector_id == pk::PROVIDER)
+        .ok_or_else(invitation_refused)?;
+    Ok((token, inv))
+}
+
+/// `POST /auth/invitation/passkey/start {invitation}`: the options for a
+/// new user's first passkey.
+pub async fn invite_start(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    listener: Option<Extension<Listener>>,
+    Json(body): Json<InviteStart>,
+) -> Result<Response, ApiErr> {
+    let (origin, rp) = origin_and_rp(&app, &headers)?;
+    let (_, inv) = passkey_invitation(&app, &body.invitation)?;
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let handle = app
+        .auth
+        .passkeys
+        .handle(&user_id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let (cookie, cer) = app.auth.ceremonies.start(
+        Purpose::Invite {
+            invitation: body.invitation.trim().to_string(),
+            user_id,
+        },
+        &rp,
+        &origin,
+    );
+    let opts = pk::creation_options(
+        &cer,
+        &app.auth.config.auth.passkeys.rp_name,
+        &handle,
+        &inv.email,
+        &inv.email,
+        &[],
+    );
+    Ok(with_cookie(
+        Json(opts).into_response(),
+        &cookie,
+        pk::CEREMONY_SECS,
+        secure(&headers, listener, &app),
+    ))
+}
+
+/// `POST /auth/invitation/passkey/finish {invitation, credential}`: the
+/// user made in the invitation's directory with this passkey, the
+/// invitation taken, and a session.
+pub async fn invite_finish(
+    State(app): State<AppState>,
+    Extension(rid): Extension<RequestId>,
+    listener: Option<Extension<Listener>>,
+    headers: HeaderMap,
+    Json(body): Json<InviteFinish>,
+) -> Result<Response, ApiErr> {
+    let bad = |m: String| err(StatusCode::BAD_REQUEST, "passkey_not_added", m);
+    let internal = |e: String| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e);
+    let cer = cookie_of(&headers)
+        .and_then(|k| app.auth.ceremonies.take(&k))
+        .ok_or_else(|| bad("the passkey prompt expired: start again".into()))?;
+    let Purpose::Invite {
+        invitation,
+        user_id,
+    } = cer.purpose.clone()
+    else {
+        return Err(bad("this isn't an invitation's passkey".into()));
+    };
+    if invitation != body.invitation.trim() {
+        return Err(bad("the passkey prompt was for another invitation".into()));
+    }
+    let (token, inv) = passkey_invitation(&app, &invitation)?;
+    let p = pk::finish_registration(&cer, &body.credential, &user_id, "Passkey")
+        .map_err(|e| bad(e.to_string()))?;
+    let a = &app.auth;
+    if a.passkeys.get(&p.id).ok().flatten().is_some()
+        || a.store
+            .identity(pk::PROVIDER, &p.id)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return Err(bad("this passkey is registered already".into()));
+    }
+    let tenant = a
+        .tenants
+        .get(&inv.tenant_id)
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or_else(invitation_refused)?;
+    // The invitation first: whoever takes it, once.
+    let inv = a
+        .invitations
+        .take_by_link(&token, &user_id)
+        .map_err(|_| invitation_refused())?;
+    let now = crate::tenancy::now();
+    let local = inv.email.split('@').next().unwrap_or("").to_string();
+    let user = auth::store::User {
+        id: user_id.clone(),
+        directory_id: tenant.directory_id.clone(),
+        display_name: if local.is_empty() {
+            inv.email.clone()
+        } else {
+            local
+        },
+        disabled: false,
+        default_project: None,
+        created_at: now,
+        managed: None,
+        email: Some(inv.email.clone()),
+        disabled_reason: None,
+    };
+    a.store
+        .put_user(&user)
+        .map_err(|e| internal(e.to_string()))?;
+    a.store
+        .put_identity(&auth::store::Identity {
+            provider: pk::PROVIDER.into(),
+            subject: p.id.clone(),
+            user_id: user_id.clone(),
+            email: None,
+            created_at: p.created_at,
+        })
+        .map_err(|e| internal(e.to_string()))?;
+    a.passkeys.put(&p).map_err(|e| internal(e.to_string()))?;
+    let by = format!("invitation:{}", inv.id);
+    a.tenants
+        .add_member(&inv.tenant_id, Ent::User(user_id.clone()), &by)
+        .map_err(|e| internal(e.to_string()))?;
+    if inv.role != crate::service::invitations::MEMBER {
+        a.add_link(
+            &inv.role,
+            Ent::User(user_id.clone()),
+            Ent::Tenant(inv.tenant_id.clone()),
+            &by,
+        )
+        .map_err(super::auth_error)?;
+    }
+    // The owner tenant's administrator administers its directory (D59).
+    if tenant.owns_directory && inv.role == "role.tenant-admin" {
+        a.add_link(
+            "role.directory-admin",
+            Ent::User(user_id.clone()),
+            Ent::Directory(tenant.directory_id.clone()),
+            &by,
+        )
+        .map_err(super::auth_error)?;
+    }
+    let (cookie, _) = a
+        .create_session_with(&user, Method::Passkey, true)
+        .map_err(super::auth_error)?;
+    let principal = a
+        .session_principal(&cookie, auth::Transport::Tcp, None)
+        .map_err(super::auth_error)?
+        .ok_or_else(|| internal("new session missing".into()))?;
+    audit_login(
+        &app,
+        Some(&principal),
+        &rid.0,
+        "passkey",
+        "ok",
+        "invitation",
+    );
+    let w = crate::service::system::whoami_of(&app, &principal)?;
+    let secure = secure(&headers, listener, &app);
+    let mut r = (
+        StatusCode::CREATED,
+        Json(serde_json::to_value(w).unwrap_or_default()),
+    )
+        .into_response();
+    let mut sc = format!(
+        "{}={}; HttpOnly; SameSite=Strict; Path=/",
+        auth::SESSION_COOKIE,
+        cookie
+    );
+    if secure {
+        sc.push_str("; Secure");
+    }
+    r.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&sc).expect("cookie is ASCII"),
+    );
+    Ok(with_cookie(r, "", 0, secure))
+}

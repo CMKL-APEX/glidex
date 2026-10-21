@@ -581,3 +581,141 @@ async fn adding_needs_a_fresh_sign_in_and_two_passkeys_are_needed_to_lose_the_re
     let (st, v) = register(&h, &mut fresh, &mut k4, "four").await;
     assert_eq!(st, StatusCode::CREATED, "{v}");
 }
+
+/// spec/tenancy.md D59, D60: a directory's first administrator comes in
+/// with a passkey through the operator's invitation, administers the new
+/// directory and nothing of the host's own, and signs in again with it.
+#[tokio::test]
+async fn a_new_directorys_first_admin_signs_in_with_a_passkey() {
+    let h = harness();
+    let root = h.user("root");
+    let ent = glidex_control_plane::authz::Ent::User(root.clone());
+    h.app
+        .auth
+        .add_link(
+            "role.system-admin",
+            ent.clone(),
+            glidex_control_plane::authz::Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    h.app.auth.make_administrator(&ent, "test").unwrap();
+    let mut op = h.signed_in(&root);
+    let (st, v) = h
+        .call(
+            &mut op,
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "name": "Acme", "owner": "acme-admin", "admin_email": "erin@acme.example"})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let link = v["invitation_link"].as_str().unwrap();
+    let (id, secret) = link
+        .rsplit_once("/invite/")
+        .unwrap()
+        .1
+        .split_once('#')
+        .unwrap();
+    let invitation = format!("{id}.{secret}");
+
+    // The invite page: what it is, then the passkey.
+    let mut b = Browser::default();
+    let (st, v) = h
+        .call(
+            &mut b,
+            "POST",
+            "/auth/invitation",
+            Some(json!({"invitation": invitation})),
+        )
+        .await;
+    assert_eq!(
+        (st, v["connector_kind"].as_str()),
+        (StatusCode::OK, Some("passkey")),
+        "{v}"
+    );
+    let (st, opts) = h
+        .call(
+            &mut b,
+            "POST",
+            "/auth/invitation/passkey/start",
+            Some(json!({"invitation": invitation})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{opts}");
+    let mut a = Authenticator::new();
+    let cred = a.create(&opts, ORIGIN);
+    // The credential with another invitation's id is refused.
+    let (st, _) = h
+        .call(
+            &mut b.clone(),
+            "POST",
+            "/auth/invitation/passkey/finish",
+            Some(json!({"invitation": format!("{id}.wrong"), "credential": cred})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, me) = h
+        .call(
+            &mut b,
+            "POST",
+            "/auth/invitation/passkey/start",
+            Some(json!({"invitation": invitation})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let cred = a.create(&me, ORIGIN);
+    let (st, me) = h
+        .call(
+            &mut b,
+            "POST",
+            "/auth/invitation/passkey/finish",
+            Some(json!({"invitation": invitation, "credential": cred})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{me}");
+    assert_eq!(me["method"], "passkey", "{me}");
+    b.csrf = me["csrf"].as_str().map(String::from);
+    let erin = me["user"]["id"].as_str().unwrap().to_string();
+    let u = h.app.auth.store.user(&erin).unwrap().unwrap();
+    assert_eq!(u.directory_id, "acme");
+
+    // She administers acme: its connectors and users, and nothing of local.
+    let (st, v) = h.call(&mut b, "GET", "/users", None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let users: Vec<_> = v["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(users, vec![erin.clone()], "{v}");
+    let (st, v) = h
+        .call(
+            &mut b,
+            "POST",
+            "/connectors",
+            Some(json!({"connector": {"id": "acme-idp", "display_name": "Acme IdP", "oidc": {"issuer": "https://idp.acme.example", "client_id": "glidex"}}})),
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let (st, _) = h.call(&mut b, "GET", "/tenants/admin", None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // The invitation is spent.
+    let (st, _) = h
+        .call(
+            &mut Browser::default(),
+            "POST",
+            "/auth/invitation/passkey/start",
+            Some(json!({"invitation": invitation})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // And she signs in again with the passkey.
+    let (st, v, _) = sign_in(&h, &mut a, ORIGIN).await;
+    assert_eq!(
+        (st, v["user"]["id"].as_str()),
+        (StatusCode::OK, Some(erin.as_str())),
+        "{v}"
+    );
+}

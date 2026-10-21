@@ -5081,3 +5081,97 @@ async fn the_operator_creates_and_deletes_directories() {
             .all(|t| t.directory_id != "beta")
     );
 }
+
+/// spec/tenancy.md D61: a login reaches its directory by its email's
+/// domain or by `/login/<directory>`; an unknown one gets the host's own.
+#[tokio::test]
+async fn logins_find_their_directory_without_listing_them() {
+    let h = harness();
+    let (_, owner) = h
+        .app
+        .auth
+        .tenants
+        .create_directory("acme", "Acme", "acme-admin")
+        .unwrap();
+    let bob = h
+        .app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "bob", "bob", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .tenants
+        .add_member(&owner.id, Ent::User(bob.clone()), "test")
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(bob.clone()),
+            Ent::Directory("acme".into()),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(json!({"connector": {"id": "acme-idp", "display_name": "Acme IdP",
+                "oidc": {"issuer": "https://idp.acme.example", "client_id": "glidex", "allowed_domains": ["acme.example"]}}})),
+            &h.session(&bob),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+
+    let names = |v: &Value| -> Vec<String> {
+        v["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/auth/discover",
+            Some(json!({"hint": "Erin@ACME.example"})),
+            "",
+        )
+        .await;
+    assert_eq!(
+        (v["directory"].as_str(), names(&v)),
+        (Some("acme"), vec!["acme-idp".to_string()]),
+        "{v}"
+    );
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/auth/discover",
+            Some(json!({"hint": "x@elsewhere.example"})),
+            "",
+        )
+        .await;
+    assert_eq!(v["directory"], "local", "{v}");
+    assert!(!names(&v).contains(&"acme-idp".to_string()), "{v}");
+    let (_, v) = h
+        .rest("GET", "/auth/methods?directory=acme", None, "")
+        .await;
+    assert_eq!(
+        (v["directory"].as_str(), v["pam"].as_bool()),
+        (Some("acme"), Some(false)),
+        "{v}"
+    );
+    assert_eq!(names(&v), vec!["acme-idp".to_string()]);
+    // An unknown directory looks like the host's own.
+    let (_, unknown) = h
+        .rest("GET", "/auth/methods?directory=nope", None, "")
+        .await;
+    let (_, own) = h.rest("GET", "/auth/methods", None, "").await;
+    assert_eq!(unknown, own);
+    assert_eq!(own["directory"], "local");
+    assert!(!names(&own).contains(&"acme-idp".to_string()), "{own}");
+}
