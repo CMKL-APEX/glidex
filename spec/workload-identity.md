@@ -340,7 +340,7 @@ W10 keeps the token and audit formats ready for this; the grants
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **WI0** issuer | Directory signing keys, rotation, discovery and JWKS; minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
+| **WI0** issuer | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
 | **WI1** VMs | `glidex-metad` and netd's steering on node and OVN networks (§7.1); `service_account` on VMs; `useServiceAccount`; glidex tokens (W6); exchange (§5); audit; UI and gxctl | §10 API and functional tests. |
 | **WI1b** vsock | vsock devices on both hypervisors, the shim relay (Cloud Hypervisor) and metad's vsock listener (QEMU), the guest helper | The functional test over vsock on a VM with no network. |
 | **WI2** outside | Docs and checks for AWS, Vault, Google and Kubernetes as relying parties; per-VM metering of tokens | The interop checks of §10. |

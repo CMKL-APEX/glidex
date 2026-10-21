@@ -126,6 +126,12 @@ organizations that **operate** it, and lets each keep its own identity.
 | D49 | Trusting an issuer | A federation of kind `jwt` names an `https` issuer (discovery and JWKS, as for OIDC logins) and one **audience**, which the workload asks its issuer for (GitHub's `audience` input, GitLab's `id_tokens.aud`). The token must be signed (RS256 or ES256) by the issuer's current keys, carry that issuer and that audience, and be valid now (60 s leeway, at most 1 h long). | Without the audience check, a token GitHub minted for another service would be accepted. |
 | D50 | Rules | A federation's rules are ordered; the **first** whose `match` holds maps the token. A rule matches **exact** string claim values only (no wildcards) and must name at least one of `repository`, `project_path` or `sub`; each rule names one service account of a project of the federation's tenant. A token that matches no rule, or fails any check, gets the same `400 invalid_grant` whatever the reason; the reason goes to the audit log. | An exact repository (and usually a branch or environment) is what a CI system vouches for; prefix matching has let other repositories in elsewhere. |
 | D51 | Who manages federations | A federation belongs to a tenant (D1). Tenant administrators manage their tenant's (`manageTenantFederations`, step-up), directory administrators any; tenant auditors read them. A federation is disabled or deleted at once. | Trusting a CI system is giving its jobs the service account's rights in the tenant. |
+| D52 | Issuer URL | A directory's issuer is `<base>/d/<directory id>`, written into the directory record the first time it issues a token and fixed after that. `<base>` is `auth.issuer_base` when set, else the host's published web UI address ([host-page.md](host-page.md) W3: `cluster.ui_url`, else what glidex-ui reports). glidex-ui serves `/d/…` from the control plane, beside `/api`. Changing it later (`gxctl directory set-issuer`, step-up) warns that every client and relying party must be reconfigured. | One stable URL per organization, the one its people and its workloads' relying parties use ([workload-identity.md](workload-identity.md) W1); behind a load balancer, the load balancer's. |
+| D53 | Signing keys | Each directory signs with **ES256** keys of its own (`kid` = `<directory>:<n>`), rotated every 30 days and on demand. A retired key stays in the JWKS until every token it signed has expired. Private keys are sealed with the directory's data key (§13) and used only on the host's leader. Discovery and JWKS at `<issuer>/.well-known/openid-configuration` and `<issuer>/jwks.json`. | One key set for people's tokens and workload tokens (workload-identity.md §4.1); ES256 is small, and `p256` is already in the tree. |
+| D54 | Clients | A directory's OAuth clients: **`gxctl`**, built in and public (device grant, RFC 8628; authorization code with PKCE and a loopback redirect, RFC 8252), and **clusters**, confidential, which authenticate with a key of their own (`private_key_jwt`). The cluster on the directory's own control plane is registered at first start; other clusters are registered by the handshake (§12.1). | Native apps can't keep a secret; a cluster's key never leaves it. |
+| D55 | Tokens a directory issues | **ID tokens** (`aud` = the client). **Access tokens**: JWTs with `aud` = one cluster's id, `sub`, `sid`, `auth_time`, `amr`, valid `access_token_ttl` (default 1 h, at most 12 h). **Refresh tokens**: opaque, stored hashed, rotated on every use; reusing an old one revokes the whole chain. They last 30 days unused and ≤ 90 days in all, clamped by `token_max_days` (D20), and end with the user's sessions, when the user is disabled (D20), and at logout. | Audience-bound, short-lived tokens are verified offline (§7.3); a stolen refresh token is caught by rotation. |
+| D56 | A cluster and its own directory | Until the handshake exists (T6.5), a cluster accepts access tokens only from a directory hosted on its own control plane, verified against that directory's keys with no feed. Such a token acts as its user, like a session: method `directory`, `mfa` from `amr`. A browser on that cluster keeps logging in directly, with no redirect: the authorization flow serves gxctl, and later the clusters whose directory is elsewhere. | T6.2–T6.3 are useful on one host, and nothing changes for today's UI. |
+| D57 | gxctl and directories | `gxctl auth login --directory <issuer>` logs in at the directory with the device grant (or the browser and a loopback redirect, `--browser`) and keeps the **refresh token** in the profile (gxctl-auth.md A3). Before calling a cluster it gets an access token for that cluster from the directory's token endpoint (`resource` = the cluster's URL, RFC 8707), cached until shortly before `exp`. The directory lists the clusters its user can reach (§7.2). | One login reaches every cluster; what gxctl holds can't be replayed to another cluster (§7.3). |
 
 ## 3. Threat model additions
 
@@ -1024,7 +1030,7 @@ established pair keeps working, including logins and feeds.
   server takes the new key and keeps the previous one, then the leader
   re-wraps the data keys in one write; a wrapped key names its KEK by id.
 - Each directory has its own **signing keys** (ID tokens, access tokens),
-  rotated on demand and every 90 days, the old one kept for verification
+  rotated on demand and every 30 days (D53), the old one kept for verification
   until every token it signed has expired; public keys travel in feeds.
 - Decryption and signing only on the host's leader, into zeroized
   buffers.
@@ -1293,7 +1299,8 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T4** pull sync and attributes | §8.2 for Google Workspace (D44–D47): runs, the safety stop, status; SSH keys from Google | Pull tests against a mock Directory API; manual checks against a real Workspace. |
 | **T4b** more sources | LDAP (login and pull; AD, FreeIPA, OpenLDAP, JumpCloud LDAP), Microsoft Graph and GitHub (after T2b), on T4's runs | LDAP against OpenLDAP in CI. |
 | **T5** workload federation | §9 and D48–D51, kind `jwt`: federations per tenant, `POST /auth/exchange`, federated tokens; `aws` later | Federation tests against a mock issuer; a GitHub Actions job exchanges its OIDC token and calls glidex without a stored token. |
-| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider, access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, standby and promote, gxctl `auth login --directory`, `trust`, UI | §17 trust tests; a check with two organizations' directories and two clusters across a real WAN link. Can start once T1 has landed. |
+| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: gpu-dev2 with prism1, and spark-1 made a cluster of its own. Can start once T1 has landed. |
+| **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 
 **T0 tasks** (files):
@@ -1406,7 +1413,59 @@ Each milestone ships its API, CLI, UI and tests together and leaves
    idp-checks.md's GitHub Actions check (through a tunnel that
    publishes only the exchange and what the job calls); UI e2e.
 
-T6–T7 get their own task lists when they start; per-protocol code under
+**T6 tasks** (each leaves `main` releasable; the order puts what is
+useful on one host first):
+1. This list and D52–D57.
+2. **Issuer and keys** (also workload-identity.md WI0's issuer):
+   - the directory's `issuer` (D52), `auth.issuer_base`;
+   - signing keys (D53): made, sealed, rotated, retired;
+   - `<issuer>/.well-known/openid-configuration` and `jwks.json`;
+   - glidex-ui serving `/d/…`;
+   - `gxctl directory keys` (list, rotate);
+   - tests: an independent JWT library verifies a token against the
+     published JWKS; rotation keeps old tokens valid until `exp`.
+3. **The directory as OIDC provider** (D54–D57):
+   - `authorize` (code with PKCE) through the directory's login page,
+     the device grant, `token` (code, refresh, device code, and an
+     access token for a `resource`), `revoke`, `end_session`;
+   - `oauth_clients`; the built-in `gxctl` client; this host's cluster
+     registered at first start;
+   - refresh tokens (D55);
+   - the cluster accepting its own directory's access tokens (D56);
+   - gxctl `auth login --directory` and per-cluster access tokens;
+   - tests: PKCE and redirect checks, refresh rotation and reuse,
+     audience, logout and disable revoking refresh tokens.
+4. **Hosted directories** (D27):
+   - `CreateDirectory` and `DeleteDirectory` for the host's operator;
+   - per-directory issuer, keys, data key, connectors and audit;
+   - routes and policies scoped by directory, with none seeing
+     another's records;
+   - gxctl `directory`; the UI's directory picker;
+   - tests: two directories on one host can't read each other.
+5. **The handshake** (§12.1): offers and redeeming them;
+   `TrustedDirectory` and `TrustedCluster`; pins both ways; the cluster
+   registered as the directory's client; `gxctl admission offer`,
+   `tenant opt-in`, `trust`; the §17 offer tests.
+6. **Feeds and cluster sessions**:
+   - the filtered feed (`/d/<id>/feed/v1`, snapshots, `feed_state`)
+     and the cluster's read-only replica;
+   - admission reports back;
+   - browser login at a directory elsewhere, giving a cluster session
+     from its ID token (§7.1);
+   - logout and disable reaching clusters;
+   - the §17 feed and token tests.
+7. **Partitions**: `max_staleness` per directory, refusing that
+   directory's credentials past it, `X-Glidex-Directory-Lag`, API
+   tokens' `clusters` (§7.4); the §17 partition tests.
+8. **UI, docs and the real check**:
+   - UI: Trusted directories and clusters, offers, the directory picker
+     at login;
+   - the operator guide;
+   - idp-checks.md's T6 row: spark-1 made a cluster with its own
+     directory, its tenant admitted on gpu-dev2's cluster, its users
+     logging in from there.
+
+T7 gets its own task list when it starts; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
 ## 19. Out of scope
