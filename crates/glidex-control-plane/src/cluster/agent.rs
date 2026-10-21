@@ -488,7 +488,7 @@ impl NodeLink {
     }
 }
 
-impl Mirror for NodeLink {
+impl Mirror<crate::store::Glidex> for NodeLink {
     fn submit(&self, ws: &WriteSet) -> Result<Submitted, StoreError> {
         // Writes already waiting go first: order matters.
         if !self.pending.lock().unwrap().is_empty() {

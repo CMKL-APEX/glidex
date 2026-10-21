@@ -1,7 +1,9 @@
-//! Raft over a [`Transport`]: HTTPS with mutual TLS in production
-//! (`cluster::net`), an in-process router with fault injection in tests.
+//! Raft over a [`Transport`]: the application's (glidex: HTTPS with mutual
+//! TLS, `cluster::net`), or an in-process router with fault injection in
+//! tests ([`crate::testing`]).
 
 use super::types::*;
+use crate::store::Schema;
 use openraft::BasicNode;
 use openraft::error::{Fatal, NetworkError, RPCError, RaftError, StreamingError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
@@ -10,6 +12,7 @@ use openraft::raft::{
 };
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -60,34 +63,37 @@ pub struct SnapshotHeader {
     pub meta: SnapshotMeta,
 }
 
-pub struct NetworkFactory {
+pub struct NetworkFactory<S: Schema> {
     pub transport: Arc<dyn Transport>,
     pub dir: PathBuf,
+    pub schema: PhantomData<S>,
 }
 
-pub struct Peer {
+pub struct Peer<S: Schema> {
     transport: Arc<dyn Transport>,
     target: RaftId,
     addr: String,
     dir: PathBuf,
+    schema: PhantomData<S>,
 }
 
-impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
-    type Network = Peer;
+impl<S: Schema> RaftNetworkFactory<TypeConfig<S>> for NetworkFactory<S> {
+    type Network = Peer<S>;
 
-    async fn new_client(&mut self, target: RaftId, node: &BasicNode) -> Peer {
+    async fn new_client(&mut self, target: RaftId, node: &BasicNode) -> Peer<S> {
         Peer {
             transport: self.transport.clone(),
             target,
             addr: node.addr.clone(),
             dir: self.dir.clone(),
+            schema: PhantomData,
         }
     }
 }
 
 type Reply<T> = Result<T, RaftError<RaftId>>;
 
-impl Peer {
+impl<S: Schema> Peer<S> {
     async fn rpc<Req: Serialize, Resp: serde::de::DeserializeOwned>(
         &self,
         rpc: Rpc,
@@ -105,10 +111,10 @@ impl Peer {
     }
 }
 
-impl RaftNetwork<TypeConfig> for Peer {
+impl<S: Schema> RaftNetwork<TypeConfig<S>> for Peer<S> {
     async fn append_entries(
         &mut self,
-        rpc: AppendEntriesRequest<TypeConfig>,
+        rpc: AppendEntriesRequest<TypeConfig<S>>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<RaftId>, RPCError<RaftId, BasicNode, RaftError<RaftId>>> {
         self.rpc(Rpc::Append, &rpc).await
@@ -125,12 +131,12 @@ impl RaftNetwork<TypeConfig> for Peer {
     async fn full_snapshot(
         &mut self,
         vote: Vote,
-        snapshot: openraft::Snapshot<TypeConfig>,
+        snapshot: openraft::Snapshot<TypeConfig<S>>,
         _cancel: impl Future<Output = openraft::error::ReplicationClosed>
         + openraft::OptionalSend
         + 'static,
         _option: RPCOption,
-    ) -> Result<SnapshotResponse<RaftId>, StreamingError<TypeConfig, Fatal<RaftId>>> {
+    ) -> Result<SnapshotResponse<RaftId>, StreamingError<TypeConfig<S>, Fatal<RaftId>>> {
         let view = snapshot.snapshot.view.ok_or_else(|| {
             StreamingError::Network(NetworkError::new(&TransportError(
                 "snapshot has no data".into(),
@@ -143,7 +149,7 @@ impl RaftNetwork<TypeConfig> for Peer {
             "send-{}-{}-{}.snap",
             self.target,
             snapshot.meta.snapshot_id,
-            crate::cluster::pki::hex(&nonce)
+            hex(&nonce)
         ));
         let out = path.clone();
         // One read transaction, streamed to a file: bounded by disk, not memory.
@@ -176,17 +182,17 @@ impl RaftNetwork<TypeConfig> for Peer {
 }
 
 /// The receiving side: what a peer's request is handed to.
-pub struct RaftService {
-    pub raft: GxRaft,
+pub struct RaftService<S: Schema> {
+    pub raft: Raft<S>,
     pub dir: PathBuf,
 }
 
-impl RaftService {
+impl<S: Schema> RaftService<S> {
     pub async fn handle(&self, rpc: Rpc, body: &[u8]) -> Result<Vec<u8>, TransportError> {
         let err = |e: serde_json::Error| TransportError(e.to_string());
         match rpc {
             Rpc::Append => {
-                let req: AppendEntriesRequest<TypeConfig> =
+                let req: AppendEntriesRequest<TypeConfig<S>> =
                     serde_json::from_slice(body).map_err(err)?;
                 serde_json::to_vec(&self.raft.append_entries(req).await).map_err(err)
             }
@@ -215,4 +221,8 @@ impl RaftService {
         let res = self.raft.install_full_snapshot(h.vote, snapshot).await;
         serde_json::to_vec(&res).map_err(err)
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }

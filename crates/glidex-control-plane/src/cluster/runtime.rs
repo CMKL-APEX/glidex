@@ -236,7 +236,7 @@ impl Cluster {
                     client: client.clone(),
                 });
                 Some(
-                    ClusterNode::start(
+                    super::raft::start_node(
                         db.clone(),
                         &files.raft(),
                         identity.raft_id,
@@ -529,7 +529,7 @@ impl LeaderForwarder {
     }
 }
 
-impl crate::store::Forwarder for LeaderForwarder {
+impl crate::store::Forwarder<crate::store::Glidex> for LeaderForwarder {
     fn write_raw(&self, ops: Vec<crate::store::Op>) -> Result<(), crate::store::StoreError> {
         let body = serde_json::to_vec(&ops)
             .map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?;

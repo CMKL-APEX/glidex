@@ -1,17 +1,19 @@
 //! A running Raft member: the log, the state machine, the transport, and the
-//! [`Replicator`] that makes `Db::write` a Raft proposal (§6.1).
+//! [`Replicator`] that makes [`Db::write`] a Raft proposal (glidex
+//! spec/clustering.md §6.1).
 
 use super::*;
-use crate::store::{Db, Replicator, StoreError, WriteSet};
+use crate::store::{Db, Replicator, Schema, StoreError, WriteSet};
 use openraft::error::{ClientWriteError, RaftError};
 use openraft::{BasicNode, Config, SnapshotPolicy};
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-/// `cluster.raft.*` (§10.2).
+/// Raft timing and log retention (glidex: `cluster.raft.*`, §10.2).
 #[derive(Debug, Clone)]
 pub struct RaftSettings {
     pub heartbeat_ms: u64,
@@ -29,30 +31,35 @@ impl Default for RaftSettings {
     }
 }
 
-pub struct ClusterNode {
+/// Where a member finds the leader's address when the membership it has
+/// applied doesn't say yet (glidex: the replicated `nodes` table).
+pub type LeaderLookup = Box<dyn Fn(RaftId) -> Option<String> + Send + Sync>;
+
+pub struct ClusterNode<S: Schema> {
     pub id: RaftId,
-    pub db: Arc<Db>,
-    pub raft: GxRaft,
-    pub service: Arc<RaftService>,
-    pub log: LogStore,
+    pub db: Arc<Db<S>>,
+    pub raft: Raft<S>,
+    pub service: Arc<RaftService<S>>,
+    pub log: LogStore<S>,
     pub dir: PathBuf,
     runtime: tokio::runtime::Handle,
     /// The term in which this node, as leader, has applied everything that
     /// was committed before it.
     ready_term: AtomicU64,
+    leader_lookup: OnceLock<LeaderLookup>,
 }
 
-impl ClusterNode {
+impl<S: Schema> ClusterNode<S> {
     /// Open the log in `dir/log.redb` and start Raft on `db`. A fresh node
     /// has no membership: it waits to be added (`add_learner`), or
     /// [`bootstrap`](Self::bootstrap)ped as a cluster of one.
     pub async fn start(
-        db: Arc<Db>,
+        db: Arc<Db<S>>,
         dir: &Path,
         id: RaftId,
         settings: &RaftSettings,
         transport: Arc<dyn Transport>,
-    ) -> Result<Arc<ClusterNode>, StoreError> {
+    ) -> Result<Arc<ClusterNode<S>>, StoreError> {
         std::fs::create_dir_all(dir)?;
         let log = LogStore::open(&dir.join("log.redb"))
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
@@ -75,8 +82,9 @@ impl ClusterNode {
         let net = NetworkFactory {
             transport,
             dir: dir.join("snapshots"),
+            schema: PhantomData,
         };
-        let raft = GxRaft::new(id, cfg, net, log.clone(), sm)
+        let raft = Raft::<S>::new(id, cfg, net, log.clone(), sm)
             .await
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
         let service = Arc::new(RaftService {
@@ -92,7 +100,14 @@ impl ClusterNode {
             dir: dir.to_path_buf(),
             runtime: tokio::runtime::Handle::current(),
             ready_term: AtomicU64::new(0),
+            leader_lookup: OnceLock::new(),
         }))
+    }
+
+    /// Where to look up the leader's address when the applied membership
+    /// doesn't have it yet; set once, after [`start`](Self::start).
+    pub fn set_leader_lookup(&self, f: LeaderLookup) {
+        let _ = self.leader_lookup.set(f);
     }
 
     /// Make this node the only voter of a new cluster.
@@ -173,14 +188,8 @@ impl ClusterNode {
             return addr;
         }
         // A member that has not applied the membership yet knows who leads
-        // but not where: the replicated `nodes` table may already say.
-        crate::node::NodeStore::new(self.db.clone())
-            .list()
-            .ok()?
-            .into_iter()
-            .find(|n| n.status.raft_id == Some(l))
-            .and_then(|n| n.status.advertise)
-            .map(|a| a.to_string())
+        // but not where: the application's records may already say.
+        self.leader_lookup.get().and_then(|f| f(l))
     }
 
     /// Wait for a leader to be elected, as seen by this node.
@@ -263,22 +272,22 @@ impl ClusterNode {
     }
 }
 
-struct RaftReplicator {
-    node: Arc<ClusterNode>,
+struct RaftReplicator<S: Schema> {
+    node: Arc<ClusterNode<S>>,
 }
 
-impl RaftReplicator {
+impl<S: Schema> RaftReplicator<S> {
     /// `None` when the control plane is shutting down.
     fn block<F>(&self, f: F) -> Option<F::Output>
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        crate::cluster::wait_on(&self.node.runtime, f)
+        wait_on(&self.node.runtime, f)
     }
 }
 
-impl Replicator for RaftReplicator {
+impl<S: Schema> Replicator<S> for RaftReplicator<S> {
     fn before_write(&self) -> Result<(), StoreError> {
         let n = &self.node;
         let m = n.raft.metrics().borrow().clone();
@@ -304,7 +313,7 @@ impl Replicator for RaftReplicator {
         m.current_leader == Some(n.id)
     }
 
-    fn propose(&self, _db: &Db, ws: WriteSet) -> Result<u64, StoreError> {
+    fn propose(&self, _db: &Db<S>, ws: WriteSet<S>) -> Result<u64, StoreError> {
         let n = &self.node;
         let raft = n.raft.clone();
         let Some(written) = self.block(async move { raft.client_write(ws).await }) else {
@@ -322,4 +331,24 @@ impl Replicator for RaftReplicator {
             Err(e) => Err(StoreError::Io(std::io::Error::other(e.to_string()))),
         }
     }
+}
+
+/// Run `f` on `rt` and wait for it from synchronous code (a store write
+/// that must reach the leader or Raft). `None` when the runtime shut down
+/// first: it drops its tasks, `f` with them.
+///
+/// Not `block_in_place(|| rt.block_on(f))`: a `block_in_place` that starts
+/// once the runtime is shutting down can't hand its worker's core on, so
+/// the I/O and time drivers are never driven or shut down again, `f` never
+/// wakes, and the shutdown waits on this thread for ever.
+pub fn wait_on<F>(rt: &tokio::runtime::Handle, f: F) -> Option<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    rt.spawn(async move {
+        let _ = tx.send(f.await);
+    });
+    tokio::task::block_in_place(|| rx.recv().ok())
 }

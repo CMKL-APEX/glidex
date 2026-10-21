@@ -893,7 +893,7 @@ pub async fn force_new_cluster(
     if raft_dir.exists() {
         std::fs::remove_dir_all(&raft_dir).map_err(other)?;
     }
-    let node = super::raft::ClusterNode::start(
+    let node = super::raft::start_node(
         db.clone(),
         &raft_dir,
         identity.raft_id,
