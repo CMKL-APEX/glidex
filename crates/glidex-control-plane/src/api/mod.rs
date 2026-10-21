@@ -1688,8 +1688,10 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Client IP: the TCP peer, or (only from glidex-ui) X-Forwarded-For.
-fn client_ip(
-    parts_ext: &axum::http::Extensions,
+/// Anything a client can send is never trusted on its own: a rate limit
+/// or an audit entry keyed on it would be the client's to choose.
+pub(crate) fn client_ip(
+    peer: Option<std::net::SocketAddr>,
     headers: &HeaderMap,
     listener: Listener,
 ) -> Option<IpAddr> {
@@ -1699,7 +1701,7 @@ fn client_ip(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
-        Listener::Tcp => parts_ext.get::<ClientAddr>().map(|a| a.0.ip()),
+        Listener::Tcp => peer.map(|a| a.ip()),
         Listener::Api | Listener::Cluster => None,
     }
 }
@@ -1773,7 +1775,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                         "only glidex-ui may use this socket",
                     );
                 }
-                let ip = client_ip(req.extensions(), &headers, listener);
+                let peer = req.extensions().get::<ClientAddr>().map(|a| a.0);
+                let ip = client_ip(peer, &headers, listener);
                 if let Some(token) = bearer(&headers) {
                     // A directory's access token (D56), else a glidex token.
                     let jwt =

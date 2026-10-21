@@ -56,7 +56,10 @@ login state is.
    value from the answer. Any failure is `401 passkey_refused`, the same
    for every reason; the reason goes to the audit log.
 
-Rate limit: 10 sign-in attempts a minute per client address.
+Rate limit: 10 sign-in attempts a minute per client address: the TCP
+peer, or the browser's address glidex-ui (or a relaying server) passes
+in `X-Forwarded-For`. A header a client sends to `:8841` itself is
+ignored, so it can't pick its own bucket.
 
 ## 3. API
 
