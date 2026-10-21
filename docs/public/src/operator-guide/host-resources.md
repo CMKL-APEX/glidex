@@ -4,11 +4,13 @@ Besides vCPUs and memory, Glidex knows how each host is built: its NUMA
 nodes and cores, its hugepages, and its PCIe tree with the devices a VM
 could be given. It uses that to:
 
-- keep a VM's memory, vCPUs and devices on one NUMA node, and give it
-  dedicated host CPUs;
+- keep a VM's memory, vCPUs and devices on one NUMA node, or split a
+  GPU VM over exactly its GPUs' NUMA nodes, and give it dedicated host
+  CPUs;
 - count hugepages per node and page size, so VMs that need them get
   them;
-- hand out devices from **pools** by count, near each other;
+- hand out devices from **pools** by count, near each other, and size
+  a VM that asks for GPUs from what each GPU brings;
 - prepare devices for passthrough, watch their health, and cordon the
   ones you don't trust.
 
@@ -58,13 +60,25 @@ A device is **ready** for passthrough when:
 - it is bound to `vfio-pci`;
 - the other functions of its IOMMU group are on `vfio-pci` or unbound
   (bridges stay with the host);
-- the `glidex` user can open `/dev/vfio/<group>`;
-- it isn't an OVS-DPDK uplink.
+- the `glidex` user can open `/dev/vfio/<group>`, judged by the file's
+  owner, group and mode, as a VM's unit would open it;
+- it isn't an OVS-DPDK uplink;
+- no process other than Glidex's own VMs has its IOMMU group open, such
+  as a VM of libvirt or OpenNebula on the same host.
 
-A device that isn't says why, for example `not bound to vfio-pci
-(driver: nvidia)` or `IOMMU group 30 also holds 0000:07:00.1 on
-snd_hda_intel`. [Prepare](#prepare-devices) it to fix the first two.
-Pools hand out ready devices only.
+A device that isn't says why:
+
+| Reason | Fix |
+| --- | --- |
+| `not bound to vfio-pci (driver: nvidia)` | [Prepare](#prepare-devices) it. |
+| `IOMMU group 30 also holds 0000:07:00.1 on snd_hda_intel` | Prepare it: the whole group goes to `vfio-pci`. |
+| `/dev/vfio/30 can't be opened by this user` | Prepare it (its udev rule gives the group device to `glidex`), or see [PCI passthrough](pci-passthrough.md#let-the-glidex-user-open-it). |
+| `in use by qemu-kvm-one (pid 37226)` | Another hypervisor's VM holds it. Being on `vfio-pci` doesn't make it free. See [Devices another hypervisor holds](pci-passthrough.md#devices-another-hypervisor-holds). |
+| `it is an OVS-DPDK uplink` | Not for passthrough. |
+
+Pools hand out ready devices only. Who holds a group is asked of
+`glidex-netd`, which can see every process; without it, that check is
+skipped.
 
 ### Warnings
 
@@ -89,6 +103,11 @@ vCPUs and its devices are on one of them. A VM asks for that with
   on the host. Then the VM's `NumaAligned` condition is `False`.
 - `NUMA_POLICY_STRICT`: on one NUMA node, or not on that host. It
   refuses devices on two NUMA nodes and devices with no NUMA node.
+- `NUMA_POLICY_ALIGNED`: on exactly the NUMA nodes of its devices, its
+  vCPUs and memory split between them by device count, and the same
+  layout shown to the guest. A [GPU request](#gpu-requests) sets it.
+  Every device needs a NUMA node, and each node's share must fit there
+  (`NUMA node 7: not enough memory (… of … MiB taken)`).
 
 Glidex picks the NUMA node with most of the VM's devices, then the
 least allocated, then the lowest number. Each NUMA node's room is its
@@ -96,9 +115,12 @@ memory times `cluster.scheduler.memory_overcommit`, and its hugepages
 of each size. VMs bound to a NUMA node count there; VMs without a
 policy count on every NUMA node in proportion to its size.
 
-The guest's memory is bound to the NUMA node. Shared vCPUs still float
-over the whole host, so no node's CPUs sit idle. The VM shows where it
-went: `numa_node`, and for dedicated vCPUs `cpus`.
+The guest's memory is bound to the NUMA node (to each node's share,
+when aligned). Shared vCPUs still float over the whole host, so no
+node's CPUs sit idle. The VM shows where it went: `numa_node`, or
+`numa` (one share per node) when aligned over several, and for
+dedicated vCPUs `cpus`. Before an aligned VM starts, each node is
+checked for its share of free hugepages.
 
 In a cluster, a strict VM that fits no node waits as **Unschedulable**
 with each node's reason (`NUMA node 1: not enough memory (… of … MiB
@@ -202,7 +224,9 @@ pool, and Glidex picks them. Pools are defined in
     "pools": [
       { "name": "a100", "class": "gpu",
         "match": { "vendor_id": "0x10de", "device_id": "0x20b0" },
-        "prepare": true },
+        "prepare": true,
+        "per_device": { "vcpus": 14, "memory_mib": 57344,
+                        "hugepages": true, "cpu_policy": "dedicated" } },
       { "name": "cx7", "class": "nic",
         "match": { "vendor_id": "0x15b3", "device_id": "0x1021" },
         "nodes": ["gpu-01", "gpu-02"] }
@@ -218,10 +242,11 @@ pool, and Glidex picks them. Pools are defined in
 | Key | Meaning |
 | --- | --- |
 | `name` | The pool's name. Unique. |
-| `class` | A label for people and usage reports: `gpu`, `nic`, `nvme`, `dpu`, `accelerator`. |
+| `class` | A label for people and usage reports: `gpu`, `nic`, `nvme`, `dpu`, `accelerator`. `gpu` also marks the pools a [GPU request](#gpu-requests) can use without naming one, and that the web UI's create form sizes VMs from. |
 | `match` | `vendor_id`, `device_id`, `class_code` (or its start, `0x0302`) and `addresses`. Every key given must match. A pool must have a match. With `vf_of` (itself a match of physical functions), the pool takes those functions' SR-IOV virtual functions; see [SR-IOV virtual functions](pci-passthrough.md#sr-iov-virtual-functions). |
 | `nodes` | Node names or ids the pool is on. Default: every node. |
 | `prepare` | Each node binds its devices of the pool to `vfio-pci` when glidex starts (see [Prepare devices](#prepare-devices)). |
+| `per_device` | What a VM asking for `gpus` from the pool gets per device, unless it sizes itself: `vcpus` and `memory_mib` (both required), and optionally `hugepages` (`true`/`false`) and `cpu_policy` (`shared` or `dedicated`). See [GPU requests](#gpu-requests). |
 
 The control plane refuses to start with two pools of the same name, a
 pool without a match, two pools with the same match on the same nodes,
@@ -252,6 +277,36 @@ VM keeps them while it exists. When a pool is short, the reason says
 why: `pool a100: 1 of 2 free`, `pool a100: no 2 free devices under one
 PCIe switch`, `pool a100 is not on this node`. In a cluster the VM
 waits for a node; on a single host the request is refused with `409`.
+
+### GPU requests
+
+A user can ask for GPUs by count instead of sizing the VM:
+`"gpus": {"count": 4, "pool": "a100"}` (in `gxctl create`, `4:a100`;
+in the web UI, a GPU pool's count). Glidex turns it into:
+
+- a pool request for 4 devices of `a100`;
+- `NUMA_POLICY_ALIGNED`, so the VM spans exactly its GPUs' NUMA nodes
+  (see [NUMA nodes](#numa-nodes));
+- 4 × the pool's `per_device` vCPUs and memory, its `hugepages` and its
+  `cpu_policy`.
+
+What the VM's request gives itself wins. Without `pool`, the project's
+only usable pool of class `gpu` is taken (cluster or tenant pool). A
+tenant pool sizes like its cluster pool. Quotas, grants and metering
+are those of the pool. Users see the sizing in the create form and as
+`per_device_vcpus` and `per_device_memory_mib` in the project's pool
+listing. The refusals are in the user guide's
+[GPUs](../user-guide/vms.md#gpus).
+
+Size `per_device` so the GPUs of one NUMA node fit that node: its
+cores less the reserved ones, and its memory less the host's share,
+divided by its GPUs. For a node with 16 cores (32 threads), one core
+reserved and 2 GPUs: 15 cores leave 7 each, so 14 vCPUs with whole
+cores, and about 56 GiB each out of 126 GiB. A VM that asks for more
+than a node can give is refused there, naming the node.
+
+`"nvlink": true` is refused for now: NVLink between passed-through
+GPUs on NVSwitch boards needs a fabric Glidex doesn't run yet.
 
 ### See what pools hold
 
@@ -345,13 +400,21 @@ The host's driver lets go of the devices: a GPU on `nvidia` stops being
 the host's. Release works with any function of the group, and refuses a
 device Glidex didn't prepare.
 
+Release refuses a group that a process has open, a VM's included
+(`IOMMU group 30 is in use by qemu-kvm-one (pid 37226)`), and so does
+a change to a PF's VF count while its group or a VF's is open.
+
 Preparing and releasing need `net-admin` or `system-admin` on that
 host. A prepared device goes back to its usual driver at reboot. For
-devices that should always be ready, give their pool `prepare: true`:
-each node then prepares its devices of the pool that aren't ready when
-glidex starts, skipping devices without an IOMMU group and OVS-DPDK
-uplinks. A device that can't be prepared stays not ready, and the
-control plane's log says why.
+devices that should always be ready:
+
+- give their pool `prepare: true`: each node then prepares its devices
+  of the pool that aren't ready when glidex starts, skipping devices
+  without an IOMMU group and OVS-DPDK uplinks. A device that can't be
+  prepared stays not ready, and the control plane's log says why;
+- or bind them at boot, before glidex and any other hypervisor starts,
+  with the installer's `--vfio-devices` (and keep VF counts with
+  `--sriov`); see [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots).
 
 ## Device health and cordoning
 
@@ -398,5 +461,11 @@ across restarts.
 | `no device pool …` (`400`) | No such pool, or a tenant pool of another tenant. |
 | `forbidden` asking for a pool | The project has no grant for it in `pci.allow`, or isn't one of the tenant pool's projects. |
 | `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
+| A device on `vfio-pci` is not ready: `in use by … (pid …)` | Another hypervisor's VM on the host has it. Pools skip it. See [Devices another hypervisor holds](pci-passthrough.md#devices-another-hypervisor-holds). |
+| A device is not ready: `/dev/vfio/<n> can't be opened by this user` | The group device's owner, group and mode don't let `glidex` open it. Prepare the device, or add the udev rule. |
+| `PCI device … has no NUMA node` for a GPU request | `NUMA_POLICY_ALIGNED` needs a NUMA node on each device, even on a one-node host. The user can set `NUMA_POLICY_PREFERRED` with `gpus`. |
+| `NUMA node …: not enough …` for a GPU request | One node's share of the VM doesn't fit there. Lower `per_device`, or free that node. |
+| `gpus: give vcpu_count and mem_size_mib, or set per_device on pool …` | The pool has no `per_device`. |
 | A VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, and the host's `dmesg`. |
 | Preparing is refused | The group holds a NIC the host uses or an OVS-DPDK uplink, or the IOMMU is off. |
+| Release or a VF count is refused: `IOMMU group … is in use by …` | A VM (Glidex's or another hypervisor's) has the group open. Stop that VM first. |

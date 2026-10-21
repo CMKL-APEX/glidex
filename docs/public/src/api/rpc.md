@@ -41,6 +41,10 @@ Optional metadata:
 
 - `x-glidex-consistency: local`: in a cluster, read from the server you
   reached without waiting for it to catch up with the leader.
+- `x-glidex-target-node: <node id>`: on a cluster server, run a
+  `glidex.host.v1` method (or `ClusterService.LeaveCluster`) on that
+  node instead, authorized on its host. On other methods it is
+  `bad_target_node` ([Host networking and PCI](rest.md#host-networking-and-pci)).
 
 Responses carry `x-request-id`.
 
@@ -68,12 +72,12 @@ is the encoded `ErrorInfo`):
 | Status | Reasons |
 |---|---|
 | `UNAUTHENTICATED` | `unauthenticated`, `login_failed`, `reauth_required`, `cookie_not_accepted` |
-| `PERMISSION_DENIED` | `forbidden`, `login_not_allowed`, `tls_required`, `ticket_required`, `tenant_suspended`, `origin_not_allowed`, `csrf_failed`, `protocol_not_allowed`, `not_admitted`, … |
+| `PERMISSION_DENIED` | `forbidden`, `login_not_allowed`, `tls_required`, `ticket_required`, `tenant_suspended`, `origin_not_allowed`, `csrf_failed`, `protocol_not_allowed`, `agent_no_local_api`, `not_admitted`, … |
 | `RESOURCE_EXHAUSTED` | `quota_exceeded`, `tenant_quota_exceeded`, `insufficient_storage`, `too_large`, `rate_limited`, `slow_down` |
 | `NOT_FOUND` | `not_found`, `oidc_disabled` |
 | `ABORTED` | `conflict` (a name taken, a concurrent change): read again and retry |
 | `FAILED_PRECONDITION` | Other `409` codes (`ambiguous`, `would_lock_out`, `confirmation_required`, `managed_by_connector`, `not_provisioned`, `not_pulled`, `no_source`, `sync_running`, …), `unsupported_on_host` |
-| `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*`, `issuer_unreachable` |
+| `INVALID_ARGUMENT` | `400` and `422` codes: `bad_request`, `invalid`, `invalid_*`, `bad_target_node`, `issuer_unreachable` |
 | `UNAVAILABLE` | `not_leader`, `use_a_server`, `leader_changed`, `cluster_unavailable`, and `502`/`503` codes (`netd_unavailable`, `node_unreachable`, `too_many_watchers`, `console_unavailable`, …) |
 | `INTERNAL` | `internal`, `persistence_error` and other `500` codes. The message is generic and names the request id; the details are in the server log |
 | `UNIMPLEMENTED` | A method this server doesn't have (an older version during an upgrade) |
@@ -228,7 +232,8 @@ parameters become fields too (`?wait=60` is `wait_secs: 60`,
 ## Services
 
 Every method, by package, with the REST operation it shares. Methods are
-unary unless marked as a stream. REST paths and RPC requests take the
+unary unless marked as a stream. The passkey ceremonies
+(`/auth/passkeys/…`) are REST only ([Passkeys](rest.md#passkeys)). REST paths and RPC requests take the
 same ids and names.
 
 ### `glidex.system.v1`
@@ -288,18 +293,18 @@ same ids and names.
 |  | `PullImage` | `POST /images` |
 |  | `DeleteImage` | `DELETE /images/{id}` |
 |  | `RetryImage` | `POST /images/{id}/retry` |
+|  | `ExtractVmKernel` | `POST /vms/{id}/extract-kernel` |
 |  | `AddImageCopy` | `POST /images/{id}/copies` |
 |  | `RemoveImageCopy` | `DELETE /images/{id}/copies/{node}` |
 |  | `ListImageEvents` | `GET /images/{id}/events` |
-|  | `ExtractVmKernel` | `POST /vms/{id}/extract-kernel` |
 | `DiskService` | `ListDisks` | `GET /disks` |
 |  | `GetDisk` | `GET /disks/{id}` |
 |  | `CreateDisk` | `POST /disks` |
+|  | `MoveDisk` | `POST /disks/{id}/move` |
 |  | `ResizeDisk` | `POST /disks/{id}/resize` |
 |  | `ExtendRoot` | `POST /disks/{id}/extend-root` |
 |  | `DeleteDisk` | `DELETE /disks/{id}` |
 |  | `ListDiskEvents` | `GET /disks/{id}/events` |
-|  | `MoveDisk` | `POST /disks/{id}/move` |
 | `DatastoreService` | `ListDatastores` | `GET /datastores` |
 |  | `GetDatastore` | `GET /datastores/{id}` |
 |  | `CreateDatastore` | `POST /datastores` |
@@ -383,6 +388,9 @@ same ids and names.
 |  | `UpdateUser` | `PATCH /users/{id}` |
 |  | `DeleteUser` | `DELETE /users/{id}` |
 |  | `LinkIdentity` | `POST /users/{id}/identities` |
+|  | `ListPasskeys` | `GET /users/{id}/passkeys` |
+|  | `RenamePasskey` | `PATCH /users/{id}/passkeys/{passkey}` |
+|  | `DeletePasskey` | `DELETE /users/{id}/passkeys/{passkey}` |
 |  | `UnlinkIdentity` | `DELETE /users/{id}/identities/{key}` |
 |  | `UpdateMe` | `PATCH /users/me` |
 |  | `GetMySshKeys` | `GET /users/me/ssh-keys` |
@@ -443,11 +451,11 @@ same ids and names.
 |  | `UpdateConnector` | `PATCH /connectors/{id}` |
 |  | `DeleteConnector` | `DELETE /connectors/{id}` |
 |  | `SetSecret` | `PUT /connectors/{id}/secrets/{field}` |
-|  | `TestConnector` | `POST /connectors/{id}/test` |
 |  | `SyncConnector` | `POST /connectors/{id}/sync` |
 |  | `ListScimTokens` | `GET /connectors/{id}/scim-tokens` |
 |  | `CreateScimToken` | `POST /connectors/{id}/scim-tokens` |
 |  | `RevokeScimToken` | `DELETE /connectors/{id}/scim-tokens/{token}` |
+|  | `TestConnector` | `POST /connectors/{id}/test` |
 | `FederationService` | `ListFederations` | `GET /tenants/{id}/federations` |
 |  | `GetFederation` | `GET /tenants/{id}/federations/{federation}` |
 |  | `CreateFederation` | `POST /tenants/{id}/federations` |
@@ -479,6 +487,13 @@ same ids and names.
 |  | `GetOvnTunnels` | `GET /cluster/ovn/tunnels` |
 | `NodeService` | `ListNodes` | `GET /nodes` |
 |  | `GetNode` | `GET /nodes/{id}` |
+|  | `GetNodeTopology` | `GET /nodes/{id}/topology` |
+|  | `PrepareDevice` | `POST /nodes/{id}/devices/{address}/prepare` |
+|  | `SetSriovVfs` | `POST /nodes/{id}/devices/{address}/sriov` |
+|  | `ReleaseDevice` | `POST /nodes/{id}/devices/{address}/release` |
+|  | `ListPciPools` | `GET /pci-pools` |
+|  | `CordonDevice` | `POST /nodes/{id}/devices/{address}/cordon` |
+|  | `UncordonDevice` | `POST /nodes/{id}/devices/{address}/uncordon` |
 |  | `DrainNode` | `POST /nodes/{id}/drain` |
 |  | `UndrainNode` | `POST /nodes/{id}/undrain` |
 |  | `ConfigureNodeOvn` | `PUT /nodes/{id}/ovn` |
@@ -491,13 +506,6 @@ same ids and names.
 |  | `AbortDetach` | `POST /nodes/{id}/detach` with `abort` |
 |  | `ForgetDeparted` | `POST /nodes/{id}/detach` with `departed` |
 |  | `ListDepartures` | `GET /departures` |
-|  | `GetNodeTopology` | `GET /nodes/{id}/topology` |
-|  | `PrepareDevice` | `POST /nodes/{id}/devices/{address}/prepare` |
-|  | `ReleaseDevice` | `POST /nodes/{id}/devices/{address}/release` |
-|  | `CordonDevice` | `POST /nodes/{id}/devices/{address}/cordon` |
-|  | `UncordonDevice` | `POST /nodes/{id}/devices/{address}/uncordon` |
-|  | `SetSriovVfs` | `POST /nodes/{id}/devices/{address}/sriov` |
-|  | `ListPciPools` | `GET /pci-pools` |
 | `ImportService` | `ListImports` | `GET /imports` |
 |  | `GetImport` | `GET /imports/{plan}` |
 |  | `ApproveImport` | `POST /imports/{plan}/approve` |

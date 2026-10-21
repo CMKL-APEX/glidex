@@ -44,7 +44,7 @@ The full documentation is at
 **People and access**
 
 - Projects with members, teams, roles and quotas, Cedar policies and an audit log ([Projects](docs/public/src/user-guide/projects.md), [Access control](docs/public/src/operator-guide/access-control.md)).
-- Sign-in with local accounts, OIDC single sign-on, Google or JumpCloud ([Authentication](docs/public/src/operator-guide/authentication.md#login-connectors)).
+- Sign-in with local accounts, passkeys, OIDC single sign-on, Google or JumpCloud ([Authentication](docs/public/src/operator-guide/authentication.md#login-connectors), [Passkeys](docs/public/src/operator-guide/authentication.md#passkeys)).
 - Users from your identity provider: SCIM provisioning, Google Workspace directory sync, and invitations ([SCIM](docs/public/src/operator-guide/authentication.md#provisioning-with-scim), [Invitations](docs/public/src/operator-guide/authentication.md#invitations)).
 - HTTPS everywhere: a self-signed certificate by default, or your own, or a Tailscale one ([TLS](docs/public/src/operator-guide/tls.md)).
 - Metered CPU, memory, disk and network use ([Usage](docs/public/src/user-guide/usage.md)).

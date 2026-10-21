@@ -23,6 +23,10 @@ changes what is missing or outdated.
   logins and, if you use them, directory sync and kernel extraction:
   see [Outbound connections](configuration.md#outbound-connections).
 
+For [LVM-thin datastores](datastores.md#lvm-thin) only: LVM with
+thin-pool support (`lvm2` and the thin-provisioning tools), and a volume
+group with a thin pool that you make. The installer installs neither.
+
 If `/dev/kvm` is missing, the installer says how to enable it (CPU
 virtualization in the firmware setup, then `modprobe kvm_intel` or
 `kvm_amd`) and carries on; no VM can start until it is there.
@@ -104,10 +108,11 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
 | `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
 | `--datastore-default` | Make the first of these datastores the default for new disks. Not saved. |
-| `--vfio-devices LIST` | Bind these to `vfio-pci` at every boot, before any VM starts: pools of `control-plane.json` or PCI addresses, comma-separated. A device already on `vfio-pci` is left alone. See [PCI passthrough](pci-passthrough.md). |
-| `--sriov PF=N` | Give physical function `PF` `N` SR-IOV VFs at every boot, before the binding. Repeatable. |
-| `--no-vfio-devices` | Stop both at boot (what is bound now stays so until the next boot). |
-| `--now` | Apply `--vfio-devices` and `--sriov` now as well, not only at the next boot. Not saved. |
+| `--stord-allow-vg VG` | Let `glidex-stord` make LVM-thin volumes in volume group `VG`: adds it to `allowed_vgs` in `/etc/glidex/stord.json` (never removes one) and restarts `glidex-stord`. Repeatable. Not saved; the file keeps the list. You make the volume group and its thin pool. See [LVM-thin](datastores.md#lvm-thin). |
+| `--vfio-devices LIST` | Bind these to `vfio-pci` at every boot, before glidex and other hypervisors start: pools of `control-plane.json` or PCI addresses, comma-separated, each with its IOMMU group. A device already on `vfio-pci` is left alone. Recorded and enabled only (`glidex-vfio-boot.service`, `/etc/glidex/vfio-devices.json`, `/etc/modules-load.d/glidex-vfio.conf`); applied at the next boot. Not with `--no-networking`. See [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots). |
+| `--sriov PF=N` | Give physical function `PF` `N` SR-IOV VFs at every boot, before the binding. Repeatable or comma-separated; the last count for a PF wins. |
+| `--no-vfio-devices` | Stop both at boot, and remove the unit and its files (what is bound now stays so until the next boot). |
+| `--now` | Apply `--vfio-devices` and `--sriov` now as well, not only at the next boot. Never touches a device on `vfio-pci`, nor the VF count of a PF with a VF on `vfio-pci`. Not saved. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |
 
@@ -133,12 +138,14 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 | `/usr/local/bin/glidex-vm-shim` | Supervises one VM's hypervisor. |
 | `/usr/local/bin/glidex-netd` | The host networking helper (unless `--no-networking`). |
 | `/usr/local/bin/glidex-authd` | The PAM helper for local passwords (unless `--no-services`). |
+| `/usr/local/bin/glidex-stord` | The storage helper for LVM-thin datastores (unless `--no-services`). |
 | `/usr/local/bin/cloud-hypervisor` | The pinned Cloud Hypervisor. |
 | `/usr/local/share/glidex/ui/` | The built web UI. |
 | `/etc/systemd/system/glidex-*.service`, `glidex-authd.socket`, `glidex-vm@.service`, `glidex-vms.slice` | The systemd units (see [Operator guide](README.md#components)). |
 | `/etc/polkit-1/rules.d/50-glidex-vm.rules` | Lets the `glidex` user start and stop its own `glidex-vm@` units. |
 | `/etc/glidex/control-plane.json.example` | Every control plane setting with its default. The installer never writes `control-plane.json` itself. |
 | `/etc/glidex/authd.json` | `glidex-authd` settings, written once and then left alone. |
+| `/etc/glidex/stord.json` | The volume groups `glidex-stord` may use (`allowed_vgs`). Written only with `--stord-allow-vg`; without it stord allows none. Yours to edit; kept on uninstall like your other files there. |
 | `/etc/glidex/vm-shim.json` | The hypervisor binaries VMs may run. |
 | `/etc/glidex/policies/` | Site policy files (`root:glidex`, mode 0750), empty. |
 | `/etc/glidex/install.conf` | The installer's saved choices. |
@@ -155,7 +162,7 @@ own `~/.glidex/`, for a control plane you run by hand.
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `glidex` | system user and group | Runs the control plane and the VM units. Only this user is in the `glidex` group, which opens `glidex-netd`'s and `glidex-authd`'s sockets. |
+| `glidex` | system user and group | Runs the control plane and the VM units. Only this user is in the `glidex` group, which opens `glidex-netd`'s, `glidex-authd`'s and `glidex-stord`'s sockets. |
 | `glidex-ui` | system user and group | Runs the web UI. It may only use the control plane's UI socket. |
 | `glidex-users` | group | People who may use `gxctl` on the local socket, `/run/glidex-cp/api.sock`, and log in to the web UI with their local password. |
 | `glidex-admin` | group | Break-glass administrators: full rights on the local socket, whatever the policies say. |
@@ -229,7 +236,8 @@ By default it keeps your data and site configuration, and says so:
 - Open vSwitch, its DPDK settings and the hugepages they need, and the
   `cloud-hypervisor` binary.
 
-It never touches `/srv/glidex` and the datastores under it, not even
+It never touches `/srv/glidex` and the datastores under it, nor the
+volume groups of LVM-thin datastores and the volumes in them, not even
 with `--purge-user-data`: unmount and remove them yourself.
 
 | Option | Effect |

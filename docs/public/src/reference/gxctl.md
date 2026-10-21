@@ -52,17 +52,21 @@ Other environment variables:
 - A self-signed server certificate is either trusted through
   `GLIDEX_CA_CERT`, or pinned by fingerprint at `auth login` (compare it
   with the one the server printed at start).
+- **On a cluster agent**, which has no API of its own, other commands
+  fail with *this host is a cluster agent: it has no local API*; `auth
+  login`, `auth use`, `auth profiles` and `auth trust` still run. Log in
+  to a server: `gxctl auth login --url https://<server>:8841`.
 
 See [Logging in](../user-guide/logging-in.md).
 
 | Command | Effect |
 |---|---|
-| `auth login [--url U]… [--profile P] [--oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes, `172-19-36-18`), `--non-interactive` |
+| `auth login [--url U]… [--profile P] [--oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--server U` is the same as `--url U`. `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes: `192.0.2.10` gives `192-0-2-10`, `[fd00::1]` gives `fd00-1`), `--non-interactive` |
 | `auth logout [--profile P] [--revoke] [--keep-token]` | Drop a profile's credential; `--revoke` also revokes the token on the server |
 | `auth status [--profile P]` | Target, cluster, trust mode, token and expiry |
 | `auth use <profile\|->` | Set the current profile (`-` clears it) |
 | `auth profiles [--all]` | List profiles |
-| `auth profiles remove <name> [--forget-token]` | Delete a profile from the config file. One that still holds a token is refused: revoke it first with `auth logout --profile <name> --revoke`, or `--forget-token` drops it unrevoked |
+| `auth profiles remove <name> [--forget-token]` | Delete a profile from the config file. One that still holds a token is refused: revoke it first with `auth logout --profile <name> --revoke`, or `--forget-token` drops it unrevoked. Removing the current profile leaves none current: while other profiles remain, commands fail with *no current profile; choose one with --profile*; pick one with `gxctl --profile <other> auth use <other>` |
 | `auth trust list \| fetch \| remove <pin> \| remove --all [--yes]` | A profile's pinned certificate fingerprints; `fetch` shows what the server claims, sending nothing else |
 | `auth token …`, `auth whoami` | Same as `token …`, `whoami` |
 | `login --oidc [--connector ID] \| --token` | Older form: log in over HTTPS and save the token file. Not needed on the socket |
@@ -78,8 +82,8 @@ See [Logging in](../user-guide/logging-in.md).
 | Command | Effect |
 |---|---|
 | `list`, `ls` | List VMs; `STATE` shows `state → desired` while they differ |
-| `get <vm>` | VM details, and why it isn't ready yet if it isn't; a `Pool:` line per device pool request with the devices it got |
-| `create` | Create a VM, asking for name, size, hypervisor, firmware, image or disk, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments |
+| `get <vm>` | VM details, and why it isn't ready yet if it isn't; a `Pool:` line per device pool request with the devices it got; for a GPU request, `GPUs: <count> from <pool>` (with ` (NVLink)` when asked), and for a VM aligned over several NUMA nodes a `NUMA <i>:` line per guest NUMA node: its host node, vCPUs, memory and devices |
+| `create` | Create a VM, asking for name, GPUs (`count[:pool][:nvlink]`, such as `4:a100`; optional: with GPUs, an empty vCPU or memory answer takes the pool's per-device sizing), size, hypervisor, firmware, image or disk, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments (default `console=ttyS0`, `ttyAMA0` on aarch64, `root=/dev/vda reboot=k panic=1`) |
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
@@ -128,16 +132,16 @@ Private key files are refused before anything is sent. See
 | `image rm <image>` | Delete an image; refused (`409`) while a disk uses it, or a VM boots or keeps a kernel image |
 | `disk list`, `disks` | List disks |
 | `disk show <disk>` | Details, datastore and partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format; `--no-extend`: don't grow the root partition; `--datastore`: where it lives (default: the default datastore) |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | Create a blank disk or one from an image. `--full`: a full copy instead of a linked clone; `--raw`: raw format (on an LVM-thin datastore disks are always raw, linked ones too); `--no-extend`: don't grow the root partition; `--datastore`: where it lives (default: the default datastore) |
 | `disk resize <disk> <GiB> [--no-extend]` | Grow or shrink |
 | `disk extend-root <disk> [--on-boot]` | Grow the root partition now (offline) or at next boot |
 | `disk move <disk> --datastore D [--node N] [--flatten]` | Copy a disk no running VM uses to another datastore, waiting up to 5 minutes. `--node`: for a node-local destination, the node that has the disk; `--flatten`: a linked disk becomes a full copy |
 | `disk rm <disk>` | Delete after confirmation |
-| `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` |
-| `datastore show <datastore>`, `get` | Id, paths, nodes, overcommit, disks, and each node's view: free space, why it can't reach it, or mount warnings |
+| `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` (empty for LVM-thin) |
+| `datastore show <datastore>`, `get` | Id, paths (for LVM-thin, the volume group and thin pool, and each node's own volume group), nodes, overcommit, disks, and each node's view: free space, why it can't reach it, mount or thin pool warnings and, for LVM-thin, the image volumes it keeps (`image volumes:`, by image id) |
 | `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
 | `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit (`system-admin`) |
-| `datastore rm <datastore>`, `delete` | Delete one no disk is on, without confirmation; its files stay (`system-admin`) |
+| `datastore rm <datastore>`, `delete` | Delete one no disk is on and, for LVM-thin, where no node keeps image volumes; without confirmation; its files stay (`system-admin`) |
 
 A datastore is named by its name or id. See
 [Images and disks](../user-guide/images-and-disks.md),

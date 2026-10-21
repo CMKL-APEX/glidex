@@ -255,7 +255,10 @@ From the **Users & roles** tab (needs `directory-admin`):
   sessions and tokens belong to the user, not to the sign-in method, so
   they keep working until they expire or are revoked; over the API,
   `DELETE /users/{id}/identities/{key}?end_sessions=true` ends the
-  sessions too.
+  sessions too. A user's [passkeys](authentication.md#passkeys) are
+  listed as *Passkey*; removing one deletes it. A user may be left with
+  passkeys alone only if two remain. Nobody can add a passkey for
+  someone else.
 - **Delete** a user, after typing their name to confirm. One change
   removes the user with their sign-in methods, sessions, personal
   tokens, team memberships, role bindings and tenant memberships; the
@@ -389,7 +392,7 @@ What a policy can look at:
   `createVm`, `deleteVm`, `startVm`, `stopVm`;
 - `resource`: the object, such as a `Glidex::Vm` (with `.project`) or a
   `Glidex::Project`;
-- `context.auth`: `method` (`peer`, `pam`, `oidc`, `token`),
+- `context.auth`: `method` (`peer`, `pam`, `oidc`, `passkey`, `token`),
   `transport` (`unix`, `tcp`), `age_secs` since login, `mfa`, and
   `source_ip` for TCP clients;
 - `context.project`, `context.tenant` where the action has one.

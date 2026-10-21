@@ -50,7 +50,8 @@ Pulling a catalog image also takes the kernel out of it: a second
 image, `<image>-kernel` (for example `ubuntu-26.04-kernel`), appears in
 state *extracting* and becomes ready a few seconds after the image.
 It is the kernel, initramfs and command line the image's own boot
-loader would boot, with `console=` replaced by `console=ttyS0`. So the
+loader would boot, with `console=` replaced by the serial console:
+`console=ttyS0`, or `console=ttyAMA0` for an aarch64 image. So the
 kernel always matches the modules on the image's disk.
 
 - A pull with a `name` names the kernel image `<name>-kernel`.
@@ -72,11 +73,22 @@ kernel always matches the modules on the image's disk.
 
 Glidex reads the image inside a small VM without network, never on the
 host. It builds that VM the first time it extracts, from pinned Debian
-packages (a one-time download of about 35 MB). Extraction works on
-x86_64 hosts that have Cloud Hypervisor or QEMU. An administrator can
-turn it off (for a host without internet access, say); `kernel_from`
-is then refused with `400 invalid_image`, and catalog pulls bring only
-the disk image.
+packages for the image's architecture (a one-time download of about
+35 MB on x86_64, 30 MB on aarch64).
+
+That VM runs under KVM, so an image's kernel is extracted only on a
+host of the image's architecture:
+
+| Image | Extracted on |
+|---|---|
+| x86_64 | an x86_64 host with Cloud Hypervisor or QEMU |
+| aarch64 | an aarch64 host with Cloud Hypervisor |
+
+An administrator can also turn extraction off (for a host without
+internet access, say). Where it can't run, `kernel_from` is refused
+with `400 invalid_image` and the reason, for example *kernels can't be
+extracted here: aarch64 kernels are extracted on a aarch64 host; this
+one is x86_64*, and catalog pulls bring only the disk image.
 
 If extraction fails, only the kernel image fails, with the reason; the
 disk image stays ready and firmware boot is unaffected. **Retry** in
@@ -135,6 +147,13 @@ host paths.
 
 - An x86_64 bzImage (64-bit), an ELF `vmlinux` for x86_64 or aarch64,
   or an arm64 `Image`. Anything else fails the image.
+- An aarch64 kernel as distributions ship it is unwrapped to the plain
+  `Image` Cloud Hypervisor boots: Ubuntu's `vmlinuz` (an EFI stub
+  holding the kernel), the kernel's own compressed EFI image (gzip or
+  zstd), or a gzip file. This applies to extracted, downloaded and
+  host-file kernels; a host file is unwrapped into the copy and never
+  changed. The kernel image's size and `sha256` are the unwrapped
+  file's.
 - At most 128 MiB for the kernel and 1 GiB for the initramfs, unless an
   administrator changed the limits.
 - A `cmdline` of at most 2047 bytes, without control characters.
@@ -236,7 +255,9 @@ be combined with `cloud_init_path`.
 `kernel_args` is the kernel command line:
 
 - **Default:** the kernel image's command line; with host paths, or a
-  kernel image without one, `console=ttyS0 root=/dev/vda reboot=k panic=1`.
+  kernel image without one, `console=ttyS0 root=/dev/vda reboot=k panic=1`
+  (`console=ttyAMA0 …` on aarch64). The architecture is the kernel
+  image's, else that of the node the VM is pinned to, else the host's.
 - **Limits:** at most 2047 bytes, no control characters
   (`400 invalid_config`).
 - **The root:** a cloud image's root is on a partition, so
@@ -257,12 +278,13 @@ device Glidex connects the [console](console.md) to:
 | Last `console=` | Guest device | Cloud Hypervisor | QEMU |
 |---|---|---|---|
 | `hvc…` (for example `hvc0`) | the virtio console | virtio console, no serial port | virtio console, no serial port |
-| anything else (`ttyS0`), or none | the serial port | serial port | serial port |
+| anything else (`ttyS0`, `ttyAMA0`), or none | the serial port | serial port | serial port |
 
 Both hypervisors behave the same. Firmware boot always uses the serial
-port. The default arguments and extracted kernels say `console=ttyS0`,
-so the console shows the kernel from its first line, and a panic is
-visible. The virtio console only starts once the kernel's virtio driver
+port. The default arguments and extracted kernels name the serial
+port, `console=ttyS0` (`console=ttyAMA0` on aarch64, where
+`ttyS0` would leave the console silent), so the console shows the
+kernel from its first line, and a panic is visible. The virtio console only starts once the kernel's virtio driver
 is up: put `console=hvc0` last only if you want it.
 
 A Cloud Hypervisor VM created by an earlier version of Glidex keeps the
@@ -390,8 +412,9 @@ changed.
 
 - Kernel boot has no UEFI firmware, so no Secure Boot and no UEFI
   variables.
-- Kernel extraction runs on x86_64 hosts only. Elsewhere, add kernel
-  images from a URL or host files.
+- Kernel extraction runs only on a host of the image's architecture
+  (x86_64 or aarch64), and on aarch64 only with Cloud Hypervisor.
+  Elsewhere, add kernel images from a URL or host files.
 - With a host-path kernel, the file must exist on the VM's node; Glidex
   doesn't copy it.
 
