@@ -271,3 +271,62 @@ pub async fn revoke_offer(c: Caller, Path(id): Path<String>) -> Result<StatusCod
     )?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// ---- trust (spec/tenancy.md D65) ---------------------------------------------
+
+pub async fn list_tenant_clusters(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<pb::ListTenantClustersResponse>, ApiErr> {
+    Ok(Json(svc::list_tenant_clusters(
+        &c,
+        pb::ListTenantClustersRequest {
+            id,
+            ..Default::default()
+        },
+    )?))
+}
+
+#[derive(Deserialize)]
+pub struct OptIn {
+    offer: String,
+}
+
+pub async fn opt_in_cluster(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(b): Json<OptIn>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let r = svc::opt_in_cluster(
+        &c,
+        pb::OptInClusterRequest {
+            id,
+            offer: b.offer,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(r)))
+}
+
+pub async fn opt_out_cluster(
+    c: Caller,
+    Path((id, cluster)): Path<(String, String)>,
+) -> Result<StatusCode, ApiErr> {
+    svc::opt_out_cluster(
+        &c,
+        pb::OptOutClusterRequest {
+            id,
+            cluster,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_trusted_directories(
+    c: Caller,
+) -> Result<Json<pb::ListTrustedDirectoriesResponse>, ApiErr> {
+    Ok(Json(svc::list_trusted_directories(&c, Default::default())?))
+}

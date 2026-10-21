@@ -734,6 +734,27 @@ impl TenantStore {
         Ok(a)
     }
 
+    /// Admit a tenant of a directory this cluster trusts (D65): it isn't
+    /// in this host's tenants, so its admission names the trusted directory.
+    pub fn admit_remote(
+        &self,
+        tenant_id: &str,
+        trusted_directory: &str,
+        cap: Quotas,
+        by: &str,
+    ) -> Result<Admission, TenantError> {
+        let a = Admission {
+            tenant_id: tenant_id.into(),
+            directory_id: trusted_directory.into(),
+            cap,
+            status: AdmissionStatus::Admitted,
+            by: by.into(),
+            at: now(),
+        };
+        self.put(ADMISSIONS, tenant_id, &a)?;
+        Ok(a)
+    }
+
     pub fn remove_admission(&self, tenant: &str) -> Result<(), TenantError> {
         if !self.remove(ADMISSIONS, tenant)? {
             return Err(TenantError::NotFound(format!("no admission for {tenant}")));

@@ -119,6 +119,30 @@ service TenantService {
       rest: "PUT /tenants/{id}/device-pools"
     };
   }
+  // The clusters of other organizations the tenant uses (spec/tenancy.md D65).
+  rpc ListTenantClusters(ListTenantClustersRequest) returns (ListTenantClustersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantClusters"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/clusters"
+    };
+  }
+  // Redeem a cluster's offer (`gxo_…`): this directory and that cluster
+  // trust each other for the tenant from then on.
+  rpc OptInCluster(OptInClusterRequest) returns (OptInClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantClusters"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/clusters"
+    };
+  }
+  rpc OptOutCluster(OptOutClusterRequest) returns (OptOutClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantClusters"
+      kind: KIND_WRITE
+      rest: "DELETE /tenants/{id}/clusters/{cluster}"
+    };
+  }
 }
 
 // Which tenants this cluster admits, with their caps (D9, D19). Its
@@ -166,6 +190,14 @@ service AdmissionService {
       action: "manageAdmissions"
       kind: KIND_WRITE
       rest: "DELETE /admissions/offers/{id}"
+    };
+  }
+  // The directories of other organizations this cluster trusts (D65).
+  rpc ListTrustedDirectories(ListTrustedDirectoriesRequest) returns (ListTrustedDirectoriesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listAdmissions"
+      kind: KIND_READ
+      rest: "GET /admissions/directories"
     };
   }
 }
@@ -529,3 +561,51 @@ message RevokeOfferRequest {
   string id = 1;
 }
 message RevokeOfferResponse {}
+
+message TenantCluster {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  string name = 2;
+  // Its API address.
+  string api = 3;
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+}
+
+message ListTenantClustersRequest {
+  string id = 1;
+}
+message ListTenantClustersResponse {
+  repeated TenantCluster clusters = 1;
+}
+
+message OptInClusterRequest {
+  string id = 1;
+  // The `gxo_…` offer token the cluster's operator sent.
+  string offer = 2;
+}
+message OptInClusterResponse {
+  TenantCluster cluster = 1;
+}
+
+message OptOutClusterRequest {
+  string id = 1;
+  string cluster = 2;
+}
+message OptOutClusterResponse {}
+
+message RemoteTenant {
+  string id = 1;
+  string slug = 2;
+  string display_name = 3 [json_name = "display_name"];
+}
+
+message TrustedDirectory {
+  string id = 1;
+  string issuer = 2;
+  repeated RemoteTenant tenants = 3;
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+}
+
+message ListTrustedDirectoriesRequest {}
+message ListTrustedDirectoriesResponse {
+  repeated TrustedDirectory directories = 1;
+}

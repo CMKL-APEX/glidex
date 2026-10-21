@@ -280,6 +280,10 @@ pub struct AuthService {
     /// grants in progress, and refresh tokens.
     pub op_pending: crate::directory::op::Pending,
     pub refresh_tokens: crate::directory::op::RefreshTokens,
+    /// Trust with other organizations' clusters and directories (D65), and
+    /// the peer assertions seen (D63).
+    pub trust: crate::trust::TrustStore,
+    pub peer_replays: crate::directory::peer::Replays,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -415,6 +419,8 @@ impl AuthService {
             ceremonies: Default::default(),
             op_pending: Default::default(),
             refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
+            trust: crate::trust::TrustStore::new(db.clone()),
+            peer_replays: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -460,6 +466,8 @@ impl AuthService {
             ceremonies: Default::default(),
             op_pending: Default::default(),
             refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
+            trust: crate::trust::TrustStore::new(db.clone()),
+            peer_replays: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),

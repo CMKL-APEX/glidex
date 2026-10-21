@@ -228,6 +228,10 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
 | `POST` / `GET` | `/admissions/offers` | `AdmissionService.OfferAdmission` / `ListOffers` | [tenancy.md](tenancy.md) D64: `{tenant, directory, cap?, days?}` → `201 {offer: {id, tenant, directory, cap, by, created_at, expires_at, redeemed_at?}, token}`; `manageAdmissions` (step-up) / `listAdmissions` |
 | `DELETE` | `/admissions/offers/{id}` | `RevokeOffer` | `manageAdmissions` (step-up) |
+| `GET` | `/admissions/directories` | `ListTrustedDirectories` | The cluster's `TrustedDirectory` records (D65): `{directories: [{id, issuer, tenants: [{id, slug, display_name}], created_at}]}`; `listAdmissions` |
+| `GET` / `POST` | `/tenants/{id}/clusters` | `TenantService.ListTenantClusters` / `OptInCluster` | The directory's `TrustedCluster` records for the tenant; opt in with `{offer}` → `201 {cluster: {cluster_id, name, api, created_at}}` (`400 offer_refused`, `502 cluster_unreachable`); `readTenantClusters` / `manageTenantClusters` (step-up) |
+| `DELETE` | `/tenants/{id}/clusters/{cluster}` | `OptOutCluster` | D66: forgotten here, the cluster told |
+| `POST` | `/trust/v1/redeem`, `/trust/v1/end`, `/d/{dir}/trust/v1/end` | — | Public, peer-signed (`Authorization: GlidexPeer <JWT>`, D63): a directory redeeming an offer or ending trust at a cluster, a cluster ending it at a directory; one `403 trust_refused` for every refusal |
 | `GET` / `POST` | `/directories` | `DirectoryService.ListDirectories` / `CreateDirectory` | The directories this host serves ([tenancy.md](tenancy.md) D59): `listDirectories` / `manageDirectories` (step-up, `cluster.directories` of `role.system-admin`); create `{id, name, owner, admin_email, days?}` → `201 {directory: {id, name, issuer, created_at}, invitation_link}` |
 | `DELETE` | `/directories/{id}` | `DeleteDirectory` | Only while it has no user, connector or project (`409 directory_not_empty`); never `local` |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |

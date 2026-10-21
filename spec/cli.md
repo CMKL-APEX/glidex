@@ -175,6 +175,8 @@ name (ids when `/projects` isn't readable).
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
 | `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([tenancy.md](tenancy.md) §6.1); `create` prints the link once |
 | `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([tenancy.md](tenancy.md) §9) |
+| `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([tenancy.md](tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
+| `tenant clusters <t>` / `opt-in <t> --offer TOKEN` / `opt-out <t> --cluster ID` | `TenantService` (D65, D66): at the tenant's directory |
 | `directory keys` / `directory keys rotate` | `SigningKeyService` ([tenancy.md](tenancy.md) D52, D53): the issuer URL and the token signing keys |
 | `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |

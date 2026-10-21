@@ -437,10 +437,14 @@ same ids and names.
 |  | `RemoveBinding` | `DELETE /tenants/{id}/bindings/{link}` |
 |  | `ListDevicePools` | `GET /tenants/{id}/device-pools` |
 |  | `SetDevicePools` | `PUT /tenants/{id}/device-pools` |
+|  | `ListTenantClusters` | `GET /tenants/{id}/clusters` |
+|  | `OptInCluster` | `POST /tenants/{id}/clusters` |
+|  | `OptOutCluster` | `DELETE /tenants/{id}/clusters/{cluster}` |
 | `AdmissionService` | `ListAdmissions` | `GET /admissions` |
 |  | `OfferAdmission` | `POST /admissions/offers` |
 |  | `ListOffers` | `GET /admissions/offers` |
 |  | `RevokeOffer` | `DELETE /admissions/offers/{id}` |
+|  | `ListTrustedDirectories` | `GET /admissions/directories` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
 | `DirectoryService` | `ListDirectories` | `GET /directories` |

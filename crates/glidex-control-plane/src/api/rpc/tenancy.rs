@@ -156,6 +156,30 @@ impl TenantService for Svc {
     ) -> ServiceResult<RemoveBindingResponse> {
         op!(self, ctx, req, tenancy::remove_binding)
     }
+
+    async fn list_tenant_clusters(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListTenantClustersRequest>,
+    ) -> ServiceResult<ListTenantClustersResponse> {
+        op!(self, ctx, req, tenancy::list_tenant_clusters)
+    }
+
+    async fn opt_in_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OptInClusterRequest>,
+    ) -> ServiceResult<OptInClusterResponse> {
+        op_async!(self, ctx, req, tenancy::opt_in_cluster)
+    }
+
+    async fn opt_out_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OptOutClusterRequest>,
+    ) -> ServiceResult<OptOutClusterResponse> {
+        op_async!(self, ctx, req, tenancy::opt_out_cluster)
+    }
 }
 
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
@@ -207,6 +231,14 @@ impl AdmissionService for Svc {
         req: ServiceRequest<'_, RevokeOfferRequest>,
     ) -> ServiceResult<RevokeOfferResponse> {
         op!(self, ctx, req, tenancy::revoke_offer)
+    }
+
+    async fn list_trusted_directories(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListTrustedDirectoriesRequest>,
+    ) -> ServiceResult<ListTrustedDirectoriesResponse> {
+        op!(self, ctx, req, tenancy::list_trusted_directories)
     }
 }
 
