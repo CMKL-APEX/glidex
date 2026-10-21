@@ -3603,8 +3603,8 @@ impl VmManager {
         let (name, nodes) = (req.name.clone(), req.nodes.clone());
         let (img, created) = self.images.pull_image(req).await?;
         if created && img.kind == images::ImageKind::Disk && with_kernel {
-            if !self.images.can_extract(img.arch) {
-                tracing::info!(image = %img.name, "no kernel extracted: no extractor on this host");
+            if let Some(why) = self.images.extraction_refused(img.arch) {
+                tracing::info!(image = %img.name, "no kernel extracted: {why}");
             } else {
                 let kernel_name = name.map(|n| {
                     let mut k = format!("{n}-kernel");

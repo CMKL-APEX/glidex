@@ -46,6 +46,10 @@ bytes = "1"
 # Unpacking the pinned Debian OVMF package (images/firmware.rs)
 tar = { version = "0.4", default-features = false }
 lzma-rs = "0.3"
+# arm64 kernels wrapped in EFI zboot or gzip (spec/kernel-boot.md K8):
+# already in the tree through connectrpc.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+zstd = "0.13"
 tempfile = "3"
 cedar-policy = "4.13"
 arc-swap = "1"

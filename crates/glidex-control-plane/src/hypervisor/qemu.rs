@@ -567,6 +567,7 @@ impl HypervisorDriver for QemuDriver {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
+    cmdline: &str,
     (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
@@ -598,7 +599,7 @@ pub(crate) fn extractor_args(
         "-initrd",
         initrd,
         "-append",
-        crate::images::extractor::CMDLINE,
+        cmdline,
     ]
     .map(String::from)
     .into_iter()
@@ -675,12 +676,13 @@ mod tests {
         let a = extractor_args(
             "/usr/bin/qemu-system-x86_64",
             ("/x/kernel", "/x/initrd"),
+            "console=ttyS0 panic=-1 quiet",
             ("/i/a.qcow2", ImageType::Qcow2, false),
             "/i/.k.extract.raw",
         );
         assert_eq!(values(&a, "-kernel"), ["/x/kernel"]);
         assert_eq!(values(&a, "-initrd"), ["/x/initrd"]);
-        assert_eq!(values(&a, "-append"), [crate::images::extractor::CMDLINE]);
+        assert_eq!(values(&a, "-append"), ["console=ttyS0 panic=-1 quiet"]);
         let bd: Vec<serde_json::Value> = values(&a, "-blockdev")
             .iter()
             .map(|b| serde_json::from_str(b).unwrap())

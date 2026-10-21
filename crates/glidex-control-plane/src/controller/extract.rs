@@ -185,16 +185,24 @@ impl VmManager {
         let a = (appliance.0.as_str(), appliance.1.as_str());
         let disk = s(&origin.path);
         let source = (disk.as_str(), origin.format.into(), origin.backing_files);
+        let cmdline = crate::images::extractor::cmdline(origin.arch);
+        // glidex runs QEMU on x86_64 only.
+        let x86 = origin.arch == crate::images::catalog::Arch::X86_64;
         let (kind, argv) = if let Some(ch) = resolve_binary("cloud-hypervisor") {
-            let argv = cloud_hypervisor::extractor_args(&s(&ch), a, source, &s(&out));
+            let argv = cloud_hypervisor::extractor_args(&s(&ch), a, &cmdline, source, &s(&out));
             (HypervisorKind::CloudHypervisor, argv)
-        } else if let Some(q) = resolve_binary("qemu-system-x86_64") {
-            let argv = qemu::extractor_args(&s(&q), a, source, &s(&out));
+        } else if x86 && let Some(q) = resolve_binary("qemu-system-x86_64") {
+            let argv = qemu::extractor_args(&s(&q), a, &cmdline, source, &s(&out));
             (HypervisorKind::Qemu, argv)
-        } else {
+        } else if x86 {
             return Err(ImageError::ToolMissing {
                 tool: "cloud-hypervisor or qemu-system-x86_64".into(),
                 package: "cloud-hypervisor or qemu-system-x86".into(),
+            });
+        } else {
+            return Err(ImageError::ToolMissing {
+                tool: "cloud-hypervisor".into(),
+                package: "cloud-hypervisor".into(),
             });
         };
         let outcome = self
