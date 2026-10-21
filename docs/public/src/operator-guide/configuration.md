@@ -156,6 +156,7 @@ See [Clusters](clusters.md).
 | `cluster.import_plan_ttl_secs` | integer | `86400` | How long an import plan waits for approval. |
 | `cluster.ca_rotation_grace_secs` | integer | `604800` | How long the old cluster CA stays trusted after a rotation. |
 | `cluster.ui_url` | string | unset | A server's web UI address, `https://host[:port]` with no path, published to the cluster (`ui_url` in the node's status): agents send browsers there. Set it to a load balancer's address in front of the servers (the same on each). It is also an accepted origin (put first in `auth.allowed_origins`) and the default SSO callback. Unset: the address glidex-ui reports (its Tailscale name, else the first `GLIDEX_UI_HOSTS` name, else the host's FQDN, with its port), else the first `auth.allowed_origins` entry. See [The web UI's address](clusters.md#the-web-uis-address). |
+| `cluster.api_url` | string | unset | Where directories of other organizations reach this cluster's API, `https://host[:port]`: the address in the admission offers it makes. Unset: the web UI's published host on the API's port. |
 | `cluster.ui_relay` | bool | `true` | Replaced: an agent's web UI now sends browsers to a server. Accepted and ignored. |
 | `cluster.ovn.bridge_mappings` | object | `{}` | Physical network name → this host's Glidex bridge. Per host. |
 

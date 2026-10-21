@@ -244,3 +244,30 @@ pub async fn delete_directory(c: Caller, Path(id): Path<String>) -> Result<Statu
     )?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// ---- offers (spec/tenancy.md D64) ------------------------------------------
+
+pub async fn offer_admission(
+    c: Caller,
+    Json(req): Json<pb::OfferAdmissionRequest>,
+) -> Result<impl IntoResponse, ApiErr> {
+    Ok((StatusCode::CREATED, Json(svc::offer_admission(&c, req)?)))
+}
+
+pub async fn list_offers(c: Caller) -> Result<Json<pb::ListOffersResponse>, ApiErr> {
+    Ok(Json(svc::list_offers(
+        &c,
+        pb::ListOffersRequest::default(),
+    )?))
+}
+
+pub async fn revoke_offer(c: Caller, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
+    svc::revoke_offer(
+        &c,
+        pb::RevokeOfferRequest {
+            id,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}

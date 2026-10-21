@@ -145,6 +145,29 @@ service AdmissionService {
       rest: "DELETE /admissions/{tenant}"
     };
   }
+  // An admission offered to a tenant of another directory (spec/tenancy.md
+  // D64): the token, shown once, lets that directory redeem it.
+  rpc OfferAdmission(OfferAdmissionRequest) returns (OfferAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "POST /admissions/offers"
+    };
+  }
+  rpc ListOffers(ListOffersRequest) returns (ListOffersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listAdmissions"
+      kind: KIND_READ
+      rest: "GET /admissions/offers"
+    };
+  }
+  rpc RevokeOffer(RevokeOfferRequest) returns (RevokeOfferResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "DELETE /admissions/offers/{id}"
+    };
+  }
 }
 
 // Directories this host serves (spec/tenancy.md D27, D59): the host's
@@ -468,3 +491,41 @@ message DeleteDirectoryRequest {
   string id = 1;
 }
 message DeleteDirectoryResponse {}
+
+message Offer {
+  string id = 1;
+  // The tenant's slug at its directory.
+  string tenant = 2;
+  // That directory's issuer URL.
+  string directory = 3;
+  Quotas cap = 4;
+  string by = 5;
+  google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
+  google.protobuf.Timestamp expires_at = 7 [json_name = "expires_at"];
+  google.protobuf.Timestamp redeemed_at = 8 [json_name = "redeemed_at"];
+}
+
+message OfferAdmissionRequest {
+  string tenant = 1;
+  // The directory's issuer URL, `https://…/d/<id>`.
+  string directory = 2;
+  // Absent: unlimited.
+  Quotas cap = 3;
+  // Default 7, at most 30.
+  optional uint32 days = 4;
+}
+message OfferAdmissionResponse {
+  Offer offer = 1;
+  // `gxo_…`, shown once.
+  string token = 2;
+}
+
+message ListOffersRequest {}
+message ListOffersResponse {
+  repeated Offer offers = 1;
+}
+
+message RevokeOfferRequest {
+  string id = 1;
+}
+message RevokeOfferResponse {}

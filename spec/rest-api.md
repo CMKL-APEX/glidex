@@ -226,6 +226,8 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `POST` | `/d/{dir}/device_authorization`, `/d/{dir}/token`, `/d/{dir}/revoke` | — | Public, HTTP only, form-encoded, OAuth errors (D55, D57) |
 | `POST` | `/d/{dir}/device/inspect`, `/d/{dir}/device/answer` | — | Signed in (a browser session; a token is refused): what a user code is for, and approving or denying it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
+| `POST` / `GET` | `/admissions/offers` | `AdmissionService.OfferAdmission` / `ListOffers` | [tenancy.md](tenancy.md) D64: `{tenant, directory, cap?, days?}` → `201 {offer: {id, tenant, directory, cap, by, created_at, expires_at, redeemed_at?}, token}`; `manageAdmissions` (step-up) / `listAdmissions` |
+| `DELETE` | `/admissions/offers/{id}` | `RevokeOffer` | `manageAdmissions` (step-up) |
 | `GET` / `POST` | `/directories` | `DirectoryService.ListDirectories` / `CreateDirectory` | The directories this host serves ([tenancy.md](tenancy.md) D59): `listDirectories` / `manageDirectories` (step-up, `cluster.directories` of `role.system-admin`); create `{id, name, owner, admin_email, days?}` → `201 {directory: {id, name, issuer, created_at}, invitation_link}` |
 | `DELETE` | `/directories/{id}` | `DeleteDirectory` | Only while it has no user, connector or project (`409 directory_not_empty`); never `local` |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |

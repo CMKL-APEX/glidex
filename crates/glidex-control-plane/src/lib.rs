@@ -30,3 +30,4 @@ pub mod store;
 pub mod tenancy;
 pub mod tenants;
 pub mod topology;
+pub mod trust;

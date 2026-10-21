@@ -115,6 +115,10 @@ tables! {
     SigningKeys = 55 => "signing_keys",
     // The directory's refresh tokens, by hash (D55).
     RefreshTokens = 56 => "refresh_tokens",
+    // This cluster's own key, the private half sealed (D63).
+    ClusterKeys = 57 => "cluster_keys",
+    // Admissions offered to other directories' tenants (D64).
+    AdmissionOffers = 58 => "admission_offers",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they

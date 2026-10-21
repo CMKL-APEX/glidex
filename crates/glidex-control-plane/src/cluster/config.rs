@@ -41,6 +41,10 @@ pub struct ClusterConfig {
     /// (spec/host-page.md W3). Also an accepted origin and the OIDC
     /// callback's default (W4).
     pub ui_url: Option<String>,
+    /// The API address directories of other organizations reach this
+    /// cluster at (an offer's `api`, D64), `https://host[:port]`. Unset:
+    /// the web UI's published host on the API's port.
+    pub api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +122,7 @@ impl Default for ClusterConfig {
             ovn: OvnConfig::default(),
             ui_relay: true,
             ui_url: None,
+            api_url: None,
         }
     }
 }
@@ -173,7 +178,15 @@ impl ClusterConfig {
         if let Some(u) = &self.ui_url {
             ui_origin(u).ok_or("cluster.ui_url must be https://host[:port]")?;
         }
+        if let Some(u) = &self.api_url {
+            ui_origin(u).ok_or("cluster.api_url must be https://host[:port]")?;
+        }
         Ok(())
+    }
+
+    /// `url` as an origin, when set and one.
+    pub fn ui_origin_of(&self, url: Option<&str>) -> Option<String> {
+        url.and_then(ui_origin)
     }
 
     /// `ui_url` as an origin (`https://host[:port]`, lowercase).

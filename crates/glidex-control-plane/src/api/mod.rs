@@ -1363,6 +1363,24 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         get(tenants::list_admissions),
     )
     .add(
+        "POST",
+        "/admissions/offers",
+        "manageAdmissions",
+        post(tenants::offer_admission),
+    )
+    .add(
+        "GET",
+        "/admissions/offers",
+        "listAdmissions",
+        get(tenants::list_offers),
+    )
+    .add(
+        "DELETE",
+        "/admissions/offers/{id}",
+        "manageAdmissions",
+        delete(tenants::revoke_offer),
+    )
+    .add(
         "PUT",
         "/admissions/{tenant}",
         "manageAdmissions",
