@@ -1108,7 +1108,9 @@ impl Cluster {
         if !node.is_leader() {
             return Err(DepartureError::Conflict("this is not the leader".into()));
         }
-        let nodes = NodeStore::new(self.db.clone()).list().map_err(failed)?;
+        let nodes = NodeStore::new(self.db.clone())
+            .list()
+            .map_err(|e| failed(format!("listing the cluster's nodes: {e}")))?;
         let others: Vec<String> = nodes
             .iter()
             .filter(|n| n.meta.id != self.identity.node_id && !n.status.phase.is_tombstone())
@@ -1122,15 +1124,26 @@ impl Cluster {
         }
         let dir = self.state_dir();
         let snap = dir.join("glidex.db.final-snapshot");
-        super::manage::export_snapshot(&self.db, &snap).map_err(failed)?;
+        // Each step names its file: a bare "No such file or directory"
+        // doesn't say which.
+        let at = |what: &str, p: &Path| {
+            let (what, p) = (what.to_string(), p.display().to_string());
+            move |e: DepartureError| failed(format!("{what} {p}: {e}"))
+        };
+        super::manage::export_snapshot(&self.db, &snap)
+            .map_err(failed)
+            .map_err(at("final snapshot", &snap))?;
         let me = self.identity.node_id.clone();
         let opts = DetachOptions {
             map_networks: BTreeMap::new(),
             with_access: true,
         };
         let bundle = build_bundle(&self.db, "dissolve", &me, &opts);
-        write_standalone_db(&pending_db(&dir), &bundle)?;
-        pki::write_private(&pending_sha_file(&dir), bundle.sha256().as_bytes()).map_err(failed)?;
+        write_standalone_db(&pending_db(&dir), &bundle)
+            .map_err(at("standalone database", &pending_db(&dir)))?;
+        pki::write_private(&pending_sha_file(&dir), bundle.sha256().as_bytes())
+            .map_err(failed)
+            .map_err(at("bundle checksum", &pending_sha_file(&dir)))?;
         let ca = self
             .signing_ca()
             .ok_or_else(|| failed("this server holds no CA key"))?;
@@ -1150,7 +1163,8 @@ impl Cluster {
             &receipt_file(&dir),
             &serde_json::to_vec(&receipt).map_err(failed)?,
         )
-        .map_err(failed)?;
+        .map_err(failed)
+        .map_err(at("receipt", &receipt_file(&dir)))?;
         tracing::warn!(
             "this cluster is dissolved: restart the control plane to continue as a standalone host"
         );
