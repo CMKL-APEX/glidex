@@ -21,7 +21,7 @@ which VM it is, in which project and tenant; glidex itself and outside
 systems verify it against the published keys. A VM with a **service
 account** attached can also get glidex API tokens for that account, with
 nothing stored in the guest. It comes before managed applications
-(a planned `apps.md`) so that none of them ships secrets into
+([apps.md](apps.md)) so that none of them ships secrets into
 guests.
 
 | | Today | With this design |
@@ -139,7 +139,7 @@ This design takes T6's direction instead of competing with it.
 
 - Trust domain: the directory's (W13), `local.glidex.example.org` above.
 - `glidex.service_account` only when one is attached. Owner references
-  (planned apps spec) add `glidex.owner` later. No node name, IP or MAC: they
+  ([apps.md](apps.md)) add `glidex.owner` later. No node name, IP or MAC: they
   change with placement and say nothing a relying party should match on.
 - Names in claims are slugs; a relying party should match on `sub` or
   ids, which never change.
@@ -289,7 +289,7 @@ W10 keeps the token and audit formats ready for this; the grants
   any cloud. A Kubernetes cluster on glidex must keep its pods from the
   endpoint (a network policy, or the cluster's own per-pod identity) or
   every pod acts as the node (the GKE metadata concealment problem).
-  The planned Kubernetes app does this.
+  The Kubernetes app does this ([apps.md](apps.md) §9).
 - **Request forgery.** Required header, no redirects, `Forwarded`
   refused, TTL 1 on replies: a guest web application that can be made
   to fetch a URL can't be made to fetch a token without also setting a

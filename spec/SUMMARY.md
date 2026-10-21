@@ -36,6 +36,7 @@
 - [Tailscale certificates](tailscale-tls.md)
 - [Tenancy](tenancy.md)
 - [Workload identity](workload-identity.md)
+- [Managed applications](apps.md)
 - [Passkeys](passkeys.md)
 - [Real-IdP checks](idp-checks.md)
 
