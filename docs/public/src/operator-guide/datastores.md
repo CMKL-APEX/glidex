@@ -275,7 +275,11 @@ Refused, with `409 conflict` and the reason:
 - taking a node out of `nodes` while a disk on the datastore is bound
   to it;
 - deleting a datastore while disks are on it: move or delete them
-  first. On the **Datastores** page, **Delete** is disabled meanwhile.
+  first. On the **Datastores** page, **Delete** is disabled meanwhile;
+- deleting an LVM-thin datastore while a node keeps an image's volume
+  in it (`gxctl datastore show` lists them as *image volumes*): delete
+  those images first, or remove their `gx-i-…` volumes with `lvremove`.
+  It can go once each node has looked again, within a minute.
 
 Deleting a datastore leaves its directory and files alone; clean them up
 yourself.

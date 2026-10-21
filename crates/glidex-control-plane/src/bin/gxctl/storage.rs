@@ -997,6 +997,9 @@ fn print_datastore(d: &Datastore) {
             for w in &r.warnings {
                 println!("    {} {w}", "warning:".yellow());
             }
+            if !r.image_volumes.is_empty() {
+                println!("    image volumes: {}", r.image_volumes.join(", "));
+            }
         } else {
             println!(
                 "  {} {}: {} {}",
