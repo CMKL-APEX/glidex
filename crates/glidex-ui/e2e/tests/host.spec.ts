@@ -35,8 +35,9 @@ test("the Host page has the host's networking, and the old address leads there",
   }
   // The Networking page keeps the networks and points here.
   await page.goto("/networking");
-  await expect(page.getByTestId("host-networking-link").getByRole("link")).toHaveAttribute("href", `/hosts/${id}`);
   await expect(page.getByText("Open vSwitch:")).toHaveCount(0);
+  await page.getByTestId("host-networking-link").getByRole("link").click();
+  await expect(page).toHaveURL(new RegExp(`/hosts/${id}$`));
 });
 
 test.describe("another node", () => {
