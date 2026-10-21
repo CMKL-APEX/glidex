@@ -236,7 +236,15 @@ A device is `ready` when all of these hold:
    unbound;
 4. `/dev/vfio/<group>` is readable and writable by `glidex`;
 5. it is not a DPDK uplink of a glidex bridge, nor an interface carrying
-   the host's own addresses (`glidex_ovs::nic::classify`).
+   the host's own addresses (`glidex_ovs::nic::classify`);
+6. no process other than this host's glidex VMs has its group open
+   (`in use by qemu-kvm-one (pid 37226)`): another hypervisor on the same
+   host, libvirt or OpenNebula, holding it. netd answers
+   `device_holders` from every process's open files (`/proc/<pid>/fd`),
+   since libvirt gives QEMU a private `/dev` where `fuser` can't see it;
+   glidex's own VMs run as the control plane's user and are left out.
+   netd also refuses `release_device` and a VF-count change while a
+   group involved is open.
 
 Each failed check is a reason (`not bound to vfio-pci (driver: nvidia)`,
 `IOMMU group 31 also holds 0000:41:00.1 on snd_hda_intel`, `/dev/vfio/31

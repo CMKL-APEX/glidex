@@ -59,6 +59,71 @@ pub fn group_members(exec: &dyn Exec, group: &str) -> Vec<String> {
     .collect()
 }
 
+/// A process that has an IOMMU group's `/dev/vfio/<group>` open: a VM
+/// (glidex's, libvirt's, anyone's) holding its devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holder {
+    pub pid: u32,
+    pub uid: u32,
+    pub comm: String,
+}
+
+impl std::fmt::Display for Holder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (pid {})", self.comm, self.pid)
+    }
+}
+
+/// Every process with one of `groups` open, by group. Read from each
+/// process's open files, not by matching `/dev/vfio/<group>` here: libvirt
+/// gives QEMU a private `/dev`, where the same path is another inode, so
+/// `fuser` misses it. Needs root to read other users' processes.
+pub fn group_holders(
+    exec: &dyn Exec,
+    groups: &[String],
+) -> std::collections::BTreeMap<String, Vec<Holder>> {
+    let mut out: std::collections::BTreeMap<String, Vec<Holder>> = Default::default();
+    if groups.is_empty() {
+        return out;
+    }
+    for pid in exec.list_dir(Path::new("/proc")) {
+        let Ok(n) = pid.parse::<u32>() else { continue };
+        let dir = Path::new("/proc").join(&pid);
+        let mut held: Vec<&String> = Vec::new();
+        for fd in exec.list_dir(&dir.join("fd")) {
+            if let Some(target) = exec.read_link(&dir.join("fd").join(&fd))
+                && let Some(g) = target.strip_prefix("/dev/vfio/")
+                && let Some(g) = groups.iter().find(|x| *x == g)
+                && !held.contains(&g)
+            {
+                held.push(g);
+            }
+        }
+        if held.is_empty() {
+            continue;
+        }
+        let status = exec.read_file(&dir.join("status")).unwrap_or_default();
+        let uid = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Uid:"))
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(u32::MAX);
+        let comm = exec
+            .read_file(&dir.join("comm"))
+            .map(|c| c.trim().to_string())
+            .unwrap_or_default();
+        for g in held {
+            out.entry(g.clone()).or_default().push(Holder {
+                pid: n,
+                uid,
+                comm: comm.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// Why `bdf` (and its group) can't be given to VMs: a function that is a
 /// DPDK uplink of a glidex bridge, or whose NIC carries the host's own
 /// addresses. `None`: it may be.
@@ -235,6 +300,38 @@ mod tests {
             .filter(|(p, d)| p.ends_with("driver_override") && d == b"\n")
             .count();
         assert_eq!(restored, 2);
+    }
+
+    #[test]
+    fn holders_are_found_by_each_process_s_open_files() {
+        let exec = host();
+        // libvirt's QEMU (another uid, a private /dev: only its fds tell).
+        exec.file(
+            "/proc/37226/status",
+            "Name:\tqemu-kvm-one\nUid:\t9869\t9869\t9869\t9869\n",
+        );
+        exec.file("/proc/37226/comm", "qemu-kvm-one\n");
+        exec.link("/proc/37226/fd/3", "/dev/null");
+        exec.link("/proc/37226/fd/30", "/dev/vfio/30");
+        exec.link("/proc/37226/fd/31", "/dev/vfio/30");
+        exec.link("/proc/37226/fd/32", "/dev/vfio/vfio");
+        // A process holding nothing of interest.
+        exec.file("/proc/1/status", "Uid:\t0\t0\t0\t0\n");
+        exec.link("/proc/1/fd/0", "/dev/vfio/99");
+        exec.file("/proc/self/status", "");
+        let h = group_holders(&exec, &["30".into(), "40".into()]);
+        assert_eq!(
+            h.get("30").unwrap(),
+            &vec![Holder {
+                pid: 37226,
+                uid: 9869,
+                comm: "qemu-kvm-one".into()
+            }],
+            "once, however many fds"
+        );
+        assert!(!h.contains_key("40") && !h.contains_key("99"));
+        assert!(group_holders(&exec, &[]).is_empty());
+        assert_eq!(h["30"][0].to_string(), "qemu-kvm-one (pid 37226)");
     }
 
     #[test]
