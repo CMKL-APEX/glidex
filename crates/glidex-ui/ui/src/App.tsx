@@ -32,6 +32,7 @@ const Admissions = lazy(() => import("./pages/Admissions"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
 const Invite = lazy(() => import("./pages/Invite"));
 const Account = lazy(() => import("./pages/Account"));
+const Device = lazy(() => import("./pages/Device"));
 const Directory = lazy(() => import("./pages/Directory"));
 
 function Shell() {
@@ -73,6 +74,7 @@ function Shell() {
             <Route path="/cluster/imports/:plan" element={<ImportPlan />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="/account" element={<Account />} />
+            <Route path="/device" element={<Device />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </Suspense>

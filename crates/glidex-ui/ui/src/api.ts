@@ -1335,3 +1335,13 @@ export const setConnectorSecret = (id: string, field: string, value: string) =>
 /** Checks that need no user; reads only, so safe to retry. */
 export const testConnector = (id: string) =>
   rpc(ConnectorService.method.testConnector, { id }).then((r) => (r.steps ?? []) as ConnectorTestStep[]);
+
+// ---- a directory's device logins (spec/tenancy.md D54) ------------------------
+
+/** What a device login's user code is for (`404` when nothing waits for it). */
+export const inspectDeviceLogin = (directory: string, user_code: string) =>
+  request<{ client_id: string; client_name: string; scope: string }>("POST", `/d/${encodeURIComponent(directory)}/device/inspect`, { user_code });
+
+/** Approve or deny a device login. */
+export const answerDeviceLogin = (directory: string, user_code: string, approve: boolean) =>
+  request<{ approved: boolean }>("POST", `/d/${encodeURIComponent(directory)}/device/answer`, { user_code, approve });

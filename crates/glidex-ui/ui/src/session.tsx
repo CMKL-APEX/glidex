@@ -229,6 +229,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [state, project, load, refreshCapabilities]);
 
+  // A directory's authorize request sent the browser here to log in first
+  // (spec/tenancy.md D54): signed in, it goes back there.
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const next = new URLSearchParams(window.location.search).get("next");
+    if (next && next.startsWith("/d/") && !next.startsWith("//")) window.location.replace(next);
+  }, [state.kind]);
+
   let body: ReactNode;
   switch (state.kind) {
     case "loading":

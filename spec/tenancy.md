@@ -1825,8 +1825,7 @@ Task 5, SSH keys from Google:
 | "My SSH keys" | `UserService.GetMySshKeys` answers them, `source: connector:<id>`, when the host has no local login for the user (a local account's keys come first, `source: local`); the credential form says where they came from |
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
-**T6** (directories and clusters apart) is in progress: tasks 1–2 of §18,
-and task 3's server side.
+**T6** (directories and clusters apart) is in progress: tasks 1–3 of §18.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1838,8 +1837,7 @@ Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 | API | `SigningKeyService.ListSigningKeys` (`readSigningKeys`, `GET /directory/keys`) and `RotateSigningKey` (`rotateSigningKey`, step-up, in `directory.keys` of `role.directory-admin`; `POST /directory/keys/rotate`); gxctl `directory keys [rotate]` |
 | Tests | `issuer.rs` unit tests (a token verified with `jsonwebtoken` against the JWKS, rotation and retention, separate directories); `connector_tests.rs::a_directory_publishes_its_issuer_and_keys` |
 
-Task 3, the directory as OpenID provider (server side; gxctl and the web
-UI's pages follow):
+Task 3, the directory as OpenID provider:
 
 | Spec | Code |
 |---|---|
@@ -1848,3 +1846,5 @@ UI's pages follow):
 | D55 | ID tokens (`aud` = the client, `sid`, `auth_time`, `amr`, 1 h); access tokens (`typ: at+jwt`, `aud` = the cluster id, `local` on a standalone host, `auth.access_token_ttl_minutes`, default 60, 5–720); refresh tokens `gxr_…` in `refresh_tokens` (directory scope) by SHA-256, chained by `family`: each use replaces the token, a replaced one coming back ends the chain (audited `directoryRefresh` `refresh_reused`); 30 days unused, at most 90 days, or the user's connectors' `token_max_days` unless one provisions them; ended when an administrator disables the user or ends its sessions, refused for a disabled user |
 | D56 | `api::op::access_principal`: a bearer JWT of a directory hosted here, its key published, `iss` its fixed issuer, `aud` this cluster, its chain alive, the user enabled; `Method::Directory`, `mfa` from the token, step-up from `auth_time` |
 | Tests | `op.rs` unit tests (redirects, PKCE vectors of RFC 7636, codes, device grants, rotation and reuse, limits); `connector_tests.rs::the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens` |
+| gxctl (D57) | `auth login --directory [ID]` (`bin/gxctl/dirlogin.rs`): the device grant, the profile's `directory` (the refresh token, the `resource`, when the access token expires) and the access token as its `token`; `refresh_if_due` before each run renews it 2 minutes before it expires, sending no credential |
+| Web UI | `/device` (`pages/Device.tsx`): a user code, checked and approved or denied by the signed-in user; `/?next=/d/…` goes back to the authorize request after a login (`session.tsx`); e2e `device-login.spec.ts` |

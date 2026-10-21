@@ -171,13 +171,29 @@ gxctl auth login --url https://host.example.org:8841 --profile lab --oidc
 
 # An API token you already have (typed hidden, or piped)
 gxctl auth login --url https://host.example.org:8841 --profile ci --token < token.txt
+
+# Your directory: approve the login in the web UI, however you sign in there
+gxctl auth login --url https://host.example.org:8841 --profile lab --directory
 ```
+
+With `--directory`, gxctl prints a link to the web UI's **Device login**
+page and a code. Open it, sign in the way you usually do (password,
+single sign-on, a passkey), check that the code matches, and approve.
+gxctl then holds no long-lived token: it keeps a *refresh token* for
+your directory and asks it for a short-lived access token for this
+cluster (one hour by default) whenever the one it holds is about to
+expire. The refresh token lasts while you keep using it (30 days unused
+at most; 30 to 90 days in all, as the operator's sign-in providers
+allow), and ends when you or an administrator end your sessions, when
+your account is disabled, or at `gxctl auth logout`.
 
 - `--connector <id>` picks one of several sign-in providers. A Google
   provider works with `--oidc` only if the operator set it up for
   device logins; otherwise it answers `device_flow_unsupported`.
 - `--name <name>` names the token it creates (default `gxctl@<profile>`),
   so you can tell your machines apart in `gxctl token list`.
+- `--directory [id]` logs in at one of the host's directories (`local`,
+  the default, until a host serves several).
 - `--days N` asks for a shorter or longer `--pam-user` token, within the
   site's limit (30 days unless the operator changed it). An `--oidc` login
   gets a token valid for one day.

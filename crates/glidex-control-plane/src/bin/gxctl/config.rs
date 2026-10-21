@@ -193,6 +193,34 @@ pub struct Profile {
     /// Failover hint (§4.2); losing it costs nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used: Option<LastUsed>,
+    /// A login at a directory (spec/tenancy.md D57): `token` is then the
+    /// access token it gave for this cluster, refreshed before it expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<DirectoryLogin>,
+}
+
+/// What a directory login keeps. The refresh token is a secret like
+/// `token`, held by the same 0600 file and never printed.
+#[derive(Deserialize, Serialize, Default, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct DirectoryLogin {
+    /// The directory on the profile's servers (`/d/<id>`).
+    pub id: String,
+    pub refresh_token: String,
+    /// `urn:glidex:cluster:<id>`: what access tokens are asked for.
+    pub resource: String,
+    /// When the access token in `token` expires (Unix seconds).
+    pub access_expires_at: u64,
+}
+
+impl std::fmt::Debug for DirectoryLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DirectoryLogin {{ id: {:?}, resource: {:?} }}",
+            self.id, self.resource
+        )
+    }
 }
 
 impl std::fmt::Debug for Profile {

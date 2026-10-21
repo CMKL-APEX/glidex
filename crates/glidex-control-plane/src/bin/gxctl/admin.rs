@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--directory [ID] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -532,7 +532,24 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         .unwrap_or_else(|| format!("gxctl@{name}"));
     let device_tag = glidex_tls::hostname().unwrap_or_else(|| "device".to_string());
     let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
-    let (credential, method_hint) = if has_flag(args, "--oidc") {
+    // A directory login (D57) keeps its refresh token in the profile.
+    let mut dir_login: Option<config::DirectoryLogin> = None;
+    let resource = format!(
+        "urn:glidex:cluster:{}",
+        claimed.as_deref().unwrap_or("local")
+    );
+    let (credential, method_hint) = if has_flag(args, "--directory") {
+        let dir = flag_value(args, "--directory")
+            .filter(|v| !v.starts_with("--"))
+            .unwrap_or("local");
+        match crate::dirlogin::device_login(&cl, dir, &resource).await {
+            Some(l) => {
+                dir_login = Some(l.keep);
+                (l.access, "directory")
+            }
+            None => return,
+        }
+    } else if has_flag(args, "--oidc") {
         match device_login_named(
             &cl,
             &token_name,
@@ -601,6 +618,15 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             return err("no token given");
         }
         (Zeroizing::new(t.to_string()), "token")
+    } else if let Some(d) = existing.as_ref().and_then(|(_, p)| p.directory.clone()) {
+        // A directory login is reused through its refresh token.
+        match crate::dirlogin::refresh(&cl, &d).await {
+            Ok(l) => {
+                dir_login = Some(l.keep);
+                (l.access, "directory")
+            }
+            Err(e) => return err(e),
+        }
     } else if let Some((_, p)) = &existing {
         // Silent reuse (§6.1.4): the profile already had a credential and
         // the server just confirmed it answers for the same cluster — a
@@ -639,7 +665,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             Err(e) => return err(e),
         }
     } else {
-        return usage("give a credential: --oidc, --token (piped or prompted), or --pam-user USER");
+        return usage(
+            "give a credential: --directory, --oidc, --token (piped or prompted), or --pam-user USER",
+        );
     };
     let _ = method_hint;
 
@@ -683,6 +711,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     let urls_w = urls.clone();
     let tls_w = tls.clone();
     let identity_w = identity.clone();
+    let dir_login_w = dir_login.clone();
     let secret = credential.as_str().to_string();
     let name_w = name.clone();
     let mut made_current = false;
@@ -693,6 +722,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         p.cluster_name = server_name;
         p.tls = tls_w;
         p.token = Some(secret);
+        p.directory = dir_login_w;
         // token_command is left exactly as it was: a site-wide helper
         // outranks this stored copy at request time (§2.2), and logging in
         // with a flag does not delete the site's answer.
@@ -784,9 +814,21 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
         );
         return;
     }
+    // A directory login ends at the directory too: its refresh token's
+    // chain, and the access tokens it gave (D55).
+    if let Some(d) = config::profile_of(&cfg, want).and_then(|(_, p)| p.directory.clone()) {
+        match crate::dirlogin::revoke(client, &d).await {
+            Ok(()) => println!("{} the directory login ended", "OK:".green()),
+            Err(e) => println!(
+                "{} the directory didn't answer ({e}); the login ends when its refresh token expires",
+                "Warning:".yellow()
+            ),
+        }
+    }
     if let Err(e) = config::edit(cfg, |c| {
         if let Some(p) = c.profiles.get_mut(&name) {
             p.token = None;
+            p.directory = None;
         }
     }) {
         return err(e);
