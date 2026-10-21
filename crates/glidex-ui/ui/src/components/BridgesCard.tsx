@@ -1,23 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
-import type { BridgeRecord, Datapath, UplinkKind, UplinkResult } from "../types";
+import type { BridgeRecord, Datapath, EntityRef, UplinkKind, UplinkResult } from "../types";
 import { datapathLabel, formatTimestamp, uplinkKindLabel } from "../types";
-import { useCan } from "../session";
+import { useAllowed } from "../nodes";
 import ConfirmDialog from "./ConfirmDialog";
 import Modal from "./Modal";
 import { Badge, ErrorBanner, errorMessage, inputClass, primaryButton, secondaryButton, selectClass } from "./ui";
 
 /** Commit a moved address once the API still answers through the new path
- * (networking.md §8.5): netd rolls it back by itself otherwise. */
-async function commitWhenReachable(r: UplinkResult): Promise<string> {
+ * (networking.md §8.5): netd rolls it back by itself otherwise. On another
+ * node, the commit itself crosses the node link to its moved address
+ * (spec/host-page.md §5). */
+async function commitWhenReachable(r: UplinkResult, node?: string): Promise<string> {
   if (r.phase !== "UPLINK_PHASE_PENDING_COMMIT" || !r.record.pending) return "Added.";
   // Fresh request through the API: if it answers, the host is reachable.
-  await api.healthCheck();
-  await api.commitUplink(r.record.spec.bridge, r.record.spec.name, r.record.pending.token);
+  if (!node) await api.healthCheck();
+  await api.commitUplink(r.record.spec.bridge, r.record.spec.name, r.record.pending.token, node);
   return "The host's address moved to the bridge and was committed.";
 }
 
-function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: boolean; onChanged: () => void }) {
+function UplinkRow({ u, node, canChange, onChanged }: { u: UplinkResult; node?: string; canChange: boolean; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -29,7 +31,7 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
     setBusy(true);
     setError(null);
     try {
-      await commitWhenReachable(await api.reapplyUplink(r.spec.bridge, r.spec.name));
+      await commitWhenReachable(await api.reapplyUplink(r.spec.bridge, r.spec.name, node), node);
       onChanged();
     } catch (e) {
       setError(`${errorMessage(e)} (if the address had moved, netd puts it back within a minute)`);
@@ -78,7 +80,7 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
           consequence={r.spec.migrate_ip ? "The NIC leaves the bridge and gets the host's address back. Networks on this bridge lose their way out." : "The NIC leaves the bridge."}
           actionLabel="Remove"
           onConfirm={async () => {
-            await api.deleteUplink(r.spec.bridge, r.spec.name);
+            await api.deleteUplink(r.spec.bridge, r.spec.name, node);
             onChanged();
           }}
           onClose={() => setRemoving(false)}
@@ -89,7 +91,7 @@ function UplinkRow({ u, canChange, onChanged }: { u: UplinkResult; canChange: bo
 }
 
 /** Add a NIC to a bridge, optionally moving the host's address onto it. */
-function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose: () => void; onDone: () => void }) {
+function AddUplinkDialog({ bridge, node, onClose, onDone }: { bridge: string; node?: string; onClose: () => void; onDone: () => void }) {
   const [kind, setKind] = useState<UplinkKind["kind"]>("UPLINK_KIND_KERNEL");
   const [nic, setNic] = useState("");
   const [port, setPort] = useState("");
@@ -105,9 +107,9 @@ function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose:
     try {
       const name = kind === "UPLINK_KIND_DPDK" ? port : nic;
       const k: UplinkKind = kind === "UPLINK_KIND_DPDK" ? { kind, pci: nic } : { kind, ifname: nic };
-      const r = await api.addUplink(bridge, { name, migrate_ip: migrate, confirm: migrate, accept_dhcp: acceptDhcp, ...k });
+      const r = await api.addUplink(bridge, { name, migrate_ip: migrate, confirm: migrate, accept_dhcp: acceptDhcp, ...k }, node);
       setStep("Checking the host still answers through the bridge, then committing…");
-      setDone(await commitWhenReachable(r));
+      setDone(await commitWhenReachable(r, node));
       onDone();
     } catch (e) {
       setError(`${errorMessage(e)}${migrate ? " — if the address had moved, netd put it back (or does within a minute)." : ""}`);
@@ -190,30 +192,38 @@ function AddUplinkDialog({ bridge, onClose, onDone }: { bridge: string; onClose:
   );
 }
 
-/** The host's glidex bridges and their uplinks (networking.md §8). */
-export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRecord[]; onChanged: () => void }) {
+/** A host's glidex bridges and their uplinks (networking.md §8): `node`'s
+ * (spec/host-page.md W2), else the host serving the UI. `host` is what
+ * the actions are checked on (`hostOf`). */
+export default function BridgesCard({
+  bridges,
+  node,
+  host = { type: "Host" },
+  onChanged,
+}: {
+  bridges: BridgeRecord[];
+  node?: string;
+  host?: EntityRef;
+  onChanged: () => void;
+}) {
   const [uplinks, setUplinks] = useState<Record<string, UplinkResult[]>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [newBridge, setNewBridge] = useState(false);
   const [name, setName] = useState("gxbr-up");
   const [datapath, setDatapath] = useState<Datapath>("DATAPATH_SYSTEM");
   const [error, setError] = useState<string | null>(null);
-  const caps = useCan([
-    { action: "createBridge", resource: { type: "Host" } },
-    { action: "ensureUplink", resource: { type: "Host" } },
-    { action: "deleteUplink", resource: { type: "Host" } },
-  ]);
-  const [canBridge, canUplink, canRemove] = caps ?? [false, false, false];
+  const allowed = useAllowed(["createBridge", "ensureUplink", "deleteUplink"], [host]);
+  const [canBridge, canUplink, canRemove] = ["createBridge", "ensureUplink", "deleteUplink"].map((a) => !!allowed?.(host, a));
 
   const load = useCallback(async () => {
     const out: Record<string, UplinkResult[]> = {};
     await Promise.all(
       bridges.map(async (b) => {
-        out[b.spec.name] = await api.listUplinks(b.spec.name).catch(() => []);
+        out[b.spec.name] = await api.listUplinks(b.spec.name, node).catch(() => []);
       }),
     );
     setUplinks(out);
-  }, [bridges]);
+  }, [bridges, node]);
   useEffect(() => {
     load();
   }, [load]);
@@ -254,14 +264,14 @@ export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRec
             {(uplinks[b.spec.name] ?? []).length > 0 && (
               <ul className="ml-4 mt-1">
                 {uplinks[b.spec.name].map((u) => (
-                  <UplinkRow key={u.record.spec.name} u={u} canChange={canRemove} onChanged={changed} />
+                  <UplinkRow key={u.record.spec.name} u={u} node={node} canChange={canRemove} onChanged={changed} />
                 ))}
               </ul>
             )}
           </li>
         ))}
       </ul>
-      {adding && <AddUplinkDialog bridge={adding} onClose={() => setAdding(null)} onDone={changed} />}
+      {adding && <AddUplinkDialog bridge={adding} node={node} onClose={() => setAdding(null)} onDone={changed} />}
       {newBridge && (
         <ConfirmDialog
           title="New bridge"
@@ -269,7 +279,7 @@ export default function BridgesCard({ bridges, onChanged }: { bridges: BridgeRec
           actionLabel="Create"
           danger={false}
           onConfirm={async () => {
-            await api.createBridge(name.trim(), datapath);
+            await api.createBridge(name.trim(), datapath, node);
             changed();
           }}
           onClose={() => setNewBridge(false)}

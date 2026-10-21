@@ -11,6 +11,7 @@ import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
 import SystemRoles from "../components/SystemRoles";
 import TopologyCard from "../components/TopologyCard";
+import HostNetworking from "../components/HostNetworking";
 import { useDirectory } from "../hooks";
 import { NodeOvnCard } from "../components/OvnViews";
 import { useCan, useSession } from "../session";
@@ -49,9 +50,10 @@ function Use({ label, taken, total, unit }: { label: string; taken: number; tota
   );
 }
 
-/** A node (spec/clustering-ui.md §5.2): its state, capacity, what runs on
- * it, what it can do, and the operations on it. */
-export default function NodeDetail() {
+/** A host's page (spec/host-page.md W1, clustering-ui.md §5.2): its state,
+ * capacity, topology and devices, networking, what runs on it, and the
+ * operations on it; on a standalone host, its one node. */
+export default function HostDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const live = useLive();
   const dir = useNodes();
@@ -97,11 +99,13 @@ export default function NodeDetail() {
 
   return (
     <div>
-      <p className="mb-2 text-sm">
-        <Link to="/cluster" className="text-sky-700 hover:underline">
-          ← Cluster
-        </Link>
-      </p>
+      {dir.clustered && (
+        <p className="mb-2 text-sm">
+          <Link to="/cluster" className="text-sky-700 hover:underline">
+            ← Cluster
+          </Link>
+        </p>
+      )}
       <PageHeader
         title={nodeLabel(node)}
         subtitle={
@@ -234,6 +238,8 @@ export default function NodeDetail() {
       {canTopology && !isTombstone(node.status.phase) && ready === "True" && (
         <TopologyCard node={id} cordoned={node.spec.cordoned_devices ?? []} manage={!!canConf?.(nodeHost, "prepareDevice")} onChanged={load} />
       )}
+
+      {!isTombstone(node.status.phase) && ready === "True" && <HostNetworking node={id} host={nodeHost} />}
 
       {host.readCluster && <NodeOvnCard node={id} />}
 

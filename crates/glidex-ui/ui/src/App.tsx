@@ -22,7 +22,9 @@ const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
 const Tokens = lazy(() => import("./pages/Tokens"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Cluster = lazy(() => import("./pages/Cluster"));
-const NodeDetail = lazy(() => import("./pages/NodeDetail"));
+const HostDetail = lazy(() => import("./pages/HostDetail"));
+const Hosts = lazy(() => import("./pages/Hosts"));
+const OldNodePage = lazy(() => import("./pages/Hosts").then((m) => ({ default: m.OldNodePage })));
 const ImportPlan = lazy(() => import("./pages/ImportPlan"));
 const Usage = lazy(() => import("./pages/Usage"));
 const TenantDetail = lazy(() => import("./pages/TenantDetail"));
@@ -65,7 +67,9 @@ function Shell() {
             <Route path="/policies" element={<Navigate to="/directory/policies" replace />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/cluster" element={<Cluster />} />
-            <Route path="/cluster/nodes/:id" element={<NodeDetail />} />
+            <Route path="/hosts" element={<Hosts />} />
+            <Route path="/hosts/:id" element={<HostDetail />} />
+            <Route path="/cluster/nodes/:id" element={<OldNodePage />} />
             <Route path="/cluster/imports/:plan" element={<ImportPlan />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="/account" element={<Account />} />

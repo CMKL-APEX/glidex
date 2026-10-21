@@ -181,6 +181,9 @@ interface RequestOptions {
   quiet401?: boolean;
   /** Safe to send again after `503 leader_changed` (GET, PUT and DELETE are). */
   idempotent?: boolean;
+  /** A host-only call for this node's host (`X-Glidex-Target-Node`,
+   * spec/host-page.md W2); unset: the host serving the UI. */
+  node?: string;
 }
 
 // ---- cluster availability (spec/clustering-ui.md §3.3) ------------------------
@@ -224,6 +227,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (!read && csrf) headers["X-Glidex-CSRF"] = csrf;
     if (local) headers["X-Glidex-Consistency"] = "local";
+    if (opts.node) headers["X-Glidex-Target-Node"] = opts.node;
     return fetch(`${API_BASE}${path}`, {
       method,
       headers,
@@ -292,11 +296,15 @@ const LOCAL = createContextKey(false);
 /** Set by a call's interceptor when the answer carried a revision (it went
  * through the cluster). */
 const REVISION = createContextKey<{ seen: boolean }>({ seen: false });
+/** The node a host-only call is for (spec/host-page.md W2). */
+const TARGET = createContextKey<string | undefined>(undefined);
 
 /** The session's CSRF value on every RPC (all are POSTs, spec/grpc.md §6). */
 const sessionHeaders: Interceptor = (next) => async (req) => {
   if (csrf) req.header.set("X-Glidex-CSRF", csrf);
   if (req.contextValues.get(LOCAL)) req.header.set("X-Glidex-Consistency", "local");
+  const target = req.contextValues.get(TARGET);
+  if (target) req.header.set("X-Glidex-Target-Node", target);
   const res = await next(req);
   if (!res.stream && res.header.has("x-glidex-revision")) req.contextValues.get(REVISION).seen = true;
   return res;
@@ -373,7 +381,7 @@ export async function rpc<M extends DescMethodUnary>(
   }
   const send = async (local = false) => {
     const revision = { seen: false };
-    const contextValues = createContextValues().set(LOCAL, local).set(REVISION, revision);
+    const contextValues = createContextValues().set(LOCAL, local).set(REVISION, revision).set(TARGET, opts.node);
     const out = await client[method.localName](input, { contextValues });
     return { out, revision: revision.seen };
   };
@@ -819,33 +827,43 @@ export const acceptNetworkShare = (project: string, network: string) =>
 export const leaveNetworkShare = (project: string, network: string) =>
   rpc(NetworkShareService.method.leaveNetworkShare, { project, network }).then(none);
 
-export const ovsStatus = () => rpc(HostNetworkService.method.getOvsStatus).then((r) => r as OvsStatus);
+// Host-only calls (spec/host-page.md W2): `node` names the host they are
+// for; without it, the host serving the UI.
+const on = (node?: string): RequestOptions => (node ? { node } : {});
 
-export const installOvs = (profile: OvsProfile, confirm: boolean) =>
-  rpc(HostNetworkService.method.installOvs, { profile, confirm }).then((r) => r as InstallOvsResponse);
+export const ovsStatus = (node?: string) => rpc(HostNetworkService.method.getOvsStatus, {}, on(node)).then((r) => r as OvsStatus);
+
+export const installOvs = (profile: OvsProfile, confirm: boolean, node?: string) =>
+  rpc(HostNetworkService.method.installOvs, { profile, confirm }, on(node)).then((r) => r as InstallOvsResponse);
 
 /** Initialize DPDK: hugepage memory per NUMA node (`1024` or `1024,1024`). */
-export const initDpdk = (socket_mem: string, confirm: boolean, pmd_cpu_mask?: string) =>
-  rpc(HostNetworkService.method.initDpdk, { socket_mem, pmd_cpu_mask, confirm }).then(none);
+export const initDpdk = (socket_mem: string, confirm: boolean, pmd_cpu_mask?: string, node?: string) =>
+  rpc(HostNetworkService.method.initDpdk, { socket_mem, pmd_cpu_mask, confirm }, on(node)).then(none);
 
-export const listBridges = () => rpc(HostNetworkService.method.listBridges).then((r) => (r.bridges ?? []) as BridgeRecord[]);
-export const createBridge = (name: string, datapath: Datapath) =>
-  rpc(HostNetworkService.method.createBridge, { name, datapath }).then((r) => r.bridge as BridgeRecord);
-export const deleteBridge = (name: string) => rpc(HostNetworkService.method.deleteBridge, { name }).then(none);
-export const listUplinks = (bridge: string) =>
-  rpc(HostNetworkService.method.listUplinks, { bridge }).then((r) => (r.uplinks ?? []) as UplinkResult[]);
+export const listBridges = (node?: string) =>
+  rpc(HostNetworkService.method.listBridges, {}, on(node)).then((r) => (r.bridges ?? []) as BridgeRecord[]);
+export const createBridge = (name: string, datapath: Datapath, node?: string) =>
+  rpc(HostNetworkService.method.createBridge, { name, datapath }, on(node)).then((r) => r.bridge as BridgeRecord);
+export const deleteBridge = (name: string, node?: string) => rpc(HostNetworkService.method.deleteBridge, { name }, on(node)).then(none);
+export const listUplinks = (bridge: string, node?: string) =>
+  rpc(HostNetworkService.method.listUplinks, { bridge }, on(node)).then((r) => (r.uplinks ?? []) as UplinkResult[]);
 const uplinkOf = (r: { uplink?: unknown }) => r.uplink as UplinkResult;
 /** Add an uplink; with `migrate_ip` the host's address moves to the bridge and must be committed. */
-export const addUplink = (bridge: string, body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind) =>
-  rpc(HostNetworkService.method.ensureUplink, { ...body, bridge }).then(uplinkOf);
-export const commitUplink = (bridge: string, name: string, token: string) =>
-  rpc(HostNetworkService.method.commitUplink, { bridge, name, token }).then(uplinkOf);
-export const reapplyUplink = (bridge: string, name: string) =>
-  rpc(HostNetworkService.method.reapplyUplink, { bridge, name }).then(uplinkOf);
-export const deleteUplink = (bridge: string, name: string) => rpc(HostNetworkService.method.deleteUplink, { bridge, name }).then(none);
+export const addUplink = (
+  bridge: string,
+  body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind,
+  node?: string,
+) => rpc(HostNetworkService.method.ensureUplink, { ...body, bridge }, on(node)).then(uplinkOf);
+export const commitUplink = (bridge: string, name: string, token: string, node?: string) =>
+  rpc(HostNetworkService.method.commitUplink, { bridge, name, token }, on(node)).then(uplinkOf);
+export const reapplyUplink = (bridge: string, name: string, node?: string) =>
+  rpc(HostNetworkService.method.reapplyUplink, { bridge, name }, on(node)).then(uplinkOf);
+export const deleteUplink = (bridge: string, name: string, node?: string) =>
+  rpc(HostNetworkService.method.deleteUplink, { bridge, name }, on(node)).then(none);
 
 /** The host's PCI devices (glidex.host.v1: `{devices}`). */
-export const listPciDevices = () => rpc(PciService.method.listPciDevices).then((r) => (r.devices ?? []) as PciDevice[]);
+export const listPciDevices = (node?: string) =>
+  rpc(PciService.method.listPciDevices, {}, on(node)).then((r) => (r.devices ?? []) as PciDevice[]);
 
 // ---- images and disks ---------------------------------------------------------
 

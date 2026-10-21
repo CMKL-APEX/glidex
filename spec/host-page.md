@@ -29,7 +29,7 @@ for browsers.
 
 | # | Topic | Decision | Why |
 |---|---|---|---|
-| W1 | Host page | `/hosts/:id`, one page per node (on a standalone host, the one node). It has these sections:<br>• **Overview**: capacity, topology, versions, and the node record in a cluster.<br>• **Networking**: OVS and DPDK status, install, bridges, uplinks, and the physical networks.<br>• **Devices**: PCI devices, cordoning, SR-IOV.<br>• **Maintenance**: reconcile, and leave on a cluster member.<br>`/cluster/nodes/:id` redirects to it, and the cluster-only sections (OVN, tunnels, membership actions) move with it and show only in a cluster. The menu has **Host** on a standalone host and **Hosts** in a cluster (the node list). The Networking page keeps the network records, which belong to the whole cluster, and links to each host for its bridges and uplinks. | One place per host, the same standalone or clustered; nothing about a host is reachable only from that host. |
+| W1 | Host page | `/hosts/:id`, one page per node (on a standalone host, the one node): the Node page of clustering-ui.md §5.2 (state, capacity, the node's settings, **Topology** with its devices and cordoning, VMs and disks, the membership actions) plus a **Networking** section: Open vSwitch status and install, bridges and uplinks, run on that node (W2). `/cluster/nodes/:id` redirects to it; the cluster-only parts (OVN, system roles, the way back to the Cluster page) show only in a cluster. The menu has **Hosts** (with `listNodes`): on a standalone host it opens the one page, in a cluster the Cluster page's node list. The Networking page keeps the network records, which belong to the whole cluster, and links to the Host page for bridges and uplinks. | One place per host, the same standalone or clustered; nothing about a host is reachable only from that host. |
 | W2 | Choosing the host | Host-only calls carry `X-Glidex-Target-Node: <node id>`. On a server, a request naming another node has its route's action authorized on that node's `Host` (`Ent::host_of`), then runs there over the node link (`relay::run_on_host`, server certificate), as relayed requests do now. A request naming the server itself, or naming no node, runs locally. Anywhere else, the header is refused with `400 bad_target_node`: on a path that isn't host-only, or naming an unknown or departed node, or on a standalone host naming any node but itself. Per-host roles (tenancy.md, #60) already decide who may act on which host. | It reuses the relay's checked path. The browser never talks to an agent. |
 | W3 | Where each server's UI is | Each server publishes its web UI's address as `status.ui_url` in its node record, which replicates to every node. It is the first of these that is set:<br>1. **`cluster.ui_url`** in the server's `control-plane.json`: a custom address, e.g. a **load balancer** in front of the servers (`https://glidex.example.com`). Servers behind one load balancer all set the same value.<br>2. The address its glidex-ui **reports** (§3): the Tailscale name when the Tailscale certificate is on, else the first name in `GLIDEX_UI_HOSTS`, else the host's FQDN, with the port it listens on.<br>3. The first `auth.allowed_origins` entry.<br>Agents publish none. | No setting is needed in the common case, and a site with a load balancer names it once per server. |
 | W4 | A custom address is trusted | A server with `cluster.ui_url` also accepts it as an origin, alongside `auth.allowed_origins` (computed or set). Its OIDC callback defaults to it (`redirect_uri` unset), and its glidex-ui accepts its host as a `Host` value (§3) besides `GLIDEX_UI_HOSTS`. | Behind a load balancer, logins and API calls arrive with the load balancer's origin and Host. Every server must take them, and the IdP needs one callback for all of them. |
@@ -61,12 +61,10 @@ PUT /ui/self {"url": "https://gpu-dev2.example.ts.net:5173"}
 
 ## 4. Who sees what
 
-- **Hosts list and pages:** they are shown with `listNodes`; a
-  standalone host's one page is shown with `readHostTopology` or
-  `readOvsStatus` on `Host`.
+- **Hosts list and pages:** they are shown with `listNodes`.
 - **Sections:** each section asks `POST /authz/allowed` for its actions
-  on that page's host (`hostOf`), and is hidden when none is allowed,
-  as on the Node page today.
+  on that page's host (`hostOf`), as on the Node page today; Networking
+  is hidden when reading the host's OVS status is refused.
 
 ## 5. Uplinks on another host
 
@@ -93,7 +91,8 @@ NIC carries the node's advertise address.
   - **Role and URL:** a user holding a role on the server's host only is
     refused on the agent; `ui_url` replicates to the agent.
 - **UI e2e:**
-  - **Standalone:** the Host page's Networking and Devices sections;
+  - **Standalone:** the Host page's Networking section, `/hosts` and the
+    old address leading to it;
   - **Mocked two-node directory:** the Hosts list, and requests carrying
     the target node.
 - **On the host pair** (gpu-dev2 server, prism1 agent):
@@ -115,7 +114,7 @@ NIC carries the node's advertise address.
 4. **UI:**
    - the Host page and the Hosts list (W1), with the target header on
      host-only calls;
-   - the Networking page's host parts move there;
+   - the Networking page's OVS status, install and bridges move there;
    - `/cluster/nodes/:id` redirects;
    - web-ui.md routes;
    - e2e.

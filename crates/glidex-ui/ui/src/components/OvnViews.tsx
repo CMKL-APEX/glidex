@@ -11,7 +11,7 @@ function Chassis({ c }: { c: Pick<ChassisRef, "chassis" | "node" | "node_name"> 
   if (!c) return <span className="text-gray-400">none</span>;
   if (!c.node) return <span className="font-mono text-xs">{c.chassis}</span>;
   return (
-    <Link to={`/cluster/nodes/${encodeURIComponent(c.node)}`} className="text-sky-700 hover:underline">
+    <Link to={`/hosts/${encodeURIComponent(c.node)}`} className="text-sky-700 hover:underline">
       {c.node_name ?? c.node.slice(0, 8)}
     </Link>
   );

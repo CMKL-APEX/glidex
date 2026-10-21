@@ -132,7 +132,7 @@ test("an image is copied to a node of its architecture, and a copy let go", asyn
 
 test("a node's unrecorded image files are listed and deleted on request", async ({ page }) => {
   const seen = await mock(page);
-  await page.goto(`/cluster/nodes/${A1}`);
+  await page.goto(`/hosts/${A1}`);
   await expect(page.getByText("aarch64", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Unrecorded image files \(1/ })).toBeVisible();
   await expect(page.getByText("old.qcow2")).toBeVisible();
