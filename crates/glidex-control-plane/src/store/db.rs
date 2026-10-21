@@ -125,6 +125,8 @@ tables! {
     TrustedClusters = 60 => "trusted_clusters",
     // What each trusted directory's feed last wrote here (D68).
     FeedState = 61 => "feed_state",
+    // The directory's chains ended in the last 12 h, for feeds (D67).
+    EndedSids = 62 => "ended_sids",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -145,9 +147,8 @@ impl TableId {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
-            | FederatedTokens | Passkeys | SigningKeys | RefreshTokens | TrustedClusters => {
-                Scope::Directory
-            }
+            | FederatedTokens | Passkeys | SigningKeys | RefreshTokens | TrustedClusters
+            | EndedSids => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

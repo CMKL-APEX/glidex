@@ -651,6 +651,12 @@ export function startOidc(returnTo: string, reauth = false, connector?: string) 
   window.location.assign(`${API_BASE}${path}?${q}`);
 }
 
+/** A login at trusted directory `id` (spec/tenancy.md D69). */
+export function startTrustedLogin(id: string, returnTo: string) {
+  const q = new URLSearchParams({ return_to: returnTo });
+  window.location.assign(`${API_BASE}/auth/t/${encodeURIComponent(id)}/start?${q}`);
+}
+
 export async function logout(): Promise<void> {
   await request<void>("POST", "/auth/logout", {}, { quiet401: true });
   setCsrf(null);

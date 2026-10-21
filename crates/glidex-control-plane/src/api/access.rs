@@ -44,6 +44,26 @@ pub async fn methods(
         },
     );
     let own = found.directory == crate::tenants::LOCAL_DIRECTORY;
+    // "Sign in with …" for each directory this cluster trusts (D69).
+    let trusted: Vec<serde_json::Value> = app
+        .auth
+        .trust
+        .directories()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| super::trusted_login::callback_url(&app, &d.id).is_some())
+        .map(|d| {
+            let host = url::Url::parse(&d.issuer)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": d.id,
+                "host": host,
+                "tenants": d.tenants.iter().map(|t| t.display_name.clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     Json(serde_json::json!({
         // Host accounts are the host's own directory's (D23).
         "pam": own && app.auth.pam_connector(None).is_ok(),
@@ -54,6 +74,7 @@ pub async fn methods(
         "disabled": app.auth.is_disabled(),
         "directory": found.directory,
         "connectors": found.connectors,
+        "trusted_directories": trusted,
     }))
 }
 
@@ -82,7 +103,7 @@ fn default_method() -> String {
 }
 
 /// Whether cookies should be `Secure`: the browser reached us over TLS.
-fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
+pub(super) fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
         Listener::Ui | Listener::Relay => {
             headers
@@ -99,7 +120,7 @@ fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> 
     }
 }
 
-fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValue {
+pub(super) fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValue {
     let mut c = format!(
         "{}={}; HttpOnly; SameSite=Strict; Path=/",
         auth::SESSION_COOKIE,
@@ -313,7 +334,7 @@ fn query_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> 
     }
 }
 
-fn first_origin(app: &AppState) -> Option<&str> {
+pub(super) fn first_origin(app: &AppState) -> Option<&str> {
     app.auth
         .config
         .auth

@@ -284,6 +284,8 @@ pub struct AuthService {
     /// the peer assertions seen (D63).
     pub trust: crate::trust::TrustStore,
     pub peer_replays: crate::directory::peer::Replays,
+    /// Browser logins at trusted directories under way (D69).
+    pub trusted_logins: crate::trust::PendingLogins,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -421,6 +423,7 @@ impl AuthService {
             refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
+            trusted_logins: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -468,6 +471,7 @@ impl AuthService {
             refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
+            trusted_logins: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -1150,6 +1154,7 @@ impl AuthService {
         let method = match s.method.as_str() {
             "oidc" => Method::Oidc,
             "passkey" => Method::Passkey,
+            "directory" => Method::Directory,
             _ => Method::Pam,
         };
         Ok(Some(Principal {
@@ -1384,6 +1389,17 @@ impl AuthService {
         method: Method,
         mfa: bool,
     ) -> Result<(String, String), AuthError> {
+        self.create_session_from(user, method, mfa, None)
+    }
+
+    /// A session, made from a trusted directory's chain `sid` when given.
+    pub fn create_session_from(
+        &self,
+        user: &User,
+        method: Method,
+        mfa: bool,
+        sid: Option<String>,
+    ) -> Result<(String, String), AuthError> {
         let id = random_token(32);
         let csrf = random_token(24);
         let now = store::now();
@@ -1397,6 +1413,7 @@ impl AuthService {
                 last_seen: now,
                 authenticated_at: now,
                 mfa,
+                sid,
             },
         )?;
         let cfg = &self.config.auth.session;
@@ -1410,6 +1427,10 @@ impl AuthService {
     pub fn end_session(&self, p: &Principal) -> Result<(), AuthError> {
         if let Some(h) = &p.session_hash {
             self.store.remove_session(h)?;
+            // And the clusters' browser logins it approved (D69).
+            if let Err(e) = self.refresh_tokens.end_session(h) {
+                tracing::warn!("ending the session's chains: {}", e);
+            }
         }
         Ok(())
     }

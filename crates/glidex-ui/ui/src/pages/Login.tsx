@@ -103,6 +103,29 @@ export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; 
   );
 }
 
+/** "Sign in with <organization>" for each directory of another
+ *  organization this cluster trusts (spec/tenancy.md D69): its login page,
+ *  then back here. */
+export function TrustedButtons({ methods }: { methods: AuthMethods }) {
+  const ds = methods.trusted_directories ?? [];
+  if (ds.length === 0) return null;
+  return (
+    <div className="mt-4 space-y-2" data-testid="trusted-directories">
+      {ds.map((d) => (
+        <button
+          key={d.id}
+          type="button"
+          onClick={() => api.startTrustedLogin(d.id, currentPath())}
+          className="w-full px-4 py-2 text-sm font-medium text-sky-700 bg-white border border-sky-300 hover:bg-sky-50 rounded-lg"
+        >
+          Sign in with {d.tenants.length > 0 ? d.tenants.join(", ") : d.host}
+          {d.tenants.length > 0 && <span className="block text-xs font-normal text-gray-500">at {d.host}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** "Your email" (spec/tenancy.md D61): an organization whose sign-in this
  * host serves has its own login page; the email finds it. */
 function EmailRoute({ current }: { current: string }) {
@@ -137,7 +160,7 @@ function EmailRoute({ current }: { current: string }) {
 
 export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; onLoggedIn: () => void }) {
   const sso = offersSso(methods);
-  const none = !methods.pam && !sso;
+  const none = !methods.pam && !sso && !(methods.trusted_directories?.length ?? 0);
   const directory = methods.directory ?? "local";
   return (
     <div className="min-h-screen flex items-start justify-center pt-24 px-4">
@@ -162,6 +185,7 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
         {sso && <SsoButtons methods={methods} />}
         {methods.passkeys && (methods.pam || sso) && <div className="my-3" />}
         {methods.passkeys && <PasskeyButton onDone={onLoggedIn} />}
+        {directory === "local" && <TrustedButtons methods={methods} />}
         {directory === "local" && <EmailRoute current={directory} />}
         {none && !methods.passkeys && (
           <p className="text-sm text-gray-600">

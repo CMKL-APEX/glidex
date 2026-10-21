@@ -95,9 +95,62 @@ pub fn verify(
     replays: &Replays,
     now: u64,
 ) -> Result<Value, PeerError> {
+    checked(jwt, TYP, jwks, iss, aud, Some(purpose), replays, now)
+}
+
+/// A client assertion's `client_assertion_type` (RFC 7523 §2.2).
+pub const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+/// A trusted cluster's client assertion for directory token endpoint
+/// `aud` (`private_key_jwt`, RFC 7523, D69): `iss` and `sub` its client
+/// id, signed with the cluster key.
+pub fn client_assertion(
+    keys: &ConnectorStore,
+    client_id: &str,
+    aud: &str,
+    now: u64,
+) -> Result<String, ConnectorError> {
+    keys.sign_jwt(
+        super::issuer::CLUSTER_OWNER,
+        "JWT",
+        &json!({
+            "iss": client_id, "sub": client_id, "aud": aud, "iat": now,
+            "exp": now + ASSERTION_SECS, "jti": crate::auth::random_token(16),
+        }),
+    )
+}
+
+/// A client assertion's claims, if it verifies against `jwks` as
+/// `client_id`'s for `aud`, once.
+pub fn verify_client_assertion(
+    jwt: &str,
+    jwks: &Value,
+    client_id: &str,
+    aud: &str,
+    replays: &Replays,
+    now: u64,
+) -> Result<Value, PeerError> {
+    let c = checked(jwt, "JWT", jwks, client_id, aud, None, replays, now)?;
+    if c["sub"].as_str() != Some(client_id) {
+        return Err(PeerError::Invalid("sub isn't the client".into()));
+    }
+    Ok(c)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked(
+    jwt: &str,
+    typ: &str,
+    jwks: &Value,
+    iss: &str,
+    aud: &str,
+    purpose: Option<&str>,
+    replays: &Replays,
+    now: u64,
+) -> Result<Value, PeerError> {
     let bad = |m: &str| PeerError::Invalid(m.to_string());
     let header = jsonwebtoken::decode_header(jwt).map_err(|e| bad(&e.to_string()))?;
-    if header.typ.as_deref() != Some(TYP) || header.alg != jsonwebtoken::Algorithm::ES256 {
+    if header.typ.as_deref() != Some(typ) || header.alg != jsonwebtoken::Algorithm::ES256 {
         return Err(bad("not a peer assertion"));
     }
     let set: jsonwebtoken::jwk::JwkSet =
@@ -123,7 +176,7 @@ pub fn verify(
     if now >= exp + 30 || nbf > now + 30 {
         return Err(bad("expired, or not yet good"));
     }
-    if c["purpose"].as_str() != Some(purpose) {
+    if purpose.is_some_and(|p| c["purpose"].as_str() != Some(p)) {
         return Err(bad("an assertion for something else"));
     }
     if exp > now + ASSERTION_SECS + 30 {
@@ -155,6 +208,27 @@ pub async fn post(
     assertion: &str,
     body: &Value,
 ) -> Result<(u16, Value), String> {
+    exchange(base, pin, path, Some(assertion), body).await
+}
+
+/// `post` without a peer assertion: a token request authenticated by the
+/// client assertion in `body` (D69).
+pub async fn post_unsigned(
+    base: &str,
+    pin: &str,
+    path: &str,
+    body: &Value,
+) -> Result<(u16, Value), String> {
+    exchange(base, pin, path, None, body).await
+}
+
+async fn exchange(
+    base: &str,
+    pin: &str,
+    path: &str,
+    assertion: Option<&str>,
+    body: &Value,
+) -> Result<(u16, Value), String> {
     let uri: axum::http::Uri = base.parse().map_err(|e| format!("{base}: {e}"))?;
     if uri.scheme_str() != Some("https") {
         return Err(format!("{base}: a peer is reached over https"));
@@ -176,7 +250,7 @@ pub async fn post(
         },
         &[b"http/1.1"],
     )?;
-    let exchange = async {
+    let run = async {
         let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
             .await
             .map_err(|e| format!("{host}:{port}: {e}"))?;
@@ -192,16 +266,16 @@ pub async fn post(
         tokio::spawn(async move {
             let _ = conn.await;
         });
-        let req = hyper::Request::post(format!("{}{path}", base.trim_end_matches('/')))
+        let mut req = hyper::Request::post(format!("{}{path}", base.trim_end_matches('/')))
             .header(
                 hyper::header::HOST,
                 uri.authority().map(|a| a.as_str()).unwrap_or(""),
             )
-            .header(hyper::header::CONTENT_TYPE, "application/json")
-            .header(
-                hyper::header::AUTHORIZATION,
-                format!("{SCHEME} {assertion}"),
-            )
+            .header(hyper::header::CONTENT_TYPE, "application/json");
+        if let Some(a) = assertion {
+            req = req.header(hyper::header::AUTHORIZATION, format!("{SCHEME} {a}"));
+        }
+        let req = req
             .body(Full::new(Bytes::from(body.to_string())))
             .map_err(|e| e.to_string())?;
         let resp = sender.send_request(req).await.map_err(|e| e.to_string())?;
@@ -217,7 +291,7 @@ pub async fn post(
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         ))
     };
-    tokio::time::timeout(TIMEOUT, exchange)
+    tokio::time::timeout(TIMEOUT, run)
         .await
         .map_err(|_| format!("{base}: no answer"))?
 }

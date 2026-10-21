@@ -361,12 +361,20 @@ async fn reqwest_free_post(
         .0
 }
 
-/// D67–D69: after the handshake, the cluster pulls the directory's feed:
-/// its admitted tenant's users, projects and roles appear in the replica,
-/// a member's access token from the directory works at the cluster, a
-/// non-member gets none, and disabling the user reaches the cluster.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
+/// Two organizations after the handshake: north, a cluster, admitting
+/// tenant acme of directory acme (its `local`). Erin is acme's tenant
+/// admin and owns its project web; Bob is in the directory but not in
+/// acme. No feed pulled yet.
+struct Admitted {
+    north: Cp,
+    acme: Cp,
+    erin: String,
+    bob: String,
+    project: String,
+    issuer: String,
+}
+
+async fn admitted() -> Admitted {
     let north = cp().await;
     let acme = cp().await;
     let op = north.admin();
@@ -454,6 +462,31 @@ async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
+    Admitted {
+        north,
+        acme,
+        erin,
+        bob,
+        project,
+        issuer,
+    }
+}
+
+/// D67–D69: after the handshake, the cluster pulls the directory's feed:
+/// its admitted tenant's users, projects and roles appear in the replica,
+/// a member's access token from the directory works at the cluster, a
+/// non-member gets none, and disabling the user reaches the cluster.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        bob,
+        project,
+        issuer,
+    } = admitted().await;
+    let store = &acme.app.auth.store;
     let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
 
     // Erin's tokens for north, from her directory.
@@ -466,6 +499,7 @@ async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
                 auth_time: glidex_control_plane::auth::store::now(),
                 amr: vec!["pwd".into()],
                 mfa: false,
+                session: None,
             };
             let (refresh, _) = acme
                 .app
@@ -601,4 +635,251 @@ async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
             .unwrap()
     );
     assert_eq!(whoami(access).await.0, StatusCode::UNAUTHORIZED);
+}
+
+/// A GET with `cookies`: its status, `Location` and `Set-Cookie`s.
+async fn browse(
+    router: &Router,
+    path: &str,
+    cookies: &[String],
+) -> (StatusCode, String, Vec<String>) {
+    let mut b = Request::get(path).header(header::ORIGIN, ORIGIN);
+    if !cookies.is_empty() {
+        b = b.header(header::COOKIE, cookies.join("; "));
+    }
+    let resp = router
+        .clone()
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let set = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .collect();
+    (resp.status(), location, set)
+}
+
+/// The path and query of `url`, as the browser would ask its host.
+fn path_of(url: &str) -> String {
+    let u = url::Url::parse(url).unwrap();
+    format!("{}?{}", u.path(), u.query().unwrap_or(""))
+}
+
+/// The same, for the API behind the web UI's `/api`.
+fn ui_path(url: &str) -> String {
+    path_of(url).strip_prefix("/api").unwrap().to_string()
+}
+
+fn query_of(url: &str, key: &str) -> Option<String> {
+    url::Url::parse(url)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+}
+
+/// D69's browser login: north's login page offers acme's directory; the
+/// code flow goes there and back; the code is exchanged with north's
+/// client assertion; the cluster session is Erin's and ends when she logs
+/// out at her directory (the next feed carries the chain's end). Bob, not
+/// in acme, is refused at his directory; a wrong callback, a missing
+/// client assertion and another browser's callback are refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_logs_in_to_the_cluster_at_its_directory() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        bob,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let c = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let callback = format!("{ORIGIN}/api/auth/t/{}/callback", d.id);
+    assert_eq!(
+        c.ui_callback.as_deref(),
+        Some(callback.as_str()),
+        "registered at the redeem"
+    );
+
+    // The login page.
+    let resp = north
+        .router
+        .clone()
+        .oneshot(Request::get("/auth/methods").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let m: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(m["trusted_directories"][0]["id"], d.id.as_str(), "{m}");
+    assert_eq!(m["trusted_directories"][0]["tenants"][0], "Acme", "{m}");
+
+    // A session at acme, as each user's browser has after logging in there.
+    let at_acme = |user: &str| {
+        let u = acme.app.auth.store.user(user).unwrap().unwrap();
+        let (cookie, csrf) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+        (
+            format!("{}={cookie}", auth::SESSION_COOKIE),
+            format!("{cookie}|{csrf}"),
+        )
+    };
+    let start = |browser: &'static str| {
+        let north = &north;
+        let d = d.clone();
+        async move {
+            let (s, to, set) = browse(
+                &north.router,
+                &format!("/auth/t/{}/start?return_to=/vms", d.id),
+                &[],
+            )
+            .await;
+            assert_eq!(s, StatusCode::SEE_OTHER, "{browser}");
+            assert!(to.starts_with(&format!("{}/authorize?", d.issuer)), "{to}");
+            (
+                to,
+                set.into_iter()
+                    .find(|c| c.starts_with("gx_tlogin="))
+                    .unwrap(),
+            )
+        }
+    };
+
+    // Bob isn't in acme: his directory says no.
+    let (to, _) = start("bob").await;
+    let (bob_cookie, _) = at_acme(&bob);
+    let (s, back, _) = browse(&acme.router, &path_of(&to), &[bob_cookie]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(back.starts_with(&callback), "{back}");
+    assert_eq!(query_of(&back, "error").as_deref(), Some("access_denied"));
+
+    // Only the registered callback.
+    let (erin_cookie, erin_session) = at_acme(&erin);
+    let wrong = to.replace(
+        &url::form_urlencoded::byte_serialize(callback.as_bytes()).collect::<String>(),
+        "https%3A%2F%2Fevil.example%2Fcb",
+    );
+    assert_ne!(wrong, to);
+    let (s, _, _) = browse(
+        &acme.router,
+        &path_of(&wrong),
+        std::slice::from_ref(&erin_cookie),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "another redirect_uri");
+
+    // Erin: there and back.
+    let (to, tlogin) = start("erin").await;
+    let (s, back, _) = browse(
+        &acme.router,
+        &path_of(&to),
+        std::slice::from_ref(&erin_cookie),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let code = query_of(&back, "code").expect(&back);
+    // Without north's client assertion, the code is no good to anyone.
+    let resp = acme
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/d/local/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&client_id=cluster:{}&code=x&redirect_uri=x",
+                    c.cluster_id
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "no client assertion"
+    );
+    // Another browser (no cookie) can't finish it.
+    let (s, _, _) = browse(&north.router, &ui_path(&back), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "another browser");
+    // The state was spent by that try: start again.
+    let (to, tlogin2) = start("erin again").await;
+    assert_ne!(tlogin, tlogin2);
+    let (_, back, _) = browse(
+        &acme.router,
+        &path_of(&to),
+        std::slice::from_ref(&erin_cookie),
+    )
+    .await;
+    assert_ne!(query_of(&back, "code"), Some(code));
+    let (s, home, set) = browse(&north.router, &ui_path(&back), &[tlogin2]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER, "{home}");
+    assert_eq!(home, "/vms");
+    let session = set
+        .into_iter()
+        .find(|c| c.starts_with(&format!("{}=", auth::SESSION_COOKIE)))
+        .expect("a session at north");
+    let whoami = |cookie: String| {
+        let north = &north;
+        async move {
+            let resp = north
+                .router
+                .clone()
+                .oneshot(
+                    Request::get("/auth/whoami")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                st,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (s, me) = whoami(session.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{me}");
+    assert_eq!(
+        (me["user"]["id"].as_str(), me["method"].as_str()),
+        (Some(erin.as_str()), Some("directory")),
+        "{me}"
+    );
+
+    // She logs out at acme: the chain ends, and with the next feed her
+    // session at north.
+    let (s, _) = acme.rest("POST", "/auth/logout", None, &erin_session).await;
+    assert!(s.is_success());
+    assert!(
+        glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap(),
+        "the ended chain is news"
+    );
+    assert_eq!(whoami(session).await.0, StatusCode::UNAUTHORIZED);
 }
