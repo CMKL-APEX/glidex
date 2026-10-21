@@ -36,11 +36,18 @@ export default function Invite() {
       .catch(() => setError("This invitation can't be used: it was already used, revoked, or it expired. Ask for a new one."));
   }, [token]);
 
+  const passkey = info?.connector_kind === "passkey";
   const accept = async () => {
     if (!token || !info?.connector_id) return;
     setBusy(true);
     setError(null);
     try {
+      // A passkey invitation (spec/tenancy.md D60): the first passkey signs in.
+      if (passkey) {
+        await api.acceptPasskeyInvitation(token);
+        window.location.assign("/");
+        return;
+      }
       const { redirect } = await api.startInvitedLogin(info.connector_id, token);
       window.location.assign(redirect);
     } catch (e) {
@@ -64,12 +71,19 @@ export default function Invite() {
             <p className="mt-3 text-sm text-gray-700">
               Join <strong>{info.tenant_display_name || info.tenant_slug}</strong> as {roleLabel(info.role)}.
             </p>
-            <p className="mt-2 text-sm text-gray-600">
-              Sign in as <strong>{info.email}</strong> through {info.connector_display_name || info.connector_id}. Another
-              account won't take the invitation.
-            </p>
+            {passkey ? (
+              <p className="mt-2 text-sm text-gray-600">
+                Your account (<strong>{info.email}</strong>) is new: create a passkey for it on this device, with your PIN,
+                fingerprint or face. You sign in with it from then on, and can add your organization's sign-in later.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-gray-600">
+                Sign in as <strong>{info.email}</strong> through {info.connector_display_name || info.connector_id}. Another
+                account won't take the invitation.
+              </p>
+            )}
             <button className={`${primaryButton} mt-6 w-full`} disabled={busy} onClick={accept}>
-              Sign in with {info.connector_display_name || info.connector_id}
+              {passkey ? "Create a passkey and sign in" : `Sign in with ${info.connector_display_name || info.connector_id}`}
             </button>
           </>
         )}

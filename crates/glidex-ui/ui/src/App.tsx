@@ -33,6 +33,7 @@ const VmConsole = lazy(() => import("./pages/VmConsole"));
 const Invite = lazy(() => import("./pages/Invite"));
 const Account = lazy(() => import("./pages/Account"));
 const Device = lazy(() => import("./pages/Device"));
+const Directories = lazy(() => import("./pages/Directories"));
 const Directory = lazy(() => import("./pages/Directory"));
 
 function Shell() {
@@ -75,6 +76,9 @@ function Shell() {
             <Route path="/usage" element={<Usage />} />
             <Route path="/account" element={<Account />} />
             <Route path="/device" element={<Device />} />
+            <Route path="/directories" element={<Directories />} />
+            {/* A directory's login page, once signed in (spec/tenancy.md D61). */}
+            <Route path="/login/:directory" element={<Navigate to="/" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </Suspense>

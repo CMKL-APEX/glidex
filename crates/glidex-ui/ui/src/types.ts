@@ -993,6 +993,8 @@ export interface AuthMethods {
   /** Passkeys are on (spec/passkeys.md), and their domain when set. */
   passkeys?: boolean;
   passkeys_rp_id?: string | null;
+  /** The directory these methods sign in to (spec/tenancy.md D61). */
+  directory?: string;
 }
 
 // The access routes (projects, bindings, users, teams, tokens, policies,
