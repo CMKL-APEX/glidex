@@ -15,8 +15,9 @@ own disk directory on each node. You can register more:
   so its VM can run on any node that reaches the datastore, and can be
   placed on another node when it is stopped or its node is lost.
 
-Glidex doesn't mount anything. You mount the filesystem on each node,
-and Glidex checks what it finds there. Datastores belong to the cluster
+Glidex doesn't mount anything or make volume groups. You mount the
+filesystem (or make the volume group) on each node, and Glidex checks
+what it finds there. Datastores belong to the cluster
 (or to the standalone host): register one once, from any server, and
 every node checks it.
 
@@ -31,6 +32,10 @@ disks stay where they always were: nothing moves when you add
 datastores.
 
 ## Mount it under /srv/glidex
+
+This and the next sections are about directories (`dir` and
+`shared-dir`). An LVM-thin datastore needs no mount: see
+[LVM-thin](#lvm-thin).
 
 The installer creates `/srv/glidex` (`root:root 0755`) and leaves it in
 place on uninstall. The control plane and the VMs may write only there
@@ -108,7 +113,9 @@ gxctl datastore create fast2 --path /srv/glidex/fast --node-path node3=/srv/glid
 A name is 1-64 letters, digits, `.`, `_` and `-`, not starting with `.`,
 and unique (`local` included). Over the API it is `POST /datastores`
 with `name`, `driver` (`DATASTORE_DRIVER_DIR` or
-`DATASTORE_DRIVER_SHARED_DIR`), `path`, and optionally `node_paths`,
+`DATASTORE_DRIVER_SHARED_DIR`; for LVM-thin see
+[Register an LVM-thin datastore](#register-an-lvm-thin-datastore)),
+`path`, and optionally `node_paths`,
 `nodes`, `default_for_disks` and `overcommit`; see the
 [REST API](../api/rest.md). In a cluster, datastores can be registered
 only once every server runs a release that has them; until then the
@@ -161,6 +168,9 @@ node, mount, and register it again.
 | `NoMarker` | Shared: no marker, so probably not mounted on this node | Mount it |
 | `NotEmpty` | Shared: files but no marker; not claimed, since they aren't Glidex's | Register an empty directory |
 | `ForeignMarker` | Shared: another datastore's or another cluster's directory | Use another export or directory |
+
+An LVM-thin datastore has reasons of its own; see
+[Node status](#node-status).
 
 ```bash
 gxctl datastore list          # each datastore, how many nodes reach it, free space
@@ -238,7 +248,8 @@ In the web UI it is **Make default** on the datastore's row (on
 
 ## Overcommit and capacity
 
-Disk files are thin, so by default (overcommit on) a datastore accepts
+Disk files and LVM-thin volumes are thin, so by default (overcommit on)
+a datastore accepts
 disks bigger than its free space, as `local` always has. With overcommit
 off, a new disk, or a disk moved in, that doesn't fit in the free space
 of the best node (less the disks still being made there) is refused
@@ -279,10 +290,11 @@ Refused, with `409 conflict` and the reason:
 - deleting an LVM-thin datastore while a node keeps an image's volume
   in it (`gxctl datastore show` lists them as *image volumes*): delete
   those images first, or remove their `gx-i-…` volumes with `lvremove`.
-  It can go once each node has looked again, within a minute.
+  It can go once each node has looked again, within a minute (see
+  [Deleting an LVM-thin datastore](#deleting-an-lvm-thin-datastore)).
 
-Deleting a datastore leaves its directory and files alone; clean them up
-yourself.
+Deleting a datastore leaves its directory and files, or its volume group
+and pool, alone; clean them up yourself.
 
 ## Moving VMs and disks
 
@@ -346,7 +358,8 @@ Placing VMs needs the `system-admin` role.
 ### Moving a disk between datastores
 
 A disk moves while no running VM uses it: from `local` to a shared
-datastore and back, or onto another node-local datastore. Users with the
+datastore and back, or onto another node-local datastore, LVM-thin
+included. Users with the
 `editor` role in its project move it, on the **Disks** page or with
 `gxctl disk move`; see
 [Moving a disk](../user-guide/images-and-disks.md#moving-a-disk) for the
@@ -356,6 +369,8 @@ commands and what is refused.
   destination, copies it into the destination, checks the copy, and
   only then switches the disk over and removes the old file. If the copy
   fails, the disk stays where it was (event `MoveFailed`).
+- Onto or off an LVM-thin datastore, the copy is always full, and raw
+  on it (see [Moving disks on and off](#moving-disks-on-and-off)).
 - A linked disk that isn't flattened is rebased onto the image's copy
   at the destination; on a shared datastore Glidex makes that copy
   first (see [Images on a shared datastore](#images-on-a-shared-datastore)).
@@ -367,54 +382,181 @@ commands and what is refused.
 
 ## LVM-thin
 
-An LVM-thin datastore keeps each disk as a raw thin volume in a volume
-group you made on every node, through `glidex-stord`, a small root helper
-the installer sets up. glidex never touches physical volumes, and stord
-acts only on the volume groups you allow and only on its own volumes
-(named `gx-d-…` and `gx-i-…`).
+An LVM-thin datastore (driver `lvm`) keeps each disk as a raw thin
+logical volume in a volume group and thin pool on each node. It is
+node-local: a disk on it lives on one node, and its VM runs there.
 
-1. On each node, make a volume group and a thin pool for glidex alone:
+Glidex runs as an unprivileged user, so a small root helper,
+`glidex-stord`, makes, activates, grows and removes the volumes for it.
+stord acts only on the volume groups you allow, and only on Glidex's
+own volumes: `gx-d-<disk-id>` for disks and `gx-i-<image-id>` for
+images. It never touches physical volumes, other logical volumes, or a
+volume group you didn't list. The installer sets it up on every host
+(see [Installation](installation.md)); it keeps no state of its own.
 
-   ```bash
-   sudo vgcreate vg-glidex /dev/nvme1n1
-   sudo lvcreate --type thin-pool -l 95%FREE -n pool vg-glidex
-   ```
+### Prepare the volume group
 
-2. Allow it, by re-running the installer with `--stord-allow-vg
-   vg-glidex`, or by adding it to `/etc/glidex/stord.json` and
-   restarting `glidex-stord`:
+You make the volume group and its thin pool, on each node that should
+have the datastore. Give Glidex a volume group of its own:
 
-   ```json
-   { "allowed_vgs": ["vg-glidex"] }
-   ```
+```bash
+sudo apt-get install lvm2 thin-provisioning-tools   # dnf: lvm2 device-mapper-persistent-data
+sudo vgcreate vg-glidex /dev/nvme1n1
+sudo lvcreate --type thin-pool -l 95%FREE -n pool vg-glidex
+```
 
-3. Register it:
+<!-- TODO(verify): the installer doesn't install lvm2 or the thin-provisioning tools; check the package names on dnf, yum and pacman hosts. -->
 
-   ```bash
-   gxctl datastore create fast --lvm vg-glidex/pool
-   ```
+Leaving some of the volume group free lets you grow the pool, or its
+metadata, later.
 
-   In the web UI: **Add datastore**, *LVM-thin on each node*. A node
-   whose volume group is named otherwise: `--node-path node3=vg-nvme`.
+### Allow it in glidex-stord
 
-What is different from a directory:
+stord allows no volume group by default. List yours in
+`/etc/glidex/stord.json`, on each node:
 
-- disks are always raw; a linked disk is a thin snapshot of the image's
-  volume on that node, made from the image the first time;
-- disks grow but never shrink;
-- each VM's unit may open exactly its own volumes;
-- moving a disk onto or off it always makes a full copy, raw on it;
-- when the pool's data or metadata is 80% full, the datastore shows a
-  warning. Extend it (`lvextend -L +100G vg-glidex/pool`, or
-  `--poolmetadatasize` for metadata) before it fills: a full thin pool
-  stops every guest on it at its next write.
+```bash
+cargo run -p glidex-install -- --stord-allow-vg vg-glidex
+```
 
-| Reason | Meaning |
-|---|---|
-| `StordUnavailable` | `glidex-stord` isn't running on this node |
-| `NotAllowed` | The volume group isn't in `/etc/glidex/stord.json` |
-| `NoVolumeGroup` | No volume group of that name on this node |
-| `NoThinPool` | The volume group has no thin pool of that name |
+The installer adds the group to the file (repeat the flag for more
+than one; it is not saved for later runs, but the file keeps the list)
+and restarts `glidex-stord`. Or edit the file and restart stord
+yourself:
+
+```json
+{ "allowed_vgs": ["vg-glidex"] }
+```
+
+```bash
+sudo systemctl restart glidex-stord
+```
+
+A missing file means no volume group. A file stord can't read or parse
+stops it from starting (`journalctl -u glidex-stord`); every node then
+shows the datastore as `StordUnavailable`. Restarting stord doesn't
+disturb running VMs: they keep their devices open.
+
+### Register an LVM-thin datastore
+
+**Web UI:** **Datastores**, **Add Datastore**, *LVM-thin on each node*:
+the **Name**, the **Volume group** and the **Thin pool**. In a cluster,
+**Volume groups of their own** takes one `node=volume-group` per line
+for nodes whose group is named otherwise.
+
+**gxctl:**
+
+```bash
+gxctl datastore create thin1 --lvm vg-glidex/pool
+gxctl datastore create thin2 --lvm vg-glidex/pool --nodes node1,node2 --node-path node3=vg-nvme
+```
+
+- `--lvm VG/POOL`: the volume group and its thin pool, instead of
+  `--path`.
+- `--node-path NODE=VG`: this node's own volume group (same pool name).
+- `--nodes`, `--default` and `--no-overcommit` work as for a directory.
+
+Over the API: `POST /datastores` with `driver`
+`DATASTORE_DRIVER_LVM`, `volume_group` and `thin_pool`, and no `path`
+(`400 invalid_datastore` otherwise); `node_paths` then maps nodes to
+their volume groups. Volume group and pool names are plain LVM names:
+letters, digits, `.`, `_`, `-` and `+`, not starting with `-`.
+
+The volume group and the pool can't be changed afterwards; a node's own
+volume group can (`gxctl datastore set thin1 --node-path node3=vg-nvme`),
+but Glidex doesn't move volumes from the old group.
+
+### Node status
+
+Each node asks its `glidex-stord` about the pool, as it checks a
+directory (see [What "reachable" means](#what-reachable-means)). A node
+that reaches it reports the pool's size and free space; `gxctl datastore
+show` prints its path as `vg-glidex/pool`.
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `StordUnavailable` | `glidex-stord` isn't running on this node, or doesn't answer | `systemctl status glidex-stord`; it isn't installed with `--no-services` |
+| `NotAllowed` | The volume group isn't in `/etc/glidex/stord.json` | [Allow it](#allow-it-in-glidex-stord) |
+| `NoVolumeGroup` | No volume group of that name on this node, or the LVM tools failed (the message says which) | Create it, fix the node's own volume group, or install `lvm2` |
+| `NoThinPool` | The volume group has no thin pool of that name | Create the pool, or fix the name |
+
+It also warns, while the datastore stays usable, when the pool's data
+or its metadata is 80% full (see [Thin pool space](#thin-pool-space)).
+
+### What is different from a directory
+
+- **Raw only.** Every disk is a raw volume; asking for qcow2 is refused
+  (`400 invalid_disk`).
+- **Linked disks are thin snapshots.** The first linked disk from an
+  image on a node makes that node's image volume, `gx-i-<image-id>`,
+  from the verified image, and seals it read-only. Each linked disk is
+  a thin snapshot of it: quick to make, and it takes pool space only
+  for what the guest changes. A full disk is a converted copy.
+- **Image volumes stay with their image.** A node keeps an image's
+  volume until the image is deleted, even when no linked disk uses it
+  any more. Deleting the image removes its volumes on every node.
+- **Disks grow but never shrink** (`400 invalid_disk`). Growing a disk
+  made from an image extends its root partition as usual.
+- **Device access per VM.** Before a VM starts, stord lets that VM's
+  unit open exactly its own volumes; deleting the VM takes that away.
+- **No volume lock of Glidex's own.** The volumes are on one node, and
+  the hypervisors' own locks refuse a second instance of a disk.
+
+### Moving disks on and off
+
+A disk moves onto or off an LVM-thin datastore like any other (see
+[Moving a disk between datastores](#moving-a-disk-between-datastores)),
+always as a full, standalone copy: a raw volume has no backing file.
+A disk moved onto it becomes raw. A disk moved off it to a directory
+stays raw, as a raw file.
+
+Volumes are on one node, so the usual rules hold: a disk can't go
+straight from one node's volume group to another node's; move it
+through a shared datastore. A VM with a disk on an LVM-thin datastore
+can be placed again only on the node that has the volume.
+
+### Metering
+
+`disk.stored` for a volume is the pool space it holds, not its size.
+For a file it is still the file's allocated size.
+
+<!-- TODO(verify): whether a linked volume's disk.stored counts blocks it still shares with the image volume (stord's data_percent × size). -->
+
+### Thin pool space
+
+Volumes are thin, so the pool, like a directory with overcommit on, can
+promise more than it has. With overcommit off, a new or moved disk that
+doesn't fit in the pool's free space is refused
+(`507 insufficient_storage`). Either way, keep an eye on it:
+
+- when the pool's data or metadata is 80% full, the node shows a
+  warning (*reachable, with warnings* on the **Datastores** page,
+  `warning:` under the node in `gxctl datastore show`);
+- **a full thin pool stops every guest on it at its next write.** Grow
+  the pool before that, from free space in the volume group:
+
+  ```bash
+  sudo lvextend -L +100G vg-glidex/pool                  # data
+  sudo lvextend --poolmetadatasize +1G vg-glidex/pool    # metadata
+  ```
+
+  LVM can also grow it by itself (`thin_pool_autoextend_threshold` in
+  `lvm.conf`), as long as the volume group has room.
+
+### Deleting an LVM-thin datastore
+
+Besides the disks, its image volumes keep an LVM-thin datastore: the
+delete is refused (`409 conflict`, naming the images and nodes) while
+any node keeps one. `gxctl datastore show` lists them under each node
+as *image volumes* (image ids). Delete those images, or remove the
+volumes on the node:
+
+```bash
+sudo lvremove vg-glidex/gx-i-<image-id>
+```
+
+The delete goes through once each node has looked again, within a
+minute. The volume group, the pool and anything else in them stay.
 
 ## Images on a shared datastore
 
@@ -459,8 +601,9 @@ disk on the default datastore) and when a disk is moved to it.
   is deleted.
 - Existing data can't be registered as a datastore: Glidex doesn't take
   over a directory that already has files in it.
-- No block storage (LVM, Ceph RBD), no CSI plugins, no disk snapshots,
-  and no per-datastore quotas yet.
+- Block storage is node-local LVM-thin only: no shared LVM, no Ceph
+  RBD, no CSI plugins, no disk snapshots, and no per-datastore quotas
+  yet.
 - A VM's root disk made along with the VM always goes to the default
   datastore. To put it elsewhere, create the disk first
   (`gxctl disk create … --datastore`) and boot the VM from it.

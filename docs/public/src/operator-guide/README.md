@@ -13,15 +13,17 @@ On every host, the installer sets up these systemd units:
 | Unit | Runs as | What it does |
 |---|---|---|
 | `glidex-control-plane.service` | `glidex` | The control plane: the REST and RPC API on port 8841 and on `/run/glidex-cp/api.sock`, the database, images and disks, and the controllers that keep every VM in the state asked for. |
-| `glidex-ui.service` | `glidex-ui` | The web UI on port 5173. Serves the UI and passes its API calls to the control plane over `/run/glidex-cp/ui.sock`. Holds no rights of its own. |
+| `glidex-ui.service` | `glidex-ui` | The web UI on port 5173. Serves the UI and passes its API calls to the control plane over `/run/glidex-cp/ui.sock`. Holds no rights of its own. On a cluster agent, it sends browsers to a server's web UI instead. |
 | `glidex-authd.socket`, `glidex-authd.service` | root | Checks local passwords with PAM for web logins. Started on demand; answers only the control plane. |
 | `glidex-netd.service` | root | Host networking: Open vSwitch bridges, NAT and DHCP, uplinks, VM ports, and binding NICs for DPDK and PCI passthrough. Takes changes only from the control plane. |
+| `glidex-stord.service` | root | The storage helper for [LVM-thin datastores](datastores.md#lvm-thin): makes, activates, grows and removes Glidex's logical volumes, only in the volume groups listed in `/etc/glidex/stord.json` (none by default), and lets each VM's unit open exactly its own volumes. Takes requests only from the control plane; keeps no state. Installed and enabled with the services, idle until a volume group is allowed. |
 | `glidex-vm@<id>.service` | `glidex` | One per running VM, in `glidex-vms.slice`: a small supervisor and the VM's hypervisor (Cloud Hypervisor or QEMU), in their own sandbox. Started and stopped by the control plane, never enabled. |
 
 Open vSwitch runs under its own units, and on cluster members so does
 OVN. The control plane needs `glidex-netd` only for VM networking and
-`glidex-authd` only for password logins: without them VMs run without
-NICs, and users log in another way.
+`glidex-authd` only for password logins, and `glidex-stord` only for
+LVM-thin datastores: without them VMs run without NICs, users log in
+another way, and disks live in directories.
 
 VMs belong to their own units, not to the control plane: restarting or
 upgrading the control plane leaves them running, and it picks them up
@@ -32,7 +34,7 @@ the VMs that were running (see `reconcile.on_host_boot` in
 Check the services:
 
 ```bash
-systemctl status glidex-control-plane glidex-ui glidex-authd.socket glidex-netd
+systemctl status glidex-control-plane glidex-ui glidex-authd.socket glidex-netd glidex-stord
 journalctl -u glidex-control-plane -b
 ```
 
@@ -40,8 +42,8 @@ journalctl -u glidex-control-plane -b
 
 | Client | Reaches | Authenticates with |
 |---|---|---|
-| Browser | `https://<host>:5173` | Local password or single sign-on |
-| `gxctl` on the host | `/run/glidex-cp/api.sock` | Your Unix account (in `glidex-users`) |
+| Browser | `https://<host>:5173` (in a cluster, a server's) | Local password, single sign-on or a passkey |
+| `gxctl` on the host | `/run/glidex-cp/api.sock` (not on a cluster agent) | Your Unix account (in `glidex-users`) |
 | `gxctl` elsewhere, scripts | `https://<host>:8841` | An access token |
 
 ## Pages
@@ -61,7 +63,7 @@ journalctl -u glidex-control-plane -b
   and NAT on a host.
 - [PCI passthrough](pci-passthrough.md): giving VMs host devices.
 - [Datastores](datastores.md): where disks live; shared storage (NFS,
-  CephFS) that lets VMs move between nodes.
+  CephFS) that lets VMs move between nodes, and LVM-thin volumes.
 - [Clusters](clusters.md): creating a cluster, joining, draining and
   removing nodes, cluster networks.
 - [Maintenance](maintenance.md): upgrades, backups and recovery.

@@ -187,7 +187,9 @@ kernel's modules from its own disk. Extraction does that for you; for a
 URL, Ubuntu publishes each build's kernel and initramfs next to the
 image, in `unpacked/`.
 
-Extraction works on x86_64 hosts only; a failed extraction fails only
+Extraction runs only on a host of the image's architecture (x86_64, or
+aarch64 with Cloud Hypervisor), and an aarch64 kernel gets
+`console=ttyAMA0` instead of `console=ttyS0`; a failed extraction fails only
 the kernel image (**Retry**, or `gxctl image retry`). See
 [Kernel boot](kernel-boot.md) to boot VMs from kernel images and to
 follow the guest's kernel.
@@ -208,7 +210,8 @@ a root disk independent of any one VM.
 - **Size (GiB)**: required for a blank disk. From an image it defaults
   to the image's size or 10 GiB, whichever is larger, and can't be
   smaller than the image.
-- **Format**: `qcow2` (default) or `raw`.
+- **Format**: `qcow2` (default) or `raw`. On an
+  [LVM-thin datastore](#disks-on-an-lvm-thin-datastore), choose `raw`.
 - **Clone** (from an image): **Linked** or **Full copy**.
 - **Datastore**: where the disk lives, shown once the operator has
   registered more than `local` ([Datastores](../operator-guide/datastores.md)).
@@ -238,7 +241,8 @@ doesn't fit in its free space (`507 insufficient_storage`).
 
 - **Linked** (default for qcow2): a thin overlay on the image. Fast and
   small, but the image must stay as long as the disk exists.
-- **Full**: an independent copy. Needed for `raw` disks.
+- **Full**: an independent copy. Needed for `raw` disks, except on an
+  LVM-thin datastore, where a linked disk is a raw thin snapshot.
 
 ### Listing and inspecting disks
 
@@ -293,6 +297,8 @@ gxctl disk resize data1 30                  # shrink
   partition is refused with the smallest size allowed.
 - A resize of a disk a running VM uses is recorded and applied once the
   VM stops.
+- A disk on an LVM-thin datastore can only grow; shrinking it is refused
+  (`400 invalid_disk`).
 
 To grow the root partition into space that is already there (say, after
 a resize with `--no-extend`):
@@ -346,6 +352,35 @@ A VM's root disk made along with the VM goes to the default datastore.
 To put it on another, create the disk first with `--datastore` (or the
 **Datastore** field) and create the VM from that disk.
 
+### Disks on an LVM-thin datastore
+
+An LVM-thin datastore keeps each disk as a raw volume in a volume group
+on one node (see [LVM-thin](../operator-guide/datastores.md#lvm-thin)).
+Like other node-local disks, it lives on one node and its VMs run
+there. What differs:
+
+- **Always raw.** Leave the format out (`gxctl disk create` does) and the
+  disk is raw; asking for qcow2 is refused (`400 invalid_disk`, *disks on
+  an lvm datastore are raw volumes; leave format out*). In the web UI,
+  set **Format** to `raw`; the form then offers only **Full copy**, so
+  make a linked disk with `gxctl` or the API.
+- **Linked or full.** A linked disk (the default with `gxctl`) is a thin
+  snapshot of the image on that node: quick to make, and small until
+  the guest writes. A full disk is an independent copy. Either way the
+  image stays as long as a linked disk uses it.
+- **Grow, never shrink.** `gxctl disk resize` to a larger size works as
+  usual, root partition included; a smaller size is refused.
+- **Moves make full, raw copies.** Moving a disk onto an LVM-thin
+  datastore, or off one, always copies it whole: **Flatten** makes no
+  difference. On the volume group it becomes raw; moved off to a
+  directory it stays raw.
+
+```bash
+gxctl disk create db-root --image ubuntu-24.04 --size-gib 40 --datastore thin1   # linked, raw
+gxctl disk create db-data --size-gib 200 --datastore thin1
+gxctl disk move data1 --datastore thin1
+```
+
 ### Moving a disk
 
 A disk can move to another datastore while no running VM uses it (stop
@@ -384,6 +419,9 @@ use the destination datastore. It is refused:
 - for an unknown datastore (`404 not_found`);
 - when the destination has overcommit off and lacks the space
   (`507 insufficient_storage`).
+
+Onto or off an LVM-thin datastore, a disk is always copied whole; see
+[Disks on an LVM-thin datastore](#disks-on-an-lvm-thin-datastore).
 
 Moving a disk from one node's own storage to another node's isn't
 possible directly: move it to a shared datastore, then from there. A

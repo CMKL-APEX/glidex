@@ -48,7 +48,9 @@ the host uses or an OVS-DPDK uplink, and needs `net-admin` or
 `system-admin` on that host. The web UI's node page has **Prepare** and
 **Release** buttons. Like the manual way below, it doesn't survive a
 reboot; a pool with `prepare: true` prepares its devices each time
-glidex starts. See [Prepare devices](host-resources.md#prepare-devices).
+glidex starts, and the installer can bind them at boot (see [Keep it
+across reboots](#keep-it-across-reboots)). See
+[Prepare devices](host-resources.md#prepare-devices).
 
 To do it by hand, load the module, and bind the device to it instead of
 its usual driver. For a device at `0000:41:00.0`:
@@ -60,8 +62,13 @@ echo 0000:41:00.0 | sudo tee /sys/bus/pci/devices/0000:41:00.0/driver/unbind
 echo 0000:41:00.0 | sudo tee /sys/bus/pci/drivers_probe
 ```
 
-This doesn't survive a reboot. To keep it, let the installer do it at
-every boot:
+This doesn't survive a reboot; see the next section.
+
+### Keep it across reboots
+
+The installer can bind devices to `vfio-pci`, and set SR-IOV VF counts,
+at every boot, before glidex, glidex-netd or any other hypervisor
+starts:
 
 ```bash
 glidex-install --vfio-devices a100                 # a pool from control-plane.json
@@ -70,31 +77,56 @@ glidex-install --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
 glidex-install --no-vfio-devices                   # stop doing it
 ```
 
-- `glidex-vfio-boot.service` runs early at boot, before glidex-netd,
-  the control plane and libvirt. It sets the VF counts first, then binds
-  each selected device (and its IOMMU group) to `vfio-pci`, with the
-  same udev rule and refusals as **Prepare**. Pools are copied as their
-  `match`, so re-run the installer after changing one.
-- **A device already on `vfio-pci` is never touched**, so a running VM
-  keeps its device.
-- The installer only records the settings and enables the unit; they
-  apply at the next boot. `--now` applies them at once as well. Even
-  then, a VF count whose physical function has a VF on `vfio-pci` is
-  left as it is, since changing it would remove that VF from its VM.
-- The settings are in `/etc/glidex/vfio-devices.json`, and `vfio-pci`
-  is loaded from `/etc/modules-load.d/glidex-vfio.conf`. Uninstall
-  removes both; devices stay where they are until the next boot.
-- For a GPU whose host driver loads first (`nvidia`, `nouveau`),
-  binding at boot takes it from that driver. Make sure nothing on the
-  host uses it.
+| Flag | What it does |
+| --- | --- |
+| `--vfio-devices LIST` | Pools of `control-plane.json` or PCI addresses, comma-separated. Each device and the rest of its IOMMU group go to `vfio-pci`. A new list replaces the old one. |
+| `--sriov PF=N` | `N` VFs on physical function `PF`, set before the binding so its VFs can be bound (by a pool with `match.vf_of`). Repeatable, or comma-separated; the last count for a PF wins. |
+| `--no-vfio-devices` | Forget both. What is bound now stays so until the next boot. |
+| `--now` | Apply them now as well. Not saved. |
+
+The settings are saved with the installer's other choices, so a later
+run without these flags keeps them.
+
+At boot, `glidex-vfio-boot.service` (a one-shot unit, there only while
+settings exist) runs after the kernel modules load and before
+glidex-netd, the control plane and libvirt:
+
+1. It sets the VF counts.
+2. It binds each selected device not yet on `vfio-pci`, with the same
+   udev rule and refusals as **Prepare**, so **Release** works on it
+   later.
+3. It prints what it bound, skipped and couldn't do
+   (`journalctl -u glidex-vfio-boot`). A device that fails stays on its
+   driver; the boot goes on.
+
+- **A device already on `vfio-pci` is never touched**, at boot or with
+  `--now`, so a running VM keeps its device.
+- **With `--now`**, a VF count is left as it is when a VF of that PF is
+  on `vfio-pci`, since changing the count would remove that VF from its
+  VM. Asking for the count it already has is fine.
+- **Pools are copied as their `match`.** Re-run the installer after
+  changing a pool's match. A pool needs `/etc/glidex/control-plane.json`
+  on that host; addresses don't.
+- **Files:** the settings are in `/etc/glidex/vfio-devices.json`, and
+  `vfio-pci` is loaded from `/etc/modules-load.d/glidex-vfio.conf`.
+  Uninstall and `--no-vfio-devices` remove both and the unit; devices
+  stay where they are until the next boot.
+- **Host drivers:** for a GPU whose host driver loads first (`nvidia`,
+  `nouveau`), binding at boot takes it from that driver. Make sure
+  nothing on the host uses it.
+- The boot devices are set up with the host networking: an install with
+  `--no-networking` doesn't apply them.
 
 ### Let the `glidex` user open it
 
 VMs run in `glidex-vm@<id>.service` units as the `glidex` user. The unit
 allows the VFIO devices (`/dev/vfio/vfio` and the per-group
 `/dev/vfio/<group>`), but the group device must also be readable and
-writable by `glidex`. By default it belongs to `root`. A udev rule fixes
-that for every group:
+writable by `glidex` through its owner, group or mode. Glidex reads
+those to decide whether a device is ready, as the VM's unit would open
+it; ACLs aren't considered. By default the group device belongs to
+`root`. **Prepare** and the boot binding write a rule per group; a udev
+rule of your own covers every group:
 
 ```text
 # /etc/udev/rules.d/90-glidex-vfio.rules
@@ -106,7 +138,7 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=vfio
 ls -l /dev/vfio/
 ```
 
-<!-- TODO(verify): glidex ships no udev rule for /dev/vfio/<group>; confirm this rule is enough on its own (no memlock limit needed in glidex-vm@.service) for both hypervisors. -->
+<!-- TODO(verify): confirm this rule is enough on its own (no memlock limit needed in glidex-vm@.service) for both hypervisors. -->
 
 ## Find devices
 
@@ -121,10 +153,8 @@ A device is **ready** for passthrough when the host has an IOMMU, the
 device is bound to `vfio-pci`, every other device in its IOMMU group
 (bridges aside) is too, the `glidex` user can open `/dev/vfio/<group>`,
 it isn't an OVS-DPDK uplink, and no other hypervisor on the host is
-using it (`in use by qemu-kvm-one (pid 37226)`: a libvirt or OpenNebula
-VM holding it). A device that isn't says why
-(`not bound to vfio-pci (driver: nvidia)`, `IOMMU group 30 also holds
-0000:07:00.1 on snd_hda_intel`). Over the API it is `GET /pci-devices`
+using it. A device that isn't says why; the reasons are listed in
+[Ready devices](host-resources.md#ready-devices). Over the API it is `GET /pci-devices`
 for this host, and `GET /nodes/{id}/topology` for any node. Both need a
 host role (`auditor`, `net-admin` or `system-admin`) on that host. In
 the web UI, a node's page (**Cluster** → a node) has a **Topology**
@@ -136,6 +166,27 @@ Glidex names a device by its sysfs path,
 address `0000:41:00.0`, but use the full path: it is what Glidex stores
 and hands to the hypervisor. Claims and placement compare PCI
 addresses, so the path and the bare address are the same device.
+
+## Devices another hypervisor holds
+
+On a host that also runs libvirt, OpenNebula or another hypervisor, a
+device can be on `vfio-pci` and still be in a running VM that isn't
+Glidex's. Such a VM may not show up with `fuser /dev/vfio/<group>`:
+libvirt gives each QEMU its own `/dev`. Glidex looks at every process's
+open files instead (through glidex-netd), and:
+
+- marks the device not ready: `in use by qemu-kvm-one (pid 37226)`.
+  Pools and the scheduler skip it;
+- refuses **Release** of its group, and a VF count change on its PF:
+  `IOMMU group 30 is in use by qemu-kvm-one (pid 37226)`;
+- leaves it alone in the boot binding and `--now`, since it is on
+  `vfio-pci` already.
+
+Glidex's own VMs (run as the `glidex` user) don't count against
+readiness. Without glidex-netd, nothing is known about other holders.
+While another hypervisor keeps a device, cordon it in Glidex too
+(`gxctl node cordon-device`), so it stays out of pools once that VM
+stops until you hand it over.
 
 ## Who may use a device
 
@@ -256,7 +307,10 @@ A device is attached to one NUMA node of the host (`cat
 `gxctl pci`). A VM with `numa_policy` (and, for pinned vCPUs,
 `cpu_policy: CPU_POLICY_DEDICATED`) gets its memory and vCPUs on its
 devices' NUMA node. With `NUMA_POLICY_STRICT`, devices on two NUMA
-nodes, or a device whose firmware reports `-1`, are refused. See
+nodes, or a device whose firmware reports `-1`, are refused. With
+`NUMA_POLICY_ALIGNED` (what a GPU request sets), a VM whose devices are
+on several NUMA nodes is split over exactly those, and its guest gets
+one NUMA node and PCI root per host node. See
 [NUMA nodes](host-resources.md#numa-nodes) and, for users,
 [NUMA and dedicated CPUs](../user-guide/vms.md#numa-and-dedicated-cpus).
 
@@ -273,7 +327,9 @@ with `pci.allow` entries that name a `pool`:
 ```
 
 The picked devices are claimed and passed through like devices named by
-address. Pools, their grants, quotas, tenant pools and metering are in
+address. For GPUs, `"gpus": {"count": 4}` also places and sizes the VM
+from the pool's `per_device`. Pools, their grants, quotas, tenant
+pools, GPU requests and metering are in
 [Device pools](host-resources.md#device-pools).
 
 ## SR-IOV virtual functions
@@ -293,7 +349,7 @@ or `system-admin`; also the **VFs…** button on the node page.) A change
 removes every VF the PF had, so it is refused while a VM holds the PF or
 one of its VFs, and for a PF that is an OVS-DPDK uplink. To keep a VF
 count across reboots, give it to the installer: `--sriov
-0000:61:00.0=8` (see [Bind the device to `vfio-pci`](#bind-the-device-to-vfio-pci) above).
+0000:61:00.0=8` (see [Keep it across reboots](#keep-it-across-reboots)).
 
 A PF with VFs enabled is no longer offered itself (passing it through
 would take its VFs with it). A pool takes VFs with `match.vf_of`, which
@@ -339,7 +395,9 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |
 | `conflict`: `PCI device … is used by VM …` | Another VM on that host holds the device, or its instance still does. Detach it from that VM. If the hot-unplug failed (`DevicesPending`), the device stays held until that VM stops. In a cluster, leave the VM unpinned so the scheduler can pick a node where the device is free. |
 | `conflict`: `PCI device … shares IOMMU group … with …` | Another VM holds a device in the same IOMMU group. Give the whole group to one VM, or move the card to a slot with its own group. |
-| `in use by qemu-kvm-one (pid …)` on a device, or `IOMMU group … is in use by …` from Release or a VF count | Another hypervisor on the host (libvirt, OpenNebula) has the device in a running VM. Being on `vfio-pci` doesn't mean it's free: check `virsh list` and `virsh dumpxml <vm>` (`<hostdev>`), and cordon the device in glidex while the other VM keeps it. |
+| `in use by qemu-kvm-one (pid …)` on a device, or `IOMMU group … is in use by …` from Release or a VF count | A VM has the group open: another hypervisor's (libvirt, OpenNebula), or for Release and VF counts also Glidex's. Being on `vfio-pci` doesn't mean it's free: check `virsh list` and `virsh dumpxml <vm>` (`<hostdev>`), and cordon the device in Glidex while the other VM keeps it. See [Devices another hypervisor holds](#devices-another-hypervisor-holds). |
+| `/dev/vfio/<n> can't be opened by this user` | The group device's owner, group and mode don't give `glidex` read and write. **Prepare** the device, or add the udev rule above; `ls -l /dev/vfio/`. |
+| After a reboot, devices are back on their host drivers, or VFs are gone | Keep them with the installer's `--vfio-devices` and `--sriov`. `journalctl -u glidex-vfio-boot` shows what the boot unit did. |
 | `pool …: 1 of 2 free`, `no device pool …` | See [Host resources](host-resources.md#troubleshooting). |
 | A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |
 

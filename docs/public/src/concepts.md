@@ -35,6 +35,12 @@ Several hosts can form a **cluster**. Each node has a role:
 - An **agent** only runs VMs. It has no API of its own; opening its
   web UI takes you to a server's, at that agent's Host page.
 
+Each node has a **Host page** in the web UI (`/hosts/<node>`): its
+capacity, topology, networking, VMs, disks, roles and operations,
+reachable from any server. Servers **publish** their web UI's address
+(`cluster.ui_url`, or the one glidex-ui reports), and agents send
+browsers there. See [Host pages](operator-guide/clusters.md#host-pages).
+
 Nodes join with a one-time **join token** and talk to each other over
 mutual TLS. A **scheduler** picks the node for each new VM, and explains
 its choice. A node can be **drained** (no new VMs are placed on it),
@@ -192,6 +198,13 @@ A **datastore** is where disks live; every disk is on one. See
   to each node that it sees the right filesystem; the disk's **worker**
   is the node that works on its file; a **volume lock** keeps two nodes
   from using one disk at once.
+- An **LVM-thin** datastore (driver `lvm`) keeps disks as raw thin
+  volumes carved from a **thin pool** in a volume group on each node; it
+  is node-local. A root helper, **`glidex-stord`**, manages the volumes,
+  and only in the volume groups an administrator allows. Each node keeps
+  an **image volume**, a read-only copy of an image, that linked disks
+  there are thin snapshots of. A full thin pool stalls the guests. See
+  [LVM-thin](operator-guide/datastores.md#lvm-thin).
 
 A disk no running VM uses can **move** to another datastore. A linked disk is then
 rebased on the image's copy there, or **flattened** into a standalone
@@ -204,13 +217,23 @@ hugepages and PCIe tree. See
 [Host resources](operator-guide/host-resources.md).
 
 - A **NUMA policy** keeps a VM's memory, vCPUs and devices on one NUMA
-  node (a socket, or part of one): preferred, or strict.
+  node (a socket, or part of one): preferred, or strict. The **aligned**
+  policy instead splits the VM over exactly its devices' NUMA nodes, one
+  guest NUMA node each.
 - **Dedicated CPUs** give each vCPU a host CPU no other VM uses.
 - **Hugepages** back guest memory with large pages (2M or 1G), counted
   per node; a VM's `page_kib` says what it got.
 - A **device pool** is a named set of like devices (GPUs, NICs) a VM
   asks for by count. A **tenant pool** is a tenant's share of one,
-  split among its projects.
+  split among its projects. A pool's **per-device sizing**
+  (`per_device`) is the vCPUs and memory a VM gets with each device.
+- A **GPU request** (`gpus`) asks for N GPUs from a pool: the VM gets
+  the aligned NUMA policy and, unless it sizes itself, the pool's
+  per-device sizing. See [GPU requests](operator-guide/host-resources.md#gpu-requests).
+- **Boot devices** are the devices the installer's `--vfio-devices` and
+  `--sriov` bind to `vfio-pci`, or give VFs, at every boot
+  (`glidex-vfio-boot.service`). See [Keep it across
+  reboots](operator-guide/pci-passthrough.md#keep-it-across-reboots).
 - A device is **ready** when it can be passed through as it is, and
   **cordoned** when an administrator keeps it from new VMs.
 
@@ -263,7 +286,11 @@ connector**: local accounts (PAM), or single sign-on through an OIDC
 provider, Google or JumpCloud. On the host itself, `gxctl` identifies
 you by your Unix account. A user can have several **sign-in methods**
 (a local password and a Google account, say), each giving the same
-roles. A **team** is a group of users; teams can mirror Unix or
+roles. A **passkey** is one more: a WebAuthn credential (the device's
+fingerprint, face or PIN, or a security key) that signs in to the web
+UI and counts as multi-factor. Passkeys belong to the **passkeys'
+domain** (`auth.passkeys.rp_id`) and work on every web UI name under it.
+See [Passkeys](operator-guide/authentication.md#passkeys). A **team** is a group of users; teams can mirror Unix or
 identity-provider groups.
 
 A connector can also be **provisioned**: the identity provider (IdP)

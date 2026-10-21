@@ -11,10 +11,15 @@ Host networking needs the `net-admin` role (or `system-admin`). On the
 local socket, members of `glidex-admin` have it.
 
 With `gxctl`, everything here acts on the host whose socket it uses. In
-the web UI, each host's page (**Hosts**, then the host) shows that host's
-Open vSwitch, bridges and uplinks; a server runs them on the node they
-are for, so an agent's are managed from any server's UI. A cluster agent
-has no local API for `gxctl`.
+the web UI, each host's page (**Hosts**, then the host) has a
+**Networking** section with that host's Open vSwitch, bridges and
+uplinks; a server runs them on the node they are for, so an agent's are
+managed from any server's UI. A cluster agent has no local API for
+`gxctl`. Over the API, a request to a server acts on another node when
+it names that node's id in the `X-Glidex-Target-Node` header (see
+[REST API](../api/rest.md)); what you may do there follows your roles on
+that host. The web UI's **Networking** page keeps the network records
+and links to the Host pages.
 
 ## Pieces
 
@@ -31,8 +36,8 @@ that carry the host's address, and restores NAT, then reports ready.
 
 The control plane talks to netd's full socket as the `glidex` group. If
 it can't, its startup line says `Checking networking... LIMITED` or
-`UNAVAILABLE`, and the web UI's Networking page shows a warning instead
-of the OVS status.
+`UNAVAILABLE`, and the Networking section of the host's page shows a
+warning instead of the OVS status.
 
 ## Install Open vSwitch
 
@@ -52,8 +57,8 @@ installer won't restart `ovs-vswitchd` unless you pass
 options.
 
 You can also install or switch the profile on a running host, from the
-web UI (**Networking** → **Install Open vSwitch** or **Install / switch
-profile**) or `gxctl`:
+web UI (the host's page → **Networking** → **Install Open vSwitch** or
+**Install / switch profile**) or `gxctl`:
 
 ```bash
 gxctl ovs status                           # netd access, OVS version, what this host can do
@@ -107,7 +112,7 @@ turn DPDK off; use the installer.
 OVS forwards packets either in the kernel (`system` datapath) or in
 userspace (`netdev`, with DPDK or AF_XDP). A VM's NIC is either a **tap**
 device or a **vhost-user** socket. Not every mix works; `gxctl ovs
-status` and the Networking page list the combinations and what each is
+status` and the Networking section of the host's page list the combinations and what each is
 missing on this host:
 
 | Id | Combination | Needs |
@@ -136,7 +141,8 @@ A NAT or isolated network gets its own bridge, named
 `gxbr-<first 8 characters of the network id>` unless you name it. A
 bridged network, and an uplink, use a bridge you create first.
 
-Create a bridge in the web UI: **Networking** → **glidex bridges** →
+Create a bridge in the web UI: the host's page → **Networking** →
+**glidex bridges** →
 **+ New bridge**, with a name and a datapath:
 
 - **kernel (system)**: for kernel uplinks, and for an OVN gateway's
@@ -169,7 +175,8 @@ of the host's NICs. There are three kinds:
 | AF_XDP | userspace (netdev) | stays a kernel interface; OVS reads it through AF_XDP |
 | DPDK | userspace (netdev) | leaves the kernel: bound to `vfio-pci`, named by PCI address |
 
-Add one from the web UI (**Networking** → a bridge → **Add uplink…**) or
+Add one from the web UI (the host's page → **Networking** → a bridge →
+**Add uplink…**) or
 `gxctl`:
 
 ```bash
@@ -225,7 +232,7 @@ gateway check. If moving fails or the gateway doesn't answer, it gives
 the NIC its own configuration back and holds the uplink off the bridge,
 so the host stays reachable.
 
-A held uplink shows **held off the bridge** on the Networking page, with
+A held uplink shows **held off the bridge** on the host's page, with
 when and why. `gxctl uplinks <bridge>` shows its phase and the netd log
 says `IP migration rolled back at start`. Fix the cause (a cable, a
 switch port, the gateway), then re-apply it:
@@ -264,7 +271,7 @@ gxctl network-add lab-fast --vhost-user        # vhost-user NICs (needs the dpdk
 - In a cluster with OVN on, `network-add` makes a cluster network unless
   you pass `--node` (a bridge on this host only).
 
-If `ufw` or `firewalld` is active, the Networking page warns that it may
+If `ufw` or `firewalld` is active, the host's page warns that it may
 drop forwarded NAT traffic. `glidex-netd` adds its own nftables table
 (`glidex`) and, where the iptables `FORWARD` or `INPUT` policy would drop
 guest traffic, its own chains (`GLIDEX-FORWARD`, `GLIDEX-INPUT`). If

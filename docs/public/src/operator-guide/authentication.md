@@ -6,7 +6,7 @@ How depends on where it comes from:
 | Client | How it is identified |
 |---|---|
 | `gxctl` on the host, on `/run/glidex-cp/api.sock` | The caller's Unix account, from the socket. No login. |
-| Web UI | A browser session, after a login with a local password or single sign-on. |
+| Web UI | A browser session, after a login with a local password, single sign-on or a [passkey](#passkeys). |
 | `gxctl` from another machine, scripts, API clients | An access token (`Authorization: Bearer …`). |
 | CI jobs and other workloads | A short-lived token, exchanged for the workload's own signed token through a [workload federation](workload-federation.md). |
 
@@ -706,11 +706,20 @@ answer the re-authentication a sensitive action asks for.
 - Each user adds their own on the **Account** page (**Add a passkey**),
   after a recent sign-in. Nobody, administrators included, can add a
   passkey to someone else's account; administrators can remove one.
+  A user has at most 10.
 - The login page then offers **Sign in with a passkey**, with no user
   name to type.
 - A user keeps another sign-in method, or a second passkey: glidex
   refuses to remove the method that would leave a single passkey as the
   only way in, so losing one device isn't a lock-out.
+
+The user's side is in [Logging in](../user-guide/logging-in.md#passkeys).
+
+Passkeys are on by default. They need the web UI on `https` (or a
+browser on the host itself at `http://localhost`); a browser shows no
+passkey prompt on a plain `http` page.
+
+### The passkeys' domain
 
 Passkeys belong to a domain. Set it to the domain your web UI's names
 share, so that a passkey made on one name works on the others (and on a
@@ -726,12 +735,50 @@ cluster's other servers):
 
 in `/etc/glidex/control-plane.json` (here for a web UI at
 `https://glidex.example.com:5173`; on a tailnet, the tailnet's
-`<tailnet>.ts.net`). Without it, each web UI name has its own passkeys,
-and the Account page says so. `"enabled": false` turns passkeys off.
-Changing `rp_id` later makes existing passkeys stop working: their users
-add new ones.
+`<tailnet>.ts.net`). The web UI's name must be that domain or a name
+under it; a page elsewhere gets an error instead of the browser's prompt.
+Without it, each web UI name has its own passkeys, and the Account page
+says so. Changing `rp_id` later makes existing passkeys stop working:
+their users add new ones.
 
-gxctl doesn't sign in with passkeys; it keeps tokens, PAM and OIDC.
+| Key | Default | Meaning |
+|---|---|---|
+| `auth.passkeys.enabled` | `true` | `false` turns passkeys off: the login page and Account page no longer offer them. |
+| `auth.passkeys.rp_id` | unset | The passkeys' domain. Unset: the name of the web UI each request came through. |
+| `auth.passkeys.rp_name` | `"glidex"` | The site name the browser shows in its passkey prompt. |
+
+Restart the control plane after changing them. In a cluster, set the
+same values on every server.
+
+### Passkeys and other sign-in methods
+
+- A passkey belongs to a Glidex user, not to a Unix account or an IdP
+  account. A passkey sign-in doesn't ask PAM or the IdP: taking someone
+  out of `glidex-users`, or deactivating them at an IdP that doesn't
+  provision Glidex users, doesn't stop their passkeys. To keep someone
+  out, **Disable** their user (see [Removing
+  people](access-control.md#removing-people)), or remove their passkeys.
+- A disabled user can't sign in with a passkey.
+- Deleting a user deletes their passkeys.
+- In **Users & roles**, a user's passkeys are among their sign-in
+  methods, labelled *Passkey*; **Remove** deletes one.
+- `gxctl` doesn't sign in with passkeys; it keeps tokens, PAM and OIDC.
+
+### A lost passkey
+
+A user who loses a device signs in another way (a password, single
+sign-on or their second passkey), opens **Account**, and removes the
+lost passkey under **Passkeys**. An administrator can remove it for them
+in **Users & roles**. A user whose only sign-in methods are two passkeys
+adds a new passkey first: removing one of the two would leave a single
+passkey, which is refused (`409 last_identity`).
+
+A user who has lost every way in (both their passkeys, say) can't add a
+new one, and nobody else can add one for them. An administrator gives
+them a way back in by linking another sign-in method to their user over the API
+(`POST /users/{id}/identities`, needs `directory-admin`), such as their
+local account; they then sign in with it and add a new passkey.
+<!-- TODO(verify): the provider and subject a PAM or OIDC identity takes in POST /users/{id}/identities (valid providers: pam, unix, oidc:<issuer>; connector sign-ins can't be linked this way). Name the exact body before documenting it further. -->
 
 ## Workload federation (CI without stored tokens)
 
@@ -846,7 +893,8 @@ Some actions need a login in the last 10 minutes:
   CA and secrets key rotation, OVN settings).
 
 In the web UI, such an action opens a "This action needs a recent login"
-dialog; after signing in again the request goes through. A user who
+dialog; after signing in again the request goes through. **Confirm with
+a passkey** there counts as a fresh login. A user who
 signs in with single sign-on picks their provider there, and is asked
 to sign in at it again even if it still has a session (Glidex sends
 `prompt=login` and `max_age=0`). On the local

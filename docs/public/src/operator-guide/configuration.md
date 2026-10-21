@@ -53,6 +53,9 @@ sudo systemctl restart glidex-control-plane
 | `auth.pam` | object | see below | Local accounts (the `file-pam` login connector). |
 | `auth.oidc` | object | see below | Single sign-on through an OpenID Connect provider (the `file-oidc` connector). |
 | `auth.secrets_key` | path | `secrets.kek` beside the database | File holding the key that encrypts connector secrets. The `secrets-kek` credential wins when present. |
+| `auth.passkeys.enabled` | bool | `true` | Offer [passkeys](authentication.md#passkeys) on the login and Account pages. `false`: the passkey endpoints answer `404 passkeys_disabled`. |
+| `auth.passkeys.rp_id` | string | unset | The [passkeys' domain](authentication.md#the-passkeys-domain) (relying-party id): the web UI's names must be it or under it. Unset: the name of the web UI each request came through. Changing it makes existing passkeys stop working. Set it the same on every server. |
+| `auth.passkeys.rp_name` | string | `"glidex"` | The site name the browser shows in its passkey prompt. |
 | `auth.federation.allow_private_issuers` | bool | `false` | Let a [workload federation](workload-federation.md#the-issuer)'s issuer be on this host or the site's network. Off, an issuer must be `https` with public addresses: names that resolve only to loopback, private, link-local or unique-local addresses, and URLs naming such an address, are refused. Turn it on for an issuer on your own network (a self-hosted GitLab, a Kubernetes cluster's issuer); it also lets plain-HTTP loopback issuers in, for tests. |
 
 `auth.pam`, see [Local accounts](authentication.md#local-accounts):
@@ -89,7 +92,7 @@ sudo systemctl restart glidex-control-plane
 | `authz.policy_history` | integer, 1–1000 | `50` | Versions kept of each site policy. |
 | `quotas.default` | object | `{"networks": 2}` | Quotas of new projects, and of the `default` project when it is first created. Keys: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, and `devices` (`{"a100": 2}`: devices per pool). An omitted key is unlimited, except `networks` (2), `routers` (1) and `external_ips` (1); `null` is unlimited. |
 | `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool. See [PCI passthrough](pci-passthrough.md). |
-| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself. See [Device pools](host-resources.md#device-pools). |
+| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
 
 The control plane refuses to start when the pools or grants don't add
@@ -150,7 +153,7 @@ See [Clusters](clusters.md).
 | `cluster.detach_freeze_secs` | integer | `600` | How long a node's detach (with its VMs) may take before it is called off. |
 | `cluster.import_plan_ttl_secs` | integer | `86400` | How long an import plan waits for approval. |
 | `cluster.ca_rotation_grace_secs` | integer | `604800` | How long the old cluster CA stays trusted after a rotation. |
-| `cluster.ui_url` | string | unset | A server's web UI address, `https://host[:port]`, published to the cluster: agents send browsers there. Set it to a load balancer's address in front of the servers (the same on each). It is also an accepted origin and the default SSO callback. Unset: the address glidex-ui reports (its Tailscale name, else the first `GLIDEX_UI_HOSTS` name, else the host's FQDN). |
+| `cluster.ui_url` | string | unset | A server's web UI address, `https://host[:port]` with no path, published to the cluster (`ui_url` in the node's status): agents send browsers there. Set it to a load balancer's address in front of the servers (the same on each). It is also an accepted origin (put first in `auth.allowed_origins`) and the default SSO callback. Unset: the address glidex-ui reports (its Tailscale name, else the first `GLIDEX_UI_HOSTS` name, else the host's FQDN, with its port), else the first `auth.allowed_origins` entry. See [The web UI's address](clusters.md#the-web-uis-address). |
 | `cluster.ui_relay` | bool | `true` | Replaced: an agent's web UI now sends browsers to a server. Accepted and ignored. |
 | `cluster.ovn.bridge_mappings` | object | `{}` | Physical network name → this host's Glidex bridge. Per host. |
 
@@ -160,6 +163,26 @@ The other `cluster.ovn` keys (`enabled`, `underlay_mtu`, `nat_supernet`,
 `edge`, `snat_ct_zones`, `dns_servers`) are still accepted, but once the
 cluster's OVN settings are saved (on the web UI's Cluster page) those
 decide, and the file's are ignored with a warning in the log.
+
+### `glidex-stord`
+
+`glidex-stord`, the root helper behind [LVM-thin
+datastores](datastores.md#lvm-thin), reads `/etc/glidex/stord.json` at
+start (`--config <path>` for another file). Without the file it allows
+no volume group. A file it can't read or parse, or an unknown key, stops
+it from starting (`journalctl -u glidex-stord`). Restart it after a
+change: `sudo systemctl restart glidex-stord`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `allowed_vgs` | array of strings | `[]` | The volume groups stord may act on. The installer's `--stord-allow-vg VG` adds one. See [Allow it in glidex-stord](datastores.md#allow-it-in-glidex-stord). |
+
+```json
+{ "allowed_vgs": ["vg-glidex"] }
+```
+
+Keep the other keys stord accepts at their defaults. Its log filter is
+`RUST_LOG` (default `info`).
 
 ### Example
 
@@ -225,6 +248,8 @@ Under the installed services:
 | `/run/glidex-cp/` | Run directory: `api.sock`, `ui.sock`, `tls.crt` (a copy of the API's certificate for local clients), and one private directory per running VM. |
 | `/run/glidex/` | `glidex-netd`'s sockets. |
 | `/run/glidex-authd/auth.sock` | `glidex-authd`'s socket. |
+| `/etc/glidex/stord.json` | [`glidex-stord`](#glidex-stord)'s settings: the volume groups it may use. |
+| `/run/glidex-stord/` | `glidex-stord`'s sockets: `stord.sock` (`root:glidex`, mode 0660) for the control plane. |
 | `/var/lib/glidex-ui/tls/` | The web UI's self-signed certificate. |
 | `/srv/glidex/` | The datastore root: registered [datastores](datastores.md) are directories under it. The installer creates it (`root:root`, mode 0755). |
 
@@ -248,7 +273,9 @@ control plane makes these outbound HTTPS connections:
 | Image and firmware URLs, and the catalog's mirrors | Pulling images. |
 | Your OIDC provider, Google, JumpCloud | Logins through those connectors. |
 | `oauth2.googleapis.com`, `admin.googleapis.com` | A [directory sync from Google Workspace](authentication.md#directory-sync-from-google-workspace), from the cluster's leader: allow it from every server. |
-| `snapshot.debian.org` | The first kernel extraction on a host: the pinned extractor packages, about 35 MB, kept afterwards. Not needed with `GLIDEX_KERNEL_EXTRACTION=off`. |
+| `snapshot.debian.org` | The first kernel extraction on a host: the pinned extractor packages for the host's architecture (about 35 MB on x86_64, 30 MB on aarch64), kept afterwards. Not needed with `GLIDEX_KERNEL_EXTRACTION=off`. |
+
+<!-- TODO(verify): the aarch64 extractor download size (about 30 MB) was estimated from the package sizes, not measured. -->
 
 ## Environment variables
 
@@ -271,6 +298,7 @@ control plane makes these outbound HTTPS connections:
 | `GLIDEX_MAX_EXTRACTIONS` | `1` | Kernel extractions at the same time on this node. |
 | `GLIDEX_MAX_KERNEL_SIZE` | `128M` | Largest kernel of a kernel image, with a `K`, `M`, `G` or `T` suffix (binary units). |
 | `GLIDEX_MAX_INITRD_SIZE` | `1G` | Largest initramfs of a kernel image, likewise. |
+| `GLIDEX_STORD_SOCKET` | `/run/glidex-stord/stord.sock` | `glidex-stord`'s socket, for [LVM-thin datastores](datastores.md#lvm-thin). Leave it for the installed services. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |
 | `RUST_LOG` | `glidex_control_plane=info,tower_http=info` | Log filter. |
 

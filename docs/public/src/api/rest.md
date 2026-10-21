@@ -55,7 +55,8 @@ changed. `credential` in the mask but absent from `change` removes the
 VM's credential.
 
 Plain JSON bodies of their own: `/health`, `/auth/methods`,
-`/auth/login`, `/auth/logout`, the OIDC and connector redirects, and
+`/auth/login`, `/auth/logout`, `/auth/session`, the OIDC and connector
+redirects, the [passkey ceremonies](#passkeys) (WebAuthn JSON) and
 `/system/reconcile`. The [SCIM endpoints](#scim-20-for-identity-providers)
 speak SCIM 2.0 JSON instead, and the [token
 exchange](#token-exchange-for-workloads) OAuth's form or JSON.
@@ -95,17 +96,23 @@ Branch on `error`, never on `message`. Common codes:
 |---|---|---|
 | 400 | `bad_request`, `invalid_request`, `invalid_config`, `invalid_disk`, `invalid_image`, `invalid_datastore`, `invalid_network`, `invalid_credential`, `invalid_project`, `invalid_state`, `project_required`, `range_too_large` | The request is malformed or not valid here |
 | 400 | `device_flow_unsupported` | A device login through a `google` connector that has no device client |
+| 400 | `passkey_not_added` | Adding a passkey failed: the prompt expired, another user started it, or the passkey is already registered |
+| 400 | `bad_target_node` | `X-Glidex-Target-Node` on a path that isn't about one host, naming an unknown or departed node, or sent to a host that can't act on other nodes (see [Host networking and PCI](#host-networking-and-pci)) |
 | 401 | `unauthenticated` | No credential, or an invalid or expired token |
 | 401 | `login_failed` | Wrong username or password |
 | 401 | `reauth_required` | The operation needs a recent login; log in again |
+| 401 | `passkey_refused` | A passkey sign-in was refused; the same answer for every reason (unknown passkey, wrong origin, expired prompt, disabled user), which is in the audit log |
 | 403 | `forbidden` | Not allowed by your roles and the site's policies |
 | 403 | `quota_exceeded`, `tenant_quota_exceeded` | Over a project quota, or the tenant's cap; `details.quota` lists what |
 | 403 | `not_admitted`, `tenant_suspended` | The project's tenant isn't admitted on this site, or is suspended |
 | 403 | `login_not_allowed`, `tls_required`, `ticket_required`, `origin_not_allowed`, `csrf_failed` | Login or browser rules refused the request |
+| 403 | `agent_no_local_api` | A local request on a cluster agent, which has no API of its own: use a server |
+| 404 | `passkeys_disabled` | A passkey ceremony while `auth.passkeys.enabled` is `false` |
 | 404 | `not_found` | No such resource, or one you can't read |
 | 409 | `conflict` | A name already taken, a resource in use or being deleted, a concurrent change |
 | 409 | `ambiguous` | A name matches several resources; use the id |
-| 409 | `cannot_delete_self`, `last_admin`, `last_identity` | Deleting yourself, the last holder of `system-admin` or `directory-admin`, or a user's last sign-in method |
+| 409 | `cannot_delete_self`, `last_admin`, `last_identity` | Deleting yourself, the last holder of `system-admin` or `directory-admin`, or a user's last sign-in method (or one that would leave a single passkey as the only one) |
+| 409 | `too_many_passkeys` | The user already has 10 passkeys |
 | 409 | `node_departed` | A per-host role on a node that has left the cluster |
 | 409 | `managed_by_connector` | The user or team is managed by a SCIM connector or a directory sync: change it at the IdP (see [Users an IdP manages](../operator-guide/access-control.md#users-an-idp-manages)) |
 | 409 | `not_provisioned` | A SCIM token for a connector that isn't `provisioning: scim` |
@@ -114,11 +121,11 @@ Branch on `error`, never on `message`. Common codes:
 | 412 | `precondition_failed` | `If-Match` didn't match; `details.resource_version` has the current one |
 | 413 | `too_large` | The body is too large |
 | 507 | `insufficient_storage` | A datastore without overcommit lacks the space for a new or moved disk; `details` has `free_bytes` and `needed_bytes` |
-| 421 | `not_leader`, `use_a_server` | Ask a cluster server (clients retry another) |
+| 421 | `not_leader`, `use_a_server` | Ask a cluster server (clients retry another). `use_a_server` is also the answer to an API request through a cluster agent's web UI: `details.location` is a server's web UI address (or `null`), `details.servers` the servers |
 | 422 | `invalid` | The body isn't the expected message (unknown field, wrong type, unknown enum value) |
 | 422 | `invalid_policy`, `invalid_connector`, `unsupported_on_host` | Rejected policy text or connector settings; a feature this host can't do |
 | 422 | `invalid_federation`, `issuer_unreachable` | Rejected workload federation settings (a rule without a pinned claim, a wildcard, a service account that isn't the tenant's, a TTL out of range, over 20 federations or 50 rules); an issuer whose discovery or keys can't be read |
-| 429 | `rate_limited`, `slow_down` | Back off and retry |
+| 429 | `rate_limited`, `slow_down` | Back off and retry (`slow_down`: also over 10 passkey sign-ins a minute from one client) |
 | 502 | `netd_error`, `node_unreachable`, `idp_error` | A helper, node or identity provider failed |
 | 503 | `cluster_unavailable`, `netd_unavailable`, `hypervisor_unavailable`, `tool_unavailable`, `too_many_watchers`, `unavailable` | Try again later, or fix the host |
 | 500 | `internal`, `persistence_error`, `hypervisor_error`, `image_error` | Server-side failure; quote `x-request-id` |
@@ -273,7 +280,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/health` | Liveness: `{"status": "ok"}`; no credential |
-| `GET` | `/auth/methods` | Which login methods are on (PAM, OIDC, connectors); no credential |
+| `GET` | `/auth/methods` | Which login methods are on (PAM, OIDC, connectors; `passkeys` and `passkeys_rp_id`, the passkeys' domain or `null`); no credential |
 | `GET` | `/auth/server-info` | The server's identity: version, cluster, certificate fingerprint; no credential |
 | `POST` | `/auth/discover` | Which login connectors to offer for a tenant slug or email (`{hint}`) |
 | `POST` | `/auth/login` | Password login for the browser: sets a session cookie |
@@ -286,6 +293,9 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/auth/link/c/{id}/start` | Add a sign-in method through connector `{id}` to yourself (`{return_to}`); needs a recent login; answers `{redirect}`. The callback returns to `return_to` with `?linked=<id>` or `?link_error=taken\|not_allowed\|not_signed_in`; a provisioned connector (SCIM or directory sync) is always `not_allowed` |
 | `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way; `400 device_flow_unsupported` for a `google` connector without a device client |
 | `POST` | `/auth/exchange` | Exchange a workload's JWT for a short-lived token, through a workload federation; no credential (see [Token exchange](#token-exchange-for-workloads)) |
+| `POST` | `/auth/passkeys/login/start`, `/auth/passkeys/login/finish` | Passkey sign-in for the browser; no credential (see [Passkeys](#passkeys)) |
+| `POST` | `/auth/passkeys/register/start`, `/auth/passkeys/register/finish` | Add a passkey to yourself, from a browser session (see [Passkeys](#passkeys)) |
+| `POST` | `/auth/session` | A browser session cookie for the local user calling on `api.sock`: `{cookie_name, cookie, csrf}`, with the user's stored teams only; `403` for any other caller |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |
 | `POST` | `/authz/check` | Would these actions be allowed? One answer per check |
@@ -296,8 +306,8 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
-| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path` |
-| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU and `devices` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
+| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)) |
+| `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU, `devices` and `gpus` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
 | `GET` | `/vms/{id}` | Get a VM |
 | `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy` and `devices` |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
@@ -315,6 +325,15 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/vms/{id}/console/ticket` | Single-use console ticket for a browser session |
 | `GET` | `/vms/{id}/console/ws` | Console WebSocket |
 | `GET` | `/vms/{id}/console/log` | Console log tail, raw bytes (`?tail_bytes=`, `?previous=true`) |
+
+A VM with a GPU request has `gpus` as asked, with `pool` filled in.
+`numa_policy` takes `NUMA_POLICY_ALIGNED` (spread the VM over exactly
+its devices' NUMA nodes); a VM aligned over more than one NUMA node has
+`numa`, one entry per guest NUMA node: `node` (the host's), `vcpus`,
+`memory_mib` and `devices`. `gpus` can't be changed with `PATCH`
+(`400 invalid_config`). A kernel-boot VM's `kernel_args` default to
+`console=ttyS0 root=/dev/vda reboot=k panic=1`, with `console=ttyAMA0`
+for an aarch64 VM.
 
 ### Guest credentials
 
@@ -346,16 +365,17 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/disks` | List disks |
-| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`); `node` (name or id) binds it to a node now, an unknown node is `400 invalid_config`; `datastore` (name or id) puts it there instead of the default datastore |
+| `POST` | `/disks` | Create a blank disk or one from an image (`?wait=`); `node` (name or id) binds it to a node now, an unknown node is `400 invalid_config`; `datastore` (name or id) puts it there instead of the default datastore. On an LVM-thin datastore a disk is raw: leave `format` out (`DISK_FORMAT_QCOW2` is `400 invalid_disk`); linked disks are thin snapshots |
 | `GET` | `/disks/{id}` | Get a disk and its partition table |
 | `DELETE` | `/disks/{id}` | Delete (`409` while attached) |
 | `POST` | `/disks/{id}/move` | Move a disk no running VM uses to another datastore: `{datastore, node, flatten, wait_secs}` (`wait_secs` or `?wait=`, at most 300); `200` once moved, else `202`. See [Moving a disk between datastores](../operator-guide/datastores.md#moving-a-disk-between-datastores) |
-| `POST` | `/disks/{id}/resize` | Grow or shrink (`?wait=`) |
+| `POST` | `/disks/{id}/resize` | Grow or shrink (`?wait=`); a disk on an LVM-thin datastore only grows (`400 invalid_disk`) |
 | `POST` | `/disks/{id}/extend-root` | Grow the root partition, offline or at next boot (`?wait=`) |
 | `GET` | `/disks/{id}/events` | The disk's last events |
 
 A disk has `datastore` (an id, or `local`) and, while it moves,
-`moving_to`. On a shared datastore it has no `node`; `worker` and
+`moving_to`. A move onto or off an LVM-thin datastore always makes a
+full copy, raw on LVM-thin. On a shared datastore it has no `node`; `worker` and
 `worker_name` name the node that works on its file.
 
 ### Datastores
@@ -366,16 +386,20 @@ name.
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/datastores` | List datastores, with each node's status (everyone) |
-| `POST` | `/datastores` | Register one: `name`, `driver` (`DATASTORE_DRIVER_DIR` or `DATASTORE_DRIVER_SHARED_DIR`), `path`, optional `node_paths` (node → path), `nodes`, `default_for_disks`, `overcommit` (default on); `201` |
+| `POST` | `/datastores` | Register one: `name`, `driver` (`DATASTORE_DRIVER_DIR`, `DATASTORE_DRIVER_SHARED_DIR` or `DATASTORE_DRIVER_LVM`), `path` (or, for LVM, `volume_group` and `thin_pool` and no `path`), optional `node_paths` (node → path; for LVM, node → that node's volume group), `nodes`, `default_for_disks`, `overcommit` (default on); `201`. A wrong combination is `400 invalid_datastore` |
 | `GET` | `/datastores/{id}` | Get a datastore |
 | `PATCH` | `/datastores/{id}` | Change `node_paths`, `nodes`, `default_for_disks` or `overcommit` |
-| `DELETE` | `/datastores/{id}` | Delete a datastore no disk is on (`409` otherwise); `204` |
+| `DELETE` | `/datastores/{id}` | Delete a datastore no disk is on and, for LVM-thin, where no node keeps image volumes (`409` otherwise); `204` |
 
 A datastore also has `topology` (`DATASTORE_TOPOLOGY_NODE_LOCAL` or
 `DATASTORE_TOPOLOGY_SHARED`), `builtin` (`local`), `created_at`,
 `disks` (how many are on it) and `node_status`: per node, `node`,
 `node_name`, `reachable`, `reason` and `message` when it isn't, `path`,
-`total_bytes`, `free_bytes` and `checked_at`. An image's copy in a
+`total_bytes`, `free_bytes`, `checked_at`, `warnings` and, for LVM-thin,
+`image_volumes` (the ids of images that node keeps a volume of). An
+LVM-thin datastore has `volume_group` and `thin_pool`, and an empty
+`path`; its `free_bytes` are the thin pool's. See
+[LVM-thin](../operator-guide/datastores.md#lvm-thin). An image's copy in a
 shared datastore has `datastore` and `datastore_name` instead of a
 `node`.
 
@@ -404,8 +428,13 @@ shared datastore has `datastore` and `datastore_name` instead of a
 
 ### Host networking and PCI
 
-These act on the host that answers them (in a cluster, the UI sends
-them to the node being managed).
+These act on the host that answers them. On a cluster server, a request
+with the header `X-Glidex-Target-Node: <node id>` acts on that node
+instead: it is authorized on that node's host and run there. The same
+header works for `/system/reconcile`, `/cluster/leave` and the
+`glidex.host.v1` RPCs; anywhere else, for an unknown or departed node,
+or on a host that isn't a server, it is `400 bad_target_node`. The web
+UI's Host pages send it.
 
 | Method | Path | What it does |
 |---|---|---|
@@ -421,7 +450,7 @@ them to the node being managed).
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
 | `GET` | `/pci-devices` | List the host's PCI devices, with `numa_node`, `ready` and, when not ready, `not_ready` (the reasons) |
-| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts; `?project=` the pools that project may use, free counts only |
+| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts, and `per_device_vcpus` / `per_device_memory_mib` when the pool sizes VMs per device; `?project=` the pools that project may use, free counts only |
 | `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
 ### Usage and metrics
@@ -465,8 +494,11 @@ them to the node being managed).
 | `POST` | `/users` | Create a user |
 | `PATCH` | `/users/{id}` | Change a user; for a user a SCIM connector manages (`managed_by`), its display name, and enabling it after its IdP disabled it, are `409 managed_by_connector` |
 | `DELETE` | `/users/{id}` | Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went. `409 managed_by_connector` for a managed user that is still enabled |
-| `POST` | `/users/{id}/identities` | Link a login identity to a user |
-| `DELETE` | `/users/{id}/identities/{key}` | Remove a sign-in method, yours or (as an administrator) anyone's, never the last unless the user is disabled (`end_sessions`) |
+| `POST` | `/users/{id}/identities` | Link a login identity to a user (providers `pam`, `unix` or `oidc:<issuer>`) |
+| `DELETE` | `/users/{id}/identities/{key}` | Remove a sign-in method, yours or (as an administrator) anyone's, never the last unless the user is disabled (`end_sessions`); a passkey's identity takes the passkey with it |
+| `GET` | `/users/{id}/passkeys` | A user's passkeys: `{passkeys, rp_id}`; yours, or anyone's with `listUsers` |
+| `PATCH` | `/users/{id}/passkeys/{passkey}` | Rename one of your passkeys (`{name}`, 1–64 printable characters); only its user may |
+| `DELETE` | `/users/{id}/passkeys/{passkey}` | Remove a passkey, yours or (as an administrator) anyone's; `409 last_identity` if it would leave none, or a single passkey alone |
 | `GET` | `/users/me` | Same as `GET /auth/whoami` |
 | `PATCH` | `/users/me` | Change your own profile (e.g. `default_project`) |
 | `GET` | `/users/me/ssh-keys` | Your SSH public keys, to prefill a guest credential: your local account's, or, without one here, those of a pulled connector's SSH key field; `source` says which (`local`, `connector:<id>`) |
@@ -628,6 +660,27 @@ Each workload token is exchanged once. Every exchange is in the
 `exchangeToken` by `system:federation:<tenant>/<id>`, never with the
 JWT.
 
+### Passkeys
+
+The web UI's passkey ceremonies are REST only, WebAuthn JSON in and out
+(see [Passkeys](../operator-guide/authentication.md#passkeys)). Each
+needs a browser `Origin` on an `https` page (or `http://localhost`)
+under the passkeys' domain (`400 invalid` otherwise), and a start sets a
+short-lived cookie its finish must send back.
+
+| Step | Body | Answer |
+|---|---|---|
+| `POST /auth/passkeys/register/start` | `{name}` (empty: `Passkey`; up to 64 characters) | `PublicKeyCredentialCreationOptions`. From a browser session only (a token is `403`), after a recent login; at most 10 per user (`409 too_many_passkeys`) |
+| `POST /auth/passkeys/register/finish` | The browser's credential (`PublicKeyCredential.toJSON()`) | `201 {passkey: {id, name}}`, or `400 passkey_not_added` |
+| `POST /auth/passkeys/login/start` | none | `PublicKeyCredentialRequestOptions`, with user verification required |
+| `POST /auth/passkeys/login/finish` | The browser's credential, likewise | `whoami` and a session cookie (method `passkey`, multi-factor), or `401 passkey_refused`; `429 slow_down` after 10 attempts a minute |
+
+A passkey (`GET /users/{id}/passkeys`) has `id` (its credential id,
+base64url), `name`, `algorithm` (`ES256`, `EdDSA` or `RS256`),
+`backed_up` (synced by its provider), `created_at` and `last_used_at`.
+With `auth.passkeys.enabled` off, the ceremonies are
+`404 passkeys_disabled`.
+
 ### Cluster and nodes
 
 Administrator operations; see [Clusters](../operator-guide/clusters.md).
@@ -653,7 +706,7 @@ id or its name.
 | `GET` | `/cluster/settings/ovn/edge-defaults` | A suggested shared edge from what the nodes report |
 | `GET` | `/cluster/ovn` | OVN as it is now: databases, chassis, gateways |
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |
-| `GET` | `/nodes` | List nodes |
+| `GET` | `/nodes` | List nodes; a server's status has `ui_url`, the web UI address it publishes |
 | `GET` | `/nodes/{id}` | Get a node |
 | `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
 | `POST` | `/nodes/{id}/devices/{address}/prepare` | Bind a device's IOMMU group to vfio-pci on its node |

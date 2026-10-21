@@ -390,6 +390,13 @@ publishes. By default it is what its glidex-ui answers on: its Tailscale
 name when the Tailscale certificate is on, else the first name in
 `GLIDEX_UI_HOSTS`, else the host's full name, with port 5173.
 
+On an agent, `https://<agent>:5173/…` answers with a redirect to the same
+path on a server's web UI, and its home page goes to that agent's Host
+page. Until a server has published its address (just after a join, say),
+the agent shows a page listing the cluster's servers instead. API calls
+to an agent's web UI are refused with `421 use_a_server`, naming the
+server's address; nothing is relayed through the agent.
+
 Behind a load balancer, set the same address on every server, in
 `/etc/glidex/control-plane.json`:
 
@@ -397,10 +404,15 @@ Behind a load balancer, set the same address on every server, in
 { "cluster": { "ui_url": "https://glidex.example.com" } }
 ```
 
+It must be `https://host[:port]`, with no path; restart the control
+plane after setting it.
+
 That address is then also an accepted origin, the default SSO callback
 (register it once with your IdP), and a name each server's web UI
 answers to. Agents of an older version still relay their web UI to the
-servers until they are upgraded.
+servers until they are upgraded. If users sign in with passkeys under
+more than one of these names, set their domain as well (see
+[Passkeys](authentication.md#the-passkeys-domain)).
 
 ## Rolling upgrades
 
@@ -530,16 +542,33 @@ The web UI's **Cluster** page (in the side menu) shows, on a cluster:
 - warnings for ports that don't answer, a CA rotation under way, and
   detaches in progress;
 - **Nodes**: role, phase, readiness, address, version and VM count;
-  click a node for its page (capacity, versions, KVM / IOMMU / DPDK,
-  `br-int` datapath, physical networks, its VMs and disks, the
-  **Roles on this host** card (see [On one host of a
-  cluster](access-control.md#on-one-host-of-a-cluster)), and the
-  **Operations…** menu);
+  click a node for its Host page (below);
 - **Pending imports** and **Detaches**;
 - **Raft**: state, term, leader, voters and learners;
 - **OVN**: on/off, tunnels, settings;
 - **Certificate authority**, and the **Danger zone**.
 
 On a standalone host it shows **This host** (name, phase, readiness,
-CPUs, memory and VM count, with a link to the host's own node page) and
+CPUs, memory and VM count, with a link to the host's own page) and
 offers **Make this host a cluster**.
+
+### Host pages
+
+Each host has a page at `/hosts/<node>`; **Hosts** in the side menu
+opens the Cluster page's node list (on a standalone host, its one page),
+and every link to a node leads there. A host's page shows:
+
+- capacity, versions, KVM / IOMMU / DPDK, the `br-int` datapath and
+  physical networks;
+- **Topology**: its NUMA nodes and PCI devices (see [PCI
+  passthrough](pci-passthrough.md));
+- **Networking**: that host's Open vSwitch, bridges and uplinks (see
+  [Host networking](host-networking.md)), shown once the host is ready;
+- its VMs and disks, the **Roles on this host** card (see [On one host
+  of a cluster](access-control.md#on-one-host-of-a-cluster)), and the
+  **Operations…** menu.
+
+The server whose web UI you use runs a host's requests on that host, so
+every host, agents included, is managed from any server's web UI. What
+you may do there follows your roles on that host. The old
+`/cluster/nodes/<node>` addresses lead to the same pages.

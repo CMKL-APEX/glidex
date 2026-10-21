@@ -52,6 +52,7 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
 | **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
 | **VFIO PCI Devices (optional)** | Host PCI devices to pass through. See [Devices](#pci-devices). |
+| **Device Pools (optional)** | How many devices to take from each pool your project may use. A GPU pool's count sizes the VM; see [GPUs](#gpus). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
@@ -81,6 +82,7 @@ in brackets.
 ```
 gxctl> create
 VM name: web-1
+GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional):
 vCPU count [1]: 2
 Memory (MiB) [512]: 2048
 Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
@@ -119,7 +121,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   }'
 ```
 
-`name`, `vcpu_count` and `mem_size_mib` are required. Values from a
+`name`, `vcpu_count` and `mem_size_mib` are required (with `gpus`, only
+`name`: see [GPUs](#gpus)). Values from a
 fixed list take their full names, as in the table below
 (`POWER_STATE_RUNNING`, not `running`); a short name is refused with
 `422` (see [Proto JSON](../api/rest.md#proto-json)). See
@@ -152,7 +155,7 @@ fixed list take their full names, as in the table below
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
 | NUMA policy | `numa_policy` | `NUMA_POLICY_NONE` (default), `NUMA_POLICY_PREFERRED` or `NUMA_POLICY_STRICT`: keep the VM's memory, CPUs and PCI devices on one host NUMA node; `NUMA_POLICY_ALIGNED`: across exactly its devices' NUMA nodes. See [NUMA and dedicated CPUs](#numa-and-dedicated-cpus). Changeable; applies at the next start. |
-| GPUs | `gpus` | `{"count": 4, "pool": "a100"}`: that many GPUs, NUMA-aligned, the VM sized from the pool unless you size it. See [GPUs](#gpus). |
+| GPUs | `gpus` | `{"count": 4, "pool": "a100"}`: that many GPUs, NUMA-aligned, the VM sized from the pool unless you size it. See [GPUs](#gpus). Fixed: change `devices` and the sizing instead. |
 | Device pools | `devices` | `[{"pool": "a100", "count": 1, "same_switch": false}]`: devices the scheduler picks from a pool your project may use; shown as `pool_devices`. See [Devices from a pool](#devices-from-a-pool). Changeable; applies at the next start. |
 | CPU policy | `cpu_policy` | `CPU_POLICY_SHARED` (default) or `CPU_POLICY_DEDICATED`: each vCPU on a host CPU of its own. Changeable; applies at the next start. |
 
@@ -338,34 +341,66 @@ from and `tenant_pool`. Devices from pools are metered
 
 #### GPUs
 
-For GPUs there's a shorter way: ask for a count and let the pool size
-the VM.
+For GPUs there's a shorter way: ask for a count, and the pool places
+and sizes the VM.
 
 ```json
-{"name": "train-1", "image": "ubuntu-24.04", "gpus": {"count": 4, "pool": "a100"}}
+{"name": "train-1", "image": "ubuntu-24.04", "credential": "alice",
+ "gpus": {"count": 4, "pool": "a100"}}
 ```
 
-- **Expansion:** `gpus` becomes a pool request for that many devices,
-  with `numa_policy: NUMA_POLICY_ALIGNED` (see [NUMA and dedicated
-  CPUs](#numa-and-dedicated-cpus)). vCPUs, memory, hugepages and the
-  CPU policy come from what the operator set per device on the pool,
-  times the count.
-- **Your values win:** `vcpu_count`, `mem_size_mib`, `numa_policy` or
-  `cpu_policy` you give yourself are kept.
-- **No pool named:** the project's only GPU pool is used. With several,
-  the request is refused and the error names them.
-- **On the VM:** it keeps `gpus` and shows what it came to (`devices`,
-  the policies, the sizing). `gxctl get <vm>` prints `GPUs:` and each
-  NUMA node's share.
-- **gxctl:** `gxctl create` asks "GPUs" (`4`, `4:a100`) before vCPUs
-  and memory. An empty vCPU or memory answer then takes the pool's
-  sizing.
-- **Web UI:** a GPU pool's count in **Device Pools** fills in the vCPU
-  and memory fields from the pool, until you change them by hand.
-- **Refusals** (`400`): a count of 0; no pool named when there are
-  several; a pool without per-device sizing and no `vcpu_count` /
-  `mem_size_mib`; `"nvlink": true`, until the cluster has an NVLink
-  fabric.
+`gpus` is filled in when the VM is created:
+
+| Field | From `gpus` | When you give it yourself |
+|---|---|---|
+| `devices` | `{"pool": "a100", "count": 4}` | Refused if `devices` asks the same pool. |
+| `numa_policy` | `NUMA_POLICY_ALIGNED` (see [NUMA and dedicated CPUs](#numa-and-dedicated-cpus)) | Yours is kept. |
+| `vcpu_count`, `mem_size_mib` | The pool's per-device vCPUs and memory, times the count | Yours are kept. |
+| `hugepages`, `cpu_policy` | The pool's, when the operator set them | Yours are kept. |
+
+- **The pool:** a cluster pool or a tenant pool by name. Without
+  `pool`, the project's only GPU pool is used.
+- **Sizing:** what each GPU brings is set by the operator. The web UI
+  shows it next to the pool (*14 vCPUs and 56 GiB each*), and
+  `GET /pci-pools?project=<p>` as `per_device_vcpus` and
+  `per_device_memory_mib`. A pool without it needs `vcpu_count` and
+  `mem_size_mib`.
+- **Quotas and metering** are those of the pool's devices
+  (`devices.a100`, `device.alloc.a100`).
+- **On the VM:** it keeps `gpus` and shows what it came to: `devices`
+  and `pool_devices`, the policies, the sizing, and for GPUs on several
+  NUMA nodes each node's share (`numa`). `gxctl get <vm>` prints
+  `GPUs: 4 from a100` and a `NUMA <i>:` line per guest NUMA node; the
+  VM's page shows **NUMA layout**.
+- **Changing it:** `gpus` can't be changed (`PATCH` refuses it). Change
+  `devices`, `vcpu_count` and `mem_size_mib` instead; they apply at
+  the next start.
+- **Placement preview:** `POST /scheduler/preview` takes `gpus` too,
+  and shows each node's split.
+
+**gxctl:** `create` asks *GPUs* right after the name: `4`, `4:a100`.
+With GPUs, an empty vCPU or memory answer takes the pool's sizing.
+
+**Web UI:** in **Device Pools**, the count of the first GPU pool is
+sent as `gpus`, and fills in the vCPU and memory fields from the pool
+until you change them by hand. A GPU pool with **Under one PCIe
+switch** ticked is an ordinary pool request instead, without the NUMA
+alignment or the sizing.
+
+Refusals (`400 invalid_config`):
+
+| Message | Why |
+|---|---|
+| `gpus: count must be at least 1` | A count of 0. |
+| `gpus: no device pool h100` | No such pool for this project. |
+| `gpus: name the pool, one of a100, t4` | The project may use several GPU pools. |
+| `gpus: this project may use no GPU pool` | No `pool` given, and no GPU pool is granted to the project. |
+| `gpus: give vcpu_count and mem_size_mib, or set per_device on pool a100` | The pool has no per-device sizing. |
+| `gpus and devices both ask pool a100` | Ask the pool in one place. |
+| `gpus: NVLink needs a fabric …` | `"nvlink": true` (`4:a100:nvlink` in gxctl). NVLink between passed-through GPUs isn't available yet. |
+
+A pool the project may not use is refused as with `devices`
+(`403 forbidden`), and so are quotas.
 
 ## Lifecycle
 
@@ -588,21 +623,23 @@ on the same node. Two settings ask for that:
     node, or no node with the memory (and CPUs) left. On a cluster the
     VM waits for a node; on a single host the create is refused (`409`).
   - `NUMA_POLICY_ALIGNED` is for VMs whose devices are on more than one
-    NUMA node, say 4 GPUs on a host with 2 per node. The VM spans
-    exactly its devices' NUMA nodes. Its vCPUs and memory are split
-    between them by their device counts: 4 GPUs on nodes 5 and 7 with 16
-    vCPUs and 128 GiB give 8 vCPUs and 64 GiB on each.
-    - The guest sees the same layout: a NUMA node per host node, with its
-      vCPUs, memory and GPUs. `numactl -H` and `nvidia-smi topo -m` in
-      the guest match the host.
+    NUMA node, say 4 GPUs on a host with 2 per node; [GPUs](#gpus) ask
+    for it. The VM spans exactly its devices' NUMA nodes. Its vCPUs and
+    memory are split between them by their device counts: 4 GPUs on
+    nodes 5 and 7 with 16 vCPUs and 128 GiB give 8 vCPUs and 64 GiB on
+    each (an uneven split gives the remainder to the first nodes).
     - Devices picked from a pool fill as few NUMA nodes as can hold them,
-      so 2 GPUs go to one node.
-    - A node whose share doesn't fit refuses the host, naming the node.
+      so 2 GPUs go to one node when one has 2 free.
+    - Each node's share must fit that node's free memory, hugepages and
+      (dedicated) CPUs, or the host is refused, naming the node.
+    - With devices on one node only, it is like `STRICT`. With no
+      devices, it is like `PREFERRED`.
+    - Every device needs a NUMA node, even on a host with one NUMA node.
+      If the firmware gives none, ask for `NUMA_POLICY_PREFERRED`
+      yourself (it wins over what `gpus` sets).
     - The VM shows its split as `numa` (one entry per guest node: host
       node, vCPUs, memory, devices), and the web UI shows it as **NUMA
       layout**.
-    - With devices on one node only, it is like `STRICT`. With no devices,
-      it is like `PREFERRED`.
 - `cpu_policy: CPU_POLICY_DEDICATED` gives each vCPU a host CPU of its
   own, which no other VM uses. It implies `NUMA_POLICY_PREFERRED`. By
   default a dedicated VM takes whole cores: both hyperthreads of a core,
@@ -616,7 +653,8 @@ its vCPUs anywhere on the host, so no node's CPUs sit idle.
 
 Set them over the API, at creation or with `PATCH /vms/{id}`
 (`update_mask` `numa_policy,cpu_policy`); the web UI and `gxctl` don't
-have them yet:
+have them yet, except through [GPUs](#gpus), which set
+`NUMA_POLICY_ALIGNED`:
 
 ```json
 {"name": "train", "vcpu_count": 16, "mem_size_mib": 65536,
@@ -636,10 +674,33 @@ When a VM can't be placed this way, the reason says why:
 | `NUMA node 1: not enough memory (… of … MiB taken)` | That NUMA node is full. |
 | `NUMA node 0: not enough free CPUs (8 dedicated vCPUs, 6 CPUs free)` | Too few CPUs left for dedicated vCPUs. |
 | `its PCI devices are on NUMA nodes 0 and 1` | A strict VM's devices are split. |
-| `PCI device … has no NUMA node` | A strict VM's device has no NUMA node. |
+| `PCI device … has no NUMA node` | A strict or aligned VM's device has no NUMA node. |
+| `its devices are on 2 NUMA nodes, so it needs at least 2 vCPUs` | An aligned VM needs a vCPU on each of its nodes. |
+| `NUMA nodes 5 and 7 would back its memory with different page sizes` | An aligned VM's nodes would back its memory with different page sizes. Give it `hugepages` with a `hugepage_size` each of its nodes has. |
 
 A `PREFERRED` VM that didn't fit on one NUMA node runs anyway, with its
 `NumaAligned` condition `False`.
+
+### What the guest sees
+
+A VM aligned over several NUMA nodes sees one guest NUMA node per host
+node, in the order of `numa`:
+
+- guest node *i* has its share of vCPUs (numbered in order: node 0's
+  first) and of memory, bound to host node `numa[i].node`;
+- each guest node has its own PCI root with the devices of its host
+  node, so the guest sees which GPU is near which vCPUs and memory
+  (`numactl -H`, `nvidia-smi topo -m`). Virtio disks and NICs stay on
+  the main PCI root;
+- with dedicated CPUs, vCPU *i* runs on host CPU `cpus[i]`, on its
+  node. Shared vCPUs float over the host, as for one node.
+
+The distances between guest NUMA nodes are the hypervisor's defaults,
+not the host's, and a GPU and a NIC that share a PCIe switch on the
+host don't share one in the guest. Both hypervisors lay the guest out
+this way.
+
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; the MMIO apertures aren't sized yet (spec GV1 not done). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
 
 ## Placement on a cluster
 
