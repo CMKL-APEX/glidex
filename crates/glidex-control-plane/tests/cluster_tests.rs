@@ -5658,3 +5658,194 @@ async fn a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywher
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(vm_of(&v)["node"], server_id.as_str(), "{v}");
 }
+
+/// A kernel of an architecture the leader can't run is extracted on a node
+/// of that architecture with a copy of the disk image, which reports it in
+/// its cache row; the leader records it (spec/kernel-boot.md §10.2). A
+/// failed run there fails the image, and a retry runs it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
+    use glidex_control_plane::controller::image_cache::CachePhase;
+    use glidex_control_plane::images::ImageStatus;
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let agent_id = agent.manager.local_node_id();
+
+    // The other architecture than this host's: the server can't extract it.
+    let (arch, kernel) = if std::env::consts::ARCH == "aarch64" {
+        ("x86_64", {
+            let mut b = vec![0u8; 32 * 1024];
+            b[0x202..0x206].copy_from_slice(b"HdrS");
+            b[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes());
+            b[0x236..0x238].copy_from_slice(&0x7fu16.to_le_bytes());
+            b
+        })
+    } else {
+        ("aarch64", {
+            let mut b = vec![0u8; 8192];
+            b[..2].copy_from_slice(b"MZ");
+            b[0x38..0x3c].copy_from_slice(b"ARM\x64");
+            b
+        })
+    };
+    // The agent says it is of that architecture, with KVM.
+    let db = server.manager.database();
+    let raw = {
+        let txn = db.begin_read().unwrap();
+        let t = txn.open_table(TableId::Nodes.definition()).unwrap();
+        t.get(agent_id.as_str()).unwrap().unwrap().value().to_vec()
+    };
+    let mut n: Value = serde_json::from_slice(&raw).unwrap();
+    n["status"]["features"]["arch"] = json!(arch);
+    n["status"]["features"]["kvm"] = json!(true);
+
+    // A disk image only the agent has.
+    let data = vec![3u8; 64 * 1024];
+    let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
+    let src_id = "img-arm";
+    let src = json!({
+        "id": src_id, "name": "foreign", "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": data.len(), "file_size_bytes": data.len(), "sha256": sha,
+        "arch": arch, "created_at": 1, "pinned": [agent_id],
+    });
+    let agent_path = agent.manager.images().image_path(src_id);
+    std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+    std::fs::write(&agent_path, &data).unwrap();
+    db.write(
+        Origin::Api,
+        |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Images.definition())?
+                .insert(src_id, src.to_string().as_bytes())?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    // No node of its architecture yet: refused.
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/images",
+        Some(json!({ "kernel_from": src_id })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v.to_string()
+            .contains(&format!("no other ready node is {arch} with KVM")),
+        "{v}"
+    );
+    db.write(
+        Origin::Api,
+        |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Nodes.definition())?
+                .insert(agent_id.as_str(), n.to_string().as_bytes())?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    wait_for("the agent's copy recorded", || async {
+        server
+            .manager
+            .image_caches(src_id)
+            .iter()
+            .any(|(n, r)| *n == agent_id && r.phase == CachePhase::Ready)
+    })
+    .await;
+
+    // The extractor, standing in on the agent: it fails first.
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (f, k) = (fail.clone(), kernel.clone());
+    agent
+        .manager
+        .images()
+        .set_extractor_job(Arc::new(move |disk, out| {
+            assert!(disk.exists(), "the disk image is on the node");
+            if f.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("the appliance stopped".into());
+            }
+            let mut o = std::fs::OpenOptions::new()
+                .write(true)
+                .open(out)
+                .map_err(|e| e.to_string())?;
+            let mut put = |name: &str, d: &[u8]| {
+                o.write_all(format!("GXFILE vda1:/boot/{name} {}\n", d.len()).as_bytes())
+                    .and_then(|_| o.write_all(d))
+            };
+            put("vmlinuz-6.12.0-test", &k).map_err(|e| e.to_string())?;
+            put("initrd.img-6.12.0-test", b"initrd").map_err(|e| e.to_string())?;
+            put(
+                "grub/grub.cfg",
+                b"\tlinux /boot/vmlinuz-6.12.0-test root=LABEL=cloudimg-rootfs ro\n",
+            )
+            .map_err(|e| e.to_string())?;
+            o.write_all(b"GXEND\n").map_err(|e| e.to_string())
+        }));
+
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/images",
+        Some(json!({ "kernel_from": src_id })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    let id = v["image"]["id"].as_str().unwrap().to_string();
+    let state = |id: String| {
+        let m = server.manager.clone();
+        async move { m.images().get_image(&id).unwrap() }
+    };
+    wait_for("the extraction to fail", || async {
+        matches!(state(id.clone()).await.status, ImageStatus::Failed { .. })
+    })
+    .await;
+    let img = state(id.clone()).await;
+    let ImageStatus::Failed { reason } = &img.status else {
+        unreachable!()
+    };
+    assert!(
+        reason.contains("on agent1") && reason.contains("the appliance stopped"),
+        "{reason}"
+    );
+    assert_eq!(img.extract_node.as_deref(), Some(agent_id.as_str()));
+
+    // Retried, it runs on the agent again and the leader records the kernel.
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (s, v) = call(&server, "POST", &format!("/images/{id}/retry"), None, &[]).await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_for("the kernel", || async {
+        state(id.clone()).await.status == ImageStatus::Ready
+    })
+    .await;
+    let img = state(id.clone()).await;
+    let stored = agent.manager.images().image_file(&img);
+    assert_eq!(
+        img.sha256,
+        glidex_control_plane::cluster::pki::hex(&Sha256::digest(std::fs::read(&stored).unwrap())),
+    );
+    assert!(
+        img.cmdline
+            .as_deref()
+            .is_some_and(|c| c.contains("console=")),
+        "{:?}",
+        img.cmdline
+    );
+    assert_eq!(img.extract_node.as_deref(), Some(agent_id.as_str()));
+    assert!(
+        !server.manager.images().image_file(&img).exists(),
+        "only the agent has it"
+    );
+    let rows = server.manager.image_caches(&id);
+    assert!(
+        rows.iter()
+            .any(|(n, r)| *n == agent_id && r.phase == CachePhase::Ready),
+        "{rows:?}"
+    );
+    // It stays Ready: the agent's copy counts.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(state(id.clone()).await.status, ImageStatus::Ready);
+}

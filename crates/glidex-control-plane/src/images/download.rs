@@ -588,6 +588,7 @@ impl ImageManager {
             kernel_release: None,
             for_image: None,
             owner: None,
+            extract_node: None,
         };
         if let Some((kernel_file, initrd_file)) = kernel_import {
             // Copied before the record exists, so a failure leaves nothing.

@@ -4,8 +4,12 @@
 //! plane's own sandbox has no `/dev/kvm`). The image manager prepares the
 //! appliance and reads the result (`images/extract.rs`).
 
+use crate::controller::image_cache::{CachePhase, CacheRow};
+use crate::controller::queue::Key;
 use crate::hypervisor::{cloud_hypervisor, qemu, resolve_binary};
-use crate::images::extract::ExtractOrigin;
+use crate::images::Image;
+use crate::images::catalog::Arch;
+use crate::images::extract::{ExtractOrigin, ExtractedKernel};
 use crate::images::extractor::OUTPUT_SIZE;
 use crate::images::{ImageError, ImageSource, ImageStatus};
 use crate::state::VmManager;
@@ -16,6 +20,8 @@ use glidex_vm_shim::state::{ExitCause, InstanceFile, Phase};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
 use std::time::Duration;
+
+type Next = Result<Option<Duration>, crate::state::VmManagerError>;
 
 /// An extraction that takes longer is stopped (it takes seconds, F-K7).
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -107,6 +113,300 @@ impl VmManager {
         Ok(id.to_string())
     }
 
+    /// Whether node `n` can extract kernels of `arch` for the leader
+    /// (§10.2): ready, schedulable, of that architecture, with KVM.
+    fn extracts_on(n: &crate::node::Node, arch: Arch) -> bool {
+        !n.status.phase.is_tombstone()
+            && n.status.phase.schedulable()
+            && n.status.ready == crate::models::Tristate::True
+            && n.status.features.kvm
+            && n.status.features.arch == arch.as_str()
+    }
+
+    /// Why a kernel of `arch` can't be extracted, if it can't (§10.2): on
+    /// this host, or in a cluster on another node of that architecture.
+    pub(crate) fn extraction_unavailable(&self, arch: Arch) -> Option<String> {
+        let here = self.images.extraction_refused(arch)?;
+        if self.cluster().is_none() || crate::images::extractor::pin_for(arch).is_none() {
+            return Some(here);
+        }
+        let me = self.local_node_id();
+        if self
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .any(|n| n.meta.id != me && Self::extracts_on(n, arch))
+        {
+            return None;
+        }
+        Some(format!(
+            "{here}, and no other ready node is {} with KVM",
+            arch.as_str()
+        ))
+    }
+
+    /// The leader's round for kernel image `img`, extracting (§10.2): run
+    /// here when this host can and has the disk image, else on a node of
+    /// its architecture with a copy, whose cache row says how it went.
+    pub(crate) fn lead_extraction(&self, img: &mut Image) -> Next {
+        if let Some(node) = img.extract_node.clone() {
+            return self.follow_extraction(img, &node);
+        }
+        if self.images.download_running(&img.id) {
+            return Ok(Some(Duration::from_secs(10)));
+        }
+        let src = match &img.source {
+            ImageSource::Extracted {
+                image_id,
+                disk_id: None,
+                ..
+            } if self.cluster().is_some() => self.images.get_image(image_id).ok(),
+            _ => None,
+        };
+        // A VM's disk, a standalone host, or a source gone (the run says so).
+        let Some(src) = src else {
+            self.spawn_extraction(&img.id);
+            return Ok(Some(Duration::from_secs(10)));
+        };
+        let here = self.images.extraction_refused(src.arch).is_none();
+        let downloading = matches!(
+            src.status,
+            ImageStatus::Downloading { .. } | ImageStatus::Verifying
+        );
+        if here && (downloading || self.images.image_path(&src.id).exists()) {
+            self.spawn_extraction(&img.id);
+            return Ok(Some(Duration::from_secs(10)));
+        }
+        if downloading {
+            return Ok(Some(Duration::from_secs(5)));
+        }
+        if src.status != ImageStatus::Ready || src.deletion_requested_at.is_some() {
+            // The run fails, saying why.
+            self.spawn_extraction(&img.id);
+            return Ok(Some(Duration::from_secs(10)));
+        }
+        // A node with a copy first; else one that gets a copy.
+        let me = self.local_node_id();
+        let holders: Vec<String> = self
+            .image_caches(&src.id)
+            .into_iter()
+            .filter(|(_, r)| r.phase == CachePhase::Ready)
+            .map(|(n, _)| n)
+            .collect();
+        let mut nodes: Vec<crate::node::Node> = self
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| Self::extracts_on(n, src.arch) && (n.meta.id != me || here))
+            .collect();
+        nodes.sort_by_key(|n| (!holders.contains(&n.meta.id), n.meta.id != me));
+        let Some(node) = nodes.first() else {
+            let why = self
+                .extraction_unavailable(src.arch)
+                .unwrap_or_else(|| format!("no node can extract it from {}", src.name));
+            img.status = ImageStatus::Failed {
+                reason: format!("kernels can't be extracted: {why}"),
+            };
+            self.images.put_image(img)?;
+            return Ok(None);
+        };
+        if !holders.contains(&node.meta.id) {
+            let mut s = src.clone();
+            s.release.retain(|r| *r != node.meta.id);
+            if !s.pinned.contains(&node.meta.id) {
+                s.pinned.push(node.meta.id.clone());
+                self.images.put_image(&s)?;
+                self.queue.add(Key::Image(s.id.clone()));
+            }
+        }
+        if node.meta.id == me {
+            // This leader, once its copy is here.
+            return Ok(Some(Duration::from_secs(5)));
+        }
+        img.extract_node = Some(node.meta.id.clone());
+        self.images.put_image(img)?;
+        self.image_event(
+            &img.id,
+            EventKind::Normal,
+            "Delegated",
+            format!("extracting on {} from {}", node.spec.name, src.name),
+        );
+        Ok(Some(Duration::from_secs(5)))
+    }
+
+    /// Kernel image `img`, extracting on `node` (§10.2): recorded from the
+    /// node's cache row once it is done; placed again if the node left.
+    fn follow_extraction(&self, img: &mut Image, node: &str) -> Next {
+        let name = match self.copy_node(node) {
+            Ok(n) => n.spec.name,
+            Err(e) => {
+                img.extract_node = None;
+                self.images.put_image(img)?;
+                self.image_event(
+                    &img.id,
+                    EventKind::Warning,
+                    "Delegated",
+                    format!("the node extracting it is gone ({e}); choosing another"),
+                );
+                return Ok(Some(Duration::from_secs(1)));
+            }
+        };
+        let row = self
+            .image_caches(&img.id)
+            .into_iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, r)| r);
+        match row {
+            Some(CacheRow {
+                phase: CachePhase::Ready,
+                extracted: Some(k),
+                ..
+            }) => {
+                k.apply(img);
+                img.status = ImageStatus::Ready;
+                self.images.put_image(img)?;
+                let from = match &img.source {
+                    ImageSource::Extracted { image_id, .. } => self
+                        .images
+                        .get_image(image_id)
+                        .map(|s| s.name)
+                        .unwrap_or_else(|_| image_id.clone()),
+                    _ => String::new(),
+                };
+                self.extracted_event(img, &from, Some(&name));
+                tracing::info!(image = %img.name, node = %name, release = ?img.kernel_release, "kernel extracted");
+                Ok(Some(Duration::from_secs(1)))
+            }
+            Some(CacheRow {
+                phase: CachePhase::Failed,
+                error,
+                ..
+            }) => {
+                tracing::warn!(image = %img.name, node = %name, "kernel extraction failed: {error}");
+                img.status = ImageStatus::Failed {
+                    reason: format!("on {name}: {error}"),
+                };
+                self.images.put_image(img)?;
+                Ok(None)
+            }
+            _ => Ok(Some(Duration::from_secs(5))),
+        }
+    }
+
+    /// A node's round for kernel image `img`, extracting: run here when the
+    /// leader chose this node (§10.2), once the disk image's copy is here.
+    pub(crate) fn extract_for_leader(&self, img: &Image) -> Next {
+        if self.images.download_running(&img.id) {
+            return Ok(Some(Duration::from_secs(10)));
+        }
+        let me = self.local_node_id();
+        if self
+            .image_caches(&img.id)
+            .iter()
+            .any(|(n, r)| *n == me && matches!(r.phase, CachePhase::Ready | CachePhase::Failed))
+        {
+            // Done: the leader records it.
+            return Ok(None);
+        }
+        let have = match &img.source {
+            ImageSource::Extracted { image_id, .. } => self.images.image_path(image_id).exists(),
+            _ => false,
+        };
+        if have {
+            self.spawn_delegated_extraction(&img.id);
+            return Ok(Some(Duration::from_secs(10)));
+        }
+        Ok(Some(Duration::from_secs(5)))
+    }
+
+    /// Run kernel image `id`'s extraction for the leader. Its result goes in
+    /// this node's cache row, never the catalog, which is the leader's.
+    fn spawn_delegated_extraction(&self, id: &str) {
+        let me = self.arc();
+        let task_id = id.to_string();
+        self.images.spawn_task(id.to_string(), async move {
+            let result = me.run_delegated_extraction(&task_id).await;
+            if me
+                .images
+                .get_image(&task_id)
+                .is_ok_and(|i| i.deletion_requested_at.is_none())
+            {
+                let row = match result {
+                    Ok((kernel, bytes)) => CacheRow {
+                        phase: CachePhase::Ready,
+                        bytes,
+                        verified_at: crate::tenancy::now(),
+                        error: String::new(),
+                        extracted: Some(kernel),
+                    },
+                    Err(e) => {
+                        tracing::warn!(image = %task_id, "kernel extraction failed: {e}");
+                        CacheRow {
+                            phase: CachePhase::Failed,
+                            bytes: 0,
+                            verified_at: crate::tenancy::now(),
+                            error: e.to_string(),
+                            extracted: None,
+                        }
+                    }
+                };
+                if let Err(e) = me.put_cache_row(&task_id, Some(row)) {
+                    tracing::warn!(image = %task_id, "recording the extraction: {e}");
+                }
+            }
+            Ok(())
+        });
+    }
+
+    async fn run_delegated_extraction(
+        &self,
+        id: &str,
+    ) -> Result<(ExtractedKernel, u64), ImageError> {
+        let img = self.images.get_image(id)?;
+        let ImageSource::Extracted {
+            image_id,
+            disk_id: None,
+            ..
+        } = &img.source
+        else {
+            return Err(ImageError::InvalidImage(format!(
+                "{} is not extracted from a disk image",
+                img.name
+            )));
+        };
+        let src = self
+            .images
+            .get_image(image_id)
+            .map_err(|_| ImageError::NotReady("the disk image it comes from was deleted".into()))?;
+        let _hold = self.images.hold_image(&src.id);
+        let origin = ExtractOrigin {
+            path: self.images.image_path(&src.id),
+            format: src.format,
+            backing_files: false,
+            arch: src.arch,
+            image_id: src.id.clone(),
+            disk_id: None,
+            sha256: src.sha256.clone(),
+            verified: src.verified(),
+        };
+        let done = self.extract_files(id, &origin).await;
+        if done.is_err() {
+            for p in [
+                self.images.part_path(id),
+                self.images.initrd_part_path(id),
+                self.images.extract_out_path(id),
+            ] {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        let done = done?;
+        let kernel = ExtractedKernel::of(&done)
+            .ok_or_else(|| ImageError::Io("the extraction recorded no kernel".into()))?;
+        Ok((kernel, done.file_size_bytes))
+    }
+
     /// Extract kernel image `id` from VM disk `disk_id` (§10.5): the disk
     /// is busy for the run, so its VM can't start meanwhile. With `dedupe`,
     /// a kernel already stored (same files) is used instead and `id`
@@ -157,6 +457,50 @@ impl VmManager {
         origin: &ExtractOrigin,
         from: &str,
     ) -> Result<crate::images::Image, ImageError> {
+        let mut img = self.extract_files(id, origin).await?;
+        img.status = ImageStatus::Ready;
+        self.images.put_image(&img)?;
+        self.extracted_event(&img, from, None);
+        tracing::info!(image = %img.name, release = ?img.kernel_release, "kernel extracted");
+        Ok(img)
+    }
+
+    /// The `Extracted` event of kernel image `img`, from `from`, on `node`
+    /// when another node extracted it.
+    pub(crate) fn extracted_event(
+        &self,
+        img: &crate::images::Image,
+        from: &str,
+        node: Option<&str>,
+    ) {
+        let _ = self.store.push_event(
+            &event_key("image", &img.id),
+            Event::new(
+                "controller",
+                EventKind::Normal,
+                "Extracted",
+                format!(
+                    "{} from {} ({}){}",
+                    img.kernel_release.as_deref().unwrap_or("kernel"),
+                    from,
+                    match &img.source {
+                        ImageSource::Extracted { path, .. } => path.as_str(),
+                        _ => "",
+                    },
+                    node.map(|n| format!(" on {n}")).unwrap_or_default()
+                ),
+            ),
+        );
+    }
+
+    /// Run the extractor on `origin` and install its kernel as kernel image
+    /// `id`'s files (§10.2–10.4): the image with what was found, not yet
+    /// recorded. Runs here, on the leader or on the node it chose.
+    async fn extract_files(
+        &self,
+        id: &str,
+        origin: &ExtractOrigin,
+    ) -> Result<crate::images::Image, ImageError> {
         let _permit = self
             .images
             .extractions
@@ -164,7 +508,6 @@ impl VmManager {
             .acquire_owned()
             .await
             .map_err(|e| ImageError::Io(e.to_string()))?;
-        let (kernel, initrd) = self.images.ensure_extractor(origin.arch).await?;
         let out = self.images.extract_out_path(id);
         let o = out.clone();
         tokio::task::spawn_blocking(move || {
@@ -180,41 +523,54 @@ impl VmManager {
         .map_err(|e| ImageError::Io(e.to_string()))?
         .map_err(|e| ImageError::Io(format!("{}: {e}", out.display())))?;
 
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let appliance = (s(&kernel), s(&initrd));
-        let a = (appliance.0.as_str(), appliance.1.as_str());
-        let disk = s(&origin.path);
-        let source = (disk.as_str(), origin.format.into(), origin.backing_files);
-        let cmdline = crate::images::extractor::cmdline(origin.arch);
-        // glidex runs QEMU on x86_64 only.
-        let x86 = origin.arch == crate::images::catalog::Arch::X86_64;
-        let (kind, argv) = if let Some(ch) = resolve_binary("cloud-hypervisor") {
-            let argv = cloud_hypervisor::extractor_args(&s(&ch), a, &cmdline, source, &s(&out));
-            (HypervisorKind::CloudHypervisor, argv)
-        } else if x86 && let Some(q) = resolve_binary("qemu-system-x86_64") {
-            let argv = qemu::extractor_args(&s(&q), a, &cmdline, source, &s(&out));
-            (HypervisorKind::Qemu, argv)
-        } else if x86 {
-            return Err(ImageError::ToolMissing {
-                tool: "cloud-hypervisor or qemu-system-x86_64".into(),
-                package: "cloud-hypervisor or qemu-system-x86".into(),
-            });
+        let job = self.images.extractor_job.read().unwrap().clone();
+        if let Some(job) = job {
+            let (disk, o) = (origin.path.clone(), out.clone());
+            tokio::task::spawn_blocking(move || job(&disk, &o))
+                .await
+                .map_err(|e| ImageError::Io(e.to_string()))?
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&out);
+                    ImageError::InvalidImage(format!("the extractor failed: {e}"))
+                })?;
         } else {
-            return Err(ImageError::ToolMissing {
-                tool: "cloud-hypervisor".into(),
-                package: "cloud-hypervisor".into(),
-            });
-        };
-        let outcome = self
-            .run_job(&job_id(id), kind, argv, EXTRACT_TIMEOUT)
-            .await
-            .map_err(|e| ImageError::Io(format!("the extractor did not start: {e}")))?;
-        if !outcome.clean {
-            let _ = std::fs::remove_file(&out);
-            return Err(ImageError::InvalidImage(format!(
-                "the extractor {}; its last output:\n{}",
-                outcome.reason, outcome.log_tail
-            )));
+            let (kernel, initrd) = self.images.ensure_extractor(origin.arch).await?;
+            let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+            let appliance = (s(&kernel), s(&initrd));
+            let a = (appliance.0.as_str(), appliance.1.as_str());
+            let disk = s(&origin.path);
+            let source = (disk.as_str(), origin.format.into(), origin.backing_files);
+            let cmdline = crate::images::extractor::cmdline(origin.arch);
+            // glidex runs QEMU on x86_64 only.
+            let x86 = origin.arch == crate::images::catalog::Arch::X86_64;
+            let (kind, argv) = if let Some(ch) = resolve_binary("cloud-hypervisor") {
+                let argv = cloud_hypervisor::extractor_args(&s(&ch), a, &cmdline, source, &s(&out));
+                (HypervisorKind::CloudHypervisor, argv)
+            } else if x86 && let Some(q) = resolve_binary("qemu-system-x86_64") {
+                let argv = qemu::extractor_args(&s(&q), a, &cmdline, source, &s(&out));
+                (HypervisorKind::Qemu, argv)
+            } else if x86 {
+                return Err(ImageError::ToolMissing {
+                    tool: "cloud-hypervisor or qemu-system-x86_64".into(),
+                    package: "cloud-hypervisor or qemu-system-x86".into(),
+                });
+            } else {
+                return Err(ImageError::ToolMissing {
+                    tool: "cloud-hypervisor".into(),
+                    package: "cloud-hypervisor".into(),
+                });
+            };
+            let outcome = self
+                .run_job(&job_id(id), kind, argv, EXTRACT_TIMEOUT)
+                .await
+                .map_err(|e| ImageError::Io(format!("the extractor did not start: {e}")))?;
+            if !outcome.clean {
+                let _ = std::fs::remove_file(&out);
+                return Err(ImageError::InvalidImage(format!(
+                    "the extractor {}; its last output:\n{}",
+                    outcome.reason, outcome.log_tail
+                )));
+            }
         }
         let (mgr, id_owned, origin_c, o) = (
             self.images.clone(),
@@ -227,28 +583,7 @@ impl VmManager {
                 .await
                 .map_err(|e| ImageError::Io(e.to_string()))?;
         let _ = std::fs::remove_file(&out);
-        let mut img = result?;
-        img.status = ImageStatus::Ready;
-        self.images.put_image(&img)?;
-        let _ = self.store.push_event(
-            &event_key("image", id),
-            Event::new(
-                "controller",
-                EventKind::Normal,
-                "Extracted",
-                format!(
-                    "{} from {} ({})",
-                    img.kernel_release.as_deref().unwrap_or("kernel"),
-                    from,
-                    match &img.source {
-                        ImageSource::Extracted { path, .. } => path.as_str(),
-                        _ => "",
-                    }
-                ),
-            ),
-        );
-        tracing::info!(image = %img.name, release = ?img.kernel_release, "kernel extracted");
-        Ok(img)
+        result
     }
 
     /// `POST /vms/{id}/extract-kernel` (§10.5): extract the kernel on VM

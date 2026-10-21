@@ -465,9 +465,10 @@ release bump is a new directory.
   is built in. 13 MB in all.
 - **Architectures:** x86_64 and aarch64, one pin each (`EXTRACTORS`).
   The extractor runs under KVM, so an image's kernel is extracted only on
-  a host of its architecture: elsewhere, as for an architecture without a
-  pin, `kernel_from` is refused with the reason and catalog pulls don't
-  extract (`extraction_refused`).
+  a host of its architecture. In a cluster that may be another node
+  (§10.2). Where no host can, as for an architecture without a pin,
+  `kernel_from` is refused with the reason and catalog pulls don't
+  extract (`extraction_unavailable`).
 - `GLIDEX_KERNEL_EXTRACTION=off` turns extraction off on a host (an
   air-gapped one, or tests).
 
@@ -477,6 +478,27 @@ The image controller runs the extractor on a node holding a `Ready`
 copy of the disk image, under the extraction limit (one at a time per
 node by default, `GLIDEX_MAX_EXTRACTIONS`). It holds the disk image
 (`ImageHold`) for the run, so it can't be deleted meanwhile.
+
+**Where.** A standalone host runs it itself. In a cluster, the leader
+runs it when it can extract that architecture and has the disk image's
+file, or is downloading it. Otherwise, once the disk image is `Ready`, it
+picks a node that is ready, schedulable, of the image's architecture and
+with KVM, preferring one with a `Ready` copy; a node without one gets
+the disk image added to its `pinned`, so a copy comes to it (clustering.md
+§9.2.2). The kernel image records the node in `extract_node` (an event
+`Delegated` says so); with no such node it is `Failed` with the reason.
+
+**A run on another node.** That node's image controller sees the
+`Extracting` image naming it, waits for its copy of the disk image, and
+runs the extractor as below. It writes no catalog record: the result
+goes in its own `image_caches/<kernel image>/<node>` row, `Ready` with
+`extracted` (the kernel's sha256 and size, release, initrd, command
+line, and the source path and digest) or `Failed` with the error. The
+leader then records that on the image (`Ready`, event `Extracted … on
+<node>`) or fails it (`on <node>: <error>`). The kernel's files stay on
+that node, as a copy others fetch from (clustering.md §9.2). If the node
+leaves the cluster first, the leader picks again. A retry clears the
+node's row and picks again.
 
 - **As a VM instance, not a child process.** The installed control
   plane's sandbox closes `/dev` and sets `no_new_privs`; hypervisors only

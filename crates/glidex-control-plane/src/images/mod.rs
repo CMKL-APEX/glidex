@@ -304,6 +304,11 @@ pub struct Image {
     /// kernel is deleted once no VM uses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// The node extracting this kernel image, when not the leader
+    /// (spec/kernel-boot.md §10.2): one of the image's architecture with a
+    /// copy of the disk image. It reports the result in its cache row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_node: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -994,6 +999,11 @@ pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
     }
 }
 
+/// What stands in for the extractor appliance in tests: given the disk
+/// image's path, write the extractor's output stream (§10.3) to the path.
+pub type ExtractorJob =
+    Arc<dyn Fn(&std::path::Path, &std::path::Path) -> Result<(), String> + Send + Sync>;
+
 pub struct ImageManager {
     db: Arc<Db>,
     pub settings: ImageSettings,
@@ -1008,6 +1018,9 @@ pub struct ImageManager {
     /// download and assembly, done once.
     pub(crate) extractions: Arc<tokio::sync::Semaphore>,
     pub(crate) extractor_lock: tokio::sync::Mutex<()>,
+    /// Tests only: writes the extractor's output stream instead of booting
+    /// the appliance ([`ImageManager::set_extractor_job`]).
+    pub(crate) extractor_job: std::sync::RwLock<Option<ExtractorJob>>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
     /// The `local` datastore's driver, over `settings.disk_dir`.
@@ -1057,6 +1070,13 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 }
 
 impl ImageManager {
+    /// Tests only: run kernel extractions through `job`, which writes the
+    /// extractor's output stream, instead of the appliance in a VM. The
+    /// stream is then read, checked and installed as for a real run.
+    pub fn set_extractor_job(&self, job: ExtractorJob) {
+        *self.extractor_job.write().unwrap() = Some(job);
+    }
+
     pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
         // Every image and disk path is built under these (paths::file_in).
         for dir in [&settings.image_dir, &settings.disk_dir] {
@@ -1068,6 +1088,7 @@ impl ImageManager {
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
             extractions: Arc::new(tokio::sync::Semaphore::new(settings.max_extractions)),
+            extractor_job: std::sync::RwLock::new(None),
             extractor_lock: tokio::sync::Mutex::new(()),
             http: download::http_client(settings.allow_private_urls)?,
             local: Arc::new(crate::datastore::file::FileDriver::new(
@@ -1955,6 +1976,7 @@ mod tests {
             kernel_release: None,
             for_image: None,
             owner: None,
+            extract_node: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");
