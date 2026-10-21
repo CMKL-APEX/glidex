@@ -1013,3 +1013,45 @@ async fn lvm_disks_on_a_real_pool() {
     }
     panic!("volumes left in {vg}");
 }
+
+/// An `lvm` datastore can't be deleted while a node keeps image volumes in
+/// it (spec/storage.md §11.1): nothing would remove them afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_lvm_datastore_with_image_volumes_is_not_deleted() {
+    use glidex_control_plane::datastore::record;
+    let h = harness();
+    let t = h.admin("root");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "thin-del", "driver": "DATASTORE_DRIVER_LVM",
+                        "volume_group": "gx-no-such-vg", "thin_pool": "pool"})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["datastore"]["id"].as_str().unwrap().to_string();
+    h.probed("thin-del", &t).await;
+    let db = h.app.manager.database();
+    let me = h.app.manager.local_node_id();
+    let mut row = record::rows(&db, &id).unwrap().remove(&me).unwrap();
+    row.image_volumes = vec!["img-kept".into()];
+    record::put_row(&db, &id, &me, Some(&row)).unwrap();
+
+    let (s, v) = h.rest("DELETE", "/datastores/thin-del", None, &t).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("img-kept"), "{v}");
+    let (_, d) = h.rest("GET", "/datastores/thin-del", None, &t).await;
+    assert_eq!(
+        d["datastore"]["node_status"][0]["image_volumes"],
+        json!(["img-kept"]),
+        "{d}"
+    );
+
+    // Once the node finds none, it goes.
+    row.image_volumes.clear();
+    record::put_row(&db, &id, &me, Some(&row)).unwrap();
+    let (s, v) = h.rest("DELETE", "/datastores/thin-del", None, &t).await;
+    assert!(s.is_success(), "{v}");
+}

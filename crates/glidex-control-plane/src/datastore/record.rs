@@ -187,6 +187,11 @@ pub struct NodeRow {
     /// (spec/storage.md §4.4): NFS mounted `soft`, or with local locks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// `lvm`: the images this node keeps a volume of in it (`gx-i-<id>`,
+    /// spec/storage.md §11.1), so the datastore isn't deleted from under
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_volumes: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -325,8 +330,16 @@ pub fn put(db: &Db, ds: &Datastore, root: &Path) -> Result<(), DatastoreError> {
 }
 
 /// Delete `id` and every node's row about it; refused while a disk is on
-/// it, checked in the same write so a disk made meanwhile can't be lost.
-pub fn delete(db: &Db, id: &str) -> Result<(), DatastoreError> {
+/// it, checked in the same write so a disk made meanwhile can't be lost,
+/// and while a node keeps image volumes in it (an `lvm` datastore's
+/// `gx-i-*`, which nothing would remove afterwards). `node_name` and
+/// `image_name` only word the refusal.
+pub fn delete(
+    db: &Db,
+    id: &str,
+    node_name: &dyn Fn(&str) -> String,
+    image_name: &dyn Fn(&str) -> String,
+) -> Result<(), DatastoreError> {
     db.write(Origin::Api, |tx| -> Result<(), DatastoreError> {
         let mut on = Vec::new();
         for r in tx.open_table(TableId::Disks.definition())?.iter()? {
@@ -343,10 +356,26 @@ pub fn delete(db: &Db, id: &str) -> Result<(), DatastoreError> {
                 on.join(", ")
             )));
         }
-        tx.open_table(TableId::Datastores.definition())?
-            .remove(id)?;
         let mut rows = tx.open_table(TableId::DatastoreNodes.definition())?;
         let prefix = format!("{id}/");
+        let mut kept = Vec::new();
+        for r in rows.range(prefix.as_str()..format!("{id}~").as_str())? {
+            let (k, v) = r?;
+            let row: NodeRow = serde_json::from_slice(v.value())?;
+            if !row.image_volumes.is_empty() {
+                let node = k.value().split_once('/').map(|(_, n)| n).unwrap_or_default();
+                let images: Vec<String> = row.image_volumes.iter().map(|i| image_name(i)).collect();
+                kept.push(format!("{} on node {}", images.join(", "), node_name(node)));
+            }
+        }
+        if !kept.is_empty() {
+            return Err(DatastoreError::Conflict(format!(
+                "it still holds volumes of images {}; delete those images first, or remove their gx-i-* volumes from the volume group",
+                kept.join("; ")
+            )));
+        }
+        tx.open_table(TableId::Datastores.definition())?
+            .remove(id)?;
         let keys: Vec<String> = rows
             .range(prefix.as_str()..format!("{id}~").as_str())?
             .map(|r| r.map(|(k, _)| k.value().to_string()))

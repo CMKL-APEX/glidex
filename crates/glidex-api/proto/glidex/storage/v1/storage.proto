@@ -843,6 +843,9 @@ message DatastoreNode {
   // What is risky about how a reachable shared datastore is mounted on
   // the node: NFS mounted `soft`, or with locks local to the node.
   repeated string warnings = 10;
+  // `lvm`: images whose volume (`gx-i-<id>`) the node keeps in it; the
+  // datastore can't be deleted while any remain.
+  repeated string image_volumes = 11 [json_name = "image_volumes"];
 }
 
 message Datastore {

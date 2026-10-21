@@ -324,6 +324,19 @@ pub fn probe(vg: &str, pool: &str, socket: &Path, now: u64) -> super::record::No
     match st {
         Ok(st) if st.usable => {
             row.reachable = true;
+            // Its image volumes, which keep the datastore from being deleted.
+            let vols: Result<Vec<Volume>, ClientError> = Client::connect(socket)
+                .and_then(|mut c| c.call(Op::ListVolumes { vg: vg.to_string() }));
+            row.image_volumes = vols
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| {
+                    v.name
+                        .strip_prefix(glidex_stord::names::IMAGE_PREFIX)
+                        .map(str::to_string)
+                })
+                .collect();
+            row.image_volumes.sort();
             row.total_bytes = st.size_bytes;
             row.free_bytes = st.size_bytes.saturating_sub(st.used_bytes);
             // A full thin pool stops every guest on it at its next write.
