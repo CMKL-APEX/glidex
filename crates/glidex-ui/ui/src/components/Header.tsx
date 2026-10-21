@@ -43,6 +43,7 @@ export default function Header() {
     { to: "/datastores", label: "Datastores", show: host.readDatastore },
     { to: "/credentials", label: "Credentials", show: true },
     { to: "/networking", label: "Networking", show: true },
+    { to: "/hosts", label: "Hosts", show: host.listNodes },
     { to: "/projects", label: "Projects", show: true },
     // Tenants, users and roles, connectors and policies: the directory's tabs.
     {

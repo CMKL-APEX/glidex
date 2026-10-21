@@ -49,7 +49,7 @@ export default function SystemRoles({ dir, node }: { dir: Directory | null; node
       <span>
         Host{" "}
         {known ? (
-          <Link to={`/cluster/nodes/${id}`} className="text-sky-700 hover:underline">
+          <Link to={`/hosts/${id}`} className="text-sky-700 hover:underline">
             {nodes.name(id)}
           </Link>
         ) : (

@@ -32,8 +32,8 @@ Several hosts can form a **cluster**. Each node has a role:
 - A **server** keeps a copy of the cluster's state in a replicated
   (Raft) store and answers the API. Run one, or three or more for a
   quorum that survives the loss of a server.
-- An **agent** only runs VMs. It has no API of its own; its web UI
-  relays to the servers.
+- An **agent** only runs VMs. It has no API of its own; opening its
+  web UI takes you to a server's, at that agent's Host page.
 
 Nodes join with a one-time **join token** and talk to each other over
 mutual TLS. A **scheduler** picks the node for each new VM, and explains

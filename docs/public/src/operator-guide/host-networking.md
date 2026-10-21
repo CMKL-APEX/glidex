@@ -10,10 +10,11 @@ Creating networks for VMs is in [Networks](../user-guide/networks.md).
 Host networking needs the `net-admin` role (or `system-admin`). On the
 local socket, members of `glidex-admin` have it.
 
-Everything here acts on the host that serves the request: the one whose
-socket `gxctl` uses, or whose web UI you opened. A cluster agent has no
-local API for `gxctl`; manage its host networking from the web UI it
-serves (`https://<agent>:5173`), which runs these requests on the agent.
+With `gxctl`, everything here acts on the host whose socket it uses. In
+the web UI, each host's page (**Hosts**, then the host) shows that host's
+Open vSwitch, bridges and uplinks; a server runs them on the node they
+are for, so an agent's are managed from any server's UI. A cluster agent
+has no local API for `gxctl`.
 
 ## Pieces
 

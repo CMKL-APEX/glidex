@@ -20,7 +20,7 @@ export default function NodeName({ id, name, className = "" }: { id: string | nu
   }
   return (
     <span className={className}>
-      <Link to={`/cluster/nodes/${encodeURIComponent(id)}`} className="text-sky-700 hover:underline" title={id}>
+      <Link to={`/hosts/${encodeURIComponent(id)}`} className="text-sky-700 hover:underline" title={id}>
         {label}
       </Link>
       {self}

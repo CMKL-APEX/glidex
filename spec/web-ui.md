@@ -179,7 +179,9 @@ ui/src/
 | `/admissions` | `Admissions` (shown with `listAdmissions`): tenants admitted here and their caps |
 | `/connectors` | `Connectors` (shown with `listConnectors`): login connectors, write-only secrets, `test` |
 | `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
-| `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3) |
+| `/hosts` | `Hosts` (shown with `listNodes`): a standalone host's page, else the Cluster page's node list (spec/host-page.md W1) |
+| `/hosts/:id` | `HostDetail` (spec/host-page.md W1, clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
+| `/cluster/nodes/:id` | Redirects to `/hosts/:id` |
 | `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 

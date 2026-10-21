@@ -11,7 +11,7 @@ import { LoadingCard } from "../components/Loading";
 import NodeActions from "../components/NodeActions";
 import AddNodeDialog from "../components/AddNodeDialog";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } from "../components/ui";
-import { PHASE_KIND } from "./NodeDetail";
+import { PHASE_KIND } from "./HostDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
 import { OvnCard, TunnelMatrix, useOvnOverview, useTunnels } from "../components/OvnViews";
 import { OvnOff, OvnOutdated, OvnSettingsDialog } from "../components/OvnSettings";
@@ -64,7 +64,7 @@ function ThisHost() {
             {s.capacity?.cpus ?? 0} CPUs, {Math.round(num(s.capacity?.memory_mib) / 1024)} GiB memory · {placed} VMs
           </div>
         </div>
-        <Link to={`/cluster/nodes/${encodeURIComponent(node.meta.id)}`} className={primaryButton}>
+        <Link to={`/hosts/${encodeURIComponent(node.meta.id)}`} className={primaryButton}>
           Open this host's page
         </Link>
       </div>
@@ -178,7 +178,7 @@ export default function Cluster() {
   const nodeRow = (n: NodeRecord) => (
     <tr key={n.meta.id} className="border-t border-gray-100 align-top">
       <td className="py-2">
-        <Link to={`/cluster/nodes/${encodeURIComponent(n.meta.id)}`} className="font-medium text-sky-700 hover:underline">
+        <Link to={`/hosts/${encodeURIComponent(n.meta.id)}`} className="font-medium text-sky-700 hover:underline">
           {nodeLabel(n)}
         </Link>
         {dir.self === n.meta.id && <span className="text-gray-400"> (this node)</span>}
