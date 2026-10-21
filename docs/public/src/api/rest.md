@@ -282,7 +282,8 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/health` | Liveness: `{"status": "ok"}`; no credential |
 | `GET` | `/auth/methods` | Which login methods are on (PAM, OIDC, connectors; `passkeys` and `passkeys_rp_id`, the passkeys' domain or `null`); no credential |
 | `GET` | `/auth/server-info` | The server's identity: version, cluster, certificate fingerprint; no credential |
-| `POST` | `/auth/discover` | Which login connectors to offer for a tenant slug or email (`{hint}`) |
+| `POST` | `/auth/discover` | Which login connectors to offer for a tenant slug or email (`{hint, directory?}`): those of the directory asked for, else of the one the email's domain belongs to, else the host's own; the answer names that `directory` |
+| `POST` | `/auth/invitation/passkey/start`, `/auth/invitation/passkey/finish` | Public: a passkey invitation's page registers the invitee's first passkey (`{invitation}`, then `{invitation, credential}`); finishing makes the user in the invitation's directory, takes the invitation and signs them in (`201` with the session's answer, as a login's) |
 | `POST` | `/auth/login` | Password login for the browser: sets a session cookie |
 | `POST` | `/auth/token` | Password login for tools: `{issued: {token, token_id, expires_at, user_id, display_name}}` |
 | `GET` | `/auth/oidc/start`, `/auth/oidc/callback` | OIDC browser login (redirects); `?reauth=1` (or `true`) asks the IdP for a fresh login, for a recent-login step-up |

@@ -286,6 +286,37 @@ impl InvitationStore {
         Ok(inv)
     }
 
+    /// Take a passkey invitation (D60): the link's secret is all the proof
+    /// there is, since a new passkey vouches for no email.
+    pub fn take_by_link(
+        &self,
+        token: &InviteToken,
+        user: &str,
+    ) -> Result<Invitation, InvitationError> {
+        let refused = || InvitationError::Invalid("the invitation can't be taken".into());
+        let t = now();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        let inv = {
+            let mut table = txn.open_table(INVITATIONS)?;
+            let mut inv: Invitation = match table.get(token.id.as_str())? {
+                Some(v) => serde_json::from_slice(v.value())?,
+                None => return Err(refused()),
+            };
+            if !token.matches(&inv)
+                || !inv.is_open(t)
+                || inv.connector_id != crate::auth::passkeys::PROVIDER
+            {
+                return Err(refused());
+            }
+            inv.taken_by = Some(user.into());
+            inv.taken_at = Some(t);
+            table.insert(inv.id.as_str(), serde_json::to_vec(&inv)?.as_slice())?;
+            inv
+        };
+        txn.commit()?;
+        Ok(inv)
+    }
+
     /// Whether `token` could be taken by a login through `connector` with
     /// `email`: checked before a user is created for it.
     pub fn would_take(

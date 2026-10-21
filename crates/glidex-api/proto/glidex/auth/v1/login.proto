@@ -64,12 +64,17 @@ service LoginService {
 message DiscoverRequest {
   // A tenant slug or an email address.
   string hint = 1;
+  // The directory whose login page asks (`/login/<directory>`,
+  // spec/tenancy.md D61); unset: found from an email, else the host's own.
+  string directory = 2;
 }
 
 message DiscoverResponse {
   // Absent unless the hint names a tenant of this directory.
   DiscoveredTenant tenant = 1;
   repeated LoginConnector connectors = 2;
+  // The directory those connectors sign in to (D61).
+  string directory = 3;
 }
 
 message DiscoveredTenant {

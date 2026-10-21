@@ -1840,7 +1840,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-and tasks 4a–4b.
+and tasks 4a–4c (4c's server side).
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1881,3 +1881,11 @@ Task 4b, creating directories:
 |---|---|
 | D59 | `glidex.tenancy.v1.DirectoryService` (`service/directories.rs`): `ListDirectories` (`listDirectories`, `GET /directories`), `CreateDirectory` and `DeleteDirectory` (`manageDirectories`, step-up, in `cluster.directories` of `role.system-admin`); create makes the directory and its owner tenant in one write (`TenantStore::create_directory`), its first signing key, and the invitation (`role.tenant-admin` of the owner tenant, sign-in `passkey`), the link from the web UI's published address; delete refuses `local` and a directory with users, connectors or projects (`directory_not_empty`), and removes its tenants, invitations, keys and data key; gxctl `directory list|create|delete` |
 | Tests | `connector_tests.rs::the_operator_creates_and_deletes_directories` |
+
+Task 4c, passkey-first invitations and login routing (server side):
+
+| Spec | Code |
+|---|---|
+| D60 | An invitation whose connector is `passkey` (`auth::passkeys::PROVIDER`): `/auth/invitation` answers `connector_kind: passkey`; `POST /auth/invitation/passkey/start {invitation}` gives creation options for a user still to be made (`Purpose::Invite`, the email as its name); `…/finish {invitation, credential}` checks the credential, takes the invitation by its link alone (`InvitationStore::take_by_link`), makes the user in the invitation's tenant's directory with that passkey as its identity, gives the invitation's role (and `role.directory-admin` for an owner tenant's administrator), and answers as a passkey login (session, `mfa`) |
+| D61 | `LoginService.Discover` takes `directory` and answers it: the directory asked for if it exists, else the one whose single enabled connector takes the email's domain (`allowed_domains`, `domains`), else `local`; its connectors only. `GET /auth/methods?directory=<id>` is that directory's login page (`pam` only for `local`, D23); an unknown id answers as `local` does |
+| Tests | `passkey_tests.rs::a_new_directorys_first_admin_signs_in_with_a_passkey`; `connector_tests.rs::logins_find_their_directory_without_listing_them` |

@@ -24,15 +24,36 @@ use zeroize::Zeroizing;
 
 // ---- login -------------------------------------------------------------
 
-pub async fn methods(State(app): State<AppState>) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+pub struct MethodsQuery {
+    #[serde(default)]
+    directory: String,
+}
+
+/// `GET /auth/methods[?directory=<id>]`: what the login page offers, for
+/// the host's own directory or the one a `/login/<id>` page names (D61).
+pub async fn methods(
+    State(app): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<MethodsQuery>,
+) -> impl IntoResponse {
+    let found = svc::discover(
+        &app,
+        login_pb::DiscoverRequest {
+            directory: q.directory,
+            ..Default::default()
+        },
+    );
+    let own = found.directory == crate::tenants::LOCAL_DIRECTORY;
     Json(serde_json::json!({
-        "pam": app.auth.pam_connector(None).is_ok(),
+        // Host accounts are the host's own directory's (D23).
+        "pam": own && app.auth.pam_connector(None).is_ok(),
         "oidc": app.auth.oidc_enabled(),
         // spec/passkeys.md: whether they are on, and their domain when set.
         "passkeys": app.auth.config.auth.passkeys.enabled,
         "passkeys_rp_id": app.auth.config.auth.passkeys.rp_id,
         "disabled": app.auth.is_disabled(),
-        "connectors": svc::discover(&app, Default::default()).connectors,
+        "directory": found.directory,
+        "connectors": found.connectors,
     }))
 }
 

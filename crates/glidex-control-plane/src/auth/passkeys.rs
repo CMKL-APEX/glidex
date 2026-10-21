@@ -193,8 +193,17 @@ impl PasskeyStore {
 /// What a ceremony in progress is for.
 #[derive(Debug, Clone)]
 pub enum Purpose {
-    Register { user_id: String, name: String },
+    Register {
+        user_id: String,
+        name: String,
+    },
     Login,
+    /// A passkey invitation's first passkey, for a user still to be made
+    /// (spec/tenancy.md D60).
+    Invite {
+        invitation: String,
+        user_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]

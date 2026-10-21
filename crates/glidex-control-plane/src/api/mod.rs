@@ -905,6 +905,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(invitations::inspect),
     )
+    // A passkey invitation's first passkey (spec/tenancy.md D60).
+    .add(
+        "POST",
+        "/auth/invitation/passkey/start",
+        PUBLIC,
+        post(passkeys::invite_start),
+    )
+    .add(
+        "POST",
+        "/auth/invitation/passkey/finish",
+        PUBLIC,
+        post(passkeys::invite_finish),
+    )
     // Add a sign-in method to the caller (§6.2): `manageOwnSignIns` inside.
     .add(
         "POST",
@@ -2443,6 +2456,8 @@ mod tests {
                 "/auth/c/{id}/start",
                 "/auth/c/{id}/start",
                 "/auth/invitation",
+                "/auth/invitation/passkey/start",
+                "/auth/invitation/passkey/finish",
                 "/auth/c/{id}/callback",
                 "/auth/c/{id}/device",
                 "/auth/c/{id}/device/poll",
