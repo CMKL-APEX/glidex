@@ -111,6 +111,8 @@ tables! {
     FederatedTokens = 53 => "federated_tokens",
     // Passkeys and users' WebAuthn handles (spec/passkeys.md).
     Passkeys = 54 => "passkeys",
+    // Each directory's token signing keys, the private half sealed (D53).
+    SigningKeys = 55 => "signing_keys",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -131,7 +133,7 @@ impl TableId {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
-            | FederatedTokens | Passkeys => Scope::Directory,
+            | FederatedTokens | Passkeys | SigningKeys => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

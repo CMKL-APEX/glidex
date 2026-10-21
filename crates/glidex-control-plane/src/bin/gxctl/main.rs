@@ -794,6 +794,10 @@ fn print_help() {
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
     println!(
+        "  {} - The directory's token signing keys and issuer URL (rotating needs a fresh login)",
+        "directory keys | directory keys rotate".cyan()
+    );
+    println!(
         "  {} - Projects",
         "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
     );
@@ -1089,6 +1093,7 @@ const COMMANDS: &[&str] = &[
     "connectors",
     "invite",
     "federation",
+    "directory",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -1128,6 +1133,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
         "federation",
         &["list", "show", "add", "enable", "disable", "remove"],
     ),
+    ("directory", &["keys"]),
     (
         "disk",
         &[
@@ -1505,6 +1511,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             directory::invite(client, &parts[1..]).await
         }
         "federation" | "federations" => directory::federation(client, &parts[1..]).await,
+        "directory" => directory::directory(client, &parts[1..]).await,
         "project" | "projects" => access::project(client, &parts[1..]).await,
         "binding" | "bindings" => access::binding(client, &parts[1..]).await,
         "system-binding" => access::system_binding(client, &parts[1..]).await,

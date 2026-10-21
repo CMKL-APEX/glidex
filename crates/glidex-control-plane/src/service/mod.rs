@@ -19,6 +19,7 @@ pub mod invitations;
 pub mod login;
 pub mod network;
 pub mod node;
+pub mod signing_keys;
 pub mod storage;
 pub mod system;
 pub mod tenancy;

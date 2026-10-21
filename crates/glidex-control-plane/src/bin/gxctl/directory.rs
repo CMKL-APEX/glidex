@@ -965,3 +965,76 @@ pub async fn federation(client: &ApiClient, args: &[&str]) {
         _ => usage(FEDERATION_USAGE),
     }
 }
+
+fn print_key(k: &SigningKey) {
+    let ts = |t: Option<&buffa_types::google::protobuf::Timestamp>| {
+        t.map(|t| crate::format_unix_time(t.seconds.max(0) as u64))
+            .unwrap_or_else(|| "-".into())
+    };
+    let state = if k.active {
+        "active".green().to_string()
+    } else {
+        format!(
+            "retired {}, published until {}",
+            ts(k.retired_at.as_option()),
+            ts(k.published_until.as_option())
+        )
+    };
+    println!(
+        "  {}  {}  made {}  {state}",
+        k.kid.cyan(),
+        k.alg,
+        ts(k.created_at.as_option())
+    );
+}
+
+/// `directory keys [rotate]` (spec/tenancy.md D52, D53): the directory's
+/// issuer URL and token signing keys, on `SigningKeyService`.
+pub async fn directory(client: &ApiClient, args: &[&str]) {
+    let Some(t) = transport(client).await else {
+        return;
+    };
+    let svc = SigningKeyServiceClient::new(t.clone(), t.config());
+    match (args.first().copied(), args.get(1).copied()) {
+        (Some("keys" | "key"), None | Some("list" | "ls")) => match svc
+            .list_signing_keys(ListSigningKeysRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => {
+                let fixed = if r.issuer_fixed {
+                    ""
+                } else {
+                    " (fixed when it first issues a token)"
+                };
+                match r.issuer.as_str() {
+                    "" => println!("  Issuer: none yet; set auth.issuer_base"),
+                    i => println!("  Issuer: {i}{fixed}"),
+                }
+                if r.keys.is_empty() {
+                    println!("  No signing keys yet: the leader makes the first within minutes.");
+                }
+                for k in &r.keys {
+                    print_key(k);
+                }
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        (Some("keys" | "key"), Some("rotate")) => match svc
+            .rotate_signing_key(RotateSigningKeyRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => {
+                if let Some(k) = r.key.as_option() {
+                    println!(
+                        "  New signing key; the one before it stays published until its tokens expire."
+                    );
+                    print_key(k);
+                }
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        _ => usage("directory keys | directory keys rotate"),
+    }
+}

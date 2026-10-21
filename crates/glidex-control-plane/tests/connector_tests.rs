@@ -4363,3 +4363,97 @@ async fn a_workload_token_is_exchanged_once_for_its_service_account() {
     }
     assert!(limited);
 }
+
+/// spec/tenancy.md D52, D53: a directory's issuer, its discovery document
+/// and JWKS (public), the first token fixing the issuer, and its keys
+/// listed and rotated on both transports.
+#[tokio::test]
+async fn a_directory_publishes_its_issuer_and_keys() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://GLIDEX.example.org/".into()));
+    let iss = "https://glidex.example.org/d/local";
+    let (s, v) = h
+        .rest("GET", "/d/local/.well-known/openid-configuration", None, "")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["issuer"], iss, "{v}");
+    assert_eq!(v["jwks_uri"], format!("{iss}/jwks.json"), "{v}");
+    assert_eq!(v["id_token_signing_alg_values_supported"], json!(["ES256"]));
+    let (s, v) = h.rest("GET", "/d/nope/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+
+    // The leader's task makes the first key.
+    let now = glidex_control_plane::auth::store::now();
+    assert!(
+        h.app
+            .auth
+            .connectors
+            .maintain_signing_keys("local", now)
+            .unwrap()
+    );
+    let (s, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(jwks["keys"][0]["kid"], "local:1", "{jwks}");
+    assert!(
+        jwks["keys"][0].get("d").is_none(),
+        "no private part: {jwks}"
+    );
+
+    // A token it signs verifies with another library, and fixes the issuer.
+    let jwt = api::issuer::sign(
+        &h.app,
+        "local",
+        "JWT",
+        json!({ "sub": "u", "aud": "c1", "exp": now + 300 }),
+    )
+    .unwrap();
+    let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(jwks).unwrap();
+    let kid = jsonwebtoken::decode_header(&jwt).unwrap().kid.unwrap();
+    let mut val = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    val.set_audience(&["c1"]);
+    val.set_issuer(&[iss]);
+    let key = jsonwebtoken::DecodingKey::from_jwk(set.find(&kid).unwrap()).unwrap();
+    assert_eq!(
+        jsonwebtoken::decode::<Value>(&jwt, &key, &val)
+            .unwrap()
+            .claims["sub"],
+        "u"
+    );
+
+    // Its keys: a directory reader lists them; rotating is a step-up action.
+    let admin = h.admin("root");
+    let tok = h.token(&admin);
+    let (s, v) = h.rest("GET", "/directory/keys", None, &tok).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["issuer"].as_str(), v["issuer_fixed"].as_bool()),
+        (Some(iss), Some(true)),
+        "{v}"
+    );
+    assert_eq!(v["keys"][0]["active"], true, "{v}");
+    let (s, v) = h
+        .rest("POST", "/directory/keys/rotate", None, &h.session(&admin))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["key"]["kid"], "local:2", "{v}");
+    let (s, v) = h
+        .connect(
+            "glidex.directory.v1.SigningKeyService/ListSigningKeys",
+            json!({}),
+            &tok,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let keys = v["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 2, "the retired key is still published: {v}");
+    assert!(
+        keys[0]["retired_at"].is_string() && keys[0]["published_until"].is_string(),
+        "{v}"
+    );
+    let (_, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    assert_eq!(jwks["keys"].as_array().unwrap().len(), 2, "{jwks}");
+
+    // Nobody else reads them.
+    let bob = h.user("bob");
+    let (s, _) = h.rest("GET", "/directory/keys", None, &h.token(&bob)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

@@ -219,6 +219,9 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
 | `GET` / `POST` | `/tenants/{id}/federations` | `FederationService.ListFederations` / `CreateFederation` | Workload federations ([tenancy.md](tenancy.md) §9, D49–D51): `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}`; `readTenantFederations` / `manageTenantFederations` (step-up). The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub`, exact values only, and name service accounts of the tenant's projects (`422 invalid_federation`) |
 | `GET` / `PATCH` / `DELETE` | `/tenants/{id}/federations/{federation}` | `GetFederation` / `UpdateFederation` / `DeleteFederation` | PATCH `{changes: {…}, update_mask?}`: without a mask, the fields present are the ones changed |
+| `GET` | `/directory/keys` | `SigningKeyService.ListSigningKeys` | The directory's issuer URL and signing keys ([tenancy.md](tenancy.md) D52, D53): `{keys: [{kid, alg, created_at, retired_at, published_until, active}], issuer, issuer_fixed}`; `readSigningKeys` |
+| `POST` | `/directory/keys/rotate` | `RotateSigningKey` | `{key}`; `rotateSigningKey` (step-up) |
+| `GET` | `/d/{dir}/.well-known/openid-configuration`, `/d/{dir}/jwks.json` | — | Public, HTTP only: discovery and JWKS (D53); `404` for a directory this host doesn't serve, `503 no_issuer` when it has no public address |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
 

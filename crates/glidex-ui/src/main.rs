@@ -693,6 +693,8 @@ fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
     Router::new()
         .route("/api", any(proxy_api))
         .route("/api/{*rest}", any(proxy_api))
+        // The directories' issuers (spec/tenancy.md D52): discovery, keys.
+        .route("/d/{*rest}", any(proxy_api))
         // A missing asset is a 404, never index.html: it would be cached as the asset.
         .nest_service("/assets", assets)
         .fallback_service(pages)
@@ -709,7 +711,7 @@ fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
 /// which names them) is checked again on every use.
 async fn cache_headers(req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if path == "/api" || path.starts_with("/api/") {
+    if path == "/api" || path.starts_with("/api/") || path.starts_with("/d/") {
         return next.run(req).await;
     }
     let asset = path.starts_with("/assets/");
@@ -1255,6 +1257,7 @@ mod tests {
         );
         assert_eq!(up("/api/images?all=1"), "/images?all=1");
         assert_eq!(up("/api"), "/");
+        assert_eq!(up("/d/local/jwks.json"), "/d/local/jwks.json");
     }
 
     /// The default policy also takes an address the host has now, even

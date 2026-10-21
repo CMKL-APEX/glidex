@@ -52,6 +52,7 @@ sudo systemctl restart glidex-control-plane
 | `auth.tokens.max_days` | integer | `365` | Longest lifetime a token may be given. |
 | `auth.pam` | object | see below | Local accounts (the `file-pam` login connector). |
 | `auth.oidc` | object | see below | Single sign-on through an OpenID Connect provider (the `file-oidc` connector). |
+| `auth.issuer_base` | string | unset | Where this host's directories issue tokens from, `https://host[:port][/path]`: each directory's issuer is `<base>/d/<directory>` (`/d/local` for this host's). Unset: the web UI's published address (`cluster.ui_url`, else what the web UI reports). A directory's issuer is fixed when it first issues a token; set this before then if the web UI's address isn't the one relying parties should use. |
 | `auth.secrets_key` | path | `secrets.kek` beside the database | File holding the key that encrypts connector secrets. The `secrets-kek` credential wins when present. |
 | `auth.passkeys.enabled` | bool | `true` | Offer [passkeys](authentication.md#passkeys) on the login and Account pages. `false`: the passkey endpoints answer `404 passkeys_disabled`. |
 | `auth.passkeys.rp_id` | string | unset | The [passkeys' domain](authentication.md#the-passkeys-domain) (relying-party id): the web UI's names must be it or under it. Unset: the name of the web UI each request came through. Changing it makes existing passkeys stop working. Set it the same on every server. |

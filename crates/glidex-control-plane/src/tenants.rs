@@ -81,6 +81,9 @@ pub struct Directory {
     /// The tenant whose members administer the directory (D7).
     pub owner_tenant: String,
     pub created_at: u64,
+    /// Its issuer URL, fixed when it first issued a token (D52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +260,7 @@ impl TenantStore {
             name: "local".into(),
             owner_tenant: ADMIN_TENANT.into(),
             created_at: at,
+            issuer: None,
         };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
@@ -401,6 +405,34 @@ impl TenantStore {
             members: self.read_all(MEMBERS)?,
             operator: self.operator()?,
         })
+    }
+
+    /// Every directory this control plane hosts.
+    pub fn directories(&self) -> Result<Vec<Directory>, TenantError> {
+        self.read_all::<Directory>(DIRECTORIES)
+    }
+
+    pub fn get_directory(&self, id: &str) -> Result<Option<Directory>, TenantError> {
+        Ok(self.directories()?.into_iter().find(|d| d.id == id))
+    }
+
+    /// Fix `id`'s issuer URL (D52); the first one written stays unless
+    /// `replace`.
+    pub fn set_issuer(
+        &self,
+        id: &str,
+        issuer: &str,
+        replace: bool,
+    ) -> Result<Directory, TenantError> {
+        let mut d = self
+            .get_directory(id)?
+            .ok_or_else(|| TenantError::NotFound(format!("directory {id}")))?;
+        if d.issuer.is_some() && !replace {
+            return Ok(d);
+        }
+        d.issuer = Some(issuer.to_string());
+        self.put(DIRECTORIES, id, &d)?;
+        Ok(d)
     }
 
     pub fn directory(&self) -> Result<Option<Directory>, TenantError> {

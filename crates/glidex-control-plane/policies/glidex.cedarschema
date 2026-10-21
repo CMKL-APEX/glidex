@@ -99,7 +99,7 @@ namespace Glidex {
   action "tenant.read" in ["role.tenant-auditor"];
   action "tenant.members", "tenant.projects", "tenant.federations" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
-  action "directory.users", "directory.tenants", "directory.connectors" in ["role.directory-admin"];
+  action "directory.users", "directory.tenants", "directory.connectors", "directory.keys" in ["role.directory-admin"];
 
   // ---- usage (spec/metering.md §10) ----------------------------------------
   action readUsage in ["system.usage", "host-scoped"]
@@ -176,6 +176,11 @@ namespace Glidex {
   action createConnector, updateConnector, deleteConnector, setConnectorSecret in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action testConnector in ["directory.connectors", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // The directory's token signing keys (spec/tenancy.md D53).
+  action readSigningKeys in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action rotateSigningKey in ["directory.keys", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   // SCIM bearer tokens (spec/tenancy.md §8.1): who holds one provisions
   // the connector's users.

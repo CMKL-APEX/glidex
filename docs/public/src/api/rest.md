@@ -534,6 +534,10 @@ UI's Host pages send it.
 | `GET` | `/tenants/{id}/federations/{federation}` | Get a federation |
 | `PATCH` | `/tenants/{id}/federations/{federation}` | Change `display_name`, `issuer`, `audience`, `enabled` or `rules` (`{changes: {…}, update_mask?}`; `rules` replaces them all). Needs a recent login |
 | `DELETE` | `/tenants/{id}/federations/{federation}` | Remove a federation; the tokens it gave stop working. Needs a recent login |
+| `GET` | `/directory/keys` | The directory's issuer URL (`issuer`, `issuer_fixed`) and its token signing keys: `{keys: [{kid, alg, created_at, retired_at, published_until, active}]}`; never a private part |
+| `POST` | `/directory/keys/rotate` | A new active signing key; the previous one stays published until its tokens expire. Needs a recent login |
+| `GET` | `/d/{directory}/.well-known/openid-configuration` | Public: the directory's OIDC discovery document (`issuer`, `jwks_uri`, ES256) |
+| `GET` | `/d/{directory}/jwks.json` | Public: the directory's signing keys as a JWKS, cacheable for 5 minutes |
 | `GET` | `/tenants/{id}/members` | List explicit members |
 | `POST` | `/tenants/{id}/members` | Add a member |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |
