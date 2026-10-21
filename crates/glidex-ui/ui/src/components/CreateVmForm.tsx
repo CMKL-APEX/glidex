@@ -478,7 +478,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               placeholder={
                 fromKernelImage && chosenKernel?.kernel?.cmdline
                   ? chosenKernel.kernel.cmdline
-                  : "console=ttyS0 root=/dev/vda reboot=k panic=1"
+                  : // The server's default: the serial console differs on aarch64 (PL011).
+                    `console=${(fromKernelImage ? chosenKernel?.arch : rootImage?.arch) === "ARCH_AARCH64" ? "ttyAMA0" : "ttyS0"} root=/dev/vda reboot=k panic=1`
               }
               value={kernelArgs}
               onChange={(e) => setKernelArgs(e.target.value)}

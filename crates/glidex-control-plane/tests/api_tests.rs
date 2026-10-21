@@ -150,6 +150,64 @@ async fn test_create_vm_success() {
     assert!(vm["id"].is_string());
 }
 
+/// A kernel VM that names no arguments gets the default for the
+/// architecture it runs on: its pinned node's, else this host's
+/// (spec/kernel-boot.md K5). aarch64's serial port is the PL011,
+/// `ttyAMA0`.
+#[tokio::test]
+async fn kernel_args_default_to_the_nodes_serial_console() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = common::with_db_path(temp_dir.path().join("test.db")).unwrap();
+    manager.report_self().unwrap();
+    let app = create_router(manager.clone());
+    let create = |name: &str, node: Option<&str>| {
+        let mut body = json!({
+            "name": name, "vcpu_count": 1, "mem_size_mib": 256,
+            "kernel_image_path": "/path/to/kernel", "rootfs_path": "/path/to/rootfs.ext4",
+        });
+        if let Some(n) = node {
+            body["node"] = json!(n);
+        }
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vms")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+    };
+    let host = match std::env::consts::ARCH {
+        "aarch64" => "ttyAMA0",
+        _ => "ttyS0",
+    };
+    let r = create("on-the-host", None).await.unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let body = body_to_json(r.into_body()).await;
+    let args = |body: &Value| {
+        let id = vm_of(body)["id"].as_str().unwrap().to_string();
+        let m = manager.clone();
+        async move { m.get_vm(&id).await.unwrap().config().kernel_args.clone() }
+    };
+    assert_eq!(
+        args(&body).await,
+        format!("console={host} root=/dev/vda reboot=k panic=1")
+    );
+
+    // Pinned to a node that reports aarch64.
+    let id = manager.local_node_id();
+    let mut node = manager.nodes().get(&id).unwrap().expect("this host's node");
+    node.status.features.arch = "aarch64".into();
+    manager.nodes().put(&node).unwrap();
+    let r = create("on-an-arm-node", Some(&id)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let body = body_to_json(r.into_body()).await;
+    assert_eq!(
+        args(&body).await,
+        "console=ttyAMA0 root=/dev/vda reboot=k panic=1"
+    );
+}
+
 #[tokio::test]
 async fn test_create_vm_with_optional_fields() {
     let (app, _temp_dir) = create_test_app();

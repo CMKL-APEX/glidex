@@ -930,7 +930,7 @@ pub async fn create(client: &ApiClient) {
             "Kernel arguments (optional, default: {}): ",
             kernel_cmdline
                 .as_deref()
-                .unwrap_or("console=ttyS0 root=/dev/vda reboot=k panic=1")
+                .unwrap_or("console=ttyS0 (ttyAMA0 on aarch64) root=/dev/vda reboot=k panic=1")
         ))
     };
 

@@ -60,7 +60,7 @@ same disk handling.
 | K2 | Default boot mode | Unchanged. An `image`/`root_disk` VM boots through firmware unless the request names a kernel (`kernel` or `kernel_image_path`). Giving both a kernel and a firmware, from either kind of source, is `400 invalid_config`. Today the firmware silently wins. |
 | K3 | Kernel/rootfs match | A kernel for a disk image is **extracted from that image** (§10), so it is the build the image's own bootloader would boot, with its own modules in `/lib/modules/<release>`. No other build is ever substituted. The Ubuntu-only download of `unpacked/` files (first draft) is dropped: extraction gives the same bytes (F-K7) and works for every distro. |
 | K4 | Seed | The VM controller generates the cloud-init seed on kernel boot too. The rule is stored on the VM as `generate_seed` (§6.3), so existing kernel-boot VMs don't gain a disk on upgrade. Credentials require a generated seed, not firmware boot. |
-| K5 | Console | The **last `console=`** on the command line picks the device: `hvc<n>` → virtio console, anything else (or none) → serial port. Both backends do the same. New VMs default to `console=ttyS0`, so early boot output and panics are visible under Cloud Hypervisor too. |
+| K5 | Console | The **last `console=`** on the command line picks the device: `hvc<n>` → virtio console, anything else (or none) → serial port. Both backends do the same. New VMs default to the serial port, `console=ttyS0` (`console=ttyAMA0`, Cloud Hypervisor's PL011, on aarch64), so early boot output and panics are visible under Cloud Hypervisor too. |
 | K6 | Kernel updates | **Settled: yes.** Kernel boot runs the kernel glidex hands to the hypervisor, so a kernel the guest installs itself doesn't boot on its own. `kernel` may be changed on a stopped or running VM and takes effect at the next launch (`RestartRequired`). A host-side update is a pull (or an extraction from the VM's disk, §10.5) and a PATCH. Switching between firmware and kernel boot stays immutable. |
 | K7 | Command line | `kernel_args` defaults to the kernel image's `cmdline`, else the hypervisor default. It is one argv element, at most 2047 bytes (x86 `COMMAND_LINE_SIZE` less the NUL), with no control characters (`400 invalid_config`). |
 | K8 | Formats | Kernel: x86_64 bzImage (`HdrS` at 0x202) or ELF `vmlinux`; aarch64 `Image` (`ARM\x64` at 0x38) or EFI-stub `Image`. An aarch64 kernel wrapped as distributions ship it is unwrapped when installed, to the plain `Image` Cloud Hypervisor boots: a stub PE whose `.linux` section holds the kernel (Ubuntu's), the kernel's own EFI zboot image (`zimg`; gzip or zstd payload) and a gzip stream, nested at most four deep, never decompressing past the size limit. The image's size and sha256 are the installed file's; a host file is unwrapped into a copy, never changed. Anything else is refused at verify. An initramfs is not parsed; only its size is checked. |
@@ -270,9 +270,11 @@ means `Virtio`; any other value, or no `console=` at all, means
 
 Existing VMs: their stored `kernel_args` already say `console=hvc0`
 (Cloud Hypervisor) or `console=ttyS0` (QEMU), so each gets the device
-it has today. `HypervisorType::default_kernel_args` becomes
-`console=ttyS0 root=/dev/vda reboot=k panic=1` for **both** backends;
-the hypervisor-specific default goes away.
+it has today. `HypervisorType::default_kernel_args(arch)` becomes
+`console=ttyS0 root=/dev/vda reboot=k panic=1` for **both** backends,
+with `console=ttyAMA0` on aarch64; the hypervisor-specific default goes
+away. The architecture is a kernel image's, else the pinned node's (its
+reported `arch`), else the host's.
 
 The shim, the console proxy and the ring buffer don't change. They see
 the hypervisor's stdio either way ([console.md](console.md#physical-io)).

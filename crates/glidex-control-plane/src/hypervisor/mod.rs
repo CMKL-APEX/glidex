@@ -10,6 +10,7 @@
 pub mod cloud_hypervisor;
 pub mod qemu;
 
+use crate::images::catalog::Arch;
 use crate::images::qemu_img::{ImageType, detect_image_type};
 use crate::models::{VmConfig, VolumeBinding};
 use glidex_hv_client::{HvError, Observed};
@@ -37,12 +38,12 @@ impl HypervisorType {
         }
     }
 
-    /// The kernel arguments a new kernel-boot VM gets when it names none.
-    /// The same for both backends: the serial port shows the kernel from
-    /// its first line (spec/kernel-boot.md K5). VMs created before this
-    /// keep the arguments they were stored with.
-    pub fn default_kernel_args(&self) -> &'static str {
-        DEFAULT_KERNEL_ARGS
+    /// The kernel arguments a new kernel-boot VM of `arch` gets when it
+    /// names none. The same for both backends: the serial port shows the
+    /// kernel from its first line (spec/kernel-boot.md K5). VMs created
+    /// before this keep the arguments they were stored with.
+    pub fn default_kernel_args(&self, arch: Arch) -> String {
+        default_kernel_args(arch)
     }
 
     /// The UEFI firmware a VM of this type boots from when the caller
@@ -73,8 +74,14 @@ impl fmt::Display for HypervisorType {
     }
 }
 
-/// See `HypervisorType::default_kernel_args`.
-pub const DEFAULT_KERNEL_ARGS: &str = "console=ttyS0 root=/dev/vda reboot=k panic=1";
+/// See `HypervisorType::default_kernel_args`: `console=ttyS0`, or
+/// `console=ttyAMA0` on aarch64, then `root=/dev/vda reboot=k panic=1`.
+pub fn default_kernel_args(arch: Arch) -> String {
+    format!(
+        "console={} root=/dev/vda reboot=k panic=1",
+        arch.serial_console()
+    )
+}
 
 /// x86's `COMMAND_LINE_SIZE` (2048) less the terminating NUL.
 pub const MAX_KERNEL_ARGS_LEN: usize = 2047;
@@ -448,7 +455,8 @@ mod tests {
 
     #[test]
     fn kernel_args_limits() {
-        assert!(check_kernel_args(DEFAULT_KERNEL_ARGS).is_ok());
+        assert!(check_kernel_args(&default_kernel_args(Arch::X86_64)).is_ok());
+        assert!(check_kernel_args(&default_kernel_args(Arch::Aarch64)).is_ok());
         assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN)).is_ok());
         assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN + 1)).is_err());
         assert!(check_kernel_args("root=/dev/vda init=/bin/sh").is_ok());
@@ -457,12 +465,20 @@ mod tests {
     }
 
     #[test]
-    fn default_kernel_args_are_shared() {
+    fn default_kernel_args_are_shared_and_per_architecture() {
         assert_eq!(
-            HypervisorType::CloudHypervisor.default_kernel_args(),
-            HypervisorType::Qemu.default_kernel_args()
+            HypervisorType::CloudHypervisor.default_kernel_args(Arch::X86_64),
+            HypervisorType::Qemu.default_kernel_args(Arch::X86_64)
         );
-        assert!(DEFAULT_KERNEL_ARGS.starts_with("console=ttyS0 "));
+        assert_eq!(
+            default_kernel_args(Arch::X86_64),
+            "console=ttyS0 root=/dev/vda reboot=k panic=1"
+        );
+        // aarch64's serial port is the PL011.
+        assert_eq!(
+            default_kernel_args(Arch::Aarch64),
+            "console=ttyAMA0 root=/dev/vda reboot=k panic=1"
+        );
     }
 
     #[test]

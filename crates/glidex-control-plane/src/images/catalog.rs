@@ -33,6 +33,16 @@ impl Arch {
         }
     }
 
+    /// The guest's name for its serial port: the 16550 UART on x86_64,
+    /// Cloud Hypervisor's PL011 on aarch64. The console of a firmware
+    /// boot, of the kernel extractor, and of a kernel VM by default.
+    pub fn serial_console(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "ttyS0",
+            Arch::Aarch64 => "ttyAMA0",
+        }
+    }
+
     pub fn host() -> Option<Arch> {
         match std::env::consts::ARCH {
             "x86_64" => Some(Arch::X86_64),

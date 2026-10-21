@@ -259,17 +259,7 @@ pub const INIT: &str = include_str!("extractor-init.sh");
 
 /// The appliance's kernel command line.
 pub fn cmdline(arch: Arch) -> String {
-    format!("console={} panic=-1 quiet", serial_console(arch))
-}
-
-/// The guest's name for its serial port, the console of a firmware boot
-/// and of the extractor: the 16550 UART on x86_64, Cloud Hypervisor's
-/// PL011 on aarch64.
-pub fn serial_console(arch: Arch) -> &'static str {
-    match arch {
-        Arch::X86_64 => "ttyS0",
-        Arch::Aarch64 => "ttyAMA0",
-    }
+    format!("console={} panic=-1 quiet", arch.serial_console())
 }
 
 /// Build the appliance from the two packages: `(kernel, initramfs)`.
@@ -536,7 +526,7 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
 /// configs, which `text` reads (BLS entry, else the first `grub.cfg`
 /// `linux` line for it). `BOOT_IMAGE=`, `console=`, `earlyprintk=` and
 /// GRUB variables are dropped, the serial console appended (`console=ttyS0`,
-/// `ttyAMA0` on aarch64: [`serial_console`]); without a
+/// `ttyAMA0` on aarch64: [`Arch::serial_console`]); without a
 /// `root=` the extraction fails.
 pub fn choose(
     entries: &[StreamEntry],
@@ -615,7 +605,7 @@ pub fn choose(
             "the boot configuration for {kernel_file} names no root="
         )));
     }
-    let console = format!("console={}", serial_console(arch));
+    let console = format!("console={}", arch.serial_console());
     kept.push(&console);
     Ok(Choice {
         version,
