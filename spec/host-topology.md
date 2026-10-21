@@ -814,10 +814,8 @@ is a device of class `dpu`:
 ## 13. Later
 
 - **Multi-node guests:** a VM spanning host NUMA nodes with a matching
-  guest NUMA topology (Cloud Hypervisor `--numa` per node with
-  `pci_segments`, QEMU `-numa` per node with `pxb-pcie,numa_node=`), so
-  a guest with 8 GPUs over two sockets sees which GPU is near which
-  CPUs.
+  guest NUMA topology. Designed in [gpu-vms.md](gpu-vms.md) §4–§5
+  (`numa_policy: aligned`), with NVLink through Fabric Manager (§7–§9).
 - **mdev and vGPU:** mediated devices as pool members, with vendor
   types and counts per parent.
 - **SR-IOV VF networking:** VLAN, MAC, trust and spoof check from the

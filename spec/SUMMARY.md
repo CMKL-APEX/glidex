@@ -43,6 +43,7 @@
 - [Clustering](clustering.md)
 - [Clustering UI](clustering-ui.md)
 - [Host topology](host-topology.md)
+- [GPU VMs](gpu-vms.md)
 - [Cluster runbook](cluster-runbook.md)
 
 # Installation
