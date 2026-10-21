@@ -519,6 +519,7 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `delete_uplink` | full | `{bridge, name}` |
 | `ensure_nat` · `delete_nat` | full | `NatSpec` · `{bridge}` → `NatState` |
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
+| `device_holders` | full, read-only | `{groups}` → for each IOMMU group some process has open, the processes (`pid`, `uid`, `comm`), from every process's open files (host-topology.md §5.1) |
 | `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (host-topology.md §5.3) |
 | `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (host-topology.md §10.1) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |

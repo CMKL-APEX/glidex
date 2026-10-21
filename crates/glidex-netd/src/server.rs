@@ -237,6 +237,9 @@ impl Netd {
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
             Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
+            Op::DeviceHolders { groups } => {
+                to_value(glidex_ovs::vfio::group_holders(self.ex(), &groups))
+            }
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::ListPreparedDevices => to_value(
                 self.store
@@ -421,6 +424,15 @@ impl Netd {
     ) -> Result<glidex_ovs::sriov::SriovState, OvsError> {
         let address = address.to_ascii_lowercase();
         let before = glidex_ovs::sriov::vfs_of(self.ex(), &address);
+        // A change removes every VF: none of them, nor the PF, may be held.
+        let groups: Vec<String> = std::iter::once(&address)
+            .chain(before.iter())
+            .filter_map(|a| glidex_ovs::vfio::iommu_group(self.ex(), a))
+            .collect();
+        let current = before.len() as u32;
+        if current != vfs {
+            self.refuse_held(&groups)?;
+        }
         let uplinks = self.dpdk_uplink_addresses()?;
         let state = glidex_ovs::sriov::set_vfs(self.ex(), &address, vfs, &uplinks)?;
         let gone: &[String] = if state.changed { &before } else { &[] };
@@ -432,6 +444,21 @@ impl Netd {
         }
         tracing::info!(device = %address, vfs = state.enabled, "SR-IOV virtual functions set");
         Ok(state)
+    }
+
+    /// Refuse while a process (a VM) has one of `groups` open.
+    fn refuse_held(&self, groups: &[String]) -> Result<(), OvsError> {
+        let held = glidex_ovs::vfio::group_holders(self.ex(), groups);
+        match held.iter().next() {
+            Some((g, hs)) => Err(OvsError::conflict(format!(
+                "IOMMU group {g} is in use by {}",
+                hs.iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// Undo `prepare_device` for the group `address` is in.
@@ -447,6 +474,7 @@ impl Netd {
                 "{address} was not prepared by glidex"
             )));
         };
+        self.refuse_held(std::slice::from_ref(&group))?;
         glidex_ovs::vfio::release(self.ex(), &p)?;
         self.store.delete(DEVICES, &group)?;
         tracing::info!(device = %address, group = %group, "released from passthrough");

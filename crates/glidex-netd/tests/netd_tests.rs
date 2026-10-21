@@ -1727,3 +1727,84 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
         .unwrap_err();
     assert!(e.to_string().contains("at most 8"), "{e}");
 }
+
+/// spec/host-topology.md §5.1: a device whose IOMMU group a process has
+/// open (a VM, glidex's or libvirt's) isn't released, and its PF's VF count
+/// isn't changed; device_holders says who holds it.
+#[test]
+fn held_devices_are_not_released_and_their_vf_counts_stay() {
+    let exec = exec();
+    let gpu = "0000:87:00.0";
+    exec.file(&format!("/sys/bus/pci/devices/{gpu}"), "");
+    exec.file(&format!("/sys/bus/pci/devices/{gpu}/class"), "0x030200\n");
+    exec.file(
+        &format!("/sys/bus/pci/devices/{gpu}/uevent"),
+        "DRIVER=nvidia\n",
+    );
+    exec.link(&format!("/sys/bus/pci/devices/{gpu}/iommu_group"), "226");
+    exec.link(&format!("/sys/kernel/iommu_groups/226/devices/{gpu}"), gpu);
+    // A PF with one VF, in group 41.
+    let pf = "/sys/bus/pci/devices/0000:61:00.0";
+    exec.file(pf, "");
+    exec.file(&format!("{pf}/sriov_totalvfs"), "8\n");
+    exec.file(&format!("{pf}/sriov_numvfs"), "1\n");
+    exec.link(&format!("{pf}/iommu_group"), "40");
+    exec.link(&format!("{pf}/virtfn0"), "0000:61:00.2");
+    exec.link("/sys/bus/pci/devices/0000:61:00.2/iommu_group", "41");
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    netd.handle(
+        Op::PrepareDevice {
+            address: gpu.into(),
+        },
+        &peer(),
+    )
+    .unwrap();
+    // A VM opens both groups.
+    exec.file("/proc/37226/status", "Uid:\t9869\t9869\t9869\t9869\n");
+    exec.file("/proc/37226/comm", "qemu-kvm-one\n");
+    exec.link("/proc/37226/fd/30", "/dev/vfio/226");
+    exec.link("/proc/37226/fd/31", "/dev/vfio/41");
+    let e = netd
+        .handle(
+            Op::ReleaseDevice {
+                address: gpu.into(),
+            },
+            &peer(),
+        )
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("in use by qemu-kvm-one (pid 37226)"),
+        "{e}"
+    );
+    let e = netd
+        .handle(
+            Op::SetSriovVfs {
+                address: "0000:61:00.0".into(),
+                vfs: 4,
+            },
+            &peer(),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("IOMMU group 41"), "{e}");
+    // Asking for the count it has changes nothing, so it's allowed.
+    netd.handle(
+        Op::SetSriovVfs {
+            address: "0000:61:00.0".into(),
+            vfs: 1,
+        },
+        &peer(),
+    )
+    .unwrap();
+    let h = netd
+        .handle(
+            Op::DeviceHolders {
+                groups: vec!["226".into(), "236".into()],
+            },
+            &peer(),
+        )
+        .unwrap();
+    assert_eq!(h["226"][0]["comm"], "qemu-kvm-one", "{h}");
+    assert_eq!(h["226"][0]["uid"], 9869, "{h}");
+    assert!(h.get("236").is_none(), "{h}");
+}

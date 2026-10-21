@@ -183,6 +183,10 @@ pub trait Exec: Send + Sync {
     fn link_name(&self, _path: &Path) -> Option<String> {
         None
     }
+    /// The whole target of a symlink (`/proc/<pid>/fd/<n>` → `/dev/vfio/31`).
+    fn read_link(&self, _path: &Path) -> Option<String> {
+        None
+    }
     /// Give a file to group `group` with `mode` (a VFIO group device to the
     /// VMs' group, spec/host-topology.md §5.3).
     fn set_group_mode(&self, _path: &Path, _group: &str, _mode: u32) -> Result<(), OvsError> {
@@ -410,6 +414,12 @@ impl Exec for SystemExec {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
     }
 
+    fn read_link(&self, path: &Path) -> Option<String> {
+        std::fs::read_link(path)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
     fn set_group_mode(&self, path: &Path, group: &str, mode: u32) -> Result<(), OvsError> {
         use std::os::unix::fs::PermissionsExt;
         let gid = std::fs::read_to_string("/etc/group")
@@ -586,6 +596,10 @@ impl Exec for RecordingExec {
         names.sort();
         names.dedup();
         names
+    }
+
+    fn read_link(&self, path: &Path) -> Option<String> {
+        self.link_name(path)
     }
 
     fn link_name(&self, path: &Path) -> Option<String> {

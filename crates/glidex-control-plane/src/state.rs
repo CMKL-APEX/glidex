@@ -1269,8 +1269,10 @@ impl VmManager {
         // The devices a VM could be given, with their readiness, for pools
         // (spec/host-topology.md §9).
         if let Some(t) = probe.topology.as_mut() {
-            t.devices =
-                crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs()).summary_devices();
+            t.devices = crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs(), |g| {
+                self.held_groups(g)
+            })
+            .summary_devices();
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -4054,7 +4056,32 @@ impl VmManager {
             .and_then(|n| n.status.topology)
             .or_else(crate::topology::read)
             .unwrap_or_default();
-        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs())
+        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs(), |g| self.held_groups(g))
+    }
+
+    /// IOMMU groups among `groups` that a process other than this host's
+    /// glidex VMs has open, and by whom (spec/host-topology.md §5.1). netd
+    /// reads every process; VMs of glidex run as this user. Without netd:
+    /// none known.
+    pub(crate) fn held_groups(&self, groups: &[String]) -> BTreeMap<String, String> {
+        let me = nix::unistd::geteuid().as_raw();
+        let held: BTreeMap<String, Vec<glidex_ovs::vfio::Holder>> =
+            match self.netd.call(Op::DeviceHolders {
+                groups: groups.to_vec(),
+            }) {
+                Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+                Err(_) => return BTreeMap::new(),
+            };
+        held.into_iter()
+            .filter_map(|(g, hs)| {
+                let others: Vec<String> = hs
+                    .iter()
+                    .filter(|h| h.uid != me)
+                    .map(|h| h.to_string())
+                    .collect();
+                (!others.is_empty()).then(|| (g, others.join(", ")))
+            })
+            .collect()
     }
 
     /// Bind this node's devices of `prepare: true` pools that aren't

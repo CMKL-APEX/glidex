@@ -527,6 +527,9 @@ pub struct ReadyContext {
     pub closed_groups: BTreeSet<String>,
     /// Addresses that are OVS-DPDK uplinks of glidex bridges.
     pub dpdk_uplinks: BTreeSet<String>,
+    /// IOMMU groups another process (not this host's glidex VMs) has open,
+    /// with who: libvirt's QEMU, say (§5.1).
+    pub held_groups: BTreeMap<String, String>,
 }
 
 fn is_bridge(class: &str) -> bool {
@@ -645,6 +648,9 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
                     if r.driver.as_deref() == Some("vfio-pci") && ctx.closed_groups.contains(g) {
                         not_ready.push(format!("/dev/vfio/{g} can't be opened by this user"));
                     }
+                    if let Some(who) = ctx.held_groups.get(g) {
+                        not_ready.push(format!("in use by {who}"));
+                    }
                 }
             }
             if ctx.dpdk_uplinks.contains(&r.address) {
@@ -730,7 +736,14 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
 
 /// Read this host's tree from sysfs. `dpdk_uplinks`: addresses netd has as
 /// DPDK uplinks.
-pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> TopologyTree {
+/// `held`: given the IOMMU groups of vfio-bound devices, those another
+/// process has open and by whom (glidex-netd's `device_holders`, which can
+/// read other users' processes).
+pub fn read_tree(
+    summary: TopologySummary,
+    dpdk_uplinks: BTreeSet<String>,
+    held: impl FnOnce(&[String]) -> BTreeMap<String, String>,
+) -> TopologyTree {
     let base = std::path::Path::new("/sys/bus/pci/devices");
     let attr = |dir: &std::path::Path, f: &str| {
         std::fs::read_to_string(dir.join(f))
@@ -796,10 +809,18 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
         .into_iter()
         .filter(|g| !crate::devaccess::vm_can_open(std::path::Path::new(&format!("/dev/vfio/{g}"))))
         .collect();
+    let vfio_groups: Vec<String> = raw
+        .iter()
+        .filter(|r| r.driver.as_deref() == Some("vfio-pci"))
+        .filter_map(|r| r.iommu_group.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let ctx = ReadyContext {
         iommu: std::path::Path::new("/sys/kernel/iommu_groups/0").exists(),
         closed_groups,
         dpdk_uplinks,
+        held_groups: held(&vfio_groups),
     };
     build_tree(summary, &raw, &ctx)
 }
@@ -942,7 +963,7 @@ mod tests {
         }
         println!("isolated {:?}; devices {:?}", t.isolated, t.device_numa);
         assert!(!t.numa_nodes.is_empty());
-        let tree = read_tree(t, Default::default());
+        let tree = read_tree(t, Default::default(), |_| Default::default());
         for d in tree.devices.iter().filter(|d| d.assignable) {
             println!(
                 "{} {} numa {:?} switch {:?} ready {} {:?}",
@@ -978,6 +999,11 @@ mod tests {
     /// A root port, a switch with a GPU and a NIC under it, a GPU on its
     /// own root port, and a GPU sharing its group with an audio function.
     fn tree() -> TopologyTree {
+        tree_with(Default::default())
+    }
+
+    /// [`tree`], with some IOMMU groups held by another process.
+    fn tree_with(held_groups: BTreeMap<String, String>) -> TopologyTree {
         let summary = TopologySummary {
             numa_nodes: (0..2)
                 .map(|id| NumaNode {
@@ -1073,6 +1099,7 @@ mod tests {
             iommu: true,
             closed_groups: ["31".to_string()].into(),
             dpdk_uplinks: Default::default(),
+            held_groups,
         };
         build_tree(summary, &raw, &ctx)
     }
@@ -1189,6 +1216,22 @@ mod tests {
             prepare: true,
         };
         assert_eq!(t.to_prepare(std::slice::from_ref(&pool)), ["0000:61:00.3"]);
+    }
+
+    #[test]
+    fn a_group_another_process_holds_is_not_ready() {
+        assert!(func(&tree(), "0000:87:00.0").ready);
+        // libvirt's QEMU holds group 20.
+        let held = tree_with([("20".to_string(), "qemu-kvm-one (pid 37226)".to_string())].into());
+        let d = func(&held, "0000:87:00.0");
+        assert!(!d.ready);
+        assert_eq!(d.not_ready, ["in use by qemu-kvm-one (pid 37226)"]);
+        assert!(
+            held.summary_devices()
+                .iter()
+                .any(|s| s.address == "0000:87:00.0" && !s.ready),
+            "pools see it as not ready"
+        );
     }
 
     #[test]

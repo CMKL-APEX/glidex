@@ -101,7 +101,9 @@ gxctl node topology <node> --devices   # its devices with their root port, switc
 A device is **ready** for passthrough when the host has an IOMMU, the
 device is bound to `vfio-pci`, every other device in its IOMMU group
 (bridges aside) is too, the `glidex` user can open `/dev/vfio/<group>`,
-and it isn't an OVS-DPDK uplink. A device that isn't says why
+it isn't an OVS-DPDK uplink, and no other hypervisor on the host is
+using it (`in use by qemu-kvm-one (pid 37226)`: a libvirt or OpenNebula
+VM holding it). A device that isn't says why
 (`not bound to vfio-pci (driver: nvidia)`, `IOMMU group 30 also holds
 0000:07:00.1 on snd_hda_intel`). Over the API it is `GET /pci-devices`
 for this host, and `GET /nodes/{id}/topology` for any node. Both need a
@@ -317,6 +319,7 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |
 | `conflict`: `PCI device … is used by VM …` | Another VM on that host holds the device, or its instance still does. Detach it from that VM. If the hot-unplug failed (`DevicesPending`), the device stays held until that VM stops. In a cluster, leave the VM unpinned so the scheduler can pick a node where the device is free. |
 | `conflict`: `PCI device … shares IOMMU group … with …` | Another VM holds a device in the same IOMMU group. Give the whole group to one VM, or move the card to a slot with its own group. |
+| `in use by qemu-kvm-one (pid …)` on a device, or `IOMMU group … is in use by …` from Release or a VF count | Another hypervisor on the host (libvirt, OpenNebula) has the device in a running VM. Being on `vfio-pci` doesn't mean it's free: check `virsh list` and `virsh dumpxml <vm>` (`<hostdev>`), and cordon the device in glidex while the other VM keeps it. |
 | `pool …: 1 of 2 free`, `no device pool …` | See [Host resources](host-resources.md#troubleshooting). |
 | A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |
 
