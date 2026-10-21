@@ -844,6 +844,8 @@ message NodeStatus {
   repeated string pci_devices = 13 [json_name = "pci_devices"];
   // When Ready last changed.
   google.protobuf.Timestamp heartbeat = 14;
+  // A server's web UI address (spec/host-page.md W3); agents publish none.
+  optional string ui_url = 15 [json_name = "ui_url"];
 }
 
 message Node {

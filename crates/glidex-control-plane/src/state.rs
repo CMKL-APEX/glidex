@@ -359,6 +359,9 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    /// This host's web UI address, as a server publishes it
+    /// (spec/host-page.md W3).
+    ui_url: ArcSwap<Option<String>>,
     /// `pci.pools` of the control-plane config (spec/host-topology.md §9).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
     /// What this host runs OVN with: the cluster setting (if written) over
@@ -550,6 +553,7 @@ impl VmManager {
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
+            ui_url: ArcSwap::from_pointee(None),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
@@ -1172,6 +1176,26 @@ impl VmManager {
         }
     }
 
+    /// Set this host's web UI address (spec/host-page.md W3); `true` when
+    /// it changed, and the node record should be refreshed.
+    pub fn set_ui_url(&self, url: Option<String>) -> bool {
+        if **self.ui_url.load() == url {
+            return false;
+        }
+        self.ui_url.store(Arc::new(url));
+        true
+    }
+
+    /// This host's web UI address as it would publish it (W3).
+    pub fn ui_url(&self) -> Option<String> {
+        (**self.ui_url.load()).clone()
+    }
+
+    /// Whether this host is a cluster agent.
+    pub fn is_agent(&self) -> bool {
+        self.cluster().is_some_and(|c| c.node.is_none())
+    }
+
     /// Refresh this node's own record with what the host has now. Writes
     /// nothing when nothing changed.
     pub fn report_self(&self) -> Result<(), VmManagerError> {
@@ -1184,6 +1208,10 @@ impl VmManager {
             }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
+        // Agents publish no UI address: browsers go to a server (W5).
+        if !self.is_agent() {
+            probe.ui_url = (**self.ui_url.load()).clone();
+        }
         // Unrecorded image files (spec/clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
         if let Some(before) = self

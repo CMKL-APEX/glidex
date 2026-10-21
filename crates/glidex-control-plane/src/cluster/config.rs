@@ -33,7 +33,14 @@ pub struct ClusterConfig {
     /// On an agent, relay the web UI's requests to a server, which
     /// authenticates them (spec/clustering-ui.md §3.6). Off: the agent's UI
     /// socket answers `421` with the servers to use instead.
+    /// Replaced: an agent's UI now sends browsers to a server
+    /// (spec/host-page.md W5, W6); still accepted, ignored.
     pub ui_relay: bool,
+    /// The address this server's web UI is published at, over what its
+    /// glidex-ui reports: e.g. a load balancer in front of the servers
+    /// (spec/host-page.md W3). Also an accepted origin and the OIDC
+    /// callback's default (W4).
+    pub ui_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,6 +117,7 @@ impl Default for ClusterConfig {
             ca_rotation_grace_secs: 604800,
             ovn: OvnConfig::default(),
             ui_relay: true,
+            ui_url: None,
         }
     }
 }
@@ -162,7 +170,15 @@ impl ClusterConfig {
         if self.scheduler.cpu_overcommit < 1.0 || self.scheduler.memory_overcommit < 1.0 {
             return Err("cluster.scheduler overcommit factors must be at least 1.0".into());
         }
+        if let Some(u) = &self.ui_url {
+            ui_origin(u).ok_or("cluster.ui_url must be https://host[:port]")?;
+        }
         Ok(())
+    }
+
+    /// `ui_url` as an origin (`https://host[:port]`, lowercase).
+    pub fn ui_origin(&self) -> Option<String> {
+        self.ui_url.as_deref().and_then(ui_origin)
     }
 
     pub fn raft_settings(&self) -> crate::cluster::raft::RaftSettings {
@@ -172,6 +188,17 @@ impl ClusterConfig {
             log_keep_entries: self.raft.log_keep_entries,
         }
     }
+}
+
+/// `https://host[:port]` (a trailing `/` allowed) as an origin; `None`
+/// for anything else.
+pub fn ui_origin(url: &str) -> Option<String> {
+    let u: axum::http::Uri = url.parse().ok()?;
+    let authority = u.authority()?;
+    let bare =
+        authority.as_str().contains('@') || u.query().is_some() || !matches!(u.path(), "" | "/");
+    (u.scheme_str() == Some("https") && !bare && !authority.host().is_empty())
+        .then(|| format!("https://{}", authority.as_str().to_ascii_lowercase()))
 }
 
 #[cfg(test)]
@@ -196,6 +223,32 @@ mod tests {
         .unwrap();
         c.check().unwrap();
         assert_eq!(c.raft.election_ms, (1000, 2000));
+    }
+
+    #[test]
+    fn ui_url_is_an_https_origin() {
+        assert_eq!(
+            ui_origin("https://GLIDEX.example.com/").as_deref(),
+            Some("https://glidex.example.com")
+        );
+        assert_eq!(
+            ui_origin("https://lb.example.com:8443").as_deref(),
+            Some("https://lb.example.com:8443")
+        );
+        for bad in [
+            "http://lb.example.com",
+            "https://lb.example.com/glidex",
+            "https://lb.example.com/?a=1",
+            "https://user@lb.example.com",
+            "lb.example.com",
+        ] {
+            assert_eq!(ui_origin(bad), None, "{bad}");
+        }
+        let c = ClusterConfig {
+            ui_url: Some("https://lb.example.com/x".into()),
+            ..Default::default()
+        };
+        assert!(c.check().is_err());
     }
 
     #[test]

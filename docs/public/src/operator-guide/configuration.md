@@ -150,7 +150,8 @@ See [Clusters](clusters.md).
 | `cluster.detach_freeze_secs` | integer | `600` | How long a node's detach (with its VMs) may take before it is called off. |
 | `cluster.import_plan_ttl_secs` | integer | `86400` | How long an import plan waits for approval. |
 | `cluster.ca_rotation_grace_secs` | integer | `604800` | How long the old cluster CA stays trusted after a rotation. |
-| `cluster.ui_relay` | bool | `true` | On an agent, relay the web UI to a server. |
+| `cluster.ui_url` | string | unset | A server's web UI address, `https://host[:port]`, published to the cluster: agents send browsers there. Set it to a load balancer's address in front of the servers (the same on each). It is also an accepted origin and the default SSO callback. Unset: the address glidex-ui reports (its Tailscale name, else the first `GLIDEX_UI_HOSTS` name, else the host's FQDN). |
+| `cluster.ui_relay` | bool | `true` | Replaced: an agent's web UI now sends browsers to a server. Accepted and ignored. |
 | `cluster.ovn.bridge_mappings` | object | `{}` | Physical network name → this host's Glidex bridge. Per host. |
 
 <!-- TODO(verify): cluster.role and cluster.tunnel_ip parse, but no code path reads them from the file (the role and tunnel address come from the join/init request); left out until confirmed. -->
