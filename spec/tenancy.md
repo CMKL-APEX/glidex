@@ -1853,7 +1853,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-and task 4 (4a–4d).
+task 4 (4a–4d) and task 5a.
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1910,3 +1910,11 @@ Task 4d, the web UI and docs:
 | UI | `pages/Directories.tsx` (`/directories`, menu **Hosting**, with `listDirectories`; create with `manageDirectories`, the invitation link shown once; delete); `pages/Invite.tsx` creates the invitee's passkey for a passkey invitation (`api.acceptPasskeyInvitation`); `/login/<directory>` loads that directory's methods (`session.tsx`), and the host's login page has **Your email** (`/auth/discover`) sending an organization's people to their directory's page |
 | Docs | the operator guide's "Hosting other organizations' directories"; web-ui.md routes |
 | UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its login page |
+
+Task 5a, peer assertions and offers:
+
+| Spec | Code |
+|---|---|
+| D63 | The cluster key: `directory/issuer.rs`'s keys under owner `CLUSTER_OWNER` in `cluster_keys` (cluster scope), made and rotated by the same upkeep; `directory/peer.rs`: `assertion` (ES256, `typ: glidex-peer+jwt`, `iss`, `aud`, `purpose`, 60 s, `jti`), `verify` against a pinned JWKS (time from the caller's clock, the purpose, at most 60 s, once: `Replays`), `post` (HTTPS with the server's leaf pinned by SHA-256, `ClientTls::with_trust`) |
+| D64 | `tenants::Offer` in `admission_offers` (cluster scope: tenant slug, directory issuer, cap, the secret's hash, expiry, `redeemed_at`); `AdmissionService.OfferAdmission` / `ListOffers` / `RevokeOffer` (`/admissions/offers`); `trust::OfferToken` (`gxo_…`): cluster id and name, `api` (`cluster.api_url`, else the web UI's host on the API's port), the API certificate's SHA-256, tenant, directory, offer id and secret; gxctl `admission offer|offers|revoke-offer` |
+| Tests | `peer.rs` and `trust.rs` unit tests; `connector_tests.rs::an_admission_is_offered_to_another_directorys_tenant` |

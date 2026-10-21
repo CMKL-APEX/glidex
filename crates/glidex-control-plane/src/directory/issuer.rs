@@ -17,6 +17,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub(super) const SIGNING_KEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("signing_keys");
+/// This cluster's own key (D63): it signs what the cluster says to the
+/// directories it trusts. Cluster scope: never in a directory's records.
+pub(super) const CLUSTER_KEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("cluster_keys");
+/// The owner name the cluster key is kept and sealed under.
+pub const CLUSTER_OWNER: &str = "~cluster";
+
+type Def = TableDefinition<'static, &'static str, &'static [u8]>;
+
+/// Where an owner's keys live: a directory's, or the cluster's.
+fn table_of(owner: &str) -> Def {
+    if owner == CLUSTER_OWNER {
+        CLUSTER_KEYS
+    } else {
+        SIGNING_KEYS
+    }
+}
 
 /// The active key's lifetime.
 pub const ROTATE_SECS: u64 = 30 * 86_400;
@@ -76,7 +92,7 @@ impl ConnectorStore {
     pub fn signing_keys(&self, directory: &str) -> Result<Vec<SigningKey>, ConnectorError> {
         let prefix = format!("{directory}/");
         Ok(self
-            .read_all::<SigningKey>(SIGNING_KEYS)?
+            .read_all::<SigningKey>(table_of(directory))?
             .into_iter()
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(_, v)| v)
@@ -124,9 +140,9 @@ impl ConnectorStore {
         };
         for mut k in keys.into_iter().filter(|k| k.retired_at.is_none()) {
             k.retired_at = Some(now);
-            self.put_raw(SIGNING_KEYS, &row(directory, k.n), &k)?;
+            self.put_raw(table_of(directory), &row(directory, k.n), &k)?;
         }
-        self.put_raw(SIGNING_KEYS, &row(directory, n), &key)?;
+        self.put_raw(table_of(directory), &row(directory, n), &key)?;
         Ok(key)
     }
 
@@ -137,7 +153,7 @@ impl ConnectorStore {
         let mut changed = false;
         for k in self.signing_keys(directory)? {
             if !k.published(now) {
-                self.remove_raw(SIGNING_KEYS, &row(directory, k.n))?;
+                self.remove_raw(table_of(directory), &row(directory, k.n))?;
                 changed = true;
             }
         }
@@ -155,7 +171,7 @@ impl ConnectorStore {
     /// Forget `directory`'s keys and its data key (it was deleted).
     pub fn forget_directory_keys(&self, directory: &str) -> Result<(), ConnectorError> {
         for k in self.signing_keys(directory)? {
-            self.remove_raw(SIGNING_KEYS, &row(directory, k.n))?;
+            self.remove_raw(table_of(directory), &row(directory, k.n))?;
         }
         self.remove_raw(super::KEYS, directory)?;
         Ok(())
@@ -220,6 +236,10 @@ pub fn spawn(auth: std::sync::Arc<crate::auth::AuthService>) {
                 continue;
             };
             let now = crate::auth::store::now();
+            // The cluster's own key too (D63).
+            if let Err(e) = auth.connectors.maintain_signing_keys(CLUSTER_OWNER, now) {
+                tracing::warn!("the cluster key: {}", e);
+            }
             for d in dirs {
                 match auth.connectors.maintain_signing_keys(&d.id, now) {
                     Ok(true) => tracing::info!(directory = %d.id, "signing keys updated"),

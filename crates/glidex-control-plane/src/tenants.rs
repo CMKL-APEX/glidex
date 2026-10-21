@@ -25,6 +25,7 @@ const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_membe
 /// Tenant pools on this cluster, by `<tenant>/<name>` (spec/host-topology.md §9.1a).
 const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
+const OFFERS: TableDefinition<&str, &[u8]> = TableDefinition::new("admission_offers");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// The directory a host hosts (D32).
@@ -203,6 +204,30 @@ pub fn unlimited() -> Quotas {
         routers: None,
         external_ips: None,
         ..Default::default()
+    }
+}
+
+/// An admission offered to a tenant of another directory (spec/tenancy.md
+/// D64): its token is shown once; only its secret's hash is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offer {
+    pub id: String,
+    /// The tenant's slug at that directory.
+    pub tenant: String,
+    /// That directory's issuer URL.
+    pub directory: String,
+    pub cap: Quotas,
+    pub secret_hash: String,
+    pub by: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeemed_at: Option<u64>,
+}
+
+impl Offer {
+    pub fn is_open(&self, now: u64) -> bool {
+        self.redeemed_at.is_none() && now < self.expires_at
     }
 }
 
@@ -504,6 +529,20 @@ impl TenantStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    // ---- offers (D64) ---------------------------------------------------
+
+    pub fn offers(&self) -> Result<Vec<Offer>, TenantError> {
+        self.read_all(OFFERS)
+    }
+
+    pub fn put_offer(&self, o: &Offer) -> Result<(), TenantError> {
+        self.put(OFFERS, &o.id, o)
+    }
+
+    pub fn remove_offer(&self, id: &str) -> Result<bool, TenantError> {
+        self.remove(OFFERS, id)
     }
 
     /// Fix `id`'s issuer URL (D52); the first one written stays unless

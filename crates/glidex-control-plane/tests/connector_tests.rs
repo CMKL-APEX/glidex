@@ -5175,3 +5175,89 @@ async fn logins_find_their_directory_without_listing_them() {
     assert_eq!(own["directory"], "local");
     assert!(!names(&own).contains(&"acme-idp".to_string()), "{own}");
 }
+
+/// spec/tenancy.md D64: the operator offers an admission to a tenant of
+/// another directory; the token carries the cluster's API, its pinned
+/// certificate and a one-time secret (only its hash is kept).
+#[tokio::test]
+async fn an_admission_is_offered_to_another_directorys_tenant() {
+    let certdir = TempDir::new().unwrap();
+    let (cert, _key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
+    let cert_path = certdir.path().join("api.crt");
+    std::fs::write(&cert_path, &cert).unwrap();
+    let cp = cert_path.clone();
+    let h = harness_with(move |c| {
+        c.cluster.api_url = Some("https://north.example:8841".into());
+        c.tls = glidex_control_plane::config::TlsSetting::Files(
+            glidex_control_plane::config::TlsConfig {
+                cert: cp,
+                key: None,
+            },
+        );
+    });
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "acme", "directory": "https://ID.acme.example/d/acme/", "days": 3})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let t = glidex_control_plane::trust::OfferToken::decode(v["token"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (t.api.as_str(), t.tenant.as_str(), t.directory.as_str()),
+        (
+            "https://north.example:8841",
+            "acme",
+            "https://id.acme.example/d/acme"
+        )
+    );
+    let fp = glidex_tls::fingerprint(&cert_path).unwrap();
+    assert_eq!(
+        Some(t.tls_sha256.clone()),
+        glidex_tls::Trust::normalize_pin(&fp)
+    );
+    assert_eq!(t.offer, v["offer"]["id"].as_str().unwrap());
+    // Listed without its secret; gone when revoked.
+    let (s, l) = h.rest("GET", "/admissions/offers", None, &op).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!l.to_string().contains(&t.secret), "{l}");
+    assert_eq!(l["offers"][0]["tenant"], "acme");
+    // Only the operator offers.
+    let bob = h.user("bob");
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "x", "directory": "https://a.example/d/x"})),
+            &h.session(&bob),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // A plain-HTTP issuer, or too long an offer.
+    for body in [
+        json!({"tenant": "acme", "directory": "http://id.acme.example/d/acme"}),
+        json!({"tenant": "acme", "directory": "https://id.acme.example/d/acme", "days": 90}),
+    ] {
+        assert_eq!(
+            h.rest("POST", "/admissions/offers", Some(body), &op)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (s, _) = h
+        .rest(
+            "DELETE",
+            &format!("/admissions/offers/{}", t.offer),
+            None,
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, l) = h.rest("GET", "/admissions/offers", None, &op).await;
+    assert!(l["offers"].as_array().is_none_or(|a| a.is_empty()), "{l}");
+}

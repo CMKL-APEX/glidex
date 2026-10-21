@@ -184,6 +184,30 @@ impl AdmissionService for Svc {
     ) -> ServiceResult<RemoveAdmissionResponse> {
         op!(self, ctx, req, tenancy::remove_admission)
     }
+
+    async fn offer_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OfferAdmissionRequest>,
+    ) -> ServiceResult<OfferAdmissionResponse> {
+        op!(self, ctx, req, tenancy::offer_admission)
+    }
+
+    async fn list_offers(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListOffersRequest>,
+    ) -> ServiceResult<ListOffersResponse> {
+        op!(self, ctx, req, tenancy::list_offers)
+    }
+
+    async fn revoke_offer(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RevokeOfferRequest>,
+    ) -> ServiceResult<RevokeOfferResponse> {
+        op!(self, ctx, req, tenancy::revoke_offer)
+    }
 }
 
 #[allow(refining_impl_trait)]

@@ -438,6 +438,9 @@ same ids and names.
 |  | `ListDevicePools` | `GET /tenants/{id}/device-pools` |
 |  | `SetDevicePools` | `PUT /tenants/{id}/device-pools` |
 | `AdmissionService` | `ListAdmissions` | `GET /admissions` |
+|  | `OfferAdmission` | `POST /admissions/offers` |
+|  | `ListOffers` | `GET /admissions/offers` |
+|  | `RevokeOffer` | `DELETE /admissions/offers/{id}` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
 | `DirectoryService` | `ListDirectories` | `GET /directories` |

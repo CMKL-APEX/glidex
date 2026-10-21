@@ -556,12 +556,77 @@ fn parse_cap(args: &[&str]) -> Result<Option<Quotas>, String> {
 }
 
 pub async fn admission(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant>";
+    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id>";
     let Some(t) = transport(client).await else {
         return;
     };
     let svc = AdmissionServiceClient::new(t.clone(), t.config());
     match args.first().copied().unwrap_or("list") {
+        // An admission for a tenant of another directory (spec/tenancy.md D64).
+        "offer" => {
+            let (Some(tenant), Some(directory)) =
+                (args.get(1), crate::flag_value(args, "--directory"))
+            else {
+                return usage(u);
+            };
+            let req = OfferAdmissionRequest {
+                tenant: tenant.to_string(),
+                directory: directory.to_string(),
+                days: crate::flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                ..Default::default()
+            };
+            match svc.offer_admission(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    println!(
+                        "  Offer for tenant {} of {}; send this token to its administrator (shown once):",
+                        tenant.cyan(),
+                        directory
+                    );
+                    println!("    {}", r.token.yellow());
+                    println!(
+                        "  They redeem it at their directory: gxctl tenant opt-in --offer <token>"
+                    );
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "offers" => match svc
+            .list_offers(ListOffersRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => {
+                for o in &r.offers {
+                    let state = if o.redeemed_at.as_option().is_some() {
+                        "redeemed"
+                    } else {
+                        "open"
+                    };
+                    println!(
+                        "  {}  {:<20} {}  {state}",
+                        o.id.cyan(),
+                        o.tenant,
+                        o.directory
+                    );
+                }
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        "revoke-offer" => {
+            let Some(id) = args.get(1) else {
+                return usage(u);
+            };
+            match svc
+                .revoke_offer(RevokeOfferRequest {
+                    id: id.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("  Offer {id} revoked"),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
         "list" | "ls" => match svc
             .list_admissions(ListAdmissionsRequest::default())
             .await

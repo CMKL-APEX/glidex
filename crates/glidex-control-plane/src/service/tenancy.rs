@@ -790,3 +790,132 @@ pub async fn set_device_pools(
         ..Default::default()
     })
 }
+
+// ---- offers to other directories' tenants (spec/tenancy.md D64) -------------
+
+fn offer_pb(o: &tenants::Offer) -> pb::Offer {
+    pb::Offer {
+        id: o.id.clone(),
+        tenant: o.tenant.clone(),
+        directory: o.directory.clone(),
+        cap: quotas_to_pb(&o.cap).into(),
+        by: o.by.clone(),
+        created_at: ts(o.created_at).into(),
+        expires_at: ts(o.expires_at).into(),
+        redeemed_at: o.redeemed_at.map(ts).into(),
+        ..Default::default()
+    }
+}
+
+/// Where directories reach this cluster's API (D64): `cluster.api_url`,
+/// else the web UI's published host on the API's port.
+pub fn offer_api(call: &Call) -> Option<String> {
+    let cfg = &call.auth().config;
+    if let Some(u) = cfg.cluster.ui_origin_of(cfg.cluster.api_url.as_deref()) {
+        return Some(u);
+    }
+    let ui = call.manager().ui_url()?;
+    let host = ui.parse::<axum::http::Uri>().ok()?.host()?.to_string();
+    let port = cfg.listen.first().map_or(8841, |a| a.port());
+    Some(format!("https://{host}:{port}"))
+}
+
+pub fn offer_admission(
+    call: &Call,
+    req: pb::OfferAdmissionRequest,
+) -> ServiceResult<pb::OfferAdmissionResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let bad = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid", m);
+    let tenant = req.tenant.trim().to_ascii_lowercase();
+    tenants::validate_slug(&tenant).map_err(tenant_error)?;
+    let directory = crate::trust::normalize_issuer(&req.directory)
+        .ok_or_else(|| bad("directory is its issuer URL, https://…/d/<id>"))?;
+    let days = req.days.map(u64::from).unwrap_or(crate::trust::OFFER_DAYS);
+    if !(1..=crate::trust::OFFER_MAX_DAYS).contains(&days) {
+        return Err(bad("an offer lasts 1 to 30 days"));
+    }
+    let api = offer_api(call)
+        .ok_or_else(|| bad("this cluster has no public API address: set cluster.api_url"))?;
+    let fp = crate::service::system::api_fingerprint(&call.app)
+        .and_then(|f| glidex_tls::Trust::normalize_pin(&f))
+        .ok_or_else(|| bad("this cluster's API has no TLS certificate to pin"))?;
+    let now = crate::tenancy::now();
+    let secret = crate::auth::random_token(32);
+    let o = tenants::Offer {
+        id: uuid::Uuid::new_v4().to_string(),
+        tenant: tenant.clone(),
+        directory: directory.clone(),
+        cap: req
+            .cap
+            .as_option()
+            .map(quotas_from_pb)
+            .unwrap_or_else(tenants::unlimited),
+        secret_hash: crate::auth::sha256_hex(secret.as_bytes()),
+        by: call.p.user_id().unwrap_or("-").to_string(),
+        created_at: now,
+        expires_at: now + days * 86_400,
+        redeemed_at: None,
+    };
+    call.auth().tenants.put_offer(&o).map_err(tenant_error)?;
+    call.set_target(format!("offer:{}", o.id));
+    call.detail("tenant", serde_json::json!(tenant));
+    call.detail("directory", serde_json::json!(directory));
+    let cluster_name = call
+        .auth()
+        .config
+        .server_name
+        .clone()
+        .or_else(glidex_tls::hostname)
+        .unwrap_or_else(|| "glidex".into());
+    let token = crate::trust::OfferToken {
+        cluster_id: crate::api::op::cluster_id(&call.app),
+        cluster_name,
+        api,
+        tls_sha256: fp,
+        tenant,
+        directory,
+        offer: o.id.clone(),
+        secret,
+        expires_at: o.expires_at,
+    }
+    .encode();
+    Ok(pb::OfferAdmissionResponse {
+        offer: offer_pb(&o).into(),
+        token,
+        ..Default::default()
+    })
+}
+
+pub fn list_offers(
+    call: &Call,
+    _req: pb::ListOffersRequest,
+) -> ServiceResult<pb::ListOffersResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let mut all = call.auth().tenants.offers().map_err(tenant_error)?;
+    all.sort_by_key(|o| o.created_at);
+    Ok(pb::ListOffersResponse {
+        offers: all.iter().map(offer_pb).collect(),
+        ..Default::default()
+    })
+}
+
+pub fn revoke_offer(
+    call: &Call,
+    req: pb::RevokeOfferRequest,
+) -> ServiceResult<pb::RevokeOfferResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    call.set_target(format!("offer:{}", req.id));
+    if !call
+        .auth()
+        .tenants
+        .remove_offer(&req.id)
+        .map_err(tenant_error)?
+    {
+        return Err(ServiceError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such offer",
+        ));
+    }
+    Ok(pb::RevokeOfferResponse::default())
+}

@@ -18,6 +18,7 @@ pub mod invitations;
 pub mod issuer;
 pub mod oidc;
 pub mod op;
+pub mod peer;
 pub mod presets;
 pub mod scim;
 pub mod scim_tokens;

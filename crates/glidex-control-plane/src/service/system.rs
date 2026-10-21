@@ -9,16 +9,21 @@ use glidex_api::proto::glidex::system::v1::{
     EntityRef, GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse,
 };
 
-/// `GetServerInfo` / `GET /auth/server-info` (spec/gxctl-auth.md §7.1):
-/// what client login profiles bind to. Public.
-pub fn server_info(app: &App) -> GetServerInfoResponse {
-    let fingerprint = match &app.auth.config.tls {
+/// The SHA-256 of the API's certificate, `AB:CD:…` (`None` without TLS).
+pub fn api_fingerprint(app: &App) -> Option<String> {
+    match &app.auth.config.tls {
         crate::config::TlsSetting::Mode(crate::config::TlsMode::Off) => None,
         crate::config::TlsSetting::Mode(crate::config::TlsMode::Auto) => {
             glidex_tls::fingerprint(&crate::serve::self_signed_dir().join("cp.crt")).ok()
         }
         crate::config::TlsSetting::Files(f) => glidex_tls::fingerprint(&f.cert).ok(),
-    };
+    }
+}
+
+/// `GetServerInfo` / `GET /auth/server-info` (spec/gxctl-auth.md §7.1):
+/// what client login profiles bind to. Public.
+pub fn server_info(app: &App) -> GetServerInfoResponse {
+    let fingerprint = api_fingerprint(app);
     let identity = crate::cluster::identity::Files::beside(app.manager.db_path())
         .load_identity()
         .ok()
