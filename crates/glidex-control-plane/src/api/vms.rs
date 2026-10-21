@@ -125,8 +125,11 @@ pub async fn create(
 ) -> Result<Response, ApiErr> {
     // proto3 has no required fields; the REST body says which are missing
     // (`422`, as before the port). A `0` sent is validated like any value.
+    // With `gpus`, the sizing may come from the pool (spec/gpu-vms.md §3).
+    let gpus = v.get("gpus").is_some_and(|g| !g.is_null());
     let missing: Vec<&str> = ["name", "vcpu_count", "mem_size_mib"]
         .into_iter()
+        .filter(|f| !(gpus && *f != "name"))
         .filter(|f| v.get(*f).is_none_or(Value::is_null))
         .collect();
     if !missing.is_empty() {

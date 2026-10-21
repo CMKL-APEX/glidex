@@ -1,6 +1,6 @@
 # GPU VMs
 
-Status: **design; GV3 implemented** (§12 milestones, §14 notes). Builds on
+Status: **design; GV1, GV2 and GV3 implemented** (§12 milestones, §14 notes). Builds on
 [host-topology.md](host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [hypervisors.md](hypervisors.md)
 (command lines) and [installer.md](installer.md).
@@ -152,7 +152,7 @@ A 4-GPU VM on prism1 today takes:
 5. **Record it.** `placement` gains `numa: [{node, cpus, memory_mib,
    devices}]`, which replaces the single `numa_node` for `aligned`.
 
-The placement preview (`POST /vms/preview`) shows the split per node.
+The placement preview (`POST /scheduler/preview`) shows the split per node (`numa`).
 
 ## 5. The guest's layout
 
@@ -357,6 +357,65 @@ glidex-install --no-vfio-devices                    # remove what it wrote
    OpenNebula's VMs share (they get no NVLink now, §2.2).
 
 ## 14. Implementation notes
+
+- **GV2** (§3, §6):
+  - **Pool sizing.** Pools take `per_device {vcpus, memory_mib,
+    hugepages?, cpu_policy?}`. `ListPciPools` shows it as
+    `per_device_vcpus` and `per_device_memory_mib`; tenant pools inherit
+    their cluster pool's.
+  - **The request.** `gpus: GpuRequest {count, pool?, nvlink?}` on
+    `CreateVmRequest` (34), `PreviewPlacementRequest` (15) and `Vm` (43).
+    `VmConfig.gpus` keeps the resolved pool.
+  - **Expansion.** `service::vm::expand_gpus` resolves the pool: a named
+    cluster or tenant pool, or else the project's only usable pool of
+    class `gpu`. `apply_gpus` then fills the create or preview request:
+    a `devices` entry (refused if `devices` asks for the same pool),
+    `NUMA_POLICY_ALIGNED` and `cpu_policy` when unspecified, `hugepages`
+    when absent, and `vcpu_count` and `mem_size_mib` when 0. The REST
+    create takes a body without sizing when it has `gpus`.
+  - **NVLink.** `nvlink: true` is refused until GV5.
+  - **gxctl.** `create` asks "GPUs" (`parse_gpus`: `4`, `4:a100`,
+    `8:a100:nvlink`), and `vm show` prints `GPUs:` and each NUMA share.
+  - **UI.** The first GPU pool with a count is sent as `gpus`, and fills
+    the vCPU and memory fields from `per_device` until they're edited.
+    The field limits went up from 32 vCPUs and 32 GiB to 255 and 4 TiB.
+  - **Not done.** A `PATCH` of `gpus`: change `devices` and the sizing
+    directly for now. The installer doesn't propose `per_device` from
+    the topology.
+
+- **GV1** (§4, §5):
+  - **The model.** `NumaPolicy::Aligned` (`NUMA_POLICY_ALIGNED`), and
+    `Placement.numa: [NumaShare {node, vcpus, memory_mib, devices}]` in
+    guest-node order (proto `NumaShare`, `Vm.numa`, `NodeFit.numa`).
+  - **The scheduler** (`aligned_fit`) splits by device count, largest
+    remainder (`split_by`). Each share is fitted with `fit_on_numa`
+    against the CPUs taken so far. All shares must back memory with the
+    same page size, or the host is refused, naming the two nodes.
+    - Devices on one node: an ordinary fit with `numa_node`, no shares.
+    - No devices: `preferred`.
+    - Fewer vCPUs than nodes: refused.
+  - **CPUs and accounting.** The placement's CPUs are every share's pins
+    in guest-node order, then their whole-core siblings, so vCPU *i* stays
+    on `cpus[i]`. `loads` counts each share's memory on its node.
+  - **Pool picks** under `aligned` sort NUMA nodes by free matching
+    devices, most first, so the VM spans the fewest.
+  - **Launch.** `VmConfig.host_numa` carries the shares.
+    `hypervisor::guest_numa_layout` maps them to vCPU ranges and to the
+    devices on each node. Free hugepages are checked per share.
+    - Cloud Hypervisor: a `--memory-zone` per share,
+      `--platform num_pci_segments=N+1`, and `--numa ... pci_segments=`.
+      Segment 0 (virtio) belongs to guest node 0; node *i*'s devices are
+      on segment *i+1*.
+    - QEMU: a memory backend and a `-numa node` per share, and a
+      `pxb-pcie` per guest node (bus numbers 0x40 + 0x18·i, `numa_node=i`)
+      with a root port per device.
+    - Shared vCPUs still float on the shared pool, as for one node (H15).
+  - **Not done:**
+    - guest NUMA distances (QEMU `-numa dist`; CH the same, verify);
+    - the root port per host PCIe switch, so a GPU and its NIC share one
+      in the guest;
+    - the MMIO aperture sizing for large BARs;
+    - the run on prism1 (§12).
 
 - **GV3** (§10):
   - **Where the logic is.** `glidex_ovs::boot_devices` holds the settings

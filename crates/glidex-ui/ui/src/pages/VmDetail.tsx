@@ -336,6 +336,25 @@ export default function VmDetail() {
             </div>
           )}
 
+          {(vm.numa ?? []).length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">NUMA layout</h3>
+              <ul className="space-y-1 text-sm text-gray-700">
+                {(vm.numa ?? []).map((s, i) => (
+                  <li key={i}>
+                    Guest node {i} on host NUMA node {s.node ?? 0}: {s.vcpus ?? 0} vCPUs,{" "}
+                    {Math.round((s.memory_mib ?? 0) / 1024)} GiB
+                    {(s.devices ?? []).length > 0 && (
+                      <>
+                        , <span className="font-mono">{(s.devices ?? []).join(", ")}</span>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="pt-6 border-t border-gray-100">
             <h3 className="text-sm font-medium text-gray-500 mb-3">Actions</h3>
             <div className="flex items-center gap-3 flex-wrap">

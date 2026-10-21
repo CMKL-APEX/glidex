@@ -1098,6 +1098,12 @@ export const clusterStatus = () => rpc(ClusterService.method.getClusterStatus, {
 /** The summary without the port checks (which connect to every node). */
 export const clusterSummary = () => rpc(ClusterService.method.getClusterStatus).then((r) => r as unknown as ClusterStatus);
 export const listNodes = () => rpc(NodeService.method.listNodes).then((r) => (r.nodes ?? []) as unknown as NodeRecord[]);
+/** N GPUs from a pool (spec/gpu-vms.md §3). */
+export interface GpuRequest {
+  count: number;
+  pool?: string;
+  nvlink?: boolean;
+}
 export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
@@ -1108,6 +1114,8 @@ export interface PreviewRequest {
   vfio_devices?: string[];
   /** Devices asked for by pool (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  gpus?: GpuRequest;
   data_disks?: string[];
   /** The root disk's image: its architecture counts (spec/clustering.md §9.2.1). */
   image?: string;

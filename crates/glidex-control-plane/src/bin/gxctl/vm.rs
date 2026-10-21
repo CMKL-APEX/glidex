@@ -355,6 +355,31 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     if !vm.vfio_devices.is_empty() {
         println!("  VFIO:       {}", vm.vfio_devices.join(", "));
     }
+    if let Some(g) = vm.gpus.as_option() {
+        println!(
+            "  GPUs:       {} from {}{}",
+            g.count,
+            g.pool.as_deref().unwrap_or("-"),
+            if g.nvlink == Some(true) {
+                " (NVLink)"
+            } else {
+                ""
+            }
+        );
+    }
+    for (i, s) in vm.numa.iter().enumerate() {
+        println!(
+            "  NUMA {i}:     host node {}, {} vCPUs, {} MiB{}",
+            s.node,
+            s.vcpus,
+            s.memory_mib,
+            if s.devices.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", s.devices.join(", "))
+            }
+        );
+    }
     for r in &vm.devices {
         let got: Vec<&str> = vm
             .pool_devices
@@ -633,6 +658,33 @@ pub(crate) fn parse_device_requests(s: &str) -> Vec<DeviceRequest> {
         .collect()
 }
 
+/// `4`, `4:a100`, `8:a100:nvlink` → a `gpus` request (spec/gpu-vms.md §3).
+pub(crate) fn parse_gpus(s: &str) -> Result<Option<GpuRequest>, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = s.split(':').map(str::trim);
+    let count: u32 = parts
+        .next()
+        .unwrap_or_default()
+        .parse()
+        .map_err(|_| format!("'{s}': give count[:pool][:nvlink], e.g. 4:a100"))?;
+    let mut g = GpuRequest {
+        count,
+        ..Default::default()
+    };
+    for p in parts {
+        match p {
+            "nvlink" => g.nvlink = Some(true),
+            "" => {}
+            pool if g.pool.is_none() => g.pool = Some(pool.to_string()),
+            other => return Err(format!("'{s}': unexpected '{other}'")),
+        }
+    }
+    Ok(Some(g))
+}
+
 pub async fn create(client: &ApiClient) {
     println!("{}", "Create new VM".bold());
     println!("{}", "-".repeat(40));
@@ -643,9 +695,38 @@ pub async fn create(client: &ApiClient) {
         return;
     }
 
-    let vcpu_count: u8 = prompt("vCPU count [1]: ").parse().unwrap_or(1);
+    let gpus = match parse_gpus(&prompt(
+        "GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional): ",
+    )) {
+        Ok(g) => g,
+        Err(e) => return println!("{} {}", "Error:".red(), e),
+    };
+    // With GPUs, an empty answer takes the pool's per-device sizing (0).
+    let (vcpu_default, mem_default, hint) = match gpus {
+        Some(_) => (0, 0, "from the pool"),
+        None => (1, 512, ""),
+    };
+    let vcpu_count: u8 = prompt(&format!(
+        "vCPU count [{}]: ",
+        if gpus.is_some() {
+            hint.to_string()
+        } else {
+            vcpu_default.to_string()
+        }
+    ))
+    .parse()
+    .unwrap_or(vcpu_default);
 
-    let mem_size_mib: u32 = prompt("Memory (MiB) [512]: ").parse().unwrap_or(512);
+    let mem_size_mib: u32 = prompt(&format!(
+        "Memory (MiB) [{}]: ",
+        if gpus.is_some() {
+            hint.to_string()
+        } else {
+            mem_default.to_string()
+        }
+    ))
+    .parse()
+    .unwrap_or(mem_default);
 
     let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
         .to_lowercase()
@@ -987,6 +1068,7 @@ pub async fn create(client: &ApiClient) {
     ));
 
     let request = CreateVmRequest {
+        gpus: gpus.into(),
         name,
         project: client.project(),
         vcpu_count: vcpu_count.into(),
@@ -1189,6 +1271,22 @@ mod tests {
             ("cx7", 1, false)
         );
         assert!(parse_device_requests("").is_empty());
+    }
+
+    #[test]
+    fn gpu_requests_parse() {
+        assert_eq!(parse_gpus("").unwrap(), None);
+        let g = parse_gpus("4").unwrap().unwrap();
+        assert_eq!((g.count, g.pool.clone(), g.nvlink), (4, None, None));
+        let g = parse_gpus("8:a100:nvlink").unwrap().unwrap();
+        assert_eq!(
+            (g.count, g.pool.as_deref(), g.nvlink),
+            (8, Some("a100"), Some(true))
+        );
+        let g = parse_gpus("2:nvlink").unwrap().unwrap();
+        assert_eq!((g.pool.clone(), g.nvlink), (None, Some(true)));
+        assert!(parse_gpus("four").is_err());
+        assert!(parse_gpus("2:a100:t4").is_err());
     }
 
     use super::*;

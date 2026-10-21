@@ -781,6 +781,7 @@ impl VmManager {
         if let Some(p) = vm.status.placement.as_mut() {
             p.page_kib = page;
             p.numa_node = fit.numa_node;
+            p.numa = fit.numa;
             p.cpus = fit.cpus;
             p.pool_devices = fit.pool_devices;
         }
@@ -881,6 +882,7 @@ impl VmManager {
                     page_kib: Self::counted_page_kib(v),
                     numa_node: p.numa_node,
                     cpus: p.cpus.clone(),
+                    numa: p.numa.clone(),
                 })
         }));
         nodes
@@ -2362,6 +2364,7 @@ impl VmManager {
                 at: crate::tenancy::now(),
                 page_kib: None,
                 numa_node: None,
+                numa: Vec::new(),
                 cpus: Vec::new(),
                 pool_devices: Vec::new(),
             });
@@ -2376,6 +2379,7 @@ impl VmManager {
                         at: crate::tenancy::now(),
                         page_kib: Some(choice.page_kib),
                         numa_node: choice.numa_node,
+                        numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
                     });

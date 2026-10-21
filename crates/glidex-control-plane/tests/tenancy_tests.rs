@@ -715,6 +715,7 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
             },
             nodes: vec![],
             prepare: false,
+            per_device: None,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,

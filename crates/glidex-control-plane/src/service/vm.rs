@@ -76,6 +76,7 @@ fn numa_pb(p: m::NumaPolicy) -> pb::NumaPolicy {
         m::NumaPolicy::None => pb::NumaPolicy::NUMA_POLICY_NONE,
         m::NumaPolicy::Preferred => pb::NumaPolicy::NUMA_POLICY_PREFERRED,
         m::NumaPolicy::Strict => pb::NumaPolicy::NUMA_POLICY_STRICT,
+        m::NumaPolicy::Aligned => pb::NumaPolicy::NUMA_POLICY_ALIGNED,
     }
 }
 
@@ -84,7 +85,18 @@ fn numa_of(p: pb::NumaPolicy) -> Option<m::NumaPolicy> {
         pb::NumaPolicy::NUMA_POLICY_NONE => Some(m::NumaPolicy::None),
         pb::NumaPolicy::NUMA_POLICY_PREFERRED => Some(m::NumaPolicy::Preferred),
         pb::NumaPolicy::NUMA_POLICY_STRICT => Some(m::NumaPolicy::Strict),
+        pb::NumaPolicy::NUMA_POLICY_ALIGNED => Some(m::NumaPolicy::Aligned),
         pb::NumaPolicy::NUMA_POLICY_UNSPECIFIED => None,
+    }
+}
+
+fn numa_share_pb(s: &m::NumaShare) -> pb::NumaShare {
+    pb::NumaShare {
+        node: s.node,
+        vcpus: s.vcpus,
+        memory_mib: s.memory_mib,
+        devices: s.devices.clone(),
+        ..Default::default()
     }
 }
 
@@ -217,6 +229,13 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         numa_policy: numa_pb(config.numa_policy).into(),
         cpu_policy: cpu_pb(config.cpu_policy).into(),
         numa_node: vm.status.placement.as_ref().and_then(|p| p.numa_node),
+        numa: vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.numa.iter())
+            .map(numa_share_pb)
+            .collect(),
         cpus: vm
             .status
             .placement
@@ -224,6 +243,7 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
             .map(|p| p.cpus.clone())
             .unwrap_or_default(),
         devices: config.devices.iter().map(device_request_pb).collect(),
+        gpus: config.gpus.as_ref().map(gpu_request_pb).into(),
         pool_devices: vm
             .status
             .placement
@@ -328,6 +348,175 @@ fn resolve_tenant_pools(
         }
         r.pool = tp.from;
         r.tenant_pool = Some(name);
+    }
+    Ok(())
+}
+
+/// What a `gpus` request comes to (spec/gpu-vms.md §3): its pool resolved,
+/// and the sizing the pool gives per device, for fields the VM leaves out.
+struct GpuExpansion {
+    request: m::GpuRequest,
+    vcpus: Option<u32>,
+    memory_mib: Option<u32>,
+    hugepages: Option<bool>,
+    cpu_policy: Option<m::CpuPolicy>,
+}
+
+/// Resolve `gpus` for `project`: the named pool (a cluster pool, or a
+/// tenant pool the project is one of), else the project's only GPU pool;
+/// sizing from the cluster pool's `per_device`.
+fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<GpuExpansion> {
+    let bad = |msg: String| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_config", msg);
+    if g.count == 0 {
+        return Err(bad("gpus: count must be at least 1".into()));
+    }
+    if g.nvlink == Some(true) {
+        return Err(bad(
+            "gpus: NVLink needs a fabric (Fabric Manager, spec/gpu-vms.md §7), which this cluster doesn't have yet"
+                .into(),
+        ));
+    }
+    let cluster = call.manager().pci_pools();
+    let tenant = call
+        .manager()
+        .projects()
+        .get(project)
+        .ok()
+        .flatten()
+        .map(|p| p.tenant_id)
+        .unwrap_or_default();
+    let tenant_pools = call
+        .auth()
+        .tenants
+        .device_pools(&tenant)
+        .unwrap_or_default();
+    // A cluster pool `project` may use.
+    let usable = |p: &crate::config::PciPool| {
+        let with_project: &[(&'static str, Ent)] =
+            &[("project", Ent::Project(project.to_string()))];
+        let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
+        es.project(project);
+        call.allowed_action("usePciPool", e, es, with_project)
+    };
+    // (name asked for, the cluster pool behind it)
+    let (name, base) = match &g.pool {
+        Some(n) => {
+            let base = cluster
+                .iter()
+                .find(|p| p.name == *n)
+                .or_else(|| {
+                    tenant_pools
+                        .iter()
+                        .find(|t| t.name == *n)
+                        .and_then(|t| cluster.iter().find(|p| p.name == t.from))
+                })
+                .ok_or_else(|| bad(format!("gpus: no device pool {n}")))?;
+            (n.clone(), base)
+        }
+        None => {
+            let is_gpu = |p: &crate::config::PciPool| p.class.as_deref() == Some("gpu");
+            let mut found: Vec<(String, &crate::config::PciPool)> = cluster
+                .iter()
+                .filter(|p| is_gpu(p) && usable(p))
+                .map(|p| (p.name.clone(), p))
+                .collect();
+            for t in &tenant_pools {
+                if t.projects.iter().any(|p| p == project)
+                    && let Some(p) = cluster.iter().find(|p| p.name == t.from && is_gpu(p))
+                {
+                    found.push((t.name.clone(), p));
+                }
+            }
+            match found.len() {
+                1 => found.remove(0),
+                0 => return Err(bad("gpus: this project may use no GPU pool".into())),
+                _ => {
+                    let names: Vec<&str> = found.iter().map(|(n, _)| n.as_str()).collect();
+                    return Err(bad(format!(
+                        "gpus: name the pool, one of {}",
+                        names.join(", ")
+                    )));
+                }
+            }
+        }
+    };
+    let per = base.per_device.as_ref();
+    Ok(GpuExpansion {
+        request: m::GpuRequest {
+            count: g.count,
+            pool: name,
+            nvlink: g.nvlink,
+        },
+        vcpus: per.map(|d| d.vcpus * g.count),
+        memory_mib: per.map(|d| d.memory_mib * g.count),
+        hugepages: per.and_then(|d| d.hugepages),
+        cpu_policy: per.and_then(|d| d.cpu_policy),
+    })
+}
+
+fn gpu_request_pb(g: &m::GpuRequest) -> pb::GpuRequest {
+    pb::GpuRequest {
+        count: g.count,
+        pool: Some(g.pool.clone()),
+        nvlink: g.nvlink,
+        ..Default::default()
+    }
+}
+
+/// Fill in what `gpus` gives, for the fields a create or preview left out.
+#[allow(clippy::too_many_arguments)]
+fn apply_gpus(
+    x: &GpuExpansion,
+    devices: &mut Vec<pb::DeviceRequest>,
+    numa: &mut buffa::EnumValue<pb::NumaPolicy>,
+    cpu: &mut buffa::EnumValue<pb::CpuPolicy>,
+    hugepages: &mut Option<bool>,
+    vcpu_count: &mut u32,
+    mem_size_mib: &mut u32,
+) -> ServiceResult<()> {
+    if devices.iter().any(|d| d.pool == x.request.pool) {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_config",
+            format!("gpus and devices both ask pool {}", x.request.pool),
+        ));
+    }
+    devices.push(pb::DeviceRequest {
+        pool: x.request.pool.clone(),
+        count: x.request.count,
+        ..Default::default()
+    });
+    if numa
+        .as_known()
+        .is_none_or(|p| p == pb::NumaPolicy::NUMA_POLICY_UNSPECIFIED)
+    {
+        *numa = pb::NumaPolicy::NUMA_POLICY_ALIGNED.into();
+    }
+    if let Some(c) = x.cpu_policy
+        && cpu
+            .as_known()
+            .is_none_or(|p| p == pb::CpuPolicy::CPU_POLICY_UNSPECIFIED)
+    {
+        *cpu = cpu_pb(c).into();
+    }
+    if hugepages.is_none() {
+        *hugepages = x.hugepages;
+    }
+    if *vcpu_count == 0 {
+        *vcpu_count = x.vcpus.unwrap_or(0);
+    }
+    if *mem_size_mib == 0 {
+        *mem_size_mib = x.memory_mib.unwrap_or(0);
+    }
+    if *vcpu_count == 0 || *mem_size_mib == 0 {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_config",
+            format!(
+                "gpus: give vcpu_count and mem_size_mib, or set per_device on pool {}",
+                x.request.pool
+            ),
+        ));
     }
     Ok(())
 }
@@ -507,9 +696,21 @@ pub async fn vm_events(
 /// VM in the project may see where it would fit.
 pub async fn preview_placement(
     call: &Call,
-    req: pb::PreviewPlacementRequest,
+    mut req: pb::PreviewPlacementRequest,
 ) -> ServiceResult<pb::PreviewPlacementResponse> {
     let project = call.target_project(req.project.as_deref())?;
+    if let Some(g) = req.gpus.as_option() {
+        let x = expand_gpus(call, &project, g)?;
+        apply_gpus(
+            &x,
+            &mut req.devices,
+            &mut req.numa_policy,
+            &mut req.cpu_policy,
+            &mut req.hugepages,
+            &mut req.vcpu_count,
+            &mut req.mem_size_mib,
+        )?;
+    }
     call.require_action(
         "createVm",
         Ent::Project(project.clone()),
@@ -570,6 +771,7 @@ pub async fn preview_placement(
                 numa_node: f.numa_node,
                 cpus: f.cpus,
                 pool_devices: f.pool_devices.iter().map(pool_device_pb).collect(),
+                numa: f.numa.iter().map(numa_share_pb).collect(),
                 ..Default::default()
             })
             .collect(),
@@ -590,9 +792,25 @@ fn names_host_path(req: &pb::CreateVmRequest) -> bool {
         || req.initrd_path.is_some()
 }
 
-pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
+pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
     let project = call.target_project(req.project.as_deref())?;
     call.set_project(&project);
+    let gpus = match req.gpus.as_option() {
+        Some(g) => {
+            let x = expand_gpus(call, &project, g)?;
+            apply_gpus(
+                &x,
+                &mut req.devices,
+                &mut req.numa_policy,
+                &mut req.cpu_policy,
+                &mut req.hugepages,
+                &mut req.vcpu_count,
+                &mut req.mem_size_mib,
+            )?;
+            Some(x.request)
+        }
+        None => None,
+    };
     let pent = Ent::Project(project.clone());
     let pes = project_entities(&project);
     call.require(pent.clone(), pes.clone())?;
@@ -672,6 +890,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         device_nodes,
     };
     let config = VmConfig {
+        gpus,
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
         mem_size_mib: req.mem_size_mib,
         kernel_image_path: m::expand_tilde(req.kernel_image_path),
@@ -693,6 +912,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         cpu_policy: cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
         devices: pool_requests,
         host_numa_node: None,
+        host_numa: Vec::new(),
         vcpu_pins: Vec::new(),
         firmware_image: None,
         kernel_image: None,
