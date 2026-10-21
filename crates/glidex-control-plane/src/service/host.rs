@@ -705,6 +705,7 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                     .into(),
                 physfn: d.physfn.clone(),
                 assignable: d.assignable,
+                fabric: d.fabric,
                 ready: d.ready,
                 not_ready: d.not_ready.clone(),
                 aer: d

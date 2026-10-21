@@ -250,7 +250,10 @@ FM API, and answers the node over vsock with JSON:
 | `status` | FM state, driver and FM versions, NVSwitch health |
 | `partitions` | supported partitions: id, GPU physical IDs, PCI addresses as FM sees them, active or not |
 | `activate {id}` / `deactivate {id}` | as FM's API |
+| `set_active {ids}` | tell FM which partitions are active after it or fabricd restarts (FM's "set activated partitions") |
 | `events` | NVLink and NVSwitch errors (stream) |
+
+How it is built, and why, is §8.3.
 
 Inside the service VM, the GPUs aren't there. FM names them by physical
 module ID, and the node maps those to host PCI addresses from the
@@ -261,11 +264,133 @@ GPU identity in shared mode.)
 
 ### 8.2 FM on the host instead
 
-For a host that already runs FM, like prism1, `fabric.where: host` uses
-the host's FM in `FABRIC_MODE=1` through `glidex-fabricd` running on the
-host (same ops, Unix socket instead of vsock). glidex switching an
-existing FM from mode 0 to 1 requires stopping it, so it is an operator
-step, not done by the installer.
+A node's fabric has a **manager**, `service-vm` (§8) or `host`. Both
+answer the same `glidex-fabricd` ops (§8.1), so the scheduler (§9) and
+the VM controller don't care which.
+
+| | `service-vm` | `host` |
+|---|---|---|
+| NVSwitches | on `vfio-pci`, passed to the service VM (`--vfio-devices`, §10) | on the host's `nvidia-nvswitch` driver |
+| NVIDIA software | in the service VM image: switch driver, FM, `glidex-fabricd` | on the host: the driver's switch module, `nvidia-fabricmanager` (the operator's packages) |
+| FM mode | `FABRIC_MODE=1`, set in the image | `FABRIC_MODE=1` in the host's `fabricmanager.cfg`, set by the operator |
+| `glidex-fabricd` | in the service VM, on vsock | on the host as `glidex-fabricd.service` (root), on `/run/glidex-fabric/fabric.sock` (`root:glidex 0660`), talking to FM's command socket (`FM_CMD_UNIX_DOMAIN_SOCKET`, or `127.0.0.1:6666`) |
+| Versions | FM matches the image's switch driver; tenant VMs bring their own GPU driver | FM matches the host's driver package, and the host upgrade moves both |
+| The host kernel | stock | carries NVIDIA's switch module |
+
+- **Choosing.** The operator chooses per node: `glidex-install
+  --fabric host|service-vm|off`, saved in install.conf and reported in
+  node status as `fabric.manager`.
+  - `host` installs and enables `glidex-fabricd.service`, but **never
+    changes FM's mode or restarts it**. It checks
+    `fabricmanager.cfg`, and while it says `FABRIC_MODE=0` the node
+    reports `FabricReady=False` ("host Fabric Manager runs in bare-metal
+    mode").
+  - `service-vm` needs the NVSwitches in `--vfio-devices`, and refuses
+    while the host's `nvidia-fabricmanager` runs (both can't own the
+    switches).
+- **The same partitions either way.** In both, glidex activates a
+  partition before a VM starts and deactivates it after. Only who
+  answers changes.
+- **Another hypervisor on the host** (prism1's OpenNebula) is where
+  `host` needs care. Its VMs share the same FM. In shared mode, a GPU
+  may need an activated partition to work at all (§13 question 1). If
+  it does, switching the host FM to mode 1 would leave the other
+  hypervisor's GPU VMs without one, since it doesn't activate
+  partitions. So on such a host, `host` is for when glidex owns the
+  board's GPUs, or after question 1 is answered.
+
+### 8.3 The Fabric Manager interface
+
+glidex talks to Fabric Manager through a library and a daemon of its own,
+used the same way for both managers (§8, §8.2). The control plane never
+links NVIDIA code or reaches FM's command socket itself.
+
+#### Two parts
+
+| Part | What it is | Who uses it |
+|---|---|---|
+| `glidex-fabric` (crate) | The protocol: the ops of §8.1 as request and response types, a version handshake, a client, and a `FabricBackend` trait. Plain Rust, no NVIDIA code. | The control plane, gxctl (through the control plane's API), tests |
+| `glidex-fabricd` (binary) | A `FabricBackend` over NVIDIA's FM API (`libnvfm`, `nv_fm_agent.h`), and a server for the protocol | Runs in the service VM (vsock) or on the host (`/run/glidex-fabric/fabric.sock`, `root:glidex 0660`) |
+
+```rust
+pub trait FabricBackend: Send + Sync {
+    fn status(&self) -> Result<FabricStatus, FabricError>;
+    fn partitions(&self) -> Result<Vec<Partition>, FabricError>;
+    fn activate(&self, id: u32) -> Result<(), FabricError>;
+    fn deactivate(&self, id: u32) -> Result<(), FabricError>;
+    /// After a restart: these, and only these, are active.
+    fn set_active(&self, ids: &[u32]) -> Result<(), FabricError>;
+}
+```
+
+#### `libnvfm`, at run time
+
+- **Loaded at run time.** `glidex-fabricd` `dlopen`s `libnvfm.so.1` (from
+  the `nvidia-fabricmanager` package) and resolves the few functions it
+  uses: init and shutdown, connect, the partitions list, activate,
+  deactivate, set activated. glidex builds and CI need no NVIDIA SDK, and
+  glidex never redistributes the library.
+- **Missing library.** fabricd answers `status: unavailable` ("no Fabric
+  Manager library"), and the node reports `FabricReady=False`.
+- **The FFI is one small module.** It covers the C structs of the
+  partition list, the error codes, and a check of the library's API
+  version against the one the module was written for; a mismatch is
+  refused, not guessed at. The rest of fabricd is safe Rust.
+- **Connecting.** fabricd connects to FM on its command socket:
+  `FM_CMD_UNIX_DOMAIN_SOCKET` when FM sets one, else
+  `127.0.0.1:FM_CMD_PORT_NUMBER` (6666 by default). It runs as root, as
+  the socket requires.
+
+#### The protocol
+
+- **Like glidex-netd's:** JSON lines, a hello with the protocol version,
+  one request at a time, and a log of each changing op.
+- **Idempotent.** Activating an active partition, or deactivating an
+  inactive one, succeeds.
+- **The control plane is the source of truth.** It knows which VMs hold
+  which partitions (`placement.fabric_partition`). After FM or fabricd
+  restarts, the node's controller sends `set_active` with the
+  partitions its running VMs hold, so FM's own state file doesn't
+  decide.
+- **Errors keep FM's code and text** (`FM_ST_IN_USE`, say), so the VM's
+  `FabricPartition=False` condition says what FM said.
+
+#### Where it runs
+
+- **Service VM** (§8): fabricd is in the image, a systemd unit there,
+  serving vsock. The node's controller is the only client.
+- **Host** (§8.2): `glidex-fabricd.service`, installed by `glidex-install
+  --fabric host`. `Requires=` and `After=` `nvidia-fabricmanager.service`,
+  and never restarts or reconfigures it. If FM isn't running, it answers
+  `unavailable`.
+- **gxctl and the UI never reach it directly.** They use the control
+  plane's API, which proxies the read-only ops:
+  - `GET /nodes/{id}/fabric` (`readHostTopology`) gives status and
+    partitions; `gxctl node fabric <node>`.
+  - Activating and deactivating by hand isn't offered: the VM
+    controller does it as VMs start and stop. Taking a partition away
+    from a running VM is what that would risk.
+
+#### Tests without a board
+
+- `glidex-fabric` ships a `FakeFabric` backend with a fixed partition
+  table (an HGX A100's 8 GPUs: partitions of 8, 4, 2 and 1). It records
+  the calls and can fail on cue.
+- The scheduler (§9 step 1) and the VM controller (steps 2–4: activate
+  before start, deactivate after exit, `set_active` on node start) are
+  tested against it, as netd is with a fake sysfs.
+- The FFI module is tested only on hardware (GV5's prism1 test).
+
+#### Not done this way
+
+- **`libnvfm` in the control plane:** every glidex host, GPU or not,
+  would depend on a proprietary library. And the `glidex` user would
+  need root's FM socket.
+- **Driving `fmpm`** (NVIDIA's sample CLI) and parsing its text: it isn't
+  a stable interface, and not every package ships it.
+- **A second fabric later** (NVLink Subnet Manager on HGX H100 and
+  newer, or another vendor's) is another `FabricBackend`, behind the same
+  protocol.
 
 ## 9. Partitions in the VM's life
 
@@ -324,8 +449,9 @@ glidex-install --no-vfio-devices                    # remove what it wrote
   reads or changes it; tenants can't see or reach it. The vsock path is
   host-local, between the node's control plane and its own system VM.
 - **NVSwitches** are never offered to tenant pools: class `0x0680` from
-  NVIDIA is excluded from `assignable`. A node with a fabric marks them
-  `held by: system/fabric-manager`.
+  NVIDIA is excluded from `assignable`, and the topology marks them
+  `fabric` (shown on the host page and in `gxctl node topology`). A
+  node with a fabric marks them `held by: system/fabric-manager`.
 - **FM's command port.** With FM on the host (§8.2), it stays bound to
   `127.0.0.1` or a Unix socket.
 - **`--vfio-devices`** writes root-owned files only, and refuses devices
@@ -339,7 +465,7 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 | **GV2** GPU requests and sizing | `gpus` in the API, gxctl and UI; pool `per_device`; the preview shows the split | API and UI tests; a `--gpus 2` VM on prism1 gets 2 GPUs on one node and its sizing. |
 | **GV3** `--vfio-devices` and `--sriov` | the boot unit, install.conf, uninstall | Installer tests with a fake sysfs; prism1 reboot test (the user's OK: prism1 also runs OpenNebula). |
 | **GV4** System VMs | the system project, node-pinned VMs, boot ordering, vsock, `FabricReady` plumbing (no FM yet) | A test system VM that answers `status` over vsock. |
-| **GV5** Fabric Manager | the fabric image, `glidex-fabricd`, partitions in node status, NVLink scheduling, activate/deactivate in the VM controller | On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
+| **GV5** Fabric Manager | the `glidex-fabric` crate (protocol, client, `FabricBackend`, `FakeFabric`) and `glidex-fabricd` (`libnvfm` loaded at run time) (§8.3); both managers (§8, §8.2) and `--fabric`; the fabric image; partitions in node status and `GET /nodes/{id}/fabric`; NVLink scheduling; activate, deactivate and `set_active` in the VM controller | Scheduler and controller tests against `FakeFabric`. On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
 
 ## 13. Open questions
 
@@ -355,8 +481,25 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 5. prism1 today: should FM move into a service VM, or should the host
    FM switch to shared mode (§8.2)? Either stops the host FM, which
    OpenNebula's VMs share (they get no NVLink now, §2.2).
+6. Is `libnvfm`'s API stable across driver branches (575, 580, …), or
+   does fabricd need a table of versions it knows (§8.3)?
+7. Which FM releases offer the Unix command socket
+   (`FM_CMD_UNIX_DOMAIN_SOCKET`), so fabricd on the host needs no TCP
+   port (§8.3)?
+
 
 ## 14. Implementation notes
+
+- **Before GV5:**
+  - **The topology marks NVSwitches.** NVIDIA vendor and class `0x0680`
+    set `PciFunction.fabric` (proto `fabric`, 19). The host page's
+    Topology card lists them under "NVLink fabric" with driver, IOMMU
+    group and NUMA node, and `gxctl node topology` prints an `nvlink
+    fabric` section.
+  - **`vfio::group_members` always keeps the device asked for.**
+    `0x0680` is a bridge class, and the members skipped every `0x06…`
+    function, so preparing an NVSwitch bound nothing. Other `0x06…`
+    functions of a group still stay with the host.
 
 - **GV2** (§3, §6):
   - **Pool sizing.** Pools take `per_device {vcpus, memory_mib,

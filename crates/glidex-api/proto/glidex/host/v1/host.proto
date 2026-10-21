@@ -513,6 +513,9 @@ message PciFunction {
   repeated string not_ready = 17 [json_name = "not_ready"];
   // AER error counts since boot (spec/host-topology.md §5.4).
   AerCounts aer = 18;
+  // Part of the host's NVLink fabric (an NVSwitch): never a tenant VM's;
+  // Fabric Manager owns it (spec/gpu-vms.md §7).
+  bool fabric = 19;
 }
 
 message AerCounts {

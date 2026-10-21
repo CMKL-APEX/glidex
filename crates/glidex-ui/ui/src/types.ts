@@ -2186,6 +2186,8 @@ export interface PciFunction {
   sriov?: { total_vfs?: number; enabled_vfs?: number; vf_driver?: string; ready_vfs?: number };
   physfn?: string;
   assignable?: boolean;
+  /** Part of the host's NVLink fabric (an NVSwitch): shown, never given to a VM (spec/gpu-vms.md §7). */
+  fabric?: boolean;
   ready?: boolean;
   not_ready?: string[];
   aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };

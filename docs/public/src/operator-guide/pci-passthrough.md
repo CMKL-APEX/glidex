@@ -332,6 +332,15 @@ from the pool's `per_device`. Pools, their grants, quotas, tenant
 pools, GPU requests and metering are in
 [Device pools](host-resources.md#device-pools).
 
+## NVLink fabric (NVSwitch)
+
+On an NVSwitch board (HGX A100, say), the node page's **Topology** card
+lists the NVSwitches under **NVLink fabric**: their driver, IOMMU group
+and NUMA node. `gxctl node topology <node>` prints them too. They are
+never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
+a service VM (spec/gpu-vms.md). Today glidex VMs on such a board get
+their GPUs without NVLink between them.
+
 ## SR-IOV virtual functions
 
 A NIC (or GPU) with SR-IOV can be split into virtual functions (VFs),
