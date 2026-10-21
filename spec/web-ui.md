@@ -185,6 +185,8 @@ ui/src/
 | `/hosts/:id` | `HostDetail` (spec/host-page.md W1, clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
 | `/cluster/nodes/:id` | Redirects to `/hosts/:id` |
 | `/device` | `Device`: approve or deny a directory's device login (`?directory=…&code=…`, spec/tenancy.md D54) |
+| `/directories` | `Directories` (shown with `listDirectories`, menu **Hosting**): the directories this host serves; **New directory** shows the first administrator's invitation link once; delete an unused one (spec/tenancy.md D59) |
+| `/login/:directory` | That directory's login page while signed out (`/auth/methods?directory=…`); signed in, `/` (D61) |
 | `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 

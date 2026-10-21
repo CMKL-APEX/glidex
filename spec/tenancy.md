@@ -1840,7 +1840,7 @@ Task 5, SSH keys from Google:
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
 **T6** (directories and clusters apart) is in progress: tasks 1–3 of §18,
-and tasks 4a–4c (4c's server side).
+and task 4 (4a–4d).
 
 Task 2, issuer and keys (also workload-identity.md WI0's issuer):
 
@@ -1889,3 +1889,11 @@ Task 4c, passkey-first invitations and login routing (server side):
 | D60 | An invitation whose connector is `passkey` (`auth::passkeys::PROVIDER`): `/auth/invitation` answers `connector_kind: passkey`; `POST /auth/invitation/passkey/start {invitation}` gives creation options for a user still to be made (`Purpose::Invite`, the email as its name); `…/finish {invitation, credential}` checks the credential, takes the invitation by its link alone (`InvitationStore::take_by_link`), makes the user in the invitation's tenant's directory with that passkey as its identity, gives the invitation's role (and `role.directory-admin` for an owner tenant's administrator), and answers as a passkey login (session, `mfa`) |
 | D61 | `LoginService.Discover` takes `directory` and answers it: the directory asked for if it exists, else the one whose single enabled connector takes the email's domain (`allowed_domains`, `domains`), else `local`; its connectors only. `GET /auth/methods?directory=<id>` is that directory's login page (`pam` only for `local`, D23); an unknown id answers as `local` does |
 | Tests | `passkey_tests.rs::a_new_directorys_first_admin_signs_in_with_a_passkey`; `connector_tests.rs::logins_find_their_directory_without_listing_them` |
+
+Task 4d, the web UI and docs:
+
+| Spec | Code |
+|---|---|
+| UI | `pages/Directories.tsx` (`/directories`, menu **Hosting**, with `listDirectories`; create with `manageDirectories`, the invitation link shown once; delete); `pages/Invite.tsx` creates the invitee's passkey for a passkey invitation (`api.acceptPasskeyInvitation`); `/login/<directory>` loads that directory's methods (`session.tsx`), and the host's login page has **Your email** (`/auth/discover`) sending an organization's people to their directory's page |
+| Docs | the operator guide's "Hosting other organizations' directories"; web-ui.md routes |
+| UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its login page |

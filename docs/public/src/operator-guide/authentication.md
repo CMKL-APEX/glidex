@@ -780,6 +780,39 @@ them a way back in by linking another sign-in method to their user over the API
 local account; they then sign in with it and add a new passkey.
 <!-- TODO(verify): the provider and subject a PAM or OIDC identity takes in POST /users/{id}/identities (valid providers: pam, unix, oidc:<issuer>; connector sign-ins can't be linked this way). Name the exact body before documenting it further. -->
 
+## Hosting other organizations' directories
+
+A host can keep the users and sign-in of other organizations, each in a
+directory of its own: its people, teams, tenants, sign-in providers,
+tokens and signing keys, with an issuer of its own at
+`<web UI>/d/<directory>`. Nobody in one directory sees or touches
+another's records, and you, the host's operator, see only that a
+directory exists, not what is in it.
+
+Create one on the web UI's **Hosting** page, or with gxctl:
+
+```bash
+gxctl directory create acme --name "Acme Corp" --admin-email it@acme.example
+```
+
+It prints an invitation link, once. Send it to that person: they open
+it, create a passkey on their device, and are the directory's first
+administrator. From there they add their organization's sign-in
+provider (OIDC, Google, JumpCloud), invite their colleagues and make
+tenants, as you do in yours.
+
+Their people sign in at `https://<web UI>/login/acme`, or on the plain
+login page by typing their email: once their sign-in provider lists
+their email domain (`allowed_domains`), the page sends them to their
+directory's sign-in. The login page never lists the directories a host
+serves.
+
+Their tenants use this host's cluster only when you admit them, as any
+tenant (`gxctl admission set`). `gxctl directory delete acme` removes a
+directory nobody uses yet; one with users, sign-in providers or projects
+stays until its administrators remove them. The host's own directory,
+`local`, stays.
+
 ## Workload federation (CI without stored tokens)
 
 A CI job usually needs a service account's token to deploy. With

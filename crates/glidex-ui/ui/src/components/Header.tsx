@@ -56,6 +56,7 @@ export default function Header() {
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
     { to: "/cluster", label: "Cluster", show: host.readCluster },
     { to: "/admissions", label: "Admissions", show: host.listAdmissions },
+    { to: "/directories", label: "Hosting", show: host.listDirectories },
   ].filter((n) => n.show);
 
   const who = me.user?.display_name ?? me.token?.name ?? (me.display_name || "unknown");

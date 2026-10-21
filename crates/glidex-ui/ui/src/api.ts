@@ -1,4 +1,5 @@
 import type {
+  LoginConnector,
   SyncStatus,
   ScimToken,
   ApiToken,
@@ -110,7 +111,7 @@ import { CredentialService, DatastoreService, DiskService, ImageService } from "
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
-import { AdmissionService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import { AdmissionService, DirectoryService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
 import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
@@ -471,7 +472,14 @@ export async function healthCheck(): Promise<HealthResponse> {
   return request("GET", "/health", undefined, { quiet401: true });
 }
 
-export const authMethods = () => request<AuthMethods>("GET", "/auth/methods", undefined, { quiet401: true });
+/** What the login page offers: the host's own directory's, or `directory`'s
+ * for its `/login/<directory>` page (spec/tenancy.md D61). */
+export const authMethods = (directory?: string) =>
+  request<AuthMethods>("GET", `/auth/methods${directory ? `?directory=${encodeURIComponent(directory)}` : ""}`, undefined, { quiet401: true });
+
+/** Which directory an email signs in to (D61): `{directory, connectors}`. */
+export const discoverLogin = (hint: string) =>
+  request<{ directory: string; connectors?: LoginConnector[] }>("POST", "/auth/discover", { hint }, { quiet401: true });
 
 /** REST, not `SystemService.WhoAmI`: every cookie-authenticated RPC needs
  * the CSRF value (spec/grpc.md §6), and this is where the session learns it
@@ -558,6 +566,39 @@ export async function addPasskey(name: string): Promise<void> {
     type: cred.type,
     response: { clientDataJSON: toB64url(r.clientDataJSON), attestationObject: toB64url(r.attestationObject) },
   });
+}
+
+/** A passkey invitation (spec/tenancy.md D60): the invitee's first
+ * passkey, which signs them in. */
+export async function acceptPasskeyInvitation(invitation: string): Promise<WhoAmI> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/invitation/passkey/start", { invitation }, { quiet401: true });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.create({
+    publicKey: {
+      ...pk,
+      challenge: fromB64url(pk.challenge),
+      user: { ...pk.user, id: fromB64url(pk.user.id) },
+      excludeCredentials: [],
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was made");
+  const r = cred.response as AuthenticatorAttestationResponse;
+  const w = await request<WhoAmI>(
+    "POST",
+    "/auth/invitation/passkey/finish",
+    {
+      invitation,
+      credential: {
+        id: cred.id,
+        rawId: toB64url(cred.rawId),
+        type: cred.type,
+        response: { clientDataJSON: toB64url(r.clientDataJSON), attestationObject: toB64url(r.attestationObject) },
+      },
+    },
+    { quiet401: true },
+  );
+  setCsrf(w.csrf);
+  return w;
 }
 
 export interface Passkey {
@@ -1345,3 +1386,17 @@ export const inspectDeviceLogin = (directory: string, user_code: string) =>
 /** Approve or deny a device login. */
 export const answerDeviceLogin = (directory: string, user_code: string, approve: boolean) =>
   request<{ approved: boolean }>("POST", `/d/${encodeURIComponent(directory)}/device/answer`, { user_code, approve });
+
+// ---- directories this host serves (spec/tenancy.md D59) ------------------------
+
+export interface HostedDirectory {
+  id: string;
+  name: string;
+  issuer: string;
+  created_at?: string;
+}
+export const listDirectories = () => rpc(DirectoryService.method.listDirectories).then((r) => (r.directories ?? []) as HostedDirectory[]);
+/** A directory and its first administrator's invitation link (shown once). */
+export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string }) =>
+  rpc(DirectoryService.method.createDirectory, req).then((r) => ({ directory: r.directory as HostedDirectory, link: r.invitation_link ?? "" }));
+export const deleteDirectory = (id: string) => rpc(DirectoryService.method.deleteDirectory, { id }).then(none);
