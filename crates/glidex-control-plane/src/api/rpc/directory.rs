@@ -2,13 +2,14 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::{directory, federations, invitations};
+use crate::service::{directory, federations, invitations, signing_keys};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::directory::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = ConnectorServiceExt::register(Svc::new(app), router);
     let router = FederationServiceExt::register(Svc::new(app), router);
+    let router = SigningKeyServiceExt::register(Svc::new(app), router);
     InvitationServiceExt::register(Svc::new(app), router)
 }
 
@@ -197,5 +198,24 @@ impl FederationService for Svc {
         req: ServiceRequest<'_, DeleteFederationRequest>,
     ) -> ServiceResult<DeleteFederationResponse> {
         op!(self, ctx, req, federations::delete_federation)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl SigningKeyService for Svc {
+    async fn list_signing_keys(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListSigningKeysRequest>,
+    ) -> ServiceResult<ListSigningKeysResponse> {
+        op!(self, ctx, req, signing_keys::list_signing_keys)
+    }
+
+    async fn rotate_signing_key(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RotateSigningKeyRequest>,
+    ) -> ServiceResult<RotateSigningKeyResponse> {
+        op!(self, ctx, req, signing_keys::rotate_signing_key)
     }
 }

@@ -129,6 +129,11 @@ pub struct AuthConfig {
     /// systemd credential `secrets-kek` wins when present. The control
     /// plane defaults it to `secrets.kek` beside its database.
     pub secrets_key: Option<PathBuf>,
+    /// Where the directories this host serves issue tokens from:
+    /// `https://host[:port][/path]`, each directory's issuer being
+    /// `<base>/d/<directory>` (spec/tenancy.md D52). Unset: the web UI's
+    /// published address (host-page.md W3).
+    pub issuer_base: Option<String>,
     pub federation: FederationConfig,
 }
 
@@ -142,6 +147,25 @@ pub struct FederationConfig {
     /// a tenant administrator can't make the control plane fetch from
     /// addresses that aren't public.
     pub allow_private_issuers: bool,
+}
+
+/// `auth.issuer_base` as it is used: `https://host[:port][/path]`
+/// without a trailing `/`; `None` when it isn't one.
+pub fn issuer_base(b: &str) -> Option<String> {
+    let u: axum::http::Uri = b.parse().ok()?;
+    let a = u.authority()?;
+    (u.scheme_str() == Some("https")
+        && !a.as_str().contains('@')
+        && !a.host().is_empty()
+        && u.query().is_none()
+        && !b.contains('#'))
+    .then(|| {
+        format!(
+            "https://{}{}",
+            a.as_str().to_ascii_lowercase(),
+            u.path().trim_end_matches('/')
+        )
+    })
 }
 
 impl AuthConfig {
@@ -684,6 +708,10 @@ impl Config {
         }
         self.metering.check()?;
         self.cluster.check()?;
+        if let Some(b) = &self.auth.issuer_base {
+            issuer_base(b)
+                .ok_or("auth.issuer_base must be https://host[:port][/path], with no query")?;
+        }
         self.check_listeners()
     }
 
@@ -724,6 +752,27 @@ pub fn credential(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn issuer_bases() {
+        assert_eq!(
+            issuer_base("https://GLIDEX.example.org/").as_deref(),
+            Some("https://glidex.example.org")
+        );
+        assert_eq!(
+            issuer_base("https://lb.example.org:8443/id/").as_deref(),
+            Some("https://lb.example.org:8443/id")
+        );
+        for bad in [
+            "http://glidex.example.org",
+            "https://x.example/?a=1",
+            "https://u@x.example",
+            "glidex.example.org",
+            "https://x.example/#f",
+        ] {
+            assert_eq!(issuer_base(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn pools_are_checked_and_match_by_ids_class_and_address() {

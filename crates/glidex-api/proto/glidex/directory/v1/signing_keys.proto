@@ -1,0 +1,56 @@
+// A directory's token signing keys (spec/tenancy.md D52, D53): ES256,
+// rotated every 30 days, a retired key published until the tokens it
+// signed have expired. Only public facts are shown; the private halves
+// never leave the directory.
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+service SigningKeyService {
+  // The directory's keys and its issuer URL.
+  rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readSigningKeys"
+      kind: KIND_READ
+      rest: "GET /directory/keys"
+    };
+  }
+  // A new active key now; the one before it is retired, and stays
+  // published until every token it signed has expired.
+  rpc RotateSigningKey(RotateSigningKeyRequest) returns (RotateSigningKeyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "rotateSigningKey"
+      kind: KIND_WRITE
+      rest: "POST /directory/keys/rotate"
+    };
+  }
+}
+
+message SigningKey {
+  // `<directory>:<n>`.
+  string kid = 1;
+  string alg = 2;
+  google.protobuf.Timestamp created_at = 3 [json_name = "created_at"];
+  // Unset for the active key.
+  google.protobuf.Timestamp retired_at = 4 [json_name = "retired_at"];
+  // When a retired key leaves the JWKS.
+  google.protobuf.Timestamp published_until = 5 [json_name = "published_until"];
+  bool active = 6;
+}
+
+message ListSigningKeysRequest {}
+message ListSigningKeysResponse {
+  repeated SigningKey keys = 1;
+  // The directory's issuer URL; empty when the host has no public address.
+  string issuer = 2;
+  // The issuer is fixed: the directory has issued a token (D52).
+  bool issuer_fixed = 3 [json_name = "issuer_fixed"];
+}
+
+message RotateSigningKeyRequest {}
+message RotateSigningKeyResponse {
+  SigningKey key = 1;
+}

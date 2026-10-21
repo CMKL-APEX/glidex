@@ -1536,8 +1536,8 @@ T7 gets its own task list when it starts; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T5 are implemented (T5: kind `jwt`); T2b, T4b, T6 and T7 are not
-started. What
+T0–T5 are implemented (T5: kind `jwt`); T6 is in progress (task 2
+below); T2b, T4b, T6b and T7 are not started. What
 follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1825,3 +1825,14 @@ Task 5, SSH keys from Google:
 | "My SSH keys" | `UserService.GetMySshKeys` answers them, `source: connector:<id>`, when the host has no local login for the user (a local account's keys come first, `source: local`); the credential form says where they came from |
 | Tests | `google_directory.rs::only_public_keys_are_kept`; `connector_tests.rs::a_google_pull_reads_the_directory_api` |
 
+**T6** (directories and clusters apart) is in progress: tasks 1–2 of §18.
+
+Task 2, issuer and keys (also workload-identity.md WI0's issuer):
+
+| Spec | Code |
+|---|---|
+| D52 | `Directory.issuer`, fixed by `TenantStore::set_issuer` when the directory first signs (`api::issuer::sign`); until then `api::issuer::issuer_url`: `auth.issuer_base` (`config::issuer_base`), else the web UI's published address (`VmManager::ui_url`), plus `/d/<directory>`; glidex-ui serves `/d/…` from the control plane, without its own `Cache-Control` |
+| D53 | `directory/issuer.rs`: `signing_keys` (directory scope), ES256 on P-256 (`p256`), the private scalar sealed with the directory's data key (`secrets::seal`, field `signing-key`); `rotate_signing_key`, `maintain_signing_keys` (a key when there is none, a new one after 30 days, retired keys deleted 13 h after retirement), `jwks`, `sign_jwt`; `issuer::spawn` runs the upkeep every 10 minutes on the leader or a standalone host |
+| Discovery | `GET /d/{dir}/.well-known/openid-configuration` and `GET /d/{dir}/jwks.json`, public, `Cache-Control: public, max-age=300`; `404` for another directory, `503 no_issuer` without a public address |
+| API | `SigningKeyService.ListSigningKeys` (`readSigningKeys`, `GET /directory/keys`) and `RotateSigningKey` (`rotateSigningKey`, step-up, in `directory.keys` of `role.directory-admin`; `POST /directory/keys/rotate`); gxctl `directory keys [rotate]` |
+| Tests | `issuer.rs` unit tests (a token verified with `jsonwebtoken` against the JWKS, rotation and retention, separate directories); `connector_tests.rs::a_directory_publishes_its_issuer_and_keys` |

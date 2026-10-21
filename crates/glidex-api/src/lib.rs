@@ -148,6 +148,7 @@ mod tests {
                 "glidex.directory.v1.ConnectorService",
                 "glidex.directory.v1.FederationService",
                 "glidex.directory.v1.InvitationService",
+                "glidex.directory.v1.SigningKeyService",
                 "glidex.network.v1.NetworkService",
                 "glidex.network.v1.NetworkShareService",
                 "glidex.network.v1.RouterService",

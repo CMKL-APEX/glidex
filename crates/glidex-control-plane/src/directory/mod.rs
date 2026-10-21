@@ -15,6 +15,7 @@ pub mod exchange;
 pub mod federation;
 pub mod google_directory;
 pub mod invitations;
+pub mod issuer;
 pub mod oidc;
 pub mod presets;
 pub mod scim;

@@ -16,6 +16,7 @@ mod exchange;
 mod federations;
 pub mod gate;
 mod invitations;
+pub mod issuer;
 mod net;
 pub(crate) mod nodes;
 mod passkeys;
@@ -829,6 +830,14 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     // Workload federation (spec/tenancy.md §9): a CI job's JWT for a
     // short-lived token; the JWT is the credential.
     .add("POST", "/auth/exchange", PUBLIC, post(exchange::exchange))
+    // A directory as an issuer (spec/tenancy.md D52, D53).
+    .add(
+        "GET",
+        "/d/{dir}/.well-known/openid-configuration",
+        PUBLIC,
+        get(issuer::discovery),
+    )
+    .add("GET", "/d/{dir}/jwks.json", PUBLIC, get(issuer::jwks))
     // Passkeys (spec/passkeys.md): the browser's ceremonies.
     .add(
         "POST",
@@ -1135,6 +1144,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/invitations/{id}",
         "manageTenantInvitations",
         delete(invitations::revoke),
+    )
+    // ---- the directory's signing keys (spec/tenancy.md D53)
+    .add(
+        "GET",
+        "/directory/keys",
+        "readSigningKeys",
+        get(issuer::list_keys),
+    )
+    .add(
+        "POST",
+        "/directory/keys/rotate",
+        "rotateSigningKey",
+        post(issuer::rotate_key),
     )
     // ---- directory connectors (spec/tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
@@ -2360,6 +2382,8 @@ mod tests {
                 "/auth/oidc/device/poll",
                 "/auth/discover",
                 "/auth/exchange",
+                "/d/{dir}/.well-known/openid-configuration",
+                "/d/{dir}/jwks.json",
                 "/auth/passkeys/login/start",
                 "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",

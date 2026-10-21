@@ -456,6 +456,8 @@ same ids and names.
 | `InvitationService` | `ListInvitations` | `GET /tenants/{id}/invitations` |
 |  | `CreateInvitation` | `POST /tenants/{id}/invitations` |
 |  | `RevokeInvitation` | `DELETE /invitations/{id}` |
+| `SigningKeyService` | `ListSigningKeys` | `GET /directory/keys` |
+|  | `RotateSigningKey` | `POST /directory/keys/rotate` |
 
 ### `glidex.cluster.v1`
 
