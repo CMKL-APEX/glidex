@@ -261,8 +261,11 @@ impl<S: Schema> ClusterNode<S> {
             .collect()
     }
 
+    /// Stops Raft; the store refuses writes from then on, and is closed
+    /// once the last handle to it is dropped.
     pub async fn shutdown(&self) {
         let _ = self.raft.shutdown().await;
+        self.db.set_stopped();
     }
 
     fn not_leader(&self) -> StoreError {

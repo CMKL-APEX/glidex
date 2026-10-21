@@ -83,6 +83,10 @@ pub trait Schema:
     /// into a new one and compared (the write-set invariant).
     const CHECK_ENV: &'static str;
 
+    /// The largest write set the store accepts as one Raft entry, in
+    /// bytes of its JSON encoding.
+    const MAX_WRITE_SET_BYTES: usize = MAX_WRITE_SET_BYTES;
+
     fn table_name(t: Self::Table) -> &'static str;
     fn table_id(t: Self::Table) -> u16;
     fn table_from_id(id: u16) -> Option<Self::Table>;
@@ -221,7 +225,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("not the leader (leader: {leader:?})")]
     NotLeader { leader: Option<String> },
-    #[error("write set of {0} bytes exceeds the 4 MiB entry limit")]
+    #[error("write set of {0} bytes exceeds the store's entry limit")]
     TooLarge(usize),
     #[error("unknown table {0:?} (not in the schema)")]
     UnknownTable(String),
@@ -277,7 +281,8 @@ impl<S: Schema> SnapshotView<S> {
     }
 }
 
-/// Largest write set a replicated store accepts.
+/// Largest write set a replicated store accepts, unless its schema says
+/// otherwise ([`Schema::MAX_WRITE_SET_BYTES`]).
 pub const MAX_WRITE_SET_BYTES: usize = 4 * 1024 * 1024;
 
 /// A write transaction that records what it writes. Dropping it without
@@ -318,7 +323,7 @@ impl<S: Schema> Tx<'_, S> {
         } = self;
         let ops = ops.into_inner();
         let (replicator, mirror) = match &*db.mode.lock().unwrap() {
-            Mode::Local => (None, None),
+            Mode::Local | Mode::Stopped => (None, None),
             Mode::Replicated(r) => (Some(r.clone()), None),
             Mode::Mirror(m) => (None, Some(m.clone())),
         };
@@ -360,7 +365,7 @@ impl<S: Schema> Tx<'_, S> {
             Some(r) => {
                 let _ = txn.abort();
                 let size = serde_json::to_vec(&ws).map(|v| v.len()).unwrap_or(0);
-                if size > MAX_WRITE_SET_BYTES {
+                if size > S::MAX_WRITE_SET_BYTES {
                     return Err(StoreError::TooLarge(size));
                 }
                 r.propose(db, ws)?;
@@ -462,6 +467,8 @@ pub enum Submitted {
 
 enum Mode<S: Schema> {
     Local,
+    /// Its Raft member has stopped: writes are refused.
+    Stopped,
     Replicated(Arc<dyn Replicator<S>>),
     Mirror(Arc<dyn Mirror<S>>),
 }
@@ -544,7 +551,7 @@ impl<S: Schema> Db<S> {
             Mode::Replicated(r) => r.can_write(),
             // A mirror's writes are status for the leader to accept;
             // setup is the leader's.
-            Mode::Mirror(_) => false,
+            Mode::Mirror(_) | Mode::Stopped => false,
         }
     }
 
@@ -598,12 +605,20 @@ impl<S: Schema> Db<S> {
         *self.mode.lock().unwrap() = Mode::Replicated(r);
     }
 
+    /// Refuse every write from now on: the store's Raft member has stopped
+    /// ([`crate::raft::ClusterNode::shutdown`]). Also lets go of the
+    /// replicator, which holds the member, which holds this database.
+    pub fn set_stopped(&self) {
+        *self.mode.lock().unwrap() = Mode::Stopped;
+    }
+
     /// Start a write: the transaction records its write set, and holds the
     /// write lane until committed or dropped.
     pub fn begin(&self, origin: S::Origin) -> Result<Tx<'_, S>, StoreError> {
         let lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
         let replicator = match &*self.mode.lock().unwrap() {
             Mode::Replicated(r) => Some(r.clone()),
+            Mode::Stopped => return Err(StoreError::NotLeader { leader: None }),
             _ => None,
         };
         // On a member that isn't the leader, a forwarded write goes to the
