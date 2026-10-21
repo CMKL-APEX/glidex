@@ -152,6 +152,15 @@ impl ConnectorStore {
         Ok(changed)
     }
 
+    /// Forget `directory`'s keys and its data key (it was deleted).
+    pub fn forget_directory_keys(&self, directory: &str) -> Result<(), ConnectorError> {
+        for k in self.signing_keys(directory)? {
+            self.remove_raw(SIGNING_KEYS, &row(directory, k.n))?;
+        }
+        self.remove_raw(super::KEYS, directory)?;
+        Ok(())
+    }
+
     /// `directory`'s JWKS: every key published at `now`.
     pub fn jwks(&self, directory: &str, now: u64) -> Result<Value, ConnectorError> {
         let keys: Vec<Value> = self

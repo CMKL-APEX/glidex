@@ -4952,3 +4952,132 @@ async fn hosted_directories_dont_see_each_other() {
     let (s, _) = h.rest("GET", "/tenants/admin", None, &acme_admin).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+/// spec/tenancy.md D59: the host's operator creates a directory with an
+/// invitation for its first administrator (a passkey sign-in, D60), sees
+/// it listed, and can delete it only while nobody uses it.
+#[tokio::test]
+async fn the_operator_creates_and_deletes_directories() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let bob = h.user("bob");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "name": "Acme", "owner": "acme-admin", "admin_email": "Erin@Acme.example"})),
+            &h.session(&bob),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not the operator: {v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "name": "Acme", "owner": "acme-admin", "admin_email": "Erin@Acme.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["directory"]["issuer"], "https://glidex.example.org/d/acme",
+        "{v}"
+    );
+    assert!(
+        v["invitation_link"].as_str().unwrap().contains("/invite/"),
+        "{v}"
+    );
+    // Its own keys and discovery from the start.
+    let (s, jwks) = h.rest("GET", "/d/acme/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(jwks["keys"][0]["kid"], "acme:1", "{jwks}");
+    // The invitation is for the owner tenant's admin, signing in with a passkey.
+    let owner = h
+        .app
+        .auth
+        .tenants
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.directory_id == "acme")
+        .unwrap();
+    assert!(owner.owns_directory);
+    let inv = h.app.auth.invitations.list(Some(&owner.id)).unwrap();
+    assert_eq!(
+        (
+            inv[0].email.as_str(),
+            inv[0].role.as_str(),
+            inv[0].connector_id.as_str()
+        ),
+        ("erin@acme.example", "role.tenant-admin", "passkey")
+    );
+    let (s, v) = h.rest("GET", "/directories", None, &op).await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<_> = v["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"acme") && ids.contains(&"local"), "{v}");
+    // The same id twice, or a bad one.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "owner": "x", "admin_email": "a@b.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "Not Ok", "owner": "x", "admin_email": "a@b.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // In use: not deleted. `local`: never.
+    h.app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "erin", "Erin", None, true)
+        .unwrap();
+    let (s, v) = h.rest("DELETE", "/directories/acme", None, &op).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("directory_not_empty")),
+        "{v}"
+    );
+    let (s, _) = h.rest("DELETE", "/directories/local", None, &op).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // An unused one goes, with its tenant, invitation and keys.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "beta", "owner": "beta-admin", "admin_email": "a@beta.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = h.rest("DELETE", "/directories/beta", None, &op).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.rest("GET", "/d/beta/jwks.json", None, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        h.app
+            .auth
+            .tenants
+            .list()
+            .unwrap()
+            .iter()
+            .all(|t| t.directory_id != "beta")
+    );
+}

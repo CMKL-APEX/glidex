@@ -1035,6 +1035,83 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
             }
             Err(e) => err(rpc_err(e)),
         },
-        _ => usage("directory keys | directory keys rotate"),
+        (Some("list" | "ls") | None, _) => {
+            let svc = glidex_api::proto::glidex::tenancy::v1::DirectoryServiceClient::new(
+                t.clone(),
+                t.config(),
+            );
+            match svc
+                .list_directories(
+                    glidex_api::proto::glidex::tenancy::v1::ListDirectoriesRequest::default(),
+                )
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    for d in &r.directories {
+                        println!("  {:<20} {:<24} {}", d.id.cyan(), d.name, d.issuer);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        (Some("create" | "add"), Some(id)) => {
+            let Some(email) = flag_value(args, "--admin-email") else {
+                return usage(
+                    "directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N]",
+                );
+            };
+            let svc = glidex_api::proto::glidex::tenancy::v1::DirectoryServiceClient::new(
+                t.clone(),
+                t.config(),
+            );
+            let req = glidex_api::proto::glidex::tenancy::v1::CreateDirectoryRequest {
+                id: id.to_string(),
+                name: flag_value(args, "--name").unwrap_or("").into(),
+                owner: flag_value(args, "--owner")
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("{id}-admin")),
+                admin_email: email.into(),
+                days: flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                ..Default::default()
+            };
+            match svc.create_directory(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    if let Some(d) = r.directory.as_option() {
+                        println!(
+                            "  Directory {} created; its issuer is {}",
+                            d.id.cyan(),
+                            d.issuer
+                        );
+                    }
+                    println!(
+                        "  Send this invitation to {email} (shown once): they sign in with a passkey"
+                    );
+                    println!("    {}", r.invitation_link.yellow());
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        (Some("delete" | "remove" | "rm"), Some(id)) => {
+            let svc = glidex_api::proto::glidex::tenancy::v1::DirectoryServiceClient::new(
+                t.clone(),
+                t.config(),
+            );
+            match svc
+                .delete_directory(
+                    glidex_api::proto::glidex::tenancy::v1::DeleteDirectoryRequest {
+                        id: id.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                Ok(_) => println!("  Directory {id} deleted"),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        _ => usage(
+            "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] | delete <id> | keys [rotate]",
+        ),
     }
 }

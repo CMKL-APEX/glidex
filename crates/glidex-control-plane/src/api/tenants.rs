@@ -214,3 +214,33 @@ pub async fn set_device_pools(
     req.id = id;
     Ok(Json(svc::set_device_pools(&c, req).await?))
 }
+
+// ---- DirectoryService (spec/tenancy.md D59) --------------------------------
+
+pub async fn list_directories(c: Caller) -> Result<Json<pb::ListDirectoriesResponse>, ApiErr> {
+    Ok(Json(crate::service::directories::list_directories(
+        &c,
+        pb::ListDirectoriesRequest::default(),
+    )?))
+}
+
+pub async fn create_directory(
+    c: Caller,
+    Json(req): Json<pb::CreateDirectoryRequest>,
+) -> Result<impl IntoResponse, ApiErr> {
+    Ok((
+        StatusCode::CREATED,
+        Json(crate::service::directories::create_directory(&c, req)?),
+    ))
+}
+
+pub async fn delete_directory(c: Caller, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
+    crate::service::directories::delete_directory(
+        &c,
+        pb::DeleteDirectoryRequest {
+            id,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}

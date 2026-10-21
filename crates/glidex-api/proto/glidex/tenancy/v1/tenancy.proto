@@ -147,6 +147,37 @@ service AdmissionService {
   }
 }
 
+// Directories this host serves (spec/tenancy.md D27, D59): the host's
+// operator creates and deletes them, and sees only that they exist; what
+// is inside one is its own administrators' business.
+service DirectoryService {
+  rpc ListDirectories(ListDirectoriesRequest) returns (ListDirectoriesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listDirectories"
+      kind: KIND_READ
+      rest: "GET /directories"
+    };
+  }
+  // A directory, its owner tenant, and the invitation for its first
+  // administrator, who signs in with a passkey (D60); the link is shown once.
+  rpc CreateDirectory(CreateDirectoryRequest) returns (CreateDirectoryResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageDirectories"
+      kind: KIND_WRITE
+      rest: "POST /directories"
+    };
+  }
+  // Only a directory nobody uses yet: no user, connector or project
+  // (`409 directory_not_empty`); `local` never.
+  rpc DeleteDirectory(DeleteDirectoryRequest) returns (DeleteDirectoryResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageDirectories"
+      kind: KIND_WRITE
+      rest: "DELETE /directories/{id}"
+    };
+  }
+}
+
 message Tenant {
   string id = 1;
   string directory_id = 2 [json_name = "directory_id"];
@@ -402,3 +433,38 @@ message AddBindingResponse {
 message SetAdmissionResponse {
   Admission admission = 1;
 }
+
+message HostedDirectory {
+  // `[a-z0-9-]{1,32}`; its issuer path is `/d/<id>`.
+  string id = 1;
+  string name = 2;
+  // Its issuer URL (D52).
+  string issuer = 3;
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+}
+
+message ListDirectoriesRequest {}
+message ListDirectoriesResponse {
+  repeated HostedDirectory directories = 1;
+}
+
+message CreateDirectoryRequest {
+  string id = 1;
+  string name = 2;
+  // The owner tenant's slug (D7).
+  string owner = 3;
+  // Who is invited as its first administrator (D59).
+  string admin_email = 4 [json_name = "admin_email"];
+  // How long the invitation lasts, in days (default 7).
+  optional uint32 days = 5;
+}
+message CreateDirectoryResponse {
+  HostedDirectory directory = 1;
+  // The invitation link, shown once.
+  string invitation_link = 2 [json_name = "invitation_link"];
+}
+
+message DeleteDirectoryRequest {
+  string id = 1;
+}
+message DeleteDirectoryResponse {}
