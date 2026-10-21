@@ -132,6 +132,11 @@ organizations that **operate** it, and lets each keep its own identity.
 | D55 | Tokens a directory issues | **ID tokens** (`aud` = the client). **Access tokens**: JWTs with `aud` = one cluster's id, `sub`, `sid`, `auth_time`, `amr`, valid `access_token_ttl` (default 1 h, at most 12 h). **Refresh tokens**: opaque, stored hashed, rotated on every use; reusing an old one revokes the whole chain. They last 30 days unused and ≤ 90 days in all, clamped by `token_max_days` (D20), and end with the user's sessions, when the user is disabled (D20), and at logout. | Audience-bound, short-lived tokens are verified offline (§7.3); a stolen refresh token is caught by rotation. |
 | D56 | A cluster and its own directory | Until the handshake exists (T6.5), a cluster accepts access tokens only from a directory hosted on its own control plane, verified against that directory's keys with no feed. Such a token acts as its user, like a session: method `directory`, `mfa` from `amr`. A browser on that cluster keeps logging in directly, with no redirect: the authorization flow serves gxctl, and later the clusters whose directory is elsewhere. | T6.2–T6.3 are useful on one host, and nothing changes for today's UI. |
 | D57 | gxctl and directories | `gxctl auth login --directory <issuer>` logs in at the directory with the device grant (or the browser and a loopback redirect, `--browser`) and keeps the **refresh token** in the profile (gxctl-auth.md A3). Before calling a cluster it gets an access token for that cluster from the directory's token endpoint (`resource` = `urn:glidex:cluster:<cluster id>`, RFC 8707; the id, not a URL, since a cluster has several), cached until shortly before `exp`. The directory lists the clusters its user can reach (§7.2). | One login reaches every cluster; what gxctl holds can't be replayed to another cluster (§7.3). |
+| D58 | Whose a record is | Every user, team, identity, session, API token, passkey and refresh token is in **one directory**: users and teams carry `directory_id` (records from before T6 are `local`); the rest follow their user, project or tenant. A principal's directory is its user's, or its service account's project's. Every request about a directory's records (`/users`, `/teams`, `/connectors`, `/tenants`, …) is about the **caller's** directory, and its lists hold only that directory's records. A user is a member only of its own directory's tenants and teams (D3). | Hosted directories (D27) share one database; nothing an organization keeps may show up in another's answers. |
+| D59 | Creating a directory | The host's operator (`manageDirectories` on `Cluster`, step-up) creates a directory with an id (`[a-z0-9-]{1,32}`, its issuer path `/d/<id>`), a name, its owner tenant's slug and the email of its first administrator; glidex makes the directory, its data key and signing key, the owner tenant, and an **invitation** for that email to the owner tenant with `role.tenant-admin` and `role.directory-admin`, shown once. The operator can list and delete directories (an empty one: no project with resources on any cluster), never read inside one through the API. | The organization's administrator takes over from the first login; the operator handles no IdP secret of theirs and holds no account in their directory (D15). |
+| D60 | Passkey-first invitations | An invitation may say `sign_in: passkey`: its page registers a **passkey** (spec/passkeys.md) as the new user's first sign-in method, user-verified and bound to the invitation's one-time secret, and logs them in. They add their organization's connectors afterwards. | A new directory has no connector yet; a passkey needs no IdP and no password. |
+| D61 | Reaching one's directory | The login page asks for an email first: `/auth/discover` finds the directory (and its connector) by the verified domains of its tenants. Each directory also has its login page at `/login/<directory id>`, showing only its methods. A passkey works from either: its user handle names its user, and so its directory. No answer lists the directories a host serves, and an unknown email gets the same answer as one of a directory with no matching connector. | People of different organizations share a host without seeing each other's names; nobody types an organization id they don't know. |
+| D62 | The host and its directories | The cluster on the host trusts every directory it hosts (D56); their tenants still need its operator's admission (D9) to use it. The host's own directory stays `local`, and its operator tenant operates the cluster. | Hosting is a service of the operator; using the hardware is the operator's separate decision. |
 
 ## 3. Threat model additions
 
@@ -1435,13 +1440,22 @@ useful on one host first):
    - gxctl `auth login --directory` and per-cluster access tokens;
    - tests: PKCE and redirect checks, refresh rotation and reuse,
      audience, logout and disable revoking refresh tokens.
-4. **Hosted directories** (D27):
-   - `CreateDirectory` and `DeleteDirectory` for the host's operator;
-   - per-directory issuer, keys, data key, connectors and audit;
-   - routes and policies scoped by directory, with none seeing
-     another's records;
-   - gxctl `directory`; the UI's directory picker;
-   - tests: two directories on one host can't read each other.
+4. **Hosted directories** (D27, D58–D62), in four steps:
+   - **4a** records in one directory (D58): `directory_id` on users and
+     teams, `Principal::directory_id`, the caller's directory as every
+     directory request's context and filter, membership only within a
+     directory; tests: two directories seeded on one host can't read or
+     change each other's users, teams, tenants, connectors or tokens.
+   - **4b** creating directories (D59): `DirectoryService`
+     (`ListDirectories`, `CreateDirectory`, `DeleteDirectory`) for the
+     host's operator, the owner tenant and the first invitation; gxctl
+     `directory list|create|delete`.
+   - **4c** passkey-first invitations (D60) and login routing (D61):
+     the invite page's passkey registration, `/auth/discover` across
+     directories, `/login/<directory>`.
+   - **4d** the web UI's Directories page for the operator, docs, and
+     an e2e: a directory created, its admin invited, signing in with a
+     passkey, adding a connector; nothing of `local` visible to them.
 5. **The handshake** (§12.1): offers and redeeming them;
    `TrustedDirectory` and `TrustedCluster`; pins both ways; the cluster
    registered as the directory's client; `gxctl admission offer`,
