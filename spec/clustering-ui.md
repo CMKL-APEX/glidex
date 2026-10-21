@@ -181,6 +181,11 @@ dialog runs when the action is used. Tokens never get `reauth`.
 
 ### 3.6 The UI on an agent
 
+> **Replaced for browsers** by [host-page.md](host-page.md): an agent's
+> web UI redirects to a server (W5), and a server's UI acts on any node's
+> host (W2). The relay below stays on servers for agents on older builds
+> (W6).
+
 An agent has no users, sessions or tokens: the auth tables replicate to
 servers only (C§8.2, `sync::filter_for`), and an agent may not write them
 (the nested e2e test found PAM logins on an agent failing with "a node
@@ -300,6 +305,8 @@ fit and why the others don't; until then the form only shows capacity
 and the post-create condition.
 
 ### 5.2 Node page
+
+> Now part of each node's Host page, `/hosts/:id` ([host-page.md](host-page.md) W1).
 
 `/cluster/nodes/:id`:
 

@@ -42,6 +42,7 @@
 
 - [Clustering](clustering.md)
 - [Clustering UI](clustering-ui.md)
+- [Host page and the UI on agents](host-page.md)
 - [Host topology](host-topology.md)
 - [Cluster runbook](cluster-runbook.md)
 
