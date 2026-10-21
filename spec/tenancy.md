@@ -137,6 +137,10 @@ organizations that **operate** it, and lets each keep its own identity.
 | D60 | Passkey-first invitations | An invitation may say `sign_in: passkey`: its page registers a **passkey** (spec/passkeys.md) as the new user's first sign-in method, user-verified and bound to the invitation's one-time secret, and logs them in. They add their organization's connectors afterwards. | A new directory has no connector yet; a passkey needs no IdP and no password. |
 | D61 | Reaching one's directory | The login page asks for an email first: `/auth/discover` finds the directory (and its connector) by the verified domains of its tenants. Each directory also has its login page at `/login/<directory id>`, showing only its methods. A passkey works from either: its user handle names its user, and so its directory. No answer lists the directories a host serves, and an unknown email gets the same answer as one of a directory with no matching connector. | People of different organizations share a host without seeing each other's names; nobody types an organization id they don't know. |
 | D62 | The host and its directories | The cluster on the host trusts every directory it hosts (D56); their tenants still need its operator's admission (D9) to use it. The host's own directory stays `local`, and its operator tenant operates the cluster. | Hosting is a service of the operator; using the hardware is the operator's separate decision. |
+| D63 | Peers authenticate by signature | Between a directory and a cluster of different organizations there is no shared CA. Each request either way carries a **signed assertion** (`Authorization: GlidexPeer <JWT>`, ES256, ≤ 60 s, single use by `jti`): a directory signs with its signing keys (D53), a cluster with its **cluster key**, an ES256 key it makes, seals with the host's KEK and rotates like a directory's. The other side checks it against the key it pinned at the handshake (and the keys the feed brings later). HTTPS server certificates are **pinned** by SHA-256 fingerprint: the cluster's from the offer, the directory's from the redeem. It all runs on the API port (8841); no client certificates. | Uses what each side already has; one mechanism for the handshake, feeds and reports; nothing new to issue or rotate on the TLS side. |
+| D64 | The offer token | `gxo_` + base64url of `{cluster_id, cluster_name, api, tls_sha256, tenant, directory, offer, secret, expires_at}`: the cluster's API address and certificate fingerprint, the tenant slug and directory issuer it is for, the offer's id and a one-time secret (stored hashed), 7 days. Shown once. It is not a credential to the cluster's API: it only lets that directory redeem that offer. | Everything the directory needs to reach and pin the cluster, in one string an operator can send by email or chat. |
+| D65 | Redeeming | At the directory, the tenant's admin runs `gxctl tenant opt-in --offer <token>` (`optInCluster` on the tenant, step-up). The directory checks the token names its issuer and this tenant, connects to `api` pinning `tls_sha256`, and posts `POST /trust/v1/redeem {offer, secret, issuer, directory, tenant, jwks, tls_sha256}` signed with its key. The cluster checks the secret (once), that issuer and tenant match the offer, and that the assertion verifies against the `jwks` sent; it stores a **`TrustedDirectory`** (`issuer`, `directory`, its keys, its TLS pin) and marks the admission `admitted`. It answers `{cluster_id, cluster_key}` (the cluster's public JWK). The directory stores a **`TrustedCluster`** (`cluster_id`, name, `api`, TLS pin, the cluster key, the tenant's opt-in) and registers the cluster as its client (D54, `private_key_jwt` with that key). Either fails: nothing is kept on either side. | One round trip, initiated by the side whose administrator decides to opt in; both pins and both keys exchanged at once. |
+| D66 | Ending trust | Either side removes its record (`gxctl admission remove` at the cluster, `gxctl tenant opt-out --cluster <id>` at the directory) and tells the other (`POST /trust/v1/end`, signed); the other side drops its record when told, or when the other next refuses it. A cluster with no admitted tenant of a directory left forgets that `TrustedDirectory`. | Each organization can leave without the other's cooperation. |
 
 ## 3. Threat model additions
 
@@ -895,8 +899,9 @@ the same.
 2. The tenant's admin redeems it at the directory: `gxctl tenant opt-in
    --offer <token>` (`tenant.clusters`, step-up). The directory checks the
    token is for this tenant, connects to the cluster's endpoint pinning
-   the fingerprint, and proves the one-time secret over mTLS with its
-   own certificate. The cluster pins the directory's CA and issuer,
+   the fingerprint, and proves the one-time secret in a request signed
+   with its own key (D63, D65). The cluster pins the directory's keys, issuer and
+   certificate,
    stores the `TrustedDirectory`, and marks the admission `admitted`.
    The directory registers the cluster as an OIDC client, records the
    `TrustedCluster` opt-in, and starts the feed.
@@ -907,7 +912,7 @@ the same.
    cluster stops feeding it, and the cluster forgets its records.
 
 **The feed (D12).** For each cluster it has opted-in tenants on, a
-directory serves `/d/<id>/feed/v1` over mTLS: its write sets that touch
+directory serves `/d/<id>/feed/v1`, its requests signed by the cluster's key (D63): its write sets that touch
 records of those tenants, in revision order, **filtered for that
 cluster**: the tenants, their projects and guest credentials, their
 members (id, display name, disabled) and teams, their links, the token
@@ -1456,10 +1461,18 @@ useful on one host first):
    - **4d** the web UI's Directories page for the operator, docs, and
      an e2e: a directory created, its admin invited, signing in with a
      passkey, adding a connector; nothing of `local` visible to them.
-5. **The handshake** (§12.1): offers and redeeming them;
-   `TrustedDirectory` and `TrustedCluster`; pins both ways; the cluster
-   registered as the directory's client; `gxctl admission offer`,
-   `tenant opt-in`, `trust`; the §17 offer tests.
+5. **The handshake** (§12.1, D63–D66), in two steps:
+   - **5a** peer assertions (D63): the cluster key, `GlidexPeer`
+     assertions made and checked, the replay cache, TLS pinning for
+     outgoing calls; offers (D64): `AdmissionService.OfferAdmission`,
+     the `offered` admission, the token; tests.
+   - **5b** redeeming and ending (D65, D66): `/trust/v1/redeem` and
+     `/trust/v1/end` at the cluster; `TrustedDirectory` and
+     `TrustedCluster`; the directory's client registration of the
+     cluster; `TenantService.OptInCluster` / `OptOutCluster`; gxctl
+     `admission offer`, `tenant opt-in|opt-out`, `trust list`; the §17
+     offer tests between two control planes in one process (refused for
+     the wrong tenant, the wrong directory, twice, after expiry).
 6. **Feeds and cluster sessions**:
    - the filtered feed (`/d/<id>/feed/v1`, snapshots, `feed_state`)
      and the cluster's read-only replica;
