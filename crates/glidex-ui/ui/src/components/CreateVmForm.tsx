@@ -294,6 +294,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   // shown, so the browser can point at it.
   const advancedNeeded =
     imagesLoaded && (firmware ? !firmwareImage : kernelSource === "image" ? !kernelImage : !kernelPath);
+  // Once the form opened Advanced options for a missing choice, they stay
+  // open: making that choice must not fold them away under the user.
+  useEffect(() => {
+    if (advancedNeeded) setShowAdvanced(true);
+  }, [advancedNeeded]);
   const firmwareName = firmwareChoices.find((i) => i.id === firmwareImage)?.name;
   const advancedSummary = firmware
     ? `UEFI firmware${firmwareName ? ` (${firmwareName})` : ""}`
