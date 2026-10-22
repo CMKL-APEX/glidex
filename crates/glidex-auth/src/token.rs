@@ -80,7 +80,8 @@ mod tests {
         let t = mint_token("hst_");
         let rest = t.secret.strip_prefix("hst_").expect("prefix");
         // 32 bytes are 43 base62 digits, fewer with leading zero bytes.
-        assert!((40..=43).contains(&rest.len()), "{}", t.secret);
+        // Tokens are never printed, even in tests.
+        assert!((40..=43).contains(&rest.len()), "length {}", rest.len());
         assert!(rest.bytes().all(|b| b.is_ascii_alphanumeric()));
         assert_eq!(t.hash, sha256_hex(t.secret.as_bytes()));
         assert_eq!(t.hash.len(), 64);
