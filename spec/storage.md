@@ -17,7 +17,7 @@ Status: **S0–S6 implemented; S7 design.** Implemented:
 - S6c, moves to and from `lvm`, metering of volumes, and VMs booted from
   them (§11.1 as built).
 
-S6 and everything after it is still design. The milestones are S0–S7
+S7 is still design. The milestones are S0–S7
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
 are applied (§18).

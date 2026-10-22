@@ -1,6 +1,6 @@
-# Host page and the UI on agents (design)
+# Host page and the UI on agents
 
-Status: **design**. Every host gets a **Host page** in the web UI. It
+Status: **implemented** (W1–W6: #127, #128, #129). Every host gets a **Host page** in the web UI. It
 gathers what belongs to that one host: its Open vSwitch, bridges and
 uplinks, PCI devices, topology, and maintenance. The page works on a
 standalone host and, in a cluster, from any server's UI for any node. An

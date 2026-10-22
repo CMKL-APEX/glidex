@@ -34,6 +34,17 @@
 - [Maintenance](operator-guide/maintenance.md)
 - [Troubleshooting](operator-guide/troubleshooting.md)
 
+# Developer guide
+
+- [Overview](developer-guide/README.md)
+- [Repository and code organization](developer-guide/organization.md)
+- [Architecture](developer-guide/architecture.md)
+- [Design decisions and trade-offs](developer-guide/design-decisions.md)
+- [Algorithms](developer-guide/algorithms.md)
+- [Performance and benchmarks](developer-guide/benchmarks.md)
+- [Glidex compared](developer-guide/comparison.md)
+- [Contributing](developer-guide/contributing.md)
+
 # Reference
 
 - [gxctl](reference/gxctl.md)

@@ -14,7 +14,7 @@ Two crates cooperate to deliver the UI:
 
 The installer builds the UI, copies `dist` to
 `/usr/local/share/glidex/ui` and runs `glidex-ui.service` as the
-`glidex` user (see [installer.md](installer.md)).
+`glidex-ui` user (see [installer.md](installer.md)).
 
 ## Server
 
