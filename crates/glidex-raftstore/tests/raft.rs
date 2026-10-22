@@ -233,6 +233,19 @@ async fn a_stopped_member_lets_go_of_its_store() {
     } = c;
     drop(nodes);
     drop(mesh);
-    glidex_raftstore::store::Db::<Test>::create(&path).expect("the store was closed");
+    // The member's tasks wind down on the runtime after the drop, so the
+    // store closes shortly after, not at once: wait for it, but not forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match glidex_raftstore::store::Db::<Test>::create(&path) {
+            Ok(_) => break,
+            Err(StoreError::Database(redb::DatabaseError::DatabaseAlreadyOpen))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(e) => panic!("the store was not closed within 10s: {e}"),
+        }
+    }
     drop(root);
 }
