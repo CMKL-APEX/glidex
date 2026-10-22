@@ -17,6 +17,9 @@ const FIRMWARE_KEY: Record<HypervisorType, string> = {
   cloudhypervisor: "cloudhv-edk2",
   qemu: "ovmf",
 };
+/** Where the last credential a user gave a VM in a project is kept (this browser). */
+const lastCredentialKey = (user: string | undefined, project: string | null | undefined) =>
+  `glidex.credential.${user ?? ""}.${project ?? ""}`;
 /** Where a VM's root disk comes from (spec/images.md §7). */
 type RootSource = "image" | "disk" | "path";
 
@@ -152,11 +155,18 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     listCredentials(project)
       .then((creds) => {
         setCredentials(creds);
-        // Default to the signed-in user's own credential, if the project
-        // has one by that name.
+        // Default to the credential this user last gave a VM here, else
+        // their own, if the project has one by that name.
+        let last: string | null = null;
+        try {
+          last = localStorage.getItem(lastCredentialKey(me.user_id, project));
+        } catch {
+          // Storage off: no memory.
+        }
         const mine = me.user?.display_name;
-        if (!credentialChosen.current && mine && creds.some((c) => c.username === mine)) {
-          setCredential(mine);
+        const pick = [last, mine].find((u) => u && creds.some((c) => c.username === u));
+        if (!credentialChosen.current && pick) {
+          setCredential(pick);
         }
       })
       .catch(() => setCredentials([]));
@@ -200,7 +210,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         .then(setPools)
         .catch(() => setPools([]));
     }
-  }, [project, me.user?.display_name]);
+  }, [project, me.user_id, me.user?.display_name]);
 
   // The first GPU pool asked for (not under one switch) goes as `gpus`:
   // aligned NUMA placement, and the pool's per-device sizing for the vCPU
@@ -258,6 +268,13 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         on_host_boot: onHostBoot === "stop" ? "HOST_BOOT_POLICY_STOP" : "HOST_BOOT_POLICY_RESUME",
         node: nodes.clustered && node ? node : undefined,
       });
+      if (seeded && credential) {
+        try {
+          localStorage.setItem(lastCredentialKey(me.user_id, project), credential);
+        } catch {
+          // Storage off: nothing remembered.
+        }
+      }
     } catch (err) {
       // Keep the form (and what was typed) so it can be corrected.
       setSubmitError(err instanceof Error ? err.message : "Failed to create VM");
