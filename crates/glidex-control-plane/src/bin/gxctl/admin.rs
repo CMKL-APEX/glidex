@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--directory [ID] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--directory [ID] [--via PROFILE] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -542,7 +542,13 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         let dir = flag_value(args, "--directory")
             .filter(|v| !v.starts_with("--"))
             .unwrap_or("local");
-        match crate::dirlogin::device_login(&cl, dir, &resource).await {
+        // Another organization's directory (D69): through the profile of
+        // its servers, whose certificate is already trusted.
+        let via = flag_value(args, "--via");
+        if via == Some(name.as_str()) {
+            return err("--via names the profile of the directory's servers, not this one");
+        }
+        match crate::dirlogin::device_login(&cl, dir, &resource, via).await {
             Some(l) => {
                 dir_login = Some(l.keep);
                 (l.access, "directory")

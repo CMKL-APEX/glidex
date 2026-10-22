@@ -1,7 +1,9 @@
-//! `auth login --directory` (spec/tenancy.md D57): a login at the
-//! directory the profile's servers host, with its device grant. The
-//! profile keeps the refresh token; before a command, an access token for
-//! this cluster is asked for when the one held is about to expire.
+//! `auth login --directory` (spec/tenancy.md D57): a login at a directory
+//! with its device grant: one the profile's servers host, or another
+//! organization's, reached through the profile that dials its servers
+//! (`--via`, D69). The profile keeps the refresh token; before a command,
+//! an access token for this cluster is asked for when the one held is
+//! about to expire.
 
 use crate::client::{self, ApiClient};
 use crate::config::{self, DirectoryLogin};
@@ -35,6 +37,23 @@ pub struct Login {
     pub keep: DirectoryLogin,
 }
 
+/// The servers directory logins go to: profile `via`'s, with its trust,
+/// else `cl`'s own (`None`).
+fn via_client(via: Option<&str>) -> Result<Option<ApiClient>, String> {
+    let Some(name) = via else {
+        return Ok(None);
+    };
+    let cfg = config::load().map_err(|e| e.to_string())?;
+    let Some((_, p)) = config::profile_of(&cfg, Some(name)) else {
+        return Err(format!(
+            "profile '{name}' (the directory's servers) is gone: log in to it again, then here"
+        ));
+    };
+    ApiClient::tcp_multi(&p.url, None, Some(&p.tls), None, None)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
 fn login_of(dir: &str, resource: &str, v: &Value) -> Option<Login> {
     let access = v["access_token"].as_str()?;
     let refresh = v["refresh_token"].as_str()?;
@@ -45,13 +64,28 @@ fn login_of(dir: &str, resource: &str, v: &Value) -> Option<Login> {
             refresh_token: refresh.to_string(),
             resource: resource.to_string(),
             access_expires_at: client::now_secs() + v["expires_in"].as_u64().unwrap_or(3600),
+            via: None,
         },
     })
 }
 
-/// The device grant at directory `dir` of `cl`'s servers: print where to
-/// approve it, wait, and return the tokens for `resource`.
-pub async fn device_login(cl: &ApiClient, dir: &str, resource: &str) -> Option<Login> {
+/// The device grant at directory `dir` of `cl`'s servers, or of profile
+/// `via`'s: print where to approve it, wait, and return the tokens for
+/// `resource`.
+pub async fn device_login(
+    cl: &ApiClient,
+    dir: &str,
+    resource: &str,
+    via: Option<&str>,
+) -> Option<Login> {
+    let other = match via_client(via) {
+        Ok(o) => o,
+        Err(e) => {
+            err(e);
+            return None;
+        }
+    };
+    let cl = other.as_ref().unwrap_or(cl);
     let base = format!("/d/{}", client::enc(dir));
     let start = match post_bare(
         cl,
@@ -101,7 +135,10 @@ pub async fn device_login(cl: &ApiClient, dir: &str, resource: &str) -> Option<L
         }
         match post_bare(cl, &format!("{base}/token"), &body).await {
             Ok((200, v)) => match login_of(dir, resource, &v) {
-                Some(l) => return Some(l),
+                Some(mut l) => {
+                    l.keep.via = via.map(String::from);
+                    return Some(l);
+                }
                 None => {
                     err("the directory gave no access token");
                     return None;
@@ -131,6 +168,8 @@ pub async fn device_login(cl: &ApiClient, dir: &str, resource: &str) -> Option<L
 
 /// A new access token from the refresh token (which is replaced).
 pub async fn refresh(cl: &ApiClient, d: &DirectoryLogin) -> Result<Login, String> {
+    let other = via_client(d.via.as_deref())?;
+    let cl = other.as_ref().unwrap_or(cl);
     let body = json!({
         "grant_type": "refresh_token",
         "client_id": "gxctl",
@@ -139,6 +178,10 @@ pub async fn refresh(cl: &ApiClient, d: &DirectoryLogin) -> Result<Login, String
     });
     match post_bare(cl, &format!("/d/{}/token", client::enc(&d.id)), &body).await? {
         (200, v) => login_of(&d.id, &d.resource, &v)
+            .map(|mut l| {
+                l.keep.via = d.via.clone();
+                l
+            })
             .ok_or_else(|| "the directory gave no access token".to_string()),
         (_, v) => Err(format!(
             "the directory login ended ({}); run 'gxctl auth login --directory' again",
@@ -149,6 +192,8 @@ pub async fn refresh(cl: &ApiClient, d: &DirectoryLogin) -> Result<Login, String
 
 /// End the login at the directory (`revoke`).
 pub async fn revoke(cl: &ApiClient, d: &DirectoryLogin) -> Result<(), String> {
+    let other = via_client(d.via.as_deref())?;
+    let cl = other.as_ref().unwrap_or(cl);
     let body = json!({ "token": d.refresh_token, "client_id": "gxctl" });
     match post_bare(cl, &format!("/d/{}/revoke", client::enc(&d.id)), &body).await? {
         (200, _) => Ok(()),

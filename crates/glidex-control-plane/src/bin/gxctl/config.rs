@@ -211,14 +211,19 @@ pub struct DirectoryLogin {
     pub resource: String,
     /// When the access token in `token` expires (Unix seconds).
     pub access_expires_at: u64,
+    /// Another organization's directory (spec/tenancy.md D69): the profile
+    /// whose servers host it, reached with that profile's trust; `None`:
+    /// this profile's own servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 impl std::fmt::Debug for DirectoryLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DirectoryLogin {{ id: {:?}, resource: {:?} }}",
-            self.id, self.resource
+            "DirectoryLogin {{ id: {:?}, resource: {:?}, via: {:?} }}",
+            self.id, self.resource, self.via
         )
     }
 }
@@ -904,5 +909,25 @@ mod tests {
         p.tls.pins = vec!["sha256/".to_string() + &"cd".repeat(32)];
         p.tls.verify_host = false;
         assert_eq!(p.trust_mode(), "system+pinned(1)+no-name-check");
+    }
+
+    #[test]
+    fn a_directory_login_reads_with_or_without_via() {
+        // As profiles were written before `via` (D57).
+        let old: DirectoryLogin = serde_json::from_str(
+            r#"{"id":"local","refresh_token":"gxr_not_shown","resource":"urn:glidex:cluster:c","access_expires_at":1}"#,
+        )
+        .unwrap();
+        assert_eq!(old.via, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("via"));
+        let other = DirectoryLogin {
+            via: Some("acme".into()),
+            ..old
+        };
+        let back: DirectoryLogin =
+            serde_json::from_str(&serde_json::to_string(&other).unwrap()).unwrap();
+        assert_eq!(back.via.as_deref(), Some("acme"));
+        // Its debug form never shows the refresh token.
+        assert!(!format!("{back:?}").contains("gxr_not_shown"));
     }
 }
