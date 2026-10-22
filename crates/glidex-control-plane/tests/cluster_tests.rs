@@ -5793,6 +5793,8 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
         img.cmdline
     );
     assert_eq!(img.extract_node.as_deref(), Some(agent_id.as_str()));
+    // No release in its header: the file's name gives it (§10.4).
+    assert_eq!(img.kernel_release.as_deref(), Some("6.12.0-test"));
     assert!(
         !server.manager.images().image_file(&img).exists(),
         "only the agent has it"

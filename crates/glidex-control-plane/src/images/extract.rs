@@ -317,7 +317,12 @@ impl ImageManager {
             )));
         }
         let mut img = self.get_image(id)?;
+        let from_header = installed.release.is_some();
         installed.apply(&mut img);
+        // An arm64 `Image` names no release: the file's name does (§10.4).
+        if !from_header {
+            img.kernel_release = Some(choice.version.clone());
+        }
         img.cmdline = Some(choice.cmdline);
         img.source = ImageSource::Extracted {
             image_id: origin.image_id.clone(),

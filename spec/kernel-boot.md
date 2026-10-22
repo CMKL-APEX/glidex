@@ -164,7 +164,8 @@ the pinned version; QEMU from the host's packages):
   - `cmdline: Option<String>`, the default `kernel_args` (K7);
   - `kernel_release: Option<String>`, the kernel's version string from
     its header (bzImage `kernel_version` offset; ELF/`Image` don't carry
-    one, so `None`). Named so because `Image.release` already lists the
+    one, so `None`, except when extracted: then the `<v>` of the file's
+    name, §10.4). Named so because `Image.release` already lists the
     nodes asked to drop their copy;
   - `for_image: Option<String>`, the disk image (id) this kernel was
     extracted from (K3; not yet implemented);
@@ -550,7 +551,8 @@ path: files are kept in memory or written under the image's id.
 - **Kernel:** the highest version among `vmlinuz-<v>` that has an initrd
   for the same `<v>` (`initrd.img-<v>` or `initramfs-<v>.img`), compared
   segment by segment, numbers numerically. Then K8's header check, and
-  `kernel_release` must equal `<v>`.
+  a release in the header must equal `<v>`. A kernel whose header has
+  none (an arm64 `Image`) gets `<v>` as its `kernel_release`.
 - **Command line:** the BLS entry for `<v>` (`options`), else the first
   `grub.cfg` `linux` line naming `vmlinuz-<v>`. glidex drops
   `BOOT_IMAGE=`, every `console=` and `earlyprintk=`, and appends the
