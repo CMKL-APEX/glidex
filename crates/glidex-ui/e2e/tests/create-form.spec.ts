@@ -75,6 +75,52 @@ test("preselects only the chosen image's own kernel", async ({ page }) => {
   await expect(page.getByTestId("kernel-mismatch")).toContainText("taken from alpha");
 });
 
+test("offers kernels and firmware of the image's architecture", async ({ page, hypervisor }) => {
+  const ready = { state: "IMAGE_STATE_READY" };
+  const [X86, ARM] = ["ARCH_X86_64", "ARCH_AARCH64"];
+  const disk = (id: string, arch: string) => ({ id, name: id, kind: "IMAGE_KIND_DISK", arch, status: ready, virtual_size_bytes: "1073741824" });
+  const kernel = (id: string, arch: string, forImage: string) => ({ id, name: id, kind: "IMAGE_KIND_KERNEL", arch, status: ready, for_image: forImage, kernel: { release: "7.0.0" } });
+  const fw = (id: string, arch: string) => ({ id, name: id, kind: "IMAGE_KIND_FIRMWARE", arch, hypervisor: PROTO_HYPERVISOR[hypervisor], status: ready, created_at: "2026-10-01T00:00:00Z" });
+  await rpcRoute(page, "glidex.storage.v1.ImageService/ListImages", () => ({
+    message: {
+      images: [
+        disk("intel", X86),
+        disk("arm", ARM),
+        kernel("intel-kernel", X86, "intel"),
+        kernel("arm-kernel", ARM, "arm"),
+        fw("fw-x86", X86),
+        fw("fw-arm", ARM),
+      ],
+    },
+  }));
+  await page.reload();
+  await page.getByRole("button", { name: "+ Create VM" }).click();
+  await field(page, "Hypervisor Backend").selectOption(hypervisor);
+  const firmware = field(page, "UEFI Firmware");
+  const offered = (select: typeof firmware) =>
+    select.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+
+  // An x86_64 image: x86_64 firmware only.
+  await expect(field(page, "Image")).toHaveValue("intel");
+  await expect(firmware).toHaveValue("fw-x86");
+  expect(await offered(firmware)).toEqual(["fw-x86"]);
+
+  // An aarch64 one: its firmware, chosen for it.
+  await field(page, "Image").selectOption("arm");
+  await expect(firmware).toHaveValue("fw-arm");
+  expect(await offered(firmware)).toEqual(["fw-arm"]);
+  await expect(page.getByTestId("firmware-hint")).toContainText("aarch64");
+
+  // Its kernels too.
+  await field(page, "Boot Mode").selectOption("kernel");
+  const kernels = page.getByTestId("kernel-image");
+  await expect(kernels).toHaveValue("arm-kernel");
+  expect(await offered(kernels)).toEqual(["arm-kernel"]);
+  await field(page, "Image").selectOption("intel");
+  await expect(kernels).toHaveValue("intel-kernel");
+  expect(await offered(kernels)).toEqual(["intel-kernel"]);
+});
+
 test("offers only firmware built for the chosen hypervisor", async ({ page, hypervisor }) => {
   const hv = field(page, "Hypervisor Backend");
   const firmware = field(page, "UEFI Firmware");

@@ -3,7 +3,7 @@ import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPoo
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -79,11 +79,26 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   // seed, and so a credential (spec/kernel-boot.md K4).
   const seeded = firmware || fromKernelImage || rootSource !== "path";
 
-  // Kernels for the chosen image's architecture; the one extracted from
-  // it first (spec/kernel-boot.md K3).
+  // The VM's architecture (spec/clustering.md §9.2.1): its image's, else
+  // the chosen node's. The kernels and firmware offered are of it.
   const rootImage = rootSource === "image" ? images.find((i) => i.id === image) : undefined;
+  const nodeArch = (nodes.clustered && node && nodes.nodes.get(node)?.status?.features?.arch) || undefined;
+  const vmArch = rootImage?.arch ?? (nodeArch ? archToProto(nodeArch) : undefined);
+  const ofVmArch = (a?: string) => !vmArch || !a || a === "ARCH_UNSPECIFIED" || a === vmArch;
+  // A node chosen of another architecture than the image: an image of
+  // the node's instead, when there is one.
+  useEffect(() => {
+    if (!nodeArch || rootSource !== "image" || !rootImage || rootImage.arch === archToProto(nodeArch)) return;
+    const same = images.find((i) => i.arch === archToProto(nodeArch));
+    if (same) setImage(same.id);
+    // Only when the node changes: an image picked afterwards stays.
+  }, [nodeArch]);
+  const archMismatch =
+    nodeArch && rootImage?.arch && rootImage.arch !== archToProto(nodeArch) ? archLabel(rootImage.arch) : undefined;
+  // Kernels for that architecture; the one extracted from the image first
+  // (spec/kernel-boot.md K3).
   const kernelChoices = kernelImages
-    .filter((k) => !rootImage || k.arch === rootImage.arch)
+    .filter((k) => ofVmArch(k.arch))
     .sort((a, b) => Number(b.for_image === image) - Number(a.for_image === image));
   const chosenKernel = kernelImages.find((k) => k.id === kernelImage);
   // Preselect the image's own kernel only: another image's initramfs looks
@@ -121,10 +136,15 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     }
   };
 
-  // Firmware is built for one hypervisor: pick the newest for the new one.
-  const firmwareChoices = firmwareFor(firmwareImages, hypervisor);
+  // Firmware is built for one hypervisor and architecture: the newest
+  // for the VM's, unless the one chosen is.
+  const firmwareChoices = firmwareFor(firmwareImages, hypervisor).filter((i) => ofVmArch(i.arch));
+  const firmwareKey = firmwareChoices.map((i) => i.id).join(",");
+  useEffect(() => {
+    setFirmwareImage((cur) => (firmwareChoices.some((i) => i.id === cur) ? cur : (firmwareChoices[0]?.id ?? "")));
+  }, [firmwareKey]);
   const changeHypervisor = (next: HypervisorType) => {
-    setFirmwareImage(firmwareFor(firmwareImages, next)[0]?.id ?? "");
+    setFirmwareImage(firmwareFor(firmwareImages, next).filter((i) => ofVmArch(i.arch))[0]?.id ?? "");
     setHypervisor(next);
   };
 
@@ -362,7 +382,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               value={firmwareImage}
               onChange={(e) => setFirmwareImage(e.target.value)}
             >
-              {firmwareChoices.length === 0 && <option value="">No firmware image for {HYPERVISOR_LABELS[hypervisor]}</option>}
+              {firmwareChoices.length === 0 && (
+                <option value="">
+                  No firmware image for {HYPERVISOR_LABELS[hypervisor]}
+                  {vmArch ? ` on ${archLabel(vmArch)}` : ""}
+                </option>
+              )}
               {firmwareChoices.map((i) => (
                 <option key={i.id} value={i.id}>
                   {i.name}
@@ -373,14 +398,15 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             <p className="mt-1 text-xs text-gray-500" data-testid="firmware-hint">
               {firmwareChoices.length === 0 ? (
                 <>
-                  Pull <span className="font-mono">{FIRMWARE_KEY[hypervisor]}</span> from the firmware catalog on the{" "}
+                  Pull <span className="font-mono">{FIRMWARE_KEY[hypervisor]}</span>
+                  {vmArch ? ` for ${archLabel(vmArch)}` : ""} from the firmware catalog on the{" "}
                   <Link to="/images" className="text-sky-700 hover:underline">
                     Images page
                   </Link>{" "}
                   first.
                 </>
               ) : (
-                "A firmware image from the Images page, built for this hypervisor"
+                `A firmware image from the Images page, built for this hypervisor${vmArch ? ` and ${archLabel(vmArch)}` : ""}`
               )}
             </p>
           </div>
@@ -413,7 +439,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 data-testid="kernel-image"
               >
                 {kernelChoices.length === 0 ? (
-                  <option value="">No kernel image{rootImage ? ` for ${archLabel(rootImage.arch)}` : ""}</option>
+                  <option value="">No kernel image{vmArch ? ` for ${archLabel(vmArch)}` : ""}</option>
                 ) : (
                   !kernelImage && <option value="">Choose a kernel</option>
                 )}
@@ -551,6 +577,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                     </option>
                   ))}
                 </select>
+                {archMismatch && (
+                  <p className="mt-1 text-xs text-amber-700" data-testid="arch-mismatch">
+                    {nodes.name(node)} is {nodeArch}; this image is {archMismatch}. Choose an {nodeArch} image or another
+                    node.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Root disk (GiB)</label>
