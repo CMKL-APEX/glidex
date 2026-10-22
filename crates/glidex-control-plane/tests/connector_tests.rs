@@ -5264,3 +5264,141 @@ async fn an_admission_is_offered_to_another_directorys_tenant() {
     let (_, l) = h.rest("GET", "/admissions/offers", None, &op).await;
     assert!(l["offers"].as_array().is_none_or(|a| a.is_empty()), "{l}");
 }
+
+/// workload-identity.md §4.2, W4, W13 (WI0): a VM's identity token is signed
+/// with its directory's keys and verifies against the published JWKS with
+/// another JWT library; the first one fixes the directory's trust domain;
+/// a stopped VM has none; no API takes one as a bearer token.
+#[tokio::test]
+async fn vm_identity_tokens_verify_against_the_directory_jwks() {
+    use glidex_control_plane::directory::workload::VmIdentity;
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let o = h.token(&root);
+    h.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", auth::store::now())
+        .unwrap();
+    // Until a token is issued, the default it would get, nothing fixed.
+    let (s, v) = h.rest("GET", "/directories", None, &h.session(&root)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let local = v["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == "local")
+        .unwrap();
+    assert_eq!(local["trust_domain"], "local.glidex.example.org", "{v}");
+    let fixed = || {
+        h.app
+            .auth
+            .tenants
+            .get_directory("local")
+            .unwrap()
+            .unwrap()
+            .trust_domain
+    };
+    assert_eq!(fixed(), None);
+
+    // A VM that isn't running has no identity.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(
+                json!({"name": "w1", "project": "default", "vcpu_count": 1, "mem_size_mib": 128,
+                "kernel_image_path": "/tmp/vmlinux", "rootfs_path": "/tmp/rootfs.ext4"}),
+            ),
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm = v["vm"]["id"].as_str().unwrap().to_string();
+    let e = api::issuer::vm_identity(&h.app, &vm).await.unwrap_err();
+    assert_eq!(e.0, StatusCode::CONFLICT);
+    let e = api::issuer::vm_identity(&h.app, "nope").await.unwrap_err();
+    assert_eq!(e.0, StatusCode::NOT_FOUND);
+
+    // As it would be for that VM running.
+    let who = VmIdentity {
+        tenant: "default".into(),
+        project: "default".into(),
+        vm_id: vm.clone(),
+        vm_name: "w1".into(),
+        cluster: api::op::cluster_id(&h.app),
+        service_account: None,
+    };
+    let jwt = api::issuer::sign_identity(&h.app, "local", &who, "sts.amazonaws.com", None).unwrap();
+    assert_eq!(fixed().as_deref(), Some("local.glidex.example.org"));
+
+    // Verified as a relying party would: discovery, then the JWKS.
+    let (_, disc) = h
+        .rest("GET", "/d/local/.well-known/openid-configuration", None, "")
+        .await;
+    assert_eq!(
+        disc["issuer"], "https://glidex.example.org/d/local",
+        "{disc}"
+    );
+    let (_, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(jwks).unwrap();
+    let header = jsonwebtoken::decode_header(&jwt).unwrap();
+    assert_eq!(header.typ.as_deref(), Some("JWT"));
+    let key = jwks.find(header.kid.as_deref().unwrap()).unwrap();
+    let mut val = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    val.set_audience(&["sts.amazonaws.com"]);
+    val.set_issuer(&["https://glidex.example.org/d/local"]);
+    let c = jsonwebtoken::decode::<Value>(
+        &jwt,
+        &jsonwebtoken::DecodingKey::from_jwk(key).unwrap(),
+        &val,
+    )
+    .unwrap()
+    .claims;
+    assert_eq!(
+        c["sub"],
+        format!("spiffe://local.glidex.example.org/tenant/default/project/default/vm/{vm}")
+    );
+    assert_eq!(c["exp"].as_u64().unwrap() - c["iat"].as_u64().unwrap(), 900);
+    assert_eq!(c["glidex"]["vm"]["name"], "w1");
+
+    // What a guest may not ask for.
+    assert!(api::issuer::sign_identity(&h.app, "local", &who, "", None).is_err());
+    assert!(api::issuer::sign_identity(&h.app, "local", &who, "a", Some(30)).is_err());
+
+    // Addressed to this very cluster, it still isn't an access token.
+    let to_us =
+        api::issuer::sign_identity(&h.app, "local", &who, &api::op::cluster_id(&h.app), None)
+            .unwrap();
+    let (s, _) = h.rest("GET", "/vms", None, &to_us).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// workload-identity.md W13: a directory created with a trust domain keeps
+/// it for good; an invalid one is refused.
+#[tokio::test]
+async fn a_directory_keeps_the_trust_domain_it_was_created_with() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let body = |td: &str| {
+        json!({"id": "acme", "name": "Acme", "owner": "acme-admin",
+            "admin_email": "it@acme.example", "trust_domain": td})
+    };
+    let (s, v) = h
+        .rest("POST", "/directories", Some(body("Acme.com/x")), &op)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = h
+        .rest("POST", "/directories", Some(body("acme.com")), &op)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["directory"]["trust_domain"], "acme.com", "{v}");
+    let d = h
+        .app
+        .auth
+        .tenants
+        .set_trust_domain("acme", "other.example")
+        .unwrap();
+    assert_eq!(d.trust_domain.as_deref(), Some("acme.com"));
+}

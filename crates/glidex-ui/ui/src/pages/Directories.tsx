@@ -64,6 +64,7 @@ export default function Directories() {
                 <th className="py-1">Directory</th>
                 <th>Name</th>
                 <th>Issuer</th>
+                <th>Trust domain</th>
                 <th>Created</th>
                 <th />
               </tr>
@@ -74,6 +75,7 @@ export default function Directories() {
                   <td className="py-1.5 font-mono">{d.id}</td>
                   <td>{d.name}</td>
                   <td className="font-mono text-xs">{d.issuer}</td>
+                  <td className="font-mono text-xs">{d.trust_domain}</td>
                   <td>{formatTimestamp(d.created_at)}</td>
                   <td className="text-right">
                     {host.manageDirectories && d.id !== "local" && (
@@ -118,13 +120,14 @@ function NewDirectory({ onClose, onDone }: { onClose: () => void; onDone: (m: { 
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [trustDomain, setTrustDomain] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const create = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.createDirectory({ id, name, owner: `${id}-admin`, admin_email: email });
+      const r = await api.createDirectory({ id, name, owner: `${id}-admin`, admin_email: email, trust_domain: trustDomain || undefined });
       onDone({ id, link: r.link, email });
     } catch (e) {
       setError(errorMessage(e));
@@ -153,11 +156,23 @@ function NewDirectory({ onClose, onDone }: { onClose: () => void; onDone: (m: { 
           </label>
           <input id="dir-admin" type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
+        <div>
+          <label htmlFor="dir-td" className="block text-xs text-gray-500">
+            Trust domain (optional; its workloads&apos; identities use it, and it can&apos;t change)
+          </label>
+          <input
+            id="dir-td"
+            className={inputClass}
+            value={trustDomain}
+            placeholder={id ? `${id}.<this host>` : "acme.example"}
+            onChange={(e) => setTrustDomain(e.target.value.toLowerCase())}
+          />
+        </div>
         <div className="flex justify-end gap-2">
           <button className={secondaryButton} onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className={primaryButton} onClick={create} disabled={busy || !/^[a-z0-9-]{1,32}$/.test(id) || !email.includes("@")}>
+          <button className={primaryButton} onClick={create} disabled={busy || !/^[a-z0-9-]{1,32}$/.test(id) || !email.includes("@") || (trustDomain !== "" && !/^[a-z0-9_-]+(\.[a-z0-9_-]+)*$/.test(trustDomain))}>
             Create
           </button>
         </div>

@@ -61,6 +61,95 @@ pub fn sign(
         .map_err(|e| internal(e.to_string()))
 }
 
+/// `dir`'s trust domain (workload-identity.md W13): the one it has, else
+/// `<dir>.<issuer host>`. `None` while it has no issuer URL.
+pub fn trust_domain(
+    auth: &crate::auth::AuthService,
+    manager: &crate::state::VmManager,
+    dir: &crate::tenants::Directory,
+) -> Option<String> {
+    if let Some(t) = &dir.trust_domain {
+        return Some(t.clone());
+    }
+    let iss = issuer_url(auth, manager, dir)?;
+    crate::directory::workload::default_trust_domain(&iss, &dir.id)
+}
+
+/// Who running VM `vm_id` is, and its directory, for its identity token
+/// (workload-identity.md §4.2). `409 not_running` unless it runs (W4).
+pub async fn vm_identity(
+    app: &AppState,
+    vm_id: &str,
+) -> Result<(String, crate::directory::workload::VmIdentity), super::ApiErr> {
+    let gone = || err(StatusCode::NOT_FOUND, "not_found", "no such VM");
+    let internal = |m: String| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m);
+    let vm = app.manager.get_vm(vm_id).await.map_err(|_| gone())?;
+    if vm.state() != crate::models::VmState::Running {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "not_running",
+            "only a running VM has an identity",
+        ));
+    }
+    let project = app
+        .manager
+        .projects
+        .get(&vm.project)
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or_else(gone)?;
+    let tenant = app
+        .auth
+        .tenants
+        .get(&project.tenant_id)
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or_else(gone)?;
+    let id = crate::directory::workload::VmIdentity {
+        tenant: tenant.slug,
+        project: project.name,
+        vm_id: vm.id,
+        vm_name: vm.name,
+        cluster: super::op::cluster_id(app),
+        service_account: None,
+    };
+    Ok((tenant.directory_id, id))
+}
+
+/// An identity token for `id` addressed to `audience`, signed by `dir`
+/// (workload-identity.md §4.2): `ttl` seconds (§4.4: 10 min to 1 h, default
+/// 15 min). Its first one fixes the directory's trust domain (W13).
+pub fn sign_identity(
+    app: &AppState,
+    dir: &str,
+    id: &crate::directory::workload::VmIdentity,
+    audience: &str,
+    ttl: Option<u64>,
+) -> Result<String, super::ApiErr> {
+    use crate::directory::workload;
+    let invalid = |m: String| err(StatusCode::BAD_REQUEST, "invalid", m);
+    let internal = |m: String| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m);
+    if !workload::valid_audience(audience) {
+        return Err(invalid("audience is required".into()));
+    }
+    let ttl = workload::ttl(ttl).map_err(invalid)?;
+    let d = app
+        .auth
+        .tenants
+        .get_directory(dir)
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "no such directory"))?;
+    let td = trust_domain(&app.auth, &app.manager, &d).ok_or_else(no_issuer)?;
+    if d.trust_domain.is_none() {
+        app.auth
+            .tenants
+            .set_trust_domain(dir, &td)
+            .map_err(|e| internal(e.to_string()))?;
+    }
+    let now = crate::auth::store::now();
+    let jti = uuid::Uuid::new_v4().to_string();
+    let claims = workload::identity_claims(&td, id, audience, now, ttl, &jti);
+    sign(app, dir, workload::TYP, claims)
+}
+
 fn no_issuer() -> super::ApiErr {
     err(
         StatusCode::SERVICE_UNAVAILABLE,

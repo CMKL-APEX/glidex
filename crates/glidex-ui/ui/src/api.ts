@@ -1462,9 +1462,11 @@ export interface HostedDirectory {
   name: string;
   issuer: string;
   created_at?: string;
+  /** Its SPIFFE trust domain (workload-identity.md W13). */
+  trust_domain?: string;
 }
 export const listDirectories = () => rpc(DirectoryService.method.listDirectories).then((r) => (r.directories ?? []) as HostedDirectory[]);
 /** A directory and its first administrator's invitation link (shown once). */
-export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string }) =>
+export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string; trust_domain?: string }) =>
   rpc(DirectoryService.method.createDirectory, req).then((r) => ({ directory: r.directory as HostedDirectory, link: r.invitation_link ?? "" }));
 export const deleteDirectory = (id: string) => rpc(DirectoryService.method.deleteDirectory, { id }).then(none);

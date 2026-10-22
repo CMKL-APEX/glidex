@@ -19,6 +19,8 @@ fn directory_pb(call: &Call, d: &Directory) -> pb::HostedDirectory {
         id: d.id.clone(),
         name: d.name.clone(),
         issuer: crate::api::issuer::issuer_url(call.auth(), call.manager(), d).unwrap_or_default(),
+        trust_domain: crate::api::issuer::trust_domain(call.auth(), call.manager(), d)
+            .unwrap_or_default(),
         created_at: Timestamp {
             seconds: d.created_at as i64,
             ..Default::default()
@@ -52,6 +54,15 @@ pub fn create_directory(
             "admin_email is required",
         ));
     }
+    if let Some(td) = &req.trust_domain
+        && !crate::directory::workload::valid_trust_domain(td)
+    {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            format!("invalid trust domain '{td}': lowercase letters, digits, '.', '-' and '_'"),
+        ));
+    }
     let name = if req.name.trim().is_empty() {
         req.id.clone()
     } else {
@@ -63,6 +74,14 @@ pub fn create_directory(
         .create_directory(&req.id, &name, &req.owner)
         .map_err(tenant_error)?;
     call.set_target(format!("directory:{}", d.id));
+    let d = match &req.trust_domain {
+        Some(td) => call
+            .auth()
+            .tenants
+            .set_trust_domain(&d.id, td)
+            .map_err(tenant_error)?,
+        None => d,
+    };
     // Its keys now, so its discovery document is complete from the start.
     let now = crate::auth::store::now();
     let made = call

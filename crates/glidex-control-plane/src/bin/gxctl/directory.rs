@@ -1049,7 +1049,13 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
             {
                 Ok(r) => {
                     for d in &r.directories {
-                        println!("  {:<20} {:<24} {}", d.id.cyan(), d.name, d.issuer);
+                        println!(
+                            "  {:<20} {:<24} {}  {}",
+                            d.id.cyan(),
+                            d.name,
+                            d.issuer,
+                            d.trust_domain.dimmed()
+                        );
                     }
                 }
                 Err(e) => err(rpc_err(e)),
@@ -1058,7 +1064,7 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
         (Some("create" | "add"), Some(id)) => {
             let Some(email) = flag_value(args, "--admin-email") else {
                 return usage(
-                    "directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N]",
+                    "directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME]",
                 );
             };
             let svc = glidex_api::proto::glidex::tenancy::v1::DirectoryServiceClient::new(
@@ -1073,15 +1079,17 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
                     .unwrap_or_else(|| format!("{id}-admin")),
                 admin_email: email.into(),
                 days: flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                trust_domain: flag_value(args, "--trust-domain").map(String::from),
                 ..Default::default()
             };
             match svc.create_directory(req).await.map(|r| r.into_owned()) {
                 Ok(r) => {
                     if let Some(d) = r.directory.as_option() {
                         println!(
-                            "  Directory {} created; its issuer is {}",
+                            "  Directory {} created; its issuer is {}, its trust domain {}",
                             d.id.cyan(),
-                            d.issuer
+                            d.issuer,
+                            d.trust_domain
                         );
                     }
                     println!(
@@ -1111,7 +1119,7 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
             }
         }
         _ => usage(
-            "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] | delete <id> | keys [rotate]",
+            "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME] | delete <id> | keys [rotate]",
         ),
     }
 }
