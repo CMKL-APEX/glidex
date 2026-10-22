@@ -173,7 +173,10 @@ Hypervisor, Glidex's default VMM, is built on the same rust-vmm crates.
 
 - **Differs:** these are VMMs or runtimes, not control planes. Glidex
   manages long-lived VMs with disks, networks and devices; it does not aim
-  at per-request VM creation or container semantics.
+  at per-request VM creation or container semantics. Glidex supported
+  Firecracker early on and dropped it for its lack of GPU passthrough
+  ([Design decisions](design-decisions.md#cloud-hypervisor-and-qemu-with-one-feature-set-driven-directly));
+  it may return as the VMM of a lightweight, container-compatible layer.
 - **Pick them when** you need sandboxed, short-lived workloads in large
   numbers.
 

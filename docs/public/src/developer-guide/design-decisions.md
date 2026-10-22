@@ -131,8 +131,12 @@ hypervisors get their whole configuration on the command line, so
 there is no half-configured instance and no crash window between
 "launched" and "booted".
 
-Why not libvirt is not recorded. What the design needs from a VM
-runtime is recorded, and it is specific: a supervisor per VM that owns
+Libvirt was set aside for two reasons, in the maintainers' words: it is
+XML-based (a domain definition format from older designs, which every
+feature would have to be expressed through), and it brings many external
+dependencies onto every host, against README goal 4 (minimal host
+dependencies). What the design needs from a VM runtime is also recorded,
+and it is specific: a supervisor per VM that owns
 the console PTY and the exit record (reconciliation.md D1), restart
 policy in one place (D6), and everything needed to adopt an instance
 persisted in its runtime directory (D7). Glidex runs alongside libvirt
@@ -141,10 +145,12 @@ not ready (host-topology.md §5, PR #133).
 
 **Alternatives considered.**
 
-- **Firecracker** was supported early on and removed (commit "Drop
-  Firecracker support"). The reason isn't recorded. Firecracker publicly
-  has no PCI passthrough and no UEFI firmware boot, which goals 1 and 4
-  require (VFIO, and booting stock distro cloud images through EDK2).
+- **Firecracker** was considered first and supported early on, then
+  removed (commit "Drop Firecracker support") because it has no PCI
+  passthrough, so no GPUs for VMs. It also has no UEFI firmware boot,
+  which booting stock distro cloud images through EDK2 needs. It may come
+  back later as the VMM of a lightweight, container-compatible layer,
+  where its small footprint and fast start matter more than devices.
   Old Firecracker records are skipped at load, not treated as fatal
   ([data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md)).
 - **One hypervisor only (Cloud Hypervisor).** QEMU is kept because it
