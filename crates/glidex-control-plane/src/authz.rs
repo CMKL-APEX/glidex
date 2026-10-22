@@ -9,26 +9,26 @@
 //! entities those refer to) and get a [`Decision`]. A decision is an allow
 //! only if Cedar allows **and** no policy errored: Cedar skips a policy
 //! whose evaluation errors, which for a `forbid` would mean allow.
+//!
+//! The engine is [`glidex_auth::cedar`]'s; this module is glidex's model
+//! of it: the schema and policies, the entities ([`Ent`], [`EntitySet`])
+//! and the break-glass team.
 
-use arc_swap::ArcSwap;
-use cedar_policy::{
-    Authorizer, Context, Decision as CedarDecision, Entities, EntityUid, Policy, PolicyId,
-    PolicySet, Request, Schema, SlotId, Template, ValidationMode, Validator,
+use cedar_policy::EntityUid;
+#[cfg(test)]
+use cedar_policy::{Policy, PolicyId};
+use glidex_auth::cedar::{self, Model};
+pub use glidex_auth::cedar::{
+    AuthContext, AuthzError, Decision, PolicyInfo, PolicySource, SiteSource, check_site_id,
+    parse_site_policy,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
-use std::str::FromStr;
-use std::sync::Arc;
-use thiserror::Error;
+use std::collections::BTreeMap;
 
 pub const SCHEMA_SRC: &str = include_str!("../policies/glidex.cedarschema");
 pub const BASE_SRC: &str = include_str!("../policies/base.cedar");
 pub const ROLES_SRC: &str = include_str!("../policies/roles.cedar");
-
-/// Id prefixes reserved for shipped policies and links (spec §7.6).
-const RESERVED_PREFIXES: [&str; 4] = ["base.", "role.", "grant.", "link."];
-const SITE_PREFIX: &str = "site.";
 
 /// Ids of this process's host (node) and cluster entities. A standalone
 /// host is a cluster of one: `Host::"local"` in `Cluster::"local"`. After
@@ -79,16 +79,6 @@ pub fn node_id() -> String {
 /// principals: allowed everything by `base.break-glass` and evaluated
 /// without site policies or links.
 pub const BREAK_GLASS_TEAM: &str = "unix:glidex-admin";
-
-#[derive(Debug, Error)]
-pub enum AuthzError {
-    #[error("invalid policy: {0}")]
-    Invalid(String),
-    #[error("policy validation failed: {}", .0.join("; "))]
-    Validation(Vec<String>),
-    #[error("authorization request error: {0}")]
-    Request(String),
-}
 
 /// A Cedar entity, by type and id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -566,408 +556,47 @@ impl EntitySet {
     }
 }
 
-/// How the principal authenticated, for `context.auth`.
-#[derive(Debug, Clone, Serialize)]
-pub struct AuthContext {
-    pub method: String,
-    pub transport: String,
-    pub age_secs: i64,
-    /// A multi-factor login (spec/tenancy.md §6), for site policies.
-    pub mfa: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_ip: Option<std::net::IpAddr>,
-}
+/// glidex's side of the engine: its schema and shipped policies, [`Ent`]
+/// and [`EntitySet`], and the break-glass team.
+pub struct Glidex;
 
-impl AuthContext {
-    fn to_json(&self) -> Value {
-        let mut v = json!({
-            "method": self.method, "transport": self.transport, "age_secs": self.age_secs,
-            "mfa": self.mfa,
-        });
-        if let Some(ip) = self.source_ip {
-            v["source_ip"] = json!({ "__extn": { "fn": "ip", "arg": ip.to_string() } });
-        }
-        v
-    }
-}
+impl Model for Glidex {
+    type Ent = Ent;
+    type Entities = EntitySet;
+    const NAMESPACE: &'static str = "Glidex";
+    const SCHEMA: &'static str = SCHEMA_SRC;
+    const POLICIES: &'static [(&'static str, PolicySource)] = &[
+        (BASE_SRC, PolicySource::Base),
+        (ROLES_SRC, PolicySource::Role),
+    ];
 
-/// One authorization question.
-#[derive(Clone)]
-pub struct Query {
-    pub principal: Ent,
-    pub action: String,
-    pub resource: Ent,
-    pub auth: AuthContext,
-    /// Extra context fields (`project`, `network`) besides `auth`.
-    pub extra: Vec<(&'static str, Ent)>,
-    pub entities: EntitySet,
-}
-
-impl Query {
-    pub fn new(
-        principal: Ent,
-        action: &str,
-        resource: Ent,
-        auth: AuthContext,
-        entities: EntitySet,
-    ) -> Self {
-        Self {
-            principal,
-            action: action.to_string(),
-            resource,
-            auth,
-            extra: Vec::new(),
-            entities,
-        }
+    fn uid(e: &Ent) -> EntityUid {
+        e.uid()
     }
 
-    pub fn with(mut self, key: &'static str, e: Ent) -> Self {
-        self.extra.push((key, e));
-        self
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct Decision {
-    pub allowed: bool,
-    /// Ids of the policies that determined the decision.
-    pub policies: Vec<String>,
-    /// Evaluation errors; any error makes the decision a deny.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<String>,
-}
-
-impl Decision {
-    pub fn denied_by(&self, id: &str) -> bool {
-        !self.allowed && self.policies.iter().any(|p| p == id)
-    }
-}
-
-/// A role assignment: one link of a role template.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Link {
-    pub id: String,
-    pub template: String,
-    pub principal: Ent,
-    pub resource: Ent,
-}
-
-/// Where a loaded policy came from (`GET /authz/policies`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PolicySource {
-    Base,
-    Role,
-    Link,
-    Site,
-    File,
-}
-
-/// A site policy to load.
-#[derive(Debug, Clone)]
-pub struct SiteSource {
-    pub id: String,
-    pub text: String,
-    pub source: PolicySource,
-}
-
-struct Sets {
-    full: PolicySet,
-    base_only: PolicySet,
-    sources: HashMap<String, PolicySource>,
-}
-
-pub struct Engine {
-    schema: Schema,
-    sets: ArcSwap<Sets>,
-    /// Bumped on every install: clients re-run their capability checks.
-    generation: std::sync::atomic::AtomicU64,
-}
-
-/// Parse `src` into policies and templates re-registered under their
-/// `@id` annotations (Cedar would otherwise name them `policy0`, …).
-fn parse_with_ids(src: &str) -> Result<(Vec<Policy>, Vec<Template>), AuthzError> {
-    let parsed = PolicySet::from_str(src).map_err(|e| AuthzError::Invalid(e.to_string()))?;
-    let id_of = |ann: Option<&str>| -> Result<PolicyId, AuthzError> {
-        ann.map(PolicyId::new).ok_or_else(|| {
-            AuthzError::Invalid("every policy needs an @id(\"…\") annotation".into())
-        })
-    };
-    let policies = parsed
-        .policies()
-        .map(|p| Ok(p.new_id(id_of(p.annotation("id"))?)))
-        .collect::<Result<Vec<_>, AuthzError>>()?;
-    let templates = parsed
-        .templates()
-        .map(|t| Ok(t.new_id(id_of(t.annotation("id"))?)))
-        .collect::<Result<Vec<_>, AuthzError>>()?;
-    Ok((policies, templates))
-}
-
-fn validation_errors(schema: &Schema, set: &PolicySet) -> Vec<String> {
-    let result = Validator::new(schema.clone()).validate(set, ValidationMode::Strict);
-    result.validation_errors().map(|e| e.to_string()).collect()
-}
-
-impl Engine {
-    /// The shipped schema and policies, with no links or site policies.
-    pub fn new() -> Result<Self, AuthzError> {
-        let (schema, _) = Schema::from_cedarschema_str(SCHEMA_SRC)
-            .map_err(|e| AuthzError::Invalid(e.to_string()))?;
-        let engine = Self {
-            schema,
-            sets: ArcSwap::from_pointee(Sets {
-                full: PolicySet::new(),
-                base_only: PolicySet::new(),
-                sources: HashMap::new(),
-            }),
-            generation: std::sync::atomic::AtomicU64::new(0),
-        };
-        engine.install(&[], &[])?;
-        Ok(engine)
+    fn json_ref(e: &Ent) -> Value {
+        e.json_ref()
     }
 
-    pub fn schema(&self) -> &Schema {
-        &self.schema
+    fn entities_json(es: &EntitySet) -> Value {
+        es.to_json()
     }
 
-    fn base_set(&self) -> Result<(PolicySet, HashMap<String, PolicySource>), AuthzError> {
-        let mut set = PolicySet::new();
-        let mut sources = HashMap::new();
-        for (src, kind) in [
-            (BASE_SRC, PolicySource::Base),
-            (ROLES_SRC, PolicySource::Role),
-        ] {
-            let (policies, templates) = parse_with_ids(src)?;
-            for p in policies {
-                sources.insert(p.id().to_string(), kind);
-                set.add(p).map_err(|e| AuthzError::Invalid(e.to_string()))?;
-            }
-            for t in templates {
-                sources.insert(t.id().to_string(), kind);
-                set.add_template(t)
-                    .map_err(|e| AuthzError::Invalid(e.to_string()))?;
-            }
-        }
-        Ok((set, sources))
-    }
-
-    /// Build and validate the full set without publishing it.
-    pub fn build(&self, links: &[Link], site: &[SiteSource]) -> Result<PolicySet, AuthzError> {
-        self.build_inner(links, site).map(|(set, _)| set)
-    }
-
-    fn build_inner(
-        &self,
-        links: &[Link],
-        site: &[SiteSource],
-    ) -> Result<(PolicySet, HashMap<String, PolicySource>), AuthzError> {
-        let (mut set, mut sources) = self.base_set()?;
-        for l in links {
-            let vals = HashMap::from([
-                (SlotId::principal(), l.principal.uid()),
-                (SlotId::resource(), l.resource.uid()),
-            ]);
-            set.link(PolicyId::new(&l.template), PolicyId::new(&l.id), vals)
-                .map_err(|e| AuthzError::Invalid(format!("link {}: {}", l.id, e)))?;
-            sources.insert(l.id.clone(), PolicySource::Link);
-        }
-        for s in site {
-            let p = parse_site_policy(&s.id, &s.text)?;
-            set.add(p)
-                .map_err(|e| AuthzError::Invalid(format!("{}: {}", s.id, e)))?;
-            sources.insert(s.id.clone(), s.source);
-        }
-        let errors = validation_errors(&self.schema, &set);
-        if !errors.is_empty() {
-            return Err(AuthzError::Validation(errors));
-        }
-        Ok((set, sources))
-    }
-
-    /// Build, validate and atomically publish a new policy set.
-    pub fn install(&self, links: &[Link], site: &[SiteSource]) -> Result<(), AuthzError> {
-        let (full, sources) = self.build_inner(links, site)?;
-        let (base_only, _) = self.base_set()?;
-        self.sets.store(Arc::new(Sets {
-            full,
-            base_only,
-            sources,
-        }));
-        self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Ok(())
-    }
-
-    /// How many times policies and links were installed.
-    pub fn generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Decide `q` against the published set. Principals in the
-    /// break-glass team are decided by the base policies alone.
-    pub fn check(&self, q: &Query) -> Decision {
-        let sets = self.sets.load();
-        let set = if self.is_break_glass(q) {
-            &sets.base_only
-        } else {
-            &sets.full
-        };
-        self.check_with(set, q)
-    }
-
-    fn is_break_glass(&self, q: &Query) -> bool {
-        match q.entities.entities.get(&q.principal) {
+    /// Principals in the break-glass team are decided by the base
+    /// policies alone.
+    fn is_break_glass(es: &EntitySet, principal: &Ent) -> bool {
+        match es.entities.get(principal) {
             Some((_, parents)) => parents.contains(&Ent::Team(BREAK_GLASS_TEAM.into())),
             None => false,
         }
     }
-
-    /// Decide `q` against `set` (for `simulate`, and tests).
-    pub fn check_with(&self, set: &PolicySet, q: &Query) -> Decision {
-        match self.evaluate(set, q) {
-            Ok(d) => d,
-            Err(e) => Decision {
-                allowed: false,
-                policies: Vec::new(),
-                errors: vec![e.to_string()],
-            },
-        }
-    }
-
-    fn evaluate(&self, set: &PolicySet, q: &Query) -> Result<Decision, AuthzError> {
-        let action: EntityUid = format!("Glidex::Action::{:?}", q.action)
-            .parse()
-            .map_err(|e: cedar_policy::ParseErrors| AuthzError::Request(e.to_string()))?;
-        let mut ctx = json!({ "auth": q.auth.to_json() });
-        for (k, e) in &q.extra {
-            ctx[*k] = e.json_ref();
-        }
-        let context = Context::from_json_value(ctx, Some((&self.schema, &action)))
-            .map_err(|e| AuthzError::Request(e.to_string()))?;
-        let request = Request::new(
-            q.principal.uid(),
-            action,
-            q.resource.uid(),
-            context,
-            Some(&self.schema),
-        )
-        .map_err(|e| AuthzError::Request(e.to_string()))?;
-        let entities = Entities::from_json_value(q.entities.to_json(), Some(&self.schema))
-            .map_err(|e| AuthzError::Request(e.to_string()))?;
-        let resp = Authorizer::new().is_authorized(&request, set, &entities);
-        let errors: Vec<String> = resp.diagnostics().errors().map(|e| e.to_string()).collect();
-        let policies = resp
-            .diagnostics()
-            .reason()
-            .map(|id| id.to_string())
-            .collect();
-        if !errors.is_empty() {
-            tracing::error!(action = %q.action, principal = %q.principal, ?errors, "policy evaluation error; denying");
-        }
-        Ok(Decision {
-            allowed: resp.decision() == CedarDecision::Allow && errors.is_empty(),
-            policies,
-            errors,
-        })
-    }
-
-    /// Validate one candidate site policy on its own (syntax, id, schema).
-    pub fn validate_site_policy(&self, id: &str, text: &str) -> Result<(), AuthzError> {
-        let p = parse_site_policy(id, text)?;
-        let mut set = PolicySet::new();
-        set.add(p).map_err(|e| AuthzError::Invalid(e.to_string()))?;
-        let errors = validation_errors(&self.schema, &set);
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(AuthzError::Validation(errors))
-        }
-    }
-
-    /// Every loaded policy and template, with its source and text.
-    pub fn listing(&self) -> Vec<PolicyInfo> {
-        let sets = self.sets.load();
-        let src = |id: &str| sets.sources.get(id).copied().unwrap_or(PolicySource::Site);
-        let mut out: Vec<PolicyInfo> = sets
-            .full
-            .templates()
-            .map(|t| PolicyInfo {
-                id: t.id().to_string(),
-                source: src(t.id().as_ref()),
-                template: true,
-                text: t.to_string(),
-            })
-            .chain(sets.full.policies().map(|p| PolicyInfo {
-                id: p.id().to_string(),
-                source: src(p.id().as_ref()),
-                template: false,
-                text: p.to_string(),
-            }))
-            .collect();
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        out
-    }
-
-    /// Whether `template` is a known role template.
-    pub fn is_template(&self, template: &str) -> bool {
-        self.sets
-            .load()
-            .full
-            .template(&PolicyId::new(template))
-            .is_some()
-    }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PolicyInfo {
-    pub id: String,
-    pub source: PolicySource,
-    pub template: bool,
-    pub text: String,
-}
-
-/// Parse a site policy: exactly one static policy whose `@id` is `id`,
-/// with a `site.` prefix.
-pub fn parse_site_policy(id: &str, text: &str) -> Result<Policy, AuthzError> {
-    check_site_id(id)?;
-    let (policies, templates) = parse_with_ids(text)?;
-    if !templates.is_empty() || policies.len() != 1 {
-        return Err(AuthzError::Invalid(
-            "a site policy must be exactly one policy, not a template".into(),
-        ));
-    }
-    let p = policies.into_iter().next().expect("one policy");
-    if p.id().to_string() != id {
-        return Err(AuthzError::Invalid(format!(
-            "@id must be \"{}\" (found \"{}\")",
-            id,
-            p.id()
-        )));
-    }
-    Ok(p)
-}
-
-pub fn check_site_id(id: &str) -> Result<(), AuthzError> {
-    if RESERVED_PREFIXES.iter().any(|p| id.starts_with(p)) || !id.starts_with(SITE_PREFIX) {
-        return Err(AuthzError::Invalid(format!(
-            "site policy ids must start with \"{}\"",
-            SITE_PREFIX
-        )));
-    }
-    let rest = &id[SITE_PREFIX.len()..];
-    if rest.is_empty()
-        || rest.len() > 64
-        || !rest
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.".contains(c))
-    {
-        return Err(AuthzError::Invalid(
-            "site policy ids are site.[a-z0-9._-]{1,64}".into(),
-        ));
-    }
-    Ok(())
-}
+pub type Engine = cedar::Engine<Glidex>;
+/// One authorization question.
+pub type Query = cedar::Query<Glidex>;
+/// A role assignment: one link of a role template.
+pub type Link = cedar::Link<Ent>;
 
 /// Role templates and the resource kind each may be linked to.
 pub const PROJECT_ROLES: [&str; 4] = ["role.viewer", "role.operator", "role.editor", "role.owner"];

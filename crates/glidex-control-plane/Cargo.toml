@@ -59,6 +59,8 @@ base64 = "0.22"
 glidex-authd = { path = "../glidex-authd" }
 glidex-tls = { path = "../glidex-tls" }
 glidex-raftstore = { path = "../glidex-raftstore" }
+# Core authentication, shared with hyperstor (spec/security.md §5, §7).
+glidex-auth = { path = "../glidex-auth" }
 # RPC API next to REST (spec/grpc.md); pinned with glidex-api's connectrpc.
 glidex-api = { path = "../glidex-api" }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "axum", "client"] }

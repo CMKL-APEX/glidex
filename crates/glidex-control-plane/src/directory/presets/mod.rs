@@ -18,13 +18,7 @@ pub enum ClaimRule {
 
 /// What a preset says about a login it allows, where it decides instead
 /// of the generic claims.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Checked {
-    /// Whether the login counts as multi-factor.
-    pub mfa: Option<bool>,
-    /// Whether the email is the user's.
-    pub email_verified: Option<bool>,
-}
+pub use glidex_auth::oidc::Checked;
 
 impl ClaimRule {
     /// `Err` with why the login isn't allowed.
@@ -43,6 +37,15 @@ impl ClaimRule {
     }
 }
 
+impl glidex_auth::oidc::ClaimCheck for ClaimRule {
+    fn check(
+        &self,
+        claims: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<Checked, String> {
+        ClaimRule::check(self, claims)
+    }
+}
+
 /// What an OIDC client takes from its preset.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preset {
@@ -51,6 +54,19 @@ pub struct Preset {
     /// Added to the authorization request.
     pub auth_params: Vec<(String, String)>,
     pub rule: ClaimRule,
+}
+
+impl From<Preset> for glidex_auth::oidc::Preset {
+    fn from(p: Preset) -> Self {
+        glidex_auth::oidc::Preset {
+            issuer_aliases: p.issuer_aliases,
+            auth_params: p.auth_params,
+            rule: match p.rule {
+                ClaimRule::None => None,
+                rule => Some(std::sync::Arc::new(rule)),
+            },
+        }
+    }
 }
 
 /// Whether `domain` is a public mail domain, which no tenant or
