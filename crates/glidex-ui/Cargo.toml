@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+glidex-tls = { path = "../glidex-tls", features = ["test-util"] }
 tempfile = "3"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 time = "0.3"

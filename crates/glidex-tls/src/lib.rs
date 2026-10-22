@@ -10,6 +10,7 @@
 //!   handshake by SNI, and certificate files re-read when they change.
 //! - The local names of this host: certificate SANs, the UI's `Host`
 //!   allowlist and the control plane's default `Origin`s.
+//! - The node's Tailscale certificates ([`tailscale`]), served by SNI.
 //! - Client trust for gxctl and the UI's TCP fallback: the system store,
 //!   explicit PEM files and the control plane's published certificate,
 //!   with the fingerprint of a rejected certificate kept for the error.
@@ -25,6 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::sign::CertifiedKey;
+
+pub mod tailscale;
 
 pub use tokio_rustls;
 
