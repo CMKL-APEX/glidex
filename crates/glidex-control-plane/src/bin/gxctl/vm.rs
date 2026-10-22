@@ -1276,37 +1276,28 @@ async fn list_service_accounts(
         .collect()
 }
 
-/// Token id → `name (project …)`. A VM names its service account by the
-/// token's public id; people read its name (as `federation show` does).
-fn labels_of(
-    accounts: &[glidex_api::proto::glidex::access::v1::Token],
-) -> std::collections::HashMap<String, String> {
-    accounts
-        .iter()
-        .map(|a| {
-            let label = match a.project.as_deref() {
-                Some(p) if !p.is_empty() => format!("{} (project {p})", a.name),
-                _ => a.name.clone(),
-            };
-            (a.id.clone(), label)
-        })
-        .collect()
-}
-
-async fn service_accounts(client: &ApiClient) -> std::collections::HashMap<String, String> {
+async fn service_accounts(client: &ApiClient) -> Vec<glidex_api::proto::glidex::access::v1::Token> {
     match client.rpc_transport().await {
-        Ok(t) => labels_of(&list_service_accounts(&t).await),
-        Err(_) => Default::default(),
+        Ok(t) => list_service_accounts(&t).await,
+        Err(_) => Vec::new(),
     }
 }
 
-/// What to call service account `id`: its name, or that it's one the
-/// caller can't list.
-fn service_account_label(labels: &std::collections::HashMap<String, String>, id: &str) -> String {
-    labels
-        .get(id)
-        .cloned()
-        .unwrap_or_else(|| "a service account you can't list".into())
+/// What to call service account `id`: `name (project …)` from the
+/// caller's own list, or that it's one they can't list. A VM names its
+/// service account by the token's public id; people read its name (as
+/// `federation show` does), and the id itself is never printed.
+fn service_account_label(
+    accounts: &[glidex_api::proto::glidex::access::v1::Token],
+    id: &str,
+) -> String {
+    match accounts.iter().find(|a| a.id == id) {
+        Some(a) => match a.project.as_deref() {
+            Some(p) if !p.is_empty() => format!("{} (project {p})", a.name),
+            _ => a.name.clone(),
+        },
+        None => "a service account you can't list".into(),
+    }
 }
 
 /// `service-account <name|id> [--set <service account> | --none]`: the
@@ -1327,8 +1318,7 @@ pub async fn service_account(client: &ApiClient, args: &[&str]) {
         Err(e) => return err(e.message),
     };
     let accounts = list_service_accounts(&t).await;
-    let labels = labels_of(&accounts);
-    let label = |id: &str| service_account_label(&labels, id);
+    let label = |id: &str| service_account_label(&accounts, id);
     let change = if has_flag(rest, "--none") {
         Some(None)
     } else if let Some(want) = flag_value(rest, "--set") {
