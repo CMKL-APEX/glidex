@@ -99,6 +99,8 @@ export interface VmResponse {
   /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/gpu-vms.md §4). */
   numa?: { node?: number; vcpus?: number; memory_mib?: number; devices?: string[] }[];
   credential?: string;
+  /** Its service account (a token id), for workload identity (spec/workload-identity.md W5). */
+  service_account?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
   firmware?: string;
@@ -278,6 +280,8 @@ export interface CreateVmRequest {
   /** Host path of UEFI firmware (admins only); prefer `firmware`. */
   firmware_path?: string;
   credential?: string;
+  /** A service account (token id) for its workload identity (spec/workload-identity.md W5). */
+  service_account?: string;
   networks?: { network: string }[];
   rootfs_path?: string;
   /** Image id/name: glidex creates and owns a root disk from it. */

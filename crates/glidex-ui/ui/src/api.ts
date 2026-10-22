@@ -134,7 +134,7 @@ import {
   type GranularityJson,
   type GroupKeyJson,
 } from "./gen/glidex/usage/v1/usage_pb";
-import { archToProto } from "./types";
+import { archToProto, isServiceToken } from "./types";
 import { csrfToken, reauthenticate, sessionEnded, setCsrf, withSession } from "@glidex/ui-kit";
 
 const API_BASE = "/api";
@@ -771,6 +771,21 @@ export function setVmKernel(id: string, change: { kernel?: string; follow?: bool
   const vm = { kernel: change.kernel, kernel_from_disk: change.follow };
   return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
 }
+
+/** Give a VM a service account, or take it away (`null`); it applies to the
+ * VM's next token, no restart (spec/workload-identity.md W5). */
+export const setVmServiceAccount = (id: string, serviceAccount: string | null) =>
+  vmWrite(
+    rpc(VmService.method.updateVm, {
+      id,
+      change: serviceAccount ? { service_account: serviceAccount } : {},
+      update_mask: "serviceAccount",
+    }) as Promise<VmWriteResponse>,
+  );
+
+/** The service accounts the caller can see in `project`. */
+export const listServiceAccounts = (project: string) =>
+  listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
 export const extractVmKernel = (id: string) =>

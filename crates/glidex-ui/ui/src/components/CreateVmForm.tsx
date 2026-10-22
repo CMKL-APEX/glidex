@@ -1,8 +1,8 @@
 import { useRef, useEffect, useState, type FormEvent } from "react";
-import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPools, pullImage } from "../api";
+import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPools, listServiceAccounts, pullImage } from "../api";
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
-import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
+import type { ApiToken, CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
 import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
@@ -42,6 +42,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   // Set once the user picks a credential, so a late load never overrides it.
   const credentialChosen = useRef(false);
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
+  // Workload identity (spec/workload-identity.md W5).
+  const [serviceAccount, setServiceAccount] = useState("");
+  const [serviceAccounts, setServiceAccounts] = useState<ApiToken[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
   const [kernelPath, setKernelPath] = useState("");
@@ -155,6 +158,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   };
 
   useEffect(() => {
+    if (project) {
+      listServiceAccounts(project)
+        .then(setServiceAccounts)
+        .catch(() => setServiceAccounts([]));
+    }
     listCredentials(project)
       .then((creds) => {
         setCredentials(creds);
@@ -259,6 +267,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         kernel_from_disk: fromKernelImage && rootSource !== "path" && followGuest ? true : undefined,
         firmware: firmware ? firmwareImage : undefined,
         credential: seeded && credential ? credential : undefined,
+        service_account: serviceAccount || undefined,
         networks:
           selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
         rootfs_path: rootSource === "path" ? rootfsPath : undefined,
@@ -497,6 +506,30 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                   : "Without a credential the VM has no way to log in. Manage credentials on the Credentials page."}
             </p>
           </div>
+      )}
+
+      {serviceAccounts.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            Service Account (optional)
+          </label>
+          <select
+            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+            value={serviceAccount}
+            onChange={(e) => setServiceAccount(e.target.value)}
+            data-testid="service-account"
+          >
+            <option value="">None</option>
+            {serviceAccounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            Software in the VM gets short-lived glidex tokens acting as it, from its metadata endpoint, with no secret stored in the guest.
+          </p>
+        </div>
       )}
 
       {networks.length === 0 && (

@@ -138,6 +138,12 @@ pub struct VmConfig {
     /// generated cloud-init seed provisions as the guest login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// The service account (a `SERVICE_ACCOUNT` token's id, of a project of
+    /// the VM's tenant) whose glidex tokens the VM gets from its metadata
+    /// endpoint (spec/workload-identity.md W5, W6). Changing it needs no
+    /// restart: it applies to the next token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account: Option<String>,
     /// Path of the boot disk. For a managed root disk (`root_disk`) this
     /// is that disk's file, so backends see one field either way.
     pub rootfs_path: String,

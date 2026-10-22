@@ -310,6 +310,9 @@ message Vm {
   glidex.common.v1.Hypervisor hypervisor = 20;
   repeated string vfio_devices = 21 [json_name = "vfio_devices"];
   optional string credential = 22;
+  // The service account whose glidex tokens the VM gets from its metadata
+  // endpoint (spec/workload-identity.md W5, W6): a token id.
+  optional string service_account = 44 [json_name = "service_account"];
   repeated Nic nics = 23;
   // Firmware image id.
   optional string firmware = 24;
@@ -408,6 +411,10 @@ message CreateVmRequest {
   optional string cloud_init_path = 8 [json_name = "cloud_init_path"];
   // A stored guest credential's username.
   optional string credential = 9;
+  // A service account (token id) of a project of the VM's tenant, for its
+  // workload identity (spec/workload-identity.md W5): needs
+  // `useServiceAccount` on that project.
+  optional string service_account = 35 [json_name = "service_account"];
   string rootfs_path = 10 [json_name = "rootfs_path"];
   // Image id or name: a linked root disk is made from it.
   optional string image = 11;
@@ -529,6 +536,9 @@ message VmChange {
   string kernel_args = 7 [json_name = "kernel_args"];
   // Absent with `credential` in the mask: the VM loses its credential.
   optional string credential = 8;
+  // Absent with `service_account` in the mask: the VM loses it. Applies to
+  // the next token, no restart (spec/workload-identity.md W5).
+  optional string service_account = 19 [json_name = "service_account"];
   bool hugepages = 9;
   repeated string vfio_devices = 10 [json_name = "vfio_devices"];
   // Disk ids or names, replacing the list.

@@ -10,6 +10,15 @@ use serde_json::{Value, json};
 
 /// The JOSE `typ` of an identity token (JWT-SVIDs allow `JWT`).
 pub const TYP: &str = "JWT";
+/// A VM's glidex tokens are federated tokens (tenancy.md D48) whose
+/// `federation` is `vm:<tenant id>`: federation ids are `[a-z0-9-]`, so no
+/// federation is ever named so (W6).
+pub const VM_ORIGIN: &str = "vm:";
+/// The federation name `POST /auth/exchange` takes for a VM's own identity
+/// token, `<tenant>/vm` (§5); no federation may be called this.
+pub const VM_FEDERATION: &str = "vm";
+/// A VM's glidex token's lifetime (W6, W8).
+pub const GLIDEX_TOKEN_TTL_SECS: u64 = 900;
 /// Lifetimes (W8, §4.4).
 pub const DEFAULT_TTL_SECS: u64 = 900;
 pub const MIN_TTL_SECS: u64 = 600;

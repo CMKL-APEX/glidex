@@ -35,7 +35,7 @@ pub fn issuer_url(
 /// `claims` signed by `dir` with `iss` set; the first token a directory
 /// issues fixes its issuer URL (D52).
 pub fn sign(
-    app: &AppState,
+    app: &super::App,
     dir: &str,
     typ: &str,
     mut claims: Value,
@@ -75,12 +75,18 @@ pub fn trust_domain(
     crate::directory::workload::default_trust_domain(&iss, &dir.id)
 }
 
-/// Who running VM `vm_id` is, and its directory, for its identity token
-/// (workload-identity.md §4.2). `409 not_running` unless it runs (W4).
-pub async fn vm_identity(
-    app: &AppState,
-    vm_id: &str,
-) -> Result<(String, crate::directory::workload::VmIdentity), super::ApiErr> {
+/// A running VM as its tokens see it (workload-identity.md §4.2).
+#[derive(Debug, Clone)]
+pub struct ResolvedVm {
+    /// Its tenant's directory, which signs its tokens.
+    pub directory: String,
+    pub tenant_id: String,
+    pub identity: crate::directory::workload::VmIdentity,
+}
+
+/// Who running VM `vm_id` is, for its tokens. `409 not_running` unless it
+/// runs (W4).
+pub async fn vm_identity(app: &super::App, vm_id: &str) -> Result<ResolvedVm, super::ApiErr> {
     let gone = || err(StatusCode::NOT_FOUND, "not_found", "no such VM");
     let internal = |m: String| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m);
     let vm = app.manager.get_vm(vm_id).await.map_err(|_| gone())?;
@@ -103,22 +109,120 @@ pub async fn vm_identity(
         .get(&project.tenant_id)
         .map_err(|e| internal(e.to_string()))?
         .ok_or_else(gone)?;
-    let id = crate::directory::workload::VmIdentity {
-        tenant: tenant.slug,
-        project: project.name,
-        vm_id: vm.id,
-        vm_name: vm.name,
-        cluster: super::op::cluster_id(app),
-        service_account: None,
+    let service_account = vm.config().service_account.clone();
+    Ok(ResolvedVm {
+        directory: tenant.directory_id,
+        tenant_id: tenant.id,
+        identity: crate::directory::workload::VmIdentity {
+            tenant: tenant.slug,
+            project: project.name,
+            vm_id: vm.id,
+            vm_name: vm.name,
+            cluster: super::op::cluster_id(app),
+            service_account,
+        },
+    })
+}
+
+/// A glidex token for `vm`'s service account (workload-identity.md W6): a
+/// federated token (tenancy.md D48) from origin `vm:<tenant>`, for 15 min,
+/// never past the service account's expiry. The secret and its lifetime.
+/// `404 no_service_account` when the VM has none, or it is gone, expired,
+/// or not its tenant's.
+pub fn vm_glidex_token(
+    app: &super::App,
+    vm: &ResolvedVm,
+    replay: Option<String>,
+) -> Result<(String, u64), super::ApiErr> {
+    use crate::auth::store::TokenKind;
+    use crate::directory::workload;
+    let internal = |m: String| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m);
+    let none = |m: &str| err(StatusCode::NOT_FOUND, "no_service_account", m);
+    let id = &vm.identity;
+    let sa_id = id
+        .service_account
+        .as_deref()
+        .ok_or_else(|| none("this VM has no service account"))?;
+    let now = crate::auth::store::now();
+    let sa = app
+        .auth
+        .store
+        .token_by_id(sa_id)
+        .map_err(|e| internal(e.to_string()))?
+        .map(|(_, t)| t)
+        .filter(|t| t.expires_at > now)
+        .ok_or_else(|| none("the VM's service account is gone or expired"))?;
+    let TokenKind::ServiceAccount { project } = &sa.kind else {
+        return Err(none("the VM's service account isn't a service account"));
     };
-    Ok((tenant.directory_id, id))
+    let ours = app
+        .manager
+        .projects
+        .get(project)
+        .map_err(|e| internal(e.to_string()))?
+        .is_some_and(|p| p.tenant_id == vm.tenant_id);
+    if !ours {
+        return Err(none("the VM's service account isn't its tenant's"));
+    }
+    let ttl = workload::GLIDEX_TOKEN_TTL_SECS.min(sa.expires_at - now);
+    let td = app
+        .auth
+        .tenants
+        .get_directory(&vm.directory)
+        .ok()
+        .flatten()
+        .and_then(|d| trust_domain(&app.auth, &app.manager, &d))
+        .unwrap_or_default();
+    let secret = format!(
+        "{}{}",
+        crate::auth::TOKEN_PREFIX,
+        crate::auth::random_token(32)
+    );
+    let token_id = format!("vmt-{}", uuid::Uuid::new_v4().simple());
+    let rec = crate::directory::federation::FederatedToken {
+        id: token_id.clone(),
+        federation: format!("{}{}", workload::VM_ORIGIN, vm.tenant_id),
+        rule: format!("vm:{}", id.vm_id),
+        service_account: sa.id.clone(),
+        subject: workload::spiffe_id(&td, id),
+        claims: [
+            ("vm".to_string(), id.vm_id.clone()),
+            ("cluster".to_string(), id.cluster.clone()),
+        ]
+        .into(),
+        // From the metadata endpoint each is new; an exchanged identity
+        // token only once (§5).
+        replay_key: replay.unwrap_or_else(|| format!("vm:{token_id}")),
+        subject_expires_at: now + ttl,
+        created_at: now,
+        expires_at: now + ttl,
+    };
+    app.auth
+        .federated_tokens
+        .mint(&glidex_auth::token::token_hash(&secret), &rec)
+        .map_err(|e| match e {
+            crate::directory::federation::FederationError::Conflict(m) => {
+                err(StatusCode::CONFLICT, "replayed", m)
+            }
+            e => internal(e.to_string()),
+        })?;
+    app.auth.audit_system(
+        &format!("system:vm:{}", id.vm_id),
+        &token_id,
+        "issueVmToken",
+        Some(&format!("token:{}", sa.id)),
+        "ok",
+        None,
+        serde_json::json!({ "vm": id.vm_id, "cluster": id.cluster, "service_account": sa.id, "token": token_id }),
+    );
+    Ok((secret, ttl))
 }
 
 /// An identity token for `id` addressed to `audience`, signed by `dir`
 /// (workload-identity.md §4.2): `ttl` seconds (§4.4: 10 min to 1 h, default
 /// 15 min). Its first one fixes the directory's trust domain (W13).
 pub fn sign_identity(
-    app: &AppState,
+    app: &super::App,
     dir: &str,
     id: &crate::directory::workload::VmIdentity,
     audience: &str,
@@ -148,6 +252,46 @@ pub fn sign_identity(
     let jti = uuid::Uuid::new_v4().to_string();
     let claims = workload::identity_claims(&td, id, audience, now, ttl, &jti);
     sign(app, dir, workload::TYP, claims)
+}
+
+/// The claims of `jwt` if it is an identity token of directory `dir` for
+/// this cluster (workload-identity.md §5): typed `JWT`, signed by one of the
+/// directory's published keys, its issuer, `aud` this cluster, unexpired.
+pub fn verify_identity(app: &super::App, dir: &str, jwt: &str) -> Result<Value, String> {
+    use crate::directory::workload;
+    let header = jsonwebtoken::decode_header(jwt).map_err(|e| format!("not a JWT: {e}"))?;
+    if header.typ.as_deref() != Some(workload::TYP) {
+        return Err("not an identity token".into());
+    }
+    let d = app
+        .auth
+        .tenants
+        .get_directory(dir)
+        .map_err(|e| e.to_string())?
+        .ok_or("no such directory")?;
+    let iss = d.issuer.clone().ok_or("the directory has issued nothing")?;
+    let now = crate::auth::store::now();
+    let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(
+        app.auth
+            .connectors
+            .jwks(dir, now)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let jwk = header
+        .kid
+        .as_deref()
+        .and_then(|k| jwks.find(k))
+        .ok_or("signed by no key of the directory")?;
+    let key = jsonwebtoken::DecodingKey::from_jwk(jwk).map_err(|e| e.to_string())?;
+    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    v.set_issuer(&[iss.as_str()]);
+    v.set_audience(&[super::op::cluster_id(app)]);
+    v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+    v.leeway = 60;
+    jsonwebtoken::decode::<Value>(jwt, &key, &v)
+        .map(|t| t.claims)
+        .map_err(|e| format!("not valid here: {e}"))
 }
 
 fn no_issuer() -> super::ApiErr {

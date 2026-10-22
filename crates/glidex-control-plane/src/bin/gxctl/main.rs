@@ -608,6 +608,10 @@ fn print_help() {
         "kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]".cyan()
     );
     println!(
+        "  {} - A VM's service account, for its workload identity",
+        "service-account <name|id> [--set <service account> | --none]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -1023,6 +1027,7 @@ const COMMANDS: &[&str] = &[
     "stop",
     "pause",
     "kernel",
+    "service-account",
     "events",
     "watch",
     "connect",
@@ -1452,6 +1457,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "place" => vm::place(client, &parts[1..]).await,
         "pause" => vm::pause(client, &parts[1..]).await,
         "kernel" => vm::kernel(client, &parts[1..]).await,
+        "service-account" => vm::service_account(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
