@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# HTTPS for the control plane and glidex-ui (spec/security.md §5.1):
-# listeners on every address, self-signed certificates, and the client
-# trust shared by gxctl and the UI.
+# HTTPS for the control plane, glidex-ui and hyperstor's management
+# service (spec/security.md §5.1): listeners on every address, self-signed
+# certificates, the client trust shared by gxctl and the UI, and the
+# node's Tailscale certificates (spec/tailscale-tls.md §4.2).
 [dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-pki-types = { version = "1", features = ["std"] }
@@ -21,6 +22,17 @@ nix = { version = "0.29", features = ["net", "hostname", "user", "fs"] }
 libc = "0.2"
 tokio = { workspace = true }
 tracing = { workspace = true }
+# tailscaled's local API, over its Unix socket.
+http = "1"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+serde_json = { workspace = true }
+
+[features]
+# `tailscale::testing`: a fake tailscaled, for the tests of services that
+# use `tailscale`.
+test-util = []
 
 [dev-dependencies]
 tempfile = "3"
