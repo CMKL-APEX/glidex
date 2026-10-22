@@ -630,6 +630,128 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
     }
 }
 
+// ---- reports (D70) -----------------------------------------------------------------
+
+/// What this cluster holds of trusted directory `d`'s admitted tenants
+/// (D70): each one's admission and the use of its projects here.
+pub async fn report_for(
+    app: &AppState,
+    d: &TrustedDirectory,
+) -> Result<trust::ClusterReport, String> {
+    let projects = app.manager.projects().list().map_err(|e| e.to_string())?;
+    let disks = app.manager.list_disks();
+    let mut tenants = Vec::new();
+    for rt in &d.tenants {
+        let Some(a) = app
+            .auth
+            .tenants
+            .admission(&rt.id)
+            .map_err(|e| e.to_string())?
+            .filter(|a| a.directory_id == d.id)
+        else {
+            continue;
+        };
+        let mut r = trust::TenantReport {
+            tenant: rt.id.clone(),
+            suspended: a.status == crate::tenants::AdmissionStatus::Suspended,
+            cap: a.cap.clone(),
+            projects: 0,
+            vms: 0,
+            running_vms: 0,
+            disks: 0,
+            disk_gib: 0,
+            networks: 0,
+        };
+        for p in projects.iter().filter(|p| p.tenant_id == rt.id) {
+            let u = app.manager.usage(&p.id).await.map_err(|e| e.to_string())?;
+            r.projects += 1;
+            r.vms += u.vms;
+            r.running_vms += u.running_vms;
+            r.disk_gib += u.disk_gib;
+            r.networks += u.networks;
+            r.disks += disks.iter().filter(|x| x.project == p.id).count() as u64;
+        }
+        tenants.push(r);
+    }
+    Ok(trust::ClusterReport { at: now(), tenants })
+}
+
+/// Send trusted directory `d` this cluster's report (D70).
+pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), String> {
+    let cluster = super::op::cluster_id(app);
+    let report = report_for(app, d).await?;
+    let a = peer::assertion(
+        &app.auth.connectors,
+        CLUSTER_OWNER,
+        &cluster,
+        &d.issuer,
+        trust::REPORT,
+        now(),
+    )
+    .map_err(|e| e.to_string())?;
+    let path = format!("/d/{}/feed/v1/report", d.directory);
+    let body = json!({ "cluster_id": cluster, "report": report });
+    match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
+        (204, _) | (200, _) => Ok(()),
+        (s, _) => Err(format!("the directory answered {s}")),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ReportBody {
+    cluster_id: String,
+    report: trust::ClusterReport,
+}
+
+/// `POST /d/{dir}/feed/v1/report {cluster_id, report}`, at the directory
+/// (D70): kept on the cluster's record, only for the tenants opted in to
+/// it.
+pub async fn report(
+    State(app): State<AppState>,
+    Path(dir): Path<String>,
+    headers: HeaderMap,
+    Json(b): Json<ReportBody>,
+) -> Response {
+    const ACTION: &str = "reportFeed";
+    let Some(assertion) = peer::from_headers(&headers) else {
+        return refused(&app, ACTION, "no assertion");
+    };
+    let Ok(Some(mut c)) = app.auth.trust.cluster(&dir, &b.cluster_id) else {
+        return refused(&app, ACTION, "not a trusted cluster");
+    };
+    let Some(iss) = app
+        .auth
+        .tenants
+        .get_directory(&dir)
+        .ok()
+        .flatten()
+        .and_then(|d| d.issuer)
+    else {
+        return refused(&app, ACTION, "no issuer");
+    };
+    if let Err(e) = peer::verify(
+        &assertion,
+        &c.jwks,
+        &c.cluster_id,
+        &iss,
+        trust::REPORT,
+        &app.auth.peer_replays,
+        now(),
+    ) {
+        return refused(&app, ACTION, &e.to_string());
+    }
+    let mut r = b.report;
+    // Its own clock, not the cluster's.
+    r.at = now();
+    r.tenants.retain(|t| c.tenants.contains(&t.tenant));
+    r.tenants.truncate(c.tenants.len());
+    c.report = Some(r);
+    match app.auth.trust.put_cluster(&c) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
+    }
+}
+
 /// How often a cluster pulls its trusted directories' feeds.
 const FEED_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -646,6 +768,11 @@ pub fn spawn_feeds(app: AppState) {
             for d in app.auth.trust.directories().unwrap_or_default() {
                 if let Err(e) = pull_feed(&app, &d).await {
                     tracing::warn!(directory = %d.issuer, "feed: {}", e);
+                    continue;
+                }
+                // And what it holds of the directory's tenants (D70).
+                if let Err(e) = push_report(&app, &d).await {
+                    tracing::warn!(directory = %d.issuer, "report: {}", e);
                 }
             }
         }

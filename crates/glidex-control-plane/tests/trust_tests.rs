@@ -883,3 +883,121 @@ async fn a_browser_logs_in_to_the_cluster_at_its_directory() {
     );
     assert_eq!(whoami(session).await.0, StatusCode::UNAUTHORIZED);
 }
+
+/// D70: with its feed, north reports to acme what it holds of acme's
+/// tenant; acme keeps it on the cluster's record and the tenant's cluster
+/// list shows it; a report naming a tenant not opted in to north keeps
+/// only the opted-in one, and an unsigned one is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cluster_reports_its_tenants_back() {
+    let Admitted {
+        north,
+        acme,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    glidex_control_plane::api::trust::push_report(&north.app, &d)
+        .await
+        .unwrap();
+    let c = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let r = c.report.clone().expect("a report");
+    assert_eq!(r.tenants.len(), 1);
+    let t = &r.tenants[0];
+    assert_eq!(c.tenants, vec![t.tenant.clone()]);
+    assert_eq!(
+        (t.suspended, t.projects, t.vms, t.disks),
+        (false, 1, 0, 0),
+        "{t:?}"
+    );
+
+    // The tenant's page, at acme.
+    let root = acme
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap();
+    let (cookie, csrf) = acme
+        .app
+        .auth
+        .create_session(&root, auth::Method::Pam)
+        .unwrap();
+    let (s, v) = acme
+        .rest(
+            "GET",
+            "/tenants/acme/clusters",
+            None,
+            &format!("{cookie}|{csrf}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rep = &v["clusters"][0]["report"];
+    assert_eq!(rep["projects"], "1", "{v}");
+    assert_eq!(rep["status"], "ADMISSION_STATUS_ADMITTED", "{v}");
+
+    // Someone else's tenant in north's report: dropped.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let mut forged = r.clone();
+    let mut other = t.clone();
+    other.tenant = "someone-else".into();
+    other.vms = 99;
+    forged.tenants.push(other);
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::REPORT,
+        glidex_control_plane::auth::store::now(),
+    )
+    .unwrap();
+    let body = json!({ "cluster_id": north_id, "report": forged });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    let c2 = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(c2.report.unwrap().tenants.len(), 1, "only acme's own");
+    // Unsigned: refused.
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        "",
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 403);
+}

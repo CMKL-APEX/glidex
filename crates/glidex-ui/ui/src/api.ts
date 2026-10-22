@@ -112,7 +112,14 @@ import { CredentialService, DatastoreService, DiskService, ImageService } from "
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
-import { AdmissionService, DirectoryService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import {
+  AdmissionService,
+  DirectoryService,
+  TenantService,
+  type SetAdmissionRequestJson,
+  type TenantClusterJson,
+  type TenantDevicePoolJson,
+} from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
 import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
@@ -1364,6 +1371,12 @@ export const startInvitedLogin = (connector: string, invitation: string) =>
 
 /** A tenant's shares of cluster device pools on this cluster (spec/host-topology.md §9.1a). */
 export type TenantDevicePool = TenantDevicePoolJson;
+
+/** Another organization's cluster the tenant uses, with its last report
+ *  (spec/tenancy.md D65, D70). */
+export type TenantCluster = TenantClusterJson;
+export const listTenantClusters = (id: string) =>
+  rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
 export const listTenantDevicePools = (id: string) =>
   rpc(TenantService.method.listDevicePools, { id }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
 /** Replaces the tenant's pools; only `name`, `from`, `max` and `projects` are read. */

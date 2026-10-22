@@ -16,6 +16,8 @@ const TRUSTED_CLUSTERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tru
 pub const REDEEM: &str = "redeem";
 pub const END: &str = "end";
 pub const FEED: &str = "feed";
+/// A cluster reporting what it holds of a directory's tenants (D70).
+pub const REPORT: &str = "report";
 
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
 
@@ -212,6 +214,32 @@ pub struct TrustedCluster {
     /// `redirect_uri` its client `cluster:<id>` may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_callback: Option<String>,
+    /// What it last reported of the opted-in tenants (D70).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<ClusterReport>,
+}
+
+/// A cluster's report to a trusted directory (D70): per tenant, its
+/// admission and what it holds there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterReport {
+    pub at: u64,
+    pub tenants: Vec<TenantReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantReport {
+    /// The tenant's id (the same at both).
+    pub tenant: String,
+    /// Admitted, or suspended (D9).
+    pub suspended: bool,
+    pub cap: crate::tenancy::Quotas,
+    pub projects: u64,
+    pub vms: u64,
+    pub running_vms: u64,
+    pub disks: u64,
+    pub disk_gib: u64,
+    pub networks: u64,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -318,6 +318,24 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 Ok(r) => {
                     for c in &r.clusters {
                         println!("  {}  {:<20} {}", c.cluster_id.cyan(), c.name, c.api);
+                        // Its last report (spec/tenancy.md D70).
+                        match c.report.as_option() {
+                            Some(rep) => {
+                                let suspended = rep.status.as_known()
+                                    == Some(glidex_api::proto::glidex::tenancy::v1::AdmissionStatus::ADMISSION_STATUS_SUSPENDED);
+                                println!(
+                                    "      {}{} projects, {} VMs ({} running), {} disks ({} GiB), {} networks",
+                                    if suspended { "suspended; " } else { "" },
+                                    rep.projects,
+                                    rep.vms,
+                                    rep.running_vms,
+                                    rep.disks,
+                                    rep.disk_gib,
+                                    rep.networks
+                                );
+                            }
+                            None => println!("      {}", "no report yet".dimmed()),
+                        }
                     }
                 }
                 Err(e) => err(rpc_err(e)),
