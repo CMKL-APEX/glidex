@@ -166,6 +166,8 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
     hypervisor: PROTO_HYPERVISOR[hypervisor],
     firmware: (await firmwareImages(hypervisor))[0].id,
     rootfs_path: "/nonexistent/disk.img",
+    // The form's default size.
+    mem_size_mib: 1024,
     restart_policy: "RESTART_POLICY_ON_FAILURE",
     on_host_boot: "HOST_BOOT_POLICY_RESUME",
   });

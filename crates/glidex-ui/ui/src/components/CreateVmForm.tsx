@@ -33,7 +33,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const { project, me } = useSession();
   const [name, setName] = useState("");
   const [vcpuCount, setVcpuCount] = useState(1);
-  const [memSizeMib, setMemSizeMib] = useState(512);
+  const [memSizeMib, setMemSizeMib] = useState(1024);
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
   /** Firmware image id; "" until the images load (or none exists). */
