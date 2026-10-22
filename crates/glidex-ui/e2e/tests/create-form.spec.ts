@@ -1,5 +1,5 @@
 // CreateVmForm per hypervisor: no VM is booted, so no KVM or image needed.
-import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, rpcRoute, test, vmCard, waitForRpc, type Hypervisor } from "../fixtures";
+import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, rpcRoute, test, vmCard, waitForRpc, type Hypervisor, showAdvanced } from "../fixtures";
 
 const other = (hv: Hypervisor): Hypervisor => (hv === "qemu" ? "cloudhypervisor" : "qemu");
 
@@ -11,6 +11,7 @@ test.beforeAll(async ({ hypervisor }) => {
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "+ Create VM" }).click();
+  await showAdvanced(page);
 });
 
 test("offers firmware boot through the hypervisor's firmware image", async ({ page, hypervisor }) => {
@@ -39,6 +40,26 @@ test("offers firmware boot through the hypervisor's firmware image", async ({ pa
   await expect(page.getByText("Login Credential")).toBeHidden();
 });
 
+test("keeps the boot options under Advanced options until one needs a choice", async ({ page, hypervisor }) => {
+  const details = page.getByTestId("advanced-options");
+  const isOpen = () => details.evaluate((d) => (d as HTMLDetailsElement).open);
+  await page.reload();
+  await page.getByRole("button", { name: "+ Create VM" }).click();
+  await field(page, "Hypervisor Backend").selectOption(hypervisor);
+  const [newest] = await firmwareImages(hypervisor);
+  // Closed, saying what it holds.
+  await expect(details.locator("summary")).toContainText(`UEFI firmware (${newest.name})`);
+  await expect.poll(isOpen).toBe(false);
+  await expect(page.getByText("Boot Mode", { exact: true })).toBeHidden();
+
+  // No firmware image to boot through: opened, so the missing choice shows.
+  await rpcRoute(page, "glidex.storage.v1.ImageService/ListImages", () => ({ message: { images: [] } }));
+  await page.reload();
+  await page.getByRole("button", { name: "+ Create VM" }).click();
+  await expect.poll(isOpen).toBe(true);
+  await expect(page.getByTestId("firmware-hint")).toContainText("Pull");
+});
+
 test("preselects only the chosen image's own kernel", async ({ page }) => {
   // Two disk images, and the kernel taken from one of them.
   const ready = { state: "IMAGE_STATE_READY" };
@@ -54,6 +75,7 @@ test("preselects only the chosen image's own kernel", async ({ page }) => {
   }));
   await page.reload();
   await page.getByRole("button", { name: "+ Create VM" }).click();
+  await showAdvanced(page);
   await field(page, "Boot Mode").selectOption("kernel");
   const kernel = page.getByTestId("kernel-image");
 
@@ -95,6 +117,7 @@ test("offers kernels and firmware of the image's architecture", async ({ page, h
   }));
   await page.reload();
   await page.getByRole("button", { name: "+ Create VM" }).click();
+  await showAdvanced(page);
   await field(page, "Hypervisor Backend").selectOption(hypervisor);
   const firmware = field(page, "UEFI Firmware");
   const offered = (select: typeof firmware) =>
