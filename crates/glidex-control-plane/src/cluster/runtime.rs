@@ -103,6 +103,11 @@ pub struct Cluster {
     /// One CA operation at a time (rotation, retirement); and when the last
     /// rotation attempt failed, so a retry waits a while.
     pub(crate) ca_op: tokio::sync::Mutex<Option<std::time::Instant>>,
+    /// One writer of the departure files (pending database, its checksum,
+    /// the receipt) at a time: the node's departure tick, or a dissolve.
+    /// Without it the tick, finding no plan, discarded the pending database
+    /// a dissolve was writing.
+    pub(crate) departure_files: tokio::sync::Mutex<()>,
 }
 
 /// Raft messages over mTLS HTTP/2.
@@ -272,6 +277,7 @@ impl Cluster {
             liveness: Default::default(),
             handlers: OnceLock::new(),
             ca_op: tokio::sync::Mutex::new(None),
+            departure_files: tokio::sync::Mutex::new(()),
         });
         // A runtime that was just stopped may still hold the port for a moment.
         let mut bound = tokio::net::TcpListener::bind(listen).await;

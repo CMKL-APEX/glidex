@@ -4004,7 +4004,23 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     .await;
     assert_eq!(s, StatusCode::OK, "{p}");
     let dir = agent_state_dir(&agent);
-    wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
+    // On a timeout, say where the departure got to: it has failed in CI
+    // without saying why.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !receipt_file(&dir).exists() {
+        if tokio::time::Instant::now() >= deadline {
+            let (_, deps) = call(&server, "GET", "/departures", None, &[]).await;
+            let n = node_json(&server, "agent1").await;
+            panic!(
+                "timed out waiting for the receipt: pending {} (sha {:?}), node phase {}, departures {}",
+                pending_db(&dir).exists(),
+                std::fs::read_to_string(pending_sha_file(&dir)).ok(),
+                n["status"]["phase"],
+                deps["departures"]
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     let n = node_json(&server, "agent1").await;
     assert_eq!(n["status"]["phase"], "NODE_PHASE_DEPARTED", "{n}");
     // The detaches are listed with their state (spec/clustering-ui.md §6).
