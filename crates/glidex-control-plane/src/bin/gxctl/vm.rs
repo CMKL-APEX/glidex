@@ -353,7 +353,10 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     println!("  vCPUs:      {}", vm.vcpu_count);
     println!("  Memory:     {} MiB", vm.mem_size_mib);
     if let Some(sa) = &vm.service_account {
-        println!("  Service account: {}", sa);
+        println!(
+            "  Service account: {}",
+            service_account_label(&service_accounts(client).await, sa)
+        );
     }
     if !vm.vfio_devices.is_empty() {
         println!("  VFIO:       {}", vm.vfio_devices.join(", "));
@@ -1258,11 +1261,58 @@ pub async fn kernel(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// The service accounts the caller can list.
+async fn list_service_accounts(
+    t: &RpcTransport,
+) -> Vec<glidex_api::proto::glidex::access::v1::Token> {
+    use glidex_api::proto::glidex::access::v1 as access;
+    access::TokenServiceClient::new(t.clone(), t.config())
+        .list_tokens(access::ListTokensRequest::default())
+        .await
+        .map(|r| r.into_owned().tokens)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.kind.as_known() == Some(access::TokenKind::TOKEN_KIND_SERVICE_ACCOUNT))
+        .collect()
+}
+
+/// Token id → `name (project …)`. A VM names its service account by the
+/// token's public id; people read its name (as `federation show` does).
+fn labels_of(
+    accounts: &[glidex_api::proto::glidex::access::v1::Token],
+) -> std::collections::HashMap<String, String> {
+    accounts
+        .iter()
+        .map(|a| {
+            let label = match a.project.as_deref() {
+                Some(p) if !p.is_empty() => format!("{} (project {p})", a.name),
+                _ => a.name.clone(),
+            };
+            (a.id.clone(), label)
+        })
+        .collect()
+}
+
+async fn service_accounts(client: &ApiClient) -> std::collections::HashMap<String, String> {
+    match client.rpc_transport().await {
+        Ok(t) => labels_of(&list_service_accounts(&t).await),
+        Err(_) => Default::default(),
+    }
+}
+
+/// What to call service account `id`: its name, or that it's one the
+/// caller can't list.
+fn service_account_label(labels: &std::collections::HashMap<String, String>, id: &str) -> String {
+    labels
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| "a service account you can't list".into())
+}
+
 /// `service-account <name|id> [--set <service account> | --none]`: the
 /// service account whose glidex tokens the VM's guest gets
 /// (spec/workload-identity.md W5); a change applies to its next token.
 pub async fn service_account(client: &ApiClient, args: &[&str]) {
-    use glidex_api::proto::glidex::access::v1 as access;
     let u = "Usage: service-account <name|id> [--set <service account name|id> | --none]";
     let Some(vm_id) = resolve(client, args, u).await else {
         return;
@@ -1276,21 +1326,9 @@ pub async fn service_account(client: &ApiClient, args: &[&str]) {
         Ok(t) => t,
         Err(e) => return err(e.message),
     };
-    let accounts: Vec<access::Token> = access::TokenServiceClient::new(t.clone(), t.config())
-        .list_tokens(access::ListTokensRequest::default())
-        .await
-        .map(|r| r.into_owned().tokens)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|t| t.kind.as_known() == Some(access::TokenKind::TOKEN_KIND_SERVICE_ACCOUNT))
-        .collect();
-    let label = |id: &str| {
-        accounts
-            .iter()
-            .find(|a| a.id == id)
-            .map(|a| format!("{} ({})", a.name, a.id))
-            .unwrap_or_else(|| id.to_string())
-    };
+    let accounts = list_service_accounts(&t).await;
+    let labels = labels_of(&accounts);
+    let label = |id: &str| service_account_label(&labels, id);
     let change = if has_flag(rest, "--none") {
         Some(None)
     } else if let Some(want) = flag_value(rest, "--set") {
