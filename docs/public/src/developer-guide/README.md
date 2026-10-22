@@ -10,7 +10,7 @@ instead; to use it, the [User guide](../user-guide/README.md).
 
 ## Glidex from a contributor's angle
 
-Glidex is a Rust workspace of 14 crates. At its centre is one binary,
+Glidex is a Rust workspace of 15 crates. At its centre is one binary,
 `glidex-control-plane`: an axum server that answers a REST API and an
 RPC API (gRPC, gRPC-Web and Connect) through one transport-neutral
 service layer, authorizes every call with Cedar, writes desired state

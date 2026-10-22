@@ -536,6 +536,27 @@ owners (tenancy.md D28), because tenant-authored policies would need
 per-tenant validation scopes and lock-out rules. See
 [Access control](../operator-guide/access-control.md).
 
+### A shared authentication crate and UI kit
+
+**Decision.** The parts of authentication that aren't Glidex-specific
+live in their own crate,
+[`glidex-auth`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-auth):
+secrets, session and token rules, the Cedar engine (generic over a
+`Model` that supplies the schema, policies, entity types and
+break-glass rule) and OIDC login. The control plane specializes them in
+`auth/`, `authz.rs` and `directory/oidc.rs`. The web UI's login and
+session pieces live in `@glidex/ui-kit`
+(`crates/glidex-ui/kit`), which talks to the app through an `AuthApi`
+adapter.
+
+**Why.** Other management services reuse the same sign-in, session,
+token and policy rules instead of reimplementing them, so a fix lands
+once.
+
+**Consequences.** The crate and the kit must not depend on Glidex's own
+records or `api.ts`; Glidex-only pieces (stored users, directories,
+passkeys, capability checks) stay in the control plane and the UI.
+
 ## Tenancy and directories
 
 **Decision.** A **tenant** is an organization's account. Every project,
