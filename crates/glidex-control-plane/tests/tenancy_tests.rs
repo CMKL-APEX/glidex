@@ -1215,3 +1215,42 @@ async fn server_info_names_a_standalone_hosts_token_audience() {
     assert_eq!(aud, glidex_control_plane::api::op::cluster_id(&h.app));
     assert!(v["cluster_id"].is_null(), "{v}");
 }
+
+/// A tenant admin with no role on the tenant's projects themselves still
+/// lists them (tenant-admin includes owner on its projects); another
+/// tenant's project stays out of the list.
+#[tokio::test]
+async fn a_tenant_admin_lists_the_tenants_projects() {
+    let h = harness();
+    let at = h.session(&h.admin("root"));
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "acme" })), &at)
+        .await;
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    for (name, tenant) in [("in-acme", acme.as_str()), ("elsewhere", DEFAULT_TENANT)] {
+        h.app
+            .manager
+            .projects()
+            .create_in(tenant, name, String::new(), None)
+            .unwrap();
+    }
+    let ada = h.user("ada");
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(ada.clone()),
+            Ent::Tenant(acme),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = h.rest("GET", "/projects", None, &h.token(&ada)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let names: Vec<&str> = v["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["in-acme"], "{v}");
+}

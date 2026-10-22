@@ -667,6 +667,19 @@ impl TenantStore {
         })
     }
 
+    /// The projects of tenants `tenants`.
+    pub fn projects_of(&self, tenants: &[String]) -> Result<Vec<String>, TenantError> {
+        if tenants.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .read_all::<crate::tenancy::Project>(PROJECTS)?
+            .into_iter()
+            .filter(|p| tenants.contains(&p.tenant_id))
+            .map(|p| p.id)
+            .collect())
+    }
+
     // ---- writes (through the service layer, spec/tenancy.md §14.1) -----
 
     pub fn create(
