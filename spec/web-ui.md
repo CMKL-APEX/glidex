@@ -128,6 +128,17 @@ Everything is same-origin from the browser's perspective.
 
 ## Source layout
 
+The pieces hyperstor's management UI shares (hyperstor D97) live in
+`crates/glidex-ui/kit`, the `@glidex/ui-kit` package: `Modal`,
+`TokenReveal`, the PAM form and SSO buttons, the step-up dialog, and the
+session layer (whoami, login page, CSRF value, the 401 `reauth_required`
+→ log in again → retry flow). They take an `AuthApi` adapter, not
+`api.ts` and `types.ts`. The UI lists it as a bun workspace
+(`"workspaces": ["../kit"]`) and Tailwind's `content` includes it; its
+README has the interface. The files below with the same names wrap the
+kit's in glidex's types and text; passkeys, accounts, roles and the
+capability checks stay in glidex.
+
 ```
 ui/src/
 ├── App.tsx                 # SessionProvider + <Routes> for the pages
@@ -142,11 +153,11 @@ ui/src/
 │   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
 │   ├── Footer.tsx          # Build info: version tag (if any), git branch, commit
 │   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
-│   ├── ReauthDialog.tsx    # Step-up re-login, then retry
+│   ├── ReauthDialog.tsx    # Step-up re-login, then retry (the kit's, with passkeys)
 │   ├── AddBindingForm.tsx  # Role + user/team picker for role links
 │   ├── ui.tsx              # Shared bits: cards, badges, binding table
 │   ├── Loading.tsx
-│   ├── Modal.tsx
+│   ├── Modal.tsx           # Re-exports the kit's
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, firmware image, boot disk source, credential picker, restart behaviour, start now)
 │   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing

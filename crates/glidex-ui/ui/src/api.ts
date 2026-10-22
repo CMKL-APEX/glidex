@@ -133,6 +133,7 @@ import {
   type GroupKeyJson,
 } from "./gen/glidex/usage/v1/usage_pb";
 import { archToProto } from "./types";
+import { csrfToken, reauthenticate, sessionEnded, setCsrf, withSession } from "@glidex/ui-kit";
 
 const API_BASE = "/api";
 
@@ -154,22 +155,9 @@ export class ApiRequestError extends Error {
 
 // ---- session plumbing (spec/security.md §5.5, §5.6) -------------------------
 
-/** The session's CSRF value, from `/auth/whoami` or a login response. */
-let csrf: string | null = null;
-
-export function setCsrf(value: string | null | undefined) {
-  csrf = value ?? null;
-}
-
-/** Called when the session is gone (401 unauthenticated). */
-let onUnauthenticated: () => void = () => {};
-/** Asks the user to log in again (401 reauth_required); resolves true when they did. */
-let reauthenticate: () => Promise<boolean> = async () => false;
-
-export function setSessionHandlers(h: { unauthenticated: () => void; reauth: () => Promise<boolean> }) {
-  onUnauthenticated = h.unauthenticated;
-  reauthenticate = h.reauth;
-}
+// The CSRF value and the 401 handlers are the kit's (crates/glidex-ui/kit,
+// csrfToken, setCsrf, sessionEnded, reauthenticate), shared with its
+// SessionProvider.
 
 async function errorOf(resp: Response): Promise<ApiRequestError> {
   const text = await resp.text();
@@ -234,6 +222,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
   const send = (local = false) => {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
+    const csrf = csrfToken();
     if (!read && csrf) headers["X-Glidex-CSRF"] = csrf;
     if (local) headers["X-Glidex-Consistency"] = "local";
     if (opts.node) headers["X-Glidex-Target-Node"] = opts.node;
@@ -282,7 +271,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
       if (resp.status === 401) err = await errorOf(resp);
     }
     if (resp.status === 401) {
-      if (err.code === "unauthenticated" && !opts.quiet401) onUnauthenticated();
+      if (err.code === "unauthenticated" && !opts.quiet401) sessionEnded();
       throw err;
     }
   }
@@ -310,6 +299,7 @@ const TARGET = createContextKey<string | undefined>(undefined);
 
 /** The session's CSRF value on every RPC (all are POSTs, spec/grpc.md §6). */
 const sessionHeaders: Interceptor = (next) => async (req) => {
+  const csrf = csrfToken();
   if (csrf) req.header.set("X-Glidex-CSRF", csrf);
   if (req.contextValues.get(LOCAL)) req.header.set("X-Glidex-Consistency", "local");
   const target = req.contextValues.get(TARGET);
@@ -413,24 +403,10 @@ export async function rpc<M extends DescMethodUnary>(
       }
     }
   };
-  let result: { out: unknown; revision: boolean; stale: boolean };
-  try {
-    result = await attempt();
-  } catch (e) {
-    let err = e instanceof ApiRequestError ? e : rpcError(e);
-    if (err.status === 401) {
-      if (err.code === "reauth_required" && (await reauthenticate())) {
-        try {
-          result = await attempt();
-          return finish(method, read, opts, result);
-        } catch (e2) {
-          err = e2 instanceof ApiRequestError ? e2 : rpcError(e2);
-        }
-      }
-      if (err.code === "unauthenticated" && !opts.quiet401) onUnauthenticated();
-    }
-    throw err;
-  }
+  const result = await withSession(attempt, {
+    quiet401: opts.quiet401,
+    toError: (e) => (e instanceof ApiRequestError ? e : rpcError(e)),
+  });
   return finish(method, read, opts, result);
 }
 
