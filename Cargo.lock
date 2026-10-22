@@ -1565,6 +1565,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-auth"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.22.1",
+ "cedar-policy",
+ "getrandom 0.3.4",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "glidex-authd"
 version = "0.1.0"
 dependencies = [
@@ -1603,6 +1622,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "glidex-api",
+ "glidex-auth",
  "glidex-authd",
  "glidex-hv-client",
  "glidex-netd",
