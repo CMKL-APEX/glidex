@@ -299,6 +299,24 @@ Instead of a profile, a one-off `--url` connection trusts a self-signed
 certificate through `GLIDEX_CA_CERT`, the path of a PEM copy of the
 host's certificate that your operator provides.
 
+### A cluster of another organization
+
+If your tenant uses a cluster run by another organization, log in to it
+with your own directory's account: first make a profile for your
+directory's host (as above, `--directory`), then one for the cluster,
+reaching your directory through that first profile:
+
+```bash
+gxctl auth login --profile acme --url https://id.acme.example:8841 --directory local
+gxctl auth login --profile north --url https://north.example.org:8841 --directory local --via acme
+```
+
+The second login asks you to approve it at your directory, like the
+first. The `north` profile then holds a login of its own at your
+directory, and gets access tokens for the north cluster only; its
+refreshes and `auth logout --revoke` go to your directory through
+`acme`'s connection and certificate.
+
 ### Managing profiles
 
 ```bash

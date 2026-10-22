@@ -34,6 +34,24 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Clusters of other organizations its tenants use (spec/tenancy.md §7.4).
+  const [others, setOthers] = useState<{ id: string; name: string }[]>([]);
+  const [also, setAlso] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    api
+      .listTenants()
+      .then((ts) => Promise.all(ts.map((t) => api.listTenantClusters(t.id).catch(() => [] as api.TenantCluster[]))))
+      .then((lists) => {
+        const seen = new Map<string, string>();
+        for (const c of lists.flat()) if (c.cluster_id) seen.set(c.cluster_id, c.name || c.cluster_id);
+        if (live) setOthers([...seen].map(([id, name]) => ({ id, name })));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const service = kind === "service_account";
   const roleChoices: readonly string[] = service ? PROJECT_ROLES : [...PROJECT_ROLES, ...HOST_ROLES];
@@ -51,6 +69,7 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
         role: r.role,
         project: isProjectRole(r.role) ? (service ? project ?? undefined : r.project) : undefined,
       })),
+      clusters: also.length > 0 ? also : undefined,
     };
     try {
       onCreated(await api.createToken(req));
@@ -77,6 +96,27 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
           onChange={(e) => setDays(e.target.value)}
         />
       </Field>
+      {others.length > 0 && (
+        <fieldset>
+          <legend className="block text-sm font-medium text-gray-700">Also works on (other organizations' clusters)</legend>
+          <p className="text-xs text-gray-500">It always works here. Each cluster you add learns its hash and could replay it to the others it lists, so add only those you need.</p>
+          <label className="mt-1 flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={also.includes("all")} onChange={(e) => setAlso(e.target.checked ? ["all"] : [])} />
+            Every cluster my tenants use
+          </label>
+          {!also.includes("all") &&
+            others.map((c) => (
+              <label key={c.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={also.includes(c.id)}
+                  onChange={(e) => setAlso(e.target.checked ? [...also, c.id] : also.filter((x) => x !== c.id))}
+                />
+                {c.name} <span className="text-xs text-gray-500 font-mono">{c.id}</span>
+              </label>
+            ))}
+        </fieldset>
+      )}
       {canService && (
         <Field label="Kind" htmlFor="token-kind">
           <select
@@ -260,6 +300,11 @@ export default function Tokens() {
                 <tr key={t.id} className="border-b border-gray-50">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{t.name}</div>
+                    {(t.clusters ?? []).length > 0 && (
+                      <div className="text-xs text-gray-500">
+                        {t.clusters?.includes("all") ? "on every cluster its tenant uses" : `on ${t.clusters?.length} clusters`}
+                      </div>
+                    )}
                     <code className="text-xs text-gray-400 font-mono">{t.id}</code>
                   </td>
                   <td className="px-4 py-3">

@@ -116,8 +116,10 @@ import {
   AdmissionService,
   DirectoryService,
   TenantService,
+  type OfferJson,
   type SetAdmissionRequestJson,
   type TenantClusterJson,
+  type TrustedDirectoryJson,
   type TenantDevicePoolJson,
 } from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
@@ -1353,6 +1355,30 @@ export type TenantDevicePool = TenantDevicePoolJson;
 export type TenantCluster = TenantClusterJson;
 export const listTenantClusters = (id: string) =>
   rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
+/** Opt the tenant in to another organization's cluster with the offer its
+ *  operator sent (D65); needs a recent login. */
+export const optInCluster = (id: string, offer: string) =>
+  rpc(TenantService.method.optInCluster, { id, offer }).then((r) => r.cluster as TenantCluster);
+export const optOutCluster = (id: string, cluster: string) => rpc(TenantService.method.optOutCluster, { id, cluster }).then(none);
+
+// ---- trust: offers and trusted directories (D64–D66, D13) ----------------------
+
+export type Offer = OfferJson;
+export type TrustedDirectory = TrustedDirectoryJson;
+export const listOffers = () => rpc(AdmissionService.method.listOffers).then((r) => (r.offers ?? []) as Offer[]);
+/** An offer for tenant `tenant` of the directory at `directory` (its issuer
+ *  URL); the `gxo_…` token is in the answer only. */
+export const offerAdmission = (tenant: string, directory: string, days?: number) =>
+  rpc(AdmissionService.method.offerAdmission, { tenant, directory, days }).then((r) => ({ offer: r.offer as Offer, token: r.token ?? "" }));
+export const revokeOffer = (id: string) => rpc(AdmissionService.method.revokeOffer, { id }).then(none);
+export const listTrustedDirectories = () =>
+  rpc(AdmissionService.method.listTrustedDirectories).then((r) => (r.directories ?? []) as TrustedDirectory[]);
+/** How long its credentials stay good without a feed; `undefined`: the
+ *  cluster's default. */
+export const setTrustedDirectory = (id: string, minutes?: number) =>
+  rpc(AdmissionService.method.setTrustedDirectory, { id, max_staleness_minutes: minutes === undefined ? undefined : String(minutes) }).then(
+    (r) => r.directory as TrustedDirectory,
+  );
 export const listTenantDevicePools = (id: string) =>
   rpc(TenantService.method.listDevicePools, { id }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
 /** Replaces the tenant's pools; only `name`, `from`, `max` and `projects` are read. */
