@@ -392,6 +392,15 @@ gxctl token revoke <token-id>
 roles apply in its own project; without `--project` it goes into the
 project selected with `--project` or your default project.
 
+A token works only on the cluster where you make it. If your tenant also
+uses clusters of other organizations, `--cluster <cluster-id>` (repeat
+it) lets the token work on those as well, and `--all-clusters` on every
+cluster your tenant uses (`gxctl tenant clusters <tenant>` lists them).
+Those clusters receive the token's hash with their next update from your
+directory, within a minute; revoking it reaches them the same way. Ask
+for as few as you need: a cluster that can check a token could also
+replay it to the others it lists.
+
 ### Using a token
 
 ```bash

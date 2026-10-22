@@ -240,6 +240,7 @@ fn token_pb(t: &auth::store::Token, roles: &[auth::store::LinkRecord]) -> pb::To
         device: t.device.clone(),
         client: t.client.clone(),
         roles: roles.iter().map(|l| binding_pb(l, None)).collect(),
+        clusters: t.clusters.clone(),
         ..Default::default()
     }
 }
@@ -1484,7 +1485,8 @@ pub fn create_token(
         call.require_action("manageOwnTokens", e, es, &[])?;
         TokenKind::Personal { owner: by.clone() }
     };
-    let (secret, token) = call
+    let clusters = token_clusters(call, &req.clusters)?;
+    let (secret, mut token) = call
         .auth()
         .create_token(
             &req.name,
@@ -1495,6 +1497,14 @@ pub fn create_token(
             req.client.as_deref(),
         )
         .map_err(|e| ServiceError::from(auth_error(e)))?;
+    if !clusters.is_empty() {
+        token.clusters = clusters;
+        call.auth()
+            .store
+            .put_token(&auth::sha256_hex(secret.as_bytes()), &token)
+            .map_err(store_err)?;
+        call.detail("clusters", serde_json::json!(token.clusters));
+    }
     call.set_target(format!("token:{}", token.id));
     let mut roles = Vec::new();
     for r in &req.roles {
@@ -1521,6 +1531,46 @@ pub fn create_token(
         record: token_pb(&token, &roles).into(),
         ..Default::default()
     })
+}
+
+/// A new token's `clusters` (spec/tenancy.md §7.4): this cluster, the
+/// clusters of other organizations the caller's directory trusts, or
+/// `all`; none asked for, or only this one, is stored as none.
+fn token_clusters(call: &Call, asked: &[String]) -> ServiceResult<Vec<String>> {
+    let here = crate::api::op::cluster_id(&call.app);
+    if asked.is_empty() || asked.iter().all(|c| *c == here) {
+        return Ok(Vec::new());
+    }
+    if asked.len() > 32 {
+        return Err(bad("a token names at most 32 clusters"));
+    }
+    let trusted: Vec<String> = call
+        .auth()
+        .trust
+        .clusters(&call.p.directory)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.cluster_id)
+        .collect();
+    let mut out = Vec::new();
+    for c in asked {
+        if *c != auth::store::ALL_CLUSTERS && *c != here && !trusted.contains(c) {
+            return Err(bad(
+                "clusters: this cluster's id, a cluster your directory's tenants use, or \"all\"",
+            ));
+        }
+        if !out.contains(c) {
+            out.push(c.clone());
+        }
+    }
+    // Where it is made, it stays good.
+    if !out
+        .iter()
+        .any(|c| *c == here || c == auth::store::ALL_CLUSTERS)
+    {
+        out.insert(0, here);
+    }
+    Ok(out)
 }
 
 pub fn revoke_token(

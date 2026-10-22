@@ -22,13 +22,15 @@ pub const REPORT: &str = "report";
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
 
 /// The tables a feed carries rows of (D67), by name.
-pub const FEED_TABLES: [&str; 6] = [
+pub const FEED_TABLES: [&str; 7] = [
     "users",
     "teams",
     "tenants",
     "tenant_members",
     "projects",
     "policy_links",
+    // API tokens that list the cluster, by their hash (§7.4).
+    "api_tokens",
 ];
 
 fn table(name: &str) -> Option<TableDefinition<'static, &'static str, &'static [u8]>> {
