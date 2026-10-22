@@ -78,6 +78,18 @@ the `https://` URL.
    re-login dialog (PAM, or SSO with `reauth=1`) and retries the request
    once. `403` messages are shown where the action was attempted.
 5. **Log out** in the header: `POST /auth/logout`.
+5a. **Accounts** (spec/tenancy.md D71). The header's name opens a menu
+   with the browser's accounts from `GET /auth/accounts`. It offers:
+   - switching to a signed-in account (`POST /auth/accounts/switch`,
+     then a reload);
+   - signing in again to a signed-out directory;
+   - **Add another account** (`POST /auth/accounts/add`, then the login
+     page);
+   - **Sign out of all**.
+
+   The Account page lists the same accounts, each with **Remove**. The
+   login page lists them as well, so a browser with no active session
+   can switch back.
 6. The header's project selector lists `GET /projects`; the choice is
    saved with `PATCH /users/me {"default_project": id}`. Lists of VMs,
    disks and credentials pass `?project=`, creates pass `project`, the

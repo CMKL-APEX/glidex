@@ -145,6 +145,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D68 | The replica | The cluster keeps the snapshot in its own tables as records of the trusted directory (`directory_id` = its `trusted-<hash>` id, D65): users, teams, memberships, tenants, projects and links, replaced in one write per new revision; nothing writes them but the feed. Authorization then works for those users as for local ones. A user missing from the replica, or `disabled` there, has no session or token on the cluster; an ended `sid` ends the cluster sessions made from it. | One authorization path; a cluster cut off keeps what it last knew (D13, task 7). |
 | D69 | Tokens and sessions from a trusted directory | The cluster accepts access tokens (D55) of a trusted directory, checked against the JWKS of its last feed, `aud` its cluster id, the user in the replica and enabled. The directory's token endpoint gives access tokens for a cluster in its `TrustedCluster` records to members of the tenants opted in to it. For the browser, the cluster is the directory's OIDC client `cluster:<id>`: its login page offers "Sign in with <directory>" for each trusted directory, the code flow (PKCE) goes to the directory with the cluster's callback, and the token request is signed with the cluster key (`private_key_jwt`); the ID token gives a **cluster session** bound to its `sid`. The callback is registered at the handshake (the redeem sends `ui_callback`). | gxctl and browsers reach other organizations' clusters with one login at their own directory (§7.1, §7.2). |
 | D70 | Reports back | With each feed pull the cluster posts what it holds for each of the directory's tenants: admission status and cap, and counts of VMs, disks and networks (`POST /d/<dir>/feed/v1/report`, signed). The directory keeps the last report on its `TrustedCluster`, and the tenant's page shows it. | A tenant sees where its resources are without logging in to every cluster. |
+| D71 | Accounts in one browser | A browser may hold sessions in several directories of the host it uses (its hosted directories, and the cluster sessions of its trusted directories, D69): **one account per directory, one active**. The active one is `gx_session`; the others are in **`gx_accounts`** (HttpOnly, SameSite=Strict, Secure over TLS, `Path=/api/auth/accounts`: only the account endpoints see it), with at most 5 entries. A directory whose session ended stays listed, by its id only, to sign in again. The server keeps no record of which accounts a browser holds together, and logs none: `GET /auth/accounts` answers from the cookies its request carries, and only with each directory's name and the account's display name. Switching makes another live account active; adding moves the active account into the list and opens the login page; removing ends that session and forgets the directory; logging out ends the active session and keeps its directory listed; signing out of all ends every session and forgets all. | People with accounts in several organizations switch without signing in again. The list is the browser's own: no one else sees it, and the host doesn't learn which accounts go together beyond the requests that carry them. |
 
 ## 3. Threat model additions
 
@@ -423,6 +424,35 @@ the handshake (§12).
    absolute 12 h, bound to the directory and `sid`). Logout or
    revocation at the directory reaches the cluster on the feed and
    ends the session.
+
+A browser can hold accounts in several directories at once (D71):
+
+- **The picker.** The header's account menu and the Account page list
+  the browser's accounts: each directory's name, the account's name,
+  and whether it is signed in. Picking a signed-in account switches to
+  it. Picking a signed-out directory opens that directory's login: its
+  `/login/<directory>` page, or a trusted directory's "Sign in with"
+  flow.
+- **The endpoints** (`/auth/accounts`, public: they work without an
+  active session, and writes need the request's `Origin`):
+
+  | Endpoint | What it does |
+  |---|---|
+  | `GET /auth/accounts` | Lists the active account and the others: `{directory, directory_name, user_name?, signed_in, active}`. |
+  | `POST /auth/accounts/switch {directory}` | Makes that directory's live session active; answers the new CSRF value. |
+  | `POST /auth/accounts/add` | Moves the active session into `gx_accounts` and clears `gx_session`; the browser then logs in as usual. |
+  | `POST /auth/accounts/remove {directory}` | Ends that directory's session (and the directory chains it approved) and drops it from the list. |
+  | `POST /auth/accounts/logout-all` | Ends every session the browser holds and clears both cookies. |
+
+- **One per directory.** A login to a directory already listed replaces
+  that entry, and the session it held is ended. When the list is full,
+  adding is refused until one is removed.
+- **Switching is not a login.** Each session keeps its own idle and
+  absolute limits, step-up time and MFA. The audit log records a switch
+  as `switchAccount` by the account switched to, and names no other
+  account.
+- **Tabs.** A switch changes the account for every tab. A tab whose
+  CSRF value no longer matches reloads.
 
 ### 7.2 gxctl
 
@@ -1477,7 +1507,7 @@ useful on one host first):
      `admission offer`, `tenant opt-in|opt-out`, `trust list`; the §17
      offer tests between two control planes in one process (refused for
      the wrong tenant, the wrong directory, twice, after expiry).
-6. **Feeds and cluster sessions** (D67–D70), in three steps:
+6. **Feeds and cluster sessions** (D67–D71), in four steps:
    - **6a** the feed and the replica (D67, D68), and access tokens of a
      trusted directory (D69's first part: the directory's token
      endpoint for trusted clusters, the cluster checking them); gxctl
@@ -1487,7 +1517,11 @@ useful on one host first):
      the cluster as OIDC client with `private_key_jwt`, its login page's
      trusted directories, cluster sessions from ID tokens, ended `sid`s
      and disabled users ending them; UI e2e.
-   - **6c** reports back (D70), the tenant page's clusters, docs.
+   - **6c** accounts in one browser (D71): `gx_accounts`, the
+     `/auth/accounts` endpoints, the header's account picker and the
+     Account page's list; tests and UI e2e on one host with two
+     directories.
+   - **6d** reports back (D70), the tenant page's clusters, docs.
 7. **Partitions**: `max_staleness` per directory, refusing that
    directory's credentials past it, `X-Glidex-Directory-Lag`, API
    tokens' `clusters` (§7.4); the §17 partition tests.
