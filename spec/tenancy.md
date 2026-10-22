@@ -1152,7 +1152,7 @@ directory_is_elsewhere` (with the directory's URL).
 
 `control-plane.json`: `auth.pam` and `auth.oidc` keep working as
 file-defined connectors of the host's first directory. New:
-`trust.default_max_staleness`, `directory.access_token_ttl`,
+`trust.default_max_staleness_minutes`, `directory.access_token_ttl`,
 `directory.sync_interval_min`, `tenancy.max_tenants`.
 
 ## 15. UI and CLI
@@ -2001,3 +2001,11 @@ Task 6d, reports back:
 |---|---|
 | D70 | After each feed pull (`spawn_feeds`), `api::trust::push_report` posts `POST /d/{dir}/feed/v1/report {cluster_id, report}`, signed with the cluster key (`purpose: report`). `report_for` builds one `trust::TenantReport` per admitted tenant of that directory: suspended or not, the cap, and the use of its projects here (projects, VMs and running VMs, disks and their GiB, networks; `VmManager::usage` per project). At the directory, `api::trust::report` checks the assertion against the `TrustedCluster`'s key, keeps only its opted-in tenants, stamps its own time, and stores it as `TrustedCluster.report`. `TenantCluster.report` (`TenantClusterReport`) carries it in `ListTenantClusters`; `gxctl tenant clusters` prints it, and the tenant page shows it in *Clusters of other organizations* (`readTenantClusters`). Docs: the operator guide's clusters page (feeds, sign-in, reports, port 8841 both ways), the user guide's logging-in page (an organization's sign-in, "Sign in with", several accounts) |
 | Tests | `trust_tests.rs::the_cluster_reports_its_tenants_back` (the report at the directory and in the tenant's cluster list; another tenant in it dropped; unsigned refused) |
+
+Task 7a, staleness:
+
+| Spec | Code |
+|---|---|
+| D13 | A feed answer (new content, or `304`) records when the directory last answered (`FeedState.checked_at`, written at most once a minute, `TrustStore::mark_checked`); `TrustStore::lag` is the time since. `TrustedDirectory.max_staleness_minutes` (else `trust.default_max_staleness_minutes`, 60) is the limit; `api::trust::freshness` compares them, refusing an id it can't resolve. The API middleware refuses a principal of a trusted directory past its limit with `401 directory_stale`, but on `/auth/…` (to see who one is and log out), and adds `X-Glidex-Directory-Lag: <seconds>` once the lag passes 90 s (three missed pulls). `AdmissionService.SetTrustedDirectory` (`PATCH /admissions/directories/{id}`, `manageAdmissions`) sets the limit; `ListTrustedDirectories` shows the limit, the last feed, the lag and `stale`; gxctl `admission directories` and `admission staleness <directory> <minutes|default>` |
+| Tests | `trust_tests.rs::a_directory_out_of_reach_too_long_is_refused` (no header while fresh; the lag once behind; past a 1-minute limit refused but on `/auth/whoami`, the cluster's own administrator unaffected; the next feed restoring it; back to the default) |
+| Not yet | API tokens' `clusters` (§7.4) and their feed: task 7b |

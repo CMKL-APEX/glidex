@@ -200,6 +200,15 @@ service AdmissionService {
       rest: "GET /admissions/directories"
     };
   }
+  // How long a trusted directory's credentials stay good here after its
+  // last feed (spec/tenancy.md D13).
+  rpc SetTrustedDirectory(SetTrustedDirectoryRequest) returns (SetTrustedDirectoryResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "PATCH /admissions/directories/{id}"
+    };
+  }
 }
 
 // Directories this host serves (spec/tenancy.md D27, D59): the host's
@@ -621,6 +630,27 @@ message TrustedDirectory {
   string issuer = 2;
   repeated RemoteTenant tenants = 3;
   google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  // Its own setting; absent: the cluster's default.
+  optional uint64 max_staleness_minutes = 5 [json_name = "max_staleness_minutes"];
+  // The limit in force.
+  uint64 effective_max_staleness_minutes = 6 [json_name = "effective_max_staleness_minutes"];
+  // When its feed last answered; absent before the first.
+  google.protobuf.Timestamp last_sync = 7 [json_name = "last_sync"];
+  // Seconds since then.
+  uint64 lag_seconds = 8 [json_name = "lag_seconds"];
+  // Past its limit: its credentials are refused here.
+  bool stale = 9;
+}
+
+message SetTrustedDirectoryRequest {
+  // Its `trusted-…` id.
+  string id = 1;
+  // At least 1; absent: back to the cluster's default
+  // (`trust.default_max_staleness_minutes`).
+  optional uint64 max_staleness_minutes = 2 [json_name = "max_staleness_minutes"];
+}
+message SetTrustedDirectoryResponse {
+  TrustedDirectory directory = 1;
 }
 
 message ListTrustedDirectoriesRequest {}

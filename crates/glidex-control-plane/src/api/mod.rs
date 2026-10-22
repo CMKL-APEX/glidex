@@ -1435,6 +1435,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         get(tenants::list_trusted_directories),
     )
     .add(
+        "PATCH",
+        "/admissions/directories/{id}",
+        "manageAdmissions",
+        patch(tenants::set_trusted_directory),
+    )
+    .add(
         "GET",
         "/tenants/{id}/clusters",
         "readTenantClusters",
@@ -1893,12 +1899,44 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             }
         }
     };
+    // A trusted directory's people (spec/tenancy.md D13): refused once its
+    // replica here is older than its `max_staleness`, since a revocation
+    // may be missing; behind, they are told by how much. `/auth/…` stays
+    // open to them, to see who they are and to log out.
+    let mut lag = None;
+    if let Some(p) = &principal
+        && let Some(f) = trust::freshness(&app, &p.directory)
+    {
+        match f {
+            Ok(l) => lag = (l > trust::BEHIND_SECS).then_some(l),
+            Err(l) if !req.uri().path().starts_with("/auth/") => {
+                let when = if l == u64::MAX {
+                    "for a while".to_string()
+                } else {
+                    format!("for {} minutes", l / 60)
+                };
+                return plain_error(
+                    StatusCode::UNAUTHORIZED,
+                    "directory_stale",
+                    &format!(
+                        "this cluster hasn't heard from your organization's directory {when}: its accounts are paused here until it does"
+                    ),
+                );
+            }
+            Err(l) => lag = Some(l),
+        }
+    }
     if let Some(p) = principal {
         req.extensions_mut().insert(p);
     }
     let mut resp = next.run(req).await;
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         resp.headers_mut().insert("x-request-id", v);
+    }
+    if let Some(l) = lag.filter(|l| *l != u64::MAX)
+        && let Ok(v) = HeaderValue::from_str(&l.to_string())
+    {
+        resp.headers_mut().insert("x-glidex-directory-lag", v);
     }
     resp
 }

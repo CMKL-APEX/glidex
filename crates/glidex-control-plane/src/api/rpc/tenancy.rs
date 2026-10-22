@@ -240,6 +240,14 @@ impl AdmissionService for Svc {
     ) -> ServiceResult<ListTrustedDirectoriesResponse> {
         op!(self, ctx, req, tenancy::list_trusted_directories)
     }
+
+    async fn set_trusted_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetTrustedDirectoryRequest>,
+    ) -> ServiceResult<SetTrustedDirectoryResponse> {
+        op!(self, ctx, req, tenancy::set_trusted_directory)
+    }
 }
 
 #[allow(refining_impl_trait)]

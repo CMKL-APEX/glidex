@@ -49,6 +49,8 @@ pub struct Config {
     pub metering: MeteringConfig,
     /// Clustering tunables (spec/clustering.md §10.2).
     pub cluster: crate::cluster::config::ClusterConfig,
+    /// Directories of other organizations (spec/tenancy.md D13).
+    pub trust: TrustConfig,
 }
 
 impl Default for Config {
@@ -71,6 +73,7 @@ impl Default for Config {
             console: ConsoleConfig::default(),
             metering: MeteringConfig::default(),
             cluster: Default::default(),
+            trust: TrustConfig::default(),
         }
     }
 }
@@ -525,6 +528,22 @@ impl PciConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TrustConfig {
+    /// How long a trusted directory's credentials stay good here after
+    /// its last feed, unless set for that directory (spec/tenancy.md D13).
+    pub default_max_staleness_minutes: u64,
+}
+
+impl Default for TrustConfig {
+    fn default() -> Self {
+        Self {
+            default_max_staleness_minutes: 60,
+        }
     }
 }
 

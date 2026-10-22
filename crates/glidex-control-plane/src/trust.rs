@@ -65,6 +65,10 @@ pub struct FeedState {
     /// `(table, key)` of every row it wrote.
     pub rows: Vec<(String, String)>,
     pub applied_at: u64,
+    /// When the directory last answered a feed request (new content or
+    /// not), to the minute: the replica is that fresh (D13).
+    #[serde(default)]
+    pub checked_at: u64,
 }
 
 /// A browser login at a trusted directory under way (D69): what its
@@ -187,6 +191,10 @@ pub struct TrustedDirectory {
     pub jwks: Value,
     pub tenants: Vec<RemoteTenant>,
     pub created_at: u64,
+    /// How long its credentials stay good after its last feed (D13);
+    /// `None`: `trust.default_max_staleness_minutes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_staleness_minutes: Option<u64>,
 }
 
 /// The id a trusted directory's records take here.
@@ -436,12 +444,54 @@ impl TrustStore {
                 revision: snap.revision.clone(),
                 rows: written.clone(),
                 applied_at: now,
+                checked_at: now,
             };
             txn.open_table(FEED_STATE)?
                 .insert(d.id.as_str(), serde_json::to_vec(&st)?.as_slice())?;
         }
         txn.commit()?;
         Ok(written.len())
+    }
+
+    /// The directory answered a feed request at `now` with nothing new;
+    /// written at most once a minute.
+    pub fn mark_checked(&self, id: &str, now: u64) -> Result<(), StoreError> {
+        let mut st = self.feed_state(id)?;
+        if now < st.checked_at + 60 {
+            return Ok(());
+        }
+        st.checked_at = now;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        txn.open_table(FEED_STATE)?
+            .insert(id, serde_json::to_vec(&st)?.as_slice())?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Move `id`'s feed times `secs` into the past, as if the directory
+    /// had been unreachable that long (tests and drills).
+    #[doc(hidden)]
+    pub fn backdate_feed(&self, id: &str, secs: u64) -> Result<(), StoreError> {
+        let mut st = self.feed_state(id)?;
+        st.applied_at = st.applied_at.saturating_sub(secs);
+        st.checked_at = st.checked_at.saturating_sub(secs);
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        txn.open_table(FEED_STATE)?
+            .insert(id, serde_json::to_vec(&st)?.as_slice())?;
+        txn.commit()?;
+        if let Some(mut d) = self.directories()?.into_iter().find(|d| d.id == id) {
+            d.created_at = d.created_at.saturating_sub(secs);
+            self.put_directory(&d)?;
+        }
+        Ok(())
+    }
+
+    /// How far behind `d`'s replica is at `now`, in seconds: since the
+    /// directory last answered a feed (since trust began, before any).
+    pub fn lag(&self, d: &TrustedDirectory, now: u64) -> Result<u64, StoreError> {
+        let st = self.feed_state(&d.id)?;
+        let last = st.checked_at.max(st.applied_at).max(d.created_at);
+        Ok(now.saturating_sub(last))
     }
 
     /// Forget trusted directory `id`'s replica (trust ended, D66).
@@ -484,6 +534,7 @@ mod tests {
             jwks: Value::Null,
             tenants: vec![],
             created_at: 0,
+            max_staleness_minutes: None,
         };
         let row = |key: &str| Row {
             table: "users".into(),
