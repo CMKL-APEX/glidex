@@ -1191,3 +1191,27 @@ async fn a_browser_holds_accounts_in_several_directories() {
         "ended"
     );
 }
+
+/// D57: a standalone host's server-info names the `aud` its access tokens
+/// carry (its own `standalone-…` id), which gxctl's directory login asks
+/// tokens for; it reports no cluster id.
+#[tokio::test]
+async fn server_info_names_a_standalone_hosts_token_audience() {
+    let h = harness();
+    let resp = h
+        .router
+        .clone()
+        .oneshot(
+            Request::get("/auth/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let aud = v["token_audience"].as_str().unwrap_or_default();
+    assert!(aud.starts_with("standalone-"), "{v}");
+    assert_eq!(aud, glidex_control_plane::api::op::cluster_id(&h.app));
+    assert!(v["cluster_id"].is_null(), "{v}");
+}

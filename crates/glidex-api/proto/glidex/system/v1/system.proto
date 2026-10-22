@@ -39,6 +39,10 @@ message GetServerInfoResponse {
   // SHA-256 of the server certificate; absent when TLS is off.
   optional string fingerprint = 5;
   LoginMethods methods = 6;
+  // The `aud` its access tokens carry (spec/tenancy.md D57): the cluster
+  // id, or a standalone host's own (`standalone-…`). What a directory
+  // login asks tokens for (`resource=urn:glidex:cluster:<this>`).
+  string token_audience = 7 [json_name = "token_audience"];
 }
 
 // Which login methods are on. `optional` so `false` is still sent.

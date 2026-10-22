@@ -440,6 +440,18 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                 // certificate (down, refused, timed out): say it plainly.
                 None => return err(e),
                 Some(fp) => {
+                    // The pinned certificate itself, refused for another
+                    // reason: it doesn't name the host dialled.
+                    let pinned = glidex_tls::Trust::normalize_pin(&fp).is_some_and(|f| {
+                        tls.pins
+                            .iter()
+                            .any(|p| glidex_tls::Trust::normalize_pin(p).as_ref() == Some(&f))
+                    });
+                    if pinned {
+                        return err(format!(
+                            "the certificate of {host} is the pinned one (SHA-256 {fp}), but it doesn't name {host}: {e}\n  use a name it was issued for (the host's own name, or one in GLIDEX_UI_HOSTS / the TLS setup), e.g. --url https://<that name>:8841"
+                        ));
+                    }
                     if !tls.pins.is_empty() && !asked {
                         // §5.3: a pinned certificate that changed is a hard
                         // error — never a re-prompt.
@@ -534,10 +546,15 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
     // A directory login (D57) keeps its refresh token in the profile.
     let mut dir_login: Option<config::DirectoryLogin> = None;
-    let resource = format!(
-        "urn:glidex:cluster:{}",
-        claimed.as_deref().unwrap_or("local")
-    );
+    // The `aud` this server's tokens carry: a standalone host has an id of
+    // its own (D57); older servers don't say, and then it is the cluster's.
+    let audience = info["token_audience"]
+        .as_str()
+        .filter(|a| !a.is_empty())
+        .map(String::from)
+        .or_else(|| claimed.clone())
+        .unwrap_or_else(|| "local".into());
+    let resource = format!("urn:glidex:cluster:{audience}");
     let (credential, method_hint) = if has_flag(args, "--directory") {
         let dir = flag_value(args, "--directory")
             .filter(|v| !v.starts_with("--"))
