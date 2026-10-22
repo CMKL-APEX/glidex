@@ -10,7 +10,7 @@
 
 use super::{AppState, err};
 use crate::directory::issuer::CLUSTER_OWNER;
-use crate::directory::peer;
+use crate::directory::{op, peer};
 use crate::trust::{self, RemoteTenant, TrustedDirectory};
 use axum::{
     Json,
@@ -168,7 +168,10 @@ pub async fn redeem(
         None,
         json!({ "offer": offer.id, "tenant": b.tenant.slug }),
     );
-    Json(json!({ "cluster_id": cluster, "cluster_key": cluster_key })).into_response()
+    // Where the directory sends this cluster's browser logins back (D69).
+    let ui_callback = super::trusted_login::callback_url(&app, &d.id);
+    Json(json!({ "cluster_id": cluster, "cluster_key": cluster_key, "ui_callback": ui_callback }))
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -429,10 +432,17 @@ pub fn snapshot_for(
         .connectors
         .jwks(dir, now())
         .map_err(|e| e.to_string())?;
+    let client = format!("{}{}", op::CLUSTER_CLIENT, c.cluster_id);
+    let ended_sids = app
+        .auth
+        .refresh_tokens
+        .ended_since(dir, &client, now().saturating_sub(op::ENDED_KEEP_SECS))
+        .map_err(|e| e.to_string())?;
     Ok(trust::Snapshot {
-        revision: trust::revision_of(&jwks, &rows),
+        revision: trust::revision_of(&jwks, &rows, &ended_sids),
         jwks,
         rows,
+        ended_sids,
     })
 }
 
@@ -491,6 +501,7 @@ pub fn localize(d: &TrustedDirectory, snap: &trust::Snapshot) -> Result<trust::S
         revision: snap.revision.clone(),
         jwks: snap.jwks.clone(),
         rows,
+        ended_sids: snap.ended_sids.clone(),
     })
 }
 
@@ -576,7 +587,7 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
         304 => Ok(false),
         200 => {
             let snap: trust::Snapshot = serde_json::from_value(v).map_err(|e| e.to_string())?;
-            if trust::revision_of(&snap.jwks, &snap.rows) != snap.revision {
+            if trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids) != snap.revision {
                 return Err("a feed whose revision doesn't match its content".into());
             }
             let local = localize(d, &snap)?;
@@ -586,6 +597,28 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
                 .map_err(|e| e.to_string())?;
             // Its role links are policies now.
             app.auth.reload_policies().map_err(|e| e.to_string())?;
+            // Sessions made from chains it ended end (D69), only its own
+            // users'; its users gone or disabled have none already.
+            if !snap.ended_sids.is_empty() {
+                let ended: std::collections::HashSet<&String> = snap.ended_sids.iter().collect();
+                let users: std::collections::HashSet<&String> = local
+                    .rows
+                    .iter()
+                    .filter(|r| r.table == "users")
+                    .map(|r| &r.key)
+                    .collect();
+                let n = app
+                    .auth
+                    .store
+                    .prune_sessions(|s| {
+                        users.contains(&s.user_id)
+                            && s.sid.as_ref().is_some_and(|x| ended.contains(x))
+                    })
+                    .map_err(|e| e.to_string())?;
+                if n > 0 {
+                    tracing::info!(directory = %d.issuer, sessions = n, "ended with their directory chains");
+                }
+            }
             // Its keys as the feed brings them (rotations, D53).
             if let Ok(Some(mut cur)) = app.auth.trust.directory_by_issuer(&d.issuer) {
                 cur.jwks = snap.jwks.clone();

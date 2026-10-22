@@ -5,7 +5,9 @@
 //!   grants** (RFC 8628) live in memory for minutes, single use.
 //! - **Refresh tokens** (D55) are stored by their SHA-256, in chains
 //!   (`family`): each use replaces the token with a new one of the chain,
-//!   and presenting a replaced one again ends the whole chain.
+//!   and presenting a replaced one again ends the whole chain. A chain
+//!   that ends is remembered 12 h (`ended_sids`), for the feeds of the
+//!   clusters that made sessions from it (D67, D69).
 
 use crate::auth::{random_token, sha256_hex};
 use redb::{ReadableTable as _, TableDefinition};
@@ -14,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const REFRESH_TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("refresh_tokens");
+const ENDED_SIDS: TableDefinition<&str, &[u8]> = TableDefinition::new("ended_sids");
 
 /// The built-in public client (D54).
 pub const GXCTL: &str = "gxctl";
@@ -30,6 +33,10 @@ pub const REFRESH_IDLE_SECS: u64 = 30 * 86_400;
 pub const REFRESH_MAX_SECS: u64 = 90 * 86_400;
 /// What a cluster is named as in `resource` (D57).
 pub const CLUSTER_URN: &str = "urn:glidex:cluster:";
+/// A trusted cluster's client id: `cluster:<id>` (D69).
+pub const CLUSTER_CLIENT: &str = "cluster:";
+/// How long an ended chain is remembered for feeds.
+pub const ENDED_KEEP_SECS: u64 = 12 * 3600;
 
 /// A loopback redirect for a native app (RFC 8252 §7.3): `http` to
 /// `127.0.0.1` or `[::1]` with a port, no fragment.
@@ -69,6 +76,9 @@ pub struct Grant {
     /// `amr` (RFC 8176): `pwd`, `otp`, `hwk`, `mfa`, …
     pub amr: Vec<String>,
     pub mfa: bool,
+    /// The browser session at the directory that approved it, when its
+    /// chain ends with that session (a cluster's browser login, D69).
+    pub session: Option<String>,
 }
 
 /// What an authorization request asked for.
@@ -293,6 +303,16 @@ pub struct GrantInfo {
     pub amr: Vec<String>,
     #[serde(default)]
     pub mfa: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+/// A chain that ended, kept `ENDED_KEEP_SECS`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndedSid {
+    pub directory_id: String,
+    pub client_id: String,
+    pub ended_at: u64,
 }
 
 impl RefreshToken {
@@ -302,6 +322,7 @@ impl RefreshToken {
             auth_time: self.grant_info.auth_time,
             amr: self.grant_info.amr.clone(),
             mfa: self.grant_info.mfa,
+            session: self.grant_info.session.clone(),
         }
     }
 }
@@ -412,6 +433,7 @@ impl RefreshTokens {
                 auth_time: grant.auth_time,
                 amr: grant.amr.clone(),
                 mfa: grant.mfa,
+                session: grant.session.clone(),
             },
             family_created_at: now,
             issued_at: now,
@@ -487,26 +509,81 @@ impl RefreshTokens {
     }
 
     pub fn end_family(&self, family: &str) -> Result<(), StoreError> {
-        let keys: Vec<String> = self
-            .all()?
-            .into_iter()
-            .filter(|(_, r)| r.family == family)
-            .map(|(k, _)| k)
-            .collect();
-        self.write(&[], &keys)
+        self.end_where(|r| r.family == family).map(|_| ())
     }
 
     /// End every chain of `user` (disable, logout everywhere).
     pub fn end_user(&self, user: &str) -> Result<usize, StoreError> {
-        let keys: Vec<String> = self
-            .all()?
-            .into_iter()
-            .filter(|(_, r)| r.user_id == user)
-            .map(|(k, _)| k)
-            .collect();
-        let n = keys.len();
-        self.write(&[], &keys)?;
-        Ok(n)
+        self.end_where(|r| r.user_id == user)
+    }
+
+    /// End the chains browser session `hash` approved (its logout, D69).
+    pub fn end_session(&self, hash: &str) -> Result<usize, StoreError> {
+        self.end_where(|r| r.grant_info.session.as_deref() == Some(hash))
+    }
+
+    /// Remove the tokens `pick` chooses, and remember their chains as
+    /// ended; the number of tokens.
+    fn end_where(&self, pick: impl Fn(&RefreshToken) -> bool) -> Result<usize, StoreError> {
+        let now = crate::auth::store::now();
+        let gone: Vec<(String, RefreshToken)> =
+            self.all()?.into_iter().filter(|(_, r)| pick(r)).collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut t = txn.open_table(REFRESH_TOKENS)?;
+            for (k, _) in &gone {
+                t.remove(k.as_str())?;
+            }
+            let mut e = txn.open_table(ENDED_SIDS)?;
+            let old: Vec<String> = e
+                .iter()?
+                .filter_map(|x| x.ok())
+                .filter(|(_, v)| {
+                    serde_json::from_slice::<EndedSid>(v.value())
+                        .map_or(true, |x| x.ended_at + ENDED_KEEP_SECS < now)
+                })
+                .map(|(k, _)| k.value().to_string())
+                .collect();
+            for k in old {
+                e.remove(k.as_str())?;
+            }
+            for (_, r) in &gone {
+                let v = EndedSid {
+                    directory_id: r.directory_id.clone(),
+                    client_id: r.client_id.clone(),
+                    ended_at: now,
+                };
+                e.insert(r.family.as_str(), serde_json::to_vec(&v)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(gone.len())
+    }
+
+    /// The chains of `client_id` at directory `dir` that ended since
+    /// `since`, sorted.
+    pub fn ended_since(
+        &self,
+        dir: &str,
+        client_id: &str,
+        since: u64,
+    ) -> Result<Vec<String>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_table(ENDED_SIDS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for e in table.iter()? {
+            let (k, v) = e?;
+            let x: EndedSid = serde_json::from_slice(v.value())?;
+            if x.directory_id == dir && x.client_id == client_id && x.ended_at >= since {
+                out.push(k.value().to_string());
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 }
 
@@ -520,6 +597,7 @@ mod tests {
             auth_time: 10,
             amr: vec!["pwd".into()],
             mfa: false,
+            session: None,
         }
     }
 
@@ -660,5 +738,44 @@ mod tests {
             .unwrap();
         assert!(s.revoke(&t).unwrap());
         assert!(!s.revoke(&t).unwrap());
+    }
+
+    #[test]
+    fn a_sessions_chains_end_with_it_and_are_remembered() {
+        let (s, _d) = store();
+        let t = crate::auth::store::now();
+        let browser = Grant {
+            session: Some("h1".into()),
+            ..grant()
+        };
+        let (_, a) = s
+            .start(
+                "local",
+                "cluster:c1",
+                "openid",
+                &browser,
+                REFRESH_MAX_SECS,
+                t,
+            )
+            .unwrap();
+        let (_, b) = s
+            .start("local", GXCTL, "openid", &grant(), REFRESH_MAX_SECS, t)
+            .unwrap();
+        assert_eq!(s.end_session("h1").unwrap(), 1);
+        assert!(!s.family_alive(&a.family, t).unwrap());
+        assert!(
+            s.family_alive(&b.family, t).unwrap(),
+            "gxctl's isn't the session's"
+        );
+        assert_eq!(
+            s.ended_since("local", "cluster:c1", t - 1).unwrap(),
+            vec![a.family.clone()]
+        );
+        assert!(s.ended_since("local", GXCTL, t - 1).unwrap().is_empty());
+        assert!(
+            s.ended_since("other", "cluster:c1", t - 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

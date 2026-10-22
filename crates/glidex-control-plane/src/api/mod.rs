@@ -28,6 +28,7 @@ mod scim;
 mod storage;
 mod tenants;
 pub mod trust;
+mod trusted_login;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
@@ -941,6 +942,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/auth/c/{id}/callback",
         PUBLIC,
         get(access::connector_callback),
+    )
+    // Logins at a trusted directory (spec/tenancy.md D69).
+    .add(
+        "GET",
+        "/auth/t/{trusted}/start",
+        PUBLIC,
+        get(trusted_login::start),
+    )
+    .add(
+        "GET",
+        "/auth/t/{trusted}/callback",
+        PUBLIC,
+        get(trusted_login::callback),
     )
     .add(
         "POST",
@@ -2519,6 +2533,8 @@ mod tests {
                 "/auth/invitation/passkey/start",
                 "/auth/invitation/passkey/finish",
                 "/auth/c/{id}/callback",
+                "/auth/t/{trusted}/start",
+                "/auth/t/{trusted}/callback",
                 "/auth/c/{id}/device",
                 "/auth/c/{id}/device/poll",
                 "/scim/v2/c/{id}/ServiceProviderConfig",

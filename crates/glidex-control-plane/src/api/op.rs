@@ -2,14 +2,16 @@
 //! under its issuer, HTTP only:
 //!
 //! - `GET /d/{dir}/authorize`: the code flow with PKCE (S256) for the
-//!   built-in `gxctl` client and a loopback redirect (RFC 8252). The
-//!   browser's session at this host approves it; without one, the web UI
-//!   logs in first and comes back (`/?next=…`).
+//!   built-in `gxctl` client and a loopback redirect (RFC 8252), or for a
+//!   trusted cluster's web UI (`cluster:<id>`, its registered callback,
+//!   D69). The browser's session at this host approves it; without one,
+//!   the web UI logs in first and comes back (`/?next=…`).
 //! - `POST /d/{dir}/device_authorization`, and the web UI's
 //!   `POST /d/{dir}/device/inspect` and `…/device/answer` (signed in).
 //! - `POST /d/{dir}/token`: `authorization_code`, `refresh_token` and
 //!   `device_code`; with `resource=urn:glidex:cluster:<id>`, an access
-//!   token for that cluster (D57).
+//!   token for that cluster (D57). A trusted cluster authenticates with a
+//!   client assertion signed by its key (`private_key_jwt`).
 //! - `POST /d/{dir}/revoke`: ends a refresh token's chain.
 //!
 //! And [`access_principal`]: this cluster accepting its own directory's
@@ -18,8 +20,10 @@
 use super::{AppState, Caller, err};
 use crate::auth::{Method, Principal, Transport};
 use crate::directory::op::{
-    self as op, CLUSTER_URN, CodeRequest, DeviceRequest, GXCTL, Grant, Poll, RefreshRefused,
+    self as op, CLUSTER_CLIENT, CLUSTER_URN, CodeRequest, DeviceRequest, GXCTL, Grant, Poll,
+    RefreshRefused,
 };
+use crate::trust::TrustedCluster;
 use axum::{
     Json,
     body::Bytes,
@@ -117,6 +121,7 @@ fn grant_of(p: &Principal) -> Option<Grant> {
         auth_time: p.authenticated_at,
         amr,
         mfa: p.mfa,
+        session: None,
     })
 }
 
@@ -142,6 +147,34 @@ fn chain_max_secs(app: &AppState, user: &str) -> u64 {
         .min()
         .unwrap_or(crate::directory::DEFAULT_TOKEN_MAX_DAYS);
     (days * 86_400).min(op::REFRESH_MAX_SECS)
+}
+
+/// A client of directory `dir` (D54): the built-in `gxctl`, or a trusted
+/// cluster's web UI (`cluster:<id>`, D69).
+enum Client {
+    Gxctl,
+    Cluster(Box<TrustedCluster>),
+}
+
+fn client_of(app: &AppState, dir: &str, id: &str) -> Option<Client> {
+    if id == GXCTL {
+        return Some(Client::Gxctl);
+    }
+    let c = app
+        .auth
+        .trust
+        .cluster(dir, id.strip_prefix(CLUSTER_CLIENT)?)
+        .ok()??;
+    Some(Client::Cluster(Box::new(c)))
+}
+
+/// `user` is a member of a tenant opted in to cluster `c` (D69).
+fn uses_cluster(app: &AppState, user: &str, c: &TrustedCluster) -> bool {
+    c.tenants.iter().any(|t| {
+        app.auth
+            .is_member(&crate::authz::Ent::User(user.into()), t)
+            .unwrap_or(false)
+    })
 }
 
 /// The cluster a `resource` names: this one, or one directory `dir`
@@ -207,13 +240,7 @@ fn token_response(
                 .cluster(dir, &a)
                 .ok()
                 .flatten()
-                .is_some_and(|c| {
-                    c.tenants.iter().any(|t| {
-                        app.auth
-                            .is_member(&crate::authz::Ent::User(r.user_id.clone()), t)
-                            .unwrap_or(false)
-                    })
-                });
+                .is_some_and(|c| uses_cluster(app, &r.user_id, &c));
             if !ok {
                 return oauth_err(
                     StatusCode::BAD_REQUEST,
@@ -258,20 +285,30 @@ pub async fn authorize(
     }
     let get = |k: &str| q.get(k).map(String::as_str).unwrap_or("");
     // Until the redirect is known good, errors are shown, not redirected.
-    if get("client_id") != GXCTL {
+    let Some(client) = client_of(&app, &dir, get("client_id")) else {
         return oauth_err(
             StatusCode::BAD_REQUEST,
             "invalid_client",
             "unknown client_id",
         );
-    }
+    };
     let redirect_uri = get("redirect_uri");
-    if !op::loopback_redirect(redirect_uri) {
-        return oauth_err(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "redirect_uri must be http://127.0.0.1:<port>/… or http://[::1]:<port>/…",
-        );
+    match &client {
+        Client::Gxctl if !op::loopback_redirect(redirect_uri) => {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "redirect_uri must be http://127.0.0.1:<port>/… or http://[::1]:<port>/…",
+            );
+        }
+        Client::Cluster(c) if c.ui_callback.as_deref() != Some(redirect_uri) => {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "redirect_uri isn't the cluster's registered callback",
+            );
+        }
+        _ => {}
     }
     let back = |params: &[(&str, &str)]| {
         let mut u = url::Url::parse(redirect_uri).expect("checked");
@@ -307,15 +344,28 @@ pub async fn authorize(
             .ok()
             .flatten()
     });
-    let Some(grant) = session.as_ref().and_then(grant_of) else {
+    let Some(mut grant) = session.as_ref().and_then(grant_of) else {
         let here = format!("/d/{dir}/authorize?{}", encode_query(&q));
         let next: String = url::form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/?next={next}")).into_response();
     };
+    if let Client::Cluster(c) = &client {
+        if !uses_cluster(&app, &grant.user_id, c) {
+            return back(&[
+                ("error", "access_denied"),
+                (
+                    "error_description",
+                    "none of your tenants uses that cluster",
+                ),
+            ]);
+        }
+        // The cluster's session ends with this one (D69).
+        grant.session = session.as_ref().and_then(|p| p.session_hash.clone());
+    }
     let code = app.auth.op_pending.issue_code(
         CodeRequest {
             directory: dir.clone(),
-            client_id: GXCTL.into(),
+            client_id: get("client_id").into(),
             redirect_uri: redirect_uri.into(),
             code_challenge: get("code_challenge").into(),
             scope,
@@ -465,13 +515,41 @@ pub async fn token(
     }
     let f = fields(&headers, &body);
     let get = |k: &str| f.get(k).map(String::as_str).unwrap_or("");
-    if get("client_id") != GXCTL {
-        return oauth_err(
-            StatusCode::UNAUTHORIZED,
-            "invalid_client",
-            "unknown client_id",
-        );
+    let client_id = get("client_id");
+    let bad_client = |m: &str| oauth_err(StatusCode::UNAUTHORIZED, "invalid_client", m);
+    let Some(client) = client_of(&app, &dir, client_id) else {
+        return bad_client("unknown client_id");
+    };
+    // A cluster signs its requests with its key (private_key_jwt, D69).
+    if let Client::Cluster(c) = &client {
+        let Some(iss) = hosted(&app, &dir).and_then(|d| d.issuer) else {
+            return bad_client("this directory has no issuer yet");
+        };
+        if get("client_assertion_type") != crate::directory::peer::CLIENT_ASSERTION_TYPE
+            || crate::directory::peer::verify_client_assertion(
+                get("client_assertion"),
+                &c.jwks,
+                client_id,
+                &iss,
+                &app.auth.peer_replays,
+                now(),
+            )
+            .is_err()
+        {
+            return bad_client("a cluster authenticates with a client assertion signed by its key");
+        }
+        if !matches!(get("grant_type"), "authorization_code" | "refresh_token") {
+            return oauth_err(
+                StatusCode::BAD_REQUEST,
+                "unauthorized_client",
+                "a cluster uses the code flow",
+            );
+        }
     }
+    let for_cluster = match &client {
+        Client::Cluster(c) => Some(c.as_ref()),
+        Client::Gxctl => None,
+    };
     let aud = match audience(&app, &dir, f.get("resource")) {
         Ok(a) => a,
         Err(r) => return r,
@@ -489,11 +567,14 @@ pub async fn token(
         {
             return bad_grant("the user can't log in");
         }
+        if for_cluster.is_some_and(|c| !uses_cluster(&app, &grant.user_id, c)) {
+            return bad_grant("none of your tenants uses that cluster");
+        }
         let max = chain_max_secs(&app, &grant.user_id);
         match app
             .auth
             .refresh_tokens
-            .start(&dir, GXCTL, scope, &grant, max, t)
+            .start(&dir, client_id, scope, &grant, max, t)
         {
             Ok(r) => {
                 app.auth.audit_system(
@@ -503,7 +584,7 @@ pub async fn token(
                     Some(&format!("user:{}", grant.user_id)),
                     "allowed",
                     None,
-                    json!({ "client_id": GXCTL, "grant_type": get("grant_type"), "sid": r.1.family }),
+                    json!({ "client_id": client_id, "grant_type": get("grant_type"), "sid": r.1.family }),
                 );
                 token_response(&app, &dir, r, aud.clone(), nonce)
             }
@@ -579,6 +660,10 @@ pub async fn token(
                         let _ = app.auth.refresh_tokens.end_family(&r.family);
                         return bad_grant("the user can't log in");
                     }
+                    if for_cluster.is_some_and(|c| !uses_cluster(&app, &r.user_id, c)) {
+                        let _ = app.auth.refresh_tokens.end_family(&r.family);
+                        return bad_grant("none of your tenants uses that cluster");
+                    }
                     token_response(&app, &dir, (secret, r), aud, None)
                 }
                 Ok(_) => bad_grant("not this directory's token"),
@@ -591,7 +676,7 @@ pub async fn token(
                         None,
                         "denied",
                         Some("refresh_reused"),
-                        json!({ "client_id": GXCTL }),
+                        json!({ "client_id": client_id }),
                     );
                     bad_grant("the refresh token was already used; its chain is ended")
                 }

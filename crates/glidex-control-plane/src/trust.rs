@@ -50,6 +50,10 @@ pub struct Snapshot {
     pub revision: String,
     pub jwks: Value,
     pub rows: Vec<Row>,
+    /// The chains of this cluster's browser logins ended in the last
+    /// 12 h: the cluster ends the sessions it made from them (D68, D69).
+    #[serde(default)]
+    pub ended_sids: Vec<String>,
 }
 
 /// What the cluster last applied from a trusted directory (D68).
@@ -59,6 +63,43 @@ pub struct FeedState {
     /// `(table, key)` of every row it wrote.
     pub rows: Vec<(String, String)>,
     pub applied_at: u64,
+}
+
+/// A browser login at a trusted directory under way (D69): what its
+/// callback checks.
+#[derive(Debug, Clone)]
+pub struct PendingLogin {
+    pub trusted: String,
+    pub nonce: String,
+    pub verifier: String,
+    pub return_to: String,
+    /// The secret of the browser's cookie that started it.
+    pub browser: String,
+    pub created: u64,
+}
+
+/// How long a browser login may take.
+pub const LOGIN_SECS: u64 = 600;
+
+/// Logins under way, by `state`.
+#[derive(Default)]
+pub struct PendingLogins(std::sync::Mutex<std::collections::HashMap<String, PendingLogin>>);
+
+impl PendingLogins {
+    pub fn put(&self, state: String, p: PendingLogin) {
+        let mut m = self.0.lock().unwrap();
+        m.retain(|_, v| v.created + LOGIN_SECS > p.created);
+        m.insert(state, p);
+    }
+
+    /// The login `state` names, once, while it is good.
+    pub fn take(&self, state: &str, now: u64) -> Option<PendingLogin> {
+        self.0
+            .lock()
+            .unwrap()
+            .remove(state)
+            .filter(|p| p.created + LOGIN_SECS > now)
+    }
 }
 
 /// An offer token's prefix.
@@ -167,6 +208,10 @@ pub struct TrustedCluster {
     /// The tenants of this directory opted in to it.
     pub tenants: Vec<String>,
     pub created_at: u64,
+    /// Its web UI's callback for logins at this directory (D69): the only
+    /// `redirect_uri` its client `cluster:<id>` may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_callback: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -286,9 +331,9 @@ impl TrustStore {
 }
 
 /// A snapshot's revision: the SHA-256 of what it holds.
-pub fn revision_of(jwks: &Value, rows: &[Row]) -> String {
+pub fn revision_of(jwks: &Value, rows: &[Row], ended_sids: &[String]) -> String {
     crate::auth::sha256_hex(
-        serde_json::to_string(&(jwks, rows))
+        serde_json::to_string(&(jwks, rows, ended_sids))
             .unwrap_or_default()
             .as_bytes(),
     )
@@ -421,6 +466,7 @@ mod tests {
             revision: "r".into(),
             jwks: Value::Null,
             rows,
+            ended_sids: Vec::new(),
         };
         // The host's own user can't be replaced by a directory's row.
         assert!(s.apply_feed(&d, &snap(vec![row(&local.id)]), 1).is_err());

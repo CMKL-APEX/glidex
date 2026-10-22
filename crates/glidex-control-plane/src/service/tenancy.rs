@@ -1094,8 +1094,13 @@ pub async fn opt_in_cluster(
             jwks: serde_json::json!({ "keys": [] }),
             tenants: Vec::new(),
             created_at: now,
+            ui_callback: None,
         });
     c.api = token.api.clone();
+    c.ui_callback = answer["ui_callback"]
+        .as_str()
+        .filter(|u| url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http")))
+        .map(String::from);
     c.tls_sha256 = token.tls_sha256.clone();
     c.jwks = answer["cluster_key"].clone();
     if !c.tenants.contains(&t.id) {

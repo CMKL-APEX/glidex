@@ -272,6 +272,10 @@ pub struct Session {
     /// The login was multi-factor (`context.auth.mfa`, spec/tenancy.md §6).
     #[serde(default)]
     pub mfa: bool,
+    /// A trusted directory's login (D69): its chain, `sid`; the session
+    /// ends when the directory's feed says that chain ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -995,6 +995,18 @@ export interface AuthMethods {
   passkeys_rp_id?: string | null;
   /** The directory these methods sign in to (spec/tenancy.md D61). */
   directory?: string;
+  /** Other organizations' directories this cluster trusts (D69). */
+  trusted_directories?: TrustedLogin[];
+}
+
+/** "Sign in with <host>": a trusted directory's login (spec/tenancy.md D69). */
+export interface TrustedLogin {
+  /** Its records' id here, `trusted-<hash>`. */
+  id: string;
+  /** Its issuer's host. */
+  host: string;
+  /** Its tenants admitted on this cluster. */
+  tenants: string[];
 }
 
 // The access routes (projects, bindings, users, teams, tokens, policies,
