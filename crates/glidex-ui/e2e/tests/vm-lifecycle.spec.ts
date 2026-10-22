@@ -4,7 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { api, bootPrerequisites, CLEAN_POWEROFF, consoleTerminal, consoleText, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard } from "../fixtures";
+import { api, bootPrerequisites, CLEAN_POWEROFF, consoleTerminal, consoleText, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard, showAdvanced } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
   test.setTimeout(10 * 60_000);
@@ -47,6 +47,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
     await test.step("create the VM", async () => {
       await page.goto("/");
       await page.getByRole("button", { name: "+ Create VM" }).click();
+      await showAdvanced(page);
       await field(page, "VM Name").fill(vmName);
       await field(page, "Hypervisor Backend").selectOption(hypervisor);
       await field(page, "vCPU Count").fill("2");
