@@ -18,6 +18,11 @@ unless { context.auth.age_secs <= 600 };
 forbid (principal, action in [Glidex::Action::"useDisk", Glidex::Action::"useCredential"], resource)
 unless { resource.project == context.project };
 
+// A VM's service account is of its own tenant (workload-identity.md W5).
+@id("base.service-account-same-tenant")
+forbid (principal, action == Glidex::Action::"useServiceAccount", resource)
+unless { resource.tenant == context.project.tenant };
+
 // Which networks a project may use. A forbid, so no role can widen it.
 @id("base.network-grant")
 forbid (principal, action == Glidex::Action::"useNetwork", resource)

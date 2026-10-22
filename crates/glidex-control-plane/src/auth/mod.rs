@@ -1201,21 +1201,28 @@ impl AuthService {
         if f.expires_at <= now {
             return Ok(None);
         }
-        let Some((tenant, id)) = f.federation.split_once('/') else {
-            return Ok(None);
-        };
-        let still = self
-            .federations
-            .get(tenant, id)
-            .map_err(|e| AuthError::Invalid(e.to_string()))?
-            .is_some_and(|fed| {
-                fed.enabled
-                    && fed.rules.iter().any(|r| {
-                        r.fingerprint() == f.rule && r.service_account == f.service_account
-                    })
-            });
-        if !still {
-            return Ok(None);
+        // A VM's own token (workload-identity.md W6) answers to no
+        // federation: it lives while its service account does (W8).
+        if !f
+            .federation
+            .starts_with(crate::directory::workload::VM_ORIGIN)
+        {
+            let Some((tenant, id)) = f.federation.split_once('/') else {
+                return Ok(None);
+            };
+            let still = self
+                .federations
+                .get(tenant, id)
+                .map_err(|e| AuthError::Invalid(e.to_string()))?
+                .is_some_and(|fed| {
+                    fed.enabled
+                        && fed.rules.iter().any(|r| {
+                            r.fingerprint() == f.rule && r.service_account == f.service_account
+                        })
+                });
+            if !still {
+                return Ok(None);
+            }
         }
         let Some((_, sa)) = self.store.token_by_id(&f.service_account)? else {
             return Ok(None);

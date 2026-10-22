@@ -259,6 +259,9 @@ pub struct ConfigPatch {
     /// `null` removes the credential.
     #[serde(default)]
     pub credential: Option<serde_json::Value>,
+    /// A token id, or `null` to remove the service account.
+    #[serde(default)]
+    pub service_account: Option<serde_json::Value>,
     #[serde(default)]
     pub hugepages: Option<bool>,
     /// `2M`, `1G`, or `null` for the node's default size.
@@ -2976,6 +2979,13 @@ impl VmManager {
                     serde_json::Value::Null => None,
                     serde_json::Value::String(s) => Some(s),
                     _ => return Err(invalid("credential must be a username or null")),
+                };
+            }
+            if let Some(sa) = c.service_account {
+                config.service_account = match sa {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    _ => return Err(invalid("service_account must be a token id or null")),
                 };
             }
             if let Some(devs) = c.vfio_devices {

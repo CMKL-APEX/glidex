@@ -603,6 +603,10 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
   action useCredential in ["vm.write"]
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
+  // A VM's service account (workload-identity.md W5): on its project;
+  // context.project is the VM's.
+  action useServiceAccount in ["project.members"]
+    appliesTo { principal: [User, Token], resource: [Project], context: ProjectCtx };
   action attachNetwork, detachNetwork in ["network.use"]
     appliesTo { principal: [User, Token], resource: [Vm, Project], context: Ctx };
   action useNetwork        // in no group: who may attach is `attachNetwork`
@@ -777,6 +781,11 @@ unless { context.auth.age_secs <= 600 };
 forbid (principal, action in [Glidex::Action::"useDisk", Glidex::Action::"useCredential"], resource)
 unless { resource.project == context.project };
 
+// A VM's service account is of its own tenant (workload-identity.md W5).
+@id("base.service-account-same-tenant")
+forbid (principal, action == Glidex::Action::"useServiceAccount", resource)
+unless { resource.tenant == context.project.tenant };
+
 // Which networks a project may use. This is a forbid so that no role can
 // widen it: an owner of project A who edits project B still can't put
 // A's private network on a VM in B.
@@ -847,11 +856,11 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/extract-kernel` | `readVm`, then `updateVm` on the Vm (kernel-boot.md §10.5) |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
-| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 

@@ -352,6 +352,12 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
     println!("  vCPUs:      {}", vm.vcpu_count);
     println!("  Memory:     {} MiB", vm.mem_size_mib);
+    if let Some(sa) = &vm.service_account {
+        println!(
+            "  Service account: {}",
+            service_account_label(&service_accounts(client).await, sa)
+        );
+    }
     if !vm.vfio_devices.is_empty() {
         println!("  VFIO:       {}", vm.vfio_devices.join(", "));
     }
@@ -1252,6 +1258,123 @@ pub async fn kernel(client: &ApiClient, args: &[&str]) {
         if let Some(p) = vm.previous_kernel.as_deref() {
             println!("Previous: {}", label(&all, p));
         }
+    }
+}
+
+/// The service accounts the caller can list.
+async fn list_service_accounts(
+    t: &RpcTransport,
+) -> Vec<glidex_api::proto::glidex::access::v1::Token> {
+    use glidex_api::proto::glidex::access::v1 as access;
+    access::TokenServiceClient::new(t.clone(), t.config())
+        .list_tokens(access::ListTokensRequest::default())
+        .await
+        .map(|r| r.into_owned().tokens)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.kind.as_known() == Some(access::TokenKind::TOKEN_KIND_SERVICE_ACCOUNT))
+        .collect()
+}
+
+async fn service_accounts(client: &ApiClient) -> Vec<glidex_api::proto::glidex::access::v1::Token> {
+    match client.rpc_transport().await {
+        Ok(t) => list_service_accounts(&t).await,
+        Err(_) => Vec::new(),
+    }
+}
+
+/// What to call service account `id`: `name (project …)` from the
+/// caller's own list, or that it's one they can't list. A VM names its
+/// service account by the token's public id; people read its name (as
+/// `federation show` does), and the id itself is never printed.
+fn service_account_label(
+    accounts: &[glidex_api::proto::glidex::access::v1::Token],
+    id: &str,
+) -> String {
+    match accounts.iter().find(|a| a.id == id) {
+        Some(a) => match a.project.as_deref() {
+            Some(p) if !p.is_empty() => format!("{} (project {p})", a.name),
+            _ => a.name.clone(),
+        },
+        None => "a service account you can't list".into(),
+    }
+}
+
+/// `service-account <name|id> [--set <service account> | --none]`: the
+/// service account whose glidex tokens the VM's guest gets
+/// (spec/workload-identity.md W5); a change applies to its next token.
+pub async fn service_account(client: &ApiClient, args: &[&str]) {
+    let u = "Usage: service-account <name|id> [--set <service account name|id> | --none]";
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let rest = &args[1..];
+    let vm = match client.get_vm(&vm_id).await {
+        Ok(vm) => vm,
+        Err(e) => return err(e),
+    };
+    let t = match client.rpc_transport().await {
+        Ok(t) => t,
+        Err(e) => return err(e.message),
+    };
+    let accounts = list_service_accounts(&t).await;
+    let label = |id: &str| service_account_label(&accounts, id);
+    let change = if has_flag(rest, "--none") {
+        Some(None)
+    } else if let Some(want) = flag_value(rest, "--set") {
+        // By id, or by name in the VM's project.
+        let id = accounts
+            .iter()
+            .find(|a| a.id == want)
+            .or_else(|| {
+                accounts
+                    .iter()
+                    .find(|a| a.name == want && a.project.as_deref() == Some(vm.project.as_str()))
+            })
+            .map(|a| a.id.clone())
+            .unwrap_or_else(|| want.to_string());
+        Some(Some(id))
+    } else if rest.is_empty() {
+        None
+    } else {
+        return usage(u);
+    };
+    if let Some(c) = change {
+        let svc = match rpc(client).await {
+            Ok(s) => s,
+            Err(e) => return err(e),
+        };
+        let req = UpdateVmRequest {
+            id: vm_id.clone(),
+            change: VmChange {
+                service_account: c.clone(),
+                ..Default::default()
+            }
+            .into(),
+            update_mask: buffa_types::google::protobuf::FieldMask {
+                paths: vec!["service_account".into()],
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        if let Err(e) = svc.update_vm(req).await {
+            return err(rpc_err(e));
+        }
+        match c {
+            Some(id) => println!(
+                "{} {} now acts as {}",
+                "Changed:".green(),
+                vm.name,
+                label(&id)
+            ),
+            None => println!("{} {} has no service account", "Changed:".green(), vm.name),
+        }
+        return;
+    }
+    match &vm.service_account {
+        Some(id) => println!("Service account: {}", label(id)),
+        None => println!("{} has no service account", vm.name),
     }
 }
 

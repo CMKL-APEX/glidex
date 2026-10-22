@@ -105,6 +105,7 @@ name (ids when `/projects` isn't readable).
 | `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
+| `service-account <name\|id> [--set <service account> \| --none]` | `GetVm` and `ListTokens`: the VM's service account; `--set` (an id, or a name in the VM's project) / `--none`: `UpdateVm` (`service_account`), for its next token ([workload-identity.md](workload-identity.md) W5) |
 | `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/kernel-boot.md §10.5) |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |

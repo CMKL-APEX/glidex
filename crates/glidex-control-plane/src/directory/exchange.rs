@@ -100,6 +100,36 @@ fn take(key: &str) -> bool {
     }
 }
 
+/// `jwt`, a running VM of `tenant`'s identity token for this cluster, for
+/// a glidex token of the VM's service account (workload-identity.md §5),
+/// once per token.
+async fn exchange_vm(
+    app: &crate::api::App,
+    tenant: &crate::tenants::Tenant,
+    jwt: &str,
+    refuse: &(dyn Fn(String, Value) -> Answer + Sync),
+) -> Answer {
+    let claims = match crate::api::issuer::verify_identity(app, &tenant.directory_id, jwt) {
+        Ok(c) => c,
+        Err(e) => return refuse(e, Value::Null),
+    };
+    let noted = json!({"sub": claims.get("sub"), "vm": claims.pointer("/glidex/vm/id")});
+    let (Some(vm_id), Some(jti)) = (
+        claims.pointer("/glidex/vm/id").and_then(Value::as_str),
+        claims.get("jti").and_then(Value::as_str),
+    ) else {
+        return refuse("not a VM's identity token".into(), noted);
+    };
+    let vm = match crate::api::issuer::vm_identity(app, vm_id).await {
+        Ok(v) if v.tenant_id == tenant.id => v,
+        _ => return refuse("the VM isn't running, or isn't the tenant's".into(), noted),
+    };
+    match crate::api::issuer::vm_glidex_token(app, &vm, Some(format!("jti:{jti}"))) {
+        Ok((token, expires_in)) => Answer::Granted { token, expires_in },
+        Err((_, e)) => refuse(e.0.message.clone(), noted),
+    }
+}
+
 fn hex_sha256(s: &str) -> String {
     use sha2::Digest;
     crate::cluster::pki::hex(&sha2::Sha256::digest(s.as_bytes()))
@@ -181,6 +211,10 @@ pub async fn exchange(app: &crate::api::App, req: &Request, request_id: &str) ->
         Ok(t) => t,
         Err(_) => return refuse("no such tenant".into(), Value::Null),
     };
+    // A VM's own identity token (workload-identity.md §5).
+    if id == crate::directory::workload::VM_FEDERATION {
+        return exchange_vm(app, &tenant, &req.subject_token, &refuse).await;
+    }
     let f = match auth.federations.get(&tenant.id, id) {
         Ok(Some(f)) if f.enabled => f,
         Ok(Some(_)) => return refuse("the federation is disabled".into(), Value::Null),

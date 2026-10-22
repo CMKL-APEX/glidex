@@ -191,6 +191,7 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         hypervisor: hypervisor_pb(config.hypervisor).into(),
         vfio_devices: config.vfio_devices.clone(),
         credential: config.credential.clone(),
+        service_account: config.service_account.clone(),
         nics: config
             .networks
             .iter()
@@ -828,6 +829,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         es.project(&project);
         call.require_action("useCredential", e, es, with_project)?;
     }
+    if let Some(sa) = &req.service_account {
+        check_service_account(call, &project, sa, with_project)?;
+    }
     if !req.networks.is_empty() {
         call.require_action("attachNetwork", pent.clone(), pes.clone(), &[])?;
         for att in &req.networks {
@@ -898,6 +902,7 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         firmware_path: req.firmware_path.map(m::expand_tilde),
         cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
         credential: req.credential,
+        service_account: req.service_account,
         rootfs_path: m::expand_tilde(req.rootfs_path),
         // The manager fills in the default (spec/kernel-boot.md K7): a
         // kernel image's command line, else the default for the
@@ -1027,6 +1032,7 @@ pub const UPDATABLE: &[&str] = &[
     "mem_size_mib",
     "kernel_args",
     "credential",
+    "service_account",
     "hugepages",
     "hugepage_size",
     "numa_policy",
@@ -1066,6 +1072,13 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                     "credential" => {
                         c.credential = Some(match &change.credential {
                             Some(u) => serde_json::Value::String(u.clone()),
+                            None => serde_json::Value::Null,
+                        })
+                    }
+                    // Absent: the VM loses its service account.
+                    "service_account" => {
+                        c.service_account = Some(match &change.service_account {
+                            Some(t) => serde_json::Value::String(t.clone()),
                             None => serde_json::Value::Null,
                         })
                     }
@@ -1121,6 +1134,44 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
         p.config = Some(c);
     }
     Ok(p)
+}
+
+/// Giving a VM of `project` service account `sa` (workload-identity.md
+/// W5): a live service account, and `useServiceAccount` on its project,
+/// which base policy keeps in the VM's tenant.
+fn check_service_account(
+    call: &Call,
+    project: &str,
+    sa: &str,
+    with_project: &[(&'static str, Ent)],
+) -> ServiceResult<()> {
+    let bad = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_config", m.to_string());
+    let now = crate::auth::store::now();
+    let token = call
+        .auth()
+        .store
+        .token_by_id(sa)
+        .map_err(|e| {
+            ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+        })?
+        .map(|(_, t)| t)
+        .filter(|t| t.expires_at > now)
+        .ok_or_else(|| bad("no such service account"))?;
+    let crate::auth::store::TokenKind::ServiceAccount {
+        project: sa_project,
+    } = &token.kind
+    else {
+        return Err(bad("that token isn't a service account"));
+    };
+    let mut es = project_entities(sa_project);
+    es.project(project);
+    call.require_action(
+        "useServiceAccount",
+        Ent::Project(sa_project.clone()),
+        es,
+        with_project,
+    )?;
+    Ok(())
 }
 
 /// Authorized per changed field (§12.1): power → start/stop/pauseVm,
@@ -1201,6 +1252,12 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 let (ce, mut ces) = credential_entities(&project, username);
                 ces.project(&project);
                 call.require_action("useCredential", ce, ces, with_project)?;
+            }
+        }
+        if let Some(sa) = &cp.service_account {
+            update = true;
+            if let Some(sa) = sa.as_str() {
+                check_service_account(call, &project, sa, with_project)?;
             }
         }
         if let Some(rs) = &cp.devices
