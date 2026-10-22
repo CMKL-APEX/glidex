@@ -330,3 +330,12 @@ pub async fn list_trusted_directories(
 ) -> Result<Json<pb::ListTrustedDirectoriesResponse>, ApiErr> {
     Ok(Json(svc::list_trusted_directories(&c, Default::default())?))
 }
+
+pub async fn set_trusted_directory(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(mut req): Json<pb::SetTrustedDirectoryRequest>,
+) -> Result<Json<pb::SetTrustedDirectoryResponse>, ApiErr> {
+    req.id = id;
+    Ok(Json(svc::set_trusted_directory(&c, req)?))
+}

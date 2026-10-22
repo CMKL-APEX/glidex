@@ -96,6 +96,7 @@ sudo systemctl restart glidex-control-plane
 | `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool. See [PCI passthrough](pci-passthrough.md). |
 | `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
+| `trust.default_max_staleness_minutes` | integer | `60` | How long a trusted directory's sessions and tokens stay good here after its last feed, unless set for that directory (`gxctl admission staleness`); see [Clusters](clusters.md#admitting-another-organizations-tenant). |
 
 The control plane refuses to start when the pools or grants don't add
 up, with one of:

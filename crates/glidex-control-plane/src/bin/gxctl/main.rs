@@ -1137,6 +1137,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "offers",
             "revoke-offer",
             "directories",
+            "staleness",
         ],
     ),
     (

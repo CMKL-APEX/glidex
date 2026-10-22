@@ -1209,25 +1209,82 @@ pub fn list_trusted_directories(
     call.require(Ent::Cluster, EntitySet::new())?;
     let all = call.auth().trust.directories().map_err(trust_err)?;
     Ok(pb::ListTrustedDirectoriesResponse {
-        directories: all
+        directories: all.iter().map(|d| trusted_directory_pb(call, d)).collect(),
+        ..Default::default()
+    })
+}
+
+/// A trusted directory with how fresh its replica is here (D13).
+fn trusted_directory_pb(call: &Call, d: &crate::trust::TrustedDirectory) -> pb::TrustedDirectory {
+    let now = crate::auth::store::now();
+    let st = call.auth().trust.feed_state(&d.id).unwrap_or_default();
+    let last = st.checked_at.max(st.applied_at);
+    let lag = call.auth().trust.lag(d, now).unwrap_or(u64::MAX);
+    let max = d
+        .max_staleness_minutes
+        .unwrap_or(call.auth().config.trust.default_max_staleness_minutes);
+    pb::TrustedDirectory {
+        id: d.id.clone(),
+        issuer: d.issuer.clone(),
+        tenants: d
+            .tenants
             .iter()
-            .map(|d| pb::TrustedDirectory {
-                id: d.id.clone(),
-                issuer: d.issuer.clone(),
-                tenants: d
-                    .tenants
-                    .iter()
-                    .map(|t| pb::RemoteTenant {
-                        id: t.id.clone(),
-                        slug: t.slug.clone(),
-                        display_name: t.display_name.clone(),
-                        ..Default::default()
-                    })
-                    .collect(),
-                created_at: ts(d.created_at).into(),
+            .map(|t| pb::RemoteTenant {
+                id: t.id.clone(),
+                slug: t.slug.clone(),
+                display_name: t.display_name.clone(),
                 ..Default::default()
             })
             .collect(),
+        created_at: ts(d.created_at).into(),
+        max_staleness_minutes: d.max_staleness_minutes,
+        effective_max_staleness_minutes: max,
+        last_sync: if last > 0 {
+            ts(last).into()
+        } else {
+            Default::default()
+        },
+        lag_seconds: lag,
+        stale: lag > max * 60,
+        ..Default::default()
+    }
+}
+
+pub fn set_trusted_directory(
+    call: &Call,
+    req: pb::SetTrustedDirectoryRequest,
+) -> ServiceResult<pb::SetTrustedDirectoryResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    if req.max_staleness_minutes == Some(0) {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "max_staleness_minutes is at least 1",
+        ));
+    }
+    let mut d = call
+        .auth()
+        .trust
+        .directories()
+        .map_err(trust_err)?
+        .into_iter()
+        .find(|d| d.id == req.id)
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "no such trusted directory",
+            )
+        })?;
+    d.max_staleness_minutes = req.max_staleness_minutes;
+    call.auth().trust.put_directory(&d).map_err(trust_err)?;
+    call.set_target(format!("directory:{}", d.issuer));
+    call.detail(
+        "max_staleness_minutes",
+        serde_json::json!(d.max_staleness_minutes),
+    );
+    Ok(pb::SetTrustedDirectoryResponse {
+        directory: trusted_directory_pb(call, &d).into(),
         ..Default::default()
     })
 }

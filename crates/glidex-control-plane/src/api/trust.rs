@@ -124,6 +124,7 @@ pub async fn redeem(
             jwks: json!({ "keys": [] }),
             tenants: Vec::new(),
             created_at: t,
+            max_staleness_minutes: None,
         });
     d.directory = b.directory.clone();
     d.api = b.api.clone();
@@ -584,7 +585,13 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
     )
     .await?;
     match status {
-        304 => Ok(false),
+        304 => {
+            app.auth
+                .trust
+                .mark_checked(&d.id, t)
+                .map_err(|e| e.to_string())?;
+            Ok(false)
+        }
         200 => {
             let snap: trust::Snapshot = serde_json::from_value(v).map_err(|e| e.to_string())?;
             if trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids) != snap.revision {
@@ -750,6 +757,39 @@ pub async fn report(
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
     }
+}
+
+// ---- staleness (D13) ---------------------------------------------------------------
+
+/// A trusted directory's replica counts as behind past this: three
+/// missed pulls.
+pub const BEHIND_SECS: u64 = 90;
+
+/// Whether trusted directory `id`'s credentials are still good here
+/// (D13): `Ok(lag)` in seconds, or `Err(lag)` past its `max_staleness`
+/// (`u64::MAX` when it can't be told: refused). `None` for an id that
+/// isn't a trusted directory's.
+pub fn freshness(app: &AppState, id: &str) -> Option<Result<u64, u64>> {
+    if !id.starts_with("trusted-") {
+        return None;
+    }
+    let d = app
+        .auth
+        .trust
+        .directories()
+        .ok()
+        .and_then(|ds| ds.into_iter().find(|d| d.id == id));
+    let Some(d) = d else {
+        return Some(Err(u64::MAX));
+    };
+    let Ok(lag) = app.auth.trust.lag(&d, now()) else {
+        return Some(Err(u64::MAX));
+    };
+    let max = d
+        .max_staleness_minutes
+        .unwrap_or(app.auth.config.trust.default_max_staleness_minutes)
+        * 60;
+    Some(if lag > max { Err(lag) } else { Ok(lag) })
 }
 
 /// How often a cluster pulls its trusted directories' feeds.

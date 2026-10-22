@@ -1001,3 +1001,158 @@ async fn the_cluster_reports_its_tenants_back() {
     .unwrap();
     assert_eq!(s, 403);
 }
+
+/// D13: past its `max_staleness` without a feed, a trusted directory's
+/// credentials are refused on the cluster (but `/auth/…`), the cluster's
+/// own people are not affected, responses carry the lag once it is behind,
+/// and the next feed restores them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_out_of_reach_too_long_is_refused() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let op = north.admin();
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let grant = glidex_control_plane::directory::op::Grant {
+        user_id: erin.clone(),
+        auth_time: glidex_control_plane::auth::store::now(),
+        amr: vec!["pwd".into()],
+        mfa: false,
+        session: None,
+    };
+    let (refresh, _) = acme
+        .app
+        .auth
+        .refresh_tokens
+        .start(
+            "local",
+            "gxctl",
+            "openid",
+            &grant,
+            86_400,
+            glidex_control_plane::auth::store::now(),
+        )
+        .unwrap();
+    let resp = acme
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/d/local/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&client_id=gxctl&refresh_token={refresh}&resource=urn:glidex:cluster:{north_id}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let access = v["access_token"].as_str().unwrap().to_string();
+    let call = |path: &'static str| {
+        let north = &north;
+        let access = access.clone();
+        async move {
+            let resp = north
+                .router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let lag = resp
+                .headers()
+                .get("x-glidex-directory-lag")
+                .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                st,
+                lag,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!((s, lag), (StatusCode::OK, None), "fresh: no lag header");
+
+    // Behind: told by how much.
+    north.app.auth.trust.backdate_feed(&d.id, 100).unwrap();
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(lag.is_some_and(|l| (100..200).contains(&l)), "{lag:?}");
+
+    // Past a 1-minute limit: refused, but for /auth/…; the cluster's own
+    // administrator is not affected.
+    let (s, v) = north
+        .rest(
+            "PATCH",
+            &format!("/admissions/directories/{}", d.id),
+            Some(json!({"max_staleness_minutes": 1})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["directory"]["stale"], true, "{v}");
+    let (s, _, v) = call("/projects").await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("directory_stale")),
+        "{v}"
+    );
+    let (s, lag, _) = call("/auth/whoami").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(lag.is_some());
+    let (s, _) = north.rest("GET", "/projects", None, &op).await;
+    assert_eq!(s, StatusCode::OK, "PAM still works");
+    let (s, v) = north
+        .rest("GET", "/admissions/directories", None, &op)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["directories"][0]["effective_max_staleness_minutes"], "1",
+        "{v}"
+    );
+
+    // The next feed (nothing new) makes it fresh again.
+    assert!(
+        !glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap()
+    );
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!((s, lag), (StatusCode::OK, None));
+
+    // Back to the default (60 minutes).
+    let (s, v) = north
+        .rest(
+            "PATCH",
+            &format!("/admissions/directories/{}", d.id),
+            Some(json!({})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["directory"]["effective_max_staleness_minutes"], "60",
+        "{v}"
+    );
+}

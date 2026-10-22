@@ -439,6 +439,20 @@ Once trust is set up:
   the tenant's page under *Clusters of other organizations*, and in
   `gxctl tenant clusters acme`, with the time the directory received it.
 
+- **When the directory is out of reach.** VMs keep running, and the
+  tenant's people keep working with the sessions and tokens they have.
+  New sign-ins need the directory. If no feed has come for longer than
+  the directory's limit (60 minutes unless you change it), this cluster
+  stops accepting that directory's sessions and tokens, since it can't
+  know who was removed meanwhile; your own users are not affected. The
+  next feed that gets through lifts it. Responses to a directory's
+  people carry `X-Glidex-Directory-Lag` (seconds) once its feed is more
+  than 90 seconds behind. `gxctl admission directories` shows each
+  directory's last feed and limit;
+  `gxctl admission staleness <directory> <minutes>` changes it (`default`
+  goes back to `trust.default_max_staleness_minutes` in
+  `control-plane.json`).
+
 Feed, sign-in and report requests are signed by the sending side's key
 and go to the other side's API with its certificate pinned, on port
 8841 both ways: open it between the two organizations' hosts.
