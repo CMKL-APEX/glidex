@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import * as api from "../api";
 import { isOidcKind } from "../types";
 import { Card, ErrorBanner, PageHeader, dangerLink, errorMessage, secondaryButton, signInLabel } from "../components/ui";
+import { AccountList } from "../components/Accounts";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PasskeysCard from "../components/PasskeysCard";
 import { useConnectorNames, useNodeNames } from "../hooks";
@@ -111,6 +112,12 @@ export default function Account() {
         )}
       </Card>
       {methods.passkeys && user && <PasskeysCard user={user.id} onChange={refresh} />}
+      <Card title="Your accounts in this browser">
+        <p className="mb-2 text-sm text-gray-600">
+          Accounts you are signed in to here, in this and other directories. Only this browser keeps the list. Removing one signs it out and forgets it.
+        </p>
+        <AccountList removable />
+      </Card>
       {removing && (
         <ConfirmDialog
           title="Remove a sign-in method"

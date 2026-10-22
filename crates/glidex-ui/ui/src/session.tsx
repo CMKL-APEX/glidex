@@ -234,6 +234,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [state, project, load, refreshCapabilities]);
 
+  // Another tab switched accounts (spec/tenancy.md D71): start over as
+  // the new one.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === api.ACCOUNT_EVENT_KEY) window.location.assign("/");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   // A directory's authorize request sent the browser here to log in first
   // (spec/tenancy.md D54): signed in, it goes back there.
   useEffect(() => {

@@ -1426,13 +1426,35 @@ impl AuthService {
 
     pub fn end_session(&self, p: &Principal) -> Result<(), AuthError> {
         if let Some(h) = &p.session_hash {
-            self.store.remove_session(h)?;
-            // And the clusters' browser logins it approved (D69).
-            if let Err(e) = self.refresh_tokens.end_session(h) {
-                tracing::warn!("ending the session's chains: {}", e);
-            }
+            self.end_session_hash(h)?;
         }
         Ok(())
+    }
+
+    /// End the session with hash `h`, and the clusters' browser logins it
+    /// approved (D69).
+    pub fn end_session_hash(&self, h: &str) -> Result<(), AuthError> {
+        self.store.remove_session(h)?;
+        if let Err(e) = self.refresh_tokens.end_session(h) {
+            tracing::warn!("ending the session's chains: {}", e);
+        }
+        Ok(())
+    }
+
+    /// The user of session `cookie` while it is good, without counting
+    /// this as its use: another account a browser holds (D71).
+    pub fn peek_session(&self, cookie: &str) -> Result<Option<User>, AuthError> {
+        let Some(s) = self.store.session(&sha256_hex(cookie.as_bytes()))? else {
+            return Ok(None);
+        };
+        let now = store::now();
+        let cfg = &self.config.auth.session;
+        if now > s.last_seen + cfg.idle_minutes * 60
+            || now > s.created_at + cfg.absolute_hours * 3600
+        {
+            return Ok(None);
+        }
+        Ok(self.store.user(&s.user_id)?.filter(|u| !u.disabled))
     }
 
     /// PAM login through glidex-authd (spec §5.3). Returns the user.

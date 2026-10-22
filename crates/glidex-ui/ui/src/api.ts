@@ -5,6 +5,7 @@ import type {
   ApiToken,
   AuditEntry,
   AuthMethods,
+  BrowserAccount,
   Binding,
   CatalogItem,
   FirmwareCatalogItem,
@@ -655,6 +656,52 @@ export function startOidc(returnTo: string, reauth = false, connector?: string) 
 export function startTrustedLogin(id: string, returnTo: string) {
   const q = new URLSearchParams({ return_to: returnTo });
   window.location.assign(`${API_BASE}/auth/t/${encodeURIComponent(id)}/start?${q}`);
+}
+
+// ---- accounts in one browser (spec/tenancy.md D71) ----------------------------
+
+/** Tells the other tabs the account changed: they reload. */
+export const ACCOUNT_EVENT_KEY = "glidex.account-switched";
+
+function accountChanged() {
+  try {
+    localStorage.setItem(ACCOUNT_EVENT_KEY, String(Date.now()));
+  } catch {
+    // No storage: other tabs find out on their next write.
+  }
+}
+
+export const listAccounts = () =>
+  request<{ accounts: BrowserAccount[]; max: number }>("GET", "/auth/accounts", undefined, { quiet401: true });
+
+export async function switchAccount(directory: string): Promise<void> {
+  const r = await request<{ csrf?: string | null }>("POST", "/auth/accounts/switch", { directory }, { quiet401: true });
+  setCsrf(r.csrf ?? null);
+  accountChanged();
+}
+
+/** Keep the active account in the list, for the login page to add one. */
+export async function addAccount(): Promise<void> {
+  await request("POST", "/auth/accounts/add", {}, { quiet401: true });
+  setCsrf(null);
+  accountChanged();
+}
+
+export async function removeAccount(directory: string): Promise<BrowserAccount[]> {
+  const r = await request<{ accounts: BrowserAccount[] }>("POST", "/auth/accounts/remove", { directory }, { quiet401: true });
+  return r.accounts;
+}
+
+export async function logoutAll(): Promise<void> {
+  await request("POST", "/auth/accounts/logout-all", {}, { quiet401: true });
+  setCsrf(null);
+  accountChanged();
+}
+
+/** Sign in again to a listed directory: its own login. */
+export function signInAgain(a: BrowserAccount, returnTo = "/") {
+  if (a.kind === "trusted") startTrustedLogin(a.directory, returnTo);
+  else window.location.assign(a.directory === "local" ? "/" : `/login/${encodeURIComponent(a.directory)}`);
 }
 
 export async function logout(): Promise<void> {

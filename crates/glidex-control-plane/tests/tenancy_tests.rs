@@ -947,3 +947,247 @@ async fn migration_keeps_an_existing_system_admin_whole() {
         assert!(s.is_success(), "{m} {p}: {s} {v}");
     }
 }
+
+/// A browser's cookies, sent as a browser would: `gx_accounts` only to
+/// `/auth/accounts…` (its `Path`), the session's CSRF value on writes.
+#[derive(Default)]
+struct Browser {
+    session: Option<String>,
+    accounts: Option<String>,
+    csrf: Option<String>,
+}
+
+impl Browser {
+    async fn call(
+        &mut self,
+        h: &H,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        origin: bool,
+    ) -> (StatusCode, Value) {
+        let mut cookies = Vec::new();
+        if let Some(s) = &self.session {
+            cookies.push(format!("gx_session={s}"));
+        }
+        if path.starts_with("/auth/accounts")
+            && let Some(a) = &self.accounts
+        {
+            cookies.push(format!("gx_accounts={a}"));
+        }
+        let mut b = Request::builder().method(method).uri(path);
+        if !cookies.is_empty() {
+            b = b.header(header::COOKIE, cookies.join("; "));
+        }
+        if origin {
+            b = b.header(header::ORIGIN, ORIGIN);
+        }
+        if let Some(c) = &self.csrf {
+            b = b.header("x-glidex-csrf", c);
+        }
+        let req = match body {
+            Some(v) => b
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(v.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        };
+        let resp = h.router.clone().oneshot(req).await.unwrap();
+        for c in resp.headers().get_all(header::SET_COOKIE) {
+            let c = c.to_str().unwrap();
+            let (kv, attrs) = c.split_once(';').unwrap_or((c, ""));
+            let (k, v) = kv.split_once('=').unwrap();
+            let v = (!attrs.contains("Max-Age=0") && !v.is_empty()).then(|| v.to_string());
+            match k {
+                "gx_session" => self.session = v,
+                "gx_accounts" => {
+                    assert!(attrs.contains("Path=/api/auth/accounts"), "{c}");
+                    assert!(attrs.contains("HttpOnly"), "{c}");
+                    self.accounts = v;
+                }
+                _ => {}
+            }
+        }
+        let s = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if let Some(c) = v["csrf"].as_str() {
+            self.csrf = Some(c.into());
+        }
+        (s, v)
+    }
+
+    /// A login at the user's directory, as any sign-in method ends.
+    fn login(&mut self, h: &H, user: &str) {
+        let u = h.app.auth.store.user(user).unwrap().unwrap();
+        let (cookie, csrf) = h
+            .app
+            .auth
+            .create_session(&u, glidex_control_plane::auth::Method::Pam)
+            .unwrap();
+        self.session = Some(cookie);
+        self.csrf = Some(csrf);
+    }
+
+    async fn accounts(&mut self, h: &H) -> Vec<(String, bool, bool)> {
+        let (s, v) = self.call(h, "GET", "/auth/accounts", None, false).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["directory"].as_str().unwrap().to_string(),
+                    a["signed_in"].as_bool().unwrap(),
+                    a["active"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// D71: one browser, accounts in two directories of one host: adding,
+/// switching both ways, an ended session staying listed to sign in again,
+/// removing, signing out of all; writes need the page's `Origin` and,
+/// with an active session, its CSRF value.
+#[tokio::test]
+async fn a_browser_holds_accounts_in_several_directories() {
+    let h = harness();
+    h.app
+        .auth
+        .tenants
+        .create_directory("beta", "Beta", "beta-admin")
+        .unwrap();
+    let alice = h.user("alice");
+    let bob = h.user("bob");
+    let mut u = h.app.auth.store.user(&bob).unwrap().unwrap();
+    u.directory_id = "beta".into();
+    h.app.auth.store.put_user(&u).unwrap();
+
+    let mut br = Browser::default();
+    br.login(&h, &alice);
+    assert_eq!(br.accounts(&h).await, vec![("local".into(), true, true)]);
+
+    // Refused: no Origin; a wrong CSRF value while signed in.
+    let (s, _) = br.call(&h, "POST", "/auth/accounts/add", None, false).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let good = br.csrf.replace("nope".into());
+    let (s, v) = br.call(&h, "POST", "/auth/accounts/add", None, true).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("csrf_failed"))
+    );
+    br.csrf = good;
+
+    // Add: alice moves into the list; bob signs in at beta.
+    let (s, v) = br.call(&h, "POST", "/auth/accounts/add", None, true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(br.session.is_none(), "the active session is parked");
+    br.login(&h, &bob);
+    assert_eq!(
+        br.accounts(&h).await,
+        vec![("beta".into(), true, true), ("local".into(), true, false)]
+    );
+
+    // Switch to alice and back.
+    let whoami = |br: &mut Browser| {
+        let s = br.session.clone();
+        let h = &h;
+        async move {
+            let mut b = Request::get("/auth/whoami");
+            if let Some(s) = s {
+                b = b.header(header::COOKIE, format!("gx_session={s}"));
+            }
+            let resp = h
+                .router
+                .clone()
+                .oneshot(b.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            (st, v["user"]["id"].as_str().map(String::from))
+        }
+    };
+    let (s, v) = br
+        .call(
+            &h,
+            "POST",
+            "/auth/accounts/switch",
+            Some(json!({"directory": "local"})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(whoami(&mut br).await, (StatusCode::OK, Some(alice.clone())));
+    let (s, _) = br
+        .call(
+            &h,
+            "POST",
+            "/auth/accounts/switch",
+            Some(json!({"directory": "beta"})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(whoami(&mut br).await, (StatusCode::OK, Some(bob.clone())));
+    let (s, _) = br
+        .call(
+            &h,
+            "POST",
+            "/auth/accounts/switch",
+            Some(json!({"directory": "gamma"})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "not held");
+
+    // Alice's session ends (here, by an administrator ending it): her
+    // directory stays listed, signed out, and can't be switched to.
+    h.app.auth.store.remove_sessions_of(&alice).unwrap();
+    assert_eq!(
+        br.accounts(&h).await,
+        vec![("beta".into(), true, true), ("local".into(), false, false)]
+    );
+    let (s, _) = br
+        .call(
+            &h,
+            "POST",
+            "/auth/accounts/switch",
+            Some(json!({"directory": "local"})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Removed: forgotten.
+    let (s, _) = br
+        .call(
+            &h,
+            "POST",
+            "/auth/accounts/remove",
+            Some(json!({"directory": "local"})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(br.accounts(&h).await, vec![("beta".into(), true, true)]);
+
+    // Signed out of all: bob's session ends too, and the list is gone.
+    br.call(&h, "POST", "/auth/accounts/add", None, true).await;
+    br.login(&h, &alice);
+    let bob_session = br.accounts.clone().unwrap();
+    assert!(bob_session.contains("s:"), "{bob_session}");
+    let (s, _) = br
+        .call(&h, "POST", "/auth/accounts/logout-all", None, true)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(br.session.is_none() && br.accounts.is_none());
+    assert_eq!(
+        h.app.auth.store.remove_sessions_of(&bob).unwrap(),
+        0,
+        "ended"
+    );
+}

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import * as api from "../api";
+import { AccountList } from "../components/Accounts";
 import PasskeyButton from "../components/PasskeyButton";
 import { secondaryButton } from "../components/ui";
 import { isOidcKind, offersSso, type AuthMethods } from "../types";
@@ -185,6 +186,9 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
         {sso && <SsoButtons methods={methods} />}
         {methods.passkeys && (methods.pam || sso) && <div className="my-3" />}
         {methods.passkeys && <PasskeyButton onDone={onLoggedIn} />}
+        <div className="mt-4">
+          <AccountList heading="Your accounts in this browser" />
+        </div>
         {directory === "local" && <TrustedButtons methods={methods} />}
         {directory === "local" && <EmailRoute current={directory} />}
         {none && !methods.passkeys && (
