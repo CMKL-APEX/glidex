@@ -220,12 +220,15 @@ Gaps (not built yet, some planned):
 - Serial console only: no VNC/SPICE or graphical display. Cloud Hypervisor
   itself runs Windows guests, but Glidex's catalog holds Linux cloud images
   provisioned by cloud-init, and Windows guests are not a target today.
-  <!-- TODO(verify): whether Windows guest support is planned. -->
+  They may come later, once the tooling supports them (a graphical
+  console and Windows provisioning).
 - Security groups, floating IPs, BGP and load balancers (clustering.md §2).
 - Scale: designed for about 50 hosts and 2,000 VMs (clustering.md §4.1).
 - LDAP, Entra ID and GitHub connectors (tenancy.md T2b, T4b); directories
   apart from clusters and fleets (T6, T7).
-- Distribution packages: install is from source with Rust.
+- Distribution packages: install is from source with Rust while Glidex is
+  under active development; prebuilt binaries and distro packages are
+  planned later.
 
 ## References
 
