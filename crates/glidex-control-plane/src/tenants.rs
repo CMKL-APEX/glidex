@@ -353,6 +353,26 @@ impl TenantStore {
         Ok(())
     }
 
+    /// A standalone host's cluster id (D56, D69): random, made once, so
+    /// two standalone hosts never take each other's access tokens.
+    pub fn standalone_id(&self) -> Result<String, TenantError> {
+        const KEY: &str = "standalone_cluster_id";
+        if let Some(v) = self.meta(KEY)? {
+            return Ok(String::from_utf8_lossy(&v).into_owned());
+        }
+        let id = format!("standalone-{}", uuid::Uuid::new_v4());
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut m = txn.open_table(META)?;
+            if let Some(v) = m.get(KEY)? {
+                return Ok(String::from_utf8_lossy(v.value()).into_owned());
+            }
+            m.insert(KEY, id.as_bytes())?;
+        }
+        txn.commit()?;
+        Ok(id)
+    }
+
     fn meta(&self, key: &str) -> Result<Option<Vec<u8>>, TenantError> {
         let txn = self.db.begin_read()?;
         let table = match txn.open_table(META) {

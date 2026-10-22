@@ -123,6 +123,8 @@ tables! {
     TrustedDirectories = 59 => "trusted_directories",
     // Clusters of other organizations a directory's tenants use (D65).
     TrustedClusters = 60 => "trusted_clusters",
+    // What each trusted directory's feed last wrote here (D68).
+    FeedState = 61 => "feed_state",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they

@@ -360,3 +360,245 @@ async fn reqwest_free_post(
         .unwrap()
         .0
 }
+
+/// D67–D69: after the handshake, the cluster pulls the directory's feed:
+/// its admitted tenant's users, projects and roles appear in the replica,
+/// a member's access token from the directory works at the cluster, a
+/// non-member gets none, and disabling the user reaches the cluster.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
+    let north = cp().await;
+    let acme = cp().await;
+    let op = north.admin();
+    let admin = acme.admin();
+    let (_, v) = acme
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "acme", "display_name": "Acme"})),
+            &admin,
+        )
+        .await;
+    let tenant = v["tenant"]["id"].as_str().unwrap().to_string();
+    let store = &acme.app.auth.store;
+    let root = store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    acme.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(root.clone()),
+            Ent::Tenant(tenant.clone()),
+            "test",
+        )
+        .unwrap();
+    // Erin works in acme; Bob is in the directory but not in acme.
+    let erin = store
+        .user_for_identity("pam", "erin", "Erin", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    let bob = store
+        .user_for_identity("pam", "bob", "Bob", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    acme.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(erin.clone()),
+            Ent::Tenant(tenant.clone()),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/projects",
+            Some(json!({"name": "web", "tenant": "acme"})),
+            &admin,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let project = v["project"]["id"].as_str().unwrap().to_string();
+    // She owns it: a project link the feed carries too.
+    acme.app
+        .auth
+        .add_link(
+            "role.owner",
+            Ent::User(erin.clone()),
+            Ent::Project(project.clone()),
+            "test",
+        )
+        .unwrap();
+
+    let issuer = format!("{}/d/local", acme.base);
+    let (_, v) = north
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "acme", "directory": issuer})),
+            &op,
+        )
+        .await;
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/tenants/acme/clusters",
+            Some(json!({"offer": v["token"]})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+
+    // Erin's tokens for north, from her directory.
+    let token_for = |user: String| {
+        let acme = &acme;
+        let north_id = north_id.clone();
+        async move {
+            let grant = glidex_control_plane::directory::op::Grant {
+                user_id: user,
+                auth_time: glidex_control_plane::auth::store::now(),
+                amr: vec!["pwd".into()],
+                mfa: false,
+            };
+            let (refresh, _) = acme
+                .app
+                .auth
+                .refresh_tokens
+                .start(
+                    "local",
+                    "gxctl",
+                    "openid",
+                    &grant,
+                    86_400,
+                    glidex_control_plane::auth::store::now(),
+                )
+                .unwrap();
+            let body = format!(
+                "grant_type=refresh_token&client_id=gxctl&refresh_token={refresh}&resource=urn:glidex:cluster:{north_id}"
+            );
+            let resp = acme
+                .router
+                .clone()
+                .oneshot(
+                    Request::post("/d/local/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let v = token_for(bob.clone()).await;
+    assert_eq!(v["error"], "invalid_target", "bob isn't in acme: {v}");
+    let v = token_for(erin.clone()).await;
+    let access = v["access_token"]
+        .as_str()
+        .expect("an access token for north")
+        .to_string();
+    let whoami = |tok: String| {
+        let north = &north;
+        async move {
+            let resp = north
+                .router
+                .clone()
+                .oneshot(
+                    Request::get("/auth/whoami")
+                        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                st,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    // Before a feed, north doesn't know her.
+    assert_eq!(whoami(access.clone()).await.0, StatusCode::UNAUTHORIZED);
+
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    assert!(
+        glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap(),
+        "304 the second time"
+    );
+    let u = north
+        .app
+        .auth
+        .store
+        .user(&erin)
+        .unwrap()
+        .expect("erin in the replica");
+    assert_eq!(
+        (u.directory_id.as_str(), u.display_name.as_str()),
+        (d.id.as_str(), "Erin")
+    );
+    assert!(
+        north.app.auth.store.user(&bob).unwrap().is_none(),
+        "only acme's people"
+    );
+    assert!(
+        u.email.is_none() && u.managed.is_none(),
+        "cut to what a cluster needs"
+    );
+
+    let (s, me) = whoami(access.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{me}");
+    assert_eq!(
+        (me["user"]["id"].as_str(), me["method"].as_str()),
+        (Some(erin.as_str()), Some("directory")),
+        "{me}"
+    );
+    // Her role holds at north: acme's project is hers to see.
+    let resp = north
+        .router
+        .clone()
+        .oneshot(
+            Request::get("/projects")
+                .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let projects: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(projects.to_string().contains(&project), "{projects}");
+
+    // Disabled at her directory: refused at north after the next pull.
+    let mut eu = store.user(&erin).unwrap().unwrap();
+    eu.disabled = true;
+    store.put_user(&eu).unwrap();
+    assert!(
+        glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap()
+    );
+    assert_eq!(whoami(access).await.0, StatusCode::UNAUTHORIZED);
+}
