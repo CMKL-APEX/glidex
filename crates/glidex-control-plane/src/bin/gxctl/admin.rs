@@ -791,7 +791,10 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
-    let want = flag_value(args, "--profile");
+    // The profile asked for, else this session's (`gxctl --profile P auth
+    // logout`), else the file's current one.
+    let session_profile = client.profile_name();
+    let want = flag_value(args, "--profile").or(session_profile.as_deref());
     let name = match config::profile_of(&cfg, want) {
         Some((n, _)) => n.clone(),
         None => {
@@ -809,7 +812,11 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
     let token_id = config::profile_of(&cfg, want)
         .and_then(|(_, p)| p.identity.as_ref())
         .and_then(|i| i.token_id.clone());
-    if has_flag(args, "--revoke") {
+    let directory_login =
+        config::profile_of(&cfg, want).is_some_and(|(_, p)| p.directory.is_some());
+    // A directory login has no API token to revoke: its chain is ended at
+    // the directory below.
+    if has_flag(args, "--revoke") && !directory_login {
         let id = match &token_id {
             Some(id) => id.clone(),
             None => {
