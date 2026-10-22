@@ -41,7 +41,7 @@ const ID_TOKEN_SECS: u64 = 3600;
 
 /// The id access tokens for this cluster carry as `aud`: its cluster id,
 /// or a standalone host's own (`standalone-<uuid>`, made once).
-pub fn cluster_id(app: &AppState) -> String {
+pub fn cluster_id(app: &super::App) -> String {
     match app.manager.cluster() {
         Some(c) => c.identity.cluster_id.clone(),
         None => app

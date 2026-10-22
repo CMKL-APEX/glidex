@@ -1968,6 +1968,7 @@ impl AuthService {
             mine.push(Ent::Token(t.id.clone()));
         }
         let mut projects = Vec::new();
+        let mut tenants = Vec::new();
         for l in self.store.links()? {
             if !mine.contains(&l.link.principal) {
                 continue;
@@ -1975,9 +1976,17 @@ impl AuthService {
             match l.link.resource {
                 Ent::Cluster => return Ok(LinkedProjects::All),
                 Ent::Project(id) => projects.push(id),
+                // A tenant role reaches its projects (tenant-admin as owner,
+                // tenant-auditor as reader); each one is still checked.
+                Ent::Tenant(id) => tenants.push(id),
                 _ => {}
             }
         }
+        projects.extend(
+            self.tenants
+                .projects_of(&tenants)
+                .map_err(|e| AuthError::Unavailable(e.to_string()))?,
+        );
         if let Some(TokenKind::ServiceAccount { project }) = p.token.as_ref().map(|t| &t.kind) {
             projects.push(project.clone());
         }

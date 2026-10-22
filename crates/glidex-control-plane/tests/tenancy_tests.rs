@@ -1191,3 +1191,66 @@ async fn a_browser_holds_accounts_in_several_directories() {
         "ended"
     );
 }
+
+/// D57: a standalone host's server-info names the `aud` its access tokens
+/// carry (its own `standalone-…` id), which gxctl's directory login asks
+/// tokens for; it reports no cluster id.
+#[tokio::test]
+async fn server_info_names_a_standalone_hosts_token_audience() {
+    let h = harness();
+    let resp = h
+        .router
+        .clone()
+        .oneshot(
+            Request::get("/auth/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let aud = v["token_audience"].as_str().unwrap_or_default();
+    assert!(aud.starts_with("standalone-"), "{v}");
+    assert_eq!(aud, glidex_control_plane::api::op::cluster_id(&h.app));
+    assert!(v["cluster_id"].is_null(), "{v}");
+}
+
+/// A tenant admin with no role on the tenant's projects themselves still
+/// lists them (tenant-admin includes owner on its projects); another
+/// tenant's project stays out of the list.
+#[tokio::test]
+async fn a_tenant_admin_lists_the_tenants_projects() {
+    let h = harness();
+    let at = h.session(&h.admin("root"));
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "acme" })), &at)
+        .await;
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    for (name, tenant) in [("in-acme", acme.as_str()), ("elsewhere", DEFAULT_TENANT)] {
+        h.app
+            .manager
+            .projects()
+            .create_in(tenant, name, String::new(), None)
+            .unwrap();
+    }
+    let ada = h.user("ada");
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(ada.clone()),
+            Ent::Tenant(acme),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = h.rest("GET", "/projects", None, &h.token(&ada)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let names: Vec<&str> = v["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["in-acme"], "{v}");
+}

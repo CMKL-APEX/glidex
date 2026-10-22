@@ -401,6 +401,13 @@ administrator; they run, at their directory:
 gxctl tenant opt-in acme --offer gxo_…
 ```
 
+In the web UI the same is on the **Admissions** page (*Offers to other
+organizations' tenants*: the tenant's slug, its directory's issuer and
+how many days, then **Make offer**) and, at the directory, on the
+tenant's page (*Clusters of other organizations*: paste the token and
+**Accept offer**; **Opt out** leaves). An offer needs this cluster's API
+to serve TLS: the directory pins its certificate.
+
 Their directory calls this cluster's API (the address in the token:
 `cluster.api_url`, else the web UI's host on port 8841), pinning its
 certificate; both sides keep the other's keys and certificate from then
@@ -447,8 +454,9 @@ Once trust is set up:
   know who was removed meanwhile; your own users are not affected. The
   next feed that gets through lifts it. Responses to a directory's
   people carry `X-Glidex-Directory-Lag` (seconds) once its feed is more
-  than 90 seconds behind. `gxctl admission directories` shows each
-  directory's last feed and limit;
+  than 90 seconds behind. `gxctl admission directories` (or the Admissions page's
+  *Directories of other organizations*) shows each directory's last feed
+  and limit;
   `gxctl admission staleness <directory> <minutes>` changes it (`default`
   goes back to `trust.default_max_staleness_minutes` in
   `control-plane.json`).

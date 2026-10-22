@@ -1191,6 +1191,8 @@ export interface ApiToken {
   device?: string;
   client?: string;
   roles?: Binding[];
+  /** The clusters it works on (spec/tenancy.md §7.4); none: only here. */
+  clusters?: string[];
 }
 
 export const isServiceToken = (t: Pick<ApiToken, "kind">) => t.kind === "TOKEN_KIND_SERVICE_ACCOUNT";
@@ -1203,6 +1205,9 @@ export interface CreateTokenRequest {
   roles?: { role: string; project?: string }[];
   device?: string;
   client?: string;
+  /** Clusters of other organizations it works on too, or `["all"]`
+   *  (spec/tenancy.md §7.4); none: only this cluster. */
+  clusters?: string[];
 }
 
 export interface CreatedToken {

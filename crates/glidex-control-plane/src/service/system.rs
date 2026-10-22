@@ -41,6 +41,7 @@ pub fn server_info(app: &App) -> GetServerInfoResponse {
         cluster_name: name,
         version: env!("CARGO_PKG_VERSION").into(),
         fingerprint,
+        token_audience: crate::api::op::cluster_id(app),
         methods: LoginMethods {
             pam: Some(app.auth.pam_connector(None).is_ok()),
             oidc: Some(app.auth.oidc_enabled()),

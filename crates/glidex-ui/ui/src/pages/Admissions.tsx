@@ -18,6 +18,7 @@ import {
   selectClass,
 } from "../components/ui";
 import { useSession } from "../session";
+import { OffersCard, TrustedDirectoriesCard } from "../components/Trust";
 
 const suspended = (a: Admission) => a.status === "ADMISSION_STATUS_SUSPENDED";
 
@@ -272,6 +273,10 @@ export default function Admissions() {
           />
         </Modal>
       )}
+      <div className="mt-6">
+        <TrustedDirectoriesCard manage={manage} />
+        <OffersCard manage={manage} />
+      </div>
       {removing && (
         <ConfirmDialog
           title="Remove Admission"
