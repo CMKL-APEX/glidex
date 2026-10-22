@@ -1,6 +1,6 @@
-# gRPC API (design)
+# gRPC API
 
-Status: **design**; G0 is implemented (§15). Adds an RPC transport (gRPC, gRPC-Web and the
+Status: **implemented**: G0–G5 (§15). Adds an RPC transport (gRPC, gRPC-Web and the
 Connect protocol, served by `connectrpc`) next to the REST API of [rest-api.md](rest-api.md), sharing its authentication
 ([security.md](security.md) §5), Cedar authorization (§7), audit (§10)
 and cluster forwarding ([clustering.md](clustering.md) §6.4). The first

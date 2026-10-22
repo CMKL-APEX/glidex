@@ -14,3 +14,11 @@ create-missing = false
 site-url = "/glidex/docs/"
 git-repository-url = "https://github.com/CMKL-APEX/glidex"
 edit-url-template = "https://github.com/CMKL-APEX/glidex/edit/main/docs/public/{path}"
+
+# Pages written as README.md are published as index.html, but links to
+# them render as README.html: send those to index.html.
+[output.html.redirect]
+"/api/README.html" = "index.html"
+"/developer-guide/README.html" = "index.html"
+"/operator-guide/README.html" = "index.html"
+"/user-guide/README.html" = "index.html"

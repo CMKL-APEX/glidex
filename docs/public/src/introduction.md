@@ -48,6 +48,8 @@ or on many hosts joined into one cluster.
   disks, credentials, networks, projects, the console and usage.
 - [Operator guide](operator-guide/README.md): installing, configuring,
   securing and running hosts and clusters.
+- [Developer guide](developer-guide/README.md): the architecture, design
+  decisions, algorithms and performance figures, for contributors.
 - [`gxctl` reference](reference/gxctl.md): the CLI's commands.
 - [API reference](api/README.md): the REST and RPC APIs.
 

@@ -25,13 +25,13 @@ fresh reader cannot infer just by reading the source.
 | [console.md](console.md) | The one console per VM (`ttyS0`/`hvc0` on a PTY), its proxy in the shim, listener invariant, log append/rotation, the WebSocket and RPC clients, the browser terminal (ghostty-web/xterm.js), known gaps |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
-| [storage.md](storage.md) | Datastores (S0–S5 built, S6–S7 design): cluster-wide storage records with node-local (`dir`, today's directories as `local`) and shared (`shared-dir`, vendor-mounted NFS/CephFS) drivers behind a CSI-shaped driver trait, placement by datastore topology, a worker node per volume, image copies per datastore with relative backing paths, re-placing stopped or lost VMs, disk move, block drivers and a CSI adapter as later gated milestones, S0 fixes, milestones S0–S7 |
+| [storage.md](storage.md) | Datastores (S0–S6 built, S7 design): cluster-wide storage records with node-local (`dir`, today's directories as `local`) and shared (`shared-dir`, vendor-mounted NFS/CephFS) drivers behind a CSI-shaped driver trait, placement by datastore topology, a worker node per volume, image copies per datastore with relative backing paths, re-placing stopped or lost VMs, disk move, block drivers and a CSI adapter as later gated milestones, S0 fixes, milestones S0–S7 |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
 | [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
 | [cluster-runbook.md](cluster-runbook.md) | Operating a cluster: removing, forgetting and rejoining nodes, rotating the CA, rolling upgrades, recovering a lost quorum |
 | [clustering.md](clustering.md) | Multi-host clusters (design): control-plane store replicated with embedded Raft (leader-computed write sets), server and node roles, node lifecycle (remove, forget, rejoin, leave with VMs and import them into another cluster), scheduler with sticky local-storage placement, cluster networks on OVN (isolated, NAT via an HA edge router or per-project VPC routers, provider), cluster IPAM, node PKI with CA rotation, conntrack-based external metering, scale envelope |
 | [clustering-ui.md](clustering-ui.md) | Cluster operations in the web UI (plan): capability checks on the right resource type, node awareness in existing pages, placement and capacity, the Cluster page with membership, imports, CA and lifecycle operations, OVN views, the server additions they need, milestones U0–U5 |
-| [host-page.md](host-page.md) | Host page and the UI on agents (design): a page per host for its OVS, bridges, uplinks, devices and maintenance, standalone or from any server; the target-node header; servers publishing their UI address (`cluster.ui_url` for a load balancer); agents redirecting browsers to a server |
+| [host-page.md](host-page.md) | Host page and the UI on agents (implemented): a page per host for its OVS, bridges, uplinks, devices and maintenance, standalone or from any server; the target-node header; servers publishing their UI address (`cluster.ui_url` for a load balancer); agents redirecting browsers to a server |
 | [host-topology.md](host-topology.md) | Host topology and device placement (design): each node's NUMA nodes, CPUs, per-node memory and hugepages and PCIe tree read from sysfs (summary replicated, full tree on request), device readiness and preparation for VFIO, NUMA policy and dedicated CPUs in the VM spec for both hypervisors, NUMA-aware scheduling, hugepage accounting per page size and NUMA node, VFIO claims per node and IOMMU group, device health, device pools for GPUs, NICs and DPUs at cluster and tenant level with quotas and metering, SR-IOV VFs, milestones HT0–HT5 |
 | [gpu-vms.md](gpu-vms.md) | GPU VMs (design): GPU requests by count with sizing from the pool, `aligned` NUMA placement across a VM's GPUs' nodes and a guest layout that mirrors the host, NVLink on NVSwitch boards through Fabric Manager's shared NVSwitch mode in a system (service) VM, and `--vfio-devices` / `--sriov` across reboots; milestones GV1–GV5 |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
@@ -41,7 +41,7 @@ fresh reader cannot infer just by reading the source.
 | [workload-identity.md](workload-identity.md) | Workload identity (draft): the directory as issuer of short-lived, audience-bound tokens for its VMs (SPIFFE IDs, OIDC discovery and JWKS), a per-node `glidex-metad` serving a link-local metadata endpoint (VMs identified by port) and vsock, per-directory SPIFFE trust domains, 15 min tokens refreshed at 80%, service accounts attached to VMs (`useServiceAccount`), glidex tokens without stored secrets, the T6 shape (delegated cluster keys) and room for agent delegation; milestones WI0–WI4 |
 | [apps.md](apps.md) | Managed applications (draft): Kubernetes, PostgreSQL and later applications as a layer above a generic core: labels, owners, `user_data`, fixed and allowed addresses, disk hot-plug, and opaque `App`/`AppInstance` resources; the `glidex-apps` service acting as each instance's own service account by impersonation; a generic Apps UI rendered from descriptors (JSON Schema); single-VM PostgreSQL pilot; Kubernetes through Cluster API; milestones A0–A4 |
 | [idp-checks.md](idp-checks.md) | Hand checks of the connector presets against real identity providers (Google Workspace and consumer accounts, JumpCloud), with no accounts or secrets in the repository |
-| [grpc.md](grpc.md) | RPC API (design; G0 implemented): gRPC, gRPC-Web and Connect via `connectrpc` next to REST on the same listeners, browser on Connect-ES, one transport-neutral service layer under both, proto source of truth in `glidex-api`, per-RPC operation table (Cedar action, read/write, REST twin), error-code mapping, cluster forwarding, port order G0–G5 |
+| [grpc.md](grpc.md) | RPC API (implemented, G0–G5): gRPC, gRPC-Web and Connect via `connectrpc` next to REST on the same listeners, browser on Connect-ES, one transport-neutral service layer under both, proto source of truth in `glidex-api`, per-RPC operation table (Cedar action, read/write, REST twin), error-code mapping, cluster forwarding, port order G0–G5 |
 
 ## Goals
 
@@ -68,9 +68,6 @@ fresh reader cannot infer just by reading the source.
 
 ## Non-goals
 
-- Clustering / multi-host orchestration. Planned in
-  [clustering.md](clustering.md); this non-goal is lifted when its
-  milestones land.
 - Built-in identity provider. Users authenticate with local accounts
   (PAM, peer credentials) or an external OIDC IdP; authorization is
   Cedar policy. See [security.md](security.md).
@@ -90,11 +87,15 @@ glidex/
     ├── glidex-control-plane/        # REST and RPC server, controllers, hypervisor drivers, gxctl
     ├── glidex-vm-shim/              # per-VM supervisor: hypervisor parent, console, exit record
     ├── glidex-hv-client/            # CH HTTP and QMP clients (shim + control plane)
+    ├── glidex-raftstore/            # replicated ReDB store on openraft, write sets (clustering.md)
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
+    ├── glidex-ovn/                  # OVN northbound management for cluster networks (clustering.md)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
     ├── glidex-authd/                # root PAM helper daemon (security.md §5.3) + client
+    ├── glidex-stord/                # root storage helper: LVM volumes, device access (storage.md)
     ├── glidex-tls/                  # HTTPS listeners, self-signed certificates, client trust (security.md §5.1)
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
+    ├── glidex-e2e/                  # end-to-end tests driving real installs (nested VMs)
     └── glidex-ui/                   # Vite+React UI; the Rust bin serves it and proxies /api
 ```
 
