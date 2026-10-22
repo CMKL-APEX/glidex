@@ -285,13 +285,14 @@ pub async fn login_finish(
     headers: HeaderMap,
     Json(cred): Json<CredentialJson>,
 ) -> Result<Response, ApiErr> {
-    let client = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|s| s.trim().to_string())
-        .or_else(|| addr.map(|a| a.0.0.ip().to_string()))
-        .unwrap_or_else(|| "-".into());
+    // X-Forwarded-For counts only from glidex-ui (or a relaying server):
+    // over TCP the peer is the client, whatever the header says.
+    let client = super::client_ip(
+        addr.map(|a| a.0.0),
+        &headers,
+        listener.as_ref().map_or(Listener::Tcp, |l| l.0),
+    )
+    .map_or_else(|| "-".into(), |ip| ip.to_string());
     if !app.auth.ceremonies.attempt(&client) {
         return Err(err(
             StatusCode::TOO_MANY_REQUESTS,

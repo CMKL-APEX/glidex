@@ -9,7 +9,7 @@ use axum::{
     body::Body,
     http::{HeaderMap, Request, StatusCode, header},
 };
-use glidex_control_plane::api::{self, App, AppState};
+use glidex_control_plane::api::{self, App, AppState, ClientAddr, Listener, PeerUid};
 use glidex_control_plane::auth::AuthService;
 use glidex_control_plane::auth::webauthn::{Cbor, b64url, encode};
 use glidex_control_plane::authz::Ent;
@@ -40,6 +40,11 @@ fn harness() -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into(), "https://evil.example:5173".into()];
     cfg.auth.passkeys.rp_id = Some(RP.into());
+    // This test plays glidex-ui on ui.sock, as the UI e2e setup does.
+    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap()
+        .name;
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     H {
@@ -717,5 +722,65 @@ async fn a_new_directorys_first_admin_signs_in_with_a_passkey() {
         (st, v["user"]["id"].as_str()),
         (StatusCode::OK, Some(erin.as_str())),
         "{v}"
+    );
+}
+
+/// Sign-in attempts are limited per client. Over TCP the client is the
+/// peer, whatever X-Forwarded-For says; only glidex-ui's socket passes a
+/// browser's address on that way.
+#[tokio::test]
+async fn sign_in_attempts_are_limited_by_the_real_client() {
+    let h = harness();
+    let finish = |listener: Listener, forwarded: String| {
+        let mut r = Request::builder()
+            .method("POST")
+            .uri("/auth/passkeys/login/finish")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", forwarded)
+            .body(Body::from(
+                json!({"id": "AA", "rawId": "AA", "type": "public-key",
+                       "response": {"clientDataJSON": "", "authenticatorData": "", "signature": ""}})
+                .to_string(),
+            ))
+            .unwrap();
+        r.extensions_mut().insert(listener);
+        match listener {
+            Listener::Ui => {
+                r.extensions_mut()
+                    .insert(PeerUid(nix::unistd::getuid().as_raw()));
+            }
+            _ => {
+                r.extensions_mut()
+                    .insert(ClientAddr("192.0.2.7:40000".parse().unwrap()));
+            }
+        }
+        let router = h.router.clone();
+        async move { router.oneshot(r).await.unwrap().status() }
+    };
+    // Over TCP, a new X-Forwarded-For each time is still one client.
+    let mut limited = false;
+    for i in 0..15 {
+        if finish(Listener::Tcp, format!("198.51.100.{i}")).await == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(
+        limited,
+        "made-up X-Forwarded-For values got around the limit"
+    );
+    // From glidex-ui, the browser's address it forwards is the client:
+    // another browser isn't held back by the first one's attempts.
+    for _ in 0..15 {
+        finish(Listener::Ui, "203.0.113.1".into()).await;
+    }
+    assert_eq!(
+        finish(Listener::Ui, "203.0.113.1".into()).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_ne!(
+        finish(Listener::Ui, "203.0.113.2".into()).await,
+        StatusCode::TOO_MANY_REQUESTS
     );
 }
