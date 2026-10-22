@@ -999,6 +999,17 @@ export interface AuthMethods {
   trusted_directories?: TrustedLogin[];
 }
 
+/** One of the browser's accounts (spec/tenancy.md D71). */
+export interface BrowserAccount {
+  directory: string;
+  directory_name: string;
+  /** `trusted`: another organization's directory (D69). */
+  kind: "hosted" | "trusted";
+  user_name?: string | null;
+  signed_in: boolean;
+  active: boolean;
+}
+
 /** "Sign in with <host>": a trusted directory's login (spec/tenancy.md D69). */
 export interface TrustedLogin {
   /** Its records' id here, `trusted-<hash>`. */

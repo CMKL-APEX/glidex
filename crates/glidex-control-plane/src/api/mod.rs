@@ -9,6 +9,7 @@
 #![allow(clippy::result_large_err)] // handlers return (StatusCode, Json<ApiError>), as before
 
 mod access;
+mod accounts;
 mod cluster;
 mod connectors;
 pub(crate) mod errors;
@@ -942,6 +943,28 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/auth/c/{id}/callback",
         PUBLIC,
         get(access::connector_callback),
+    )
+    // A browser's accounts in several directories (spec/tenancy.md D71):
+    // public, so a browser without an active session can switch back.
+    .add("GET", "/auth/accounts", PUBLIC, get(accounts::list))
+    .add(
+        "POST",
+        "/auth/accounts/switch",
+        PUBLIC,
+        post(accounts::switch),
+    )
+    .add("POST", "/auth/accounts/add", PUBLIC, post(accounts::add))
+    .add(
+        "POST",
+        "/auth/accounts/remove",
+        PUBLIC,
+        post(accounts::remove),
+    )
+    .add(
+        "POST",
+        "/auth/accounts/logout-all",
+        PUBLIC,
+        post(accounts::logout_all),
     )
     // Logins at a trusted directory (spec/tenancy.md D69).
     .add(
@@ -2533,6 +2556,11 @@ mod tests {
                 "/auth/invitation/passkey/start",
                 "/auth/invitation/passkey/finish",
                 "/auth/c/{id}/callback",
+                "/auth/accounts",
+                "/auth/accounts/switch",
+                "/auth/accounts/add",
+                "/auth/accounts/remove",
+                "/auth/accounts/logout-all",
                 "/auth/t/{trusted}/start",
                 "/auth/t/{trusted}/callback",
                 "/auth/c/{id}/device",
