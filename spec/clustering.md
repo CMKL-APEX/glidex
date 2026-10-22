@@ -836,6 +836,12 @@ As built:
     has applied it, so the controller reads its own write.
   - Before this, a follower server's image copies, disks and VM status
     were never written, so nothing placed on it got made.
+- **The one catalog record a node creates** is a kernel image it
+  extracts from the root disk of a VM placed on it (kernel-boot.md
+  §10.5): new, `extracting`, `extract_node` the node itself, the disk
+  bound to it, nothing pinned or released. It can't change or delete it
+  afterwards; the leader records the result from the node's
+  `image_caches` row. Test: `sync.rs::a_node_creates_only_kernels_it_extracts_from_its_disks`.
 - **A server's own `nodes` record** keeps its raw path (`/cluster/v1/raw`),
   because a server may write fields of its record that a node may not
   (`raft_id`, `phase`).

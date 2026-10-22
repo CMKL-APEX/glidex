@@ -183,6 +183,7 @@ impl VmManager {
                     bytes: 0,
                     verified_at: 0,
                     error: String::new(),
+                    extracted: None,
                 }),
             )
             .map_err(|e| e.to_string())?;
@@ -207,6 +208,7 @@ impl VmManager {
                         bytes: 0,
                         verified_at: 0,
                         error: e.clone(),
+                        extracted: None,
                     }),
                 );
                 return Err(e);
@@ -222,6 +224,7 @@ impl VmManager {
                 bytes,
                 verified_at: crate::tenancy::now(),
                 error: String::new(),
+                extracted: None,
             }),
         )
         .map_err(|e| e.to_string())

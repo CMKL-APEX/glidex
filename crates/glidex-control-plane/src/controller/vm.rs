@@ -858,7 +858,20 @@ impl VmManager {
         // it first, so the bindings below use what this records.
         let followed: Vm;
         let vm = if vm.config().kernel_from_disk || st.disk_kernel.is_some() {
-            if let Err(e) = self.follow_disk_kernel(vm, &mut st).await {
+            let followed_disk = self.follow_disk_kernel(vm, &mut st).await;
+            if let Ok(false) = followed_disk {
+                // Extracting on this node for the leader (§10.2).
+                set_cond(
+                    &mut st.conditions,
+                    "KernelExtracted",
+                    Tristate::Unknown,
+                    "Extracting",
+                    "extracting the kernel from the root disk",
+                );
+                self.write_status(&vm.id, vm.generation, st, events).await?;
+                return Ok(Some(Duration::from_secs(3)));
+            }
+            if let Err(e) = followed_disk {
                 set_cond(
                     &mut st.conditions,
                     "Ready",

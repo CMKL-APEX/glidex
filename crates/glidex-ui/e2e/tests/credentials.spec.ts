@@ -67,6 +67,59 @@ test("the VM form defaults to my own credential when the project has one", async
   }
 });
 
+test("the VM form picks the credential I last gave a VM", async ({ page }) => {
+  const project = await defaultProject();
+  const me = (await api<{ user: { display_name: string } }>("/auth/whoami")).user.display_name;
+  const OTHER = "e2e-keys-2";
+  for (const u of [USER, OTHER, me]) {
+    await api("/credentials", { method: "POST", body: { username: u, project, ssh_authorized_keys: [KEY] } });
+  }
+  try {
+    // A firmware image to boot through, and a create that isn't made.
+    await rpcRoute(page, "glidex.storage.v1.ImageService/ListImages", () => ({
+      message: {
+        images: [
+          { id: "fw", name: "fw", kind: "IMAGE_KIND_FIRMWARE", arch: "ARCH_X86_64", hypervisor: "HYPERVISOR_CLOUD_HYPERVISOR", status: { state: "IMAGE_STATE_READY" } },
+        ],
+      },
+    }));
+    let sent: { credential?: string } | undefined;
+    await rpcRoute(page, "glidex.vm.v1.VmService/CreateVm", (body) => {
+      sent = body as { credential?: string };
+      return { message: { vm: { id: "v1", name: "cred-vm" } } };
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "+ Create VM" }).click();
+    const select = field(page, "Login Credential");
+    // Nothing given yet: my own.
+    await expect(select).toHaveValue(me);
+
+    await field(page, "VM Name").fill("cred-vm");
+    await field(page, "Hypervisor Backend").selectOption("cloudhypervisor");
+    await field(page, "Boot Disk").selectOption("path");
+    await field(page, "Disk Image Path").fill("/nonexistent/disk.img");
+    await select.selectOption(OTHER);
+    await page.getByRole("button", { name: "Create VM", exact: true }).click();
+    await expect.poll(() => sent?.credential).toBe(OTHER);
+
+    // The next VM starts from it, here and after a reload.
+    await page.getByRole("button", { name: "+ Create VM" }).click();
+    await expect(select).toHaveValue(OTHER);
+    await page.reload();
+    await page.getByRole("button", { name: "+ Create VM" }).click();
+    await expect(select).toHaveValue(OTHER);
+
+    // Gone from the project: back to my own.
+    await removeCredential(OTHER);
+    await page.reload();
+    await page.getByRole("button", { name: "+ Create VM" }).click();
+    await expect(select).toHaveValue(me);
+  } finally {
+    await removeCredential(OTHER);
+    await removeCredential(me);
+  }
+});
+
 test("Add Credential prefills my own public keys", async ({ page }) => {
   // The server reads ~/.ssh through glidex-authd, which only serves the
   // glidex service user; the scratch control plane can't use it, so the
