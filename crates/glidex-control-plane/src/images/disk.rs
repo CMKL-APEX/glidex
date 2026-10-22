@@ -83,7 +83,17 @@ impl ImageManager {
                 req.name
             )));
         }
-        let format = req.format.unwrap_or_default();
+        // A block datastore's volumes are raw (spec/storage.md S19).
+        let block = self.datastore_is_block(req.datastore.as_deref());
+        let format = match (req.format, block) {
+            (Some(DiskFormat::Qcow2), true) => {
+                return Err(ImageError::invalid_disk(
+                    "disks on an lvm datastore are raw volumes; leave format out",
+                ));
+            }
+            (_, true) => DiskFormat::Raw,
+            (f, false) => f.unwrap_or_default(),
+        };
         let size = requested_size(req.size_gib, req.size_bytes)?;
         let origin = match &req.image {
             None => {
@@ -137,7 +147,8 @@ impl ImageManager {
                     _ => {}
                 }
                 let mode = req.clone.unwrap_or_default();
-                if (mode, format) == (CloneMode::Linked, DiskFormat::Raw) {
+                // On LVM a linked disk is a thin snapshot, raw as well.
+                if (mode, format) == (CloneMode::Linked, DiskFormat::Raw) && !block {
                     return Err(ImageError::invalid_disk(
                         "a raw disk cannot be linked; use clone: full",
                     ));
@@ -170,6 +181,18 @@ impl ImageManager {
         });
         self.choose_datastore(req.datastore.as_deref(), &mut disk)?;
         Ok(disk)
+    }
+
+    /// Whether the datastore `key` names (else the default for disks) keeps
+    /// block volumes. One that doesn't exist is not: `choose_datastore`
+    /// says so.
+    fn datastore_is_block(&self, key: Option<&str>) -> bool {
+        use crate::datastore::record;
+        match key {
+            Some(k) => record::find(&self.db, k).ok().flatten(),
+            None => record::default_for_disks(&self.db).ok(),
+        }
+        .is_some_and(|d| d.driver.is_block())
     }
 
     /// Put a new disk on the datastore asked for, else the default for disks
@@ -624,6 +647,9 @@ impl ImageManager {
         {
             *mode = CloneMode::Full;
         }
+        if spec.raw {
+            d.format = DiskFormat::Raw;
+        }
         d
     }
 
@@ -647,7 +673,7 @@ impl ImageManager {
             } if !flatten => Some(self.image_for_move(dst, image_id)?),
             _ => None,
         };
-        to.copy_in(dst, &path, flatten, &mut |made| {
+        to.copy_in(dst, &path, src.format, flatten, &mut |made| {
             if let Some(b) = &backing {
                 let dir = made.path().parent().unwrap_or(Path::new("."));
                 let rel = crate::paths::relative_to(b, dir).unwrap_or_else(|| b.clone());

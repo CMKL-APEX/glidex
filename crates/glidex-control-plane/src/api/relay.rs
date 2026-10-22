@@ -1,28 +1,27 @@
-//! The web UI on an agent (spec/clustering-ui.md §3.6).
+//! Host-only requests across nodes, and the web UI on agents
+//! (spec/host-page.md, spec/clustering-ui.md §3.6).
+//!
+//! A host-only request (`/ovs`, `/pci-devices`, `/system/reconcile`, …)
+//! means this host, unless it names another node in `X-Glidex-Target-Node`
+//! (W2): a server then authorizes the route's action on that node's `Host`
+//! and sends it there (`/cluster/v1/host/…`, a server certificate), where
+//! it runs with that one decision (`PreAuthorized`).
 //!
 //! An agent has no users, sessions or tokens (the auth tables replicate to
-//! servers only), so it can't authenticate a browser. Its UI socket relays
-//! each request whole to a server over :8842 (`/cluster/v1/ui/…`, the
-//! agent's certificate), where it is authenticated as if the browser had
-//! come there; the agent never vouches for a principal. Responses stream
-//! back (event streams), and WebSocket upgrades are spliced through.
-//!
-//! A host-local request (`/ovs`, `/pci-devices`, `/system/reconcile`) asked
-//! from an agent's UI means the agent's host: the server authorizes the
-//! route's action on that node's `Host`, then sends it to the agent
-//! (`/cluster/v1/host/…`, a server certificate), which runs it with that one
-//! decision (`PreAuthorized`).
+//! servers only), so its glidex-ui sends browsers to a server (W5), and its
+//! UI socket answers API requests with `421 use_a_server`. Servers still
+//! take requests that agents of an older build relay (`/cluster/v1/ui/…`,
+//! W6): authenticated as if the browser had come there, the agent never
+//! vouching for a principal.
 
 use super::{ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction, err};
 use crate::auth::Principal;
 use crate::authz::{Ent, EntitySet};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use bytes::Bytes;
-use http_body_util::BodyExt;
 
 pub const VIA_NODE_HEADER: &str = "x-glidex-via-node";
 pub const TARGET_NODE_HEADER: &str = "x-glidex-target-node";
@@ -30,34 +29,6 @@ pub const AUTHORIZED_HEADER: &str = "x-glidex-authorized";
 /// On relayed answers: the node that ran the request.
 pub const SERVED_BY_HEADER: &str = "x-glidex-served-by";
 const MAX_RELAYED_BODY: usize = 32 << 20;
-
-/// Request headers a relay passes on: what authenticates the browser and
-/// describes the body. Nothing that could claim an identity for it.
-const PASS_REQUEST: [&str; 13] = [
-    "content-type",
-    "accept",
-    "cookie",
-    "authorization",
-    "origin",
-    "x-glidex-csrf",
-    "x-forwarded-for",
-    "x-forwarded-proto",
-    "user-agent",
-    "if-match",
-    "x-glidex-consistency",
-    "x-request-id",
-    "last-event-id",
-];
-
-/// Extra request headers of a WebSocket upgrade.
-const PASS_UPGRADE: [&str; 6] = [
-    "upgrade",
-    "connection",
-    "sec-websocket-key",
-    "sec-websocket-version",
-    "sec-websocket-protocol",
-    "sec-websocket-extensions",
-];
 
 /// Response headers that describe the answer (hop-by-hop ones are left out).
 const PASS_RESPONSE: [&str; 12] = [
@@ -110,151 +81,182 @@ fn respond_headers(resp: &mut Response, from: &HeaderMap) {
     }
 }
 
-/// Global layer, outermost: on an agent, the UI socket's requests go to a server.
-pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> Response {
+/// Global layer, outermost. On every host: glidex-ui's own `PUT /ui/self`
+/// on the UI socket (§3 of spec/host-page.md), and the target-node header
+/// of host-only requests (W2). On an agent, the UI socket's API requests
+/// get `421 use_a_server`: its glidex-ui sends browsers to a server (W5).
+pub async fn ui_relay(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     let listener = req
         .extensions()
         .get::<Listener>()
         .copied()
         .unwrap_or(Listener::Tcp);
-    let Some(cluster) = app.manager.cluster() else {
-        return next.run(req).await;
-    };
-    // Servers serve their UI themselves.
-    if listener != Listener::Ui || cluster.node.is_some() {
-        return next.run(req).await;
+    let own = req.uri().path() == UI_SELF_PATH;
+    if listener == Listener::Ui && (own || app.manager.is_agent()) {
+        if !super::ui_peer_ok(&app, req.extensions().get::<super::PeerUid>()) {
+            return super::plain_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "only glidex-ui may use this socket",
+            );
+        }
+        if own {
+            return ui_self(&app, req).await;
+        }
+        return use_a_server(&app);
     }
-    if !super::ui_peer_ok(&app, req.extensions().get::<super::PeerUid>()) {
+    if matches!(listener, Listener::Ui | Listener::Tcp | Listener::Api)
+        && let Err(r) = take_target(&app, &mut req)
+    {
+        return r;
+    }
+    next.run(req).await
+}
+
+/// glidex-ui's report of itself (spec/host-page.md §3). glidex-ui never
+/// proxies a browser to it (it answers `/api/ui/…` itself).
+pub const UI_SELF_PATH: &str = "/ui/self";
+
+#[derive(serde::Deserialize, Default)]
+struct UiSelf {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+async fn ui_self(app: &AppState, req: Request) -> Response {
+    if req.method() != axum::http::Method::PUT {
         return super::plain_error(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only glidex-ui may use this socket",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "PUT only",
         );
+    }
+    let body = axum::body::to_bytes(req.into_body(), 64 << 10)
+        .await
+        .unwrap_or_default();
+    let me: UiSelf = serde_json::from_slice(&body).unwrap_or_default();
+    let reported = me
+        .url
+        .as_deref()
+        .and_then(crate::cluster::config::ui_origin);
+    let cfg = &app.auth.config;
+    let custom = cfg.cluster.ui_origin();
+    let agent = app.manager.is_agent();
+    if !agent {
+        // W3: the custom address, else what glidex-ui reports, else the
+        // first allowed origin.
+        let published = custom
+            .clone()
+            .or(reported)
+            .or_else(|| cfg.auth.allowed_origins.first().cloned());
+        if app.manager.set_ui_url(published) {
+            let m = app.manager.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = m.report_self() {
+                    tracing::warn!("publishing the web UI's address: {}", e);
+                }
+            });
+        }
     }
     let servers = app
         .manager
         .node_link()
         .map(|l| l.servers())
         .unwrap_or_default();
-    let server_list = || servers.join(", ");
-    if !app.auth.config.cluster.ui_relay {
-        return err(
-            StatusCode::MISDIRECTED_REQUEST,
-            "use_a_server",
-            format!(
-                "this node doesn't serve the UI; use a server: {}",
-                server_list()
-            ),
-        )
-        .into_response();
-    }
-    // The Origin is checked here, where the browser connected (the server
-    // trusts the relay for it, as for a forwarded request).
-    let websocket = req.headers().get(header::UPGRADE).is_some();
-    if let Some(o) = req
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        && (!super::is_safe(req.method()) || websocket)
-        && !app.auth.config.auth.origin_allowed(o)
-    {
-        return super::plain_error(
-            StatusCode::FORBIDDEN,
-            "origin_not_allowed",
-            "this origin may not use the API",
-        );
-    }
-    let path = req.uri().path().to_string();
-    let pq = req
-        .uri()
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| path.clone());
-    let target = format!("/cluster/v1/ui{pq}");
-    let me = cluster.identity.node_id.clone();
-    let mut headers = copy_headers(req.headers(), &PASS_REQUEST);
-    headers.push((VIA_NODE_HEADER, me.clone()));
-    if is_remote_host_path(&path) {
-        headers.push((TARGET_NODE_HEADER, me.clone()));
-    }
-    let unreachable = || {
-        err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cluster_unavailable",
-            format!(
-                "this node can't reach a server; log in on a server: {}",
-                server_list()
-            ),
-        )
-        .into_response()
-    };
-
-    if websocket {
-        headers.extend(copy_headers(req.headers(), &PASS_UPGRADE));
-        let (mut parts, _) = req.into_parts();
-        let Some(on) = parts.extensions.remove::<hyper::upgrade::OnUpgrade>() else {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                "upgrade without a connection to upgrade",
-            )
-            .into_response();
-        };
-        for addr in &servers {
-            let Ok((status, rh, body, up)) = cluster
-                .client
-                .upgrade_with(addr, parts.method.clone(), &target, &headers)
-                .await
-            else {
-                continue;
-            };
-            let mut resp = Response::new(Body::from(body));
-            *resp.status_mut() = status;
-            respond_headers(&mut resp, &rh);
-            if let Some(mut server) = up {
-                resp.headers_mut()
-                    .insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
-                if let Some(u) = rh.get(header::UPGRADE) {
-                    resp.headers_mut().insert(header::UPGRADE, u.clone());
-                }
-                tokio::spawn(async move {
-                    let Ok(client) = on.await else { return };
-                    let mut client = hyper_util::rt::TokioIo::new(client);
-                    let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
-                });
-            }
-            return resp;
+    let mut out = serde_json::json!({ "servers": servers });
+    if agent {
+        if let Some(url) = server_ui(app) {
+            out["redirect"] = url.into();
         }
-        return unreachable();
+        out["home"] = format!("/hosts/{}", app.manager.local_node_id()).into();
+    } else if let Some(o) = custom {
+        out["extra_hosts"] = serde_json::json!([o.trim_start_matches("https://")]);
     }
+    axum::Json(out).into_response()
+}
 
-    let (parts, body) = req.into_parts();
-    let body: Bytes = match axum::body::to_bytes(body, MAX_RELAYED_BODY).await {
-        Ok(b) => b,
-        Err(_) => {
-            return err(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "too_large",
-                "request body too large",
-            )
-            .into_response();
-        }
+/// The web UI an agent sends browsers to: the published address of the
+/// server its node link reached last, then of the others (W5).
+pub fn server_ui(app: &AppState) -> Option<String> {
+    let nodes = app.manager.nodes().list().ok()?;
+    let servers: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
+        .collect();
+    let order = app
+        .manager
+        .node_link()
+        .map(|l| l.servers())
+        .unwrap_or_default();
+    order
+        .iter()
+        .filter_map(|a| {
+            servers
+                .iter()
+                .find(|n| n.status.advertise.is_some_and(|x| x.to_string() == *a))
+        })
+        .chain(servers.iter())
+        .find_map(|n| n.status.ui_url.clone())
+}
+
+/// An agent's answer to an API request on its UI socket (W5).
+fn use_a_server(app: &AppState) -> Response {
+    let servers = app
+        .manager
+        .node_link()
+        .map(|l| l.servers())
+        .unwrap_or_default();
+    let location = server_ui(app);
+    let message = match &location {
+        Some(u) => format!("this node doesn't serve the web UI; use {u}"),
+        None => format!(
+            "this node doesn't serve the web UI; use a server: {}",
+            servers.join(", ")
+        ),
     };
-    for addr in &servers {
-        let Ok(r) = cluster
-            .client
-            .request_stream(addr, parts.method.clone(), &target, &headers, body.clone())
-            .await
-        else {
-            continue;
-        };
-        let (rp, incoming) = r.into_parts();
-        let mut resp = Response::new(Body::new(incoming.map_err(axum::Error::new)));
-        *resp.status_mut() = rp.status;
-        respond_headers(&mut resp, &rp.headers);
-        return resp;
+    let body = super::errors::ApiError::new("use_a_server", message)
+        .with_details(serde_json::json!({ "location": location, "servers": servers }));
+    (StatusCode::MISDIRECTED_REQUEST, axum::Json(body)).into_response()
+}
+
+/// W2: `X-Glidex-Target-Node` on a request that came to this host. Absent
+/// or naming this host: the request runs here. Naming another node, on a
+/// server and a host-only path: authorized on that node's `Host`, then run
+/// there (`remote_host`). Anything else is `400 bad_target_node`.
+fn take_target(app: &AppState, req: &mut Request) -> Result<(), Response> {
+    let Some(v) = req.headers_mut().remove(TARGET_NODE_HEADER) else {
+        return Ok(());
+    };
+    let bad = |m: String| err(StatusCode::BAD_REQUEST, "bad_target_node", m).into_response();
+    let t = v
+        .to_str()
+        .map_err(|_| bad("the target node is not text".into()))?
+        .to_string();
+    if !is_remote_host_path(req.uri().path()) {
+        return Err(bad(format!(
+            "{} is not about one host; it takes no target node",
+            req.uri().path()
+        )));
     }
-    unreachable()
+    if t == app.manager.local_node_id() {
+        return Ok(());
+    }
+    let server = app.manager.cluster().is_some_and(|c| c.node.is_some());
+    if !server {
+        return Err(bad(format!("this host can't act on node {t}")));
+    }
+    let known = app
+        .manager
+        .nodes()
+        .get(&t)
+        .ok()
+        .flatten()
+        .is_some_and(|n| !n.status.phase.is_tombstone());
+    if !known {
+        return Err(bad(format!("no node {t} in this cluster")));
+    }
+    req.extensions_mut().insert(RemoteHost(t));
+    Ok(())
 }
 
 /// Per-route layer (inside the audit layer): a relayed host-local request

@@ -62,6 +62,9 @@ const HOST_ACTION_RESOURCE = {
   snapshotCluster: "Cluster",
   initCluster: "Host",
   leaveCluster: "Host",
+  // Directories this host serves (spec/tenancy.md D59).
+  listDirectories: "Cluster",
+  manageDirectories: "Cluster",
   configureOvn: "Cluster",
   // Tenants, admissions and login connectors (spec/tenancy.md §14); the
   // per-tenant actions are checked on each tenant by its page.
@@ -151,7 +154,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const load = useCallback(async () => {
     let methods: AuthMethods;
     try {
-      methods = await api.authMethods();
+      // `/login/<directory>`: that directory's login page (D61).
+      const m = window.location.pathname.match(/^\/login\/([a-z0-9-]{1,32})\/?$/);
+      methods = await api.authMethods(m?.[1]);
     } catch (e) {
       setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
       return;
@@ -228,6 +233,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
     };
   }, [state, project, load, refreshCapabilities]);
+
+  // A directory's authorize request sent the browser here to log in first
+  // (spec/tenancy.md D54): signed in, it goes back there.
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const next = new URLSearchParams(window.location.search).get("next");
+    if (next && next.startsWith("/d/") && !next.startsWith("//")) window.location.replace(next);
+  }, [state.kind]);
 
   let body: ReactNode;
   switch (state.kind) {

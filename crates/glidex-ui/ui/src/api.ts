@@ -1,4 +1,5 @@
 import type {
+  LoginConnector,
   SyncStatus,
   ScimToken,
   ApiToken,
@@ -110,8 +111,9 @@ import { CredentialService, DatastoreService, DiskService, ImageService } from "
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
-import { AdmissionService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import { AdmissionService, DirectoryService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
+import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
 import {
@@ -180,6 +182,9 @@ interface RequestOptions {
   quiet401?: boolean;
   /** Safe to send again after `503 leader_changed` (GET, PUT and DELETE are). */
   idempotent?: boolean;
+  /** A host-only call for this node's host (`X-Glidex-Target-Node`,
+   * spec/host-page.md W2); unset: the host serving the UI. */
+  node?: string;
 }
 
 // ---- cluster availability (spec/clustering-ui.md §3.3) ------------------------
@@ -223,6 +228,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (!read && csrf) headers["X-Glidex-CSRF"] = csrf;
     if (local) headers["X-Glidex-Consistency"] = "local";
+    if (opts.node) headers["X-Glidex-Target-Node"] = opts.node;
     return fetch(`${API_BASE}${path}`, {
       method,
       headers,
@@ -291,11 +297,15 @@ const LOCAL = createContextKey(false);
 /** Set by a call's interceptor when the answer carried a revision (it went
  * through the cluster). */
 const REVISION = createContextKey<{ seen: boolean }>({ seen: false });
+/** The node a host-only call is for (spec/host-page.md W2). */
+const TARGET = createContextKey<string | undefined>(undefined);
 
 /** The session's CSRF value on every RPC (all are POSTs, spec/grpc.md §6). */
 const sessionHeaders: Interceptor = (next) => async (req) => {
   if (csrf) req.header.set("X-Glidex-CSRF", csrf);
   if (req.contextValues.get(LOCAL)) req.header.set("X-Glidex-Consistency", "local");
+  const target = req.contextValues.get(TARGET);
+  if (target) req.header.set("X-Glidex-Target-Node", target);
   const res = await next(req);
   if (!res.stream && res.header.has("x-glidex-revision")) req.contextValues.get(REVISION).seen = true;
   return res;
@@ -372,7 +382,7 @@ export async function rpc<M extends DescMethodUnary>(
   }
   const send = async (local = false) => {
     const revision = { seen: false };
-    const contextValues = createContextValues().set(LOCAL, local).set(REVISION, revision);
+    const contextValues = createContextValues().set(LOCAL, local).set(REVISION, revision).set(TARGET, opts.node);
     const out = await client[method.localName](input, { contextValues });
     return { out, revision: revision.seen };
   };
@@ -462,7 +472,14 @@ export async function healthCheck(): Promise<HealthResponse> {
   return request("GET", "/health", undefined, { quiet401: true });
 }
 
-export const authMethods = () => request<AuthMethods>("GET", "/auth/methods", undefined, { quiet401: true });
+/** What the login page offers: the host's own directory's, or `directory`'s
+ * for its `/login/<directory>` page (spec/tenancy.md D61). */
+export const authMethods = (directory?: string) =>
+  request<AuthMethods>("GET", `/auth/methods${directory ? `?directory=${encodeURIComponent(directory)}` : ""}`, undefined, { quiet401: true });
+
+/** Which directory an email signs in to (D61): `{directory, connectors}`. */
+export const discoverLogin = (hint: string) =>
+  request<{ directory: string; connectors?: LoginConnector[] }>("POST", "/auth/discover", { hint }, { quiet401: true });
 
 /** REST, not `SystemService.WhoAmI`: every cookie-authenticated RPC needs
  * the CSRF value (spec/grpc.md §6), and this is where the session learns it
@@ -478,6 +495,125 @@ export async function loginPam(username: string, password: string): Promise<WhoA
   setCsrf(w.csrf);
   return w;
 }
+
+// ---- passkeys (spec/passkeys.md) --------------------------------------------
+// The ceremonies are REST: WebAuthn's own JSON, binary fields base64url.
+
+const fromB64url = (s: string): ArrayBuffer => {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "="));
+  const out = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+  return out.buffer;
+};
+const toB64url = (buf: ArrayBuffer | null | undefined): string | undefined => {
+  if (!buf) return undefined;
+  let s = "";
+  for (const c of new Uint8Array(buf)) s += String.fromCharCode(c);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/** Whether this browser can make and use passkeys. */
+export const passkeysSupported = () => typeof window !== "undefined" && !!window.PublicKeyCredential && !!navigator.credentials;
+
+/** Sign in with a passkey: the browser asks which, with the user's PIN,
+ * fingerprint or face. */
+export async function loginPasskey(): Promise<WhoAmI> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/passkeys/login/start", {}, { quiet401: true });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.get({
+    publicKey: { ...pk, challenge: fromB64url(pk.challenge), allowCredentials: [] },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was chosen");
+  const r = cred.response as AuthenticatorAssertionResponse;
+  const w = await request<WhoAmI>(
+    "POST",
+    "/auth/passkeys/login/finish",
+    {
+      id: cred.id,
+      rawId: toB64url(cred.rawId),
+      type: cred.type,
+      response: {
+        clientDataJSON: toB64url(r.clientDataJSON),
+        authenticatorData: toB64url(r.authenticatorData),
+        signature: toB64url(r.signature),
+        userHandle: toB64url(r.userHandle),
+      },
+    },
+    { quiet401: true },
+  );
+  setCsrf(w.csrf);
+  return w;
+}
+
+/** Add a passkey named `name` to the signed-in user (a recent login
+ * first: the re-auth dialog asks). */
+export async function addPasskey(name: string): Promise<void> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/passkeys/register/start", { name });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.create({
+    publicKey: {
+      ...pk,
+      challenge: fromB64url(pk.challenge),
+      user: { ...pk.user, id: fromB64url(pk.user.id) },
+      excludeCredentials: (pk.excludeCredentials ?? []).map((c: { id: string; type: "public-key" }) => ({ ...c, id: fromB64url(c.id) })),
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was made");
+  const r = cred.response as AuthenticatorAttestationResponse;
+  await request("POST", "/auth/passkeys/register/finish", {
+    id: cred.id,
+    rawId: toB64url(cred.rawId),
+    type: cred.type,
+    response: { clientDataJSON: toB64url(r.clientDataJSON), attestationObject: toB64url(r.attestationObject) },
+  });
+}
+
+/** A passkey invitation (spec/tenancy.md D60): the invitee's first
+ * passkey, which signs them in. */
+export async function acceptPasskeyInvitation(invitation: string): Promise<WhoAmI> {
+  const opts = await request<{ publicKey: any }>("POST", "/auth/invitation/passkey/start", { invitation }, { quiet401: true });
+  const pk = opts.publicKey;
+  const cred = (await navigator.credentials.create({
+    publicKey: {
+      ...pk,
+      challenge: fromB64url(pk.challenge),
+      user: { ...pk.user, id: fromB64url(pk.user.id) },
+      excludeCredentials: [],
+    },
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new Error("No passkey was made");
+  const r = cred.response as AuthenticatorAttestationResponse;
+  const w = await request<WhoAmI>(
+    "POST",
+    "/auth/invitation/passkey/finish",
+    {
+      invitation,
+      credential: {
+        id: cred.id,
+        rawId: toB64url(cred.rawId),
+        type: cred.type,
+        response: { clientDataJSON: toB64url(r.clientDataJSON), attestationObject: toB64url(r.attestationObject) },
+      },
+    },
+    { quiet401: true },
+  );
+  setCsrf(w.csrf);
+  return w;
+}
+
+export interface Passkey {
+  id: string;
+  name: string;
+  algorithm?: string;
+  backed_up?: boolean;
+  created_at?: string;
+  last_used_at?: string;
+}
+export const listPasskeys = (user: string) =>
+  rpc(UserService.method.listPasskeys, { id: user }).then((r) => ({ passkeys: (r.passkeys ?? []) as Passkey[], rpId: r.rp_id }));
+export const renamePasskey = (user: string, passkey: string, name: string) =>
+  rpc(UserService.method.renamePasskey, { id: user, passkey, name }).then((r) => r.passkey as Passkey);
+export const deletePasskey = (user: string, passkey: string) => rpc(UserService.method.deletePasskey, { id: user, passkey }).then(none);
 
 /** Leave the page for the identity provider: connector `connector`, or
  *  the first OIDC connector. */
@@ -513,6 +649,12 @@ export function startOidc(returnTo: string, reauth = false, connector?: string) 
   if (reauth) q.set("reauth", "1");
   const path = connector ? `/auth/c/${encodeURIComponent(connector)}/start` : "/auth/oidc/start";
   window.location.assign(`${API_BASE}${path}?${q}`);
+}
+
+/** A login at trusted directory `id` (spec/tenancy.md D69). */
+export function startTrustedLogin(id: string, returnTo: string) {
+  const q = new URLSearchParams({ return_to: returnTo });
+  window.location.assign(`${API_BASE}/auth/t/${encodeURIComponent(id)}/start?${q}`);
 }
 
 export async function logout(): Promise<void> {
@@ -732,33 +874,43 @@ export const acceptNetworkShare = (project: string, network: string) =>
 export const leaveNetworkShare = (project: string, network: string) =>
   rpc(NetworkShareService.method.leaveNetworkShare, { project, network }).then(none);
 
-export const ovsStatus = () => rpc(HostNetworkService.method.getOvsStatus).then((r) => r as OvsStatus);
+// Host-only calls (spec/host-page.md W2): `node` names the host they are
+// for; without it, the host serving the UI.
+const on = (node?: string): RequestOptions => (node ? { node } : {});
 
-export const installOvs = (profile: OvsProfile, confirm: boolean) =>
-  rpc(HostNetworkService.method.installOvs, { profile, confirm }).then((r) => r as InstallOvsResponse);
+export const ovsStatus = (node?: string) => rpc(HostNetworkService.method.getOvsStatus, {}, on(node)).then((r) => r as OvsStatus);
+
+export const installOvs = (profile: OvsProfile, confirm: boolean, node?: string) =>
+  rpc(HostNetworkService.method.installOvs, { profile, confirm }, on(node)).then((r) => r as InstallOvsResponse);
 
 /** Initialize DPDK: hugepage memory per NUMA node (`1024` or `1024,1024`). */
-export const initDpdk = (socket_mem: string, confirm: boolean, pmd_cpu_mask?: string) =>
-  rpc(HostNetworkService.method.initDpdk, { socket_mem, pmd_cpu_mask, confirm }).then(none);
+export const initDpdk = (socket_mem: string, confirm: boolean, pmd_cpu_mask?: string, node?: string) =>
+  rpc(HostNetworkService.method.initDpdk, { socket_mem, pmd_cpu_mask, confirm }, on(node)).then(none);
 
-export const listBridges = () => rpc(HostNetworkService.method.listBridges).then((r) => (r.bridges ?? []) as BridgeRecord[]);
-export const createBridge = (name: string, datapath: Datapath) =>
-  rpc(HostNetworkService.method.createBridge, { name, datapath }).then((r) => r.bridge as BridgeRecord);
-export const deleteBridge = (name: string) => rpc(HostNetworkService.method.deleteBridge, { name }).then(none);
-export const listUplinks = (bridge: string) =>
-  rpc(HostNetworkService.method.listUplinks, { bridge }).then((r) => (r.uplinks ?? []) as UplinkResult[]);
+export const listBridges = (node?: string) =>
+  rpc(HostNetworkService.method.listBridges, {}, on(node)).then((r) => (r.bridges ?? []) as BridgeRecord[]);
+export const createBridge = (name: string, datapath: Datapath, node?: string) =>
+  rpc(HostNetworkService.method.createBridge, { name, datapath }, on(node)).then((r) => r.bridge as BridgeRecord);
+export const deleteBridge = (name: string, node?: string) => rpc(HostNetworkService.method.deleteBridge, { name }, on(node)).then(none);
+export const listUplinks = (bridge: string, node?: string) =>
+  rpc(HostNetworkService.method.listUplinks, { bridge }, on(node)).then((r) => (r.uplinks ?? []) as UplinkResult[]);
 const uplinkOf = (r: { uplink?: unknown }) => r.uplink as UplinkResult;
 /** Add an uplink; with `migrate_ip` the host's address moves to the bridge and must be committed. */
-export const addUplink = (bridge: string, body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind) =>
-  rpc(HostNetworkService.method.ensureUplink, { ...body, bridge }).then(uplinkOf);
-export const commitUplink = (bridge: string, name: string, token: string) =>
-  rpc(HostNetworkService.method.commitUplink, { bridge, name, token }).then(uplinkOf);
-export const reapplyUplink = (bridge: string, name: string) =>
-  rpc(HostNetworkService.method.reapplyUplink, { bridge, name }).then(uplinkOf);
-export const deleteUplink = (bridge: string, name: string) => rpc(HostNetworkService.method.deleteUplink, { bridge, name }).then(none);
+export const addUplink = (
+  bridge: string,
+  body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind,
+  node?: string,
+) => rpc(HostNetworkService.method.ensureUplink, { ...body, bridge }, on(node)).then(uplinkOf);
+export const commitUplink = (bridge: string, name: string, token: string, node?: string) =>
+  rpc(HostNetworkService.method.commitUplink, { bridge, name, token }, on(node)).then(uplinkOf);
+export const reapplyUplink = (bridge: string, name: string, node?: string) =>
+  rpc(HostNetworkService.method.reapplyUplink, { bridge, name }, on(node)).then(uplinkOf);
+export const deleteUplink = (bridge: string, name: string, node?: string) =>
+  rpc(HostNetworkService.method.deleteUplink, { bridge, name }, on(node)).then(none);
 
 /** The host's PCI devices (glidex.host.v1: `{devices}`). */
-export const listPciDevices = () => rpc(PciService.method.listPciDevices).then((r) => (r.devices ?? []) as PciDevice[]);
+export const listPciDevices = (node?: string) =>
+  rpc(PciService.method.listPciDevices, {}, on(node)).then((r) => (r.devices ?? []) as PciDevice[]);
 
 // ---- images and disks ---------------------------------------------------------
 
@@ -791,8 +943,11 @@ export const imageEvents = (id: string) =>
 export const listDatastores = () =>
   rpc(DatastoreService.method.listDatastores).then((r) => (r.datastores ?? []) as Datastore[]);
 export const getDatastore = (id: string) => rpc(DatastoreService.method.getDatastore, { id }).then((r) => r.datastore as Datastore);
-export const createDatastore = ({ shared, ...req }: DatastoreInput) =>
-  rpc(DatastoreService.method.createDatastore, { ...req, driver: shared ? "DATASTORE_DRIVER_SHARED_DIR" : "DATASTORE_DRIVER_DIR" }).then(
+export const createDatastore = ({ shared, lvm, ...req }: DatastoreInput) =>
+  rpc(DatastoreService.method.createDatastore, {
+    ...req,
+    driver: lvm ? "DATASTORE_DRIVER_LVM" : shared ? "DATASTORE_DRIVER_SHARED_DIR" : "DATASTORE_DRIVER_DIR",
+  }).then(
     (r) => r.datastore as Datastore,
   );
 /** Changes the fields `req` has. */
@@ -990,6 +1145,12 @@ export const clusterStatus = () => rpc(ClusterService.method.getClusterStatus, {
 /** The summary without the port checks (which connect to every node). */
 export const clusterSummary = () => rpc(ClusterService.method.getClusterStatus).then((r) => r as unknown as ClusterStatus);
 export const listNodes = () => rpc(NodeService.method.listNodes).then((r) => (r.nodes ?? []) as unknown as NodeRecord[]);
+/** N GPUs from a pool (spec/gpu-vms.md §3). */
+export interface GpuRequest {
+  count: number;
+  pool?: string;
+  nvlink?: boolean;
+}
 export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
@@ -1000,6 +1161,8 @@ export interface PreviewRequest {
   vfio_devices?: string[];
   /** Devices asked for by pool (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  gpus?: GpuRequest;
   data_disks?: string[];
   /** The root disk's image: its architecture counts (spec/clustering.md §9.2.1). */
   image?: string;
@@ -1117,6 +1280,27 @@ export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenan
 // ---- invitations (spec/tenancy.md §6.1) -----------------------------------
 
 export type Invitation = InvitationJson;
+// ---- workload federations (spec/tenancy.md §9) --------------------------------
+
+/** A tenant's trust in a CI or workload issuer (glidex.directory.v1.Federation). */
+export type Federation = FederationJson & {
+  id: string;
+  issuer: string;
+  audience: string;
+  rules?: { match?: Record<string, string>; service_account: string; ttl_secs?: number }[];
+};
+export const listFederations = (tenant: string) =>
+  rpc(FederationService.method.listFederations, { tenant }).then((r) => (r.federations ?? []) as Federation[]);
+export const createFederation = (tenant: string, federation: FederationJson) =>
+  rpc(FederationService.method.createFederation, { tenant, federation }).then((r) => r.federation as Federation);
+/** Sets the fields of `changes` that `fields` names. */
+export const updateFederation = (tenant: string, federation: string, changes: FederationJson, fields: string[]) =>
+  rpc(FederationService.method.updateFederation, { tenant, federation, changes, update_mask: fields.join(",") }).then(
+    (r) => r.federation as Federation,
+  );
+export const deleteFederation = (tenant: string, federation: string) =>
+  rpc(FederationService.method.deleteFederation, { tenant, federation }).then(none);
+
 export const listInvitations = (tenant: string) =>
   rpc(InvitationService.method.listInvitations, { tenant }).then((r) => (r.invitations ?? []) as Invitation[]);
 /** The link is answered once; it carries the secret in its fragment. */
@@ -1198,3 +1382,27 @@ export const setConnectorSecret = (id: string, field: string, value: string) =>
 /** Checks that need no user; reads only, so safe to retry. */
 export const testConnector = (id: string) =>
   rpc(ConnectorService.method.testConnector, { id }).then((r) => (r.steps ?? []) as ConnectorTestStep[]);
+
+// ---- a directory's device logins (spec/tenancy.md D54) ------------------------
+
+/** What a device login's user code is for (`404` when nothing waits for it). */
+export const inspectDeviceLogin = (directory: string, user_code: string) =>
+  request<{ client_id: string; client_name: string; scope: string }>("POST", `/d/${encodeURIComponent(directory)}/device/inspect`, { user_code });
+
+/** Approve or deny a device login. */
+export const answerDeviceLogin = (directory: string, user_code: string, approve: boolean) =>
+  request<{ approved: boolean }>("POST", `/d/${encodeURIComponent(directory)}/device/answer`, { user_code, approve });
+
+// ---- directories this host serves (spec/tenancy.md D59) ------------------------
+
+export interface HostedDirectory {
+  id: string;
+  name: string;
+  issuer: string;
+  created_at?: string;
+}
+export const listDirectories = () => rpc(DirectoryService.method.listDirectories).then((r) => (r.directories ?? []) as HostedDirectory[]);
+/** A directory and its first administrator's invitation link (shown once). */
+export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string }) =>
+  rpc(DirectoryService.method.createDirectory, req).then((r) => ({ directory: r.directory as HostedDirectory, link: r.invitation_link ?? "" }));
+export const deleteDirectory = (id: string) => rpc(DirectoryService.method.deleteDirectory, { id }).then(none);

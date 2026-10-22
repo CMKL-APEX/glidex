@@ -16,14 +16,19 @@ mod exchange;
 mod federations;
 pub mod gate;
 mod invitations;
+pub mod issuer;
 mod net;
 pub(crate) mod nodes;
+pub mod op;
+mod passkeys;
 mod rates;
 pub mod relay;
 mod rpc;
 mod scim;
 mod storage;
 mod tenants;
+pub mod trust;
+mod trusted_login;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
@@ -145,6 +150,14 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 }
 
 pub fn router(app: AppState) -> Router {
+    // What a server publishes as its web UI's address until its glidex-ui
+    // reports one (spec/host-page.md W3); the next self-report writes it.
+    let cfg = &app.auth.config;
+    app.manager.set_ui_url(
+        cfg.cluster
+            .ui_origin()
+            .or_else(|| cfg.auth.allowed_origins.first().cloned()),
+    );
     let (r, _) = routes(&app);
     r.merge(rpc::routes(&app))
         .layer(from_fn_with_state(app.clone(), gate::cluster_gate))
@@ -820,6 +833,71 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     // Workload federation (spec/tenancy.md §9): a CI job's JWT for a
     // short-lived token; the JWT is the credential.
     .add("POST", "/auth/exchange", PUBLIC, post(exchange::exchange))
+    // A directory as an issuer (spec/tenancy.md D52, D53).
+    .add(
+        "GET",
+        "/d/{dir}/.well-known/openid-configuration",
+        PUBLIC,
+        get(issuer::discovery),
+    )
+    .add("GET", "/d/{dir}/jwks.json", PUBLIC, get(issuer::jwks))
+    // The directory as an OpenID provider (D54–D57).
+    .add("GET", "/d/{dir}/authorize", PUBLIC, get(op::authorize))
+    .add(
+        "POST",
+        "/d/{dir}/device_authorization",
+        PUBLIC,
+        post(op::device_authorization),
+    )
+    .add("POST", "/d/{dir}/token", PUBLIC, post(op::token))
+    .add("POST", "/d/{dir}/revoke", PUBLIC, post(op::revoke))
+    // Trust between organizations (D63–D66): peer assertions, not users.
+    .add("POST", "/trust/v1/redeem", PUBLIC, post(trust::redeem))
+    .add("POST", "/trust/v1/end", PUBLIC, post(trust::end_at_cluster))
+    .add(
+        "POST",
+        "/d/{dir}/trust/v1/end",
+        PUBLIC,
+        post(trust::end_at_directory),
+    )
+    .add("POST", "/d/{dir}/feed/v1", PUBLIC, post(trust::feed))
+    .add(
+        "POST",
+        "/d/{dir}/device/inspect",
+        AUTHENTICATED,
+        post(op::device_inspect),
+    )
+    .add(
+        "POST",
+        "/d/{dir}/device/answer",
+        AUTHENTICATED,
+        post(op::device_answer),
+    )
+    // Passkeys (spec/passkeys.md): the browser's ceremonies.
+    .add(
+        "POST",
+        "/auth/passkeys/login/start",
+        PUBLIC,
+        post(passkeys::login_start),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/login/finish",
+        PUBLIC,
+        post(passkeys::login_finish),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/register/start",
+        AUTHENTICATED,
+        post(passkeys::register_start),
+    )
+    .add(
+        "POST",
+        "/auth/passkeys/register/finish",
+        AUTHENTICATED,
+        post(passkeys::register_finish),
+    )
     .add(
         "GET",
         "/auth/c/{id}/start",
@@ -839,6 +917,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(invitations::inspect),
     )
+    // A passkey invitation's first passkey (spec/tenancy.md D60).
+    .add(
+        "POST",
+        "/auth/invitation/passkey/start",
+        PUBLIC,
+        post(passkeys::invite_start),
+    )
+    .add(
+        "POST",
+        "/auth/invitation/passkey/finish",
+        PUBLIC,
+        post(passkeys::invite_finish),
+    )
     // Add a sign-in method to the caller (§6.2): `manageOwnSignIns` inside.
     .add(
         "POST",
@@ -851,6 +942,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/auth/c/{id}/callback",
         PUBLIC,
         get(access::connector_callback),
+    )
+    // Logins at a trusted directory (spec/tenancy.md D69).
+    .add(
+        "GET",
+        "/auth/t/{trusted}/start",
+        PUBLIC,
+        get(trusted_login::start),
+    )
+    .add(
+        "GET",
+        "/auth/t/{trusted}/callback",
+        PUBLIC,
+        get(trusted_login::callback),
     )
     .add(
         "POST",
@@ -932,6 +1036,24 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/users/{id}/identities/{key}",
         "manageUsers",
         delete(access::unlink_identity),
+    )
+    .add(
+        "GET",
+        "/users/{id}/passkeys",
+        "listUsers",
+        get(access::list_passkeys),
+    )
+    .add(
+        "PATCH",
+        "/users/{id}/passkeys/{passkey}",
+        "manageUsers",
+        axum::routing::patch(access::rename_passkey),
+    )
+    .add(
+        "DELETE",
+        "/users/{id}/passkeys/{passkey}",
+        "manageUsers",
+        delete(access::delete_passkey),
     )
     .add("GET", "/teams", "listTeams", get(access::list_teams))
     .add("POST", "/teams", "manageTeams", post(access::create_team))
@@ -1084,6 +1206,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageTenantInvitations",
         delete(invitations::revoke),
     )
+    // ---- the directory's signing keys (spec/tenancy.md D53)
+    .add(
+        "GET",
+        "/directory/keys",
+        "readSigningKeys",
+        get(issuer::list_keys),
+    )
+    .add(
+        "POST",
+        "/directory/keys/rotate",
+        "rotateSigningKey",
+        post(issuer::rotate_key),
+    )
     // ---- directory connectors (spec/tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
         "GET",
@@ -1230,9 +1365,69 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/directories",
+        "listDirectories",
+        get(tenants::list_directories),
+    )
+    .add(
+        "POST",
+        "/directories",
+        "manageDirectories",
+        post(tenants::create_directory),
+    )
+    .add(
+        "DELETE",
+        "/directories/{id}",
+        "manageDirectories",
+        delete(tenants::delete_directory),
+    )
+    .add(
+        "GET",
         "/admissions",
         "listAdmissions",
         get(tenants::list_admissions),
+    )
+    .add(
+        "POST",
+        "/admissions/offers",
+        "manageAdmissions",
+        post(tenants::offer_admission),
+    )
+    .add(
+        "GET",
+        "/admissions/offers",
+        "listAdmissions",
+        get(tenants::list_offers),
+    )
+    .add(
+        "GET",
+        "/admissions/directories",
+        "listAdmissions",
+        get(tenants::list_trusted_directories),
+    )
+    .add(
+        "GET",
+        "/tenants/{id}/clusters",
+        "readTenantClusters",
+        get(tenants::list_tenant_clusters),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/clusters",
+        "manageTenantClusters",
+        post(tenants::opt_in_cluster),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}/clusters/{cluster}",
+        "manageTenantClusters",
+        delete(tenants::opt_out_cluster),
+    )
+    .add(
+        "DELETE",
+        "/admissions/offers/{id}",
+        "manageAdmissions",
+        delete(tenants::revoke_offer),
     )
     .add(
         "PUT",
@@ -1508,8 +1703,10 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Client IP: the TCP peer, or (only from glidex-ui) X-Forwarded-For.
-fn client_ip(
-    parts_ext: &axum::http::Extensions,
+/// Anything a client can send is never trusted on its own: a rate limit
+/// or an audit entry keyed on it would be the client's to choose.
+pub(crate) fn client_ip(
+    peer: Option<std::net::SocketAddr>,
     headers: &HeaderMap,
     listener: Listener,
 ) -> Option<IpAddr> {
@@ -1519,7 +1716,7 @@ fn client_ip(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
-        Listener::Tcp => parts_ext.get::<ClientAddr>().map(|a| a.0.ip()),
+        Listener::Tcp => peer.map(|a| a.ip()),
         Listener::Api | Listener::Cluster => None,
     }
 }
@@ -1593,9 +1790,18 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                         "only glidex-ui may use this socket",
                     );
                 }
-                let ip = client_ip(req.extensions(), &headers, listener);
+                let peer = req.extensions().get::<ClientAddr>().map(|a| a.0);
+                let ip = client_ip(peer, &headers, listener);
                 if let Some(token) = bearer(&headers) {
-                    match app.auth.token_principal(&token, Transport::Tcp, ip) {
+                    // A directory's access token (D56), else a glidex token.
+                    let jwt =
+                        !token.starts_with(auth::TOKEN_PREFIX) && token.matches('.').count() == 2;
+                    let found = if jwt {
+                        Ok(op::access_principal(&app, &token, Transport::Tcp, ip))
+                    } else {
+                        app.auth.token_principal(&token, Transport::Tcp, ip)
+                    };
+                    match found {
                         Ok(Some(p)) => Ok(Some(p)),
                         Ok(None) => {
                             return plain_error(
@@ -1869,6 +2075,12 @@ impl Caller {
         &self.app.auth
     }
 
+    /// The directory a request about directory records is about: the
+    /// caller's own (spec/tenancy.md D58).
+    pub fn directory_ent(&self) -> Ent {
+        Ent::Directory(self.p.directory_id().to_string())
+    }
+
     /// Ask Cedar, recording the decision for the audit entry.
     /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
     fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
@@ -1911,7 +2123,7 @@ impl Caller {
     pub fn allowed_after_reauth(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
         if !matches!(
             self.p.method,
-            crate::auth::Method::Pam | crate::auth::Method::Oidc
+            crate::auth::Method::Pam | crate::auth::Method::Oidc | crate::auth::Method::Passkey
         ) {
             return false;
         }
@@ -2177,11 +2389,6 @@ pub(crate) fn auth_error(e: AuthError) -> ApiErr {
 
 // ---- entities for Cedar ---------------------------------------------------
 
-/// The directory this host hosts (spec/tenancy.md D32).
-pub(crate) fn directory_ent() -> Ent {
-    Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into())
-}
-
 pub(crate) fn project_entities(project: &str) -> EntitySet {
     let mut es = EntitySet::new();
     es.project(project);
@@ -2244,7 +2451,7 @@ fn agent_login_hint(m: &crate::state::VmManager) -> String {
         .cloned()
         .unwrap_or_else(|| "https://<server>:8841".into());
     format!(
-        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})",
+        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login --url {url}` (servers: {})",
         if servers.is_empty() {
             "unknown".into()
         } else {
@@ -2308,10 +2515,26 @@ mod tests {
                 "/auth/oidc/device/poll",
                 "/auth/discover",
                 "/auth/exchange",
+                "/d/{dir}/.well-known/openid-configuration",
+                "/d/{dir}/jwks.json",
+                "/d/{dir}/authorize",
+                "/d/{dir}/device_authorization",
+                "/d/{dir}/token",
+                "/d/{dir}/revoke",
+                "/trust/v1/redeem",
+                "/trust/v1/end",
+                "/d/{dir}/trust/v1/end",
+                "/d/{dir}/feed/v1",
+                "/auth/passkeys/login/start",
+                "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",
                 "/auth/c/{id}/start",
                 "/auth/invitation",
+                "/auth/invitation/passkey/start",
+                "/auth/invitation/passkey/finish",
                 "/auth/c/{id}/callback",
+                "/auth/t/{trusted}/start",
+                "/auth/t/{trusted}/callback",
                 "/auth/c/{id}/device",
                 "/auth/c/{id}/device/poll",
                 "/scim/v2/c/{id}/ServiceProviderConfig",

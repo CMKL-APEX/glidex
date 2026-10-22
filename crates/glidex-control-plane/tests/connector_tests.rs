@@ -41,6 +41,8 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     cfg.auth.secrets_key = Some(dir.path().join("secrets.kek"));
+    // The mock IdP is a plain-HTTP issuer on the loopback.
+    cfg.auth.federation.allow_private_issuers = true;
     f(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
@@ -894,6 +896,7 @@ async fn oidc_login_through_an_api_connector() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,
@@ -2237,6 +2240,7 @@ async fn deleting_a_user_takes_what_is_its_alone() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![auth::store::TeamMember {
                 user_id: bob.clone(),
@@ -2500,6 +2504,7 @@ async fn managed_users_and_teams_belong_to_their_connector() {
         store
             .put_team(&Team {
                 id: id.into(),
+                directory_id: "local".into(),
                 name: name.into(),
                 members: vec![
                     TeamMember {
@@ -3928,6 +3933,71 @@ fn service_account(h: &H, by: &str) -> String {
         .id
 }
 
+/// Without `auth.federation.allow_private_issuers` (the default), a
+/// federation's issuer must be https with a public address: the control
+/// plane fetches from nothing on its own host or network.
+#[tokio::test]
+async fn federation_issuers_are_public_unless_allowed() {
+    let mock = idp::start().await;
+    let h = harness_with(|c| c.auth.federation.allow_private_issuers = false);
+    let admin = h.admin("fed-admin");
+    let s = h.session(&admin);
+    let sa = service_account(&h, &admin);
+    let port = mock.base.rsplit(':').next().unwrap().to_string();
+    let make = |issuer: String| {
+        json!({"federation": {"id": "gh", "issuer": issuer, "audience": "glidex",
+            "rules": [{"match": {"repository": "acme/infra"}, "service_account": sa}]}})
+    };
+    // A plain-HTTP loopback issuer (the mock) is refused before it's read.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(make(mock.base.clone())),
+            &s,
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+        "{v}"
+    );
+    // https to an address, or a name, that isn't public is never fetched.
+    for issuer in [
+        format!("https://127.0.0.1:{port}"),
+        format!("https://[::1]:{port}"),
+        "https://10.0.0.1".to_string(),
+        "https://169.254.169.254".to_string(),
+        format!("https://localhost:{port}"),
+    ] {
+        let (st, v) = h
+            .rest(
+                "POST",
+                "/tenants/default/federations",
+                Some(make(issuer.clone())),
+                &s,
+            )
+            .await;
+        assert_eq!(
+            (st, v["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("issuer_unreachable")),
+            "{issuer}: {v}"
+        );
+        let m = v["message"].as_str().unwrap();
+        assert!(
+            m.contains("not a public address") || m.contains("no public address"),
+            "{issuer}: {m}"
+        );
+    }
+    let (_, v) = h
+        .rest("GET", "/tenants/default/federations", None, &s)
+        .await;
+    assert!(
+        v["federations"].as_array().is_none_or(|a| a.is_empty()),
+        "{v}"
+    );
+}
+
 /// spec/tenancy.md §9, D49–D51: a tenant's federations, their checks, and
 /// who may manage them.
 #[tokio::test]
@@ -4295,4 +4365,902 @@ async fn a_workload_token_is_exchanged_once_for_its_service_account() {
         }
     }
     assert!(limited);
+}
+
+/// spec/tenancy.md D52, D53: a directory's issuer, its discovery document
+/// and JWKS (public), the first token fixing the issuer, and its keys
+/// listed and rotated on both transports.
+#[tokio::test]
+async fn a_directory_publishes_its_issuer_and_keys() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://GLIDEX.example.org/".into()));
+    let iss = "https://glidex.example.org/d/local";
+    let (s, v) = h
+        .rest("GET", "/d/local/.well-known/openid-configuration", None, "")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["issuer"], iss, "{v}");
+    assert_eq!(v["jwks_uri"], format!("{iss}/jwks.json"), "{v}");
+    assert_eq!(v["id_token_signing_alg_values_supported"], json!(["ES256"]));
+    let (s, v) = h.rest("GET", "/d/nope/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+
+    // The leader's task makes the first key.
+    let now = glidex_control_plane::auth::store::now();
+    assert!(
+        h.app
+            .auth
+            .connectors
+            .maintain_signing_keys("local", now)
+            .unwrap()
+    );
+    let (s, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(jwks["keys"][0]["kid"], "local:1", "{jwks}");
+    assert!(
+        jwks["keys"][0].get("d").is_none(),
+        "no private part: {jwks}"
+    );
+
+    // A token it signs verifies with another library, and fixes the issuer.
+    let jwt = api::issuer::sign(
+        &h.app,
+        "local",
+        "JWT",
+        json!({ "sub": "u", "aud": "c1", "exp": now + 300 }),
+    )
+    .unwrap();
+    let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(jwks).unwrap();
+    let kid = jsonwebtoken::decode_header(&jwt).unwrap().kid.unwrap();
+    let mut val = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    val.set_audience(&["c1"]);
+    val.set_issuer(&[iss]);
+    let key = jsonwebtoken::DecodingKey::from_jwk(set.find(&kid).unwrap()).unwrap();
+    assert_eq!(
+        jsonwebtoken::decode::<Value>(&jwt, &key, &val)
+            .unwrap()
+            .claims["sub"],
+        "u"
+    );
+
+    // Its keys: a directory reader lists them; rotating is a step-up action.
+    let admin = h.admin("root");
+    let tok = h.token(&admin);
+    let (s, v) = h.rest("GET", "/directory/keys", None, &tok).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["issuer"].as_str(), v["issuer_fixed"].as_bool()),
+        (Some(iss), Some(true)),
+        "{v}"
+    );
+    assert_eq!(v["keys"][0]["active"], true, "{v}");
+    let (s, v) = h
+        .rest("POST", "/directory/keys/rotate", None, &h.session(&admin))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["key"]["kid"], "local:2", "{v}");
+    let (s, v) = h
+        .connect(
+            "glidex.directory.v1.SigningKeyService/ListSigningKeys",
+            json!({}),
+            &tok,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let keys = v["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 2, "the retired key is still published: {v}");
+    assert!(
+        keys[0]["retired_at"].is_string() && keys[0]["published_until"].is_string(),
+        "{v}"
+    );
+    let (_, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    assert_eq!(jwks["keys"].as_array().unwrap().len(), 2, "{jwks}");
+
+    // Nobody else reads them.
+    let bob = h.user("bob");
+    let (s, _) = h.rest("GET", "/directory/keys", None, &h.token(&bob)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// RFC 7636: a verifier and its S256 challenge.
+fn pkce() -> (String, String) {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let verifier = format!("v-{}", "x".repeat(50));
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+fn form(pairs: &[(&str, &str)]) -> String {
+    let mut s = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in pairs {
+        s.append_pair(k, v);
+    }
+    s.finish()
+}
+
+impl H {
+    async fn post_form(&self, path: &str, pairs: &[(&str, &str)]) -> (StatusCode, Value) {
+        let (s, v, _) = self
+            .send(
+                Request::post(path)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form(pairs)))
+                    .unwrap(),
+            )
+            .await;
+        (s, v)
+    }
+
+    /// `GET path` as `who`; the `Location` it answers.
+    async fn location(&self, path: &str, who: &str) -> (StatusCode, String) {
+        let b = self.with_auth(Request::get(path), who);
+        let (s, _, h) = self.send(b.body(Body::empty()).unwrap()).await;
+        (
+            s,
+            h.get(header::LOCATION)
+                .map(|v| v.to_str().unwrap().to_string())
+                .unwrap_or_default(),
+        )
+    }
+}
+
+fn query_of(location: &str) -> std::collections::HashMap<String, String> {
+    let u = url::Url::parse(location).unwrap();
+    u.query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
+}
+
+/// spec/tenancy.md D54–D57: the code flow with PKCE for gxctl, through the
+/// browser session at this host; tokens for this cluster; refresh rotation
+/// and reuse; the device grant; a disabled user; revocation.
+#[tokio::test]
+async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    h.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", glidex_control_plane::auth::store::now())
+        .unwrap();
+    let alice = h.user("alice");
+    let browser = h.session(&alice);
+    let (verifier, challenge) = pkce();
+    let cb = "http://127.0.0.1:53999/callback";
+    let authorize = format!(
+        "/d/local/authorize?{}",
+        form(&[
+            ("response_type", "code"),
+            ("client_id", "gxctl"),
+            ("redirect_uri", cb),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "openid offline_access"),
+            ("state", "st-1"),
+        ])
+    );
+    // Without a session the web UI logs in first and comes back.
+    let (s, loc) = h.location(&authorize, "").await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(loc.starts_with("/?next=%2Fd%2Flocal%2Fauthorize"), "{loc}");
+    // Not a loopback redirect: shown, never followed.
+    let (s, _) = h
+        .location(
+            &authorize.replace("127.0.0.1%3A53999", "evil.example"),
+            &browser,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // With one, the code goes back to gxctl's loopback listener.
+    let (s, loc) = h.location(&authorize, &browser).await;
+    assert_eq!(s, StatusCode::SEE_OTHER, "{loc}");
+    assert!(loc.starts_with(cb), "{loc}");
+    let q = query_of(&loc);
+    assert_eq!(q["state"], "st-1");
+    let code = q["code"].clone();
+
+    let cluster_id = glidex_control_plane::api::op::cluster_id(&h.app);
+    assert!(cluster_id.starts_with("standalone-"), "{cluster_id}");
+    let cluster = format!("urn:glidex:cluster:{cluster_id}");
+    let cluster = cluster.as_str();
+    let exchange = |code: String, verifier: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", "gxctl"),
+                    ("code", &code),
+                    ("redirect_uri", cb),
+                    ("code_verifier", &verifier),
+                    ("resource", cluster),
+                ],
+            )
+            .await
+        }
+    };
+    // A wrong verifier spends the code.
+    let (s, v) = exchange(code.clone(), format!("w-{}", "y".repeat(50))).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    let (s, v) = exchange(code, verifier.clone()).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+    let (_, loc) = h.location(&authorize, &browser).await;
+    let (s, tok) = exchange(query_of(&loc)["code"].clone(), verifier).await;
+    assert_eq!(s, StatusCode::OK, "{tok}");
+    let refresh = tok["refresh_token"].as_str().unwrap().to_string();
+    let access = tok["access_token"].as_str().unwrap().to_string();
+    assert!(
+        refresh.starts_with("gxr_") && tok["id_token"].is_string(),
+        "{tok}"
+    );
+    assert_eq!(tok["expires_in"], 3600);
+
+    // This cluster takes the access token as alice, a directory login.
+    let (s, me) = h.rest("GET", "/auth/whoami", None, &access).await;
+    assert_eq!(s, StatusCode::OK, "{me}");
+    assert_eq!(
+        (me["user"]["id"].as_str(), me["method"].as_str()),
+        (Some(alice.as_str()), Some("directory")),
+        "{me}"
+    );
+    // Another cluster's audience is refused at the directory.
+    let (s, v) = h
+        .post_form(
+            "/d/local/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", "gxctl"),
+                ("refresh_token", &refresh),
+                ("resource", "urn:glidex:cluster:elsewhere"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_target"))
+    );
+
+    // Refresh: a new token each time; the old one again ends the chain.
+    let refresh_with = |r: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", "gxctl"),
+                    ("refresh_token", &r),
+                    ("resource", cluster),
+                ],
+            )
+            .await
+        }
+    };
+    let (s, t2) = refresh_with(refresh.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{t2}");
+    let r2 = t2["refresh_token"].as_str().unwrap().to_string();
+    assert_ne!(r2, refresh);
+    let a2 = t2["access_token"].as_str().unwrap().to_string();
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a2).await.0,
+        StatusCode::OK
+    );
+    let (s, v) = refresh_with(refresh).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "reused"
+    );
+    assert_eq!(
+        refresh_with(r2).await.0,
+        StatusCode::BAD_REQUEST,
+        "the chain ended"
+    );
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a2).await.0,
+        StatusCode::UNAUTHORIZED,
+        "and its access tokens with it"
+    );
+
+    // The device grant: gxctl asks, alice approves in the web UI.
+    let device = || {
+        let h = &h;
+        async move {
+            h.post_form("/d/local/device_authorization", &[("client_id", "gxctl")])
+                .await
+        }
+    };
+    let (s, d) = device().await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    assert_eq!(
+        d["verification_uri"], "https://glidex.example.org/device",
+        "{d}"
+    );
+    let dc = d["device_code"].as_str().unwrap().to_string();
+    let uc = d["user_code"].as_str().unwrap().to_string();
+    let poll = |dc: String| {
+        let h = &h;
+        async move {
+            h.post_form(
+                "/d/local/token",
+                &[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                    ("client_id", "gxctl"),
+                    ("device_code", &dc),
+                ],
+            )
+            .await
+        }
+    };
+    let (_, v) = poll(dc.clone()).await;
+    assert_eq!(v["error"], "authorization_pending", "{v}");
+    // A token can't approve a login.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/d/local/device/answer",
+            Some(json!({"user_code": uc, "approve": true})),
+            &h.token(&alice),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/d/local/device/inspect",
+            Some(json!({"user_code": uc.to_lowercase()})),
+            &browser,
+        )
+        .await;
+    assert_eq!(
+        (s, v["client_id"].as_str()),
+        (StatusCode::OK, Some("gxctl")),
+        "{v}"
+    );
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/d/local/device/answer",
+            Some(json!({"user_code": uc, "approve": true})),
+            &browser,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Past the polling interval, the tokens come.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let mut got = Value::Null;
+    for _ in 0..8 {
+        let (s, v) = poll(dc.clone()).await;
+        if s == StatusCode::OK {
+            got = v;
+            break;
+        }
+        assert_eq!(v["error"], "slow_down", "{v}");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let r3 = got["refresh_token"]
+        .as_str()
+        .expect("device tokens")
+        .to_string();
+    assert!(
+        got.get("access_token").is_none(),
+        "no resource asked: {got}"
+    );
+    let (s, t3) = refresh_with(r3.clone()).await;
+    assert_eq!(s, StatusCode::OK);
+    let a3 = t3["access_token"].as_str().unwrap().to_string();
+    let r4 = t3["refresh_token"].as_str().unwrap().to_string();
+
+    // Revoking ends the chain; disabling the user ends what's left.
+    let (s, _) = h.post_form("/d/local/revoke", &[("token", &r4)]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        h.rest("GET", "/auth/whoami", None, &a3).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, d) = device().await;
+    let uc = d["user_code"].as_str().unwrap().to_string();
+    h.rest(
+        "POST",
+        "/d/local/device/answer",
+        Some(json!({"user_code": uc, "approve": true})),
+        &browser,
+    )
+    .await;
+    let (s, t5) = poll(d["device_code"].as_str().unwrap().to_string()).await;
+    assert_eq!(s, StatusCode::OK, "{t5}");
+    let mut u = h.app.auth.store.user(&alice).unwrap().unwrap();
+    u.disabled = true;
+    h.app.auth.store.put_user(&u).unwrap();
+    let (s, v) = refresh_with(t5["refresh_token"].as_str().unwrap().to_string()).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+}
+
+/// spec/tenancy.md D58: two directories on one host. Each administrator
+/// sees and changes only its own directory's users, teams, tenants and
+/// connectors; the other's records answer as missing; nobody becomes a
+/// member of the other directory's tenants.
+#[tokio::test]
+async fn hosted_directories_dont_see_each_other() {
+    let h = harness();
+    let root = h.admin("root");
+    let local_admin = h.session(&root);
+    let alice = h.user("alice");
+    // A second directory, `acme`, with its own administrator.
+    let (_, owner) = h
+        .app
+        .auth
+        .tenants
+        .create_directory("acme", "Acme", "acme-admin")
+        .unwrap();
+    let bob = h
+        .app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "bob", "bob", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .tenants
+        .add_member(&owner.id, Ent::User(bob.clone()), "test")
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(bob.clone()),
+            Ent::Directory("acme".into()),
+            "test",
+        )
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(bob.clone()),
+            Ent::Tenant(owner.id.clone()),
+            "test",
+        )
+        .unwrap();
+    let acme_admin = h.session(&bob);
+
+    let ids = |v: &Value, list: &str| -> Vec<String> {
+        v[list]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x["id"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Users: each sees its own.
+    let (s, v) = h.rest("GET", "/users", None, &acme_admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v, "users"), vec![bob.clone()], "{v}");
+    let (_, v) = h.rest("GET", "/users", None, &local_admin).await;
+    let local_users = ids(&v, "users");
+    assert!(
+        local_users.contains(&alice) && !local_users.contains(&bob),
+        "{v}"
+    );
+    // Another directory's user is missing, not forbidden.
+    let (s, _) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{alice}"),
+            Some(json!({"display_name": "x"})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = h
+        .rest("DELETE", &format!("/users/{bob}"), None, &local_admin)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Teams made by each stay in its directory.
+    let (s, t) = h
+        .rest(
+            "POST",
+            "/teams",
+            Some(json!({"name": "acme-ops"})),
+            &acme_admin,
+        )
+        .await;
+    assert!(s.is_success(), "{t}");
+    let team = t["team"]["id"].as_str().unwrap().to_string();
+    let (_, v) = h.rest("GET", "/teams", None, &local_admin).await;
+    assert!(!ids(&v, "teams").contains(&team), "{v}");
+    let (_, v) = h.rest("GET", "/teams", None, &acme_admin).await;
+    assert_eq!(ids(&v, "teams"), vec![team.clone()], "{v}");
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/teams/{team}/members"),
+            Some(json!({"user": alice})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "alice isn't acme's");
+
+    // Tenants and connectors.
+    let (_, v) = h.rest("GET", "/tenants", None, &acme_admin).await;
+    assert_eq!(ids(&v, "tenants"), vec![owner.id.clone()], "{v}");
+    let (_, v) = h.rest("GET", "/tenants", None, &local_admin).await;
+    assert!(!ids(&v, "tenants").contains(&owner.id), "{v}");
+    let (_, v) = h.rest("GET", "/connectors", None, &acme_admin).await;
+    assert!(
+        ids(&v, "connectors").is_empty(),
+        "the host's connectors aren't acme's: {v}"
+    );
+    // The same slug can live in both directories.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "shared"})),
+            &local_admin,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "shared"})),
+            &acme_admin,
+        )
+        .await;
+    assert!(s.is_success(), "a slug is per directory: {v}");
+
+    // Nobody joins the other directory's tenants.
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{}/members", owner.id),
+            Some(json!({"principal": {"type": "User", "id": alice}})),
+            &acme_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/tenants/default/members",
+            Some(json!({"principal": {"type": "User", "id": bob}})),
+            &local_admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // And neither administrates the other's directory or tenants.
+    let (s, _) = h
+        .rest("GET", &format!("/tenants/{}", owner.id), None, &local_admin)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = h.rest("GET", "/tenants/admin", None, &acme_admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// spec/tenancy.md D59: the host's operator creates a directory with an
+/// invitation for its first administrator (a passkey sign-in, D60), sees
+/// it listed, and can delete it only while nobody uses it.
+#[tokio::test]
+async fn the_operator_creates_and_deletes_directories() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let bob = h.user("bob");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "name": "Acme", "owner": "acme-admin", "admin_email": "Erin@Acme.example"})),
+            &h.session(&bob),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not the operator: {v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "name": "Acme", "owner": "acme-admin", "admin_email": "Erin@Acme.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["directory"]["issuer"], "https://glidex.example.org/d/acme",
+        "{v}"
+    );
+    assert!(
+        v["invitation_link"].as_str().unwrap().contains("/invite/"),
+        "{v}"
+    );
+    // Its own keys and discovery from the start.
+    let (s, jwks) = h.rest("GET", "/d/acme/jwks.json", None, "").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(jwks["keys"][0]["kid"], "acme:1", "{jwks}");
+    // The invitation is for the owner tenant's admin, signing in with a passkey.
+    let owner = h
+        .app
+        .auth
+        .tenants
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.directory_id == "acme")
+        .unwrap();
+    assert!(owner.owns_directory);
+    let inv = h.app.auth.invitations.list(Some(&owner.id)).unwrap();
+    assert_eq!(
+        (
+            inv[0].email.as_str(),
+            inv[0].role.as_str(),
+            inv[0].connector_id.as_str()
+        ),
+        ("erin@acme.example", "role.tenant-admin", "passkey")
+    );
+    let (s, v) = h.rest("GET", "/directories", None, &op).await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<_> = v["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"acme") && ids.contains(&"local"), "{v}");
+    // The same id twice, or a bad one.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "acme", "owner": "x", "admin_email": "a@b.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "Not Ok", "owner": "x", "admin_email": "a@b.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // In use: not deleted. `local`: never.
+    h.app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "erin", "Erin", None, true)
+        .unwrap();
+    let (s, v) = h.rest("DELETE", "/directories/acme", None, &op).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("directory_not_empty")),
+        "{v}"
+    );
+    let (s, _) = h.rest("DELETE", "/directories/local", None, &op).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // An unused one goes, with its tenant, invitation and keys.
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/directories",
+            Some(json!({"id": "beta", "owner": "beta-admin", "admin_email": "a@beta.example"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = h.rest("DELETE", "/directories/beta", None, &op).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.rest("GET", "/d/beta/jwks.json", None, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        h.app
+            .auth
+            .tenants
+            .list()
+            .unwrap()
+            .iter()
+            .all(|t| t.directory_id != "beta")
+    );
+}
+
+/// spec/tenancy.md D61: a login reaches its directory by its email's
+/// domain or by `/login/<directory>`; an unknown one gets the host's own.
+#[tokio::test]
+async fn logins_find_their_directory_without_listing_them() {
+    let h = harness();
+    let (_, owner) = h
+        .app
+        .auth
+        .tenants
+        .create_directory("acme", "Acme", "acme-admin")
+        .unwrap();
+    let bob = h
+        .app
+        .auth
+        .store
+        .user_for_identity_in("acme", "test-acme", "bob", "bob", None, true)
+        .unwrap()
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .tenants
+        .add_member(&owner.id, Ent::User(bob.clone()), "test")
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(bob.clone()),
+            Ent::Directory("acme".into()),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(json!({"connector": {"id": "acme-idp", "display_name": "Acme IdP",
+                "oidc": {"issuer": "https://idp.acme.example", "client_id": "glidex", "allowed_domains": ["acme.example"]}}})),
+            &h.session(&bob),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+
+    let names = |v: &Value| -> Vec<String> {
+        v["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/auth/discover",
+            Some(json!({"hint": "Erin@ACME.example"})),
+            "",
+        )
+        .await;
+    assert_eq!(
+        (v["directory"].as_str(), names(&v)),
+        (Some("acme"), vec!["acme-idp".to_string()]),
+        "{v}"
+    );
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/auth/discover",
+            Some(json!({"hint": "x@elsewhere.example"})),
+            "",
+        )
+        .await;
+    assert_eq!(v["directory"], "local", "{v}");
+    assert!(!names(&v).contains(&"acme-idp".to_string()), "{v}");
+    let (_, v) = h
+        .rest("GET", "/auth/methods?directory=acme", None, "")
+        .await;
+    assert_eq!(
+        (v["directory"].as_str(), v["pam"].as_bool()),
+        (Some("acme"), Some(false)),
+        "{v}"
+    );
+    assert_eq!(names(&v), vec!["acme-idp".to_string()]);
+    // An unknown directory looks like the host's own.
+    let (_, unknown) = h
+        .rest("GET", "/auth/methods?directory=nope", None, "")
+        .await;
+    let (_, own) = h.rest("GET", "/auth/methods", None, "").await;
+    assert_eq!(unknown, own);
+    assert_eq!(own["directory"], "local");
+    assert!(!names(&own).contains(&"acme-idp".to_string()), "{own}");
+}
+
+/// spec/tenancy.md D64: the operator offers an admission to a tenant of
+/// another directory; the token carries the cluster's API, its pinned
+/// certificate and a one-time secret (only its hash is kept).
+#[tokio::test]
+async fn an_admission_is_offered_to_another_directorys_tenant() {
+    let certdir = TempDir::new().unwrap();
+    let (cert, _key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
+    let cert_path = certdir.path().join("api.crt");
+    std::fs::write(&cert_path, &cert).unwrap();
+    let cp = cert_path.clone();
+    let h = harness_with(move |c| {
+        c.cluster.api_url = Some("https://north.example:8841".into());
+        c.tls = glidex_control_plane::config::TlsSetting::Files(
+            glidex_control_plane::config::TlsConfig {
+                cert: cp,
+                key: None,
+            },
+        );
+    });
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "acme", "directory": "https://ID.acme.example/d/acme/", "days": 3})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let t = glidex_control_plane::trust::OfferToken::decode(v["token"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (t.api.as_str(), t.tenant.as_str(), t.directory.as_str()),
+        (
+            "https://north.example:8841",
+            "acme",
+            "https://id.acme.example/d/acme"
+        )
+    );
+    let fp = glidex_tls::fingerprint(&cert_path).unwrap();
+    assert_eq!(
+        Some(t.tls_sha256.clone()),
+        glidex_tls::Trust::normalize_pin(&fp)
+    );
+    assert_eq!(t.offer, v["offer"]["id"].as_str().unwrap());
+    // Listed without its secret; gone when revoked.
+    let (s, l) = h.rest("GET", "/admissions/offers", None, &op).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!l.to_string().contains(&t.secret), "{l}");
+    assert_eq!(l["offers"][0]["tenant"], "acme");
+    // Only the operator offers.
+    let bob = h.user("bob");
+    let (s, _) = h
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "x", "directory": "https://a.example/d/x"})),
+            &h.session(&bob),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // A plain-HTTP issuer, or too long an offer.
+    for body in [
+        json!({"tenant": "acme", "directory": "http://id.acme.example/d/acme"}),
+        json!({"tenant": "acme", "directory": "https://id.acme.example/d/acme", "days": 90}),
+    ] {
+        assert_eq!(
+            h.rest("POST", "/admissions/offers", Some(body), &op)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (s, _) = h
+        .rest(
+            "DELETE",
+            &format!("/admissions/offers/{}", t.offer),
+            None,
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, l) = h.rest("GET", "/admissions/offers", None, &op).await;
+    assert!(l["offers"].as_array().is_none_or(|a| a.is_empty()), "{l}");
 }

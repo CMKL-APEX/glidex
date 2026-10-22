@@ -133,6 +133,11 @@ pub enum Op {
         address: String,
     },
     ListPreparedDevices,
+    /// Read-only: the processes holding each of `groups` (`/dev/vfio/<g>`
+    /// open), whoever runs them (spec/host-topology.md §5.1).
+    DeviceHolders {
+        groups: Vec<String>,
+    },
     /// Give a physical function `vfs` SR-IOV virtual functions
     /// (spec/host-topology.md §10.1); 0 removes them.
     SetSriovVfs {
@@ -190,6 +195,7 @@ impl Op {
                 | Op::CtExternalCounters
                 | Op::OvnStatus
                 | Op::ListPreparedDevices
+                | Op::DeviceHolders { .. }
         )
     }
 
@@ -227,6 +233,7 @@ impl Op {
             Op::PrepareDevice { .. } => "prepare_device",
             Op::ReleaseDevice { .. } => "release_device",
             Op::ListPreparedDevices => "list_prepared_devices",
+            Op::DeviceHolders { .. } => "device_holders",
             Op::SetSriovVfs { .. } => "set_sriov_vfs",
         }
     }

@@ -129,6 +129,7 @@ mod tests {
             vec![
                 "glidex.tenancy.v1.TenantService",
                 "glidex.tenancy.v1.AdmissionService",
+                "glidex.tenancy.v1.DirectoryService",
                 "glidex.access.v1.ProjectService",
                 "glidex.access.v1.UserService",
                 "glidex.access.v1.TeamService",
@@ -148,6 +149,7 @@ mod tests {
                 "glidex.directory.v1.ConnectorService",
                 "glidex.directory.v1.FederationService",
                 "glidex.directory.v1.InvitationService",
+                "glidex.directory.v1.SigningKeyService",
                 "glidex.network.v1.NetworkService",
                 "glidex.network.v1.NetworkShareService",
                 "glidex.network.v1.RouterService",

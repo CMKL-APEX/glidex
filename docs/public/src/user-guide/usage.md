@@ -41,7 +41,7 @@ Administrators can change these.
 | `cpu.used` | VM | core-hours | CPU time the VM actually used, the hypervisor's own included. |
 | `cpu.cores_peak` | VM | cores | Highest CPU rate over one sample interval. |
 | `mem.alloc` | VM | MiB-hours | Memory size × time running or paused. |
-| `device.alloc.<pool>` | VM | device-hours | Devices of a pool the VM holds × time running or paused. |
+| `device.alloc.<pool>` | VM | device-hours | Devices the VM got from a device pool × time running or paused (for example `device.alloc.a100`). |
 | `mem.used` | VM | MiB-hours | Memory the VM's processes held × time. |
 | `mem.peak` | VM | MiB | Most memory held in the hour. |
 | `vmio.read_bytes`, `vmio.write_bytes` | VM | GiB | Disk I/O on the host side, after the host's page cache. |
@@ -58,6 +58,13 @@ Administrators can change these.
 | `bridge.ext_rx_bytes`, `bridge.ext_tx_bytes` | network (NAT) | GiB | The network's traffic through its NAT gateway. |
 
 Directions are the guest's: `rx` is what the guest received.
+
+`device.alloc.<pool>` counts only devices a VM got from a
+[device pool](vms.md#devices-from-a-pool), under the cluster pool's
+name (a tenant pool's devices count under the pool it draws from).
+Devices passed through by address aren't metered. `gxctl usage` lists
+it with the other meters (`--meters device.alloc.a100` for that pool
+alone); the web UI's **Usage** page doesn't show it yet.
 
 Some meters are derived when you read them:
 

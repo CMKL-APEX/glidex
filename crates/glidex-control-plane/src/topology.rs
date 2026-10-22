@@ -472,6 +472,11 @@ pub struct PciFunction {
     pub physfn: Option<String>,
     /// A device a VM could be given (§3.3).
     pub assignable: bool,
+    /// Part of the host's NVLink fabric: an NVIDIA NVSwitch. Never given to
+    /// a tenant VM; Fabric Manager, on the host or in a service VM, owns it
+    /// (spec/gpu-vms.md §7, §11).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fabric: bool,
     /// For an assignable device: ready for passthrough (§5.1), else why not.
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -527,6 +532,9 @@ pub struct ReadyContext {
     pub closed_groups: BTreeSet<String>,
     /// Addresses that are OVS-DPDK uplinks of glidex bridges.
     pub dpdk_uplinks: BTreeSet<String>,
+    /// IOMMU groups another process (not this host's glidex VMs) has open,
+    /// with who: libvirt's QEMU, say (§5.1).
+    pub held_groups: BTreeMap<String, String>,
 }
 
 fn is_bridge(class: &str) -> bool {
@@ -540,6 +548,12 @@ fn is_bridge(class: &str) -> bool {
 /// when the rest of their IOMMU group is passed through.
 fn is_bridge_class(class: &str) -> bool {
     class.trim_start_matches("0x").starts_with("06")
+}
+
+/// An NVIDIA NVSwitch: vendor 0x10de, class 0x0680 ("other bridge").
+fn is_nvswitch(vendor: &str, class: &str) -> bool {
+    vendor.trim_start_matches("0x").eq_ignore_ascii_case("10de")
+        && class.trim_start_matches("0x").starts_with("0680")
 }
 
 fn is_gpu(class: &str) -> bool {
@@ -645,6 +659,9 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
                     if r.driver.as_deref() == Some("vfio-pci") && ctx.closed_groups.contains(g) {
                         not_ready.push(format!("/dev/vfio/{g} can't be opened by this user"));
                     }
+                    if let Some(who) = ctx.held_groups.get(g) {
+                        not_ready.push(format!("in use by {who}"));
+                    }
                 }
             }
             if ctx.dpdk_uplinks.contains(&r.address) {
@@ -700,6 +717,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             sriov: r.sriov.clone(),
             physfn: r.physfn.clone(),
             assignable,
+            fabric: is_nvswitch(&r.vendor_id, &r.class_id),
             ready: assignable && not_ready.is_empty(),
             not_ready,
             aer: r.aer,
@@ -730,7 +748,14 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
 
 /// Read this host's tree from sysfs. `dpdk_uplinks`: addresses netd has as
 /// DPDK uplinks.
-pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> TopologyTree {
+/// `held`: given the IOMMU groups of vfio-bound devices, those another
+/// process has open and by whom (glidex-netd's `device_holders`, which can
+/// read other users' processes).
+pub fn read_tree(
+    summary: TopologySummary,
+    dpdk_uplinks: BTreeSet<String>,
+    held: impl FnOnce(&[String]) -> BTreeMap<String, String>,
+) -> TopologyTree {
     let base = std::path::Path::new("/sys/bus/pci/devices");
     let attr = |dir: &std::path::Path, f: &str| {
         std::fs::read_to_string(dir.join(f))
@@ -794,18 +819,20 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
     let groups: BTreeSet<String> = raw.iter().filter_map(|r| r.iommu_group.clone()).collect();
     let closed_groups = groups
         .into_iter()
-        .filter(|g| {
-            nix::unistd::access(
-                format!("/dev/vfio/{g}").as_str(),
-                nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK,
-            )
-            .is_err()
-        })
+        .filter(|g| !crate::devaccess::vm_can_open(std::path::Path::new(&format!("/dev/vfio/{g}"))))
+        .collect();
+    let vfio_groups: Vec<String> = raw
+        .iter()
+        .filter(|r| r.driver.as_deref() == Some("vfio-pci"))
+        .filter_map(|r| r.iommu_group.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
     let ctx = ReadyContext {
         iommu: std::path::Path::new("/sys/kernel/iommu_groups/0").exists(),
         closed_groups,
         dpdk_uplinks,
+        held_groups: held(&vfio_groups),
     };
     build_tree(summary, &raw, &ctx)
 }
@@ -813,6 +840,7 @@ pub fn read_tree(summary: TopologySummary, dpdk_uplinks: BTreeSet<String>) -> To
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use glidex_ovs::tuning::{Cpu, Topology};
 
     /// Two nodes of two cores with two threads each: node 0 CPUs 0,1 and
@@ -947,7 +975,7 @@ mod tests {
         }
         println!("isolated {:?}; devices {:?}", t.isolated, t.device_numa);
         assert!(!t.numa_nodes.is_empty());
-        let tree = read_tree(t, Default::default());
+        let tree = read_tree(t, Default::default(), |_| Default::default());
         for d in tree.devices.iter().filter(|d| d.assignable) {
             println!(
                 "{} {} numa {:?} switch {:?} ready {} {:?}",
@@ -983,6 +1011,11 @@ mod tests {
     /// A root port, a switch with a GPU and a NIC under it, a GPU on its
     /// own root port, and a GPU sharing its group with an audio function.
     fn tree() -> TopologyTree {
+        tree_with(Default::default())
+    }
+
+    /// [`tree`], with some IOMMU groups held by another process.
+    fn tree_with(held_groups: BTreeMap<String, String>) -> TopologyTree {
         let summary = TopologySummary {
             numa_nodes: (0..2)
                 .map(|id| NumaNode {
@@ -1078,6 +1111,7 @@ mod tests {
             iommu: true,
             closed_groups: ["31".to_string()].into(),
             dpdk_uplinks: Default::default(),
+            held_groups,
         };
         build_tree(summary, &raw, &ctx)
     }
@@ -1192,8 +1226,70 @@ mod tests {
             matches: vfs,
             nodes: vec![],
             prepare: true,
+            per_device: None,
         };
         assert_eq!(t.to_prepare(std::slice::from_ref(&pool)), ["0000:61:00.3"]);
+    }
+
+    #[test]
+    fn a_group_another_process_holds_is_not_ready() {
+        assert!(func(&tree(), "0000:87:00.0").ready);
+        // libvirt's QEMU holds group 20.
+        let held = tree_with([("20".to_string(), "qemu-kvm-one (pid 37226)".to_string())].into());
+        let d = func(&held, "0000:87:00.0");
+        assert!(!d.ready);
+        assert_eq!(d.not_ready, ["in use by qemu-kvm-one (pid 37226)"]);
+        assert!(
+            held.summary_devices()
+                .iter()
+                .any(|s| s.address == "0000:87:00.0" && !s.ready),
+            "pools see it as not ready"
+        );
+    }
+
+    #[test]
+    fn nvswitches_are_the_fabric_not_devices_for_vms() {
+        let raw = vec![
+            raw(
+                "pci0000:c0/0000:c0:01.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("177"),
+                Some(5),
+            ),
+            raw(
+                "pci0000:c0/0000:c0:01.1/0000:c4:00.0",
+                "0x068000",
+                Some("nvidia-nvswitch"),
+                Some("178"),
+                Some(5),
+            ),
+            raw(
+                "pci0000:c0/0000:c0:01.1/0000:c5:00.0",
+                "0x030200",
+                Some("vfio-pci"),
+                Some("179"),
+                Some(5),
+            ),
+        ];
+        let t = build_tree(
+            TopologySummary::default(),
+            &raw,
+            &ReadyContext {
+                iommu: true,
+                ..Default::default()
+            },
+        );
+        let sw = func(&t, "0000:c4:00.0");
+        assert!(sw.fabric && !sw.assignable, "{sw:?}");
+        assert!(
+            !t.summary_devices()
+                .iter()
+                .any(|d| d.address == "0000:c4:00.0")
+        );
+        let gpu = func(&t, "0000:c5:00.0");
+        assert!(!gpu.fabric && gpu.assignable);
+        assert!(!func(&t, "0000:c0:01.1").fabric, "a root port isn't");
     }
 
     #[test]
@@ -1226,6 +1322,7 @@ mod tests {
             },
             nodes: vec![],
             prepare: true,
+            per_device: None,
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(

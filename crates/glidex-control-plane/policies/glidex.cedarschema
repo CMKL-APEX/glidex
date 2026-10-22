@@ -94,12 +94,12 @@ namespace Glidex {
   action "image.manage" in ["role.image-admin"];
   action "datastore.manage" in ["role.system-admin"];
   action "policy.write" in ["role.system-admin", "step-up"];
-  action "host.paths", "quota.exceed", "cluster.admissions" in ["role.system-admin"];
+  action "host.paths", "quota.exceed", "cluster.admissions", "cluster.directories" in ["role.system-admin"];
   // Tenants and directories (spec/tenancy.md §10.5).
   action "tenant.read" in ["role.tenant-auditor"];
-  action "tenant.members", "tenant.projects", "tenant.federations" in ["role.tenant-admin"];
+  action "tenant.members", "tenant.projects", "tenant.federations", "tenant.clusters" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
-  action "directory.users", "directory.tenants", "directory.connectors" in ["role.directory-admin"];
+  action "directory.users", "directory.tenants", "directory.connectors", "directory.keys" in ["role.directory-admin"];
 
   // ---- usage (spec/metering.md §10) ----------------------------------------
   action readUsage in ["system.usage", "host-scoped"]
@@ -170,12 +170,22 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantFederations in ["tenant.federations", "directory.tenants", "step-up", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // Clusters of other organizations a tenant uses (spec/tenancy.md D65).
+  action readTenantClusters in ["tenant.read", "tenant.clusters", "directory.read", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  action manageTenantClusters in ["tenant.clusters", "step-up", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
   action listConnectors, readConnector in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action createConnector, updateConnector, deleteConnector, setConnectorSecret in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action testConnector in ["directory.connectors", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // The directory's token signing keys (spec/tenancy.md D53).
+  action readSigningKeys in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action rotateSigningKey in ["directory.keys", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   // SCIM bearer tokens (spec/tenancy.md §8.1): who holds one provisions
   // the connector's users.
@@ -189,6 +199,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action confirmConnectorSync in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // Directories the host serves (spec/tenancy.md D59): the operator's.
+  action listDirectories in ["host.read", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action manageDirectories in ["cluster.directories", "step-up", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action listAdmissions in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageAdmissions in ["cluster.admissions", "step-up", "host-scoped"]

@@ -22,7 +22,9 @@ const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
 const Tokens = lazy(() => import("./pages/Tokens"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Cluster = lazy(() => import("./pages/Cluster"));
-const NodeDetail = lazy(() => import("./pages/NodeDetail"));
+const HostDetail = lazy(() => import("./pages/HostDetail"));
+const Hosts = lazy(() => import("./pages/Hosts"));
+const OldNodePage = lazy(() => import("./pages/Hosts").then((m) => ({ default: m.OldNodePage })));
 const ImportPlan = lazy(() => import("./pages/ImportPlan"));
 const Usage = lazy(() => import("./pages/Usage"));
 const TenantDetail = lazy(() => import("./pages/TenantDetail"));
@@ -30,6 +32,8 @@ const Admissions = lazy(() => import("./pages/Admissions"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
 const Invite = lazy(() => import("./pages/Invite"));
 const Account = lazy(() => import("./pages/Account"));
+const Device = lazy(() => import("./pages/Device"));
+const Directories = lazy(() => import("./pages/Directories"));
 const Directory = lazy(() => import("./pages/Directory"));
 
 function Shell() {
@@ -65,10 +69,16 @@ function Shell() {
             <Route path="/policies" element={<Navigate to="/directory/policies" replace />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/cluster" element={<Cluster />} />
-            <Route path="/cluster/nodes/:id" element={<NodeDetail />} />
+            <Route path="/hosts" element={<Hosts />} />
+            <Route path="/hosts/:id" element={<HostDetail />} />
+            <Route path="/cluster/nodes/:id" element={<OldNodePage />} />
             <Route path="/cluster/imports/:plan" element={<ImportPlan />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="/account" element={<Account />} />
+            <Route path="/device" element={<Device />} />
+            <Route path="/directories" element={<Directories />} />
+            {/* A directory's login page, once signed in (spec/tenancy.md D61). */}
+            <Route path="/login/:directory" element={<Navigate to="/" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </Suspense>

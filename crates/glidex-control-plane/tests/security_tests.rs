@@ -1300,6 +1300,7 @@ async fn pam_login_provisions_on_first_login() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,
@@ -1769,6 +1770,7 @@ async fn oidc_code_flow_with_pkce() {
         .store
         .put_team(&auth::store::Team {
             id: "team-lab".into(),
+            directory_id: "local".into(),
             name: "lab".into(),
             members: vec![],
             created_at: 0,
@@ -2397,6 +2399,7 @@ async fn pools_are_granted_and_hand_out_devices() {
         },
         nodes: vec![],
         prepare: false,
+        per_device: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2539,6 +2542,7 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
         },
         nodes: vec![],
         prepare: false,
+        per_device: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2615,4 +2619,132 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
         v.to_string().contains("0000:61:00.2 is held by VM v1"),
         "{v}"
     );
+}
+
+/// spec/gpu-vms.md §3: `gpus` expands to a pool request, `aligned` and the
+/// pool's per-device sizing; what the VM gives itself wins; a missing pool
+/// name with several GPU pools, NVLink without a fabric, and no sizing at
+/// all are refused.
+#[tokio::test]
+async fn gpu_requests_expand_from_the_pool() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PerDevice, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let pool = |name: &str, device: &str, per: Option<PerDevice>| PciPool {
+        name: name.into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x10de".into()),
+            device_id: Some(device.into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: per,
+    };
+    let pools = vec![
+        pool(
+            "a100",
+            "0x20b0",
+            Some(PerDevice {
+                vcpus: 2,
+                memory_mib: 256,
+                hugepages: None,
+                cpu_policy: None,
+            }),
+        ),
+        pool("t4", "0x1eb8", None),
+    ];
+    let grant = |p: &str| PciGrant {
+        bdf: None,
+        pool: Some(p.into()),
+        projects: vec!["pa".into()],
+        tenants: vec![],
+        node: None,
+    };
+    let h = harness_with(|c| {
+        c.pci.pools = pools.clone();
+        c.pci.allow = vec![grant("a100"), grant("t4")];
+    });
+    let mut cfg = Config::default();
+    cfg.pci.pools = pools;
+    h.app.manager.configure(&cfg);
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let mut t = n.status.topology.clone().unwrap_or_default();
+    // This host's first NUMA node, for the fake GPUs.
+    let k = t.numa_nodes.first().map(|x| x.id).unwrap_or(0);
+    let gpu = |a: &str, device: &str| SummaryDevice {
+        address: a.into(),
+        vendor_id: "0x10de".into(),
+        device_id: device.into(),
+        class_id: "0x030200".into(),
+        numa_node: Some(k),
+        ready: true,
+        ..Default::default()
+    };
+    t.devices = vec![gpu("0000:87:00.0", "0x20b0"), gpu("0000:90:00.0", "0x1eb8")];
+    for d in ["0000:87:00.0", "0000:90:00.0"] {
+        t.device_numa.insert(d.into(), k);
+    }
+    n.status.topology = Some(TopologySummary { ..t });
+    nodes.put(&n).unwrap();
+    let pa = h.project("pa");
+    let alice = h.user("alice");
+    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    let a = As::Bearer(h.token(&alice));
+    let body = |name: &str, gpus: Value| {
+        let mut b = vm_body(name, "pa");
+        let o = b.as_object_mut().unwrap();
+        o.remove("vcpu_count");
+        o.remove("mem_size_mib");
+        o.insert("gpus".into(), gpus);
+        b
+    };
+    let (s, v, _) = h
+        .call(
+            "POST",
+            "/vms",
+            Some(body("g1", json!({"count": 1, "pool": "a100"}))),
+            &a,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm = &v["vm"];
+    assert_eq!(
+        (vm["vcpu_count"].as_u64(), vm["mem_size_mib"].as_u64()),
+        (Some(2), Some(256)),
+        "{v}"
+    );
+    assert_eq!(vm["numa_policy"], "NUMA_POLICY_ALIGNED", "{v}");
+    assert_eq!(vm["devices"], json!([{"pool": "a100", "count": 1}]), "{v}");
+    assert_eq!(vm["gpus"], json!({"count": 1, "pool": "a100"}), "{v}");
+    assert_eq!(vm["pool_devices"][0]["address"], "0000:87:00.0", "{v}");
+    // Its own sizing wins.
+    let mut b = body("g2", json!({"count": 1, "pool": "t4"}));
+    b["vcpu_count"] = json!(4);
+    b["mem_size_mib"] = json!(512);
+    let (s, v, _) = h.call("POST", "/vms", Some(b), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["vcpu_count"], 4, "{v}");
+    for (gpus, why) in [
+        (json!({"count": 1}), "name the pool, one of a100, t4"),
+        (
+            json!({"count": 1, "pool": "t4"}),
+            "set per_device on pool t4",
+        ),
+        (
+            json!({"count": 1, "pool": "a100", "nvlink": true}),
+            "NVLink needs a fabric",
+        ),
+        (json!({"count": 0, "pool": "a100"}), "at least 1"),
+        (json!({"count": 1, "pool": "h100"}), "no device pool h100"),
+    ] {
+        let (s, v, _) = h
+            .call("POST", "/vms", Some(body("bad", gpus.clone())), &a)
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{gpus}: {v}");
+        assert!(v.to_string().contains(why), "{gpus}: {v}");
+    }
 }

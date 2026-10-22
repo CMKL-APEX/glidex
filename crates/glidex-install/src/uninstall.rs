@@ -18,14 +18,17 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// In stop order: the UI, the control plane (stops VMs), glidex-authd,
-/// then netd.
+/// In stop order: the UI, the control plane (stops VMs), glidex-authd and
+/// glidex-stord, then netd.
 pub const UNITS: &[&str] = &[
     "glidex-ui.service",
     "glidex-control-plane.service",
     "glidex-authd.service",
     "glidex-authd.socket",
+    "glidex-stord.service",
     "glidex-netd.service",
+    // Stopping it unbinds nothing: devices stay on vfio-pci until reboot.
+    "glidex-vfio-boot.service",
 ];
 /// Units of the pinned OVS source build (removed only with --remove-ovs).
 pub const OVS_SOURCE_UNITS: &[&str] =
@@ -39,6 +42,7 @@ pub const BINARIES: &[&str] = &[
     "glidex-netd",
     "glidex-ui",
     "glidex-authd",
+    "glidex-stord",
     "glidex-vm-shim",
 ];
 /// The VM unit template and its slice (spec/reconciliation.md §13).
@@ -57,6 +61,8 @@ pub const INSTALLER_CONFIG: &[&str] = &[
     "authd.json",
     "control-plane.json.example",
     "vm-shim.json",
+    // --vfio-devices / --sriov (spec/gpu-vms.md §10).
+    "vfio-devices.json",
 ];
 /// The system user the control plane and UI run as, and its home (the
 /// control plane's VM database, images and disks).
@@ -72,6 +78,7 @@ pub const STATE_DIRS: &[&str] = &[
     "/run/glidex",
     "/run/glidex-cp",
     "/run/glidex-authd",
+    "/run/glidex-stord",
 ];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
 pub const DISTRO_OVS_PACKAGES: &[&str] = &["openvswitch-switch-dpdk", "openvswitch-switch"];
@@ -472,6 +479,9 @@ fn host_settings(host: &dyn HostView, opts: &Options, steps: &mut Vec<Step>) {
                 sysconfig::SYSCTL_DROPIN
             )));
         }
+    }
+    if host.exists(Path::new(crate::VFIO_MODULES)) {
+        steps.push(Step::Remove(PathBuf::from(crate::VFIO_MODULES)));
     }
     if !keep_dpdk && host.exists(Path::new(sysconfig::MODULES_DROPIN)) {
         steps.push(Step::Remove(PathBuf::from(sysconfig::MODULES_DROPIN)));

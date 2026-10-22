@@ -359,6 +359,9 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    /// This host's web UI address, as a server publishes it
+    /// (spec/host-page.md W3).
+    ui_url: ArcSwap<Option<String>>,
     /// `pci.pools` of the control-plane config (spec/host-topology.md §9).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
     /// What this host runs OVN with: the cluster setting (if written) over
@@ -550,6 +553,7 @@ impl VmManager {
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
+            ui_url: ArcSwap::from_pointee(None),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
@@ -777,6 +781,7 @@ impl VmManager {
         if let Some(p) = vm.status.placement.as_mut() {
             p.page_kib = page;
             p.numa_node = fit.numa_node;
+            p.numa = fit.numa;
             p.cpus = fit.cpus;
             p.pool_devices = fit.pool_devices;
         }
@@ -877,6 +882,7 @@ impl VmManager {
                     page_kib: Self::counted_page_kib(v),
                     numa_node: p.numa_node,
                     cpus: p.cpus.clone(),
+                    numa: p.numa.clone(),
                 })
         }));
         nodes
@@ -1147,6 +1153,15 @@ impl VmManager {
             let new = if ds.is_builtin() {
                 // `local` is the disk directory, wherever it is.
                 probe::probe_dir(&self.images.settings.disk_dir, now)
+            } else if let (true, record::DriverSpec::Lvm { thin_pool, .. }) =
+                (ds.on_node(&me), &ds.driver)
+            {
+                crate::datastore::lvm::probe(
+                    ds.path_for(&me),
+                    thin_pool,
+                    &crate::datastore::lvm::socket_path(),
+                    now,
+                )
             } else if ds.on_node(&me) {
                 probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {
@@ -1163,6 +1178,26 @@ impl VmManager {
         }
     }
 
+    /// Set this host's web UI address (spec/host-page.md W3); `true` when
+    /// it changed, and the node record should be refreshed.
+    pub fn set_ui_url(&self, url: Option<String>) -> bool {
+        if **self.ui_url.load() == url {
+            return false;
+        }
+        self.ui_url.store(Arc::new(url));
+        true
+    }
+
+    /// This host's web UI address as it would publish it (W3).
+    pub fn ui_url(&self) -> Option<String> {
+        (**self.ui_url.load()).clone()
+    }
+
+    /// Whether this host is a cluster agent.
+    pub fn is_agent(&self) -> bool {
+        self.cluster().is_some_and(|c| c.node.is_none())
+    }
+
     /// Refresh this node's own record with what the host has now. Writes
     /// nothing when nothing changed.
     pub fn report_self(&self) -> Result<(), VmManagerError> {
@@ -1175,6 +1210,10 @@ impl VmManager {
             }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
+        // Agents publish no UI address: browsers go to a server (W5).
+        if !self.is_agent() {
+            probe.ui_url = (**self.ui_url.load()).clone();
+        }
         // Unrecorded image files (spec/clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
         if let Some(before) = self
@@ -1232,8 +1271,10 @@ impl VmManager {
         // The devices a VM could be given, with their readiness, for pools
         // (spec/host-topology.md §9).
         if let Some(t) = probe.topology.as_mut() {
-            t.devices =
-                crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs()).summary_devices();
+            t.devices = crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs(), |g| {
+                self.held_groups(g)
+            })
+            .summary_devices();
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -2042,7 +2083,7 @@ impl VmManager {
                 config.kernel_args = k
                     .cmdline
                     .clone()
-                    .unwrap_or_else(|| config.hypervisor.default_kernel_args().to_string());
+                    .unwrap_or_else(|| config.hypervisor.default_kernel_args(k.arch));
             }
         }
         // A managed root disk is a cloud image: firmware boot unless the
@@ -2187,6 +2228,20 @@ impl VmManager {
         if let Some(want) = &opts.node {
             vm.spec.node = Some(self.resolve_node(want)?);
         }
+        // A kernel from a host path that names no arguments: the default
+        // for the architecture it runs on, its pinned node's (else this
+        // host's), whose serial port differs (spec/kernel-boot.md K5).
+        if vm.spec.config.kernel_args.is_empty() {
+            let arch = vm
+                .spec
+                .node
+                .as_deref()
+                .and_then(|id| self.nodes.get(id).ok().flatten())
+                .and_then(|n| crate::images::catalog::Arch::parse(&n.status.features.arch))
+                .or_else(crate::images::catalog::Arch::host)
+                .unwrap_or(crate::images::catalog::Arch::X86_64);
+            vm.spec.config.kernel_args = vm.spec.config.hypervisor.default_kernel_args(arch);
+        }
         // A device another VM on the node claims (spec/host-topology.md
         // §8.4). Unpinned in a cluster, the node isn't known yet: the
         // scheduler skips nodes where it is taken.
@@ -2309,6 +2364,7 @@ impl VmManager {
                 at: crate::tenancy::now(),
                 page_kib: None,
                 numa_node: None,
+                numa: Vec::new(),
                 cpus: Vec::new(),
                 pool_devices: Vec::new(),
             });
@@ -2323,6 +2379,7 @@ impl VmManager {
                         at: crate::tenancy::now(),
                         page_kib: Some(choice.page_kib),
                         numa_node: choice.numa_node,
+                        numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
                     });
@@ -3594,8 +3651,8 @@ impl VmManager {
         let (name, nodes) = (req.name.clone(), req.nodes.clone());
         let (img, created) = self.images.pull_image(req).await?;
         if created && img.kind == images::ImageKind::Disk && with_kernel {
-            if !self.images.can_extract(img.arch) {
-                tracing::info!(image = %img.name, "no kernel extracted: no extractor on this host");
+            if let Some(why) = self.images.extraction_refused(img.arch) {
+                tracing::info!(image = %img.name, "no kernel extracted: {why}");
             } else {
                 let kernel_name = name.map(|n| {
                     let mut k = format!("{n}-kernel");
@@ -4017,7 +4074,32 @@ impl VmManager {
             .and_then(|n| n.status.topology)
             .or_else(crate::topology::read)
             .unwrap_or_default();
-        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs())
+        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs(), |g| self.held_groups(g))
+    }
+
+    /// IOMMU groups among `groups` that a process other than this host's
+    /// glidex VMs has open, and by whom (spec/host-topology.md §5.1). netd
+    /// reads every process; VMs of glidex run as this user. Without netd:
+    /// none known.
+    pub(crate) fn held_groups(&self, groups: &[String]) -> BTreeMap<String, String> {
+        let me = nix::unistd::geteuid().as_raw();
+        let held: BTreeMap<String, Vec<glidex_ovs::vfio::Holder>> =
+            match self.netd.call(Op::DeviceHolders {
+                groups: groups.to_vec(),
+            }) {
+                Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+                Err(_) => return BTreeMap::new(),
+            };
+        held.into_iter()
+            .filter_map(|(g, hs)| {
+                let others: Vec<String> = hs
+                    .iter()
+                    .filter(|h| h.uid != me)
+                    .map(|h| h.to_string())
+                    .collect();
+                (!others.is_empty()).then(|| (g, others.join(", ")))
+            })
+            .collect()
     }
 
     /// Bind this node's devices of `prepare: true` pools that aren't

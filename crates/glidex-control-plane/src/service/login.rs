@@ -71,13 +71,41 @@ pub fn audit_login(
 }
 
 /// The connectors a login page offers.
-fn login_connectors(app: &AppState) -> Vec<pb::LoginConnector> {
+/// The email domains a connector takes: an OIDC connector's
+/// `allowed_domains`, a Workspace connector's `domains`.
+fn connector_domains(c: &Connector) -> Vec<String> {
+    ["allowed_domains", "domains"]
+        .iter()
+        .flat_map(|k| c.settings[*k].as_array().cloned().unwrap_or_default())
+        .filter_map(|v| v.as_str().map(|d| d.trim().to_ascii_lowercase()))
+        .collect()
+}
+
+/// The directory an email belongs to (D61): the one whose enabled
+/// connector takes its domain, if exactly one directory does.
+fn directory_of_email(app: &AppState, email: &str) -> Option<String> {
+    let domain = email.rsplit_once('@')?.1.trim().to_ascii_lowercase();
+    let mut dirs: Vec<String> = app
+        .auth
+        .connectors
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.enabled && connector_domains(c).contains(&domain))
+        .map(|c| c.directory_id)
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    (dirs.len() == 1).then(|| dirs.remove(0))
+}
+
+fn login_connectors(app: &AppState, directory: &str) -> Vec<pb::LoginConnector> {
     app.auth
         .connectors
         .list()
         .unwrap_or_default()
         .into_iter()
-        .filter(|c| c.enabled)
+        .filter(|c| c.enabled && c.directory_id == directory)
         .map(|c| pb::LoginConnector {
             id: c.id,
             kind: c.kind.as_str().into(),
@@ -87,10 +115,29 @@ fn login_connectors(app: &AppState) -> Vec<pb::LoginConnector> {
         .collect()
 }
 
-/// What to offer for a tenant slug or an email address. This host hosts
-/// one directory, so every login connector is offered; a hint naming a
-/// tenant is echoed.
+/// What to offer for a tenant slug or an email address (D61): the login
+/// connectors of the directory asked for, else of the one the email's
+/// domain belongs to, else of the host's own. An unknown directory or
+/// email gets the host's own, as any other would: no answer tells which
+/// directories a host serves. A hint naming a tenant there is echoed.
 pub fn discover(app: &AppState, req: pb::DiscoverRequest) -> pb::DiscoverResponse {
+    let local = crate::tenants::LOCAL_DIRECTORY.to_string();
+    let asked = req.directory.trim().to_ascii_lowercase();
+    let directory = if !asked.is_empty()
+        && app
+            .auth
+            .tenants
+            .get_directory(&asked)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        asked
+    } else if req.hint.contains('@') {
+        directory_of_email(app, &req.hint).unwrap_or(local)
+    } else {
+        local
+    };
     let slug = req.hint.trim().to_ascii_lowercase();
     let tenant = app
         .auth
@@ -98,7 +145,7 @@ pub fn discover(app: &AppState, req: pb::DiscoverRequest) -> pb::DiscoverRespons
         .list()
         .unwrap_or_default()
         .into_iter()
-        .find(|t| t.slug == slug);
+        .find(|t| t.slug == slug && t.directory_id == directory);
     pb::DiscoverResponse {
         tenant: tenant
             .map(|t| pb::DiscoveredTenant {
@@ -107,7 +154,8 @@ pub fn discover(app: &AppState, req: pb::DiscoverRequest) -> pb::DiscoverRespons
                 ..Default::default()
             })
             .into(),
-        connectors: login_connectors(app),
+        connectors: login_connectors(app, &directory),
+        directory,
         ..Default::default()
     }
 }

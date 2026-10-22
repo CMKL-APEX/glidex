@@ -25,6 +25,7 @@ const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_membe
 /// Tenant pools on this cluster, by `<tenant>/<name>` (spec/host-topology.md §9.1a).
 const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
+const OFFERS: TableDefinition<&str, &[u8]> = TableDefinition::new("admission_offers");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// The directory a host hosts (D32).
@@ -81,6 +82,9 @@ pub struct Directory {
     /// The tenant whose members administer the directory (D7).
     pub owner_tenant: String,
     pub created_at: u64,
+    /// Its issuer URL, fixed when it first issued a token (D52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,11 +207,37 @@ pub fn unlimited() -> Quotas {
     }
 }
 
+/// An admission offered to a tenant of another directory (spec/tenancy.md
+/// D64): its token is shown once; only its secret's hash is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offer {
+    pub id: String,
+    /// The tenant's slug at that directory.
+    pub tenant: String,
+    /// That directory's issuer URL.
+    pub directory: String,
+    pub cap: Quotas,
+    pub secret_hash: String,
+    pub by: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeemed_at: Option<u64>,
+}
+
+impl Offer {
+    pub fn is_open(&self, now: u64) -> bool {
+        self.redeemed_at.is_none() && now < self.expires_at
+    }
+}
+
 /// Everything about tenants this control plane knows, read in one go for
 /// an authorization decision.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub directory: Option<Directory>,
+    /// Every directory hosted here, `local` included (D27, D58).
+    pub directories: Vec<Directory>,
     pub tenants: Vec<Tenant>,
     pub admissions: Vec<Admission>,
     pub members: Vec<Member>,
@@ -231,6 +261,14 @@ impl Snapshot {
             .as_ref()
             .map(|d| d.owner_tenant.as_str())
             .unwrap_or(ADMIN_TENANT)
+    }
+
+    /// Directory `id`'s owner tenant.
+    pub fn owner_of(&self, id: &str) -> Option<&str> {
+        self.directories
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.owner_tenant.as_str())
     }
 }
 
@@ -257,6 +295,7 @@ impl TenantStore {
             name: "local".into(),
             owner_tenant: ADMIN_TENANT.into(),
             created_at: at,
+            issuer: None,
         };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
@@ -312,6 +351,26 @@ impl TenantStore {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// A standalone host's cluster id (D56, D69): random, made once, so
+    /// two standalone hosts never take each other's access tokens.
+    pub fn standalone_id(&self) -> Result<String, TenantError> {
+        const KEY: &str = "standalone_cluster_id";
+        if let Some(v) = self.meta(KEY)? {
+            return Ok(String::from_utf8_lossy(&v).into_owned());
+        }
+        let id = format!("standalone-{}", uuid::Uuid::new_v4());
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut m = txn.open_table(META)?;
+            if let Some(v) = m.get(KEY)? {
+                return Ok(String::from_utf8_lossy(v.value()).into_owned());
+            }
+            m.insert(KEY, id.as_bytes())?;
+        }
+        txn.commit()?;
+        Ok(id)
     }
 
     fn meta(&self, key: &str) -> Result<Option<Vec<u8>>, TenantError> {
@@ -396,11 +455,133 @@ impl TenantStore {
     pub fn snapshot(&self) -> Result<Snapshot, TenantError> {
         Ok(Snapshot {
             directory: self.directory()?,
+            directories: self.directories()?,
             tenants: self.list()?,
             admissions: self.admissions()?,
             members: self.read_all(MEMBERS)?,
             operator: self.operator()?,
         })
+    }
+
+    /// Every directory this control plane hosts.
+    pub fn directories(&self) -> Result<Vec<Directory>, TenantError> {
+        self.read_all::<Directory>(DIRECTORIES)
+    }
+
+    pub fn get_directory(&self, id: &str) -> Result<Option<Directory>, TenantError> {
+        Ok(self.directories()?.into_iter().find(|d| d.id == id))
+    }
+
+    /// A new hosted directory `id` (D27, D59) and its owner tenant `owner`,
+    /// in one write.
+    pub fn create_directory(
+        &self,
+        id: &str,
+        name: &str,
+        owner: &str,
+    ) -> Result<(Directory, Tenant), TenantError> {
+        validate_slug(id)?;
+        validate_slug(owner)?;
+        if self.get_directory(id)?.is_some() {
+            return Err(TenantError::AlreadyExists(format!("directory {id}")));
+        }
+        let at = now();
+        let t = Tenant {
+            id: uuid::Uuid::new_v4().to_string(),
+            directory_id: id.into(),
+            slug: owner.into(),
+            display_name: name.into(),
+            owns_directory: true,
+            operator: false,
+            suspended: false,
+            created_at: at,
+        };
+        let d = Directory {
+            id: id.into(),
+            name: name.into(),
+            owner_tenant: t.id.clone(),
+            created_at: at,
+            issuer: None,
+        };
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(DIRECTORIES)?
+                .insert(id, serde_json::to_vec(&d)?.as_slice())?;
+            txn.open_table(TENANTS)?
+                .insert(t.id.as_str(), serde_json::to_vec(&t)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok((d, t))
+    }
+
+    /// Whether any project belongs to `tenant`.
+    pub fn has_projects(&self, tenant: &str) -> Result<bool, TenantError> {
+        Ok(self
+            .read_all::<crate::tenancy::Project>(PROJECTS)?
+            .iter()
+            .any(|p| p.tenant_id == tenant))
+    }
+
+    /// Remove hosted directory `id` and its tenants (the caller checked
+    /// that nothing else is left in it). Never `local`.
+    pub fn delete_directory(&self, id: &str) -> Result<(), TenantError> {
+        if id == LOCAL_DIRECTORY {
+            return Err(TenantError::Invalid(
+                "directory local can't be deleted".into(),
+            ));
+        }
+        let tenants: Vec<String> = self
+            .list()?
+            .into_iter()
+            .filter(|t| t.directory_id == id)
+            .map(|t| t.id)
+            .collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            let mut d = txn.open_table(DIRECTORIES)?;
+            if d.remove(id)?.is_none() {
+                return Err(TenantError::NotFound(format!("directory {id}")));
+            }
+            let mut t = txn.open_table(TENANTS)?;
+            for k in &tenants {
+                t.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    // ---- offers (D64) ---------------------------------------------------
+
+    pub fn offers(&self) -> Result<Vec<Offer>, TenantError> {
+        self.read_all(OFFERS)
+    }
+
+    pub fn put_offer(&self, o: &Offer) -> Result<(), TenantError> {
+        self.put(OFFERS, &o.id, o)
+    }
+
+    pub fn remove_offer(&self, id: &str) -> Result<bool, TenantError> {
+        self.remove(OFFERS, id)
+    }
+
+    /// Fix `id`'s issuer URL (D52); the first one written stays unless
+    /// `replace`.
+    pub fn set_issuer(
+        &self,
+        id: &str,
+        issuer: &str,
+        replace: bool,
+    ) -> Result<Directory, TenantError> {
+        let mut d = self
+            .get_directory(id)?
+            .ok_or_else(|| TenantError::NotFound(format!("directory {id}")))?;
+        if d.issuer.is_some() && !replace {
+            return Ok(d);
+        }
+        d.issuer = Some(issuer.to_string());
+        self.put(DIRECTORIES, id, &d)?;
+        Ok(d)
     }
 
     pub fn directory(&self) -> Result<Option<Directory>, TenantError> {
@@ -428,12 +609,20 @@ impl TenantStore {
         Ok(self.list()?.into_iter().find(|t| t.id == id))
     }
 
-    /// A tenant by id or by slug.
+    /// A tenant by id or by slug, slugs being `local`'s.
     pub fn resolve(&self, key: &str) -> Result<Tenant, TenantError> {
+        self.resolve_in(LOCAL_DIRECTORY, key)
+    }
+
+    /// A tenant by id, or by its slug in `directory` (D24).
+    pub fn resolve_in(&self, directory: &str, key: &str) -> Result<Tenant, TenantError> {
         let all = self.list()?;
         all.iter()
             .find(|t| t.id == key)
-            .or_else(|| all.iter().find(|t| t.slug == key))
+            .or_else(|| {
+                all.iter()
+                    .find(|t| t.slug == key && t.directory_id == directory)
+            })
             .cloned()
             .ok_or_else(|| TenantError::NotFound(key.to_string()))
     }
@@ -486,13 +675,28 @@ impl TenantStore {
         display_name: String,
         operator: bool,
     ) -> Result<Tenant, TenantError> {
+        self.create_in(LOCAL_DIRECTORY, slug, display_name, operator)
+    }
+
+    /// A tenant of `directory`; its slug is unique there (D24).
+    pub fn create_in(
+        &self,
+        directory: &str,
+        slug: &str,
+        display_name: String,
+        operator: bool,
+    ) -> Result<Tenant, TenantError> {
         validate_slug(slug)?;
-        if self.list()?.iter().any(|t| t.slug == slug || t.id == slug) {
+        if self
+            .list()?
+            .iter()
+            .any(|t| t.id == slug || (t.slug == slug && t.directory_id == directory))
+        {
             return Err(TenantError::AlreadyExists(slug.to_string()));
         }
         let t = Tenant {
             id: uuid::Uuid::new_v4().to_string(),
-            directory_id: LOCAL_DIRECTORY.into(),
+            directory_id: directory.into(),
             slug: slug.into(),
             display_name,
             owns_directory: false,
@@ -547,6 +751,27 @@ impl TenantStore {
             at: now(),
         };
         self.put(ADMISSIONS, &t.id, &a)?;
+        Ok(a)
+    }
+
+    /// Admit a tenant of a directory this cluster trusts (D65): it isn't
+    /// in this host's tenants, so its admission names the trusted directory.
+    pub fn admit_remote(
+        &self,
+        tenant_id: &str,
+        trusted_directory: &str,
+        cap: Quotas,
+        by: &str,
+    ) -> Result<Admission, TenantError> {
+        let a = Admission {
+            tenant_id: tenant_id.into(),
+            directory_id: trusted_directory.into(),
+            cap,
+            status: AdmissionStatus::Admitted,
+            by: by.into(),
+            at: now(),
+        };
+        self.put(ADMISSIONS, tenant_id, &a)?;
         Ok(a)
     }
 

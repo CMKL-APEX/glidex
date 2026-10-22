@@ -1771,6 +1771,67 @@ async fn kernel_images_from_host_files() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// An aarch64 kernel wrapped as Ubuntu ships it (a stub PE whose `.linux`
+/// is an EFI zboot of a gzip'd Image) is installed as the plain `Image`
+/// Cloud Hypervisor boots, with that file's size and digest; the host's
+/// file is left as it is (spec/kernel-boot.md K8).
+#[tokio::test]
+async fn wrapped_arm64_kernels_are_installed_plain() {
+    use std::io::Write;
+    let mut image = vec![0u8; 16384];
+    image[..2].copy_from_slice(b"MZ");
+    image[0x38..0x3c].copy_from_slice(b"ARM\x64");
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&image).unwrap();
+    let payload = gz.finish().unwrap();
+    let mut zboot = vec![0u8; 64];
+    zboot[..2].copy_from_slice(b"MZ");
+    zboot[4..8].copy_from_slice(b"zimg");
+    zboot[8..12].copy_from_slice(&64u32.to_le_bytes());
+    zboot[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    zboot[24..28].copy_from_slice(b"gzip");
+    zboot.extend_from_slice(&payload);
+    // The stub: a PE with one section, `.linux`.
+    let mut stub = vec![0u8; 0x200];
+    stub[..2].copy_from_slice(b"MZ");
+    stub[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    stub[0x80..0x84].copy_from_slice(b"PE\0\0");
+    stub[0x84..0x86].copy_from_slice(&0xaa64u16.to_le_bytes());
+    stub[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+    let section = 0x80 + 24;
+    stub[section..section + 6].copy_from_slice(b".linux");
+    stub[section + 16..section + 20].copy_from_slice(&(zboot.len() as u32).to_le_bytes());
+    stub[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
+    stub.extend_from_slice(&zboot);
+
+    let tmp = TempDir::new().unwrap();
+    let (app, _manager) = create_app(tmp.path());
+    let kernel = tmp.path().join("vmlinuz-7.0.0-38-generic");
+    std::fs::write(&kernel, &stub).unwrap();
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({ "kernel_path": kernel, "arch": "ARCH_AARCH64", "name": "arm" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = image_of(&img);
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    assert_eq!(img["arch"], "ARCH_AARCH64", "{img}");
+    assert_eq!(
+        img["sha256"],
+        sha256_hex(&image),
+        "the plain Image's digest: {img}"
+    );
+    assert_eq!(num(&img["virtual_size_bytes"]), image.len() as u64, "{img}");
+    assert_eq!(
+        std::fs::read(&kernel).unwrap(),
+        stub,
+        "the host file is unchanged"
+    );
+}
+
 /// VMs boot kernel images (spec/kernel-boot.md K2): no firmware needed for
 /// an image VM, the kernel's command line by default, a generated seed
 /// and so a credential, in-use protection, and a PATCH to another kernel.

@@ -78,6 +78,17 @@ fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
     serde_json::to_value(v).map_err(|e| OvsError::Io(e.to_string()))
 }
 
+/// What [`Netd::apply_boot_devices`] did.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BootReport {
+    /// PF → VFs it has now.
+    pub sriov: Vec<(String, u32)>,
+    pub bound: Vec<String>,
+    /// Address → why it was left as it was.
+    pub skipped: Vec<(String, String)>,
+    pub failed: Vec<(String, String)>,
+}
+
 impl Netd {
     pub fn new(
         exec: Arc<dyn Exec>,
@@ -237,6 +248,9 @@ impl Netd {
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
             Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
+            Op::DeviceHolders { groups } => {
+                to_value(glidex_ovs::vfio::group_holders(self.ex(), &groups))
+            }
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::ListPreparedDevices => to_value(
                 self.store
@@ -421,6 +435,15 @@ impl Netd {
     ) -> Result<glidex_ovs::sriov::SriovState, OvsError> {
         let address = address.to_ascii_lowercase();
         let before = glidex_ovs::sriov::vfs_of(self.ex(), &address);
+        // A change removes every VF: none of them, nor the PF, may be held.
+        let groups: Vec<String> = std::iter::once(&address)
+            .chain(before.iter())
+            .filter_map(|a| glidex_ovs::vfio::iommu_group(self.ex(), a))
+            .collect();
+        let current = before.len() as u32;
+        if current != vfs {
+            self.refuse_held(&groups)?;
+        }
         let uplinks = self.dpdk_uplink_addresses()?;
         let state = glidex_ovs::sriov::set_vfs(self.ex(), &address, vfs, &uplinks)?;
         let gone: &[String] = if state.changed { &before } else { &[] };
@@ -432,6 +455,61 @@ impl Netd {
         }
         tracing::info!(device = %address, vfs = state.enabled, "SR-IOV virtual functions set");
         Ok(state)
+    }
+
+    /// Refuse while a process (a VM) has one of `groups` open.
+    fn refuse_held(&self, groups: &[String]) -> Result<(), OvsError> {
+        let held = glidex_ovs::vfio::group_holders(self.ex(), groups);
+        match held.iter().next() {
+            Some((g, hs)) => Err(OvsError::conflict(format!(
+                "IOMMU group {g} is in use by {}",
+                hs.iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// spec/gpu-vms.md §10: apply the boot settings: VF counts first, then
+    /// bind the selected devices that aren't on `vfio-pci` yet, recording
+    /// each like `prepare_device`. A device already on `vfio-pci` is left
+    /// alone; outside boot, a VF count whose PF has a VF on `vfio-pci` is
+    /// left too (a change would take it from its VM).
+    pub fn apply_boot_devices(
+        &self,
+        cfg: &glidex_ovs::boot_devices::BootDevices,
+        at_boot: bool,
+    ) -> BootReport {
+        use glidex_ovs::boot_devices::{Action, plan_devices, sriov_change_refusal};
+        let mut report = BootReport::default();
+        for s in &cfg.sriov {
+            let pf = s.pf.to_ascii_lowercase();
+            if let Some(why) = sriov_change_refusal(self.ex(), &pf, at_boot) {
+                let current = glidex_ovs::sriov::vfs_of(self.ex(), &pf).len() as u32;
+                if current != s.vfs {
+                    report
+                        .skipped
+                        .push((pf, format!("VF count left at {current}: {why}")));
+                    continue;
+                }
+            }
+            match self.set_sriov_vfs(&pf, s.vfs) {
+                Ok(st) => report.sriov.push((pf, st.enabled)),
+                Err(e) => report.failed.push((pf, e.to_string())),
+            }
+        }
+        for (address, action) in plan_devices(self.ex(), cfg) {
+            match action {
+                Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
+                Action::Bind { .. } => match self.prepare_device(&address) {
+                    Ok(_) => report.bound.push(address),
+                    Err(e) => report.failed.push((address, e.to_string())),
+                },
+            }
+        }
+        report
     }
 
     /// Undo `prepare_device` for the group `address` is in.
@@ -447,6 +525,7 @@ impl Netd {
                 "{address} was not prepared by glidex"
             )));
         };
+        self.refuse_held(std::slice::from_ref(&group))?;
         glidex_ovs::vfio::release(self.ex(), &p)?;
         self.store.delete(DEVICES, &group)?;
         tracing::info!(device = %address, group = %group, "released from passthrough");

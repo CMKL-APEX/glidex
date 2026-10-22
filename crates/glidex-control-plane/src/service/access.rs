@@ -6,8 +6,7 @@
 use super::common::{entity_of, entity_ref, principal_of, ts, ts_opt};
 use super::{Call, ServiceError, ServiceResult};
 use crate::api::{
-    add_network, auth_error, credential_entities, directory_ent, disk_entities, project_entities,
-    vm_entities,
+    add_network, auth_error, credential_entities, disk_entities, project_entities, vm_entities,
 };
 use crate::auth::store::{
     DisabledReason, Identity, MemberSource, StoreError, Team, TeamMember, TokenKind, User,
@@ -41,6 +40,16 @@ fn manager_err(e: crate::state::VmManagerError) -> ServiceError {
 
 fn bad(m: impl Into<String>) -> ServiceError {
     ServiceError::new(StatusCode::BAD_REQUEST, "invalid", m)
+}
+
+/// A user of the caller's directory (D58); `404` for any other.
+fn user_here(call: &Call, id: &str) -> ServiceResult<User> {
+    call.auth()
+        .store
+        .user(id)
+        .map_err(store_err)?
+        .filter(|u| u.directory_id == call.p.directory_id())
+        .ok_or_else(|| not_found("user"))
 }
 
 fn not_found(what: &str) -> ServiceError {
@@ -343,7 +352,7 @@ pub fn create_project(
     let tenant = call
         .auth()
         .tenants
-        .resolve(key)
+        .resolve_in(call.p.directory_id(), key)
         .map_err(|_| not_found("tenant"))?;
     call.require(Ent::Tenant(tenant.id.clone()), EntitySet::new())?;
     // Without explicit quotas a project gets the site default (§6.3).
@@ -465,14 +474,14 @@ pub async fn delete_project(
     Ok(pb::DeleteProjectResponse::default())
 }
 
+/// `e` exists in the caller's directory (D58); another directory's
+/// principals answer as missing.
 fn check_principal_exists(call: &Call, e: &Ent) -> ServiceResult<()> {
-    let s = &call.auth().store;
-    let ok = match e {
-        Ent::User(id) => s.user(id).map_err(store_err)?.is_some(),
-        Ent::Team(id) => id.starts_with("unix:") || s.team(id).map_err(store_err)?.is_some(),
-        Ent::Token(id) => s.token_by_id(id).map_err(store_err)?.is_some(),
-        _ => false,
-    };
+    let ok = call
+        .auth()
+        .principal_directory(e)
+        .map_err(|e| ServiceError::from(auth_error(e)))?
+        .is_some_and(|d| d == call.p.directory_id());
     if ok {
         Ok(())
     } else {
@@ -705,12 +714,13 @@ pub fn remove_system_binding(
 // ---- users ----------------------------------------------------------------
 
 pub fn list_users(call: &Call, _req: pb::ListUsersRequest) -> ServiceResult<pb::ListUsersResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let s = &call.auth().store;
     let users = s
         .users()
         .map_err(store_err)?
         .iter()
+        .filter(|u| u.directory_id == call.p.directory_id())
         .map(|u| user_pb(u, &s.identities_of(&u.id).unwrap_or_default()))
         .collect();
     Ok(pb::ListUsersResponse {
@@ -727,7 +737,7 @@ pub fn create_user(
     call: &Call,
     req: pb::CreateUserRequest,
 ) -> ServiceResult<pb::CreateUserResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let s = &call.auth().store;
     for i in &req.identities {
         if !valid_provider(&i.provider) || i.subject.is_empty() {
@@ -748,6 +758,7 @@ pub fn create_user(
     }
     let u = User {
         id: uuid::Uuid::new_v4().to_string(),
+        directory_id: call.p.directory_id().to_string(),
         display_name: req.display_name,
         disabled: false,
         default_project: None,
@@ -778,13 +789,10 @@ pub fn update_user(
     call: &Call,
     req: pb::UpdateUserRequest,
 ) -> ServiceResult<pb::UpdateUserResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     call.set_target(format!("user:{}", req.id));
     let s = &call.auth().store;
-    let mut u = s
-        .user(&req.id)
-        .map_err(store_err)?
-        .ok_or_else(|| not_found("user"))?;
+    let mut u = user_here(call, &req.id)?;
     let managed = u.managed.as_ref().map(|m| m.connector.clone());
     for path in mask_of(req.update_mask.as_option()) {
         match path.as_str() {
@@ -819,6 +827,8 @@ pub fn update_user(
                 u.disabled = req.disabled;
                 if req.disabled {
                     s.remove_sessions_of(&u.id).map_err(store_err)?;
+                    // And its directory refresh tokens (D55).
+                    let _ = call.auth().refresh_tokens.end_user(&u.id);
                 }
             }
             other => return Err(bad(format!("can't change {other}"))),
@@ -835,12 +845,10 @@ pub fn link_identity(
     call: &Call,
     req: pb::LinkIdentityRequest,
 ) -> ServiceResult<pb::LinkIdentityResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     call.set_target(format!("user:{}", req.id));
     let s = &call.auth().store;
-    s.user(&req.id)
-        .map_err(store_err)?
-        .ok_or_else(|| not_found("user"))?;
+    user_here(call, &req.id)?;
     if !valid_provider(&req.provider) || req.subject.is_empty() {
         return Err(bad(
             "identities are pam:, unix: or oidc:<issuer> with a subject",
@@ -877,7 +885,7 @@ pub fn delete_user(
     call: &Call,
     req: pb::DeleteUserRequest,
 ) -> ServiceResult<pb::DeleteUserResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     call.set_target(format!("user:{}", req.id));
     if call.p.user_id() == Some(req.id.as_str()) {
         return Err(ServiceError::new(
@@ -887,10 +895,7 @@ pub fn delete_user(
         ));
     }
     let s = &call.auth().store;
-    let user = s
-        .user(&req.id)
-        .map_err(store_err)?
-        .ok_or_else(|| not_found("user"))?;
+    let user = user_here(call, &req.id)?;
     // The IdP still has it: it would only provision it again (§8.3).
     if let Some(m) = &user.managed
         && !user.disabled
@@ -925,6 +930,10 @@ pub fn delete_user(
         .delete_user(&req.id)
         .map_err(store_err)?
         .ok_or_else(|| not_found("user"))?;
+    call.auth()
+        .passkeys
+        .forget_user(&req.id)
+        .map_err(passkey_err)?;
     let n = |x: usize| x.min(u32::MAX as usize) as u32;
     Ok(pb::DeleteUserResponse {
         identities: n(d.identities),
@@ -948,7 +957,8 @@ pub fn unlink_identity(
         let (e, es) = self_entities(call);
         call.require_action("manageOwnSignIns", e, es, &[])?;
     } else {
-        call.require(directory_ent(), EntitySet::new())?;
+        call.require(call.directory_ent(), EntitySet::new())?;
+        user_here(call, &req.id)?;
     }
     call.set_target(format!("user:{}", req.id));
     let s = &call.auth().store;
@@ -959,28 +969,177 @@ pub fn unlink_identity(
     let Some(i) = found else {
         return Err(not_found("identity"));
     };
-    // A user may have many sign-in methods, but not none, unless it is
-    // disabled (it can't sign in anyway): then its last one can go, to be
-    // added to the user its person really is.
     let disabled = s
         .user(&req.id)
         .map_err(store_err)?
         .is_some_and(|u| u.disabled);
-    if all.len() <= 1 && !disabled {
-        return Err(ServiceError::new(
-            StatusCode::CONFLICT,
-            "last_identity",
-            "this is the user's only way to sign in: add another first, or disable the user to take it away",
-        ));
-    }
+    keeps_a_way_in(&all, i, disabled)?;
     call.detail("identity", serde_json::json!(req.key));
     s.remove_identity(&i.provider, &i.subject)
         .map_err(store_err)?;
+    if i.provider == crate::auth::passkeys::PROVIDER {
+        call.auth()
+            .passkeys
+            .delete(&i.subject)
+            .map_err(passkey_err)?;
+    }
     if req.end_sessions == Some(true) && !own {
         let n = s.remove_sessions_of(&req.id).map_err(store_err)?;
+        let _ = call.auth().refresh_tokens.end_user(&req.id);
         call.detail("sessions_ended", serde_json::json!(n));
     }
     Ok(pb::UnlinkIdentityResponse::default())
+}
+
+/// A user may have many sign-in methods, but not none, unless it is
+/// disabled (it can't sign in anyway): then its last one can go, to be
+/// added to the user its person really is. Passkeys alone are enough only
+/// when there are two (spec/passkeys.md P4): one lost device isn't a
+/// lock-out.
+fn keeps_a_way_in(all: &[Identity], removing: &Identity, disabled: bool) -> ServiceResult<()> {
+    if disabled {
+        return Ok(());
+    }
+    let left: Vec<&Identity> = all
+        .iter()
+        .filter(|i| !(i.provider == removing.provider && i.subject == removing.subject))
+        .collect();
+    let only_one_passkey = left.len() == 1 && left[0].provider == crate::auth::passkeys::PROVIDER;
+    if left.is_empty() || only_one_passkey {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "last_identity",
+            if left.is_empty() {
+                "this is the user's only way to sign in: add another first, or disable the user to take it away"
+            } else {
+                "that would leave one passkey as the only way to sign in: add another sign-in method or a second passkey first"
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn passkey_err(e: crate::auth::passkeys::PasskeyError) -> ServiceError {
+    use crate::auth::passkeys::PasskeyError as E;
+    match e {
+        E::NotFound => not_found("passkey"),
+        E::Invalid(m) => ServiceError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid", m),
+        E::Refused(m) => ServiceError::new(StatusCode::UNAUTHORIZED, "passkey_refused", m),
+        E::Storage(m) => ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+fn passkey_pb(p: &crate::auth::passkeys::Passkey) -> pb::Passkey {
+    pb::Passkey {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        algorithm: match p.alg {
+            crate::auth::webauthn::ES256 => "ES256",
+            crate::auth::webauthn::EDDSA => "EdDSA",
+            crate::auth::webauthn::RS256 => "RS256",
+            _ => "?",
+        }
+        .into(),
+        backed_up: Some(p.backed_up),
+        created_at: ts(p.created_at).into(),
+        last_used_at: p.last_used_at.map(ts).into(),
+        ..Default::default()
+    }
+}
+
+/// One's own (`manageOwnSignIns`), or anyone's with `admin_action`.
+fn own_or(call: &Call, user: &str, admin_action: &'static str) -> ServiceResult<bool> {
+    let own = call.p.user_id() == Some(user);
+    if own {
+        let (e, es) = self_entities(call);
+        call.require_action("manageOwnSignIns", e, es, &[])?;
+    } else {
+        call.with_action(admin_action)
+            .require(call.directory_ent(), EntitySet::new())?;
+        user_here(call, user)?;
+    }
+    call.set_target(format!("user:{user}"));
+    Ok(own)
+}
+
+pub fn list_passkeys(
+    call: &Call,
+    req: pb::ListPasskeysRequest,
+) -> ServiceResult<pb::ListPasskeysResponse> {
+    let own = call.p.user_id() == Some(req.id.as_str());
+    if !own {
+        call.require(call.directory_ent(), EntitySet::new())?;
+        user_here(call, &req.id)?;
+    }
+    let list = call.auth().passkeys.list(&req.id).map_err(passkey_err)?;
+    Ok(pb::ListPasskeysResponse {
+        passkeys: list.iter().map(passkey_pb).collect(),
+        rp_id: call.auth().config.auth.passkeys.rp_id.clone(),
+        ..Default::default()
+    })
+}
+
+pub fn rename_passkey(
+    call: &Call,
+    req: pb::RenamePasskeyRequest,
+) -> ServiceResult<pb::RenamePasskeyResponse> {
+    if call.p.user_id() != Some(req.id.as_str()) {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only its user renames a passkey",
+        ));
+    }
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(bad("a passkey's name is 1-64 printable characters"));
+    }
+    let mut p = call
+        .auth()
+        .passkeys
+        .get(&req.passkey)
+        .map_err(passkey_err)?
+        .filter(|p| p.user_id == req.id)
+        .ok_or_else(|| not_found("passkey"))?;
+    p.name = name.to_string();
+    call.auth().passkeys.put(&p).map_err(passkey_err)?;
+    Ok(pb::RenamePasskeyResponse {
+        passkey: passkey_pb(&p).into(),
+        ..Default::default()
+    })
+}
+
+pub fn delete_passkey(
+    call: &Call,
+    req: pb::DeletePasskeyRequest,
+) -> ServiceResult<pb::DeletePasskeyResponse> {
+    own_or(call, &req.id, "manageUsers")?;
+    let p = call
+        .auth()
+        .passkeys
+        .get(&req.passkey)
+        .map_err(passkey_err)?
+        .filter(|p| p.user_id == req.id)
+        .ok_or_else(|| not_found("passkey"))?;
+    let s = &call.auth().store;
+    let all = s.identities_of(&req.id).map_err(store_err)?;
+    let disabled = s
+        .user(&req.id)
+        .map_err(store_err)?
+        .is_some_and(|u| u.disabled);
+    let me = Identity {
+        provider: crate::auth::passkeys::PROVIDER.into(),
+        subject: p.id.clone(),
+        user_id: req.id.clone(),
+        email: None,
+        created_at: 0,
+    };
+    keeps_a_way_in(&all, &me, disabled)?;
+    call.detail("passkey", serde_json::json!({ "id": p.id, "name": p.name }));
+    s.remove_identity(crate::auth::passkeys::PROVIDER, &p.id)
+        .map_err(store_err)?;
+    call.auth().passkeys.delete(&p.id).map_err(passkey_err)?;
+    Ok(pb::DeletePasskeyResponse::default())
 }
 
 pub fn update_me(call: &Call, req: pb::UpdateMeRequest) -> ServiceResult<pb::UpdateMeResponse> {
@@ -1081,7 +1240,7 @@ pub async fn my_ssh_keys(
 // ---- teams ----------------------------------------------------------------
 
 pub fn list_teams(call: &Call, _req: pb::ListTeamsRequest) -> ServiceResult<pb::ListTeamsResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     Ok(pb::ListTeamsResponse {
         teams: call
             .auth()
@@ -1089,6 +1248,7 @@ pub fn list_teams(call: &Call, _req: pb::ListTeamsRequest) -> ServiceResult<pb::
             .teams()
             .map_err(store_err)?
             .iter()
+            .filter(|t| t.directory_id == call.p.directory_id())
             .map(team_pb)
             .collect(),
         ..Default::default()
@@ -1109,7 +1269,7 @@ pub fn create_team(
     call: &Call,
     req: pb::CreateTeamRequest,
 ) -> ServiceResult<pb::CreateTeamResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     valid_team_name(&req.name)?;
     let s = &call.auth().store;
     if s.team_by_name(&req.name).map_err(store_err)?.is_some() {
@@ -1121,6 +1281,7 @@ pub fn create_team(
     }
     let t = Team {
         id: uuid::Uuid::new_v4().to_string(),
+        directory_id: call.p.directory_id().to_string(),
         name: req.name,
         members: vec![],
         created_at: crate::auth::store::now(),
@@ -1140,6 +1301,7 @@ fn team(call: &Call, id: &str) -> ServiceResult<Team> {
         .store
         .team(id)
         .map_err(store_err)?
+        .filter(|t| t.directory_id == call.p.directory_id())
         .ok_or_else(|| not_found("team"))
 }
 
@@ -1147,7 +1309,7 @@ pub fn update_team(
     call: &Call,
     req: pb::UpdateTeamRequest,
 ) -> ServiceResult<pb::UpdateTeamResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     valid_team_name(&req.name)?;
     let mut t = team(call, &req.id)?;
     if let Some(m) = &t.managed {
@@ -1165,7 +1327,7 @@ pub fn delete_team(
     call: &Call,
     req: pb::DeleteTeamRequest,
 ) -> ServiceResult<pb::DeleteTeamResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     if let Some(m) = team(call, &req.id)?.managed {
         return Err(managed_conflict("the team", &m.connector));
     }
@@ -1180,13 +1342,9 @@ pub fn add_team_member(
     call: &Call,
     req: pb::AddTeamMemberRequest,
 ) -> ServiceResult<pb::AddTeamMemberResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let mut t = team(call, &req.id)?;
-    call.auth()
-        .store
-        .user(&req.user)
-        .map_err(store_err)?
-        .ok_or_else(|| not_found("user"))?;
+    user_here(call, &req.user)?;
     if !t
         .members
         .iter()
@@ -1208,7 +1366,7 @@ pub fn remove_team_member(
     call: &Call,
     req: pb::RemoveTeamMemberRequest,
 ) -> ServiceResult<pb::RemoveTeamMemberResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let mut t = team(call, &req.id)?;
     // Memberships a connector gives are its own (§8.3); manual ones stay
     // the directory's.
@@ -1256,10 +1414,13 @@ pub fn list_tokens(
     call: &Call,
     _req: pb::ListTokensRequest,
 ) -> ServiceResult<pb::ListTokensResponse> {
-    let all = call.allowed("manageAnyTokens", directory_ent(), EntitySet::new());
+    let all = call.allowed("manageAnyTokens", call.directory_ent(), EntitySet::new());
     let links = call.auth().store.links().map_err(store_err)?;
     let mut tokens = Vec::new();
     for (_, t) in call.auth().store.tokens().map_err(store_err)? {
+        if call.auth().token_directory(&t, None) != call.p.directory_id() {
+            continue;
+        }
         let visible = all
             || match &t.kind {
                 TokenKind::Personal { owner } => call.p.user_id() == Some(owner.as_str()),
@@ -1382,7 +1543,7 @@ pub fn revoke_token(
                 project_entities(project),
             ),
             _ => false,
-        } || call.allowed("manageAnyTokens", directory_ent(), EntitySet::new());
+        } || call.allowed("manageAnyTokens", call.directory_ent(), EntitySet::new());
     if !ok {
         return Err(not_found("token"));
     }
@@ -1832,7 +1993,17 @@ pub async fn resource_entities(call: &Call, e: &Ent) -> Option<EntitySet> {
             call.auth().tenants.get(id).ok().flatten()?;
             EntitySet::new()
         }
-        Ent::Directory(id) if id == crate::tenants::LOCAL_DIRECTORY => EntitySet::new(),
+        Ent::Directory(id)
+            if call
+                .auth()
+                .tenants
+                .get_directory(id)
+                .ok()
+                .flatten()
+                .is_some() =>
+        {
+            EntitySet::new()
+        }
         Ent::Directory(_) => return None,
         Ent::User(id) => {
             let mut es = EntitySet::new();

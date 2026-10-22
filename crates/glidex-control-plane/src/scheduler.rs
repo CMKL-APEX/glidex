@@ -95,6 +95,8 @@ pub struct Placed {
     /// (dedicated).
     pub numa_node: Option<u32>,
     pub cpus: Vec<u32>,
+    /// `aligned` over several NUMA nodes: its share of each.
+    pub numa: Vec<crate::models::NumaShare>,
 }
 
 /// A device's PCI address, from a sysfs path or an address: what nodes
@@ -224,7 +226,24 @@ pub fn pick_pool_devices(
                     && device_taken(&n.status.pci_groups, &load.devices, &d.address).is_none()
             })
             .collect();
-        free.sort_by_key(|d| (numa.is_some() && d.numa_node != numa, d.address.clone()));
+        if effective_numa(req) == NumaPolicy::Aligned {
+            // As few NUMA nodes as can hold them: the node of devices it
+            // has first, then those with the most free (spec/gpu-vms.md §4).
+            let mut per_node: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+            for d in &free {
+                *per_node.entry(d.numa_node).or_default() += 1;
+            }
+            free.sort_by_key(|d| {
+                (
+                    numa.is_some() && d.numa_node != numa,
+                    std::cmp::Reverse(per_node.get(&d.numa_node).copied().unwrap_or(0)),
+                    d.numa_node,
+                    d.address.clone(),
+                )
+            });
+        } else {
+            free.sort_by_key(|d| (numa.is_some() && d.numa_node != numa, d.address.clone()));
+        }
         let need = r.count as usize;
         if free.len() < need {
             return Err(format!("pool {}: {} of {} free", p.name, free.len(), need));
@@ -286,6 +305,9 @@ pub struct Fit {
     pub numa_aligned: bool,
     /// The devices picked for its pool requests.
     pub pool_devices: Vec<crate::models::PoolDevice>,
+    /// `aligned` over several NUMA nodes: each node's share, in guest NUMA
+    /// node order (spec/gpu-vms.md §4).
+    pub numa: Vec<crate::models::NumaShare>,
 }
 
 /// The NUMA policy that applies: dedicated CPUs imply `preferred`.
@@ -458,6 +480,107 @@ fn fit_on_numa(
     Ok((page, cpus, used))
 }
 
+/// `aligned` (spec/gpu-vms.md §4): exactly the NUMA nodes of the VM's
+/// devices, its vCPUs and memory split between them by their device counts
+/// (largest remainder), each share fitting its node. One node: an ordinary
+/// fit there. No devices: as `preferred`.
+fn aligned_fit(
+    t: &TopologySummary,
+    load: &Load,
+    req: &Request,
+    cfg: &SchedulerConfig,
+    page: u64,
+) -> Result<Fit, String> {
+    let mut by_node: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for d in &req.vfio {
+        let addr = pci_address(d);
+        match t.device_numa.get(&addr) {
+            Some(k) => by_node.entry(*k).or_default().push(addr),
+            None => return Err(format!("PCI device {addr} has no NUMA node")),
+        }
+    }
+    let mut taken = reserved_cpus(t);
+    taken.extend(load.dedicated.iter().copied());
+    if by_node.is_empty() {
+        return Err("aligned needs devices to align with".into());
+    }
+    let weights: Vec<u64> = by_node.values().map(|v| v.len() as u64).collect();
+    if (req.vcpus as usize) < by_node.len() {
+        return Err(format!(
+            "its devices are on {} NUMA nodes, so it needs at least {} vCPUs",
+            by_node.len(),
+            by_node.len()
+        ));
+    }
+    let vcpus = split_by(req.vcpus as u64, &weights);
+    let mems = split_by(req.mem_mib, &weights);
+    let one = by_node.len() == 1;
+    let (mut pins, mut siblings, mut shares) = (Vec::new(), Vec::new(), Vec::new());
+    let mut page_used: Option<(u32, u64)> = None;
+    for (i, (k, devices)) in by_node.into_iter().enumerate() {
+        let mut sub = req.clone();
+        sub.vcpus = vcpus[i] as u32;
+        sub.mem_mib = mems[i];
+        let (p, cpus, _) = fit_on_numa(t, k, load, &sub, cfg, page, &taken)?;
+        if let Some((k0, p0)) = page_used
+            && p0 != p
+        {
+            return Err(format!(
+                "NUMA nodes {k0} and {k} would back its memory with different page sizes"
+            ));
+        }
+        page_used = Some((k, p));
+        let n = (vcpus[i] as usize).min(cpus.len());
+        pins.extend_from_slice(&cpus[..n]);
+        siblings.extend_from_slice(&cpus[n..]);
+        taken.extend(cpus.iter().copied());
+        shares.push(crate::models::NumaShare {
+            node: k,
+            vcpus: vcpus[i] as u32,
+            memory_mib: mems[i],
+            devices,
+        });
+    }
+    // vCPU i on cpus[i] in guest-node order; whole cores' siblings last.
+    pins.extend(siblings);
+    let page_kib = page_used.map(|(_, p)| p).unwrap_or(page);
+    Ok(if one {
+        Fit {
+            page_kib,
+            numa_node: Some(shares[0].node),
+            cpus: pins,
+            numa_aligned: true,
+            ..Default::default()
+        }
+    } else {
+        Fit {
+            page_kib,
+            numa_node: None,
+            cpus: pins,
+            numa_aligned: true,
+            numa: shares,
+            ..Default::default()
+        }
+    })
+}
+
+/// `total` split by `weights`, largest remainder first; sums to `total`.
+fn split_by(total: u64, weights: &[u64]) -> Vec<u64> {
+    let sum: u64 = weights.iter().sum::<u64>().max(1);
+    let mut parts: Vec<u64> = weights.iter().map(|w| total * w / sum).collect();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse((total * weights[i]) % sum), i));
+    let mut left = total - parts.iter().sum::<u64>();
+    for i in order {
+        if left == 0 {
+            break;
+        }
+        parts[i] += 1;
+        left -= 1;
+    }
+    parts
+}
+
 /// Where on `n` a VM of `req` goes under its NUMA and CPU policies
 /// (spec/host-topology.md §8.2): the NUMA node holding its devices and
 /// enough memory and CPUs, the most devices then the least allocated
@@ -470,7 +593,11 @@ pub fn numa_fit(
     cfg: &SchedulerConfig,
     page: u64,
 ) -> Result<Fit, String> {
-    let policy = effective_numa(req);
+    let mut policy = effective_numa(req);
+    // `aligned` without devices has nothing to align with: as `preferred`.
+    if policy == NumaPolicy::Aligned && req.vfio.is_empty() {
+        policy = NumaPolicy::Preferred;
+    }
     if policy == NumaPolicy::None && req.cpu == CpuPolicy::Shared {
         return Ok(Fit {
             page_kib: page,
@@ -494,6 +621,9 @@ pub fn numa_fit(
             }
             None => {}
         }
+    }
+    if policy == NumaPolicy::Aligned {
+        return aligned_fit(t, load, req, cfg, page);
     }
     if policy == NumaPolicy::Strict && device_nodes.len() > 1 {
         let ks: Vec<String> = device_nodes.keys().map(|k| k.to_string()).collect();
@@ -541,6 +671,7 @@ pub fn numa_fit(
             cpus,
             numa_aligned: true,
             pool_devices: Vec::new(),
+            numa: Vec::new(),
         });
     }
     if policy == NumaPolicy::Strict {
@@ -567,6 +698,7 @@ pub fn numa_fit(
         cpus,
         numa_aligned: false,
         pool_devices: Vec::new(),
+        numa: Vec::new(),
     })
 }
 
@@ -757,6 +889,7 @@ pub struct NodeFit {
     pub cpus: Vec<u32>,
     pub numa_aligned: bool,
     pub pool_devices: Vec<crate::models::PoolDevice>,
+    pub numa: Vec<crate::models::NumaShare>,
     /// `max(cpu share, memory share, hugepage share)` after placing: lower
     /// is preferred.
     #[serde(skip)]
@@ -806,6 +939,7 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
                 cpus: fit.cpus,
                 numa_aligned: fit.numa_aligned,
                 pool_devices: fit.pool_devices,
+                numa: fit.numa,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
                 mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit)
@@ -844,6 +978,7 @@ pub struct Choice {
     pub cpus: Vec<u32>,
     pub numa_aligned: bool,
     pub pool_devices: Vec<crate::models::PoolDevice>,
+    pub numa: Vec<crate::models::NumaShare>,
 }
 
 /// The node a VM goes to, or why each node refused it (the first of
@@ -862,6 +997,7 @@ pub fn schedule(
             cpus: f.cpus.clone(),
             numa_aligned: f.numa_aligned,
             pool_devices: f.pool_devices.clone(),
+            numa: f.numa.clone(),
         }),
         _ => {
             let mut refused: Vec<(String, String)> = all
@@ -902,15 +1038,19 @@ pub fn loads(placed: impl IntoIterator<Item = Placed>) -> HashMap<String, Load> 
         } else {
             *l.hugepage_mib.entry(p.page_kib).or_default() += p.mem_mib;
         }
-        if let Some(k) = p.numa_node {
+        let bound: Vec<(u32, u64)> = match p.numa_node {
+            Some(k) => vec![(k, p.mem_mib)],
+            None => p.numa.iter().map(|s| (s.node, s.memory_mib)).collect(),
+        };
+        for (k, mib) in bound {
             if p.page_kib == SMALL_PAGE_KIB {
-                *l.numa_mem_mib.entry(k).or_default() += p.mem_mib;
+                *l.numa_mem_mib.entry(k).or_default() += mib;
             } else {
                 *l.numa_hugepage_mib
                     .entry(k)
                     .or_default()
                     .entry(p.page_kib)
-                    .or_default() += p.mem_mib;
+                    .or_default() += mib;
             }
         }
         if !p.cpus.is_empty() {
@@ -1405,6 +1545,7 @@ mod tests {
             page_kib: c.page_kib,
             numa_node: c.numa_node,
             cpus: c.cpus.clone(),
+            numa: c.numa.clone(),
             ..Default::default()
         }
     }
@@ -1658,6 +1799,7 @@ mod tests {
                 },
                 nodes: vec![],
                 prepare: false,
+                per_device: None,
             },
             count,
             same_switch,
@@ -1723,6 +1865,90 @@ mod tests {
         r.pools = vec![gpus(1, false)];
         let c = schedule(&r, &[(n, Load::default())], &cfg()).unwrap();
         assert_eq!((c.numa_node, picked(&c)), (Some(1), vec!["0000:47:00.0"]));
+    }
+
+    #[test]
+    fn split_by_keeps_the_total_and_follows_the_weights() {
+        assert_eq!(split_by(8, &[2, 2]), [4, 4]);
+        assert_eq!(split_by(7, &[2, 2]), [4, 3], "the remainder to the first");
+        assert_eq!(split_by(10, &[1, 3]), [3, 7]);
+        assert_eq!(split_by(1000, &[1, 1, 1]), [334, 333, 333]);
+        assert_eq!(split_by(5, &[3]), [5]);
+    }
+
+    #[test]
+    fn aligned_gpus_take_as_few_numa_nodes_as_they_can() {
+        // Two GPUs fit one node: an ordinary NUMA fit there.
+        let n = pool_node();
+        let mut r = numa_req(4, 2048, NumaPolicy::Aligned, CpuPolicy::Shared);
+        r.pools = vec![gpus(2, false)];
+        let c = schedule(&r, &[(n, Load::default())], &cfg()).unwrap();
+        assert_eq!((c.numa_node, c.numa.len()), (Some(0), 0), "{c:?}");
+        assert_eq!(picked(&c), vec!["0000:07:00.0", "0000:08:00.0"]);
+    }
+
+    #[test]
+    fn aligned_over_two_numa_nodes_splits_cpus_memory_and_devices() {
+        let n = pool_node();
+        let mut r = numa_req(4, 4096, NumaPolicy::Aligned, CpuPolicy::Dedicated);
+        r.pools = vec![gpus(4, false)];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert_eq!(c.numa_node, None);
+        let shares: Vec<(u32, u32, u64, Vec<String>)> = c
+            .numa
+            .iter()
+            .map(|s| (s.node, s.vcpus, s.memory_mib, s.devices.clone()))
+            .collect();
+        assert_eq!(
+            shares,
+            vec![
+                (
+                    0,
+                    2,
+                    2048,
+                    vec!["0000:07:00.0".into(), "0000:08:00.0".into()]
+                ),
+                (
+                    1,
+                    2,
+                    2048,
+                    vec!["0000:47:00.0".into(), "0000:4e:00.0".into()]
+                ),
+            ]
+        );
+        // vCPUs 0-1 on node 0's CPUs, 2-3 on node 1's.
+        let t = n.status.topology.as_ref().unwrap();
+        let on = |k: u32, c: u32| t.node(k).unwrap().cpus().any(|x| x == c);
+        assert!(on(0, c.cpus[0]) && on(0, c.cpus[1]), "{:?}", c.cpus);
+        assert!(on(1, c.cpus[2]) && on(1, c.cpus[3]), "{:?}", c.cpus);
+        // Its memory counts on each node: a second such VM finds node 0
+        // with only what the first left.
+        let load = loads([place(&c, &r)]).remove("numa").unwrap();
+        assert_eq!(load.numa_mem_mib.get(&0), Some(&2048));
+        assert_eq!(load.numa_mem_mib.get(&1), Some(&2048));
+        // A node whose share doesn't fit: refused, naming that node.
+        let busy = Load {
+            mem_mib: 7000,
+            numa_mem_mib: [(0, 7000)].into(),
+            ..Default::default()
+        };
+        let mut r2 = numa_req(4, 4096, NumaPolicy::Aligned, CpuPolicy::Shared);
+        r2.pools = vec![gpus(4, false)];
+        let e = schedule(&r2, &[(n.clone(), busy)], &cfg()).unwrap_err();
+        assert!(e[0].1.contains("NUMA node 0"), "{e:?}");
+        // Fewer vCPUs than NUMA nodes can't be split.
+        let mut tiny = numa_req(1, 1024, NumaPolicy::Aligned, CpuPolicy::Shared);
+        tiny.pools = vec![gpus(4, false)];
+        let e = schedule(&tiny, &[(n, Load::default())], &cfg()).unwrap_err();
+        assert!(e[0].1.contains("at least 2 vCPUs"), "{e:?}");
+    }
+
+    #[test]
+    fn aligned_without_devices_is_preferred() {
+        let n = numa_node();
+        let r = numa_req(2, 1024, NumaPolicy::Aligned, CpuPolicy::Shared);
+        let c = schedule(&r, &[(n, Load::default())], &cfg()).unwrap();
+        assert!(c.numa_node.is_some() && c.numa.is_empty(), "{c:?}");
     }
 
     #[test]

@@ -55,6 +55,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [pools, setPools] = useState<PciPoolJson[]>([]);
   /** Devices asked of each pool, and whether under one PCIe switch. */
   const [poolAsks, setPoolAsks] = useState<Record<string, { count: number; sameSwitch: boolean }>>({});
+  /** The vCPU or memory field was changed by hand: GPUs no longer size the VM. */
+  const [sizedByHand, setSizedByHand] = useState(false);
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [firmwareImages, setFirmwareImages] = useState<ImageInfo[]>([]);
   const [freeDisks, setFreeDisks] = useState<DiskInfo[]>([]);
@@ -180,8 +182,21 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     }
   }, [project, me.user?.display_name]);
 
+  // The first GPU pool asked for (not under one switch) goes as `gpus`:
+  // aligned NUMA placement, and the pool's per-device sizing for the vCPU
+  // and memory fields until they're set by hand (spec/gpu-vms.md §3).
+  const gpuPool = pools.find(
+    (p) => p.class === "gpu" && (poolAsks[p.name ?? ""]?.count ?? 0) > 0 && !poolAsks[p.name ?? ""]?.sameSwitch,
+  );
+  const gpuCount = gpuPool ? poolAsks[gpuPool.name ?? ""].count : 0;
+  const gpus = gpuPool ? { count: gpuCount, pool: gpuPool.name } : undefined;
+  useEffect(() => {
+    if (!gpuPool || sizedByHand) return;
+    if (gpuPool.per_device_vcpus) setVcpuCount(gpuCount * gpuPool.per_device_vcpus);
+    if (gpuPool.per_device_memory_mib) setMemSizeMib(gpuCount * gpuPool.per_device_memory_mib);
+  }, [gpuPool, gpuCount, sizedByHand]);
   const poolRequests = Object.entries(poolAsks)
-    .filter(([, a]) => a.count > 0)
+    .filter(([pool, a]) => a.count > 0 && pool !== gpuPool?.name)
     .map(([pool, a]) => ({ pool, count: a.count, same_switch: a.sameSwitch && a.count > 1 ? true : undefined }));
   const askPool = (pool: string, change: Partial<{ count: number; sameSwitch: boolean }>) =>
     setPoolAsks((cur) => ({ ...cur, [pool]: { ...(cur[pool] ?? { count: 0, sameSwitch: false }), ...change } }));
@@ -217,6 +232,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
         vfio_devices: devices.length > 0 ? devices : undefined,
         devices: poolRequests.length > 0 ? poolRequests : undefined,
+        gpus,
         power: startNow ? "POWER_STATE_RUNNING" : undefined,
         restart_policy: restartPolicy === "never" ? "RESTART_POLICY_NEVER" : "RESTART_POLICY_ON_FAILURE",
         on_host_boot: onHostBoot === "stop" ? "HOST_BOOT_POLICY_STOP" : "HOST_BOOT_POLICY_RESUME",
@@ -274,9 +290,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             type="number"
             className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
             min="1"
-            max="32"
+            max="255"
             value={vcpuCount}
-            onChange={(e) => setVcpuCount(Number(e.target.value))}
+            onChange={(e) => {
+              setSizedByHand(true);
+              setVcpuCount(Number(e.target.value));
+            }}
           />
         </div>
         <div>
@@ -287,9 +306,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             type="number"
             className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
             min="128"
-            max="32768"
+            max="4194304"
             value={memSizeMib}
-            onChange={(e) => setMemSizeMib(Number(e.target.value))}
+            onChange={(e) => {
+              setSizedByHand(true);
+              setMemSizeMib(Number(e.target.value));
+            }}
           />
         </div>
       </div>
@@ -307,6 +329,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               .map((d) => d.trim())
               .filter((d) => d.length > 0),
             devices: poolRequests.length > 0 ? poolRequests : undefined,
+            gpus,
             image: rootSource === "image" && image ? image : undefined,
           }}
           value={node}
@@ -478,7 +501,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               placeholder={
                 fromKernelImage && chosenKernel?.kernel?.cmdline
                   ? chosenKernel.kernel.cmdline
-                  : "console=ttyS0 root=/dev/vda reboot=k panic=1"
+                  : // The server's default: the serial console differs on aarch64 (PL011).
+                    `console=${(fromKernelImage ? chosenKernel?.arch : rootImage?.arch) === "ARCH_AARCH64" ? "ttyAMA0" : "ttyS0"} root=/dev/vda reboot=k panic=1`
               }
               value={kernelArgs}
               onChange={(e) => setKernelArgs(e.target.value)}
@@ -682,6 +706,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                     </span>
                   )}
                   <span className="text-xs text-gray-500">{p.free ?? 0} free</span>
+                  {p.per_device_vcpus && p.per_device_memory_mib && (
+                    <span className="text-xs text-gray-500">
+                      {p.per_device_vcpus} vCPUs and {Math.round(p.per_device_memory_mib / 1024)} GiB each
+                    </span>
+                  )}
                   <input
                     type="number"
                     min="0"
@@ -706,7 +735,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           </div>
           <p className="mt-1 text-xs text-gray-500">
             How many devices to take from each pool; the scheduler picks which,
-            near each other and the VM&apos;s memory.
+            near each other and the VM&apos;s memory. GPUs place the VM on their NUMA
+            nodes, with its vCPUs and memory split between them
+            {gpuPool?.per_device_vcpus && !sizedByHand ? ", and size it from the pool" : ""}.
           </p>
         </div>
       )}

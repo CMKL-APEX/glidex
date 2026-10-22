@@ -3,7 +3,7 @@
 //! (`api/rpc/directory.rs`) both call these functions and nothing else.
 
 use super::{Call, ServiceError, ServiceResult};
-use crate::api::{auth_error, directory_ent};
+use crate::api::auth_error;
 use crate::auth::connector_err;
 use crate::authz::EntitySet;
 use crate::directory::{self as dir, Connector, Kind, Source};
@@ -213,13 +213,17 @@ fn guarded(call: &Call, c: &mut Connector) -> ServiceResult<bool> {
     let Some(t) = &c.default_tenant else {
         return Ok(false);
     };
-    let tenant = call.auth().tenants.resolve(t).map_err(|_| {
-        ServiceError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_connector",
-            format!("no tenant {t}"),
-        )
-    })?;
+    let tenant = call
+        .auth()
+        .tenants
+        .resolve_in(call.p.directory_id(), t)
+        .map_err(|_| {
+            ServiceError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_connector",
+                format!("no tenant {t}"),
+            )
+        })?;
     c.default_tenant = Some(tenant.id.clone());
     Ok(tenant.owns_directory || tenant.operator)
 }
@@ -230,6 +234,7 @@ fn get_visible(call: &Call, id: &str) -> ServiceResult<Connector> {
         .connectors
         .get(id)
         .map_err(err_of)?
+        .filter(|c| c.directory_id == call.p.directory_id())
         .ok_or_else(|| {
             ServiceError::new(
                 StatusCode::NOT_FOUND,
@@ -243,11 +248,12 @@ pub fn list_connectors(
     call: &Call,
     _req: pb::ListConnectorsRequest,
 ) -> ServiceResult<pb::ListConnectorsResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let all = call.auth().connectors.list().map_err(err_of)?;
     Ok(pb::ListConnectorsResponse {
         connectors: all
             .iter()
+            .filter(|c| c.directory_id == call.p.directory_id())
             .map(|c| to_pb(call, c))
             .collect::<ServiceResult<_>>()?,
         ..Default::default()
@@ -258,7 +264,7 @@ pub fn get_connector(
     call: &Call,
     req: pb::GetConnectorRequest,
 ) -> ServiceResult<pb::GetConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     Ok(pb::GetConnectorResponse {
         connector: to_pb(call, &c)?.into(),
@@ -325,12 +331,12 @@ pub async fn sync_connector(
     call: &Call,
     req: pb::SyncConnectorRequest,
 ) -> ServiceResult<pb::SyncConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     let confirm = req.confirm == Some(true);
     if confirm {
         call.with_action("confirmConnectorSync")
-            .require(directory_ent(), EntitySet::new())?;
+            .require(call.directory_ent(), EntitySet::new())?;
     }
     if c.provisioning != dir::Provisioning::Pull {
         return Err(ServiceError::new(
@@ -392,7 +398,7 @@ pub fn list_scim_tokens(
     call: &Call,
     req: pb::ListScimTokensRequest,
 ) -> ServiceResult<pb::ListScimTokensResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     let tokens = call
         .auth()
@@ -410,7 +416,7 @@ pub fn create_scim_token(
     call: &Call,
     req: pb::CreateScimTokenRequest,
 ) -> ServiceResult<pb::CreateScimTokenResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     if c.provisioning != dir::Provisioning::Scim {
         return Err(ServiceError::new(
@@ -450,7 +456,7 @@ pub fn revoke_scim_token(
     call: &Call,
     req: pb::RevokeScimTokenRequest,
 ) -> ServiceResult<pb::RevokeScimTokenResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     call.set_target(format!("connector:{}", c.id));
     let t = call
@@ -489,7 +495,7 @@ pub fn create_connector(
     call: &Call,
     req: pb::CreateConnectorRequest,
 ) -> ServiceResult<pb::CreateConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let p = req.connector.as_option().ok_or_else(|| {
         ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "connector is required")
     })?;
@@ -504,7 +510,7 @@ pub fn create_connector(
     let now = crate::tenancy::now();
     let mut c = Connector {
         id: p.id.clone(),
-        directory_id: crate::tenants::LOCAL_DIRECTORY.into(),
+        directory_id: call.p.directory_id().to_string(),
         kind,
         display_name: p.display_name.clone(),
         enabled: p.enabled.unwrap_or(true),
@@ -545,7 +551,7 @@ pub fn update_connector(
     call: &Call,
     req: pb::UpdateConnectorRequest,
 ) -> ServiceResult<pb::UpdateConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let mut c = get_visible(call, &req.id)?;
     let p = req.connector.as_option().cloned().unwrap_or_default();
     let paths: Vec<String> = req
@@ -621,7 +627,7 @@ pub fn delete_connector(
     call: &Call,
     req: pb::DeleteConnectorRequest,
 ) -> ServiceResult<pb::DeleteConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     let disable = match req.users.as_deref() {
         None | Some("disable") => true,
@@ -657,7 +663,7 @@ pub fn delete_connector(
 }
 
 pub fn set_secret(call: &Call, req: pb::SetSecretRequest) -> ServiceResult<pb::SetSecretResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     // The field name is audited, never the value (spec/tenancy.md §13).
     call.detail("field", serde_json::json!(req.field));
@@ -714,7 +720,7 @@ pub async fn test_connector(
     call: &Call,
     req: pb::TestConnectorRequest,
 ) -> ServiceResult<pb::TestConnectorResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
     let mut steps = Vec::new();
     match c.kind {

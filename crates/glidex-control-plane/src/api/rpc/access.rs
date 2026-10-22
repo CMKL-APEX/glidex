@@ -157,6 +157,30 @@ impl UserService for Svc {
         op!(self, ctx, req, svc::unlink_identity)
     }
 
+    async fn list_passkeys(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListPasskeysRequest>,
+    ) -> ServiceResult<ListPasskeysResponse> {
+        op!(self, ctx, req, svc::list_passkeys)
+    }
+
+    async fn rename_passkey(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RenamePasskeyRequest>,
+    ) -> ServiceResult<RenamePasskeyResponse> {
+        op!(self, ctx, req, svc::rename_passkey)
+    }
+
+    async fn delete_passkey(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeletePasskeyRequest>,
+    ) -> ServiceResult<DeletePasskeyResponse> {
+        op!(self, ctx, req, svc::delete_passkey)
+    }
+
     async fn update_me(
         &self,
         ctx: RequestContext,

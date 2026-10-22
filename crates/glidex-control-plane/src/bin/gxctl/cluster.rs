@@ -705,9 +705,28 @@ pub(crate) fn topology_lines(
         format!("{l}  {ready}")
     };
     let assignable: Vec<&PciFunction> = t.devices.iter().filter(|d| d.assignable).collect();
+    let fabric: Vec<&PciFunction> = t.devices.iter().filter(|d| d.fabric).collect();
+    // The NVLink fabric: shown, never offered to a VM.
+    let fabric_line = |d: &PciFunction| {
+        format!(
+            "{}  nvswitch  {}:{}  {}{}{}  (NVLink fabric, not for VMs)",
+            d.address,
+            d.vendor_id.trim_start_matches("0x"),
+            d.device_id.trim_start_matches("0x"),
+            d.driver.as_deref().unwrap_or("no driver"),
+            d.iommu_group
+                .as_deref()
+                .map(|g| format!("  group {g}"))
+                .unwrap_or_default(),
+            d.numa_node
+                .map(|n| format!("  numa {n}"))
+                .unwrap_or_default()
+        )
+    };
     let mut out = Vec::new();
     if devices_only {
         out.extend(assignable.iter().map(|d| dev(d)));
+        out.extend(fabric.iter().map(|d| fabric_line(d)));
     } else {
         let s = t.summary.as_option().cloned().unwrap_or_default();
         for n in &s.numa_nodes {
@@ -746,6 +765,14 @@ pub(crate) fn topology_lines(
         if !loose.is_empty() {
             out.push(format!("{} (no NUMA node)", "numa".bold()));
             out.extend(loose.iter().map(|d| format!("  {}", dev(d))));
+        }
+        if !fabric.is_empty() {
+            out.push(format!(
+                "{} ({} NVSwitches)",
+                "nvlink fabric".bold(),
+                fabric.len()
+            ));
+            out.extend(fabric.iter().map(|d| format!("  {}", fabric_line(d))));
         }
         let mut reserved: Vec<(u32, String)> = s.reserved_cpus.clone().into_iter().collect();
         reserved.sort();

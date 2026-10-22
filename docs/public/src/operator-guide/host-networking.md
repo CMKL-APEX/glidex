@@ -10,10 +10,16 @@ Creating networks for VMs is in [Networks](../user-guide/networks.md).
 Host networking needs the `net-admin` role (or `system-admin`). On the
 local socket, members of `glidex-admin` have it.
 
-Everything here acts on the host that serves the request: the one whose
-socket `gxctl` uses, or whose web UI you opened. A cluster agent has no
-local API for `gxctl`; manage its host networking from the web UI it
-serves (`https://<agent>:5173`), which runs these requests on the agent.
+With `gxctl`, everything here acts on the host whose socket it uses. In
+the web UI, each host's page (**Hosts**, then the host) has a
+**Networking** section with that host's Open vSwitch, bridges and
+uplinks; a server runs them on the node they are for, so an agent's are
+managed from any server's UI. A cluster agent has no local API for
+`gxctl`. Over the API, a request to a server acts on another node when
+it names that node's id in the `X-Glidex-Target-Node` header (see
+[REST API](../api/rest.md)); what you may do there follows your roles on
+that host. The web UI's **Networking** page keeps the network records
+and links to the Host pages.
 
 ## Pieces
 
@@ -30,8 +36,8 @@ that carry the host's address, and restores NAT, then reports ready.
 
 The control plane talks to netd's full socket as the `glidex` group. If
 it can't, its startup line says `Checking networking... LIMITED` or
-`UNAVAILABLE`, and the web UI's Networking page shows a warning instead
-of the OVS status.
+`UNAVAILABLE`, and the Networking section of the host's page shows a
+warning instead of the OVS status.
 
 ## Install Open vSwitch
 
@@ -51,8 +57,8 @@ installer won't restart `ovs-vswitchd` unless you pass
 options.
 
 You can also install or switch the profile on a running host, from the
-web UI (**Networking** → **Install Open vSwitch** or **Install / switch
-profile**) or `gxctl`:
+web UI (the host's page → **Networking** → **Install Open vSwitch** or
+**Install / switch profile**) or `gxctl`:
 
 ```bash
 gxctl ovs status                           # netd access, OVS version, what this host can do
@@ -65,12 +71,48 @@ OVS 3.0 or newer is required. Restarting OVS interrupts traffic on its
 bridges, so both the UI and `gxctl` ask for confirmation first (`--force`
 in `gxctl`).
 
+### Back to the kernel profile
+
+A host that ran the `dpdk` profile goes back with the installer:
+
+```bash
+cargo run -p glidex-install -- --ovs-profile kernel --allow-ovs-restart
+cargo run -p glidex-install -- --ovs-profile kernel --allow-ovs-restart --release-hugepages
+```
+
+The kernel profile runs no DPDK. When the installer finds DPDK on in
+`ovs-vswitchd`, it removes the settings the `dpdk` profile set
+(`dpdk-init`, `dpdk-socket-mem`, `dpdk-lcore-mask`, `pmd-cpu-mask`,
+`pmd-auto-lb`, `userspace-tso-enable`) and restarts `ovs-vswitchd`,
+since DPDK can't be stopped in a running one. That gives back DPDK's
+PMD cores and socket memory.
+
+- With bridges, the restart interrupts their traffic, so it needs
+  `--allow-ovs-restart`. Without it, the installer says what the restart
+  would interrupt, leaves DPDK on and finishes the rest of the install.
+- It is refused while a DPDK port exists (a DPDK uplink or a vhost-user
+  VM NIC), naming it: those would stop working. Remove DPDK uplinks and
+  stop or move VMs with vhost-user NICs first.
+- The OVS packages stay installed.
+- Hugepages stay reserved unless you pass `--release-hugepages`, which
+  puts `vm.nr_hugepages` back to its value before Glidex (else 0) and
+  removes it from `/etc/sysctl.d/90-glidex.conf`. It goes only with the
+  kernel profile, only once DPDK is off, and isn't saved. Hugepages a
+  running guest uses go back once freed, or after a reboot.
+
+With DPDK off, a cluster node's `br-int` on **Automatic** goes back to
+the kernel datapath within about a minute, but only once no VM port is
+on `br-int` (see [The `br-int` datapath](#the-br-int-datapath)).
+
+Switching the profile with `gxctl ovs install` or the web UI doesn't
+turn DPDK off; use the installer.
+
 ## Datapaths and NIC types
 
 OVS forwards packets either in the kernel (`system` datapath) or in
 userspace (`netdev`, with DPDK or AF_XDP). A VM's NIC is either a **tap**
 device or a **vhost-user** socket. Not every mix works; `gxctl ovs
-status` and the Networking page list the combinations and what each is
+status` and the Networking section of the host's page list the combinations and what each is
 missing on this host:
 
 | Id | Combination | Needs |
@@ -99,7 +141,8 @@ A NAT or isolated network gets its own bridge, named
 `gxbr-<first 8 characters of the network id>` unless you name it. A
 bridged network, and an uplink, use a bridge you create first.
 
-Create a bridge in the web UI: **Networking** → **glidex bridges** →
+Create a bridge in the web UI: the host's page → **Networking** →
+**glidex bridges** →
 **+ New bridge**, with a name and a datapath:
 
 - **kernel (system)**: for kernel uplinks, and for an OVN gateway's
@@ -132,7 +175,8 @@ of the host's NICs. There are three kinds:
 | AF_XDP | userspace (netdev) | stays a kernel interface; OVS reads it through AF_XDP |
 | DPDK | userspace (netdev) | leaves the kernel: bound to `vfio-pci`, named by PCI address |
 
-Add one from the web UI (**Networking** → a bridge → **Add uplink…**) or
+Add one from the web UI (the host's page → **Networking** → a bridge →
+**Add uplink…**) or
 `gxctl`:
 
 ```bash
@@ -188,7 +232,7 @@ gateway check. If moving fails or the gateway doesn't answer, it gives
 the NIC its own configuration back and holds the uplink off the bridge,
 so the host stays reachable.
 
-A held uplink shows **held off the bridge** on the Networking page, with
+A held uplink shows **held off the bridge** on the host's page, with
 when and why. `gxctl uplinks <bridge>` shows its phase and the netd log
 says `IP migration rolled back at start`. Fix the cause (a cable, a
 switch port, the gateway), then re-apply it:
@@ -227,7 +271,7 @@ gxctl network-add lab-fast --vhost-user        # vhost-user NICs (needs the dpdk
 - In a cluster with OVN on, `network-add` makes a cluster network unless
   you pass `--node` (a bridge on this host only).
 
-If `ufw` or `firewalld` is active, the Networking page warns that it may
+If `ufw` or `firewalld` is active, the host's page warns that it may
 drop forwarded NAT traffic. `glidex-netd` adds its own nftables table
 (`glidex`) and, where the iptables `FORWARD` or `INPUT` policy would drop
 guest traffic, its own chains (`GLIDEX-FORWARD`, `GLIDEX-INPUT`). If
@@ -294,7 +338,9 @@ networks. On the node's page, **br-int datapath** → **Change…**:
 | Userspace (netdev, DPDK) | For vhost-user NICs on cluster networks. Needs DPDK; can't carry a gateway. |
 
 The node switches within half a minute, but only while no VM port is on
-`br-int`: stop or move the node's VMs on cluster networks first. A VM
+`br-int`: stop or move the node's VMs on cluster networks first. After
+going [back to the kernel profile](#back-to-the-kernel-profile),
+**Automatic** switches to the kernel datapath the same way. A VM
 with a vhost-user NIC on a cluster network is placed only on nodes whose
 `br-int` is userspace.
 

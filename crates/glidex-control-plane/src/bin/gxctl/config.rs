@@ -28,6 +28,32 @@ pub struct Config {
     pub profiles: BTreeMap<String, Profile>,
 }
 
+impl Config {
+    /// Take profile `name` out of the file; the current one too, leaving
+    /// none current. A profile still holding a token is refused unless
+    /// `forget_token`: the token stays valid on the server until revoked.
+    pub fn remove_profile(&mut self, name: &str, forget_token: bool) -> Result<(), String> {
+        let Some(p) = self.profiles.get(name) else {
+            return Err(format!(
+                "no profile '{name}'; the file knows: {}",
+                self.list()
+            ));
+        };
+        if p.token.is_some() && !forget_token {
+            return Err(format!(
+                "profile '{name}' still holds a token, which stays valid on the server: \
+                 revoke it first (gxctl auth logout --profile {name} --revoke), \
+                 or pass --forget-token to drop it without revoking"
+            ));
+        }
+        self.profiles.remove(name);
+        if self.current.as_deref() == Some(name) {
+            self.current = None;
+        }
+        Ok(())
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -167,6 +193,34 @@ pub struct Profile {
     /// Failover hint (§4.2); losing it costs nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used: Option<LastUsed>,
+    /// A login at a directory (spec/tenancy.md D57): `token` is then the
+    /// access token it gave for this cluster, refreshed before it expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<DirectoryLogin>,
+}
+
+/// What a directory login keeps. The refresh token is a secret like
+/// `token`, held by the same 0600 file and never printed.
+#[derive(Deserialize, Serialize, Default, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct DirectoryLogin {
+    /// The directory on the profile's servers (`/d/<id>`).
+    pub id: String,
+    pub refresh_token: String,
+    /// `urn:glidex:cluster:<id>`: what access tokens are asked for.
+    pub resource: String,
+    /// When the access token in `token` expires (Unix seconds).
+    pub access_expires_at: u64,
+}
+
+impl std::fmt::Debug for DirectoryLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DirectoryLogin {{ id: {:?}, resource: {:?} }}",
+            self.id, self.resource
+        )
+    }
 }
 
 impl std::fmt::Debug for Profile {
@@ -631,6 +685,35 @@ mod tests {
             !shown.contains("gxt_secret_value") && !shown.contains("vault"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_profile_is_removed_once_its_token_is_dealt_with() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("config.json");
+        let mut c = full();
+        c.current = Some("lab".into());
+        let e = c.remove_profile("lab", false).unwrap_err();
+        assert!(
+            e.contains("still holds a token") && e.contains("--revoke"),
+            "{e}"
+        );
+        assert!(c.profiles.contains_key("lab"), "refused: nothing changed");
+        assert!(
+            c.remove_profile("ghost", true)
+                .unwrap_err()
+                .contains("no profile 'ghost'")
+        );
+        c.remove_profile("lab", true).unwrap();
+        assert!(!c.profiles.contains_key("lab"));
+        assert_eq!(c.current, None, "the current one goes with it");
+        // The file stays loadable (a current naming a missing profile isn't).
+        save_to(&p, &c).unwrap();
+        assert!(load_from(&p).unwrap().unwrap().current.is_none());
+        // A profile without a token goes at once.
+        let mut c = full();
+        c.profiles.get_mut("lab").unwrap().token = None;
+        c.remove_profile("lab", false).unwrap();
     }
 
     #[test]

@@ -5,7 +5,8 @@ The control plane serves HTTPS on every address, `0.0.0.0:8841` and
 self-signed certificate unless one is configured; plain HTTP only on
 loopback — [security.md](security.md) §5.1), and on its Unix sockets.
 All request and
-response bodies are JSON except for the console WebSocket.
+response bodies are JSON except the console WebSocket, the console
+log (raw bytes) and `GET /watch` (server-sent events).
 
 ## Authentication and authorization
 
@@ -28,8 +29,7 @@ served in the proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8)
 full and RFC 3339 times. A body that is JSON but not the message (an
 unknown enum value, a wrong type) is `422 invalid`, as before; so is a
 `POST /vms` without `name`, `vcpu_count` or `mem_size_mib` (proto3 has
-no required fields, so the REST twin checks them). The families not
-ported yet keep their shapes.
+no required fields, so the REST twin checks them).
 
 The usage family (`/usage…`, the `/…/bandwidth`, `/…/io` and
 `/…/compute` series, and `/…/stats`) is served in the proto shape too:
@@ -219,7 +219,21 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
 | `GET` / `POST` | `/tenants/{id}/federations` | `FederationService.ListFederations` / `CreateFederation` | Workload federations ([tenancy.md](tenancy.md) §9, D49–D51): `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}`; `readTenantFederations` / `manageTenantFederations` (step-up). The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub`, exact values only, and name service accounts of the tenant's projects (`422 invalid_federation`) |
 | `GET` / `PATCH` / `DELETE` | `/tenants/{id}/federations/{federation}` | `GetFederation` / `UpdateFederation` / `DeleteFederation` | PATCH `{changes: {…}, update_mask?}`: without a mask, the fields present are the ones changed |
+| `GET` | `/directory/keys` | `SigningKeyService.ListSigningKeys` | The directory's issuer URL and signing keys ([tenancy.md](tenancy.md) D52, D53): `{keys: [{kid, alg, created_at, retired_at, published_until, active}], issuer, issuer_fixed}`; `readSigningKeys` |
+| `POST` | `/directory/keys/rotate` | `RotateSigningKey` | `{key}`; `rotateSigningKey` (step-up) |
+| `GET` | `/d/{dir}/.well-known/openid-configuration`, `/d/{dir}/jwks.json` | — | Public, HTTP only: discovery and JWKS (D53); `404` for a directory this host doesn't serve, `503 no_issuer` when it has no public address |
+| `GET` | `/d/{dir}/authorize` | — | Public, HTTP only: the code flow with PKCE for `gxctl` (D54); `303` to the loopback `redirect_uri` with `code` and `state`, or to `/?next=…` without a session |
+| `POST` | `/d/{dir}/device_authorization`, `/d/{dir}/token`, `/d/{dir}/revoke` | — | Public, HTTP only, form-encoded, OAuth errors (D55, D57) |
+| `POST` | `/d/{dir}/device/inspect`, `/d/{dir}/device/answer` | — | Signed in (a browser session; a token is refused): what a user code is for, and approving or denying it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
+| `POST` / `GET` | `/admissions/offers` | `AdmissionService.OfferAdmission` / `ListOffers` | [tenancy.md](tenancy.md) D64: `{tenant, directory, cap?, days?}` → `201 {offer: {id, tenant, directory, cap, by, created_at, expires_at, redeemed_at?}, token}`; `manageAdmissions` (step-up) / `listAdmissions` |
+| `DELETE` | `/admissions/offers/{id}` | `RevokeOffer` | `manageAdmissions` (step-up) |
+| `GET` | `/admissions/directories` | `ListTrustedDirectories` | The cluster's `TrustedDirectory` records (D65): `{directories: [{id, issuer, tenants: [{id, slug, display_name}], created_at}]}`; `listAdmissions` |
+| `GET` / `POST` | `/tenants/{id}/clusters` | `TenantService.ListTenantClusters` / `OptInCluster` | The directory's `TrustedCluster` records for the tenant; opt in with `{offer}` → `201 {cluster: {cluster_id, name, api, created_at}}` (`400 offer_refused`, `502 cluster_unreachable`); `readTenantClusters` / `manageTenantClusters` (step-up) |
+| `DELETE` | `/tenants/{id}/clusters/{cluster}` | `OptOutCluster` | D66: forgotten here, the cluster told |
+| `POST` | `/trust/v1/redeem`, `/trust/v1/end`, `/d/{dir}/trust/v1/end` | — | Public, peer-signed (`Authorization: GlidexPeer <JWT>`, D63): a directory redeeming an offer or ending trust at a cluster, a cluster ending it at a directory; one `403 trust_refused` for every refusal |
+| `GET` / `POST` | `/directories` | `DirectoryService.ListDirectories` / `CreateDirectory` | The directories this host serves ([tenancy.md](tenancy.md) D59): `listDirectories` / `manageDirectories` (step-up, `cluster.directories` of `role.system-admin`); create `{id, name, owner, admin_email, days?}` → `201 {directory: {id, name, issuer, created_at}, invitation_link}` |
+| `DELETE` | `/directories/{id}` | `DeleteDirectory` | Only while it has no user, connector or project (`409 directory_not_empty`); never `local` |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
 
 Login connectors ([tenancy.md](tenancy.md) §13–§14) are REST twins of
@@ -468,7 +482,9 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
   `initrd_path` adds an initramfs to `kernel_image_path` (a host path,
   `useHostPath`). `kernel_args` defaults to `console=ttyS0 root=/dev/vda
-  reboot=k panic=1`; at most 2047 bytes, no control characters. The last
+  reboot=k panic=1` (`console=ttyAMA0` for a VM on an aarch64 node: a
+  kernel image's architecture, else the pinned node's, else the
+  host's); at most 2047 bytes, no control characters. The last
   `console=` picks the console device: `hvc0` is the virtio console,
   anything else the serial port.
 - `firmware` boots the disk through UEFI firmware instead of a kernel:

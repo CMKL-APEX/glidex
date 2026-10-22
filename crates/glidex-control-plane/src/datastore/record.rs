@@ -67,6 +67,15 @@ pub enum DriverSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,
     },
+    /// LVM-thin on each node: a volume group and thin pool the operator
+    /// made, through glidex-stord (spec/storage.md §11.1, S19).
+    Lvm {
+        vg: String,
+        thin_pool: String,
+        /// Node id → that node's volume group, overriding `vg`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        node_vgs: BTreeMap<String, String>,
+    },
 }
 
 /// Where a datastore's volumes can be reached from (S4).
@@ -79,12 +88,14 @@ pub enum Topology {
 }
 
 impl DriverSpec {
-    /// The datastore's path, and each node's own (S14).
+    /// The datastore's path, and each node's own (S14). For `lvm`: its
+    /// volume group, and each node's own.
     pub fn paths(&self) -> (&String, &BTreeMap<String, String>) {
         match self {
             DriverSpec::Dir { path, node_paths } | DriverSpec::SharedDir { path, node_paths } => {
                 (path, node_paths)
             }
+            DriverSpec::Lvm { vg, node_vgs, .. } => (vg, node_vgs),
         }
     }
 
@@ -93,7 +104,13 @@ impl DriverSpec {
             DriverSpec::Dir { node_paths, .. } | DriverSpec::SharedDir { node_paths, .. } => {
                 node_paths
             }
+            DriverSpec::Lvm { node_vgs, .. } => node_vgs,
         }
+    }
+
+    /// Volumes are block devices (raw), not files.
+    pub fn is_block(&self) -> bool {
+        matches!(self, DriverSpec::Lvm { .. })
     }
 }
 
@@ -123,7 +140,8 @@ impl Datastore {
         self.nodes.is_empty() || self.nodes.iter().any(|n| n == node)
     }
 
-    /// `node`'s path to it: its override, else the datastore's path.
+    /// `node`'s path to it: its override, else the datastore's path (for
+    /// `lvm`, the node's volume group).
     pub fn path_for(&self, node: &str) -> &str {
         let (path, node_paths) = self.driver.paths();
         node_paths.get(node).unwrap_or(path)
@@ -131,7 +149,7 @@ impl Datastore {
 
     pub fn topology(&self) -> Topology {
         match self.driver {
-            DriverSpec::Dir { .. } => Topology::NodeLocal,
+            DriverSpec::Dir { .. } | DriverSpec::Lvm { .. } => Topology::NodeLocal,
             DriverSpec::SharedDir { .. } => Topology::Shared,
         }
     }
@@ -169,6 +187,11 @@ pub struct NodeRow {
     /// (spec/storage.md §4.4): NFS mounted `soft`, or with local locks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// `lvm`: the images this node keeps a volume of in it (`gx-i-<id>`,
+    /// spec/storage.md §11.1), so the datastore isn't deleted from under
+    /// them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_volumes: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -260,6 +283,17 @@ fn validate(ds: &Datastore, others: &[Datastore], root: &Path) -> Result<(), Dat
             ds.name
         )));
     }
+    if let DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
+        let (vg, node_vgs) = ds.driver.paths();
+        for (what, n) in std::iter::once(("volume group", vg))
+            .chain(node_vgs.values().map(|v| ("volume group", v)))
+            .chain(std::iter::once(("thin pool", thin_pool)))
+        {
+            glidex_stord::names::lvm_name(what, n)
+                .map_err(|e| DatastoreError::Invalid(e.to_string()))?;
+        }
+        return Ok(());
+    }
     let (path, node_paths) = ds.driver.paths();
     check_path(path, root)?;
     for p in node_paths.values() {
@@ -296,8 +330,16 @@ pub fn put(db: &Db, ds: &Datastore, root: &Path) -> Result<(), DatastoreError> {
 }
 
 /// Delete `id` and every node's row about it; refused while a disk is on
-/// it, checked in the same write so a disk made meanwhile can't be lost.
-pub fn delete(db: &Db, id: &str) -> Result<(), DatastoreError> {
+/// it, checked in the same write so a disk made meanwhile can't be lost,
+/// and while a node keeps image volumes in it (an `lvm` datastore's
+/// `gx-i-*`, which nothing would remove afterwards). `node_name` and
+/// `image_name` only word the refusal.
+pub fn delete(
+    db: &Db,
+    id: &str,
+    node_name: &dyn Fn(&str) -> String,
+    image_name: &dyn Fn(&str) -> String,
+) -> Result<(), DatastoreError> {
     db.write(Origin::Api, |tx| -> Result<(), DatastoreError> {
         let mut on = Vec::new();
         for r in tx.open_table(TableId::Disks.definition())?.iter()? {
@@ -314,10 +356,26 @@ pub fn delete(db: &Db, id: &str) -> Result<(), DatastoreError> {
                 on.join(", ")
             )));
         }
-        tx.open_table(TableId::Datastores.definition())?
-            .remove(id)?;
         let mut rows = tx.open_table(TableId::DatastoreNodes.definition())?;
         let prefix = format!("{id}/");
+        let mut kept = Vec::new();
+        for r in rows.range(prefix.as_str()..format!("{id}~").as_str())? {
+            let (k, v) = r?;
+            let row: NodeRow = serde_json::from_slice(v.value())?;
+            if !row.image_volumes.is_empty() {
+                let node = k.value().split_once('/').map(|(_, n)| n).unwrap_or_default();
+                let images: Vec<String> = row.image_volumes.iter().map(|i| image_name(i)).collect();
+                kept.push(format!("{} on node {}", images.join(", "), node_name(node)));
+            }
+        }
+        if !kept.is_empty() {
+            return Err(DatastoreError::Conflict(format!(
+                "it still holds volumes of images {}; delete those images first, or remove their gx-i-* volumes from the volume group",
+                kept.join("; ")
+            )));
+        }
+        tx.open_table(TableId::Datastores.definition())?
+            .remove(id)?;
         let keys: Vec<String> = rows
             .range(prefix.as_str()..format!("{id}~").as_str())?
             .map(|r| r.map(|(k, _)| k.value().to_string()))

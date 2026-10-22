@@ -844,6 +844,8 @@ message NodeStatus {
   repeated string pci_devices = 13 [json_name = "pci_devices"];
   // When Ready last changed.
   google.protobuf.Timestamp heartbeat = 14;
+  // A server's web UI address (spec/host-page.md W3); agents publish none.
+  optional string ui_url = 15 [json_name = "ui_url"];
 }
 
 message Node {
@@ -884,6 +886,9 @@ message PciPool {
   optional string from = 5;
   optional uint32 max = 6;
   optional uint32 used = 7;
+  // What a VM gets per device asked of it with `gpus` (spec/gpu-vms.md §6).
+  optional uint32 per_device_vcpus = 8 [json_name = "per_device_vcpus"];
+  optional uint32 per_device_memory_mib = 9 [json_name = "per_device_memory_mib"];
 }
 message PciPoolNode {
   string node = 1;

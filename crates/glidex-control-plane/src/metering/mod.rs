@@ -382,15 +382,14 @@ impl crate::state::VmManager {
                 } else {
                     Vec::new()
                 };
-                let paths: Vec<_> = disks.iter().map(|d| me.images.disk_path(d)).collect();
                 let m = meter.clone();
+                let images_mgr = me.images.clone();
                 let done = tokio::task::spawn_blocking(move || {
                     let measured: Vec<(Disk, u64)> = disks
                         .into_iter()
-                        .zip(paths)
-                        .filter_map(|(d, p)| {
-                            let info = crate::images::qemu_img::info(&p, Some(d.format)).ok()?;
-                            Some((d, info.actual_size))
+                        .filter_map(|d| {
+                            let stored = images_mgr.stored_bytes(&d)?;
+                            Some((d, stored))
                         })
                         .collect();
                     m.sample_storage(&measured, &images, now_ms())

@@ -12,6 +12,7 @@
 pub mod access;
 pub mod cluster;
 pub mod common;
+pub mod directories;
 pub mod directory;
 pub mod federations;
 pub mod host;
@@ -19,6 +20,7 @@ pub mod invitations;
 pub mod login;
 pub mod network;
 pub mod node;
+pub mod signing_keys;
 pub mod storage;
 pub mod system;
 pub mod tenancy;

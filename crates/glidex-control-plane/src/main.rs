@@ -223,9 +223,9 @@ async fn main() {
     // the detached runner they are this process's children and need it.
     print_status("Checking KVM access");
     if vm_manager.runner().kind_name() == "systemd" {
-        // access(2): the VM units run as this user with these groups.
-        let rw = nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK;
-        if nix::unistd::access("/dev/kvm", rw).is_ok() {
+        // The VM units run as this user with these groups, and allow
+        // /dev/kvm where this unit doesn't: its owner, group and mode tell.
+        if glidex_control_plane::devaccess::vm_can_open(Path::new("/dev/kvm")) {
             println!("OK (VMs open it in their glidex-vm units)");
         } else if Path::new("/dev/kvm").exists() {
             println!("NO ACCESS (this user is not in the kvm group; no VM can start)");
@@ -407,12 +407,16 @@ async fn main() {
     auth.watch_policies();
     // Pulled connectors' runs, where writes go (spec/tenancy.md §8.2).
     glidex_control_plane::directory::sync::spawn(auth.clone());
+    glidex_control_plane::directory::issuer::spawn(auth.clone());
 
     vm_manager.set_secrets_key(auth.clone());
-    let router = api::router(Arc::new(api::App {
+    let app_state = Arc::new(api::App {
         manager: vm_manager.clone(),
         auth,
-    }));
+    });
+    // Feeds from the directories this cluster trusts (spec/tenancy.md D67).
+    api::trust::spawn_feeds(app_state.clone());
+    let router = api::router(app_state);
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());
 

@@ -2,12 +2,13 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::tenancy;
+use crate::service::{directories, tenancy};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::tenancy::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = TenantServiceExt::register(Svc::new(app), router);
+    let router = DirectoryServiceExt::register(Svc::new(app), router);
     AdmissionServiceExt::register(Svc::new(app), router)
 }
 
@@ -155,6 +156,30 @@ impl TenantService for Svc {
     ) -> ServiceResult<RemoveBindingResponse> {
         op!(self, ctx, req, tenancy::remove_binding)
     }
+
+    async fn list_tenant_clusters(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListTenantClustersRequest>,
+    ) -> ServiceResult<ListTenantClustersResponse> {
+        op!(self, ctx, req, tenancy::list_tenant_clusters)
+    }
+
+    async fn opt_in_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OptInClusterRequest>,
+    ) -> ServiceResult<OptInClusterResponse> {
+        op_async!(self, ctx, req, tenancy::opt_in_cluster)
+    }
+
+    async fn opt_out_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OptOutClusterRequest>,
+    ) -> ServiceResult<OptOutClusterResponse> {
+        op_async!(self, ctx, req, tenancy::opt_out_cluster)
+    }
 }
 
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
@@ -182,5 +207,64 @@ impl AdmissionService for Svc {
         req: ServiceRequest<'_, RemoveAdmissionRequest>,
     ) -> ServiceResult<RemoveAdmissionResponse> {
         op!(self, ctx, req, tenancy::remove_admission)
+    }
+
+    async fn offer_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, OfferAdmissionRequest>,
+    ) -> ServiceResult<OfferAdmissionResponse> {
+        op!(self, ctx, req, tenancy::offer_admission)
+    }
+
+    async fn list_offers(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListOffersRequest>,
+    ) -> ServiceResult<ListOffersResponse> {
+        op!(self, ctx, req, tenancy::list_offers)
+    }
+
+    async fn revoke_offer(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RevokeOfferRequest>,
+    ) -> ServiceResult<RevokeOfferResponse> {
+        op!(self, ctx, req, tenancy::revoke_offer)
+    }
+
+    async fn list_trusted_directories(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListTrustedDirectoriesRequest>,
+    ) -> ServiceResult<ListTrustedDirectoriesResponse> {
+        op!(self, ctx, req, tenancy::list_trusted_directories)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl DirectoryService for Svc {
+    async fn list_directories(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListDirectoriesRequest>,
+    ) -> ServiceResult<ListDirectoriesResponse> {
+        op!(self, ctx, req, directories::list_directories)
+    }
+
+    async fn create_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateDirectoryRequest>,
+    ) -> ServiceResult<CreateDirectoryResponse> {
+        op!(self, ctx, req, directories::create_directory)
+    }
+
+    async fn delete_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteDirectoryRequest>,
+    ) -> ServiceResult<DeleteDirectoryResponse> {
+        op!(self, ctx, req, directories::delete_directory)
     }
 }

@@ -125,8 +125,11 @@ pub async fn create(
 ) -> Result<Response, ApiErr> {
     // proto3 has no required fields; the REST body says which are missing
     // (`422`, as before the port). A `0` sent is validated like any value.
+    // With `gpus`, the sizing may come from the pool (spec/gpu-vms.md §3).
+    let gpus = v.get("gpus").is_some_and(|g| !g.is_null());
     let missing: Vec<&str> = ["name", "vcpu_count", "mem_size_mib"]
         .into_iter()
+        .filter(|f| !(gpus && *f != "name"))
         .filter(|f| v.get(*f).is_none_or(Value::is_null))
         .collect();
     if !missing.is_empty() {
@@ -411,7 +414,13 @@ fn pool_grants<'a>(
 pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
     pool_grants(c, name)
         .flat_map(|g| g.tenants.iter())
-        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .filter_map(|t| {
+            c.auth()
+                .tenants
+                .resolve_in(c.p.directory_id(), t)
+                .ok()
+                .map(|t| t.id)
+        })
         .collect()
 }
 
@@ -452,7 +461,13 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
     let tenants: Vec<String> = allow
         .iter()
         .flat_map(|g| g.tenants.iter())
-        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .filter_map(|t| {
+            c.auth()
+                .tenants
+                .resolve_in(c.p.directory_id(), t)
+                .ok()
+                .map(|t| t.id)
+        })
         .collect();
     let mut es = EntitySet::new();
     es.pci_device(node, bdf, &grants, &tenants);

@@ -24,6 +24,7 @@
 //! Tailscale certificate to its ts.net names (`tailscale`,
 //! spec/tailscale-tls.md).
 
+mod home;
 mod tailscale;
 
 use axum::Router;
@@ -193,11 +194,16 @@ struct HostPolicy {
     /// with either list: the UI holds a certificate for them, so they are
     /// this host's (spec/tailscale-tls.md §4.3).
     tailscale: Option<Arc<tailscale::Held>>,
+    /// What the control plane last said about this UI: on a server, more
+    /// names to accept (`cluster.ui_url`, spec/host-page.md W4); on an
+    /// agent, where browsers go (W5).
+    home: Arc<home::Home>,
 }
 
 impl HostPolicy {
     fn allows(&self, host: &str) -> bool {
         host_allowed(&self.rules, host)
+            || self.home.allows_host(host)
             || (self.local_ips && host_ip(host).is_some_and(glidex_tls::is_local_ip))
             || self
                 .tailscale
@@ -687,11 +693,14 @@ fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
     Router::new()
         .route("/api", any(proxy_api))
         .route("/api/{*rest}", any(proxy_api))
+        // The directories' issuers (spec/tenancy.md D52): discovery, keys.
+        .route("/d/{*rest}", any(proxy_api))
         // A missing asset is a 404, never index.html: it would be cached as the asset.
         .nest_service("/assets", assets)
         .fallback_service(pages)
         .with_state(state)
         .layer(from_fn(cache_headers))
+        .layer(from_fn_with_state(hosts.home.clone(), home::route))
         .layer(from_fn_with_state(Arc::new(hosts), host_check))
         .layer(from_fn_with_state(hsts, security_headers))
 }
@@ -702,7 +711,7 @@ fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
 /// which names them) is checked again on every use.
 async fn cache_headers(req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if path == "/api" || path.starts_with("/api/") {
+    if path == "/api" || path.starts_with("/api/") || path.starts_with("/d/") {
         return next.run(req).await;
     }
     let asset = path.starts_with("/assets/");
@@ -931,6 +940,73 @@ async fn accept_loop(
     }
 }
 
+/// The address this UI reports (spec/host-page.md W3): its Tailscale name
+/// when it holds that certificate, else the first name `GLIDEX_UI_HOSTS`
+/// lists, else the host's FQDN; with its port.
+fn own_url(
+    held: Option<&tailscale::Held>,
+    explicit: Option<&[HostRule]>,
+    fqdn: Option<&str>,
+    port: u16,
+) -> Option<String> {
+    let named = |h: &str| h != "localhost" && !h.starts_with('[') && h.parse::<IpAddr>().is_err();
+    let (host, port) = held
+        .and_then(|t| t.first())
+        .map(|h| (h, port))
+        .or_else(|| {
+            explicit?
+                .iter()
+                .find(|r| named(&r.host))
+                .map(|r| (r.host.clone(), r.port.unwrap_or(port)))
+        })
+        .or_else(|| fqdn.filter(|h| named(h)).map(|h| (h.to_string(), port)))?;
+    Some(match port {
+        443 => format!("https://{host}"),
+        p => format!("https://{host}:{p}"),
+    })
+}
+
+/// Report `own()` to the control plane every `home::EVERY` (sooner until
+/// the first answer) and keep what it says.
+async fn report_loop(
+    upstream: Upstream,
+    home: Arc<home::Home>,
+    own: impl Fn() -> Option<String> + Send + 'static,
+) {
+    let mut answered = false;
+    loop {
+        let body = serde_json::json!({ "url": own() }).to_string();
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/ui/self")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .expect("a valid request");
+        match upstream.send(req).await {
+            Ok(resp) if resp.status().is_success() => {
+                match axum::body::to_bytes(Body::new(resp.into_body()), 1 << 20).await {
+                    Ok(b) => match serde_json::from_slice::<serde_json::Value>(&b) {
+                        Ok(v) => {
+                            home.set(home::Answer::from_json(&v));
+                            answered = true;
+                        }
+                        Err(e) => tracing::debug!("PUT /ui/self: {}", e),
+                    },
+                    Err(e) => tracing::debug!("PUT /ui/self: {}", e),
+                }
+            }
+            Ok(resp) => tracing::debug!(status = %resp.status(), "PUT /ui/self"),
+            Err(e) => tracing::debug!("PUT /ui/self: {}", e),
+        }
+        let wait = if answered {
+            home::EVERY
+        } else {
+            std::time::Duration::from_secs(5)
+        };
+        tokio::time::sleep(wait).await;
+    }
+}
+
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
@@ -982,16 +1058,22 @@ async fn serve() -> Result<(), String> {
         _ => None,
     };
     let held = tailscale.as_ref().map(|t| t.held());
-    let hosts = match env("GLIDEX_UI_HOSTS") {
-        Some(list) => HostPolicy {
-            rules: parse_host_rules(&list)?,
+    let home = Arc::new(home::Home::default());
+    let explicit = env("GLIDEX_UI_HOSTS")
+        .map(|l| parse_host_rules(&l))
+        .transpose()?;
+    let hosts = match &explicit {
+        Some(rules) => HostPolicy {
+            rules: rules.clone(),
             local_ips: false,
             tailscale: held.clone(),
+            home: home.clone(),
         },
         None => HostPolicy {
             rules: default_host_rules(&glidex_tls::LocalNames::discover()),
             local_ips: true,
             tailscale: held.clone(),
+            home: home.clone(),
         },
     };
     let spec = upstream_spec(
@@ -1000,6 +1082,14 @@ async fn serve() -> Result<(), String> {
     )?;
     let upstream = Upstream::new(spec, env("GLIDEX_API_CA_CERT"))?;
     let describe = upstream.describe();
+    // spec/host-page.md §3: report this UI's address; learn where it belongs.
+    if tls_on {
+        let port = listen.first().map_or(PORT, SocketAddr::port);
+        let fqdn = glidex_tls::LocalNames::discover().dns.into_iter().next();
+        let held = held.clone();
+        let own = move || own_url(held.as_deref(), explicit.as_deref(), fqdn.as_deref(), port);
+        tokio::spawn(report_loop(upstream.clone(), home.clone(), own));
+    }
     let hsts = cert.as_ref().is_some_and(|c| !c.self_signed);
     let redirect = redirect_router(Arc::new(hosts.clone()));
     let router = app(
@@ -1167,6 +1257,7 @@ mod tests {
         );
         assert_eq!(up("/api/images?all=1"), "/images?all=1");
         assert_eq!(up("/api"), "/");
+        assert_eq!(up("/d/local/jwks.json"), "/d/local/jwks.json");
     }
 
     /// The default policy also takes an address the host has now, even
@@ -1181,6 +1272,7 @@ mod tests {
             rules: default_host_rules(&glidex_tls::LocalNames::default()),
             local_ips: true,
             tailscale: None,
+            home: Default::default(),
         };
         let explicit = HostPolicy {
             local_ips: false,
@@ -1199,6 +1291,31 @@ mod tests {
         }
         assert_eq!(host_ip("[::1]:5173"), Some("::1".parse().unwrap()));
         assert_eq!(host_ip("glidex.example.org"), None);
+    }
+
+    #[test]
+    fn the_reported_address() {
+        let rules = parse_host_rules("10.0.0.5,ui.example.com:8443,other.example.com").unwrap();
+        assert_eq!(
+            own_url(None, Some(&rules), Some("h1.lan"), 5173).as_deref(),
+            Some("https://ui.example.com:8443"),
+            "the first name GLIDEX_UI_HOSTS lists, not an address"
+        );
+        assert_eq!(
+            own_url(None, None, Some("h1.lan"), 5173).as_deref(),
+            Some("https://h1.lan:5173")
+        );
+        assert_eq!(
+            own_url(None, None, Some("h1.lan"), 443).as_deref(),
+            Some("https://h1.lan")
+        );
+        assert_eq!(own_url(None, None, Some("localhost"), 5173), None);
+        let held = tailscale::Held::default();
+        assert_eq!(
+            own_url(Some(&held), None, Some("h1.lan"), 5173).as_deref(),
+            Some("https://h1.lan:5173"),
+            "no Tailscale certificate yet"
+        );
     }
 
     #[test]
@@ -1504,6 +1621,7 @@ mod tests {
                 rules: default_host_rules(&local()),
                 local_ips: false,
                 tailscale: None,
+                home: Default::default(),
             },
         );
         let get = |path: &str, encoding: Option<&str>| {
@@ -1591,6 +1709,7 @@ mod tests {
                 rules: default_host_rules(&local()),
                 local_ips: false,
                 tailscale: None,
+                home: Default::default(),
             },
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1694,6 +1813,7 @@ mod tests {
             rules: default_host_rules(&names),
             local_ips: false,
             tailscale: None,
+            home: Default::default(),
         };
         let router = app(
             dir.path(),
@@ -1807,6 +1927,7 @@ mod tests {
             rules: default_host_rules(&local()),
             local_ips: false,
             tailscale: Some(held.clone()),
+            home: Default::default(),
         };
         let router = app(
             dir.path(),

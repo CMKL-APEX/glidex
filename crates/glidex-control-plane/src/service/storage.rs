@@ -936,13 +936,23 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR,
             pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
         ),
+        DriverSpec::Lvm { .. } => (
+            pb::DatastoreDriver::DATASTORE_DRIVER_LVM,
+            pb::DatastoreTopology::DATASTORE_TOPOLOGY_NODE_LOCAL,
+        ),
+    };
+    let (path, volume_group, thin_pool) = match &d.driver {
+        DriverSpec::Lvm { vg, thin_pool, .. } => (String::new(), vg.clone(), thin_pool.clone()),
+        _ => (path.clone(), String::new(), String::new()),
     };
     pb::Datastore {
         id: d.id.clone(),
         name: d.name.clone(),
         driver: driver.into(),
         topology: topology.into(),
-        path: path.clone(),
+        path,
+        volume_group,
+        thin_pool,
         node_paths: node_paths.clone().into_iter().collect(),
         nodes: d.nodes.clone(),
         default_for_disks: v.is_default,
@@ -963,6 +973,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
                 free_bytes: r.free_bytes,
                 checked_at: crate::service::common::ts_opt(r.checked_at).into(),
                 warnings: r.warnings.clone(),
+                image_volumes: r.image_volumes.clone(),
                 ..Default::default()
             })
             .collect(),
@@ -1013,17 +1024,23 @@ pub async fn create_datastore(
     req: pb::CreateDatastoreRequest,
 ) -> ServiceResult<pb::CreateDatastoreResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
-    let shared = match req.driver.as_known() {
+    let invalid = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_datastore", m);
+    let (shared, lvm) = match req.driver.as_known() {
         Some(pb::DatastoreDriver::DATASTORE_DRIVER_DIR)
-        | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => false,
-        Some(pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR) => true,
-        None => {
-            return Err(ServiceError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_datastore",
-                "driver: dir or shared-dir",
-            ));
+        | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => (false, None),
+        Some(pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR) => (true, None),
+        Some(pb::DatastoreDriver::DATASTORE_DRIVER_LVM) => {
+            if req.volume_group.is_empty() || req.thin_pool.is_empty() || !req.path.is_empty() {
+                return Err(invalid(
+                    "an lvm datastore takes volume_group and thin_pool, not path",
+                ));
+            }
+            (
+                false,
+                Some((req.volume_group.clone(), req.thin_pool.clone())),
+            )
         }
+        None => return Err(invalid("driver: dir, shared-dir or lvm")),
     };
     let v = call
         .manager()
@@ -1035,6 +1052,7 @@ pub async fn create_datastore(
             default_for_disks: req.default_for_disks.unwrap_or(false),
             overcommit: req.overcommit,
             shared,
+            lvm,
         })
         .await
         .map_err(manager_err)?;

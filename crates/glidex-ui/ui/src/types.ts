@@ -96,6 +96,8 @@ export interface VmResponse {
   /** Devices asked for by pool, and those the scheduler picked (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
   pool_devices?: { pool: string; address: string }[];
+  /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/gpu-vms.md §4). */
+  numa?: { node?: number; vcpus?: number; memory_mib?: number; devices?: string[] }[];
   credential?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
@@ -294,6 +296,8 @@ export interface CreateVmRequest {
   vfio_devices?: string[];
   /** Devices asked for by pool; the scheduler picks them (spec/host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  gpus?: { count: number; pool?: string; nvlink?: boolean };
   /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
   power?: ProtoPowerState;
   /** After a crash: restart (default) or leave it stopped. */
@@ -759,7 +763,10 @@ export interface DatastoreNode {
 export interface Datastore {
   id: string;
   name: string;
-  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR";
+  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM";
+  /** `lvm`: the volume group (`node_paths`: each node's own) and its thin pool. */
+  volume_group?: string;
+  thin_pool?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -782,6 +789,10 @@ export interface DatastoreInput {
   name?: string;
   /** Create only: one filesystem every node mounts (`shared-dir`). */
   shared?: boolean;
+  /** Create only: LVM-thin (`lvm`), with `volume_group` and `thin_pool` instead of `path`. */
+  lvm?: boolean;
+  volume_group?: string;
+  thin_pool?: string;
   path?: string;
   node_paths?: Record<string, string>;
   nodes?: string[];
@@ -979,6 +990,23 @@ export interface AuthMethods {
   disabled: boolean;
   /** The directory's enabled connectors (absent from older servers). */
   connectors?: LoginConnector[];
+  /** Passkeys are on (spec/passkeys.md), and their domain when set. */
+  passkeys?: boolean;
+  passkeys_rp_id?: string | null;
+  /** The directory these methods sign in to (spec/tenancy.md D61). */
+  directory?: string;
+  /** Other organizations' directories this cluster trusts (D69). */
+  trusted_directories?: TrustedLogin[];
+}
+
+/** "Sign in with <host>": a trusted directory's login (spec/tenancy.md D69). */
+export interface TrustedLogin {
+  /** Its records' id here, `trusted-<hash>`. */
+  id: string;
+  /** Its issuer's host. */
+  host: string;
+  /** Its tenants admitted on this cluster. */
+  tenants: string[];
 }
 
 // The access routes (projects, bindings, users, teams, tokens, policies,
@@ -1464,6 +1492,8 @@ export interface NodeRecord {
     raft_id?: U64;
     advertise?: string;
     tunnel_ip?: string;
+    /** A server's web UI address (spec/host-page.md W3). */
+    ui_url?: string;
     versions?: { glidex?: string; ovs?: string; ovn?: string };
     capacity?: NodeResources;
     allocatable?: NodeResources;
@@ -2168,6 +2198,8 @@ export interface PciFunction {
   sriov?: { total_vfs?: number; enabled_vfs?: number; vf_driver?: string; ready_vfs?: number };
   physfn?: string;
   assignable?: boolean;
+  /** Part of the host's NVLink fabric (an NVSwitch): shown, never given to a VM (spec/gpu-vms.md §7). */
+  fabric?: boolean;
   ready?: boolean;
   not_ready?: string[];
   aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };

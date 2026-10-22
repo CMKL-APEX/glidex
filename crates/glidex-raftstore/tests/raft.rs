@@ -1,7 +1,7 @@
 //! Raft over an in-process mesh with fault injection (spec/clustering.md §15).
 
-use glidex_control_plane::cluster::raft::testing::TestCluster;
-use glidex_control_plane::store::StoreError;
+use glidex_raftstore::store::{StoreError, definition};
+use glidex_raftstore::testing::{Test, TestCluster, TestOrigin, TestTable};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -69,14 +69,11 @@ async fn a_partitioned_leaders_writes_are_rejected() {
     let stale = {
         let db = c.by_id(old).db.clone();
         tokio::task::spawn_blocking(move || {
-            db.write(
-                glidex_control_plane::store::Origin::Api,
-                |tx| -> Result<(), StoreError> {
-                    tx.open_table(glidex_control_plane::store::TableId::Meta.definition())?
-                        .insert("stale", b"x".as_slice())?;
-                    Ok(())
-                },
-            )
+            db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert("stale", b"x".as_slice())?;
+                Ok(())
+            })
         })
     };
     c.put(new, "fresh", "2").unwrap();
@@ -159,14 +156,11 @@ async fn membership_changes_under_load() {
         tokio::task::spawn_blocking(move || {
             let mut n = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let r = db.write(
-                    glidex_control_plane::store::Origin::Api,
-                    |tx| -> Result<(), StoreError> {
-                        tx.open_table(glidex_control_plane::store::TableId::Meta.definition())?
-                            .insert(&format!("w{n}"), b"1".as_slice())?;
-                        Ok(())
-                    },
-                );
+                let r = db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                    tx.open_table(definition::<Test>(TestTable::Data))?
+                        .insert(&format!("w{n}"), b"1".as_slice())?;
+                    Ok(())
+                });
                 if r.is_ok() {
                     n += 1;
                 }
@@ -207,4 +201,51 @@ async fn membership_changes_under_load() {
     assert_eq!(voters.len(), 3);
     c.converge(&voters, leader).await;
     assert!(c.same_data(&voters));
+}
+
+/// A write set over the schema's limit is refused before it is proposed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn write_sets_over_the_schemas_limit_are_refused() {
+    let c = TestCluster::new(1).await;
+    c.put(1, "small", "v").unwrap();
+    let big = "x".repeat(100 * 1024);
+    assert!(matches!(
+        c.put(1, "big", &big),
+        Err(StoreError::TooLarge(_))
+    ));
+}
+
+/// A member that has stopped refuses writes, and lets go of its store: the
+/// store can be opened again once the member is dropped (the store holds
+/// the member through its replicator, which would otherwise keep both).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_member_lets_go_of_its_store() {
+    let c = TestCluster::new(1).await;
+    c.put(1, "k", "v").unwrap();
+    let path = c.by_id(1).dir.join("store.db");
+    c.kill(1).await;
+    assert!(matches!(
+        c.put(1, "k2", "v"),
+        Err(StoreError::NotLeader { .. })
+    ));
+    let glidex_raftstore::testing::TestCluster {
+        mesh, nodes, root, ..
+    } = c;
+    drop(nodes);
+    drop(mesh);
+    // The member's tasks wind down on the runtime after the drop, so the
+    // store closes shortly after, not at once: wait for it, but not forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match glidex_raftstore::store::Db::<Test>::create(&path) {
+            Ok(_) => break,
+            Err(StoreError::Database(redb::DatabaseError::DatabaseAlreadyOpen))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(e) => panic!("the store was not closed within 10s: {e}"),
+        }
+    }
+    drop(root);
 }

@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--directory [ID] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -259,6 +259,28 @@ async fn tofu_verdict(urls: &[String]) -> String {
             Err(_) => "the server did not answer the unverified probe".into(),
         },
         Err(_) => "the unverified probe could not connect".into(),
+    }
+}
+
+/// The name `auth login --save` gives a new profile: a host name's first
+/// label (`gpu-dev2.example.net` → `gpu-dev2`), or the whole of an address,
+/// its dots or colons as dashes (`172.19.36.18` → `172-19-36-18`).
+fn profile_name_for(host: &str) -> String {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return bare
+            .split(['.', ':'])
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+    }
+    let n: String = host
+        .chars()
+        .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+        .collect();
+    match n.trim_matches('-') {
+        "" => host.to_string(),
+        n => n.to_string(),
     }
 }
 
@@ -332,16 +354,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                         "which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host",
                     );
                 }
-                let host = config::url_host(&urls[0]);
-                let mut n: String = host
-                    .chars()
-                    .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
-                    .collect();
-                n = n.trim_matches('-').to_string();
-                if n.is_empty() {
-                    n = host;
-                }
-                name = Some(n);
+                name = Some(profile_name_for(&config::url_host(&urls[0])));
                 None
             }
         }
@@ -519,7 +532,24 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         .unwrap_or_else(|| format!("gxctl@{name}"));
     let device_tag = glidex_tls::hostname().unwrap_or_else(|| "device".to_string());
     let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
-    let (credential, method_hint) = if has_flag(args, "--oidc") {
+    // A directory login (D57) keeps its refresh token in the profile.
+    let mut dir_login: Option<config::DirectoryLogin> = None;
+    let resource = format!(
+        "urn:glidex:cluster:{}",
+        claimed.as_deref().unwrap_or("local")
+    );
+    let (credential, method_hint) = if has_flag(args, "--directory") {
+        let dir = flag_value(args, "--directory")
+            .filter(|v| !v.starts_with("--"))
+            .unwrap_or("local");
+        match crate::dirlogin::device_login(&cl, dir, &resource).await {
+            Some(l) => {
+                dir_login = Some(l.keep);
+                (l.access, "directory")
+            }
+            None => return,
+        }
+    } else if has_flag(args, "--oidc") {
         match device_login_named(
             &cl,
             &token_name,
@@ -588,6 +618,15 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             return err("no token given");
         }
         (Zeroizing::new(t.to_string()), "token")
+    } else if let Some(d) = existing.as_ref().and_then(|(_, p)| p.directory.clone()) {
+        // A directory login is reused through its refresh token.
+        match crate::dirlogin::refresh(&cl, &d).await {
+            Ok(l) => {
+                dir_login = Some(l.keep);
+                (l.access, "directory")
+            }
+            Err(e) => return err(e),
+        }
     } else if let Some((_, p)) = &existing {
         // Silent reuse (§6.1.4): the profile already had a credential and
         // the server just confirmed it answers for the same cluster — a
@@ -626,7 +665,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             Err(e) => return err(e),
         }
     } else {
-        return usage("give a credential: --oidc, --token (piped or prompted), or --pam-user USER");
+        return usage(
+            "give a credential: --directory, --oidc, --token (piped or prompted), or --pam-user USER",
+        );
     };
     let _ = method_hint;
 
@@ -670,6 +711,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     let urls_w = urls.clone();
     let tls_w = tls.clone();
     let identity_w = identity.clone();
+    let dir_login_w = dir_login.clone();
     let secret = credential.as_str().to_string();
     let name_w = name.clone();
     let mut made_current = false;
@@ -680,6 +722,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         p.cluster_name = server_name;
         p.tls = tls_w;
         p.token = Some(secret);
+        p.directory = dir_login_w;
         // token_command is left exactly as it was: a site-wide helper
         // outranks this stored copy at request time (§2.2), and logging in
         // with a flag does not delete the site's answer.
@@ -771,9 +814,21 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
         );
         return;
     }
+    // A directory login ends at the directory too: its refresh token's
+    // chain, and the access tokens it gave (D55).
+    if let Some(d) = config::profile_of(&cfg, want).and_then(|(_, p)| p.directory.clone()) {
+        match crate::dirlogin::revoke(client, &d).await {
+            Ok(()) => println!("{} the directory login ended", "OK:".green()),
+            Err(e) => println!(
+                "{} the directory didn't answer ({e}); the login ends when its refresh token expires",
+                "Warning:".yellow()
+            ),
+        }
+    }
     if let Err(e) = config::edit(cfg, |c| {
         if let Some(p) = c.profiles.get_mut(&name) {
             p.token = None;
+            p.directory = None;
         }
     }) {
         return err(e);
@@ -917,6 +972,29 @@ fn auth_profiles(args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
+    if args.first() == Some(&"remove") {
+        let Some(name) = args.get(1).filter(|n| !n.starts_with("--")) else {
+            return usage("Usage: auth profiles remove <name> [--forget-token]");
+        };
+        let Some(mut c) = cfg else {
+            return err("no config file yet: there is no profile to remove");
+        };
+        let was_current = c.current.as_deref() == Some(*name);
+        if let Err(e) = c.remove_profile(name, has_flag(args, "--forget-token")) {
+            return err(e);
+        }
+        if let Err(e) = config::save(&c) {
+            return err(e);
+        }
+        println!("{} profile '{name}' removed", "OK:".green());
+        if was_current {
+            println!(
+                "{} no profile is current now: gxctl auth use <profile>",
+                "Info:".cyan()
+            );
+        }
+        return;
+    }
     let Some(c) = cfg.as_ref() else {
         return println!(
             "no config file yet (log in first: gxctl auth login --url … --profile P --save)"
@@ -1170,6 +1248,19 @@ pub fn ui() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_profiles_are_named_for_their_host() {
+        assert_eq!(
+            profile_name_for("gpu-dev2.cloudforest-cloud.ts.net"),
+            "gpu-dev2"
+        );
+        assert_eq!(profile_name_for("prism1"), "prism1");
+        // An address is named whole, not cut at its first dot.
+        assert_eq!(profile_name_for("172.19.36.18"), "172-19-36-18");
+        assert_eq!(profile_name_for("[fd00::1]"), "fd00-1");
+        assert_eq!(profile_name_for("fd00::1"), "fd00-1");
+    }
 
     #[test]
     fn positional_arguments_skip_flags_and_their_values() {

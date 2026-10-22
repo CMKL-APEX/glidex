@@ -1598,6 +1598,8 @@ dependencies = [
  "connectrpc-health",
  "connectrpc-reflection",
  "dirs",
+ "ed25519-dalek",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
  "glidex-api",
@@ -1606,6 +1608,8 @@ dependencies = [
  "glidex-netd",
  "glidex-ovn",
  "glidex-ovs",
+ "glidex-raftstore",
+ "glidex-stord",
  "glidex-tls",
  "glidex-vm-shim",
  "http-body-util",
@@ -1617,6 +1621,7 @@ dependencies = [
  "mime",
  "nix",
  "openraft",
+ "p256",
  "percent-encoding",
  "rand 0.8.8",
  "rcgen",
@@ -1630,6 +1635,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha-crypt",
+ "sha2 0.10.9",
  "sha2 0.11.0",
  "smallvec",
  "tabled",
@@ -1644,10 +1650,12 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "x509-parser",
  "zbus",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -1715,7 +1723,39 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "glidex-raftstore"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "openraft",
+ "redb",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "glidex-stord"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

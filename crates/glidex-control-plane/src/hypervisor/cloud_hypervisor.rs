@@ -129,7 +129,35 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
             mem.push_str(&format!(",hugepage_size={size}"));
         }
     }
+    let layout = super::guest_numa_layout(config);
     match config.host_numa_node {
+        // `aligned` over several host NUMA nodes (spec/gpu-vms.md §5): a
+        // zone, a guest NUMA node and a PCI segment for its devices per
+        // share. Segment 0 (virtio devices) is guest node 0's.
+        None if !config.host_numa.is_empty() => {
+            a.push("--memory".into());
+            a.push("size=0".into());
+            a.push("--memory-zone".into());
+            a.extend(config.host_numa.iter().enumerate().map(|(i, s)| {
+                format!(
+                    "id=mem{i},size={}M{mem},host_numa_node={}",
+                    s.memory_mib, s.node
+                )
+            }));
+            a.push("--platform".into());
+            a.push(format!("num_pci_segments={}", layout.len() + 1));
+            a.push("--numa".into());
+            a.extend(layout.iter().enumerate().map(|(i, (first, last, _))| {
+                let segments = if i == 0 {
+                    "0,1".to_string()
+                } else {
+                    (i + 1).to_string()
+                };
+                format!(
+                    "guest_numa_id={i},cpus=[{first}-{last}],memory_zones=mem{i},pci_segments=[{segments}]"
+                )
+            }));
+        }
         // Guest RAM in one zone bound to the host NUMA node, seen by the
         // guest as its one NUMA node.
         Some(node) => {
@@ -188,12 +216,15 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     }
     if !config.vfio_devices.is_empty() {
         a.push("--device".into());
-        a.extend(
-            config
-                .vfio_devices
+        a.extend(config.vfio_devices.iter().map(|p| {
+            // `aligned`: on its guest NUMA node's segment.
+            let segment = layout
                 .iter()
-                .map(|p| format!("path={},id={}", q(p), vfio_device_id(p))),
-        );
+                .position(|(_, _, ds)| ds.contains(p))
+                .map(|i| format!(",pci_segment={}", i + 1))
+                .unwrap_or_default();
+            format!("path={},id={}{segment}", q(p), vfio_device_id(p))
+        }));
     }
     a.extend([
         "--console".into(),
@@ -210,6 +241,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
+    cmdline: &str,
     (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
@@ -224,7 +256,7 @@ pub(crate) fn extractor_args(
         "--initramfs",
         initrd,
         "--cmdline",
-        crate::images::extractor::CMDLINE,
+        cmdline,
         "--disk",
     ]
     .map(String::from)
@@ -397,17 +429,24 @@ mod tests {
             backing_files: true,
             lock: None,
         });
-        c.data_disk_bindings = vec![VolumeBinding::File {
-            path: "/disks/data.raw".into(),
-            format: DiskFormat::Raw,
-            backing_files: false,
-            lock: None,
-        }];
+        c.data_disk_bindings = vec![
+            VolumeBinding::File {
+                path: "/disks/data.raw".into(),
+                format: DiskFormat::Raw,
+                backing_files: false,
+                lock: None,
+            },
+            // An LVM volume (spec/storage.md §19, H6).
+            VolumeBinding::Block {
+                path: "/dev/vg0/gx-d-1".into(),
+            },
+        ];
         assert_eq!(
             values(&args(&c, "/s"), "--disk"),
             [
                 "path=/disks/root.qcow2,image_type=qcow2,backing_files=on",
                 "path=/disks/data.raw,image_type=raw",
+                "path=/dev/vg0/gx-d-1,image_type=raw",
                 "path=\"/run/x,y/seed.img\",readonly=on,image_type=raw",
             ]
         );
@@ -452,6 +491,65 @@ mod tests {
         assert_eq!(
             values(&a, "--numa"),
             ["guest_numa_id=0,cpus=[0-1],memory_zones=mem0"]
+        );
+    }
+
+    #[test]
+    fn aligned_gets_a_zone_a_guest_node_and_a_segment_per_host_node() {
+        let mut c = config(serde_json::json!({"vcpu_count": 4, "mem_size_mib": 4096}));
+        c.vfio_devices = ["87:00.0", "90:00.0", "b7:00.0", "bd:00.0", "41:00.0"]
+            .iter()
+            .map(|a| format!("/sys/bus/pci/devices/0000:{a}"))
+            .collect();
+        c.host_numa = vec![
+            crate::models::NumaShare {
+                node: 5,
+                vcpus: 2,
+                memory_mib: 2048,
+                devices: vec!["0000:b7:00.0".into(), "0000:bd:00.0".into()],
+            },
+            crate::models::NumaShare {
+                node: 7,
+                vcpus: 2,
+                memory_mib: 2048,
+                devices: vec!["0000:87:00.0".into(), "0000:90:00.0".into()],
+            },
+        ];
+        let a = args(&c, "/s");
+        assert_eq!(values(&a, "--memory"), ["size=0"]);
+        assert_eq!(
+            values(&a, "--memory-zone"),
+            [
+                "id=mem0,size=2048M,host_numa_node=5",
+                "id=mem1,size=2048M,host_numa_node=7"
+            ]
+        );
+        assert_eq!(values(&a, "--platform"), ["num_pci_segments=3"]);
+        assert_eq!(
+            values(&a, "--numa"),
+            [
+                "guest_numa_id=0,cpus=[0-1],memory_zones=mem0,pci_segments=[0,1]",
+                "guest_numa_id=1,cpus=[2-3],memory_zones=mem1,pci_segments=[2]",
+            ]
+        );
+        let devices = values(&a, "--device");
+        let seg = |addr: &str| {
+            devices
+                .iter()
+                .find(|d| d.contains(addr))
+                .map(|d| d.split(",pci_segment=").nth(1).unwrap_or("0").to_string())
+                .unwrap()
+        };
+        assert_eq!(
+            (
+                seg("b7:00.0"),
+                seg("bd:00.0"),
+                seg("87:00.0"),
+                seg("90:00.0"),
+                seg("41:00.0")
+            ),
+            ("1".into(), "1".into(), "2".into(), "2".into(), "0".into()),
+            "{devices:?}"
         );
     }
 
@@ -577,6 +675,7 @@ mod tests {
         let x = extractor_args(
             bin.to_str().unwrap(),
             ("/nonexistent/kernel", "/nonexistent/initrd"),
+            "console=ttyS0 panic=-1 quiet",
             ("/nonexistent/a,b/disk.qcow2", ImageType::Qcow2, false),
             "/nonexistent/out.raw",
         );

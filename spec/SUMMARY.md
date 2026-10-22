@@ -35,13 +35,18 @@
 - [Security](security.md)
 - [Tailscale certificates](tailscale-tls.md)
 - [Tenancy](tenancy.md)
+- [Workload identity](workload-identity.md)
+- [Managed applications](apps.md)
+- [Passkeys](passkeys.md)
 - [Real-IdP checks](idp-checks.md)
 
 # Clusters
 
 - [Clustering](clustering.md)
 - [Clustering UI](clustering-ui.md)
+- [Host page and the UI on agents](host-page.md)
 - [Host topology](host-topology.md)
+- [GPU VMs](gpu-vms.md)
 - [Cluster runbook](cluster-runbook.md)
 
 # Installation

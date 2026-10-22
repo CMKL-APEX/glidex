@@ -74,14 +74,11 @@ fn qemu_version() -> Option<(u32, u32)> {
 }
 
 /// In-kernel virtio-net datapath, if the VM may open `/dev/vhost-net`
-/// (usually the `kvm` group). `access(2)`, not an open: the VM's unit runs
-/// as this user with these groups, but this unit's sandbox closes /dev.
+/// (usually the `kvm` group). Not an open or `access(2)`: the VM's unit
+/// runs as this user with these groups, but this unit's sandbox closes
+/// /dev ([`crate::devaccess`]).
 fn vhost_net_usable() -> bool {
-    nix::unistd::access(
-        "/dev/vhost-net",
-        nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK,
-    )
-    .is_ok()
+    crate::devaccess::vm_can_open(std::path::Path::new("/dev/vhost-net"))
 }
 
 /// Whether the filesystem holding `path` supports `O_DIRECT` (tmpfs and
@@ -127,7 +124,7 @@ impl QemuDisk {
     fn blockdev(&self, node: &str) -> String {
         let read_only = self.disk.read_only;
         let mut file = serde_json::json!({
-            "driver": "file",
+            "driver": if self.disk.block { "host_device" } else { "file" },
             "filename": self.disk.path,
             "read-only": read_only,
         });
@@ -135,7 +132,9 @@ impl QemuDisk {
             file["cache"] = serde_json::json!({"direct": true});
             file["aio"] = "native".into();
         }
-        if self.disk.shared {
+        // A block volume: this node's QEMU alone may open it (spec/storage.md
+        // §19, H6).
+        if self.disk.shared || self.disk.block {
             file["locking"] = "on".into();
         }
         // A disk we couldn't probe is opened raw; never left to QEMU's own
@@ -191,6 +190,9 @@ impl LaunchSpec<'_> {
         // is the memdev of the guest's one NUMA node instead of the
         // machine's memory backend.
         let numa = config.host_numa_node;
+        // `aligned` over several host NUMA nodes (spec/gpu-vms.md §5).
+        let layout = super::guest_numa_layout(config);
+        let multi = numa.is_none() && !layout.is_empty();
         let secure_boot = matches!(
             self.firmware,
             Some(Firmware::Pflash {
@@ -199,7 +201,7 @@ impl LaunchSpec<'_> {
             })
         );
         let mut machine = "q35".to_string();
-        if shared && numa.is_none() {
+        if shared && numa.is_none() && !multi {
             machine.push_str(",memory-backend=mem");
         }
         if secure_boot {
@@ -211,10 +213,34 @@ impl LaunchSpec<'_> {
         }
         push(&mut args, "-m", format!("{}M", config.mem_size_mib));
         push(&mut args, "-smp", config.vcpu_count.to_string());
+        let hugetlb = match (config.hugepages, &config.hugepage_size) {
+            (true, Some(size)) => format!(",hugetlb=on,hugetlbsize={size}"),
+            (true, None) => ",hugetlb=on".into(),
+            (false, _) => String::new(),
+        };
         let bind = numa
             .map(|n| format!(",host-nodes={n},policy=bind"))
             .unwrap_or_default();
-        if shared {
+        if multi {
+            // A backend and a guest NUMA node per share.
+            for (i, (s, (first, last, _))) in config.host_numa.iter().zip(&layout).enumerate() {
+                let bind = format!(",host-nodes={},policy=bind", s.node);
+                let backend = if shared {
+                    format!(
+                        "memory-backend-memfd,id=mem{i},size={}M,share=on{hugetlb}{bind}",
+                        s.memory_mib
+                    )
+                } else {
+                    format!("memory-backend-ram,id=mem{i},size={}M{bind}", s.memory_mib)
+                };
+                push(&mut args, "-object", backend);
+                push(
+                    &mut args,
+                    "-numa",
+                    format!("node,nodeid={i},cpus={first}-{last},memdev=mem{i}"),
+                );
+            }
+        } else if shared {
             // vhost-user: OVS maps guest RAM, so it must be shared.
             push(
                 &mut args,
@@ -305,7 +331,43 @@ impl LaunchSpec<'_> {
             }
         }
 
+        // `aligned`: a PCIe expander per guest NUMA node, a root port per
+        // device under it (spec/gpu-vms.md §5).
+        if multi {
+            for (i, (_, _, devices)) in layout.iter().enumerate() {
+                push(
+                    &mut args,
+                    "-device",
+                    format!(
+                        "pxb-pcie,id=pxb{i},bus_nr={},numa_node={i},bus=pcie.0",
+                        PXB_BUS_BASE + i as u32 * PXB_BUS_STRIDE
+                    ),
+                );
+                for (j, d) in devices.iter().enumerate() {
+                    push(
+                        &mut args,
+                        "-device",
+                        format!(
+                            "pcie-root-port,id=rp{i}_{j},bus=pxb{i},chassis={},slot=0",
+                            PXB_CHASSIS_BASE + (i * 32 + j) as u32
+                        ),
+                    );
+                    push(
+                        &mut args,
+                        "-device",
+                        format!(
+                            "vfio-pci,host={},id={},bus=rp{i}_{j}",
+                            vfio_bdf(d),
+                            vfio_device_id(d)
+                        ),
+                    );
+                }
+            }
+        }
         for device in &config.vfio_devices {
+            if multi && layout.iter().any(|(_, _, ds)| ds.contains(device)) {
+                continue;
+            }
             push(
                 &mut args,
                 "-device",
@@ -344,6 +406,14 @@ impl LaunchSpec<'_> {
         args
     }
 }
+
+/// `pxb-pcie` bus numbers for `aligned` guest NUMA nodes: room for 24
+/// buses (root ports and what is under them) each, above the root bus's;
+/// eight nodes stay under 0xff.
+const PXB_BUS_BASE: u32 = 0x40;
+const PXB_BUS_STRIDE: u32 = 0x18;
+/// Root port chassis numbers under them, clear of the root complex's.
+const PXB_CHASSIS_BASE: u32 = 100;
 
 /// `-netdev` / `-device` pairs for one NIC. vhost-user sockets are served
 /// by QEMU (OVS's `dpdkvhostuserclient` connects); `wait=off` so QEMU starts
@@ -568,6 +638,7 @@ impl HypervisorDriver for QemuDriver {
 pub(crate) fn extractor_args(
     bin: &str,
     (kernel, initrd): (&str, &str),
+    cmdline: &str,
     (disk, format, backing_files): (&str, ImageType, bool),
     out: &str,
 ) -> Vec<String> {
@@ -599,7 +670,7 @@ pub(crate) fn extractor_args(
         "-initrd",
         initrd,
         "-append",
-        crate::images::extractor::CMDLINE,
+        cmdline,
     ]
     .map(String::from)
     .into_iter()
@@ -676,12 +747,13 @@ mod tests {
         let a = extractor_args(
             "/usr/bin/qemu-system-x86_64",
             ("/x/kernel", "/x/initrd"),
+            "console=ttyS0 panic=-1 quiet",
             ("/i/a.qcow2", ImageType::Qcow2, false),
             "/i/.k.extract.raw",
         );
         assert_eq!(values(&a, "-kernel"), ["/x/kernel"]);
         assert_eq!(values(&a, "-initrd"), ["/x/initrd"]);
-        assert_eq!(values(&a, "-append"), [crate::images::extractor::CMDLINE]);
+        assert_eq!(values(&a, "-append"), ["console=ttyS0 panic=-1 quiet"]);
         let bd: Vec<serde_json::Value> = values(&a, "-blockdev")
             .iter()
             .map(|b| serde_json::from_str(b).unwrap())
@@ -776,13 +848,24 @@ mod tests {
                 backing_files: false,
                 lock: Some("/srv/glidex/nfs/.locks/data.lock".into()),
             },
+            // An LVM volume: a block device, locked (§19, H6).
+            VolumeBinding::Block {
+                path: "/dev/vg0/gx-d-1".into(),
+            },
         ];
         let args = spec(&config).args();
         let blockdevs: Vec<serde_json::Value> = values(&args, "-blockdev")
             .iter()
             .map(|b| serde_json::from_str(b).unwrap())
             .collect();
-        assert_eq!(blockdevs.len(), 4);
+        assert_eq!(blockdevs.len(), 5);
+        assert_eq!(
+            blockdevs[3],
+            serde_json::json!({
+                "driver": "raw", "node-name": "disk3", "read-only": false,
+                "file": {"driver": "host_device", "filename": "/dev/vg0/gx-d-1", "read-only": false, "locking": "on"}
+            })
+        );
         assert_eq!(
             blockdevs[0],
             serde_json::json!({
@@ -795,11 +878,11 @@ mod tests {
         assert!(blockdevs[1].as_object().unwrap().contains_key("backing"));
         assert!(!blockdevs[2].as_object().unwrap().contains_key("backing"));
         assert_eq!(blockdevs[2]["driver"], "raw");
-        // Image locking on for the shared disk only.
+        // Image locking on for the shared disk and the block volume only.
         assert_eq!(blockdevs[2]["file"]["locking"], "on");
         assert!(blockdevs[1]["file"].get("locking").is_none());
-        assert_eq!(blockdevs[3]["file"]["filename"], "/tmp/seed,1.img");
-        assert_eq!(blockdevs[3]["read-only"], true);
+        assert_eq!(blockdevs[4]["file"]["filename"], "/tmp/seed,1.img");
+        assert_eq!(blockdevs[4]["read-only"], true);
         let devices: Vec<&str> = values(&args, "-device")
             .into_iter()
             .filter(|d| d.starts_with("virtio-blk-pci"))
@@ -811,6 +894,7 @@ mod tests {
                 "virtio-blk-pci,drive=disk1,id=vd1",
                 "virtio-blk-pci,drive=disk2,id=vd2",
                 "virtio-blk-pci,drive=disk3,id=vd3",
+                "virtio-blk-pci,drive=disk4,id=vd4",
             ]
         );
     }
@@ -934,6 +1018,69 @@ mod tests {
         assert!(values(&args, "-object").contains(
             &"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on,host-nodes=5,policy=bind"
         ));
+    }
+
+    #[test]
+    fn aligned_gets_a_backend_a_guest_node_and_an_expander_per_host_node() {
+        let mut config = config(serde_json::json!({"vcpu_count": 4, "mem_size_mib": 4096}));
+        config.vfio_devices = ["87:00.0", "90:00.0", "b7:00.0", "bd:00.0"]
+            .iter()
+            .map(|a| format!("/sys/bus/pci/devices/0000:{a}"))
+            .collect();
+        config.host_numa = vec![
+            crate::models::NumaShare {
+                node: 5,
+                vcpus: 2,
+                memory_mib: 2048,
+                devices: vec!["0000:b7:00.0".into(), "0000:bd:00.0".into()],
+            },
+            crate::models::NumaShare {
+                node: 7,
+                vcpus: 2,
+                memory_mib: 2048,
+                devices: vec!["0000:87:00.0".into(), "0000:90:00.0".into()],
+            },
+        ];
+        let args = spec(&config).args();
+        assert_eq!(values(&args, "-machine"), ["q35"]);
+        let objects = values(&args, "-object");
+        assert!(
+            objects.contains(&"memory-backend-ram,id=mem0,size=2048M,host-nodes=5,policy=bind"),
+            "{objects:?}"
+        );
+        assert!(
+            objects.contains(&"memory-backend-ram,id=mem1,size=2048M,host-nodes=7,policy=bind"),
+            "{objects:?}"
+        );
+        assert_eq!(
+            values(&args, "-numa"),
+            [
+                "node,nodeid=0,cpus=0-1,memdev=mem0",
+                "node,nodeid=1,cpus=2-3,memdev=mem1"
+            ]
+        );
+        let devices = values(&args, "-device");
+        for want in [
+            "pxb-pcie,id=pxb0,bus_nr=64,numa_node=0,bus=pcie.0",
+            "pxb-pcie,id=pxb1,bus_nr=88,numa_node=1,bus=pcie.0",
+            "pcie-root-port,id=rp0_0,bus=pxb0,chassis=100,slot=0",
+            "vfio-pci,host=0000:b7:00.0,id=vfio_0000_b7_00_0,bus=rp0_0",
+            "vfio-pci,host=0000:90:00.0,id=vfio_0000_90_00_0,bus=rp1_1",
+        ] {
+            assert!(devices.contains(&want), "{want} in {devices:?}");
+        }
+        assert_eq!(
+            devices.iter().filter(|d| d.starts_with("vfio-pci")).count(),
+            4,
+            "each device once: {devices:?}"
+        );
+        // Shared memory: memfd backends, bound the same way.
+        config.hugepages = true;
+        let objects: Vec<String> = values(&spec(&config).args(), "-object")
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(objects.contains(&"memory-backend-memfd,id=mem1,size=2048M,share=on,hugetlb=on,host-nodes=7,policy=bind".to_string()), "{objects:?}");
     }
 
     #[test]

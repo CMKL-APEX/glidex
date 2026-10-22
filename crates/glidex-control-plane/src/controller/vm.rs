@@ -1110,22 +1110,34 @@ impl VmManager {
                 config.hugepages = kib != crate::models::SMALL_PAGE_KIB;
                 if config.hugepages {
                     config.hugepage_size = Some(crate::models::hugepage_size_name(kib));
-                    let need = config.mem_size_mib as u64;
-                    let numa = vm.status.placement.as_ref().and_then(|p| p.numa_node);
-                    let spare = blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
-                        .await
-                        .map_err(before_intent)?;
-                    if spare < need {
-                        return Err(before_intent(
-                            crate::hypervisor::HypervisorError::Unsupported(format!(
-                                "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
-                                crate::models::hugepage_size_name(kib),
-                                numa.map(|n| format!(" on NUMA node {n}"))
-                                    .unwrap_or_default(),
-                                spare,
-                                need
-                            )),
-                        ));
+                    // Per NUMA node it is bound to: one, each share of an
+                    // `aligned` VM, or none (host-wide).
+                    let placement = vm.status.placement.as_ref();
+                    let wants: Vec<(Option<u32>, u64)> = match placement {
+                        Some(p) if !p.numa.is_empty() => p
+                            .numa
+                            .iter()
+                            .map(|s| (Some(s.node), s.memory_mib))
+                            .collect(),
+                        p => vec![(p.and_then(|p| p.numa_node), config.mem_size_mib as u64)],
+                    };
+                    for (numa, need) in wants {
+                        let spare =
+                            blocking(move || crate::hypervisor::hugepages_spare_mib(kib, numa))
+                                .await
+                                .map_err(before_intent)?;
+                        if spare < need {
+                            return Err(before_intent(
+                                crate::hypervisor::HypervisorError::Unsupported(format!(
+                                    "not enough free {} hugepages{}: {} MiB free, the VM needs {} MiB",
+                                    crate::models::hugepage_size_name(kib),
+                                    numa.map(|n| format!(" on NUMA node {n}"))
+                                        .unwrap_or_default(),
+                                    spare,
+                                    need
+                                )),
+                            ));
+                        }
                     }
                 }
             }
@@ -1151,6 +1163,12 @@ impl VmManager {
             .map(|p| (p.numa_node, p.cpus.clone()))
             .unwrap_or_default();
         config.host_numa_node = numa;
+        config.host_numa = vm
+            .status
+            .placement
+            .as_ref()
+            .map(|p| p.numa.clone())
+            .unwrap_or_default();
         // The devices picked for its pool requests (spec/host-topology.md §9).
         for d in vm
             .status
@@ -1234,6 +1252,19 @@ impl VmManager {
         launch
             .write(&paths.launch)
             .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
+        // Block volumes: the VM's unit may open exactly these (S18).
+        let devices: Vec<String> = config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .filter(|b| b.is_block())
+            .map(|b| b.path().to_string_lossy().into_owned())
+            .collect();
+        let id = vm.id.clone();
+        tokio::task::spawn_blocking(move || crate::datastore::lvm::allow_devices(&id, devices))
+            .await
+            .map_err(|e| before_intent(VmManagerError::PersistenceError(e.to_string())))?
+            .map_err(before_intent)?;
 
         // 5.4 the intent record, before anything runs.
         let runner = self.runner();
@@ -1941,6 +1972,14 @@ impl VmManager {
         if has(FINALIZER_RUNTIME) {
             let _ = std::fs::remove_file(self.firmware_vars_path(&vm.id));
             crate::paths::remove_vm_dir(&vm.id);
+            // Its unit's block devices (S18); under /run, so a stord that is
+            // away only leaves one until the next boot.
+            let id = vm.id.clone();
+            if let Ok(Err(e)) =
+                blocking(move || crate::datastore::lvm::allow_devices(&id, Vec::new())).await
+            {
+                tracing::warn!(vm_id = %vm.id, "removing the VM unit's devices: {}", e);
+            }
         }
         self.notify_changed();
         tracing::info!(vm_id = %vm.id, name = %vm.name, "VM deleted");

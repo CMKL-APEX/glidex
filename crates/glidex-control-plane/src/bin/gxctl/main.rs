@@ -11,6 +11,7 @@ mod cluster;
 mod config;
 mod console;
 mod directory;
+mod dirlogin;
 mod host;
 mod network;
 mod storage;
@@ -725,7 +726,7 @@ fn print_help() {
     );
     println!(
         "  {} - Register a directory under /srv/glidex",
-        "datastore create <name> --path P [--shared] [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+        "datastore create <name> (--path P [--shared] | --lvm VG/POOL) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
     println!(
@@ -788,11 +789,15 @@ fn print_help() {
     println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|delete <t> | members|add-member|remove-member …".cyan());
     println!(
         "  {} - Tenants admitted on this cluster, and their caps",
-        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t>".cyan()
+        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories".cyan()
     );
     println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
+    println!(
+        "  {} - Directories this host serves (operator), and the token signing keys of yours (rotating needs a fresh login)",
+        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] | delete <id> | keys [rotate]".cyan()
+    );
     println!(
         "  {} - Projects",
         "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
@@ -1089,6 +1094,7 @@ const COMMANDS: &[&str] = &[
     "connectors",
     "invite",
     "federation",
+    "directory",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -1116,9 +1122,23 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "unbind",
             "device-pools",
             "device-pool",
+            "clusters",
+            "opt-in",
+            "opt-out",
         ],
     ),
-    ("admission", &["list", "set", "remove"]),
+    (
+        "admission",
+        &[
+            "list",
+            "set",
+            "remove",
+            "offer",
+            "offers",
+            "revoke-offer",
+            "directories",
+        ],
+    ),
     (
         "connector",
         &["list", "show", "add", "update", "secret", "test", "remove"],
@@ -1128,6 +1148,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
         "federation",
         &["list", "show", "add", "enable", "disable", "remove"],
     ),
+    ("directory", &["list", "create", "delete", "keys"]),
     (
         "disk",
         &[
@@ -1505,6 +1526,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             directory::invite(client, &parts[1..]).await
         }
         "federation" | "federations" => directory::federation(client, &parts[1..]).await,
+        "directory" => directory::directory(client, &parts[1..]).await,
         "project" | "projects" => access::project(client, &parts[1..]).await,
         "binding" | "bindings" => access::binding(client, &parts[1..]).await,
         "system-binding" => access::system_binding(client, &parts[1..]).await,
@@ -1558,11 +1580,32 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
     true
 }
 
+/// Commands that never use the local session: on a cluster agent, which
+/// has no API of its own, they run anyway; `auth login` is how one gets a
+/// server to talk to.
+fn needs_no_session(words: &[String]) -> bool {
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    matches!(
+        w.as_slice(),
+        ["auth", "login" | "use" | "profiles" | "trust", ..]
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let client = match build_client(&cli) {
         Ok(c) => c,
+        // The session isn't used: any client will do.
+        Err(e) if e == client::AGENT_HINT && needs_no_session(&cli.command) => {
+            match ApiClient::tcp(client::DEFAULT_URL, None) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".red(), e);
+                    std::process::exit(2);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("{} {}", "Error:".red(), e);
             std::process::exit(2);
@@ -1572,6 +1615,9 @@ async fn main() {
     // before any command runs (§4.1): the binding mismatch is a wall
     // between the operator and a repurposed or hostile machine, so not
     // even a one-shot command slips past it.
+    if !needs_no_session(&cli.command) {
+        dirlogin::refresh_if_due(&client, cli.profile.as_deref()).await;
+    }
     if let Err(e) = client.preflight().await {
         eprintln!("{} {}", "Error:".red(), e);
         std::process::exit(2);
@@ -1660,6 +1706,20 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_login_runs_without_a_local_session() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(needs_no_session(&w(
+            "auth login --url https://192.0.2.1:8841"
+        )));
+        assert!(needs_no_session(&w("auth use prod")));
+        assert!(needs_no_session(&w("auth profiles")));
+        assert!(!needs_no_session(&w("auth status")));
+        assert!(!needs_no_session(&w("node list")));
+        assert!(!needs_no_session(&[]));
+        assert!(client::AGENT_HINT.contains("auth login --url https://"));
+    }
 
     #[test]
     fn credential_choice_defaults_to_mine() {

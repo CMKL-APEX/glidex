@@ -72,6 +72,10 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=@HOME@ -/srv/glidex
 DevicePolicy=closed
+# LVM volumes of lvm datastores, to fill them and edit their partitions
+# (spec/storage.md S18). glidex-stord hands only glidex's own volumes to
+# the glidex user; the host's other device-mapper devices stay root's.
+DeviceAllow=block-device-mapper rw
 # Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs), TCP
 # (the API listeners, image downloads, OIDC) and netlink, read-only, to
 # list the host's addresses (certificate names, allowed origins). Without

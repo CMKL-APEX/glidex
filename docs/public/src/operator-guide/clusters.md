@@ -18,9 +18,11 @@ Every node runs the same software and runs VMs. A node is one of:
   Raft, and serves the API. Servers sign node certificates and run OVN's
   databases when OVN is on.
 - **Agent**: only runs VMs. It has no API of its own: `gxctl` on an
-  agent says so and points you to a server. Its web UI still works; it
-  relays every request to a server, which authenticates it, so you log
-  in there with the servers' users.
+  agent says so and points you to a server. Opening an agent's web UI
+  takes you to a server's web UI, at that agent's Host page; you log in
+  there, with SSO, passkeys or the servers' users. Each host's page
+  (**Hosts** in the menu) manages its Open vSwitch, bridges and uplinks
+  from any server.
 
 The servers that vote in Raft are *voters*. A cluster keeps working
 while a majority of voters is up, so run 1, 3 or 5 servers: 3 survive
@@ -177,22 +179,27 @@ one step. Its VMs keep running.
 The scheduler picks a node when a VM is created. A node is a candidate
 only if it is `Active`, ready, not draining, has room, and has what the
 VM needs: the hypervisor, the image's architecture, hugepages if asked,
-its PCI devices, the physical networks of its provider networks, a
-userspace `br-int` for vhost-user NICs on cluster networks, an OVN
+its PCI devices (granted to the project on that node, and not
+cordoned), free devices of the pools it asks for, a NUMA node with room
+under its NUMA or CPU policy, the physical networks of its provider
+networks, a userspace `br-int` for vhost-user NICs on cluster networks, an OVN
 version as new as the cluster's, the node of any node-local disk or node
 network it uses, and every datastore its disks are on
 ([Datastores](datastores.md)). Among candidates it picks the least allocated
 (the largest of the CPU, memory and, for a VM in hugepages, hugepage
 shares after placing), then the one with fewest VMs.
 
-A node's hugepages are its own resource: the pool the kernel reserved
-(`vm.nr_hugepages`, and per size under `/sys/kernel/mm/hugepages`), less
-what OVS-DPDK takes for `dpdk-socket-mem`. They don't count as ordinary
-memory, and a node's allocatable memory leaves them out. VMs placed on
-the node hold theirs whether running or not. Before a VM in hugepages
-starts, its node checks that enough of them are free; if not, the start
-fails with the counts. Hugepages used outside Glidex (another process,
-or DPDK beyond `dpdk-socket-mem`) show up that way.
+A node's hugepages are its own resource, per page size: the pool the
+kernel reserved, less what OVS-DPDK takes for `dpdk-socket-mem`. They
+don't count as ordinary memory, and VMs placed on the node hold theirs
+whether running or not. NUMA nodes, dedicated CPUs, hugepages and device
+pools are described in [Host resources](host-resources.md); each node
+reports its topology (`gxctl node topology <node>`), which the
+scheduler uses.
+
+PCI devices and their grants are per node: the same address on two
+nodes is two devices, and a `pci.allow` grant with `node` covers only
+that node's. See [PCI passthrough](pci-passthrough.md#in-a-cluster).
 
 Room is each node's CPUs and memory minus a reserve, times an
 overcommit ratio. The defaults, in `/etc/glidex/control-plane.json`:
@@ -215,18 +222,23 @@ node's reason in its status.
 A VM stays on its node once placed. Glidex doesn't move running VMs.
 A stopped VM whose disks are on shared datastores can be placed on
 another node: `gxctl place <vm> [--node N]`, or **Place on another
-node** on its page.
+node** on its page. A disk on a node's own datastore (`local` or another
+node-local one) keeps its VM on that node; move it to a shared datastore
+first. See
+[Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 
 ## Node lifecycle
 
 Each node has a phase: `Active`, `Draining`, `Departing` (a detach in
 progress), or one of the end states `Departed`, `Removed`, `Forgotten`.
 The Cluster page's **Nodes** card shows phase and readiness; a node's
-page has an **Operations…** menu for everything below.
+page has an **Operations…** menu for everything below. The `gxctl node`
+commands take a node's name or its id.
 
 ### A node is down for a while
 
-Nothing to do. A node that stops reporting for 40 seconds
+Nothing to do. Every node, servers included, reports to the leader
+every 5 seconds. A node that stops reporting for 40 seconds
 (`cluster.node_grace_secs`) becomes not ready, and so do its VMs
 (`NodeUnreachable`). Nothing is restarted elsewhere. The node comes back
 by itself with its identity.
@@ -240,7 +252,8 @@ gxctl node undrain node3
 
 A draining node gets no new VMs. VMs already there keep running; the
 command prints what is still on the node. Stop, delete or move them
-before removing it.
+before removing it: a stopped VM whose disks are on shared datastores
+can be [placed on another node](datastores.md#placing-a-stopped-or-lost-vm-again).
 
 ### Remove an empty node
 
@@ -268,8 +281,11 @@ gxctl node detach node3 --abort         # before the node acknowledged
 The node leaves *with* its VMs, disks and node networks and becomes a
 standalone host that owns them. `--with-access` also carries the
 projects' users, teams and role bindings (never sessions or tokens).
-The node is frozen while the handover runs. The Cluster page shows it
-under **Detaches**.
+The node is frozen while the handover runs. Its disks on node-local
+datastores other than `local` can't leave with the node: the detach is
+refused (`409`) until they are moved to `local`. The Cluster page
+shows it under **Detaches**, with the networks it maps or drops by the names
+they had when it started, even if they are gone since.
 
 If no server can be reached at all, a node can leave on its own:
 
@@ -288,10 +304,15 @@ last synced are lost. Then, on a server, run
    even number of voters). Its VMs stay recorded, marked lost; its
    certificate is refused from now on; a forgotten server is rotated out
    of the CA. Lost VMs whose disks are on shared datastores can be
-   placed on a live node: `gxctl place <vm>`.
+   placed on a live node: `gxctl place <vm>` (or **Place on a live
+   node** on the VM's page), then started. A lost VM with a disk on the
+   node's own datastores (`local` or another node-local one) can't be
+   placed: that disk is on the lost host. See
+   [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 2. When you no longer want its records:
-   `gxctl node purge node3`. This deletes the records of its VMs, disks
-   and networks, not any files.
+   `gxctl node purge node3`. This deletes the records of the VMs still
+   on it (place the ones you keep first), and of its disks and networks,
+   not any files. Disks on shared datastores are not affected.
 
 ### A repaired host comes back as itself
 
@@ -362,12 +383,72 @@ gxctl cluster rotate-secrets-key
 If a server can't be reached, it stops before re-wrapping anything; run
 it again.
 
+## Admitting another organization's tenant
+
+A tenant whose directory is elsewhere (another organization's glidex,
+or a host that serves its directory) uses this cluster after a
+handshake: you offer, its administrator accepts at their directory.
+
+```bash
+# On this cluster, as its operator: who, and which directory (its issuer)
+gxctl admission offer acme --directory https://id.acme.example/d/acme
+```
+
+It prints an offer token (`gxo_…`) once. Send it to the tenant's
+administrator; they run, at their directory:
+
+```bash
+gxctl tenant opt-in acme --offer gxo_…
+```
+
+Their directory calls this cluster's API (the address in the token:
+`cluster.api_url`, else the web UI's host on port 8841), pinning its
+certificate; both sides keep the other's keys and certificate from then
+on. `gxctl admission directories` lists the directories this cluster
+trusts; `gxctl admission remove <tenant>` ends a tenant's admission and
+tells its directory; the tenant can opt out from its side too
+(`gxctl tenant opt-out acme --cluster <id>`). An offer works once and
+lasts 7 days (`--days`, at most 30); `gxctl admission offers` and
+`revoke-offer` manage open ones.
+
+## The web UI's address
+
+Agents send browsers to a server's web UI, at the address that server
+publishes. By default it is what its glidex-ui answers on: its Tailscale
+name when the Tailscale certificate is on, else the first name in
+`GLIDEX_UI_HOSTS`, else the host's full name, with port 5173.
+
+On an agent, `https://<agent>:5173/…` answers with a redirect to the same
+path on a server's web UI, and its home page goes to that agent's Host
+page. Until a server has published its address (just after a join, say),
+the agent shows a page listing the cluster's servers instead. API calls
+to an agent's web UI are refused with `421 use_a_server`, naming the
+server's address; nothing is relayed through the agent.
+
+Behind a load balancer, set the same address on every server, in
+`/etc/glidex/control-plane.json`:
+
+```json
+{ "cluster": { "ui_url": "https://glidex.example.com" } }
+```
+
+It must be `https://host[:port]`, with no path; restart the control
+plane after setting it.
+
+That address is then also an accepted origin, the default SSO callback
+(register it once with your IdP), and a name each server's web UI
+answers to. Agents of an older version still relay their web UI to the
+servers until they are upgraded. If users sign in with passkeys under
+more than one of these names, set their domain as well (see
+[Passkeys](authentication.md#the-passkeys-domain)).
+
 ## Rolling upgrades
 
 Upgrade one node at a time: agents first, then servers. On each host,
 update the checkout and re-run the installer (see
 [Maintenance](maintenance.md#updating)). VMs keep running while the
-control plane restarts.
+control plane restarts. An agent stopped in the middle of reporting a
+status sends that report once it is back.
 
 `gxctl cluster status` shows each node's version and feature level. The
 cluster runs at the lowest feature level any server reports, and uses
@@ -489,12 +570,33 @@ The web UI's **Cluster** page (in the side menu) shows, on a cluster:
 - warnings for ports that don't answer, a CA rotation under way, and
   detaches in progress;
 - **Nodes**: role, phase, readiness, address, version and VM count;
-  click a node for its page (capacity, versions, KVM / IOMMU / DPDK,
-  `br-int` datapath, physical networks, its VMs and disks, and the
-  **Operations…** menu);
+  click a node for its Host page (below);
 - **Pending imports** and **Detaches**;
 - **Raft**: state, term, leader, voters and learners;
 - **OVN**: on/off, tunnels, settings;
 - **Certificate authority**, and the **Danger zone**.
 
-On a standalone host it offers **Make this host a cluster**.
+On a standalone host it shows **This host** (name, phase, readiness,
+CPUs, memory and VM count, with a link to the host's own page) and
+offers **Make this host a cluster**.
+
+### Host pages
+
+Each host has a page at `/hosts/<node>`; **Hosts** in the side menu
+opens the Cluster page's node list (on a standalone host, its one page),
+and every link to a node leads there. A host's page shows:
+
+- capacity, versions, KVM / IOMMU / DPDK, the `br-int` datapath and
+  physical networks;
+- **Topology**: its NUMA nodes and PCI devices (see [PCI
+  passthrough](pci-passthrough.md));
+- **Networking**: that host's Open vSwitch, bridges and uplinks (see
+  [Host networking](host-networking.md)), shown once the host is ready;
+- its VMs and disks, the **Roles on this host** card (see [On one host
+  of a cluster](access-control.md#on-one-host-of-a-cluster)), and the
+  **Operations…** menu.
+
+The server whose web UI you use runs a host's requests on that host, so
+every host, agents included, is managed from any server's web UI. What
+you may do there follows your roles on that host. The old
+`/cluster/nodes/<node>` addresses lead to the same pages.

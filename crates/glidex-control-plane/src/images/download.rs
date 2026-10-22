@@ -1330,7 +1330,17 @@ impl ImageManager {
     ) -> Result<InstalledKernel, ImageError> {
         let part = self.part_path(id);
         let io = |p: &Path, e: std::io::Error| ImageError::Io(format!("{}: {}", p.display(), e));
-        let size = std::fs::metadata(&part).map_err(|e| io(&part, e))?.len();
+        // The installed file is the plain arm64 Image, so its digest too.
+        let (size, sha256) = match self.unwrap_kernel(&part, arch)? {
+            Some(plain) => {
+                std::fs::write(&part, &plain).map_err(|e| io(&part, e))?;
+                (plain.len() as u64, sha256_hex(&plain))
+            }
+            None => (
+                std::fs::metadata(&part).map_err(|e| io(&part, e))?.len(),
+                sha256,
+            ),
+        };
         let header = check_kernel_file(&part, size, arch, self.settings.max_kernel_size)?;
         if initrd.is_some() {
             let from = self.initrd_part_path(id);
@@ -1347,6 +1357,21 @@ impl ImageManager {
             release: header.release,
             initrd,
         })
+    }
+
+    /// The plain `Image` of an aarch64 kernel file that is wrapped (a stub
+    /// PE, EFI zboot or gzip; K8), or `None` to install the file as it is.
+    /// One over the size limit is left for the size check to refuse.
+    fn unwrap_kernel(&self, path: &Path, arch: Arch) -> Result<Option<Vec<u8>>, ImageError> {
+        if arch != Arch::Aarch64 {
+            return Ok(None);
+        }
+        let io = |e: std::io::Error| ImageError::Io(format!("{}: {}", path.display(), e));
+        let limit = self.settings.max_kernel_size;
+        if std::fs::metadata(path).map_err(io)?.len() > limit {
+            return Ok(None);
+        }
+        kernel::unwrap_arm64(&std::fs::read(path).map_err(io)?, limit)
     }
 
     /// Copy a host kernel (and initramfs) into a kernel image, read-only,
@@ -1381,6 +1406,35 @@ impl ImageManager {
                 size_bytes: size,
             })
         };
+        // A wrapped arm64 kernel is unwrapped into a scratch copy; the
+        // host's file is never changed.
+        let unwrapped = self
+            .settings
+            .image_dir
+            .join(format!(".{}.unwrapped", super::safe_stem(id)));
+        let kernel_file = match self.unwrap_kernel(kernel_file, arch)? {
+            Some(plain) => {
+                std::fs::write(&unwrapped, &plain).map_err(|e| io(&unwrapped, e))?;
+                unwrapped.as_path()
+            }
+            None => kernel_file,
+        };
+        let result = self.import_checked_kernel(id, arch, kernel_file, initrd_file, &copy);
+        let _ = std::fs::remove_file(&unwrapped);
+        result
+    }
+
+    /// The rest of [`Self::import_kernel`], from a kernel file that is
+    /// what gets installed.
+    fn import_checked_kernel(
+        &self,
+        id: &str,
+        arch: Arch,
+        kernel_file: &Path,
+        initrd_file: Option<&Path>,
+        copy: &dyn Fn(&Path, &Path, u64) -> Result<FileMeta, ImageError>,
+    ) -> Result<InstalledKernel, ImageError> {
+        let io = |p: &Path, e: std::io::Error| ImageError::Io(format!("{}: {}", p.display(), e));
         let size = std::fs::metadata(kernel_file)
             .map_err(|e| io(kernel_file, e))?
             .len();

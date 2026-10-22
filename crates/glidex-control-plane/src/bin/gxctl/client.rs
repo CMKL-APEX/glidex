@@ -38,7 +38,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Conn for T {}
 pub const AGENT_UI_SOCKET: &str = "/run/glidex-cp/ui.sock";
 
 /// What `gxctl` says on a cluster agent, which has no API of its own.
-pub const AGENT_HINT: &str = "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server instead: `gxctl auth login https://<server>:8841` (spec/gxctl-auth.md)";
+pub const AGENT_HINT: &str = "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server instead: `gxctl auth login --url https://<server>:8841` (spec/gxctl-auth.md)";
 
 pub fn socket_candidates(xdg_runtime_dir: Option<&str>, euid: u32) -> Vec<PathBuf> {
     let mut v = vec![PathBuf::from("/run/glidex-cp/api.sock")];
@@ -666,6 +666,11 @@ impl ApiClient {
 
     pub fn set_token(&self, t: Option<Zeroizing<String>>) {
         *self.token.lock().unwrap() = t;
+    }
+
+    /// The credential, removed (put it back with `set_token`).
+    pub fn take_token(&self) -> Option<Zeroizing<String>> {
+        self.token.lock().unwrap().take()
     }
 
     /// The `--project` / `project use` choice for this session.

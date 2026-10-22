@@ -162,7 +162,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
              | unbind <t> <link> | device-pools <t> \
              | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
-             | device-pool remove <t> <name>";
+             | device-pool remove <t> <name> | clusters <t> | opt-in <t> --offer TOKEN | opt-out <t> --cluster ID";
     let Some(t) = transport(client).await else {
         return;
     };
@@ -300,6 +300,69 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 .map(|r| r.into_owned())
             {
                 Ok(_) => println!("{} {}", "Tenant deleted:".green(), id),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // Clusters of other organizations (spec/tenancy.md D65, D66).
+        "clusters" => {
+            let Some(id) = id(1) else { return usage(u) };
+            match svc
+                .list_tenant_clusters(ListTenantClustersRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) if r.clusters.is_empty() => println!("  No clusters of other organizations."),
+                Ok(r) => {
+                    for c in &r.clusters {
+                        println!("  {}  {:<20} {}", c.cluster_id.cyan(), c.name, c.api);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "opt-in" => {
+            let (Some(id), Some(offer)) = (id(1), crate::flag_value(args, "--offer")) else {
+                return usage(u);
+            };
+            match svc
+                .opt_in_cluster(OptInClusterRequest {
+                    id: id.clone(),
+                    offer: offer.to_string(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    if let Some(c) = r.cluster.as_option() {
+                        println!(
+                            "  Tenant {} now uses cluster {} ({}) at {}",
+                            id.cyan(),
+                            c.name,
+                            c.cluster_id,
+                            c.api
+                        );
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "opt-out" => {
+            let (Some(id), Some(cluster)) = (id(1), crate::flag_value(args, "--cluster")) else {
+                return usage(u);
+            };
+            match svc
+                .opt_out_cluster(OptOutClusterRequest {
+                    id: id.clone(),
+                    cluster: cluster.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("  Tenant {id} no longer uses cluster {cluster}"),
                 Err(e) => err(rpc_err(e)),
             }
         }
@@ -556,12 +619,93 @@ fn parse_cap(args: &[&str]) -> Result<Option<Quotas>, String> {
 }
 
 pub async fn admission(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant>";
+    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories";
     let Some(t) = transport(client).await else {
         return;
     };
     let svc = AdmissionServiceClient::new(t.clone(), t.config());
     match args.first().copied().unwrap_or("list") {
+        // An admission for a tenant of another directory (spec/tenancy.md D64).
+        "offer" => {
+            let (Some(tenant), Some(directory)) =
+                (args.get(1), crate::flag_value(args, "--directory"))
+            else {
+                return usage(u);
+            };
+            let req = OfferAdmissionRequest {
+                tenant: tenant.to_string(),
+                directory: directory.to_string(),
+                days: crate::flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                ..Default::default()
+            };
+            match svc.offer_admission(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    println!(
+                        "  Offer for tenant {} of {}; send this token to its administrator (shown once):",
+                        tenant.cyan(),
+                        directory
+                    );
+                    println!("    {}", r.token.yellow());
+                    println!(
+                        "  They redeem it at their directory: gxctl tenant opt-in <tenant> --offer <token>"
+                    );
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "directories" => match svc
+            .list_trusted_directories(ListTrustedDirectoriesRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) if r.directories.is_empty() => {
+                println!("  No directories of other organizations.")
+            }
+            Ok(r) => {
+                for d in &r.directories {
+                    let tenants: Vec<_> = d.tenants.iter().map(|t| t.slug.as_str()).collect();
+                    println!("  {}  tenants: {}", d.issuer.cyan(), tenants.join(", "));
+                }
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        "offers" => match svc
+            .list_offers(ListOffersRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => {
+                for o in &r.offers {
+                    let state = if o.redeemed_at.as_option().is_some() {
+                        "redeemed"
+                    } else {
+                        "open"
+                    };
+                    println!(
+                        "  {}  {:<20} {}  {state}",
+                        o.id.cyan(),
+                        o.tenant,
+                        o.directory
+                    );
+                }
+            }
+            Err(e) => err(rpc_err(e)),
+        },
+        "revoke-offer" => {
+            let Some(id) = args.get(1) else {
+                return usage(u);
+            };
+            match svc
+                .revoke_offer(RevokeOfferRequest {
+                    id: id.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("  Offer {id} revoked"),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
         "list" | "ls" => match svc
             .list_admissions(ListAdmissionsRequest::default())
             .await

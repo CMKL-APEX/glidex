@@ -46,7 +46,7 @@ and pools for GPUs, DPUs and NICs.
 | H2 | Where it lives | Two levels. The **summary** (NUMA nodes, CPU sets, per-node memory and hugepages, and *assignable* devices with their NUMA node) is in the node's replicated `status`, because the scheduler needs it on the leader. The **full tree** (every PCI function, bridges, links) stays on the node and is served on request (§4.2). It keeps Raft state small, and the tree is only needed for display and diagnosis. |
 | H3 | Device identity | A device is `(node, address)`. A VFIO claim, a grant and a scheduler match are all per node. Today's claim check compares the address across the whole cluster (§8.4). The VM spec keeps the sysfs path as written today. |
 | H4 | Unknown NUMA | A device whose `numa_node` reads `-1` (one-node hosts, some firmware) is reported as `numa_node: null`. On a host with one NUMA node it counts as node 0. On a multi-node host it fits any NUMA policy except `strict`, and the node shows a `topology_warnings` entry. Glidex never guesses from the bus number. |
-| H5 | VM NUMA policy | `numa: none \| preferred \| strict` (default `none`, today's behaviour). `preferred` aligns vCPUs, memory and devices on one host NUMA node when one fits and falls back otherwise. `strict` refuses a node where they can't all be on one NUMA node. One host NUMA node per VM in this design; spanning nodes with a guest NUMA topology is §13. |
+| H5 | VM NUMA policy | `numa: none \| preferred \| strict` (default `none`, today's behaviour). `preferred` aligns vCPUs, memory and devices on one host NUMA node when one fits and falls back otherwise. `strict` refuses a node where they can't all be on one NUMA node. One host NUMA node per VM in this design; spanning nodes with a guest NUMA topology is `aligned`, in [gpu-vms.md](gpu-vms.md) §4. |
 | H6 | CPU policy | `cpu: shared \| dedicated` (default `shared`). `shared` vCPUs float over the NUMA node's (or host's) shareable CPUs and count against `cpu_overcommit`. `dedicated` pins each vCPU to its own host CPU, exclusively, never overcommitted. |
 | H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (networking.md §3), and CPUs kept for the host. By default, once a node holds any `dedicated` VM, the first physical core of each NUMA node is reserved for the host (the OVS-DPDK OS core counts as node 0's). `cluster.node_reserved.cpu_list` in the control-plane config overrides that default, including with an empty list. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
 | H8 | Who allocates CPUs | The **scheduler** picks the node and NUMA node and writes the exact CPU set into `status.placement`. The node never chooses CPUs itself. The leader is the one writer, so two VMs can't take the same CPU. A standalone host runs the same code locally. |
@@ -236,7 +236,15 @@ A device is `ready` when all of these hold:
    unbound;
 4. `/dev/vfio/<group>` is readable and writable by `glidex`;
 5. it is not a DPDK uplink of a glidex bridge, nor an interface carrying
-   the host's own addresses (`glidex_ovs::nic::classify`).
+   the host's own addresses (`glidex_ovs::nic::classify`);
+6. no process other than this host's glidex VMs has its group open
+   (`in use by qemu-kvm-one (pid 37226)`): another hypervisor on the same
+   host, libvirt or OpenNebula, holding it. netd answers
+   `device_holders` from every process's open files (`/proc/<pid>/fd`),
+   since libvirt gives QEMU a private `/dev` where `fuser` can't see it;
+   glidex's own VMs run as the control plane's user and are left out.
+   netd also refuses `release_device` and a VF-count change while a
+   group involved is open.
 
 Each failed check is a reason (`not bound to vfio-pci (driver: nvidia)`,
 `IOMMU group 31 also holds 0000:41:00.1 on snd_hda_intel`, `/dev/vfio/31
@@ -814,10 +822,8 @@ is a device of class `dpu`:
 ## 13. Later
 
 - **Multi-node guests:** a VM spanning host NUMA nodes with a matching
-  guest NUMA topology (Cloud Hypervisor `--numa` per node with
-  `pci_segments`, QEMU `-numa` per node with `pxb-pcie,numa_node=`), so
-  a guest with 8 GPUs over two sockets sees which GPU is near which
-  CPUs.
+  guest NUMA topology. Designed in [gpu-vms.md](gpu-vms.md) §4–§5
+  (`numa_policy: aligned`), with NVLink through Fabric Manager (§7–§9).
 - **mdev and vGPU:** mediated devices as pool members, with vendor
   types and counts per parent.
 - **SR-IOV VF networking:** VLAN, MAC, trust and spoof check from the

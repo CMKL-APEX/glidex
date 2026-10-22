@@ -1,0 +1,35 @@
+[Unit]
+Description=glidex storage helper (LVM volumes, device access)
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/storage.md
+After=lvm2-monitor.service systemd-udevd.service
+Before=glidex-control-plane.service
+
+[Service]
+# READY=1 once the sockets are bound.
+Type=notify
+ExecStart=/usr/local/bin/glidex-stord
+RuntimeDirectory=glidex-stord
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=2
+# stord acts only on the volume groups in /etc/glidex/stord.json
+# (allowed_vgs) and only on volumes named gx-d-*/gx-i-* (spec/storage.md
+# S17). It writes LVM's metadata backups and locks, and the VM units'
+# drop-ins; nothing else. Checked with LVM-thin on a loop device
+# (spec/storage.md §19, H4-H5).
+ProtectSystem=strict
+ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+# device-mapper ioctls (CAP_SYS_ADMIN), handing device nodes to glidex
+# (CAP_CHOWN, CAP_FOWNER), LVM's mlock (CAP_IPC_LOCK) and raw device I/O.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_IPC_LOCK CAP_SYS_RAWIO CAP_MKNOD
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

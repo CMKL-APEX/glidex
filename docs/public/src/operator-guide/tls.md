@@ -43,8 +43,8 @@ service printed:
   ```
 
 `/run/glidex-cp/tls.crt` is a public copy of the API's certificate (never
-the key) that the control plane writes at every start, for local
-clients to trust.
+the key) that the control plane writes at every start and after it
+reloads a replaced certificate, for local clients to trust.
 
 ### New names or addresses
 

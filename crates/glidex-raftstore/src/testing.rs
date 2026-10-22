@@ -1,13 +1,80 @@
-//! An in-process Raft cluster with fault injection (spec/clustering.md §15):
-//! messages between members are routed through a [`Mesh`] that can drop,
-//! delay and reorder them, partition members and take them down.
+//! An in-process Raft cluster with fault injection (glidex
+//! spec/clustering.md §15): messages between members are routed through a
+//! [`Mesh`] that can drop, delay and reorder them, partition members and
+//! take them down. [`Test`] is a small schema for the crate's own tests and
+//! [`TestCluster`]; other applications use [`Mesh`] with theirs.
 
-use super::*;
-use crate::store::{Db, Origin, StoreError, TableId};
+use crate::raft::*;
+use crate::store::{Db, Schema, StoreError, definition};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// A schema for tests: two replicated tables and the local one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Test;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u16)]
+pub enum TestTable {
+    Data = 1,
+    Other = 2,
+    Local = 3,
+}
+
+impl Serialize for TestTable {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u16(*self as u16)
+    }
+}
+
+impl<'de> Deserialize<'de> for TestTable {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let id = u16::deserialize(d)?;
+        Test::table_from_id(id)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown table id {id}")))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestOrigin {
+    Api,
+    System,
+}
+
+impl Schema for Test {
+    type Table = TestTable;
+    type Origin = TestOrigin;
+    const TABLES: &'static [TestTable] = &[TestTable::Data, TestTable::Other, TestTable::Local];
+    const LOCAL: TestTable = TestTable::Local;
+    const SYSTEM: TestOrigin = TestOrigin::System;
+    const SNAPSHOT_MAGIC: &'static [u8; 8] = b"RSTEST1\n";
+    const CHECK_ENV: &'static str = "GLIDEX_CHECK_WRITE_SETS";
+    /// Small, so the limit is easy to reach in a test.
+    const MAX_WRITE_SET_BYTES: usize = 64 * 1024;
+
+    fn table_name(t: TestTable) -> &'static str {
+        match t {
+            TestTable::Data => "data",
+            TestTable::Other => "other",
+            TestTable::Local => "local",
+        }
+    }
+    fn table_id(t: TestTable) -> u16 {
+        t as u16
+    }
+    fn table_from_id(id: u16) -> Option<TestTable> {
+        Self::TABLES.iter().copied().find(|t| *t as u16 == id)
+    }
+    fn table_from_name(name: &str) -> Option<TestTable> {
+        Self::TABLES
+            .iter()
+            .copied()
+            .find(|t| Self::table_name(*t) == name)
+    }
+}
 
 #[derive(Default)]
 struct Faults {
@@ -22,18 +89,20 @@ struct Faults {
     loss_pct: u8,
 }
 
-#[derive(Default)]
-pub struct Mesh {
-    services: Mutex<HashMap<RaftId, Arc<RaftService>>>,
+pub struct Mesh<S: Schema> {
+    services: Mutex<HashMap<RaftId, Arc<RaftService<S>>>>,
     faults: Mutex<Faults>,
 }
 
-impl Mesh {
-    pub fn new() -> Arc<Mesh> {
-        Arc::new(Mesh::default())
+impl<S: Schema> Mesh<S> {
+    pub fn new() -> Arc<Mesh<S>> {
+        Arc::new(Mesh {
+            services: Mutex::new(HashMap::new()),
+            faults: Mutex::new(Faults::default()),
+        })
     }
 
-    pub fn register(&self, id: RaftId, s: Arc<RaftService>) {
+    pub fn register(&self, id: RaftId, s: Arc<RaftService<S>>) {
         self.services.lock().unwrap().insert(id, s);
     }
 
@@ -77,7 +146,7 @@ impl Mesh {
         })
     }
 
-    async fn route(&self, from: RaftId, to: RaftId) -> Result<Arc<RaftService>, TransportError> {
+    async fn route(&self, from: RaftId, to: RaftId) -> Result<Arc<RaftService<S>>, TransportError> {
         let (delay, drop) = {
             let f = self.faults.lock().unwrap();
             let r = rand_u64();
@@ -114,13 +183,13 @@ fn rand_u64() -> u64 {
     u64::from_le_bytes(b)
 }
 
-struct MeshTransport {
-    mesh: Arc<Mesh>,
+struct MeshTransport<S: Schema> {
+    mesh: Arc<Mesh<S>>,
     from: RaftId,
 }
 
 #[async_trait::async_trait]
-impl Transport for MeshTransport {
+impl<S: Schema> Transport for MeshTransport<S> {
     async fn call(
         &self,
         target: RaftId,
@@ -149,13 +218,13 @@ impl Transport for MeshTransport {
 
 pub struct TestNode {
     pub id: RaftId,
-    pub node: Arc<ClusterNode>,
-    pub db: Arc<Db>,
+    pub node: Arc<ClusterNode<Test>>,
+    pub db: Arc<Db<Test>>,
     pub dir: PathBuf,
 }
 
 pub struct TestCluster {
-    pub mesh: Arc<Mesh>,
+    pub mesh: Arc<Mesh<Test>>,
     pub nodes: Vec<TestNode>,
     pub root: tempfile::TempDir,
     pub settings: RaftSettings,
@@ -215,7 +284,7 @@ impl TestCluster {
     pub async fn add_started(&mut self, id: RaftId) -> usize {
         let dir = self.root.path().join(format!("n{id}"));
         std::fs::create_dir_all(&dir).unwrap();
-        let db = Arc::new(Db::create(dir.join("glidex.db")).unwrap());
+        let db = Arc::new(Db::create(dir.join("store.db")).unwrap());
         let node = ClusterNode::start(
             db.clone(),
             &dir.join("raft"),
@@ -268,8 +337,8 @@ impl TestCluster {
     pub fn put(&self, id: RaftId, key: &str, value: &str) -> Result<(), StoreError> {
         let db = self.by_id(id).db.clone();
         let (k, v) = (key.to_string(), value.to_string());
-        db.write(Origin::Api, move |tx| -> Result<(), StoreError> {
-            tx.open_table(TableId::Meta.definition())?
+        db.write(TestOrigin::Api, move |tx| -> Result<(), StoreError> {
+            tx.open_table(definition::<Test>(TestTable::Data))?
                 .insert(&k, v.as_bytes())?;
             Ok(())
         })

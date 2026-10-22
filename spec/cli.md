@@ -136,7 +136,7 @@ name (ids when `/projects` isn't readable).
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
 | `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
-| `datastore create <name> --path P [--shared] [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`) |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`); with `--lvm` LVM-thin on each node (`lvm`, §11.1), `--node-path NODE=VG` naming a node's own volume group |
 | `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
 | `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
@@ -161,7 +161,8 @@ name (ids when `/projects` isn't readable).
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
-| `auth login [--profile P] (--url U… \| --server U…) [--oidc \| --token \| --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--save] [--name N] [--days N] [--non-interactive]`| The `auth` group is the canonical surface; `login`, `logout`, `token …` and `whoami` remain as aliases. Connects to the chosen target (TOFU-pinning an untrusted certificate with confirmation or `--pin`), binds the profile to the server's `cluster_id`, proves the credential with `whoami`, and merges it into `config.json` (`0600`) — this is the command that **generates the config file**. Flags per [gxctl-auth.md §6.1](gxctl-auth.md). |
+| `auth login [--profile P] (--url U… \| --server U…) [--directory [ID] \| --oidc \| --token \| --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--save] [--name N] [--days N] [--non-interactive]`| The `auth` group is the canonical surface; `login`, `logout`, `token …` and `whoami` remain as aliases. Connects to the chosen target (TOFU-pinning an untrusted certificate with confirmation or `--pin`), binds the profile to the server's `cluster_id`, proves the credential with `whoami`, and merges it into `config.json` (`0600`) — this is the command that **generates the config file**. Flags per [gxctl-auth.md §6.1](gxctl-auth.md). |
+| `auth login --directory [ID]` | The directory's device grant (`POST /d/{ID}/device_authorization`, default `local`; the web UI's `/device` page approves it), then `token` with `resource=urn:glidex:cluster:<cluster id>` ([tenancy.md](tenancy.md) D57). The profile keeps `directory {id, refresh_token, resource, access_expires_at}` and the access token as `token`; before each run gxctl refreshes it when it expires within 2 minutes (the refresh token is replaced each time), with no credential on the request |
 | `auth logout [--profile P] [--revoke] [--keep-token]`| Drops the profile's credential (`--revoke` deletes that token server-side first, by `identity.token_id`); pins and CA stay, so a later `login` needs only the credential |
 | `auth status` / `auth use P` / `auth profiles`| Where am I: target, cluster, trust mode, token and expiry (also the REPL banner); set / clear `current`; list profiles |
 | `auth trust list\|fetch\|remove`| Manage a profile's pinned fingerprints; `fetch` compares the server's claim without sending anything else |
@@ -174,6 +175,10 @@ name (ids when `/projects` isn't readable).
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
 | `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([tenancy.md](tenancy.md) §6.1); `create` prints the link once |
 | `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([tenancy.md](tenancy.md) §9) |
+| `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([tenancy.md](tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
+| `tenant clusters <t>` / `opt-in <t> --offer TOKEN` / `opt-out <t> --cluster ID` | `TenantService` (D65, D66): at the tenant's directory |
+| `directory keys` / `directory keys rotate` | `SigningKeyService` ([tenancy.md](tenancy.md) D52, D53): the issuer URL and the token signing keys |
+| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
 | `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |
@@ -327,7 +332,8 @@ Interactive `handle_create` asks, in order:
    the default instead (`none` for no login). With
    no credentials in the project gxctl says "no login available" and
    doesn't ask.
-9. Kernel args (optional — server default `console=ttyS0 root=/dev/vda reboot=k panic=1`) —
+9. Kernel args (optional — server default `console=ttyS0 root=/dev/vda reboot=k panic=1`,
+   `console=ttyAMA0` on aarch64) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.
 

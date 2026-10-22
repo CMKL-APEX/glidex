@@ -4,7 +4,7 @@ How you prove who you are depends on where you connect from:
 
 | From | How |
 |------|-----|
-| The web UI | Your account's password (PAM) or single sign-on (OIDC), whichever the site enables |
+| The web UI | Your account's password (PAM), single sign-on (OIDC, Google, JumpCloud) or a passkey, whichever the site enables |
 | `gxctl` on a Glidex host | Nothing: the local socket knows your Unix account |
 | `gxctl` on another machine | `gxctl auth login` once; it saves a token in a login profile |
 | Scripts and the API | An API token, sent as `Authorization: Bearer <token>` |
@@ -21,24 +21,119 @@ sign-in page shows what the site enables:
   host, or of the site's PAM setup. By default the account must be in the
   `glidex-users` group.
 - **Sign in with &lt;provider&gt;** (or **Sign in with SSO**): your
-  organisation's single sign-on.
+  organisation's single sign-on, one button per provider the site
+  offers, such as its Google Workspace or JumpCloud.
+- **Sign in with a passkey**: a passkey you added earlier (see
+  [Passkeys](#passkeys)). There is no user name to type.
 
 If the page says *No login method is enabled on this host*, ask an
 administrator, or use `gxctl` on the host.
 
+Some single sign-on providers create your Glidex account for you ahead
+of time (*provisioning*): the identity provider pushes it over SCIM, or
+Glidex reads it from your organisation's Google Workspace (a *directory
+sync*). Through such a provider:
+
+- only people it provisioned can sign in; anyone else is refused
+  (`login_not_allowed`), even with an invitation. With a directory sync,
+  that is the members of the Google groups your operator chose;
+- your first sign-in is matched to the account it made, by your
+  provider's id or, over SCIM, your verified email address;
+- your name and email come from the provider, and if the provider
+  deactivates you, you can't sign in until it reactivates you. With a
+  directory sync, being suspended in Google or taken out of the groups
+  counts as deactivated. An administrator may also disable you in
+  Glidex; then only an administrator can enable you again.
+
+A directory sync reads Google every 15 minutes unless the operator chose
+otherwise, so after you are added to a group (or come back), it can take
+that long before you can sign in.
+
+In a cluster, open a server's web UI. Opening an agent's sends you to a
+server's, at that agent's Host page; sign in there.
+
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
 browser shows with the one your operator gives you before you accept it
-(see [TLS](../operator-guide/tls.md)).
+(see [TLS](../operator-guide/tls.md)). If the host is on a Tailscale
+tailnet and your operator turned on its Tailscale certificate, open the
+UI at its `https://<node>.<tailnet>.ts.net:5173` address instead: the
+browser trusts that one, with no warning (see
+[Tailscale certificates](../operator-guide/tls.md#tailscale-certificates)).
 
 A browser session ends after 30 minutes without activity and after 12
 hours at most, unless the operator changed these. **Log out**, in the
 header, ends it now. Some actions (changing policies, host networking or
 the cluster) need a recent login: the UI then asks you to sign in again
-(*Confirm it's you*) and retries the action.
+(*Confirm it's you*) and retries the action. **Confirm with a passkey**
+answers it too.
 
 The header also shows who you are and the project you are working in;
 see [Projects](projects.md#choosing-a-project).
+
+### Invitations
+
+An administrator may let you in with an invitation: a link of the form
+`https://<host>:5173/invite/<id>#<secret>`. Open it in your browser. The
+page says which tenant and role it is for, and which address and
+provider to sign in with; **Sign in with &lt;provider&gt;** takes you
+there. Sign in with that address: another account doesn't take the
+invitation.
+
+- A link works once, for one person, and expires (after 7 days unless
+  the administrator chose otherwise).
+- Keep it to yourself until you have used it: it works like a password.
+- If the page says the invitation was already used, revoked or has
+  expired, ask for a new one.
+
+### Your account
+
+Click your name in the header for **Your account**. Its **Sign-in
+methods** card lists the ways you can sign in as yourself, for example a
+local password and a Google account; each gives the same roles.
+
+- Under *Add a way to sign in*, pick one of the site's single sign-on
+  providers and sign in there; it is added to you. This needs a recent
+  login. A provider that provisions its users, by SCIM or a directory
+  sync, can't be added: its sign-ins belong to the accounts it manages.
+- **Remove** takes one away. You can't remove your last one.
+
+Signing in a second way without adding it first makes a second, separate
+user. If a sign-in already belongs to another user, an administrator
+must remove it from that user before you can add it.
+
+### Passkeys
+
+A passkey lets you sign in with your device's fingerprint, face or PIN,
+or a security key, instead of a password. When the site has passkeys
+on, **Your account** has a **Passkeys** card; it says so if your browser
+can't make passkeys.
+
+To add one:
+
+1. Sign in another way, and open **Your account**.
+2. Under **Passkeys**, type a **Name** (such as *work laptop*) and click
+   **Add a passkey**. If your login isn't recent, the UI asks you to
+   sign in again first.
+3. Confirm in your browser's or device's prompt.
+
+The card lists your passkeys with when each was made and last used, and
+*synced* for one your device keeps in sync across your devices. It also
+appears as *Passkey* under **Sign-in methods**. **Rename** changes its
+name; **Remove** deletes it. You can have up to 10.
+
+To sign in, click **Sign in with a passkey** on the login page and pick
+the passkey in your browser's prompt. Closing the prompt just cancels.
+
+- Keep another sign-in method, or a second passkey. You can't remove the
+  one that would leave a single passkey as your only way in.
+- If the card says passkeys made here work under this page's name only,
+  a passkey you add works only at that address of the web UI. Open the
+  UI at the same address to use it.
+- If you lose a device, sign in another way and remove its passkey. If
+  you have no way left to sign in, ask an administrator.
+- `gxctl` doesn't use passkeys; use a password, single sign-on or a
+  token there.
 
 ## gxctl on a Glidex host
 
@@ -55,7 +150,8 @@ being added). Members of `glidex-admin` are administrators.
 
 `--socket <path>` (or `GLIDEX_SOCKET`) picks another socket. On a cluster
 *agent* node there is no local API: log in to a server node from there
-as from any other machine.
+as from any other machine (`gxctl auth login --url
+https://<server>:8841 …`, which runs on the agent itself).
 
 ## gxctl from another machine
 
@@ -75,18 +171,38 @@ gxctl auth login --url https://host.example.org:8841 --profile lab --oidc
 
 # An API token you already have (typed hidden, or piped)
 gxctl auth login --url https://host.example.org:8841 --profile ci --token < token.txt
+
+# Your directory: approve the login in the web UI, however you sign in there
+gxctl auth login --url https://host.example.org:8841 --profile lab --directory
 ```
 
-- `--connector <id>` picks one of several sign-in providers.
+With `--directory`, gxctl prints a link to the web UI's **Device login**
+page and a code. Open it, sign in the way you usually do (password,
+single sign-on, a passkey), check that the code matches, and approve.
+gxctl then holds no long-lived token: it keeps a *refresh token* for
+your directory and asks it for a short-lived access token for this
+cluster (one hour by default) whenever the one it holds is about to
+expire. The refresh token lasts while you keep using it (30 days unused
+at most; 30 to 90 days in all, as the operator's sign-in providers
+allow), and ends when you or an administrator end your sessions, when
+your account is disabled, or at `gxctl auth logout`.
+
+- `--connector <id>` picks one of several sign-in providers. A Google
+  provider works with `--oidc` only if the operator set it up for
+  device logins; otherwise it answers `device_flow_unsupported`.
 - `--name <name>` names the token it creates (default `gxctl@<profile>`),
   so you can tell your machines apart in `gxctl token list`.
+- `--directory [id]` logs in at one of the host's directories (`local`,
+  the default, until a host serves several).
 - `--days N` asks for a shorter or longer `--pam-user` token, within the
   site's limit (30 days unless the operator changed it). An `--oidc` login
   gets a token valid for one day.
 - For a cluster, repeat `--url` with several server nodes; `gxctl` tries
   them in turn.
 - Without `--profile`, `--url` refreshes the profile that already points
-  at that host; for a new host add `--save` to name the profile after it.
+  at that host; for a new host add `--save` to name the profile after it:
+  a host name's first label (`gpu-dev2.example.net` gives `gpu-dev2`),
+  or a whole IP address with dashes (`192.0.2.10` gives `192-0-2-10`).
 
 The first profile you create becomes the current one; `--use` makes a
 later one current. Run the same `auth login --profile lab` again when its
@@ -148,7 +264,15 @@ gxctl auth use lab            # make 'lab' current
 gxctl --profile ci list       # use another profile for one command
 gxctl auth logout             # forget this profile's token (target and pins stay)
 gxctl auth logout --revoke    # revoke it on the server first, then forget it
+gxctl auth profiles remove lab
 ```
+
+`auth profiles remove <name>` deletes a profile from the file. It refuses
+one that still holds a token, since the token stays valid on the server:
+run `gxctl auth logout --profile <name> --revoke` first, or add
+`--forget-token` to drop it unrevoked (revoke it later from **Tokens** or
+`gxctl token revoke`). Removing the current profile leaves none current;
+pick another with `gxctl --profile <other> auth use <other>`.
 
 `GLIDEX_PROFILE` does what `--profile` does. `--url` on a command
 overrides the target for that run but keeps the profile's trust; the
@@ -257,6 +381,6 @@ you:
 ```
 
 `Method` is `peer` on the local socket and `token` whenever a token is
-sent (as `gxctl` does from a profile); a web UI session is `pam` or
-`oidc`. The user id is what others need to add
+sent (as `gxctl` does from a profile); a web UI session is `pam`, `oidc`
+or `passkey`. The user id is what others need to add
 you to a project. Over the API: `GET /auth/whoami`.

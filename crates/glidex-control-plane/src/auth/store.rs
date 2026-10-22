@@ -73,9 +73,17 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// The directory of a record from before T6 (spec/tenancy.md D58).
+pub fn local_directory() -> String {
+    crate::tenants::LOCAL_DIRECTORY.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
+    /// Its directory (spec/tenancy.md D58); `local` from before T6.
+    #[serde(default = "local_directory")]
+    pub directory_id: String,
     pub display_name: String,
     #[serde(default)]
     pub disabled: bool,
@@ -212,6 +220,9 @@ pub struct TeamMember {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Team {
     pub id: String,
+    /// Its directory (D58); `local` from before T6.
+    #[serde(default = "local_directory")]
+    pub directory_id: String,
     pub name: String,
     #[serde(default)]
     pub members: Vec<TeamMember>,
@@ -261,6 +272,10 @@ pub struct Session {
     /// The login was multi-factor (`context.auth.mfa`, spec/tenancy.md §6).
     #[serde(default)]
     pub mfa: bool,
+    /// A trusted directory's login (D69): its chain, `sid`; the session
+    /// ends when the directory's feed says that chain ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +690,7 @@ impl IdentityStore {
     /// in one write.
     pub fn scim<R, E: From<StoreError> + From<crate::store::StoreError>>(
         &self,
+        directory: &str,
         connector: &str,
         f: impl FnOnce(&ScimTx<'_>) -> Result<R, E>,
     ) -> Result<R, E> {
@@ -682,6 +698,7 @@ impl IdentityStore {
             f(&ScimTx {
                 tx,
                 connector: connector.to_string(),
+                directory: directory.to_string(),
             })
         })
     }
@@ -720,7 +737,8 @@ impl IdentityStore {
         verified_email: Option<&str>,
         by_email: bool,
     ) -> Result<Option<User>, StoreError> {
-        self.scim(connector, |tx| {
+        // It only links an existing user; it makes none.
+        self.scim(&local_directory(), connector, |tx| {
             let ours = |u: &User| u.managed.as_ref().is_some_and(|m| m.connector == connector);
             let key = Identity::key(provider, subject);
             let known: Option<Identity> = {
@@ -908,6 +926,26 @@ impl IdentityStore {
         email: Option<String>,
         create: bool,
     ) -> Result<Option<User>, StoreError> {
+        self.user_for_identity_in(
+            &local_directory(),
+            provider,
+            subject,
+            display_name,
+            email,
+            create,
+        )
+    }
+
+    /// As `user_for_identity`, a new user being made in `directory` (D58).
+    pub fn user_for_identity_in(
+        &self,
+        directory: &str,
+        provider: &str,
+        subject: &str,
+        display_name: &str,
+        email: Option<String>,
+        create: bool,
+    ) -> Result<Option<User>, StoreError> {
         if let Some(i) = self.identity(provider, subject)? {
             return self.user(&i.user_id);
         }
@@ -930,6 +968,7 @@ impl IdentityStore {
             None => {
                 let u = User {
                     id: uuid::Uuid::new_v4().to_string(),
+                    directory_id: directory.to_string(),
                     display_name: display_name.to_string(),
                     disabled: false,
                     default_project: None,
@@ -1363,6 +1402,8 @@ fn deprovision_in(
 pub struct ScimTx<'a> {
     tx: &'a crate::store::Tx<'a>,
     pub connector: String,
+    /// The connector's directory: where the users and teams it makes go.
+    pub directory: String,
 }
 
 impl ScimTx<'_> {
@@ -1544,6 +1585,7 @@ impl ScimTx<'_> {
                     }
                     None => teams.push(Team {
                         id: g.id.clone(),
+                        directory_id: self.directory.clone(),
                         name,
                         members: vec![],
                         created_at: now(),
@@ -1717,6 +1759,7 @@ mod tests {
         for name in ["a", "b", "c"] {
             s.put_team(&Team {
                 id: name.into(),
+                directory_id: local_directory(),
                 name: name.into(),
                 members: vec![],
                 created_at: 0,
@@ -1808,6 +1851,7 @@ mod tests {
     fn a_scim_first_login_finds_only_its_connectors_users() {
         let user = |id: &str, connector: Option<&str>, ext: &str| User {
             id: id.into(),
+            directory_id: local_directory(),
             display_name: id.into(),
             disabled: false,
             default_project: None,

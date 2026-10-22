@@ -24,12 +24,57 @@ use zeroize::Zeroizing;
 
 // ---- login -------------------------------------------------------------
 
-pub async fn methods(State(app): State<AppState>) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+pub struct MethodsQuery {
+    #[serde(default)]
+    directory: String,
+}
+
+/// `GET /auth/methods[?directory=<id>]`: what the login page offers, for
+/// the host's own directory or the one a `/login/<id>` page names (D61).
+pub async fn methods(
+    State(app): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<MethodsQuery>,
+) -> impl IntoResponse {
+    let found = svc::discover(
+        &app,
+        login_pb::DiscoverRequest {
+            directory: q.directory,
+            ..Default::default()
+        },
+    );
+    let own = found.directory == crate::tenants::LOCAL_DIRECTORY;
+    // "Sign in with …" for each directory this cluster trusts (D69).
+    let trusted: Vec<serde_json::Value> = app
+        .auth
+        .trust
+        .directories()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| super::trusted_login::callback_url(&app, &d.id).is_some())
+        .map(|d| {
+            let host = url::Url::parse(&d.issuer)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": d.id,
+                "host": host,
+                "tenants": d.tenants.iter().map(|t| t.display_name.clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     Json(serde_json::json!({
-        "pam": app.auth.pam_connector(None).is_ok(),
+        // Host accounts are the host's own directory's (D23).
+        "pam": own && app.auth.pam_connector(None).is_ok(),
         "oidc": app.auth.oidc_enabled(),
+        // spec/passkeys.md: whether they are on, and their domain when set.
+        "passkeys": app.auth.config.auth.passkeys.enabled,
+        "passkeys_rp_id": app.auth.config.auth.passkeys.rp_id,
         "disabled": app.auth.is_disabled(),
-        "connectors": svc::discover(&app, Default::default()).connectors,
+        "directory": found.directory,
+        "connectors": found.connectors,
+        "trusted_directories": trusted,
     }))
 }
 
@@ -58,7 +103,7 @@ fn default_method() -> String {
 }
 
 /// Whether cookies should be `Secure`: the browser reached us over TLS.
-fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
+pub(super) fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
         Listener::Ui | Listener::Relay => {
             headers
@@ -75,7 +120,7 @@ fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> 
     }
 }
 
-fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValue {
+pub(super) fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValue {
     let mut c = format!(
         "{}={}; HttpOnly; SameSite=Strict; Path=/",
         auth::SESSION_COOKIE,
@@ -289,7 +334,7 @@ fn query_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> 
     }
 }
 
-fn first_origin(app: &AppState) -> Option<&str> {
+pub(super) fn first_origin(app: &AppState) -> Option<&str> {
     app.auth
         .config
         .auth
@@ -856,6 +901,41 @@ pub async fn unlink_identity(
         ..Default::default()
     };
     acc::unlink_identity(&c, req)?;
+    Ok(super::proto_no_content())
+}
+
+/// `GET /users/{id}/passkeys`.
+pub async fn list_passkeys(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListPasskeysRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::list_passkeys(&c, req)?))
+}
+
+/// `PATCH /users/{id}/passkeys/{passkey} {name}`.
+pub async fn rename_passkey(
+    c: Caller,
+    Path((id, passkey)): Path<(String, String)>,
+    Json(v): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let mut req: pb::RenamePasskeyRequest = proto_body(v)?;
+    req.id = id;
+    req.passkey = passkey;
+    Ok(Proto(StatusCode::OK, acc::rename_passkey(&c, req)?))
+}
+
+/// `DELETE /users/{id}/passkeys/{passkey}`.
+pub async fn delete_passkey(
+    c: Caller,
+    Path((id, passkey)): Path<(String, String)>,
+) -> Result<Response, ApiErr> {
+    let req = pb::DeletePasskeyRequest {
+        id,
+        passkey,
+        ..Default::default()
+    };
+    acc::delete_passkey(&c, req)?;
     Ok(super::proto_no_content())
 }
 

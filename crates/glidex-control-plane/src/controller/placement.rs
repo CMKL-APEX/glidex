@@ -43,6 +43,7 @@ impl VmManager {
                         at: crate::tenancy::now(),
                         page_kib: Some(choice.page_kib),
                         numa_node: choice.numa_node,
+                        numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
                     });

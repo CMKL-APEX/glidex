@@ -8,7 +8,9 @@
 //! asks the policy engine; a personal token that has links of its own is
 //! allowed only what both it and its owner are allowed.
 
+pub mod passkeys;
 pub mod store;
+pub mod webauthn;
 
 use crate::authz::{
     self, AuthContext, Decision, Engine, Ent, EntitySet, Link, PolicySource, Query, SiteSource,
@@ -68,7 +70,11 @@ pub enum Method {
     Peer,
     Pam,
     Oidc,
+    /// A passkey (spec/passkeys.md): user-verified, so multi-factor.
+    Passkey,
     Token,
+    /// An access token of a directory hosted here (spec/tenancy.md D56).
+    Directory,
     Disabled,
 }
 
@@ -78,7 +84,9 @@ impl Method {
             Method::Peer => "peer",
             Method::Pam => "pam",
             Method::Oidc => "oidc",
+            Method::Passkey => "passkey",
             Method::Token => "token",
+            Method::Directory => "directory",
             Method::Disabled => "disabled",
         }
     }
@@ -115,20 +123,26 @@ pub struct Principal {
     /// The federated token this request came with (spec/tenancy.md D48):
     /// it acts as `token`, its service account; audit names both.
     pub federated: Option<String>,
+    /// The directory it belongs to (D58): its user's, or its service
+    /// account's project's.
+    #[serde(default = "store::local_directory")]
+    pub directory: String,
 }
 
 impl Principal {
     /// The directory the principal belongs to (spec/tenancy.md §6). A host
     /// hosts one directory until directories and clusters come apart (T6).
     pub fn directory_id(&self) -> &str {
-        crate::tenants::LOCAL_DIRECTORY
+        &self.directory
     }
 
     /// The synthetic principal of [`AuthService::disabled`].
     pub fn system() -> Self {
         Principal {
+            directory: store::local_directory(),
             user: Some(User {
                 id: "system".into(),
+                directory_id: store::local_directory(),
                 display_name: "system".into(),
                 disabled: false,
                 default_project: None,
@@ -259,6 +273,19 @@ pub struct AuthService {
     pub sync_status: crate::directory::sync::SyncStatusStore,
     /// Workload federations (spec/tenancy.md §9).
     pub federations: crate::directory::federation::FederationStore,
+    /// Passkeys (spec/passkeys.md), and their ceremonies in progress.
+    pub passkeys: passkeys::PasskeyStore,
+    pub ceremonies: passkeys::Ceremonies,
+    /// The directory as an OpenID provider (D54–D57): codes and device
+    /// grants in progress, and refresh tokens.
+    pub op_pending: crate::directory::op::Pending,
+    pub refresh_tokens: crate::directory::op::RefreshTokens,
+    /// Trust with other organizations' clusters and directories (D65), and
+    /// the peer assertions seen (D63).
+    pub trust: crate::trust::TrustStore,
+    pub peer_replays: crate::directory::peer::Replays,
+    /// Browser logins at trusted directories under way (D69).
+    pub trusted_logins: crate::trust::PendingLogins,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -390,7 +417,16 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
-            issuers: Default::default(),
+            passkeys: passkeys::PasskeyStore::new(db.clone()),
+            ceremonies: Default::default(),
+            op_pending: Default::default(),
+            refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
+            trust: crate::trust::TrustStore::new(db.clone()),
+            peer_replays: Default::default(),
+            trusted_logins: Default::default(),
+            issuers: crate::directory::federation::Issuers::new(
+                config.auth.federation.allow_private_issuers,
+            ),
             federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
@@ -429,7 +465,16 @@ impl AuthService {
             sync_status: crate::directory::sync::SyncStatusStore::new(db.clone()),
             sync_source: Mutex::new(None),
             federations: crate::directory::federation::FederationStore::new(db.clone()),
-            issuers: Default::default(),
+            passkeys: passkeys::PasskeyStore::new(db.clone()),
+            ceremonies: Default::default(),
+            op_pending: Default::default(),
+            refresh_tokens: crate::directory::op::RefreshTokens::new(db.clone()),
+            trust: crate::trust::TrustStore::new(db.clone()),
+            peer_replays: Default::default(),
+            trusted_logins: Default::default(),
+            issuers: crate::directory::federation::Issuers::new(
+                config.auth.federation.allow_private_issuers,
+            ),
             federated_tokens: crate::directory::federation::FederatedTokens::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
@@ -825,16 +870,40 @@ impl AuthService {
         wanted.extend(project_tenants);
         wanted.extend(tenants.iter().cloned());
         wanted.extend(owner.iter().cloned());
+        // The directory the request is about (D58): the one it names, else
+        // its resource's tenant's, else the caller's own.
+        let directory = match resource {
+            Ent::Directory(d) => d.clone(),
+            _ => owner
+                .as_deref()
+                .and_then(|t| snap.tenant(t))
+                .map(|t| t.directory_id.clone())
+                .unwrap_or_else(|| p.directory_id().to_string()),
+        };
         wanted.push(snap.operator.clone());
         wanted.push(snap.owner().to_string());
+        if let Some(o) = snap.owner_of(&directory) {
+            wanted.push(o.to_string());
+        }
         wanted.sort();
         wanted.dedup();
-        let directory = snap
-            .directory
-            .as_ref()
-            .map(|d| d.id.clone())
-            .unwrap_or_else(|| LOCAL_DIRECTORY.to_string());
-        es.directory(&directory, snap.owner());
+        // Every directory the request's tenants are in, with its owner.
+        let mut dirs: Vec<String> = wanted
+            .iter()
+            .filter_map(|t| snap.tenant(t).map(|r| r.directory_id.clone()))
+            .collect();
+        dirs.push(directory.clone());
+        dirs.push(LOCAL_DIRECTORY.to_string());
+        dirs.sort();
+        dirs.dedup();
+        for d in &dirs {
+            let owner = snap.owner_of(d).unwrap_or(if d == LOCAL_DIRECTORY {
+                snap.owner()
+            } else {
+                ""
+            });
+            es.directory(d, owner);
+        }
         for t in &wanted {
             match snap.tenant(t) {
                 Some(rec) => es.tenant(
@@ -995,6 +1064,7 @@ impl AuthService {
             teams.push(authz::BREAK_GLASS_TEAM.into());
         }
         Ok(Some(Principal {
+            directory: u.directory_id.clone(),
             user: Some(u),
             token: None,
             token_narrowed: false,
@@ -1009,6 +1079,46 @@ impl AuthService {
             mfa: false,
             federated: None,
         }))
+    }
+
+    /// The directory of a user, team or token (D58); `None` when it
+    /// doesn't exist. Host groups (`unix:`) are `local`'s.
+    pub fn principal_directory(&self, e: &Ent) -> Result<Option<String>, AuthError> {
+        Ok(match e {
+            Ent::User(id) => self.store.user(id)?.map(|u| u.directory_id),
+            Ent::Team(id) if id.starts_with("unix:") => Some(store::local_directory()),
+            Ent::Team(id) => self.store.team(id)?.map(|t| t.directory_id),
+            Ent::Token(id) => self
+                .store
+                .token_by_id(id)?
+                .map(|(_, t)| self.token_directory(&t, None)),
+            _ => None,
+        })
+    }
+
+    /// A token's directory (D58): its owner's, or its service account's
+    /// project's tenant's.
+    pub fn token_directory(&self, t: &Token, owner: Option<&User>) -> String {
+        if let Some(u) = owner {
+            return u.directory_id.clone();
+        }
+        match &t.kind {
+            TokenKind::Personal { owner } => self
+                .store
+                .user(owner)
+                .ok()
+                .flatten()
+                .map(|u| u.directory_id)
+                .unwrap_or_else(store::local_directory),
+            TokenKind::ServiceAccount { project } => self
+                .tenants
+                .project_tenant(project)
+                .ok()
+                .flatten()
+                .and_then(|t| self.tenants.get(&t).ok().flatten())
+                .map(|t| t.directory_id)
+                .unwrap_or_else(store::local_directory),
+        }
     }
 
     /// The principal for a session cookie value.
@@ -1041,12 +1151,14 @@ impl AuthService {
             self.store.put_session(&hash, &s)?;
         }
         let teams = self.store.teams_of(&user.id)?;
-        let method = if s.method == "oidc" {
-            Method::Oidc
-        } else {
-            Method::Pam
+        let method = match s.method.as_str() {
+            "oidc" => Method::Oidc,
+            "passkey" => Method::Passkey,
+            "directory" => Method::Directory,
+            _ => Method::Pam,
         };
         Ok(Some(Principal {
+            directory: user.directory_id.clone(),
             user: Some(user),
             token: None,
             token_narrowed: false,
@@ -1103,6 +1215,7 @@ impl AuthService {
             self.store.put_token(&hash, &t)?;
         }
         Ok(Some(Principal {
+            directory: self.token_directory(&t, user.as_ref()),
             user,
             token: Some(t),
             token_narrowed: narrowed,
@@ -1167,6 +1280,7 @@ impl AuthService {
             .iter()
             .any(|l| l.link.principal == Ent::Token(sa.id.clone()));
         Ok(Some(Principal {
+            directory: self.token_directory(&sa, None),
             user: None,
             token: Some(sa),
             token_narrowed: narrowed,
@@ -1190,6 +1304,11 @@ impl AuthService {
                     teams: Vec<String>,
                     narrowed: bool,
                     method: Method| Principal {
+            directory: match (&user, &token) {
+                (Some(u), _) => u.directory_id.clone(),
+                (None, Some(t)) => self.token_directory(t, None),
+                _ => store::local_directory(),
+            },
             user,
             token,
             token_narrowed: narrowed,
@@ -1270,6 +1389,17 @@ impl AuthService {
         method: Method,
         mfa: bool,
     ) -> Result<(String, String), AuthError> {
+        self.create_session_from(user, method, mfa, None)
+    }
+
+    /// A session, made from a trusted directory's chain `sid` when given.
+    pub fn create_session_from(
+        &self,
+        user: &User,
+        method: Method,
+        mfa: bool,
+        sid: Option<String>,
+    ) -> Result<(String, String), AuthError> {
         let id = random_token(32);
         let csrf = random_token(24);
         let now = store::now();
@@ -1283,6 +1413,7 @@ impl AuthService {
                 last_seen: now,
                 authenticated_at: now,
                 mfa,
+                sid,
             },
         )?;
         let cfg = &self.config.auth.session;
@@ -1296,6 +1427,10 @@ impl AuthService {
     pub fn end_session(&self, p: &Principal) -> Result<(), AuthError> {
         if let Some(h) = &p.session_hash {
             self.store.remove_session(h)?;
+            // And the clusters' browser logins it approved (D69).
+            if let Err(e) = self.refresh_tokens.end_session(h) {
+                tracing::warn!("ending the session's chains: {}", e);
+            }
         }
         Ok(())
     }
@@ -1467,7 +1602,8 @@ impl AuthService {
         }
         let user = self
             .store
-            .user_for_identity(
+            .user_for_identity_in(
+                &c.directory_id,
                 &provider,
                 &id.subject,
                 &id.display_name,
@@ -2267,6 +2403,7 @@ mod tests {
         s.store
             .put_team(&store::Team {
                 id: "t1".into(),
+                directory_id: store::local_directory(),
                 name: "lab".into(),
                 members: vec![],
                 created_at: 0,

@@ -224,6 +224,20 @@ pub fn inspect_invitation(
         .ok()
         .flatten()
         .ok_or_else(not_found)?;
+    // A passkey invitation (D60): its page registers one.
+    if inv.connector_id == crate::auth::passkeys::PROVIDER {
+        return Ok(login_pb::InspectInvitationResponse {
+            tenant_slug: tenant.slug,
+            tenant_display_name: tenant.display_name,
+            connector_id: inv.connector_id.clone(),
+            connector_display_name: "Passkey".into(),
+            connector_kind: "passkey".into(),
+            email: inv.email,
+            role: inv.role,
+            expires_at: ts(inv.expires_at).into(),
+            ..Default::default()
+        });
+    }
     let c = app
         .auth
         .connectors

@@ -29,9 +29,27 @@ fn io(p: &Path) -> impl Fn(std::io::Error) -> ImageError + '_ {
 }
 
 impl ImageManager {
-    /// Whether kernels can be extracted here for images of `arch`.
-    pub fn can_extract(&self, arch: Arch) -> bool {
-        self.settings.kernel_extraction && extractor::pin_for(arch).is_some()
+    /// Why kernels of `arch` can't be extracted here, if they can't: off
+    /// on this host, no extractor pinned, or another architecture (the
+    /// extractor runs under KVM, so only on a host of the image's).
+    pub fn extraction_refused(&self, arch: Arch) -> Option<String> {
+        if !self.settings.kernel_extraction {
+            return Some(
+                "kernel extraction is off on this host (GLIDEX_KERNEL_EXTRACTION=off)".into(),
+            );
+        }
+        if extractor::pin_for(arch).is_none() {
+            return Some(format!("no kernel extractor for {} yet", arch.as_str()));
+        }
+        match Arch::host() {
+            Some(host) if host == arch => None,
+            host => Some(format!(
+                "{} kernels are extracted on a {} host; this one is {}",
+                arch.as_str(),
+                arch.as_str(),
+                host.map(Arch::as_str).unwrap_or(std::env::consts::ARCH)
+            )),
+        }
     }
 
     /// The extractor's output disk for kernel image `id` (§10.2).
@@ -137,10 +155,9 @@ impl ImageManager {
                 src.name, src.status
             )));
         }
-        if !self.can_extract(src.arch) {
+        if let Some(why) = self.extraction_refused(src.arch) {
             return Err(ImageError::InvalidImage(format!(
-                "kernels can't be extracted on this host for {} (no extractor, or GLIDEX_KERNEL_EXTRACTION=off)",
-                src.arch.as_str()
+                "kernels can't be extracted here: {why}"
             )));
         }
         if let Some(existing) = self.images.read().unwrap().values().find(|i| {
@@ -184,10 +201,9 @@ impl ImageManager {
         disk: &super::Disk,
         arch: Arch,
     ) -> Result<Image, ImageError> {
-        if !self.can_extract(arch) {
+        if let Some(why) = self.extraction_refused(arch) {
             return Err(ImageError::InvalidImage(format!(
-                "kernels can't be extracted on this host for {} (no extractor, or GLIDEX_KERNEL_EXTRACTION=off)",
-                arch.as_str()
+                "kernels can't be extracted here: {why}"
             )));
         }
         let stem: String = vm_name
@@ -274,7 +290,7 @@ impl ImageManager {
             self.settings.max_initrd_size,
         )?;
         let mut file = std::fs::File::open(out).map_err(io(out))?;
-        let choice = extractor::choose(&entries, |e| {
+        let choice = extractor::choose(&entries, origin.arch, |e| {
             Ok(String::from_utf8_lossy(&extractor::read_entry(&mut file, e)?).into_owned())
         })?;
         let kernel_sha = copy_range(

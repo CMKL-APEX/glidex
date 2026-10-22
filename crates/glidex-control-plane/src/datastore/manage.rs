@@ -31,6 +31,9 @@ pub struct NewDatastore {
     /// One filesystem every node mounts (`shared-dir`), else each node's
     /// own directory (`dir`).
     pub shared: bool,
+    /// `lvm`: (volume group, thin pool) instead of `path`; `node_paths`
+    /// then name each node's volume group.
+    pub lvm: Option<(String, String)>,
 }
 
 /// `PATCH /datastores/{id}`: what is `Some` changes.
@@ -125,7 +128,13 @@ impl VmManager {
         let ds = Datastore {
             id: uuid::Uuid::new_v4().to_string(),
             name: req.name,
-            driver: if req.shared {
+            driver: if let Some((vg, thin_pool)) = req.lvm {
+                DriverSpec::Lvm {
+                    vg,
+                    thin_pool,
+                    node_vgs: self.node_path_ids(&req.node_paths)?,
+                }
+            } else if req.shared {
                 DriverSpec::SharedDir {
                     path: req.path,
                     node_paths: self.node_path_ids(&req.node_paths)?,
@@ -235,7 +244,22 @@ impl VmManager {
             )
             .into());
         }
-        record::delete(&db, &ds.id)?;
+        let nodes = self.nodes();
+        let node_name = |id: &str| {
+            nodes
+                .get(id)
+                .ok()
+                .flatten()
+                .map(|n| n.spec.name)
+                .unwrap_or_else(|| id.to_string())
+        };
+        let image_name = |id: &str| {
+            self.images
+                .get_image(id)
+                .map(|i| i.name)
+                .unwrap_or_else(|_| id.to_string())
+        };
+        record::delete(&db, &ds.id, &node_name, &image_name)?;
         Ok(())
     }
 }
@@ -376,11 +400,16 @@ impl VmManager {
         if shared_src {
             disk.worker = Some(mover.clone());
         }
+        // Onto or off block volumes the copy is standalone, and onto them
+        // raw (spec/storage.md §11.1).
+        let src_block = record::find(&db, &disk.datastore)?.is_some_and(|d| d.driver.is_block());
+        let raw = dst.driver.is_block();
         disk.moving = Some(MoveSpec {
             datastore: dst.id.clone(),
             node: dest_node,
             mover,
-            flatten,
+            flatten: flatten || raw || src_block,
+            raw,
         });
         drop(vms);
         self.images.put_disk(&disk)?;

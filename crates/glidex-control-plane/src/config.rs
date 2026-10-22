@@ -123,10 +123,52 @@ pub struct AuthConfig {
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
+    /// Passkeys (spec/passkeys.md).
+    pub passkeys: PasskeyConfig,
     /// File holding the host's secrets key (spec/tenancy.md §13); the
     /// systemd credential `secrets-kek` wins when present. The control
     /// plane defaults it to `secrets.kek` beside its database.
     pub secrets_key: Option<PathBuf>,
+    /// Where the directories this host serves issue tokens from:
+    /// `https://host[:port][/path]`, each directory's issuer being
+    /// `<base>/d/<directory>` (spec/tenancy.md D52). Unset: the web UI's
+    /// published address (host-page.md W3).
+    pub issuer_base: Option<String>,
+    /// How long a directory's access tokens last, 5–720 minutes (default
+    /// 60, D55).
+    pub access_token_ttl_minutes: Option<u64>,
+    pub federation: FederationConfig,
+}
+
+/// Workload federations (spec/tenancy.md §9).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct FederationConfig {
+    /// Let a federation's issuer be on this host or the site's own
+    /// network: plain-HTTP loopback issuers, and issuers or JWKS whose
+    /// addresses are loopback, private, link-local or unique-local. Off:
+    /// a tenant administrator can't make the control plane fetch from
+    /// addresses that aren't public.
+    pub allow_private_issuers: bool,
+}
+
+/// `auth.issuer_base` as it is used: `https://host[:port][/path]`
+/// without a trailing `/`; `None` when it isn't one.
+pub fn issuer_base(b: &str) -> Option<String> {
+    let u: axum::http::Uri = b.parse().ok()?;
+    let a = u.authority()?;
+    (u.scheme_str() == Some("https")
+        && !a.as_str().contains('@')
+        && !a.host().is_empty()
+        && u.query().is_none()
+        && !b.contains('#'))
+    .then(|| {
+        format!(
+            "https://{}{}",
+            a.as_str().to_ascii_lowercase(),
+            u.path().trim_end_matches('/')
+        )
+    })
 }
 
 impl AuthConfig {
@@ -203,6 +245,28 @@ impl Default for PamConfig {
             group_teams: HashMap::new(),
             authd_socket: PathBuf::from("/run/glidex-authd/auth.sock"),
             service: "glidex".into(),
+        }
+    }
+}
+
+/// Passkeys (spec/passkeys.md P2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PasskeyConfig {
+    pub enabled: bool,
+    /// The relying-party id (a domain): passkeys made under it work on
+    /// every web UI name under it. Unset: each request's UI host name.
+    pub rp_id: Option<String>,
+    /// What the browser shows as the site's name.
+    pub rp_name: String,
+}
+
+impl Default for PasskeyConfig {
+    fn default() -> Self {
+        PasskeyConfig {
+            enabled: true,
+            rp_id: None,
+            rp_name: "glidex".into(),
         }
     }
 }
@@ -331,6 +395,22 @@ pub struct PciPool {
     /// (spec/host-topology.md §5.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prepare: bool,
+    /// What a VM gets per device it asks of the pool by `gpus`, unless it
+    /// sizes itself (spec/gpu-vms.md §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_device: Option<PerDevice>,
+}
+
+/// A VM's share per device of a pool (spec/gpu-vms.md §6).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerDevice {
+    pub vcpus: u32,
+    pub memory_mib: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hugepages: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_policy: Option<crate::models::CpuPolicy>,
 }
 
 /// Which devices are a pool's: every key given must match.
@@ -587,6 +667,12 @@ impl Config {
             cfg.auth.allowed_origins = glidex_tls::LocalNames::discover().origins(UI_PORT);
             cfg.auth.origins_from_host = true;
         }
+        // A published address (a load balancer) is an origin too, and
+        // first: the OIDC callback's default (spec/host-page.md W4).
+        if let Some(o) = cfg.cluster.ui_origin() {
+            cfg.auth.allowed_origins.retain(|a| *a != o);
+            cfg.auth.allowed_origins.insert(0, o);
+        }
         Ok(cfg)
     }
 
@@ -625,6 +711,17 @@ impl Config {
         }
         self.metering.check()?;
         self.cluster.check()?;
+        if self
+            .auth
+            .access_token_ttl_minutes
+            .is_some_and(|m| !(5..=720).contains(&m))
+        {
+            return Err("auth.access_token_ttl_minutes must be 5-720".into());
+        }
+        if let Some(b) = &self.auth.issuer_base {
+            issuer_base(b)
+                .ok_or("auth.issuer_base must be https://host[:port][/path], with no query")?;
+        }
         self.check_listeners()
     }
 
@@ -667,6 +764,27 @@ pub fn credential(name: &str) -> Option<PathBuf> {
 mod tests {
 
     #[test]
+    fn issuer_bases() {
+        assert_eq!(
+            issuer_base("https://GLIDEX.example.org/").as_deref(),
+            Some("https://glidex.example.org")
+        );
+        assert_eq!(
+            issuer_base("https://lb.example.org:8443/id/").as_deref(),
+            Some("https://lb.example.org:8443/id")
+        );
+        for bad in [
+            "http://glidex.example.org",
+            "https://x.example/?a=1",
+            "https://u@x.example",
+            "glidex.example.org",
+            "https://x.example/#f",
+        ] {
+            assert_eq!(issuer_base(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn pools_are_checked_and_match_by_ids_class_and_address() {
         let pool = |name: &str, vendor: Option<&str>| PciPool {
             name: name.into(),
@@ -680,6 +798,7 @@ mod tests {
             },
             nodes: vec![],
             prepare: false,
+            per_device: None,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],

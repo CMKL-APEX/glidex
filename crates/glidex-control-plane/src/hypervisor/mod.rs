@@ -10,6 +10,7 @@
 pub mod cloud_hypervisor;
 pub mod qemu;
 
+use crate::images::catalog::Arch;
 use crate::images::qemu_img::{ImageType, detect_image_type};
 use crate::models::{VmConfig, VolumeBinding};
 use glidex_hv_client::{HvError, Observed};
@@ -37,12 +38,12 @@ impl HypervisorType {
         }
     }
 
-    /// The kernel arguments a new kernel-boot VM gets when it names none.
-    /// The same for both backends: the serial port shows the kernel from
-    /// its first line (spec/kernel-boot.md K5). VMs created before this
-    /// keep the arguments they were stored with.
-    pub fn default_kernel_args(&self) -> &'static str {
-        DEFAULT_KERNEL_ARGS
+    /// The kernel arguments a new kernel-boot VM of `arch` gets when it
+    /// names none. The same for both backends: the serial port shows the
+    /// kernel from its first line (spec/kernel-boot.md K5). VMs created
+    /// before this keep the arguments they were stored with.
+    pub fn default_kernel_args(&self, arch: Arch) -> String {
+        default_kernel_args(arch)
     }
 
     /// The UEFI firmware a VM of this type boots from when the caller
@@ -73,8 +74,14 @@ impl fmt::Display for HypervisorType {
     }
 }
 
-/// See `HypervisorType::default_kernel_args`.
-pub const DEFAULT_KERNEL_ARGS: &str = "console=ttyS0 root=/dev/vda reboot=k panic=1";
+/// See `HypervisorType::default_kernel_args`: `console=ttyS0`, or
+/// `console=ttyAMA0` on aarch64, then `root=/dev/vda reboot=k panic=1`.
+pub fn default_kernel_args(arch: Arch) -> String {
+    format!(
+        "console={} root=/dev/vda reboot=k panic=1",
+        arch.serial_console()
+    )
+}
 
 /// x86's `COMMAND_LINE_SIZE` (2048) less the terminating NUL.
 pub const MAX_KERNEL_ARGS_LEN: usize = 2047;
@@ -210,6 +217,8 @@ pub(crate) struct VmDisk {
     /// On a shared datastore: QEMU's image locking must be on, so another
     /// node's QEMU can't open it (spec/storage.md §10).
     pub shared: bool,
+    /// A block device (an LVM volume, spec/storage.md §11.1), raw.
+    pub block: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
@@ -228,6 +237,15 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: Some((*format).into()),
             backing_files: *backing_files,
             shared: lock.is_some(),
+            block: false,
+        },
+        VolumeBinding::Block { path } => VmDisk {
+            path: path.clone(),
+            read_only: false,
+            format: Some(ImageType::Raw),
+            backing_files: false,
+            shared: false,
+            block: true,
         },
     };
     let root = match &config.root_disk_binding {
@@ -238,6 +256,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: detect_image_type(&config.rootfs_path),
             backing_files: false,
             shared: false,
+            block: false,
         },
     };
     std::iter::once(root)
@@ -248,6 +267,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             format: Some(ImageType::Raw),
             backing_files: false,
             shared: false,
+            block: false,
         }))
         .collect()
 }
@@ -352,6 +372,33 @@ pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
     Ok(())
 }
 
+/// An `aligned` VM's guest NUMA nodes (spec/gpu-vms.md §5): for each share
+/// of `config.host_numa`, its vCPU range (first, last) and the VFIO devices
+/// (as `config.vfio_devices` names them) on that host node.
+pub(crate) fn guest_numa_layout(config: &VmConfig) -> Vec<(u32, u32, Vec<String>)> {
+    let mut first = 0u32;
+    config
+        .host_numa
+        .iter()
+        .map(|s| {
+            let last = first + s.vcpus.max(1) - 1;
+            let devices = config
+                .vfio_devices
+                .iter()
+                .filter(|p| {
+                    s.devices
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&vfio_bdf(p)))
+                })
+                .cloned()
+                .collect();
+            let r = (first, last, devices);
+            first = last + 1;
+            r
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +482,8 @@ mod tests {
 
     #[test]
     fn kernel_args_limits() {
-        assert!(check_kernel_args(DEFAULT_KERNEL_ARGS).is_ok());
+        assert!(check_kernel_args(&default_kernel_args(Arch::X86_64)).is_ok());
+        assert!(check_kernel_args(&default_kernel_args(Arch::Aarch64)).is_ok());
         assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN)).is_ok());
         assert!(check_kernel_args(&"a".repeat(MAX_KERNEL_ARGS_LEN + 1)).is_err());
         assert!(check_kernel_args("root=/dev/vda init=/bin/sh").is_ok());
@@ -444,12 +492,20 @@ mod tests {
     }
 
     #[test]
-    fn default_kernel_args_are_shared() {
+    fn default_kernel_args_are_shared_and_per_architecture() {
         assert_eq!(
-            HypervisorType::CloudHypervisor.default_kernel_args(),
-            HypervisorType::Qemu.default_kernel_args()
+            HypervisorType::CloudHypervisor.default_kernel_args(Arch::X86_64),
+            HypervisorType::Qemu.default_kernel_args(Arch::X86_64)
         );
-        assert!(DEFAULT_KERNEL_ARGS.starts_with("console=ttyS0 "));
+        assert_eq!(
+            default_kernel_args(Arch::X86_64),
+            "console=ttyS0 root=/dev/vda reboot=k panic=1"
+        );
+        // aarch64's serial port is the PL011.
+        assert_eq!(
+            default_kernel_args(Arch::Aarch64),
+            "console=ttyAMA0 root=/dev/vda reboot=k panic=1"
+        );
     }
 
     #[test]

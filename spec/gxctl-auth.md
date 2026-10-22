@@ -323,6 +323,11 @@ muscle memory survive.
    - `--oidc`: the existing device flow (admin.rs:141-190): print
      verification URI + user code, poll; `token_name: "gxctl@<profile>"`
      (§7.2), plus `{device: hostname, client: "gxctl/<version>"}`.
+   - `--directory [ID]`: a login at the directory the target hosts
+     ([tenancy.md](tenancy.md) D57): its device grant, approved on the
+     web UI's `/device` page, gives a refresh token kept in the profile
+     (`directory`) and an access token for this cluster (`token`), which
+     gxctl renews from the refresh token before it expires.
    - `--token`: read the secret with echo off from a TTY, or raw from
      stdin when piped (as `login --token` does, cli.md:134).
    - `--pam-user U`: `POST /auth/token {username, password,

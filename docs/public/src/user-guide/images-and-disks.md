@@ -92,6 +92,11 @@ it from there when they need it. When pulling in the web UI you can pick
 **Copy to nodes** to have copies ready sooner; the **Images** page shows
 each node's copy and can copy an image to another node or let a copy go.
 
+Linked disks on a [shared datastore](#where-a-disk-lives) use a copy of the
+image kept in that datastore. The **Images** page lists these copies
+apart from the node copies (*in 1 shared datastore*); they go when the
+image is deleted.
+
 ## Firmware images
 
 VMs that boot a cloud image start through UEFI firmware built for their
@@ -175,12 +180,19 @@ or, for an administrator, from files on the host (`"kernel_path"`,
 `"initrd_path"`, `"cmdline"`). Kernel images appear under **Images**,
 *Kernels*, with their release; `gxctl image list` shows them as
 `kernel <release>`. Like firmware, a kernel image can't be deleted while
-a VM boots it.
+a VM boots it or keeps it to go back to (`409 conflict`, naming the VMs).
 
 Use the kernel the cloud image was built with: the guest loads the
 kernel's modules from its own disk. Extraction does that for you; for a
 URL, Ubuntu publishes each build's kernel and initramfs next to the
 image, in `unpacked/`.
+
+Extraction runs only on a host of the image's architecture (x86_64, or
+aarch64 with Cloud Hypervisor), and an aarch64 kernel gets
+`console=ttyAMA0` instead of `console=ttyS0`; a failed extraction fails only
+the kernel image (**Retry**, or `gxctl image retry`). See
+[Kernel boot](kernel-boot.md) to boot VMs from kernel images and to
+follow the guest's kernel.
 
 ## Disks
 
@@ -198,7 +210,8 @@ a root disk independent of any one VM.
 - **Size (GiB)**: required for a blank disk. From an image it defaults
   to the image's size or 10 GiB, whichever is larger, and can't be
   smaller than the image.
-- **Format**: `qcow2` (default) or `raw`.
+- **Format**: `qcow2` (default) or `raw`. On an
+  [LVM-thin datastore](#disks-on-an-lvm-thin-datastore), choose `raw`.
 - **Clone** (from an image): **Linked** or **Full copy**.
 - **Datastore**: where the disk lives, shown once the operator has
   registered more than `local` ([Datastores](../operator-guide/datastores.md)).
@@ -217,13 +230,19 @@ When a disk is made from an image and given more space than the image
 has, Glidex extends its root partition to fill it (the guest grows the
 filesystem when it boots). `--no-extend` leaves the partition as it is.
 
-If the image is still downloading, the disk waits for it.
+If the image is still downloading, the disk waits for it. On a shared
+datastore, a linked disk also waits while the image is copied into the
+datastore.
+
+A datastore whose operator turned overcommit off refuses a disk that
+doesn't fit in its free space (`507 insufficient_storage`).
 
 ### Clone modes
 
 - **Linked** (default for qcow2): a thin overlay on the image. Fast and
   small, but the image must stay as long as the disk exists.
-- **Full**: an independent copy. Needed for `raw` disks.
+- **Full**: an independent copy. Needed for `raw` disks, except on an
+  LVM-thin datastore, where a linked disk is a raw thin snapshot.
 
 ### Listing and inspecting disks
 
@@ -278,6 +297,8 @@ gxctl disk resize data1 30                  # shrink
   partition is refused with the smallest size allowed.
 - A resize of a disk a running VM uses is recorded and applied once the
   VM stops.
+- A disk on an LVM-thin datastore can only grow; shrinking it is refused
+  (`400 invalid_disk`).
 
 To grow the root partition into space that is already there (say, after
 a resize with `--no-extend`):
@@ -312,18 +333,64 @@ A disk lives on a datastore. On the built-in `local`, or another
 datastore each node has its own of, it lives on one node: the node of
 the first VM that uses it, and its VMs run there. On a **shared**
 datastore (one filesystem every node mounts), it is tied to no node, and
-its VM can run on any node that reaches the datastore. The **Disks**
-page has a *Datastore* column once there is more than `local`; `gxctl
-disk show` names it too.
+its VM can run on any node that reaches the datastore; disk access then
+goes over the network. The **Disks** page has a *Datastore* column once
+there is more than `local`; `gxctl disk show` names it too (`local`, or
+the datastore's id). The **Datastores** page, and `gxctl datastore
+list`, show every datastore, the default, and how much space is free.
+
+In a cluster, the **Disks** page's *Node* column shows a disk's node, or
+`shared · <node>` for a disk on a shared datastore (the node currently
+working on it).
+
+Over the API, `node` (a node's name or id) binds a new disk on a
+node-local datastore to that node when it is created; an unknown node is
+refused with `400 invalid_config`, and a disk on a shared datastore
+can't be bound to a node (`400 invalid_disk`).
+
+A VM's root disk made along with the VM goes to the default datastore.
+To put it on another, create the disk first with `--datastore` (or the
+**Datastore** field) and create the VM from that disk.
+
+### Disks on an LVM-thin datastore
+
+An LVM-thin datastore keeps each disk as a raw volume in a volume group
+on one node (see [LVM-thin](../operator-guide/datastores.md#lvm-thin)).
+Like other node-local disks, it lives on one node and its VMs run
+there. What differs:
+
+- **Always raw.** Leave the format out (`gxctl disk create` does) and the
+  disk is raw; asking for qcow2 is refused (`400 invalid_disk`, *disks on
+  an lvm datastore are raw volumes; leave format out*). In the web UI,
+  set **Format** to `raw`; the form then offers only **Full copy**, so
+  make a linked disk with `gxctl` or the API.
+- **Linked or full.** A linked disk (the default with `gxctl`) is a thin
+  snapshot of the image on that node: quick to make, and small until
+  the guest writes. A full disk is an independent copy. Either way the
+  image stays as long as a linked disk uses it.
+- **Grow, never shrink.** `gxctl disk resize` to a larger size works as
+  usual, root partition included; a smaller size is refused.
+- **Moves make full, raw copies.** Moving a disk onto an LVM-thin
+  datastore, or off one, always copies it whole: **Flatten** makes no
+  difference. On the volume group it becomes raw; moved off to a
+  directory it stays raw.
+
+```bash
+gxctl disk create db-root --image ubuntu-24.04 --size-gib 40 --datastore thin1   # linked, raw
+gxctl disk create db-data --size-gib 200 --datastore thin1
+gxctl disk move data1 --datastore thin1
+```
 
 ### Moving a disk
 
 A disk can move to another datastore while no running VM uses it (stop
-the VM first). Its data is copied, then the old file is removed.
+the VM first, or detach the disk). Its data is copied and checked, then
+the old file is removed; if the move fails, the disk stays where it was.
 
-**Web UI:** **Disks**, **Move** on the disk's row: pick the datastore.
-For a linked disk, **Flatten** makes it a full copy instead of an overlay
-on the image there.
+**Web UI:** **Disks**, **Move** on the disk's row (shown when there is
+more than one datastore): pick the datastore. For a linked disk,
+**Flatten** makes it a full copy instead of an overlay on the image
+there.
 
 **gxctl:**
 
@@ -333,10 +400,28 @@ gxctl disk move web-root --datastore fast --flatten
 ```
 
 It waits up to five minutes and prints the disk, or that it is still
-moving; a disk that is moving shows *moving* in its status, and can't
-be attached, resized or started from until it's done. A linked disk
-moved to a shared datastore waits for the image to be copied there
-first.
+moving; follow it with `gxctl disk show`. A linked disk moved to a
+shared datastore waits for the image to be copied there first.
+
+While a disk moves, the **Disks** page shows it *· moving*, with
+**Resize** and **Move** disabled. Resizing it is refused
+(`409 conflict`), adding it to a VM's data disks is refused
+(`400 invalid_config`), and a VM using it waits to start (condition
+`DisksReady` `False`, reason `DiskNotReady`) until the move is done.
+
+Moving needs the `editor` role in the disk's project, and the right to
+use the destination datastore. It is refused:
+
+- for a disk that is being deleted, already moving, not ready, or used
+  by a running VM (`409 conflict`);
+- for the datastore the disk is already on, or one that the node with
+  the disk, or its VM's node, doesn't reach (`400 invalid_disk`);
+- for an unknown datastore (`404 not_found`);
+- when the destination has overcommit off and lacks the space
+  (`507 insufficient_storage`).
+
+Onto or off an LVM-thin datastore, a disk is always copied whole; see
+[Disks on an LVM-thin datastore](#disks-on-an-lvm-thin-datastore).
 
 Moving a disk from one node's own storage to another node's isn't
 possible directly: move it to a shared datastore, then from there. A
@@ -349,6 +434,7 @@ disk on a shared datastore lets its VM move between nodes (see
 api() { curl --cacert host.crt -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' "$@"; }
 api -X POST https://host.example.org:8841/images -d '{"catalog": "ubuntu-24.04"}'
 api -X POST https://host.example.org:8841/disks -d '{"name": "data1", "project": "lab", "size_gib": 50}'
+api -X POST https://host.example.org:8841/disks -d '{"name": "data2", "project": "lab", "size_gib": 50, "datastore": "nfs1"}'
 api -X POST https://host.example.org:8841/disks/data1/resize -d '{"size_gib": 100}'
 api -X POST https://host.example.org:8841/disks/data1/move -d '{"datastore": "nfs1", "wait_secs": 300}'
 api -X DELETE https://host.example.org:8841/disks/data1
