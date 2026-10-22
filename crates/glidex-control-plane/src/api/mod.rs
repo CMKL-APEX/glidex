@@ -1837,6 +1837,23 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                         app.auth.token_principal(&token, Transport::Tcp, ip)
                     };
                     match found {
+                        // An API token only on the clusters it lists
+                        // (spec/tenancy.md §7.4); one fed from a trusted
+                        // directory was made elsewhere.
+                        Ok(Some(p))
+                            if p.token.as_ref().is_some_and(|t| {
+                                !t.good_on(
+                                    &op::cluster_id(&app),
+                                    !p.directory.starts_with("trusted-"),
+                                )
+                            }) =>
+                        {
+                            return plain_error(
+                                StatusCode::UNAUTHORIZED,
+                                "unauthenticated",
+                                "this token isn't for this cluster",
+                            );
+                        }
                         Ok(Some(p)) => Ok(Some(p)),
                         Ok(None) => {
                             return plain_error(

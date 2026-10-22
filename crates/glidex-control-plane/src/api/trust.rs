@@ -413,6 +413,37 @@ pub fn snapshot_for(
             value: serde_json::to_value(&cut).unwrap_or_default(),
         });
     }
+    // API tokens listing this cluster (§7.4), of the people (as sent) and
+    // projects it gets: their hash, owner, kind, lifetime and list only.
+    let sent: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|r| r.table == "users")
+        .map(|r| r.key.clone())
+        .collect();
+    for (k, v) in parse("api_tokens")? {
+        let Ok(t) = serde_json::from_value::<crate::auth::store::Token>(v) else {
+            continue;
+        };
+        let ours = match &t.kind {
+            crate::auth::store::TokenKind::Personal { owner } => sent.contains(owner),
+            crate::auth::store::TokenKind::ServiceAccount { project } => pids.contains(project),
+        };
+        if !ours || t.clusters.is_empty() || !t.good_on(&c.cluster_id, false) {
+            continue;
+        }
+        let cut = crate::auth::store::Token {
+            last_used_at: None,
+            last_used_from: None,
+            device: None,
+            client: None,
+            ..t
+        };
+        rows.push(trust::Row {
+            table: "api_tokens".into(),
+            key: k,
+            value: serde_json::to_value(&cut).unwrap_or_default(),
+        });
+    }
     for (table, set) in [
         ("tenants", tenants),
         ("projects", projects),
@@ -450,12 +481,22 @@ pub fn snapshot_for(
 /// The rows of `snap` as this cluster keeps them for trusted directory
 /// `d` (D68): only its admitted tenants' records, its users, teams and
 /// tenants named as its; `Err` for anything outside that.
-pub fn localize(d: &TrustedDirectory, snap: &trust::Snapshot) -> Result<trust::Snapshot, String> {
+pub fn localize(
+    d: &TrustedDirectory,
+    snap: &trust::Snapshot,
+    cluster: &str,
+) -> Result<trust::Snapshot, String> {
     let tids: std::collections::HashSet<&str> = d.tenants.iter().map(|t| t.id.as_str()).collect();
     let pids: std::collections::HashSet<String> = snap
         .rows
         .iter()
         .filter(|r| r.table == "projects")
+        .map(|r| r.key.clone())
+        .collect();
+    let users: std::collections::HashSet<String> = snap
+        .rows
+        .iter()
+        .filter(|r| r.table == "users")
         .map(|r| r.key.clone())
         .collect();
     let mut rows = Vec::new();
@@ -472,6 +513,17 @@ pub fn localize(d: &TrustedDirectory, snap: &trust::Snapshot) -> Result<trust::S
             }
             "projects" => v["tenant_id"].as_str().is_some_and(|t| tids.contains(t)),
             "tenant_members" => v["tenant_id"].as_str().is_some_and(|t| tids.contains(t)),
+            // Its people's and projects' tokens, listing this cluster.
+            "api_tokens" => serde_json::from_value::<crate::auth::store::Token>(v.clone())
+                .is_ok_and(|t| {
+                    let whose = match &t.kind {
+                        crate::auth::store::TokenKind::Personal { owner } => users.contains(owner),
+                        crate::auth::store::TokenKind::ServiceAccount { project } => {
+                            pids.contains(project)
+                        }
+                    };
+                    whose && !t.clusters.is_empty() && t.good_on(cluster, false)
+                }),
             // Only a tenant role on one of its tenants, or a project role
             // on one of their projects: nothing of this cluster's own.
             "policy_links" => {
@@ -597,7 +649,7 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
             if trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids) != snap.revision {
                 return Err("a feed whose revision doesn't match its content".into());
             }
-            let local = localize(d, &snap)?;
+            let local = localize(d, &snap, &cluster)?;
             app.auth
                 .trust
                 .apply_feed(d, &local, t)

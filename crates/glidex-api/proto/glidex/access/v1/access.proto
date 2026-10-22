@@ -601,6 +601,10 @@ message Token {
   optional string client = 12;
   // Its own role links.
   repeated Binding roles = 13;
+  // The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+  // "all" (every cluster its tenant uses); empty: only the one it was
+  // made on.
+  repeated string clusters = 14;
 }
 
 message ListTokensRequest {}
@@ -625,6 +629,11 @@ message CreateTokenRequest {
   repeated RoleRef roles = 5;
   optional string device = 6;
   optional string client = 7;
+  // The clusters it is good on (spec/tenancy.md §7.4): this cluster's id
+  // and those of other organizations its tenants use, or "all". Default:
+  // only this one. A token on several can be replayed among them by a
+  // compromised one.
+  repeated string clusters = 8;
 }
 message CreateTokenResponse {
   // The secret, shown once.

@@ -1853,6 +1853,7 @@ impl AuthService {
             last_used_from: None,
             device: stamp(device),
             client: stamp(client),
+            clusters: Vec::new(),
         };
         self.store.put_token(&minted.hash, &t)?;
         Ok((minted.secret, t))

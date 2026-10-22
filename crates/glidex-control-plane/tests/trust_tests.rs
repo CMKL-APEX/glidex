@@ -1156,3 +1156,124 @@ async fn a_directory_out_of_reach_too_long_is_refused() {
         "{v}"
     );
 }
+
+/// §7.4: an API token is good only on the clusters it lists. Erin's token
+/// listing north reaches north through the feed (its hash, cut); one with
+/// no list stays at acme; `all` works on north too; an unknown cluster is
+/// refused at creation; Bob's (not in acme) is never fed; revoking it at
+/// acme ends it on north with the next feed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_tokens_work_on_the_clusters_they_list() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        bob,
+        project,
+        issuer,
+    } = admitted().await;
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let session_of = |user: &str| {
+        let u = acme.app.auth.store.user(user).unwrap().unwrap();
+        let (cookie, csrf) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+        format!("{cookie}|{csrf}")
+    };
+    let erin_s = session_of(&erin);
+    let mint = |s: String, clusters: Value| {
+        let acme = &acme;
+        async move {
+            acme.rest(
+                "POST",
+                "/tokens",
+                Some(json!({"name": "t", "clusters": clusters})),
+                &s,
+            )
+            .await
+        }
+    };
+    let (s, v) = mint(erin_s.clone(), json!([north_id])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let for_north = v["token"].as_str().unwrap().to_string();
+    let for_north_id = v["record"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["record"]["clusters"].as_array().unwrap().len(), 2, "{v}");
+    let (_, v) = mint(erin_s.clone(), json!([])).await;
+    let local_only = v["token"].as_str().unwrap().to_string();
+    let (_, v) = mint(erin_s.clone(), json!(["all"])).await;
+    let everywhere = v["token"].as_str().unwrap().to_string();
+    let (s, v) = mint(erin_s.clone(), json!(["no-such-cluster"])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = mint(session_of(&bob), json!([north_id])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let bobs = v["token"].as_str().unwrap().to_string();
+
+    let get = |cp: &Cp, tok: String| {
+        let router = cp.router.clone();
+        async move {
+            let resp = router
+                .oneshot(
+                    Request::get("/projects")
+                        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (st, String::from_utf8_lossy(&bytes).to_string())
+        }
+    };
+    // At acme, where they were made, all of them work.
+    for t in [&for_north, &local_only, &everywhere] {
+        assert_eq!(get(&acme, t.clone()).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        get(&north, for_north.clone()).await.0,
+        StatusCode::UNAUTHORIZED,
+        "before a feed"
+    );
+
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let (s, body) = get(&north, for_north.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert!(body.contains(&project), "her project role holds: {body}");
+    assert_eq!(get(&north, everywhere.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        get(&north, local_only).await.0,
+        StatusCode::UNAUTHORIZED,
+        "not listed"
+    );
+    assert_eq!(
+        get(&north, bobs).await.0,
+        StatusCode::UNAUTHORIZED,
+        "not acme's"
+    );
+    // What north keeps: the hash and lifetime, no use or device.
+    let (_, t) = north
+        .app
+        .auth
+        .store
+        .token_by_id(&for_north_id)
+        .unwrap()
+        .expect("fed");
+    assert!(t.device.is_none() && t.client.is_none());
+
+    // Revoked at acme: gone from north with the next feed.
+    let (s, _) = acme
+        .rest("DELETE", &format!("/tokens/{for_north_id}"), None, &erin_s)
+        .await;
+    assert!(s.is_success());
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    assert_eq!(get(&north, for_north).await.0, StatusCode::UNAUTHORIZED);
+}
