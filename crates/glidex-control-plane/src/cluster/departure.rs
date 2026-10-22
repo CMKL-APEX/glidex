@@ -1102,6 +1102,9 @@ impl Cluster {
     /// the store is kept (0600); the departure is committed by this node itself,
     /// with a receipt signed by its own CA key, and finished at the next start.
     pub async fn dissolve(self: &Arc<Self>) -> Result<Value, DepartureError> {
+        // The departure tick would take this node's pending database, which
+        // no plan names, for a leftover and remove it.
+        let _files = self.departure_files.lock().await;
         let node = self.node.as_ref().ok_or_else(|| {
             DepartureError::Invalid("only a server can dissolve a cluster".into())
         })?;
@@ -1191,7 +1194,11 @@ impl Cluster {
                         me.expire_departures();
                         me.expire_imports();
                     }
-                    if me.departure_tick().await.is_some() {
+                    let committed = {
+                        let _files = me.departure_files.lock().await;
+                        me.departure_tick().await
+                    };
+                    if committed.is_some() {
                         tracing::warn!(
                             "this node's departure committed: restart the control plane to continue as a standalone host"
                         );
