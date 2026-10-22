@@ -967,12 +967,35 @@ fn trust_err(e: crate::trust::StoreError) -> ServiceError {
     ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
 }
 
-fn tenant_cluster_pb(c: &crate::trust::TrustedCluster) -> pb::TenantCluster {
+/// Trusted cluster `c` as tenant `tenant` sees it, with what the cluster
+/// last reported of it (D70).
+fn tenant_cluster_pb(c: &crate::trust::TrustedCluster, tenant: &str) -> pb::TenantCluster {
+    let report = c.report.as_ref().and_then(|r| {
+        let t = r.tenants.iter().find(|t| t.tenant == tenant)?;
+        Some(pb::TenantClusterReport {
+            reported_at: ts(r.at).into(),
+            status: if t.suspended {
+                pb::AdmissionStatus::ADMISSION_STATUS_SUSPENDED
+            } else {
+                pb::AdmissionStatus::ADMISSION_STATUS_ADMITTED
+            }
+            .into(),
+            cap: quotas_to_pb(&t.cap).into(),
+            projects: t.projects,
+            vms: t.vms,
+            running_vms: t.running_vms,
+            disks: t.disks,
+            disk_gib: t.disk_gib,
+            networks: t.networks,
+            ..Default::default()
+        })
+    });
     pb::TenantCluster {
         cluster_id: c.cluster_id.clone(),
         name: c.name.clone(),
         api: c.api.clone(),
         created_at: ts(c.created_at).into(),
+        report: report.into(),
         ..Default::default()
     }
 }
@@ -992,7 +1015,7 @@ pub fn list_tenant_clusters(
         clusters: all
             .iter()
             .filter(|c| c.tenants.contains(&t.id))
-            .map(tenant_cluster_pb)
+            .map(|c| tenant_cluster_pb(c, &t.id))
             .collect(),
         ..Default::default()
     })
@@ -1095,6 +1118,7 @@ pub async fn opt_in_cluster(
             tenants: Vec::new(),
             created_at: now,
             ui_callback: None,
+            report: None,
         });
     c.api = token.api.clone();
     c.ui_callback = answer["ui_callback"]
@@ -1110,7 +1134,7 @@ pub async fn opt_in_cluster(
     call.set_target(format!("tenant:{}", t.id));
     call.detail("cluster", serde_json::json!(c.cluster_id));
     Ok(pb::OptInClusterResponse {
-        cluster: tenant_cluster_pb(&c).into(),
+        cluster: tenant_cluster_pb(&c, &t.id).into(),
         ..Default::default()
     })
 }

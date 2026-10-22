@@ -42,6 +42,7 @@ const CAPS = [
   "manageTenantInvitations",
   "readTenantDevicePools",
   "manageTenantDevicePools",
+  "readTenantClusters",
   "readTenantFederations",
   "manageTenantFederations",
 ] as const;
@@ -49,6 +50,77 @@ type Cap = (typeof CAPS)[number];
 
 /** The tenant's shares of cluster device pools, split among its projects
  *  (spec/host-topology.md §9.1a). */
+/** The clusters of other organizations the tenant uses, and what each last
+ *  reported of it (spec/tenancy.md D70). */
+function ClustersCard({ tenant }: { tenant: Tenant }) {
+  const [clusters, setClusters] = useState<api.TenantCluster[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .listTenantClusters(tenant.id)
+      .then(setClusters)
+      .catch((e) => setError(errorMessage(e)));
+  }, [tenant.id]);
+  if (clusters !== null && clusters.length === 0 && !error) return null;
+  return (
+    <Card title="Clusters of other organizations">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {clusters === null ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="tenant-clusters">
+            <thead>
+              <tr className="text-left text-xs text-gray-500">
+                <th className="py-1 pr-3 font-medium">Cluster</th>
+                <th className="py-1 pr-3 font-medium">Admission</th>
+                <th className="py-1 pr-3 font-medium">Projects</th>
+                <th className="py-1 pr-3 font-medium">VMs</th>
+                <th className="py-1 pr-3 font-medium">Disks</th>
+                <th className="py-1 pr-3 font-medium">Networks</th>
+                <th className="py-1 font-medium">Reported</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {clusters.map((c) => {
+                const r = c.report;
+                return (
+                  <tr key={c.cluster_id}>
+                    <td className="py-1.5 pr-3">
+                      <div className="text-gray-800">{c.name || c.cluster_id}</div>
+                      <div className="text-xs text-gray-500 font-mono">{c.api}</div>
+                    </td>
+                    {r ? (
+                      <>
+                        <td className="py-1.5 pr-3">{r.status === "ADMISSION_STATUS_SUSPENDED" ? <span className="text-amber-700">suspended</span> : "admitted"}</td>
+                        <td className="py-1.5 pr-3">{r.projects ?? 0}</td>
+                        <td className="py-1.5 pr-3">
+                          {r.vms ?? 0}
+                          {Number(r.running_vms ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.running_vms} running)</span>}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {r.disks ?? 0}
+                          {Number(r.disk_gib ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.disk_gib} GiB)</span>}
+                        </td>
+                        <td className="py-1.5 pr-3">{r.networks ?? 0}</td>
+                        <td className="py-1.5 text-xs text-gray-500">{r.reported_at ? new Date(r.reported_at).toLocaleString() : "—"}</td>
+                      </>
+                    ) : (
+                      <td colSpan={6} className="py-1.5 text-xs text-gray-500">
+                        No report yet
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function DevicePoolsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
   const [pools, setPools] = useState<api.TenantDevicePool[] | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
@@ -702,6 +774,7 @@ export default function TenantDetail() {
       {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
 
       {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
+      {can("readTenantClusters") && <ClustersCard tenant={tenant} />}
 
       {can("readTenantFederations") && <FederationsCard tenant={tenant} canManage={can("manageTenantFederations")} />}
 

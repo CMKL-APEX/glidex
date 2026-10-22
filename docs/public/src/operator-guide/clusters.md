@@ -411,6 +411,38 @@ tells its directory; the tenant can opt out from its side too
 lasts 7 days (`--days`, at most 30); `gxctl admission offers` and
 `revoke-offer` manage open ones.
 
+Once trust is set up:
+
+- **People and roles.** Every 30 seconds this cluster's leader (or a
+  standalone host) pulls a *feed* from each trusted directory. It holds
+  the admitted tenants, their projects, members and tenant and project
+  roles, and those people's names and whether they are disabled; never
+  emails, sign-ins or secrets. The cluster keeps them as that
+  directory's records, so policies and quotas work for them as for local
+  users, and no one edits them here. Someone removed from the tenant,
+  or disabled at their directory, loses access here with the next feed.
+  A feed never replaces this cluster's own records.
+- **Signing in.** The tenant's people sign in at their own directory.
+  The web UI's sign-in page offers **Sign in with &lt;tenant&gt;**,
+  which goes to the directory and back. On the API, an access token
+  their directory issued for this cluster works too; it is for this
+  cluster only. For that,
+  the directory must know this cluster's web UI address: it learns it
+  when the tenant opts in (the published address, or the first of
+  `auth.allowed_origins`). If the address changes, have the tenant opt
+  in again with a new offer. Signing out at the directory ends the
+  cluster's sessions made from it with the next feed.
+- **Reports.** After each feed, this cluster tells the directory what it
+  holds of each of its tenants: the admission (admitted or suspended,
+  and the cap), and counts of projects, VMs (and running ones), disks
+  (and their GiB) and networks. The tenant's administrators see it on
+  the tenant's page under *Clusters of other organizations*, and in
+  `gxctl tenant clusters acme`, with the time the directory received it.
+
+Feed, sign-in and report requests are signed by the sending side's key
+and go to the other side's API with its certificate pinned, on port
+8841 both ways: open it between the two organizations' hosts.
+
 ## The web UI's address
 
 Agents send browsers to a server's web UI, at the address that server

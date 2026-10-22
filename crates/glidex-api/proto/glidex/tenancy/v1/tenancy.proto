@@ -568,6 +568,24 @@ message TenantCluster {
   // Its API address.
   string api = 3;
   google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  // What the cluster last reported of this tenant; absent before its
+  // first report.
+  TenantClusterReport report = 5;
+}
+
+// A cluster's report of one tenant (spec/tenancy.md D70).
+message TenantClusterReport {
+  // When the directory received it.
+  google.protobuf.Timestamp reported_at = 1 [json_name = "reported_at"];
+  AdmissionStatus status = 2;
+  // The tenant's cap on that cluster.
+  Quotas cap = 3;
+  uint64 projects = 4;
+  uint64 vms = 5;
+  uint64 running_vms = 6 [json_name = "running_vms"];
+  uint64 disks = 7;
+  uint64 disk_gib = 8 [json_name = "disk_gib"];
+  uint64 networks = 9;
 }
 
 message ListTenantClustersRequest {

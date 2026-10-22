@@ -864,6 +864,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     .add("POST", "/d/{dir}/feed/v1", PUBLIC, post(trust::feed))
     .add(
         "POST",
+        "/d/{dir}/feed/v1/report",
+        PUBLIC,
+        post(trust::report),
+    )
+    .add(
+        "POST",
         "/d/{dir}/device/inspect",
         AUTHENTICATED,
         post(op::device_inspect),
@@ -2548,6 +2554,7 @@ mod tests {
                 "/trust/v1/end",
                 "/d/{dir}/trust/v1/end",
                 "/d/{dir}/feed/v1",
+                "/d/{dir}/feed/v1/report",
                 "/auth/passkeys/login/start",
                 "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",
