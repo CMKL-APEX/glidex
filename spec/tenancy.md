@@ -193,7 +193,7 @@ next to the fleet's own directory tables).
 
 | Record | Scope | Contents |
 |---|---|---|
-| `Directory` (new) | directory | `id`, `name`, `issuer` (`https://<host>/d/<id>`), `owner_tenant`, signing key ids, `created_at`. |
+| `Directory` (new) | directory | `id`, `name`, `issuer` (`https://<host>/d/<id>`), `owner_tenant`, signing key ids, `trust_domain` ([workload-identity.md](workload-identity.md) W13), `created_at`. |
 | `Tenant` (new) | directory | `id`, `directory_id`, `slug` (`[a-z0-9-]{1,32}`, unique in the directory), `display_name`, `owns_directory`, `operator`, `suspended`, `self_tags` (D35), `domains` (assigned by the owner), `limits {projects, members, connectors}`, `created_at`. |
 | `TrustedCluster` (new) | directory | per tenant opt-in: `tenant_id`, `cluster_id`, `endpoint`, `ca_fingerprint`, OIDC client registration, `admitted` (as the cluster reports it), `feed_revision`. |
 | `TrustedDirectory` (new) | cluster | `directory_id`, `issuer`, `ca_fingerprint`, JWKS (from the feed), `max_staleness`, `feed_revision`, `last_sync`. |

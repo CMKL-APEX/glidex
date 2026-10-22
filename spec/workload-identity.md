@@ -1,6 +1,6 @@
 # Workload identity
 
-Status: **draft** (proposal); nothing implemented. Extends
+Status: **draft**; WI0 implemented (§13, §15). Extends
 [tenancy.md](tenancy.md) (§7 tokens, §9 workload federation, T6),
 [security.md](security.md) (§7 Cedar) and [networking.md](networking.md).
 §11 lists the changes other documents need once this is accepted.
@@ -340,7 +340,7 @@ W10 keeps the token and audit formats ready for this; the grants
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **WI0** issuer | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
+| **WI0** issuer *(done)* | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
 | **WI1** VMs | `glidex-metad` and netd's steering on node and OVN networks (§7.1); `service_account` on VMs; `useServiceAccount`; glidex tokens (W6); exchange (§5); audit; UI and gxctl | §10 API and functional tests. |
 | **WI1b** vsock | vsock devices on both hypervisors, the shim relay (Cloud Hypervisor) and metad's vsock listener (QEMU), the guest helper | The functional test over vsock on a VM with no network. |
 | **WI2** outside | Docs and checks for AWS, Vault, Google and Kubernetes as relying parties; per-VM metering of tokens | The interop checks of §10. |
@@ -368,3 +368,20 @@ W10 keeps the token and audit formats ready for this; the grants
   Kubernetes `ServiceAccountTokenProjection` and kubelet token rotation,
   Google Compute Engine metadata server tokens, Azure managed identity
   token caching.
+
+## 15. Implementation status
+
+**WI0** is implemented. The directory's keys, discovery and JWKS came
+with tenancy.md T6 task 2 (D52, D53); on top of them:
+
+| Spec | Code |
+|---|---|
+| Identity token claims, lifetimes, SPIFFE ID, trust domain names, audiences (§4.2, §4.4, W9, W13) | `directory/workload.rs` (`identity_claims`, `ttl`, `spiffe_id`, `valid_trust_domain`, `default_trust_domain`, `valid_audience`) |
+| Minting for a VM (W4) | `api::issuer::vm_identity` (a running VM's tenant, project and directory; `409 not_running`), `api::issuer::sign_identity` (typed `JWT`, signed with the directory's keys through `api::issuer::sign`) |
+| Trust domain per directory (W13) | `Directory.trust_domain`, fixed by `TenantStore::set_trust_domain` at the first identity token or at creation (`CreateDirectoryRequest.trust_domain`, gxctl `directory create --trust-domain`, the Hosting page); `HostedDirectory.trust_domain` shows it, or the default it would get |
+| Never a bearer token (§3) | `api::op::access_principal` takes only `typ: at+jwt` |
+| Tests | `directory::workload` unit tests; `connector_tests.rs`: `vm_identity_tokens_verify_against_the_directory_jwks` (verified with `jsonwebtoken` against the served discovery and JWKS), `a_directory_keeps_the_trust_domain_it_was_created_with` |
+
+Nothing calls `sign_identity` for guests yet: the metadata endpoint is
+WI1.
+

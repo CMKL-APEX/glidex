@@ -85,6 +85,10 @@ pub struct Directory {
     /// Its issuer URL, fixed when it first issued a token (D52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
+    /// Its SPIFFE trust domain, chosen at creation or fixed when it first
+    /// issued a workload token (workload-identity.md W13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_domain: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +300,7 @@ impl TenantStore {
             owner_tenant: ADMIN_TENANT.into(),
             created_at: at,
             issuer: None,
+            trust_domain: None,
         };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
@@ -502,6 +507,7 @@ impl TenantStore {
             owner_tenant: t.id.clone(),
             created_at: at,
             issuer: None,
+            trust_domain: None,
         };
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -580,6 +586,25 @@ impl TenantStore {
             return Ok(d);
         }
         d.issuer = Some(issuer.to_string());
+        self.put(DIRECTORIES, id, &d)?;
+        Ok(d)
+    }
+
+    /// Fix `id`'s trust domain to `td` unless it already has one, which
+    /// never changes (workload-identity.md W13). The directory as it is now.
+    pub fn set_trust_domain(&self, id: &str, td: &str) -> Result<Directory, TenantError> {
+        let mut d = self
+            .get_directory(id)?
+            .ok_or_else(|| TenantError::NotFound(format!("directory {id}")))?;
+        if d.trust_domain.is_some() {
+            return Ok(d);
+        }
+        if !crate::directory::workload::valid_trust_domain(td) {
+            return Err(TenantError::Invalid(format!(
+                "invalid trust domain '{td}': lowercase letters, digits, '.', '-' and '_'"
+            )));
+        }
+        d.trust_domain = Some(td.to_string());
         self.put(DIRECTORIES, id, &d)?;
         Ok(d)
     }

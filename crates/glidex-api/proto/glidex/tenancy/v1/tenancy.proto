@@ -505,6 +505,9 @@ message HostedDirectory {
   // Its issuer URL (D52).
   string issuer = 3;
   google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+  // Its SPIFFE trust domain (workload-identity.md W13): the one chosen or
+  // fixed, else the default it would get, `<id>.<issuer host>`.
+  string trust_domain = 5 [json_name = "trust_domain"];
 }
 
 message ListDirectoriesRequest {}
@@ -521,6 +524,9 @@ message CreateDirectoryRequest {
   string admin_email = 4 [json_name = "admin_email"];
   // How long the invitation lasts, in days (default 7).
   optional uint32 days = 5;
+  // Its SPIFFE trust domain, for good (workload-identity.md W13): a name
+  // the organization owns. Absent: `<id>.<issuer host>`.
+  optional string trust_domain = 6 [json_name = "trust_domain"];
 }
 message CreateDirectoryResponse {
   HostedDirectory directory = 1;

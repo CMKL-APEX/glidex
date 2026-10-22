@@ -178,7 +178,7 @@ name (ids when `/projects` isn't readable).
 | `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([tenancy.md](tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
 | `tenant clusters <t>` / `opt-in <t> --offer TOKEN` / `opt-out <t> --cluster ID` | `TenantService` (D65, D66): at the tenant's directory |
 | `directory keys` / `directory keys rotate` | `SigningKeyService` ([tenancy.md](tenancy.md) D52, D53): the issuer URL and the token signing keys |
-| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
+| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N] [--trust-domain NAME]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
 | `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |

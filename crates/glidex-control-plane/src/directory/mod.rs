@@ -24,6 +24,7 @@ pub mod scim;
 pub mod scim_tokens;
 pub mod secrets;
 pub mod sync;
+pub mod workload;
 
 pub use presets::google::GoogleSettings;
 pub use presets::jumpcloud::JumpcloudSettings;
