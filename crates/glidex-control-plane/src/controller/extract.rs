@@ -277,6 +277,13 @@ impl VmManager {
                 img.status = ImageStatus::Ready;
                 self.images.put_image(img)?;
                 let from = match &img.source {
+                    ImageSource::Extracted {
+                        disk_id: Some(d), ..
+                    } => self
+                        .images
+                        .get_disk(d)
+                        .map(|d| d.name)
+                        .unwrap_or_else(|_| d.clone()),
                     ImageSource::Extracted { image_id, .. } => self
                         .images
                         .get_image(image_id)

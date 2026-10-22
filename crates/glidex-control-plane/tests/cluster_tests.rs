@@ -5976,6 +5976,12 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     assert_eq!(img.owner.as_deref(), Some(vm_id.as_str()));
     assert!(agent.manager.images().image_file(&img).exists());
     assert!(!server.manager.images().image_file(&img).exists());
+    let (_, ev) = call(&server, "GET", &format!("/images/{id}/events"), None, &[]).await;
+    assert!(
+        ev.to_string()
+            .contains("from kd (vda1:/boot/vmlinuz-6.12.0-test) on agent1"),
+        "{ev}"
+    );
 
     // Started, the VM takes its kernel from the disk on the agent: the one
     // just extracted, as the disk hasn't changed since.
