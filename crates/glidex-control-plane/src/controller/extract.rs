@@ -116,11 +116,30 @@ impl VmManager {
     /// Whether node `n` can extract kernels of `arch` for the leader
     /// (§10.2): ready, schedulable, of that architecture, with KVM.
     fn extracts_on(n: &crate::node::Node, arch: Arch) -> bool {
-        !n.status.phase.is_tombstone()
-            && n.status.phase.schedulable()
-            && n.status.ready == crate::models::Tristate::True
-            && n.status.features.kvm
-            && n.status.features.arch == arch.as_str()
+        Self::extract_refused_on(n, arch).is_none()
+    }
+
+    /// Why node `n` can't extract kernels of `arch` now, if it can't.
+    fn extract_refused_on(n: &crate::node::Node, arch: Arch) -> Option<String> {
+        let f = &n.status.features;
+        if n.status.phase.is_tombstone() || !n.status.phase.schedulable() {
+            Some(format!("it is {:?}", n.status.phase))
+        } else if n.status.ready != crate::models::Tristate::True {
+            Some("it is not ready".into())
+        } else if !f.kvm {
+            Some("it has no KVM".into())
+        } else if f.arch != arch.as_str() {
+            Some(format!(
+                "it is {}",
+                if f.arch.is_empty() {
+                    "of an unknown architecture"
+                } else {
+                    f.arch.as_str()
+                }
+            ))
+        } else {
+            None
+        }
     }
 
     /// Why a kernel of `arch` can't be extracted, if it can't (§10.2): on
@@ -669,9 +688,9 @@ impl VmManager {
         // shared one, any node that reaches the datastore (spec/storage.md §5).
         if let Some(n) = disk.node.as_deref().filter(|n| *n != self.local_node_id()) {
             let node = self.copy_node(n)?;
-            if !Self::extracts_on(&node, arch) {
+            if let Some(why) = Self::extract_refused_on(&node, arch) {
                 return Err(ImageError::InUse(format!(
-                    "disk {} is on {}, which can't extract {} kernels now (not ready, or no KVM)",
+                    "disk {} is on {}, which can't extract {} kernels now: {why}",
                     disk.name,
                     node.spec.name,
                     arch.as_str()
