@@ -587,6 +587,10 @@ pub struct NicStatus {
     pub ipv4: Option<Ipv4Addr>,
     #[serde(default)]
     pub port_ok: bool,
+    /// The port's metadata index on a NAT network (spec/workload-identity.md
+    /// §7.1): how glidex-metad knows this NIC's requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_index: Option<u16>,
 }
 
 impl Vm {

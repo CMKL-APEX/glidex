@@ -18,6 +18,7 @@ mod federations;
 pub mod gate;
 mod invitations;
 pub mod issuer;
+pub mod metad;
 mod net;
 pub(crate) mod nodes;
 pub mod op;
@@ -77,6 +78,9 @@ pub enum Listener {
     /// (spec/clustering-ui.md §3.6): authenticated here like `Ui`, with the
     /// Origin already checked by the agent.
     Relay,
+    /// `metad.sock`: glidex-metad, with its own router
+    /// (spec/workload-identity.md W11).
+    Metad,
 }
 
 /// The node that relayed a UI request (`Listener::Relay`).
@@ -1752,7 +1756,7 @@ pub(crate) fn client_ip(
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
         Listener::Tcp => peer.map(|a| a.ip()),
-        Listener::Api | Listener::Cluster => None,
+        Listener::Api | Listener::Cluster | Listener::Metad => None,
     }
 }
 
@@ -1816,6 +1820,10 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 None => Ok(None),
             },
             Listener::Cluster => gate::forwarded_principal(&headers),
+            // metad.sock serves its own router (api::metad), never this one.
+            Listener::Metad => {
+                return plain_error(StatusCode::FORBIDDEN, "forbidden", "not on this socket");
+            }
             Listener::Ui | Listener::Tcp | Listener::Relay => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>())
                 {

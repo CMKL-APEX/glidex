@@ -1,0 +1,29 @@
+[package]
+name = "glidex-metad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "glidex's metadata endpoint for guests (spec/workload-identity.md W11)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "glidex-metad"
+path = "src/main.rs"
+
+[dependencies]
+glidex-ovs = { path = "../glidex-ovs" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+socket2 = { version = "0.6", features = ["all"] }
+form_urlencoded = "1"
+
+[dev-dependencies]
+tempfile = "3"

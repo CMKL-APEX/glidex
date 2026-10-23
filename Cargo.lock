@@ -1712,6 +1712,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-metad"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "form_urlencoded",
+ "glidex-ovs",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "glidex-netd"
 version = "0.1.0"
 dependencies = [

@@ -851,11 +851,19 @@ fn offer_pb(o: &tenants::Offer) -> pb::Offer {
 /// Where directories reach this cluster's API (D64): `cluster.api_url`,
 /// else the web UI's published host on the API's port.
 pub fn offer_api(call: &Call) -> Option<String> {
-    let cfg = &call.auth().config;
+    api_endpoint(&call.auth().config, call.manager())
+}
+
+/// This host's public API address: `cluster.api_url`, else the web UI's
+/// host on the API's port.
+pub fn api_endpoint(
+    cfg: &crate::config::Config,
+    manager: &crate::state::VmManager,
+) -> Option<String> {
     if let Some(u) = cfg.cluster.ui_origin_of(cfg.cluster.api_url.as_deref()) {
         return Some(u);
     }
-    let ui = call.manager().ui_url()?;
+    let ui = manager.ui_url()?;
     let host = ui.parse::<axum::http::Uri>().ok()?.host()?.to_string();
     let port = cfg.listen.first().map_or(8841, |a| a.port());
     Some(format!("https://{host}:{port}"))
