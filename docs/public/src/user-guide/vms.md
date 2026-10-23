@@ -273,10 +273,10 @@ curl -s -H "$H" http://169.254.169.254/v1/glidex/token      # needs a service ac
 - Every process in the guest can ask, as on any cloud. Requests through a
   proxy in the guest (`Forwarded`, `X-Forwarded-For`) are refused.
 
-The endpoint serves VMs on NAT networks of a host or a cluster's leader.
+The endpoint serves VMs on NAT networks of a host or a cluster's leader;
 OVN networks, other nodes of a cluster, and isolated or bridged networks
-come later, and a VM on a NAT network can't reach the host's own API, so
-use its glidex tokens from elsewhere.
+come later. A NAT network's guests reach the host's own API only if the
+network allows it ([The host from a NAT network](networks.md#the-host-from-a-nat-network)).
 
 ### Networks
 

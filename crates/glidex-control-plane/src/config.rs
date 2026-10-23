@@ -40,6 +40,10 @@ pub struct Config {
     pub metad_socket: Option<PathBuf>,
     /// The user glidex-metad runs as; only it may use `metad_socket`.
     pub metad_user: String,
+    /// Open this host's API (the `listen` ports) to the guests of every
+    /// node NAT network on it, as each network's `host_api` does for one
+    /// (spec/workload-identity.md §15). Default: closed.
+    pub nat_host_api: bool,
     /// Group whose members may use `api_socket`.
     pub users_group: String,
     /// Group whose members are break-glass administrators on `api_socket`.
@@ -69,6 +73,7 @@ impl Default for Config {
             ui_user: "glidex-ui".into(),
             metad_socket: None,
             metad_user: "glidex-metad".into(),
+            nat_host_api: false,
             users_group: "glidex-users".into(),
             admin_group: "glidex-admin".into(),
             auth: AuthConfig::default(),

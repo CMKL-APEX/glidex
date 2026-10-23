@@ -72,6 +72,16 @@ service NetworkService {
       rest: "PUT /networks/{id}/grants"
     };
   }
+  // Open (or close) this host's API to a node NAT network's guests, which
+  // netd otherwise keeps from every host service but DHCP, DNS, ping and
+  // the metadata endpoint (spec/workload-identity.md §15).
+  rpc SetNetworkHostApi(SetNetworkHostApiRequest) returns (SetNetworkHostApiResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setNetworkHostApi"
+      kind: KIND_WRITE
+      rest: "PUT /networks/{id}/host_api"
+    };
+  }
   // A network private to a project: NAT or isolated, counted against its
   // `networks` quota.
   rpc CreateProjectNetwork(CreateProjectNetworkRequest) returns (CreateProjectNetworkResponse) {
@@ -162,6 +172,9 @@ message Network {
   NetworkPhase phase = 21;
   repeated glidex.common.v1.Condition conditions = 22;
   google.protobuf.Timestamp deletion_requested_at = 23 [json_name = "deletion_requested_at"];
+  // Node NAT networks: its guests reach this host's API
+  // (spec/workload-identity.md §15).
+  optional bool host_api = 24 [json_name = "host_api"];
 }
 
 message ShareOffer {
@@ -278,6 +291,14 @@ message GrantNetworkRequest {
   bool all_projects = 4 [json_name = "all_projects"];
 }
 message GrantNetworkResponse {
+  Network network = 1;
+}
+
+message SetNetworkHostApiRequest {
+  string id = 1;
+  bool host_api = 2 [json_name = "host_api"];
+}
+message SetNetworkHostApiResponse {
   Network network = 1;
 }
 

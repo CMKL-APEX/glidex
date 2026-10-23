@@ -188,6 +188,25 @@ NAT networks are IPv4 only. The address of each NIC shows in the VM's
 details: **Network** on its page in the web UI, `NIC <n>` in
 `gxctl get <vm>`, `nics[].ipv4` in the API.
 
+## The host from a NAT network
+
+Guests of a single-host NAT network reach the outside world, but on
+their own host only its DHCP, DNS, ping on the gateway and the
+[metadata endpoint](vms.md#workload-identity): every other service of
+the host is closed to them. A host network administrator can open the
+host's glidex API (port 8841) to one network's guests, for software in
+them that calls glidex with the tokens the metadata endpoint gives:
+
+```
+gxctl> network host-api lab on
+gxctl> network host-api lab off
+```
+
+or `PUT /networks/<id>/host_api` with `{"host_api": true}`. Guests then
+call `https://<gateway>:8841`. To open it on every NAT network of a host,
+set `"nat_host_api": true` in its `control-plane.json`. The API still
+needs a valid token for everything.
+
 ## Delete a network
 
 A network can't be deleted while any VM uses it, even a stopped one.

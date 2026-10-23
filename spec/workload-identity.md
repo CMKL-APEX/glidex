@@ -440,11 +440,14 @@ describes the datapath.
 | Tests | `glidex-ovs` (`metadata`, the ruleset goldens, checked with `nft -c`), `netd_tests.rs::nat_ports_get_a_metadata_index_and_rule`, `glidex-metad`'s own, `connector_tests.rs::metad_socket_answers_metad_alone_and_only_for_vm_ports`; `glidex-e2e`'s `metadata.rs` from inside a guest, the successful exchange included |
 
 Known limits of WI1b-1:
-- **A NAT guest can't reach the host's API**: netd's `input` chain
-  drops everything from NAT bridges to the host but DHCP, DNS, ping and
-  the metadata endpoint. Its glidex tokens work from elsewhere (an OVN
-  network, another host). Opening `:8841` to NAT guests is a separate
-  decision.
+- **A NAT guest reaches the host's API only where allowed**: netd's
+  `input` chain drops everything from NAT bridges to the host but DHCP,
+  DNS, ping and the metadata endpoint. A network's `host_api`
+  (`SetNetworkHostApi`, `setNetworkHostApi` in `host.network`: host
+  network administrators, never a project's own) or a host's
+  `nat_host_api` opens the API's `listen` ports from that bridge (on
+  every host address, `inet glidex` and `GLIDEX-INPUT`); the network
+  controller keeps netd's `NatState.host_api_ports` as they should be.
 - In a cluster, only the leader answers (`503 not_leader` elsewhere);
   agents don't serve `metad.sock` yet (WI1b-2).
 - The control plane keeps each answer until 80% of its lifetime (§4.4),

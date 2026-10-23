@@ -138,6 +138,7 @@ impl VmManager {
                                 bridge: net.bridge.clone(),
                                 subnet: None,
                                 dns: net.dns,
+                                host_api_ports: self.host_api_ports(&net),
                             };
                             let netd = self.netd.clone();
                             match tokio::task::spawn_blocking(move || {
@@ -161,6 +162,43 @@ impl VmManager {
                                     "netd has no NAT for it and creating one failed: {}",
                                     e
                                 )),
+                            }
+                        }
+                    }
+                    // The host's API opened or closed to its guests
+                    // (spec/workload-identity.md §15).
+                    Some(n) if n.state.host_api_ports != self.host_api_ports(&net) => {
+                        let ports = self.host_api_ports(&net);
+                        let spec = NatSpec {
+                            bridge: net.bridge.clone(),
+                            subnet: Some(n.state.subnet),
+                            dns: net.dns,
+                            host_api_ports: ports.clone(),
+                        };
+                        let netd = self.netd.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            netd.call::<NatInfo>(Op::EnsureNat(spec))
+                        })
+                        .await
+                        .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+                        {
+                            Ok(_) => {
+                                let _ = self.store.push_event(
+                                    &event_key("network", &net.id),
+                                    Event::new(
+                                        "controller",
+                                        EventKind::Normal,
+                                        "HostApi",
+                                        if ports.is_empty() {
+                                            "this host's API is closed to the network's guests".to_string()
+                                        } else {
+                                            format!("this host's API (ports {ports:?}) is open to the network's guests")
+                                        },
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                problems.push(format!("opening or closing the host's API: {e}"))
                             }
                         }
                     }
