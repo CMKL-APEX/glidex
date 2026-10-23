@@ -16,8 +16,10 @@ use axum::{
     routing::post,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::sync::Mutex;
 
 /// What metad asks: the peer address a guest's request came from, and for
 /// an identity token its audience and lifetime.
@@ -108,6 +110,42 @@ fn writable(app: &App) -> Result<(), super::ApiErr> {
     }
 }
 
+/// Answers already given: the same one until 80% of its lifetime (W8,
+/// §4.4), so a guest asking often signs and writes nothing. Keyed by the
+/// VM and its service account, never by the peer address: a port's index
+/// passes to another VM once that port is gone.
+struct Given {
+    answer: Value,
+    issued_at: u64,
+    lifetime: u64,
+}
+
+fn given() -> &'static Mutex<HashMap<String, Given>> {
+    static G: std::sync::OnceLock<Mutex<HashMap<String, Given>>> = std::sync::OnceLock::new();
+    G.get_or_init(Default::default)
+}
+
+/// `key`'s answer while fresh, with `expires_in` what remains of it.
+fn reuse(key: &str, now: u64) -> Option<Value> {
+    let mut g = given().lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|_, v| now < v.issued_at + v.lifetime * 4 / 5);
+    let v = g.get(key)?;
+    let mut a = v.answer.clone();
+    a["expires_in"] = (v.issued_at + v.lifetime - now).into();
+    Some(a)
+}
+
+fn remember(key: String, answer: &Value, lifetime: u64, now: u64) {
+    given().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        key,
+        Given {
+            answer: answer.clone(),
+            issued_at: now,
+            lifetime,
+        },
+    );
+}
+
 /// `/v1/instance`: what the VM is.
 async fn instance(State(app): State<AppState>, Json(ask): Json<Ask>) -> Response {
     match vm_of(&app, &ask.peer).await {
@@ -127,15 +165,22 @@ async fn instance(State(app): State<AppState>, Json(ask): Json<Ask>) -> Response
 async fn identity(State(app): State<AppState>, Json(ask): Json<Ask>) -> Response {
     let run = async {
         let vm = vm_of(&app, &ask.peer).await?;
+        let audience = ask.audience.as_deref().unwrap_or("");
+        let key = format!(
+            "identity|{}|{:?}|{audience}|{:?}",
+            vm.identity.vm_id, vm.identity.service_account, ask.ttl
+        );
+        let now = crate::auth::store::now();
+        if let Some(a) = reuse(&key, now) {
+            return Ok(Json(a));
+        }
         writable(&app)?;
-        let token = issuer::sign_identity(
-            &app,
-            &vm.directory,
-            &vm.identity,
-            ask.audience.as_deref().unwrap_or(""),
-            ask.ttl,
-        )?;
-        Ok::<_, super::ApiErr>(Json(json!({ "token": token })))
+        let token = issuer::sign_identity(&app, &vm.directory, &vm.identity, audience, ask.ttl)?;
+        let expires_in = crate::directory::workload::ttl(ask.ttl)
+            .unwrap_or(crate::directory::workload::DEFAULT_TTL_SECS);
+        let answer = json!({ "token": token, "expires_in": expires_in });
+        remember(key, &answer, expires_in, now);
+        Ok::<_, super::ApiErr>(Json(answer))
     };
     match run.await {
         Ok(r) => r.into_response(),
@@ -147,17 +192,42 @@ async fn identity(State(app): State<AppState>, Json(ask): Json<Ask>) -> Response
 async fn glidex_token(State(app): State<AppState>, Json(ask): Json<Ask>) -> Response {
     let run = async {
         let vm = vm_of(&app, &ask.peer).await?;
+        let key = format!(
+            "glidex|{}|{:?}",
+            vm.identity.vm_id, vm.identity.service_account
+        );
+        let now = crate::auth::store::now();
+        if let Some(a) = reuse(&key, now) {
+            return Ok(Json(a));
+        }
         writable(&app)?;
         let (token, expires_in) = issuer::vm_glidex_token(&app, &vm, None)?;
-        Ok::<_, super::ApiErr>(Json(json!({
+        let answer = json!({
             "access_token": token,
             "token_type": "Bearer",
             "expires_in": expires_in,
             "endpoint": crate::service::tenancy::api_endpoint(&app.auth.config, &app.manager),
-        })))
+        });
+        remember(key, &answer, expires_in, now);
+        Ok::<_, super::ApiErr>(Json(answer))
     };
     match run.await {
         Ok(r) => r.into_response(),
         Err(e) => e.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answers_are_reused_until_80_percent_of_their_life() {
+        let a = json!({ "token": "t1", "expires_in": 900 });
+        remember("test|vm-a".into(), &a, 900, 1_000);
+        assert_eq!(reuse("test|vm-a", 1_100).unwrap()["expires_in"], 800);
+        assert_eq!(reuse("test|vm-a", 1_719).unwrap()["token"], "t1");
+        assert!(reuse("test|vm-a", 1_720).is_none(), "past 80%");
+        assert!(reuse("test|vm-b", 1_100).is_none(), "another VM's own");
     }
 }

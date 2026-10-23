@@ -154,43 +154,22 @@ fn a_guest_gets_its_identity_from_the_metadata_endpoint() {
         .expect("a service account")
         .to_string();
     made.token = Some(sa_id.clone());
-    let vm = api.ok(
-        "POST",
-        "/vms",
-        Some(&json!({
-            "name": format!("gxmd-{tag}"), "vcpu_count": 1, "mem_size_mib": 1024,
-            "image": env("GLIDEX_E2E_IMAGE", "ubuntu-26.04"), "firmware": "cloudhv-edk2",
-            "root_disk_size_gib": 10, "credential": credential, "project": project,
-            "hypervisor": "cloudhypervisor", "service_account": sa_id,
-            "networks": [{ "network": env("GLIDEX_E2E_NETWORK", "default") }],
-            "kernel_image_path": "", "rootfs_path": "",
-        })),
+    let (id, ssh) = make_vm(
+        &api,
+        &format!("gxmd-{tag}"),
+        &credential,
+        &project,
+        &sa_id,
+        &key,
     );
-    let id = vm["vm"]["id"].as_str().unwrap().to_string();
     made.vm = Some(id.clone());
-    api.ok(
-        "POST",
-        &format!("/vms/{id}/start?wait=120"),
-        Some(&json!({})),
-    );
-    let ip = wait_for("the VM's address", Duration::from_secs(120), || {
-        let v = api.ok("GET", &format!("/vms/{id}"), None);
-        v["vm"]["nics"][0]["ipv4"].as_str().map(String::from)
-    });
-    let ssh = Ssh {
-        host: ip,
-        user: credential.clone(),
-        key,
-    };
-    wait_for("SSH to the VM", Duration::from_secs(300), || {
-        ssh.reachable().then_some(())
-    });
 
-    let md = |path: &str, headers: &str| {
+    let md_on = |ssh: &Ssh, path: &str, headers: &str| {
         ssh.check(&format!(
             "curl -s -w '\\n%{{http_code}}' {headers} 'http://169.254.169.254{path}'"
         ))
     };
+    let md = |path: &str, headers: &str| md_on(&ssh, path, headers);
     let split = |out: String| -> (u16, String) {
         let (body, code) = out.trim_end().rsplit_once('\n').unwrap_or(("", "0"));
         (code.trim().parse().unwrap_or(0), body.to_string())
@@ -237,8 +216,8 @@ fn a_guest_gets_its_identity_from_the_metadata_endpoint() {
     let (code, vms) = https("GET", "/vms", Some(access), None);
     assert_eq!(code, 200, "{vms}");
     assert!(vms.to_string().contains(&id), "a viewer sees the VM: {vms}");
-    let (code, _) = https("POST", "/tokens", Some(access), None);
-    assert!(code == 403 || code == 400, "only a viewer: {code}");
+    let (code, _) = https("DELETE", &format!("/vms/{id}"), Some(access), None);
+    assert_eq!(code, 403, "only a viewer");
 
     step("an identity token for this cluster, exchanged once");
     let (code, mine) = split(md(&format!("/v1/identity?audience={cluster}"), flavor));
@@ -256,5 +235,70 @@ fn a_guest_gets_its_identity_from_the_metadata_endpoint() {
         (400, Some("invalid_grant")),
         "only once"
     );
+
+    step("a new VM given the same port index gets its own identity");
+    // netd hands the freed index to the next VM: nothing given to the old
+    // one may reach it (the control plane's answers are kept by VM).
+    api.call("POST", &format!("/vms/{id}/stop?wait=60"), Some(&json!({})));
+    api.ok("DELETE", &format!("/vms/{id}?wait=120"), None);
+    made.vm = None;
+    let (id2, ssh2) = make_vm(
+        &api,
+        &format!("gxmd-{tag}-2"),
+        &credential,
+        &project,
+        &sa_id,
+        &key,
+    );
+    made.vm = Some(id2.clone());
+    let (code, jwt) = split(md_on(&ssh2, "/v1/identity?audience=gx-e2e", flavor));
+    assert_eq!(code, 200, "{jwt}");
+    let c = claims(&jwt);
+    assert!(
+        c["sub"].as_str().unwrap().ends_with(&format!("/vm/{id2}")),
+        "the old VM's token reached the new one: {c}"
+    );
     drop(made);
+}
+
+/// Make and start a VM with `sa` on the NAT network, and reach it.
+fn make_vm(
+    api: &Api,
+    name: &str,
+    credential: &str,
+    project: &str,
+    sa: &str,
+    key: &std::path::Path,
+) -> (String, Ssh) {
+    let vm = api.ok(
+        "POST",
+        "/vms",
+        Some(&json!({
+            "name": name, "vcpu_count": 1, "mem_size_mib": 1024,
+            "image": env("GLIDEX_E2E_IMAGE", "ubuntu-26.04"), "firmware": "cloudhv-edk2",
+            "root_disk_size_gib": 10, "credential": credential, "project": project,
+            "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR", "service_account": sa,
+            "networks": [{ "network": env("GLIDEX_E2E_NETWORK", "default") }],
+            "kernel_image_path": "", "rootfs_path": "",
+        })),
+    );
+    let id = vm["vm"]["id"].as_str().unwrap().to_string();
+    api.ok(
+        "POST",
+        &format!("/vms/{id}/start?wait=120"),
+        Some(&json!({})),
+    );
+    let ip = wait_for("the VM's address", Duration::from_secs(120), || {
+        let v = api.ok("GET", &format!("/vms/{id}"), None);
+        v["vm"]["nics"][0]["ipv4"].as_str().map(String::from)
+    });
+    let ssh = Ssh {
+        host: ip,
+        user: credential.to_string(),
+        key: key.to_path_buf(),
+    };
+    wait_for("SSH to the VM", Duration::from_secs(300), || {
+        ssh.reachable().then_some(())
+    });
+    (id, ssh)
 }
