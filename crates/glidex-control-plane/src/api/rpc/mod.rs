@@ -134,6 +134,8 @@ fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
             matches!(protocol, Some(Protocol::Grpc | Protocol::Connect))
         }
         Listener::Cluster => true,
+        // metad.sock serves its own router, no RPC.
+        Listener::Metad => false,
     }
 }
 

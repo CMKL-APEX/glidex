@@ -1411,6 +1411,7 @@ impl VmManager {
                     port: None,
                     ipv4: None,
                     port_ok: false,
+                    metadata_index: None,
                 });
                 if let Some(stored) = self
                     .write_status(&vm.id, vm.generation, st.clone(), vec![])
@@ -1427,6 +1428,7 @@ impl VmManager {
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
                 n.port = Some(res.port.clone());
                 n.ipv4 = res.ipv4;
+                n.metadata_index = res.metadata_index;
                 n.port_ok = true;
             }
             out.push(NicBinding {
@@ -1844,8 +1846,9 @@ impl VmManager {
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             match blocking(move || netd.call::<AttachResult>(Op::AttachVmPort(spec))).await? {
-                Ok(_) => {
+                Ok(r) => {
                     st.nics[i].port_ok = true;
+                    st.nics[i].metadata_index = r.metadata_index;
                     events.push(Event::new(
                         "controller",
                         EventKind::Warning,

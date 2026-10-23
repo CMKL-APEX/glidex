@@ -416,6 +416,8 @@ async fn main() {
     });
     // Feeds from the directories this cluster trusts (spec/tenancy.md D67).
     api::trust::spawn_feeds(app_state.clone());
+    // glidex-metad's own socket and router (spec/workload-identity.md W11).
+    let metad_router = api::metad::router(app_state.clone()).layer(TraceLayer::new_for_http());
     let router = api::router(app_state);
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());
@@ -444,17 +446,21 @@ async fn main() {
     }
     let api_sock = cfg.api_socket_path();
     let ui_sock = cfg.ui_socket_path();
-    let unix: Vec<(tokio::net::UnixListener, api::Listener, std::path::PathBuf)> =
-        [(api_sock, api::Listener::Api), (ui_sock, api::Listener::Ui)]
-            .into_iter()
-            .filter_map(|(path, kind)| match serve::bind_unix(&path) {
-                Ok(l) => Some((l, kind, path)),
-                Err(e) => {
-                    eprintln!("  Warning: cannot listen on {}: {}", path.display(), e);
-                    None
-                }
-            })
-            .collect();
+    let metad_sock = cfg.metad_socket_path();
+    let unix: Vec<(tokio::net::UnixListener, api::Listener, std::path::PathBuf)> = [
+        (api_sock, api::Listener::Api),
+        (ui_sock, api::Listener::Ui),
+        (metad_sock, api::Listener::Metad),
+    ]
+    .into_iter()
+    .filter_map(|(path, kind)| match serve::bind_unix(&path) {
+        Ok(l) => Some((l, kind, path)),
+        Err(e) => {
+            eprintln!("  Warning: cannot listen on {}: {}", path.display(), e);
+            None
+        }
+    })
+    .collect();
     if tcp.is_empty() && unix.is_empty() {
         eprintln!("No usable listen address");
         std::process::exit(1);
@@ -524,7 +530,11 @@ async fn main() {
             ))
         })
         .chain(unix.into_iter().map(|(l, kind, _)| {
-            tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))
+            let router = match kind {
+                api::Listener::Metad => metad_router.clone(),
+                _ => app.clone(),
+            };
+            tokio::spawn(serve::serve_unix(l, router, kind, stop_rx.clone()))
         }))
         .collect();
     shutdown_signal().await;

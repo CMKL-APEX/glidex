@@ -320,6 +320,8 @@ pub async fn password_token(
         Listener::Tcp => {
             app.auth.config.tls.enabled() || origin.client_ip.is_none_or(|ip| ip.is_loopback())
         }
+        // metad.sock serves its own router, never logins.
+        Listener::Metad => false,
     };
     if !local {
         return Err(ServiceError::new(

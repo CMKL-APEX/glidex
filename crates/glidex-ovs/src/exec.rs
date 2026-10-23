@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 pub enum Program {
     OvsVsctl,
     OvsAppctl,
+    /// OpenFlow rules for the metadata endpoint (spec/workload-identity.md §7.1).
+    OvsOfctl,
     OvsVswitchd,
     OvnNbctl,
     OvnSbctl,
@@ -53,6 +55,7 @@ impl Program {
         match self {
             Program::OvsVsctl => "ovs-vsctl",
             Program::OvsAppctl => "ovs-appctl",
+            Program::OvsOfctl => "ovs-ofctl",
             Program::OvsVswitchd => "ovs-vswitchd",
             Program::OvnNbctl => "ovn-nbctl",
             Program::OvnSbctl => "ovn-sbctl",

@@ -5714,3 +5714,50 @@ async fn the_vm_exchange_takes_only_a_running_vms_identity_token() {
         "{v}"
     );
 }
+
+/// workload-identity.md W11: metad.sock answers glidex-metad's user only,
+/// and only for a peer address that is a VM port of this node.
+#[tokio::test]
+async fn metad_socket_answers_metad_alone_and_only_for_vm_ports() {
+    let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap();
+    let h = harness_with(|c| c.metad_user = me.name.clone());
+    let router = api::metad::router(h.app.clone());
+    let ask = |uid: u32, body: Value| {
+        let mut req = Request::post("/v1/instance")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(api::PeerUid(uid));
+        let router = router.clone();
+        async move {
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let uid = me.uid.as_raw();
+    // Anyone else: refused.
+    let (s, _) = ask(uid + 1, json!({"peer": "169.254.192.1"})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Not a VM port's peer address, or one no VM here has.
+    let (s, v) = ask(uid, json!({"peer": "10.88.0.5"})).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("unknown_port")),
+        "{v}"
+    );
+    let (s, v) = ask(uid, json!({"peer": "169.254.192.1"})).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("unknown_port")),
+        "{v}"
+    );
+    let (s, _) = ask(uid, json!({"peer": "nope"})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}

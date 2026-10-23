@@ -35,6 +35,9 @@ const SERVICE_USER: &str = "glidex";
 const NETD_GROUP: &str = "glidex";
 /// The web UI's own user (and group); not in `glidex`.
 const UI_USER: &str = "glidex-ui";
+/// The metadata endpoint's own user (and group): only it may use the
+/// control plane's metad.sock (spec/workload-identity.md W11).
+pub(crate) const METAD_USER: &str = "glidex-metad";
 /// Humans allowed to use gxctl on the control plane's api.sock.
 const USERS_GROUP: &str = "glidex-users";
 /// Break-glass administrators (api.sock as system-admin, netd directly).
@@ -57,6 +60,7 @@ pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
 const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
+const METAD_UNIT: &str = "/etc/systemd/system/glidex-metad.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
 const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
 const STORD_UNIT: &str = "/etc/systemd/system/glidex-stord.service";
@@ -2098,6 +2102,7 @@ struct Changes {
     stord: bool,
     /// stord.json changed: stord reads it at start.
     stord_config: bool,
+    metad: bool,
 }
 
 /// `cloud-hypervisor v53.0` (possibly with a suffix) → `v53.0`.
@@ -2304,6 +2309,9 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "-p",
         "glidex-vm-shim",
     ];
+    if opts.networking {
+        args.extend(["-p", "glidex-metad"]);
+    }
     if opts.services {
         args.extend(["-p", "glidex-authd", "-p", "glidex-stord"]);
     }
@@ -2370,6 +2378,10 @@ fn binaries(opts: &Options) -> Vec<&'static str> {
         v.push("glidex-authd");
         v.push("glidex-stord");
     }
+    // The metadata endpoint needs netd's rules and runs as a unit.
+    if opts.networking && opts.services {
+        v.push("glidex-metad");
+    }
     v
 }
 
@@ -2386,6 +2398,7 @@ fn install_binaries(opts: &Options, user_home: &Path, changed: &mut Changes) -> 
                 "glidex-netd" => changed.netd = true,
                 "glidex-authd" => changed.authd = true,
                 "glidex-stord" => changed.stord = true,
+                "glidex-metad" => changed.metad = true,
                 _ => {}
             }
         } else {
@@ -2484,6 +2497,8 @@ struct UserState<'a> {
     admin_group: bool,
     ui_group: bool,
     ui_user: bool,
+    metad_group: bool,
+    metad_user: bool,
     /// The invoking user (not root).
     member: Option<Member<'a>>,
 }
@@ -2576,6 +2591,26 @@ fn service_user_commands(s: &UserState, shell: &str) -> Vec<Vec<String>> {
         ]));
         cmds.push(cmd);
     }
+    if !s.metad_user {
+        let group: &[&str] = if s.metad_group {
+            &["--gid", METAD_USER]
+        } else {
+            &["--user-group"]
+        };
+        let mut cmd = argv(&["useradd", "--system"]);
+        cmd.extend(argv(group));
+        cmd.extend(argv(&[
+            "--home-dir",
+            "/nonexistent",
+            "--no-create-home",
+            "--shell",
+            shell,
+            "--comment",
+            "glidex metadata endpoint",
+            METAD_USER,
+        ]));
+        cmds.push(cmd);
+    }
     if let Some(m) = s.member {
         let missing: Vec<&str> = [(m.in_users, USERS_GROUP), (m.in_admin, ADMIN_GROUP)]
             .into_iter()
@@ -2618,6 +2653,8 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
         admin_group: group_exists(ADMIN_GROUP),
         ui_group: group_exists(UI_USER),
         ui_user: succeeds("getent", &["passwd", UI_USER]),
+        metad_group: group_exists(METAD_USER),
+        metad_user: succeeds("getent", &["passwd", METAD_USER]),
         member: invoking.map(|u| Member {
             name: u,
             in_netd_group: user_in_group(u, NETD_GROUP),
@@ -3472,6 +3509,14 @@ fn install_services(
     let vm_units_changed = install_vm_units(&root)?;
     let ui_unit_changed =
         install_if_changed(&root.join("packaging/glidex-ui.service"), UI_UNIT, "0644")?;
+    // With networking only (its binary is there then).
+    let metad = Path::new(BIN_DIR).join("glidex-metad").exists();
+    let metad_unit_changed = metad
+        && install_if_changed(
+            &root.join("packaging/glidex-metad.service"),
+            METAD_UNIT,
+            "0644",
+        )?;
     let authd_socket_changed = install_if_changed(
         &root.join("packaging/glidex-authd.socket"),
         AUTHD_SOCKET_UNIT,
@@ -3491,6 +3536,7 @@ fn install_services(
     if cp_unit_changed
         || stord_unit_changed
         || ui_unit_changed
+        || metad_unit_changed
         || authd_socket_changed
         || authd_service_changed
         || vm_units_changed
@@ -3509,6 +3555,9 @@ fn install_services(
     enable_unit("glidex-stord.service")?;
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
+    if metad {
+        enable_unit("glidex-metad.service")?;
+    }
 
     // glidex-authd first, so the control plane finds its socket.
     for cmd in authd_actions(
@@ -3596,6 +3645,18 @@ fn install_services(
         );
     } else {
         println!("{} {}", "Running:".green(), ui);
+    }
+
+    // The metadata endpoint: stateless, after the control plane (its
+    // metad.sock) and netd (its rules).
+    let md = "glidex-metad.service";
+    if metad {
+        if !unit_active(md) || changed.metad || metad_unit_changed || changed.control_plane {
+            sudo(&argv(&["systemctl", "restart", md]))?;
+            println!("{} {}", "Started:".green(), md);
+        } else {
+            println!("{} {}", "Running:".green(), md);
+        }
     }
 
     // The control plane used to run as the installing user, on its ~/.glidex.
@@ -4302,6 +4363,8 @@ mod tests {
         admin_group: true,
         ui_group: true,
         ui_user: true,
+        metad_group: true,
+        metad_user: true,
         member: Some(ALICE_DONE),
     };
 
@@ -4317,6 +4380,8 @@ mod tests {
             admin_group: false,
             ui_group: false,
             ui_user: false,
+            metad_group: false,
+            metad_user: false,
             member: Some(ALICE_NEW),
         };
         assert_eq!(
@@ -4329,6 +4394,7 @@ mod tests {
                 "groupadd --system glidex-users",
                 "groupadd --system glidex-admin",
                 "useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin --comment glidex web UI glidex-ui",
+                "useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin --comment glidex metadata endpoint glidex-metad",
                 "usermod -aG glidex-users,glidex-admin alice",
             ]
         );
@@ -4839,6 +4905,23 @@ mod tests {
     }
 
     #[test]
+    fn metad_unit_is_unprivileged() {
+        let s = std::fs::read_to_string(workspace_root().join("packaging/glidex-metad.service"))
+            .unwrap();
+        assert_eq!(unit_user(&s), Some(METAD_USER));
+        for line in [
+            "Group=glidex-metad",
+            "ExecStart=/usr/local/bin/glidex-metad",
+            "NoNewPrivileges=yes",
+            "CapabilityBoundingSet=",
+            "ProtectSystem=strict",
+            "InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd",
+        ] {
+            assert!(s.lines().any(|l| l == line), "missing {line:?}");
+        }
+    }
+
+    #[test]
     fn binaries_follow_options() {
         assert_eq!(
             binaries(&Options::default()),
@@ -4849,7 +4932,8 @@ mod tests {
                 "glidex-vm-shim",
                 "glidex-netd",
                 "glidex-authd",
-                "glidex-stord"
+                "glidex-stord",
+                "glidex-metad"
             ]
         );
         let no_net = Options {
@@ -4857,6 +4941,8 @@ mod tests {
             ..Options::default()
         };
         assert!(!binaries(&no_net).contains(&"glidex-netd"));
+        // The metadata endpoint needs netd's rules.
+        assert!(!binaries(&no_net).contains(&"glidex-metad"));
         let no_services = Options {
             services: false,
             ..Options::default()

@@ -22,6 +22,7 @@ use std::process::Command;
 /// glidex-stord, then netd.
 pub const UNITS: &[&str] = &[
     "glidex-ui.service",
+    "glidex-metad.service",
     "glidex-control-plane.service",
     "glidex-authd.service",
     "glidex-authd.socket",
@@ -44,12 +45,15 @@ pub const BINARIES: &[&str] = &[
     "glidex-authd",
     "glidex-stord",
     "glidex-vm-shim",
+    "glidex-metad",
 ];
 /// The VM unit template and its slice (spec/reconciliation.md §13).
 pub const VM_UNIT_FILES: &[&str] = &["glidex-vm@.service", "glidex-vms.slice"];
 pub const GROUP: &str = "glidex";
 /// The web UI's user; its own group of the same name.
 pub const UI_USER: &str = crate::UI_USER;
+/// The metadata endpoint's user; its own group of the same name.
+pub const METAD_USER: &str = crate::METAD_USER;
 /// Groups of people (spec/security.md §4), removed with glidex.
 pub const PEOPLE_GROUPS: &[&str] = &[crate::USERS_GROUP, crate::ADMIN_GROUP];
 pub const CONFIG_DIR: &str = "/etc/glidex";
@@ -386,12 +390,12 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
     // Users first: groupdel refuses a user's primary group. (userdel may
     // already remove a same-named group; groupdel then just warns.)
-    for user in [SERVICE_USER, UI_USER] {
+    for user in [SERVICE_USER, UI_USER, METAD_USER] {
         if host.user_exists(user) {
             steps.push(run(&["userdel", user]));
         }
     }
-    for group in [GROUP, UI_USER].iter().chain(PEOPLE_GROUPS) {
+    for group in [GROUP, UI_USER, METAD_USER].iter().chain(PEOPLE_GROUPS) {
         if host.group_exists(group) {
             steps.push(run(&["groupdel", group]));
         }
@@ -702,7 +706,7 @@ fn execute(step: &Step) -> Result<()> {
             // The metering table goes too: the only place it is deleted
             // (spec/metering.md D14).
             let script =
-                glidex_ovs::nat::nft_script(&[], &[]) + &glidex_ovs::nat_meter::drop_script();
+                glidex_ovs::nat::nft_script(&[], &[], &[]) + &glidex_ovs::nat_meter::drop_script();
             child
                 .stdin
                 .take()

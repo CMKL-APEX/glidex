@@ -383,7 +383,18 @@ impl Netd {
     fn apply_firewall(&self, nats: &[NatState]) -> Result<(), OvsError> {
         let isolated = self.isolated_bridges()?;
         let names: Vec<&str> = isolated.iter().map(String::as_str).collect();
-        nat::apply_nft(self.ex(), nats, &names)
+        let metadata = self.metadata_indexes(nats)?;
+        nat::apply_nft(self.ex(), nats, &names, &metadata)
+    }
+
+    /// The metadata indexes of the VM ports on `nats`' bridges.
+    fn metadata_indexes(&self, nats: &[NatState]) -> Result<Vec<u16>, OvsError> {
+        Ok(self
+            .vm_ports()?
+            .into_iter()
+            .filter(|r| nats.iter().any(|n| n.bridge == r.spec.bridge))
+            .filter_map(|r| r.metadata_index)
+            .collect())
     }
 
     // ---- uplinks -------------------------------------------------------
@@ -1001,19 +1012,49 @@ impl Netd {
             }
             None => None,
         };
+        // The metadata endpoint on a NAT network (spec/workload-identity.md
+        // §7.1): the port keeps its index across re-attaches.
+        let metadata_index = match ipv4 {
+            Some(_) => {
+                let others = self.vm_ports()?;
+                let index = match others
+                    .iter()
+                    .find(|r| store::vm_port_key(&r.spec.vm_id, r.spec.nic_index) == key)
+                    .and_then(|r| r.metadata_index)
+                {
+                    Some(i) => i,
+                    None => {
+                        let used: Vec<u16> =
+                            others.iter().filter_map(|r| r.metadata_index).collect();
+                        glidex_ovs::metadata::allocate(&used).ok_or_else(|| {
+                            OvsError::conflict("no metadata index left on this host")
+                        })?
+                    }
+                };
+                glidex_ovs::metadata::add_flow(self.ex(), &spec.bridge, &port, index)?;
+                Some(index)
+            }
+            None => None,
+        };
         let record = VmPortRecord {
             spec,
             port: port.clone(),
             binding: binding.clone(),
             ipv4,
             owner_uid,
+            metadata_index,
         };
         self.store.put(VM_PORTS, &key, &record)?;
-        tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, "VM port attached");
+        if metadata_index.is_some() {
+            glidex_ovs::metadata::ensure_address(self.ex())?;
+            self.apply_firewall(&self.nats()?)?;
+        }
+        tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, ?metadata_index, "VM port attached");
         Ok(AttachResult {
             port,
             binding,
             ipv4,
+            metadata_index,
         })
     }
 
@@ -1031,6 +1072,9 @@ impl Netd {
         Self::check_owner(&old, owner_uid)?;
         if old.spec.bridge != spec.bridge {
             vm_port::unplug(self.ex(), &spec.vm_id, spec.nic_index)?;
+            if let Some(i) = old.metadata_index {
+                glidex_ovs::metadata::del_flow(self.ex(), &old.spec.bridge, i)?;
+            }
             self.store.delete(VM_PORTS, &key)?;
         }
         self.attach(spec, owner_uid)
@@ -1062,10 +1106,18 @@ impl Netd {
     }
 
     fn remove_port(&self, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
+        let key = store::vm_port_key(vm_id, nic_index);
+        let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?;
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
-        self.store
-            .delete(VM_PORTS, &store::vm_port_key(vm_id, nic_index))?;
+        self.store.delete(VM_PORTS, &key)?;
+        if let Some(r) = old
+            && let Some(i) = r.metadata_index
+        {
+            // Its bridge may be gone already: the rule went with it.
+            let _ = glidex_ovs::metadata::del_flow(self.ex(), &r.spec.bridge, i);
+            self.apply_firewall(&self.nats()?)?;
+        }
         tracing::info!(vm = %vm_id, nic = nic_index, "VM port detached");
         Ok(())
     }
@@ -1190,6 +1242,24 @@ impl Netd {
             match self.apply_nat(state, &nats) {
                 Ok(()) => report.repaired.push(format!("nat {}", state.bridge)),
                 Err(e) => report.errors.push(format!("nat {}: {}", state.bridge, e)),
+            }
+        }
+        // OVS keeps no OpenFlow rules across a restart: the metadata
+        // endpoint's, again (spec/workload-identity.md §7.1).
+        let ports = self.vm_ports().unwrap_or_default();
+        if ports.iter().any(|r| r.metadata_index.is_some())
+            && let Err(e) = glidex_ovs::metadata::ensure_address(ex)
+        {
+            report.errors.push(format!("metadata address: {e}"));
+        }
+        for r in ports {
+            if let Some(i) = r.metadata_index {
+                match glidex_ovs::metadata::add_flow(ex, &r.spec.bridge, &r.port, i) {
+                    Ok(()) => report.repaired.push(format!("metadata rule of {}", r.port)),
+                    Err(e) => report
+                        .errors
+                        .push(format!("metadata rule of {}: {e}", r.port)),
+                }
             }
         }
         // Without NAT networks nothing above rebuilt the table: fence the

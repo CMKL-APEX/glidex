@@ -1093,7 +1093,11 @@ may ask it for what.
    (`iifname "gx*" oifname "gx*" iifname != oifname drop`, placed before
    the per-bridge accepts). An `input` chain lets traffic in from NAT
    bridges only for DHCP (udp 67) and DNS (udp/tcp 53) to the gateway,
-   and drops the rest. Project networks (§6.2) depend on this. Where
+   ping to the gateway, and a VM port's own marked request to the
+   metadata endpoint (`169.254.169.254:8775` after its DNAT; unmarked
+   ones, from anywhere, are dropped:
+   [workload-identity.md](workload-identity.md) §7.1), and drops the
+   rest. Project networks (§6.2) depend on this. Where
    iptables' `INPUT` also drops (ufw), netd's `GLIDEX-INPUT` chain
    accepts exactly the same traffic and no more.
    **Isolated networks** are fenced off completely, as defense in depth.
