@@ -91,10 +91,12 @@ pub fn image_volume_id(image_id: &str) -> String {
     hyperstor_pki::sha256_hex(format!("glidex-image:{image_id}").as_bytes())[..32].to_string()
 }
 
-fn id_of(id: &str, salt: &str) -> String {
+/// `id` as a volume id: a UUID as it is, anything else hashed under
+/// `domain` (so a disk and an image named alike get different ids).
+fn id_of(id: &str, domain: &str) -> String {
     match uuid::Uuid::parse_str(id) {
         Ok(u) => u.simple().to_string(),
-        Err(_) => hyperstor_pki::sha256_hex(format!("{salt}{id}").as_bytes())[..32].to_string(),
+        Err(_) => hyperstor_pki::sha256_hex(format!("{domain}{id}").as_bytes())[..32].to_string(),
     }
 }
 

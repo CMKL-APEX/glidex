@@ -885,7 +885,7 @@ message Datastore {
   // The identity glidex enrolled with, `hyperstor://<cluster>/mgmt/<name>`,
   // and when its certificate expires (renewed before that, S20).
   string hyperstor_identity = 18 [json_name = "hyperstor_identity"];
-  google.protobuf.Timestamp hyperstor_certificate_expires = 19 [json_name = "hyperstor_certificate_expires"];
+  google.protobuf.Timestamp hyperstor_identity_expires = 19 [json_name = "hyperstor_identity_expires"];
 }
 
 message ListDatastoresRequest {}

@@ -961,7 +961,7 @@ fn print_datastore(d: &Datastore) {
             println!(
                 "  identity: {}{}",
                 d.hyperstor_identity,
-                d.hyperstor_certificate_expires
+                d.hyperstor_identity_expires
                     .as_option()
                     .map(|t| format!(
                         " (certificate until {})",

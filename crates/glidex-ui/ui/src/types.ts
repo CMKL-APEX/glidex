@@ -775,7 +775,7 @@ export interface Datastore {
   hyperstor_api?: string[];
   hyperstor_pool?: number;
   hyperstor_identity?: string;
-  hyperstor_certificate_expires?: string;
+  hyperstor_identity_expires?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */

@@ -1002,7 +1002,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
         hyperstor_api,
         hyperstor_pool,
         hyperstor_identity,
-        hyperstor_certificate_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
+        hyperstor_identity_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
         ..Default::default()
     }
 }

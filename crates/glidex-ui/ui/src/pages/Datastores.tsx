@@ -255,7 +255,7 @@ function Detail({ d }: { d: Datastore }) {
                 {d.hyperstor_identity && (
                   <div>
                     As <span className="font-mono text-xs">{d.hyperstor_identity}</span>
-                    {d.hyperstor_certificate_expires && <>, certificate until {new Date(d.hyperstor_certificate_expires).toLocaleString()}</>}
+                    {d.hyperstor_identity_expires && <>, certificate until {new Date(d.hyperstor_identity_expires).toLocaleString()}</>}
                   </div>
                 )}
               </>
