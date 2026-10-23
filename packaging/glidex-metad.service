@@ -1,0 +1,34 @@
+[Unit]
+Description=glidex metadata endpoint for guests (169.254.169.254)
+Documentation=https://github.com/CMKL-APEX/glidex
+Wants=glidex-control-plane.service glidex-netd.service
+After=network-online.target glidex-netd.service glidex-control-plane.service
+
+[Service]
+Type=simple
+# Its own user: the control plane takes requests on metad.sock from it
+# alone (spec/workload-identity.md W11). It holds no key and sees no
+# secret but the short-lived tokens it hands a guest.
+User=glidex-metad
+Group=glidex-metad
+# 169.254.169.254:8775, where netd's rules bring guests' requests; bound
+# before netd has put the address on the loopback (IP_FREEBIND).
+ExecStart=/usr/local/bin/glidex-metad
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET
+# netd's socket, the control plane's data and authd's socket are not its
+# business; /run/glidex-cp stays reachable for metad.sock.
+InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
