@@ -219,6 +219,34 @@ fn a_guest_gets_its_identity_from_the_metadata_endpoint() {
     let (code, _) = https("DELETE", &format!("/vms/{id}"), Some(access), None);
     assert_eq!(code, 403, "only a viewer");
 
+    step("the network opens this host's API to its guests, then closes it");
+    // A node NAT network keeps its guests from the host but for DHCP, DNS,
+    // ping and metadata; `host_api` opens the API (spec §15).
+    let net = env("GLIDEX_E2E_NETWORK", "default");
+    let from_guest = |token: &str| {
+        let out = ssh.run(&format!(
+            "gw=$(ip route | awk '/^default/ {{print $3; exit}}'); curl -sk --max-time 5 -o /dev/null -w '%{{http_code}}' -H 'Authorization: Bearer {token}' https://$gw:8841/vms"
+        ));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(from_guest(access), "000", "closed by default");
+    api.ok(
+        "PUT",
+        &format!("/networks/{net}/host_api"),
+        Some(&json!({ "host_api": true })),
+    );
+    wait_for("the API from the guest", Duration::from_secs(60), || {
+        (from_guest(access) == "200").then_some(())
+    });
+    api.ok(
+        "PUT",
+        &format!("/networks/{net}/host_api"),
+        Some(&json!({ "host_api": false })),
+    );
+    wait_for("the API closed again", Duration::from_secs(60), || {
+        (from_guest(access) == "000").then_some(())
+    });
+
     step("an identity token for this cluster, exchanged once");
     let (code, mine) = split(md(&format!("/v1/identity?audience={cluster}"), flavor));
     assert_eq!(code, 200, "{mine}");

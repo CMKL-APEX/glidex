@@ -440,16 +440,65 @@ describes the datapath.
 | Tests | `glidex-ovs` (`metadata`, the ruleset goldens, checked with `nft -c`), `netd_tests.rs::nat_ports_get_a_metadata_index_and_rule`, `glidex-metad`'s own, `connector_tests.rs::metad_socket_answers_metad_alone_and_only_for_vm_ports`; `glidex-e2e`'s `metadata.rs` from inside a guest, the successful exchange included |
 
 Known limits of WI1b-1:
-- **A NAT guest can't reach the host's API**: netd's `input` chain
-  drops everything from NAT bridges to the host but DHCP, DNS, ping and
-  the metadata endpoint. Its glidex tokens work from elsewhere (an OVN
-  network, another host). Opening `:8841` to NAT guests is a separate
-  decision.
-- In a cluster, only the leader answers (`503 not_leader` elsewhere);
-  agents don't serve `metad.sock` yet (WI1b-2).
+- **A NAT guest reaches the host's API only where allowed**: netd's
+  `input` chain drops everything from NAT bridges to the host but DHCP,
+  DNS, ping and the metadata endpoint. A network's `host_api`
+  (`SetNetworkHostApi`, `setNetworkHostApi` in `host.network`: host
+  network administrators, never a project's own) or a host's
+  `nat_host_api` opens the API's `listen` ports from that bridge (on
+  every host address, `inet glidex` and `GLIDEX-INPUT`); the network
+  controller keeps netd's `NatState.host_api_ports` as they should be.
+- In a cluster, nodes that can't write (followers, agents) forward to the
+  leader since WI1b-2's first part, below.
 - The control plane keeps each answer until 80% of its lifetime (§4.4),
   keyed by the VM, its service account and the question, never by the
   peer address: netd hands a freed index to the next VM, and an answer
   kept by address would reach it (the e2e test checks this). A changed
   service account gets a fresh token at once (W5).
+
+**WI1b-2, first part: answers from the leader.** A node that can't write
+(a follower server or an agent) finds the VM behind the peer address in
+its own cache (an agent's holds only its VMs, so only the id) and asks
+the leader as itself: `POST /cluster/v1/metadata` on :8842 with its node
+certificate, `{vm_id, kind, audience, ttl}`. The leader answers only
+about a running VM **placed on the asking node** (spec/clustering.md
+§12.3), signs and records as it would for itself (D53), and keeps its
+answers by VM as before.
+
+| Spec | Code |
+|---|---|
+| Asking | `api::metad::answer` (local when `can_write`, else `ask_leader` through `NodeLink::post_leader` or `Cluster::post_leader`), `Question`, `Kind` |
+| Answering | `cluster::server::metadata` (`caller`, leader only), `api::metad::leader_answer` (`not_placed_here` unless the VM's placement is the node's); `Cluster::app`, set by `VmManager::set_api_app` |
+| Agents | `main.rs`: an agent serves `metad.sock` too |
+| Tests | `cluster_tests.rs::an_agents_metadata_tokens_come_from_the_leader` (an agent's identity token signed by the leader; a VM of another node refused) |
+
+**WI1b-2, second part: OVN and isolated networks (design, prototyped).**
+Their guests' requests never reach the host stack (OVN switches them in
+its pipeline; isolated bridges have no host address), so netd's rules
+can't catch them. Two designs:
+
+- **tc/eBPF at the VM's port** (prototyped,
+  `scripts/dev/spikes/metadata-ebpf/`). A tc ingress program on every
+  VM's tap sees its packets before OVS or OVN. For `169.254.169.254:80`
+  it rewrites the source to the port's peer address and the port to
+  metad's, remembers the VM's address and MAC in a map, and redirects
+  the packet into the host stack through a dummy device; a tc egress
+  program on that device rewrites replies back and redirects them out of
+  the right tap. The spike, on a bridge with no host address or route,
+  identified two VMs by their ports, kept a VM spoofing the other's
+  address as itself, and dropped a port without an index. One mechanism
+  for node NAT, OVN, isolated and bridged networks (any kernel-datapath
+  tap), unaffected by OVS restarts, identity from the tap. Costs: BPF
+  code in netd (aya or libbpf), a recent kernel, harder debugging; no
+  help for vhost-user/DPDK ports (WI1c's vsock). Guests still need a
+  route to `169.254.169.254` (a gateway, or an on-link route and an ARP
+  answer for it, which the program would give).
+- **OVN localports** (OpenStack's design): a namespace with a proxy per
+  OVN network on each node, identity from (network, source address)
+  under port security. More processes and namespaces, and isolated node
+  networks would still need something else.
+
+Recommendation: tc/eBPF, replacing the OpenFlow mark on node NAT
+networks too, once it handles ARP for `169.254.169.254` and the
+DPDK-port exclusion.
 

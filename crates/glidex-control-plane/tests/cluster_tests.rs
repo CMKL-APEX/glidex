@@ -5695,9 +5695,7 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
     } else {
         "aarch64"
     };
-    // The agent says it is of that architecture, with KVM.
     let db = server.manager.database();
-    let n = node_with(&server, &agent_id, arch);
     // A disk image only the agent has.
     let data = vec![3u8; 64 * 1024];
     let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
@@ -5734,15 +5732,8 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
             .contains(&format!("no other ready node is {arch} with KVM")),
         "{v}"
     );
-    db.write(
-        Origin::Api,
-        |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Nodes.definition())?
-                .insert(agent_id.as_str(), n.to_string().as_bytes())?;
-            Ok(())
-        },
-    )
-    .unwrap();
+    // The agent says it is of that architecture, with KVM.
+    node_with(&server, &agent_id, arch).await;
     wait_for("the agent's copy recorded", || async {
         server
             .manager
@@ -5759,12 +5750,12 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
         .images()
         .set_extractor_job(fake_extractor(arch, Some(fail.clone())));
 
-    let (s, v) = call(
+    let (s, v) = call_with_ready_node(
         &server,
+        (&agent_id, arch),
         "POST",
         "/images",
         Some(json!({ "kernel_from": src_id })),
-        &[],
     )
     .await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
@@ -5843,17 +5834,60 @@ fn test_kernel(arch: &str) -> Vec<u8> {
     }
 }
 
-/// Node `id`'s record, saying it is of `arch` with KVM (written back by the
-/// caller; the node reports itself again only every two minutes).
-fn node_with(cp: &Cp, id: &str, arch: &str) -> Value {
-    use glidex_control_plane::store::TableId;
-    let db = cp.manager.database();
-    let txn = db.begin_read().unwrap();
-    let t = txn.open_table(TableId::Nodes.definition()).unwrap();
-    let mut n: Value = serde_json::from_slice(t.get(id).unwrap().unwrap().value()).unwrap();
-    n["status"]["features"]["arch"] = json!(arch);
-    n["status"]["features"]["kvm"] = json!(true);
-    n
+/// Make node `id` say it is of `arch` with KVM, and wait until it is ready
+/// so (the node reports itself again only every two minutes).
+async fn node_with(cp: &Cp, id: &str, arch: &str) {
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    use redb::ReadableTable;
+    // Read and written in one transaction: the leader's liveness loop
+    // writes the record's `ready`, and a copy read before its write would
+    // put the old value back.
+    cp.manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            let mut t = tx.open_table(TableId::Nodes.definition())?;
+            let raw = t.get(id)?.expect("the node's record").value().to_vec();
+            let mut n: Value = serde_json::from_slice(&raw).unwrap();
+            n["status"]["features"]["arch"] = json!(arch);
+            n["status"]["features"]["kvm"] = json!(true);
+            t.insert(id, n.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the node ready, of its architecture, with KVM", || async {
+        cp.manager.nodes().get(id).ok().flatten().is_some_and(|n| {
+            n.status.ready == glidex_control_plane::models::Tristate::True
+                && n.status.features.kvm
+                && n.status.features.arch == arch
+        })
+    })
+    .await;
+}
+
+/// `call` as a request that node `id` (of `arch`, with KVM) must be ready
+/// for: again while the leader refuses it as not ready. On a busy runner a
+/// late heartbeat makes the leader count a node unreachable for a moment
+/// (the tests' 8 s grace against its 5 s heartbeat), and the node's own
+/// report may undo the test's features; both are set again first.
+async fn call_with_ready_node(
+    cp: &Cp,
+    (id, arch): (&str, &str),
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        node_with(cp, id, arch).await;
+        let (s, v) = call(cp, method, uri, body.clone(), &[]).await;
+        let refused = v.to_string().contains("it is not ready")
+            || v.to_string().contains("it has no KVM")
+            || v.to_string().contains("no other ready node");
+        if !refused || tokio::time::Instant::now() > deadline {
+            return (s, v);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// The extractor appliance, standing in (spec/kernel-boot.md §10.3): it
@@ -5904,8 +5938,8 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     let (server, agent) = server_and_agent().await;
     let agent_id = agent.manager.local_node_id();
     let arch = std::env::consts::ARCH;
-    let n = node_with(&server, &agent_id, arch);
-    // A kernel image to start from, and the agent with KVM.
+    // The agent with KVM, and a kernel image to start from.
+    node_with(&server, &agent_id, arch).await;
     let kernel = test_kernel(arch);
     let sha =
         glidex_control_plane::cluster::pki::hex(&<sha2::Sha256 as sha2::Digest>::digest(&kernel));
@@ -5920,8 +5954,6 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
         .write(
             Origin::Api,
             |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-                tx.open_table(TableId::Nodes.definition())?
-                    .insert(agent_id.as_str(), n.to_string().as_bytes())?;
                 tx.open_table(TableId::Images.definition())?
                     .insert("k0", k0.to_string().as_bytes())?;
                 Ok(())
@@ -5971,12 +6003,12 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     .await;
 
     // `extract-kernel` from the server: the agent extracts, the leader records.
-    let (s, v) = call(
+    let (s, v) = call_with_ready_node(
         &server,
+        (&agent_id, arch),
         "POST",
         &format!("/vms/{vm_id}/extract-kernel"),
         None,
-        &[],
     )
     .await;
     assert!(s.is_success(), "{s} {v}");
@@ -6065,4 +6097,219 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
         "{:?}",
         v.status.conditions
     );
+}
+
+/// spec/workload-identity.md §15 (WI1b-2): an agent can't sign or record,
+/// so its metad answers come from the leader, asked as the agent (its
+/// certificate on :8842); the leader answers only about a VM placed on the
+/// asking node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agents_metadata_tokens_come_from_the_leader() {
+    let _one = serial().await;
+    let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap();
+    let cfg = test_config();
+    let server = with_secrets(new_cp());
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    // The leader's app, with an issuer and its keys.
+    let mut scfg = test_config();
+    scfg.auth.secrets_key = Some(server._dir.path().join("secrets.kek"));
+    scfg.auth.issuer_base = Some("https://glidex.example.org".into());
+    let sauth =
+        glidex_control_plane::auth::AuthService::disabled_with(server.manager.database(), scfg)
+            .unwrap();
+    sauth
+        .connectors
+        .maintain_signing_keys("local", glidex_control_plane::auth::store::now())
+        .unwrap();
+    server
+        .manager
+        .set_api_app(Arc::new(glidex_control_plane::api::App {
+            manager: server.manager.clone(),
+            auth: sauth,
+        }));
+
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent.manager.node_link().unwrap().clone();
+    assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+
+    // A VM on the agent, running with NIC metadata index 3, as the agent's
+    // controller would report it.
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("md-on-agent", "agent1")),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    wait_for("the VM in the agent's cache", || async {
+        agent.manager.list_vms().await.iter().any(|v| v.id == id)
+    })
+    .await;
+    let mut rec = agent
+        .manager
+        .list_vms()
+        .await
+        .into_iter()
+        .find(|v| v.id == id)
+        .unwrap();
+    rec.resource_version += 1;
+    rec.status.phase = glidex_control_plane::models::VmPhase::Running;
+    rec.status.nics = vec![glidex_control_plane::models::NicStatus {
+        network: "n".into(),
+        nic_index: 0,
+        mac: "02:00:00:00:00:03".into(),
+        port: Some("gx00000000-0".into()),
+        ipv4: None,
+        port_ok: true,
+        metadata_index: Some(3),
+    }];
+    let ws = glidex_control_plane::store::WriteSet {
+        format: 1,
+        origin: glidex_control_plane::store::Origin::Controller,
+        ops: vec![glidex_control_plane::store::Op::Put {
+            table: glidex_control_plane::store::TableId::Vms,
+            key: id.as_bytes().to_vec(),
+            value: serde_json::to_vec(&rec).unwrap(),
+        }],
+    };
+    let c = cluster(&agent);
+    let r = c
+        .client
+        .request(
+            &server.addr.to_string(),
+            hyper::Method::POST,
+            "/cluster/v1/status-write",
+            &[("content-type", "application/json".into())],
+            serde_json::to_vec(&ws).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    wait_for("the agent to see its VM running with index 3", || async {
+        agent
+            .manager
+            .list_vms()
+            .await
+            .iter()
+            .any(|v| v.id == id && v.status.nics.iter().any(|n| n.metadata_index == Some(3)))
+    })
+    .await;
+
+    // The agent's metad router: the leader signs.
+    let mut acfg = test_config();
+    acfg.metad_user = me.name.clone();
+    let aauth =
+        glidex_control_plane::auth::AuthService::disabled_with(agent.manager.database(), acfg)
+            .unwrap();
+    let router =
+        glidex_control_plane::api::metad::router(Arc::new(glidex_control_plane::api::App {
+            manager: agent.manager.clone(),
+            auth: aauth,
+        }));
+    let mut req = Request::post("/v1/identity")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"peer": "169.254.192.3", "audience": "gx-test"}).to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::PeerUid(me.uid.as_raw()));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let jwt = body["token"].as_str().unwrap();
+    let claims: Value = {
+        use base64::Engine as _;
+        let p = jwt.split('.').nth(1).unwrap();
+        serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(p)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert!(
+        claims["sub"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/vm/{id}")),
+        "{claims}"
+    );
+    assert_eq!(
+        claims["iss"], "https://glidex.example.org/d/local",
+        "{claims}"
+    );
+
+    // The leader answers nothing about a VM that isn't the asking node's.
+    let (s, other) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("md-on-server", &server.manager.local_node_id())),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{other}");
+    let other_id = vm_of(&other)["id"].as_str().unwrap().to_string();
+    let q = json!({"vm_id": other_id, "kind": "identity", "audience": "gx-test"});
+    let r = c
+        .client
+        .request(
+            &server.addr.to_string(),
+            hyper::Method::POST,
+            glidex_control_plane::api::metad::LEADER_PATH,
+            &[("content-type", "application/json".into())],
+            serde_json::to_vec(&q).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert!(String::from_utf8_lossy(&r.body).contains("not_placed_here"));
 }

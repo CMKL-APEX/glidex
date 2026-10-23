@@ -1097,7 +1097,9 @@ may ask it for what.
    metadata endpoint (`169.254.169.254:8775` after its DNAT; unmarked
    ones, from anywhere, are dropped:
    [workload-identity.md](workload-identity.md) §7.1), and drops the
-   rest. Project networks (§6.2) depend on this. Where
+   rest; a network whose administrator set `host_api` also gets the
+   API's ports (workload-identity.md §15). Project networks (§6.2)
+   depend on this. Where
    iptables' `INPUT` also drops (ufw), netd's `GLIDEX-INPUT` chain
    accepts exactly the same traffic and no more.
    **Isolated networks** are fenced off completely, as defense in depth.

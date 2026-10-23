@@ -118,6 +118,7 @@ fn setup_nat(netd: &Netd) {
             bridge: "gxbr-nat".into(),
             subnet: None,
             dns: true,
+            host_api_ports: vec![],
         }),
         &peer(),
     )
@@ -1506,6 +1507,7 @@ fn isolated_bridges_are_fenced_off_from_the_host() {
             bridge: "gxbr-nat".into(),
             subnet: None,
             dns: true,
+            host_api_ports: vec![],
         }),
         &peer(),
     );

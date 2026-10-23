@@ -40,6 +40,10 @@ pub struct Settings {
     pub ready_timeout_secs: u64,
     /// The shim's block-counter poll for the exit snapshot (metering D12).
     pub meter_poll_secs: u64,
+    /// `nat_host_api`: every node NAT network's guests reach the API.
+    pub nat_host_api: bool,
+    /// The API's ports (`listen`), what a NAT network with `host_api` opens.
+    pub api_ports: Vec<u16>,
 }
 
 impl Default for Settings {
@@ -62,6 +66,13 @@ impl Settings {
                 cfg.metering.sample_secs
             } else {
                 0
+            },
+            nat_host_api: cfg.nat_host_api,
+            api_ports: {
+                let mut p: Vec<u16> = cfg.listen.iter().map(|a| a.port()).collect();
+                p.sort_unstable();
+                p.dedup();
+                p
             },
         }
     }

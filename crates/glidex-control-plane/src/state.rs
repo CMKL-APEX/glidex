@@ -381,6 +381,7 @@ pub struct VmManager {
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
+    api_app: std::sync::OnceLock<Arc<crate::api::App>>,
     secrets_key: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
     node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
@@ -566,6 +567,7 @@ impl VmManager {
             db_path,
             cluster: arc_swap::ArcSwapOption::empty(),
             api_router: std::sync::OnceLock::new(),
+            api_app: std::sync::OnceLock::new(),
             secrets_key: std::sync::OnceLock::new(),
             node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
@@ -1419,6 +1421,15 @@ impl VmManager {
         let _ = self.api_router.set(router);
     }
 
+    /// Record the API's app, so a cluster's leader can answer the metadata
+    /// questions of its nodes (spec/workload-identity.md §15).
+    pub fn set_api_app(&self, app: Arc<crate::api::App>) {
+        if let Some(c) = self.cluster() {
+            c.set_app(app.clone());
+        }
+        let _ = self.api_app.set(app);
+    }
+
     /// Record the secrets key's holder, for a cluster to send to and
     /// receive from other servers (spec/tenancy.md §13).
     /// The holder of the secrets key, once the API's auth service exists.
@@ -1447,6 +1458,9 @@ impl VmManager {
     pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
         if let Some(r) = self.api_router.get() {
             cluster.set_api(r.clone());
+        }
+        if let Some(a) = self.api_app.get() {
+            cluster.set_app(a.clone());
         }
         if let Some(s) = self.secrets_key.get() {
             cluster.set_secrets(s.clone());
@@ -4611,6 +4625,7 @@ impl VmManager {
                         bridge: net.bridge.clone(),
                         subnet: req.subnet,
                         dns: req.dns,
+                        host_api_ports: self.host_api_ports(&net),
                     }));
                     if let Err(e) = res {
                         let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge {
@@ -4915,6 +4930,39 @@ impl VmManager {
     }
 
     /// Set which projects may use a host network.
+    /// The host's ports netd opens to `net`'s guests: the API's, on a node
+    /// NAT network with `host_api` or on a host with `nat_host_api`
+    /// (spec/workload-identity.md §15).
+    pub(crate) fn host_api_ports(&self, net: &Network) -> Vec<u16> {
+        let s = self.settings();
+        if net.mode == NetworkMode::Nat && (net.host_api || s.nat_host_api) {
+            s.api_ports.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Open (or close) this host's API to `id`'s guests: a node NAT
+    /// network's `host_api`, applied by its controller.
+    pub fn set_network_host_api(
+        &self,
+        id: &str,
+        host_api: bool,
+    ) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(id)?;
+        if net.mode != NetworkMode::Nat || net.scope != crate::network::NetworkScope::Node {
+            return Err(NetError::Invalid(
+                "only a node NAT network's guests are kept from the host's API".into(),
+            )
+            .into());
+        }
+        net.host_api = host_api;
+        self.networks.put(&net)?;
+        self.queue
+            .add(crate::controller::queue::Key::Network(net.id.clone()));
+        Ok(net)
+    }
+
     pub fn grant_network(
         &self,
         id: &str,
