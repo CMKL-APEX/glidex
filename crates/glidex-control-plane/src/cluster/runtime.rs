@@ -79,6 +79,18 @@ pub trait SecretsKey: Send + Sync {
     /// Re-wrap every data key with the current key; how many changed.
     fn rewrap(&self) -> Result<usize, String>;
     fn kek_id(&self) -> String;
+    /// Seals `value` as `owner`'s `field` in the replicated store, under a
+    /// data key the KEK wraps (a hyperstor datastore's key, spec/storage.md
+    /// S20).
+    fn seal_value(&self, owner: &str, field: &str, value: &str) -> Result<(), String>;
+    /// The value sealed as `owner`'s `field`, if any; `Err` where this
+    /// node's key can't open it (an agent).
+    fn open_value(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String>;
+    fn forget_value(&self, owner: &str, field: &str) -> Result<(), String>;
 }
 
 pub struct Cluster {

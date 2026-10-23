@@ -62,6 +62,16 @@ fn parse_qemu_version(output: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// The chardev option that makes QEMU reconnect to a socket after a second:
+/// `reconnect-ms` since 9.2, which deprecated `reconnect` (spec/storage.md
+/// §19, H8).
+fn reconnect_option(version: Option<(u32, u32)>) -> &'static str {
+    match version {
+        Some(v) if v >= (9, 2) => "reconnect-ms=1000",
+        _ => "reconnect=1",
+    }
+}
+
 fn qemu_version() -> Option<(u32, u32)> {
     static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
     *VERSION.get_or_init(|| {
@@ -316,8 +326,32 @@ impl LaunchSpec<'_> {
         // Root first, so it stays /dev/vda and is what the firmware boots.
         for (i, disk) in self.disks.iter().enumerate() {
             let node = format!("disk{}", i);
-            push(&mut args, "-blockdev", disk.blockdev(&node));
             let boot = if i == 0 { ",bootindex=1" } else { "" };
+            // A hyperstor volume: hyperstor-vhost serves the socket, and
+            // QEMU reconnects to it if the service restarts (frontends.md
+            // §11.1 in hyperstor). One queue unless it offers more.
+            if disk.disk.vhost {
+                push(
+                    &mut args,
+                    "-chardev",
+                    format!(
+                        "socket,id=chr-{},path={},{}",
+                        node,
+                        qopt(&disk.disk.path),
+                        reconnect_option(qemu_version())
+                    ),
+                );
+                push(
+                    &mut args,
+                    "-device",
+                    format!(
+                        "vhost-user-blk-pci,chardev=chr-{},num-queues=1,id=vd{}{}",
+                        node, i, boot
+                    ),
+                );
+                continue;
+            }
+            push(&mut args, "-blockdev", disk.blockdev(&node));
             push(
                 &mut args,
                 "-device",
@@ -984,6 +1018,46 @@ mod tests {
             ["vhost-user,id=net0,chardev=chr-net0,queues=2"]
         );
         assert!(values(&args, "-device").contains(&"virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01,rx_queue_size=1024,tx_queue_size=1024,mq=on,vectors=6"));
+    }
+
+    /// A hyperstor volume (spec/storage.md §11.2): a vhost-user-blk device on
+    /// the socket hyperstor-vhost serves, reconnecting if it restarts, with
+    /// guest memory shared; it boots when it is the root.
+    #[test]
+    fn hyperstor_disks_are_vhost_user_blk_devices_with_shared_memory() {
+        let mut config = config(serde_json::json!({}));
+        config.root_disk_binding = Some(VolumeBinding::VhostUserBlk {
+            socket: "/run/hyperstor/vhost/0123.sock".into(),
+            volume: "0123".into(),
+            map: "10.0.0.5:8849".into(),
+        });
+        let args = spec(&config).args();
+        assert_eq!(values(&args, "-machine"), ["q35,memory-backend=mem"]);
+        assert!(
+            values(&args, "-object").contains(&"memory-backend-memfd,id=mem,size=1024M,share=on")
+        );
+        assert_eq!(
+            values(&args, "-chardev"),
+            [format!(
+                "socket,id=chr-disk0,path=/run/hyperstor/vhost/0123.sock,{}",
+                reconnect_option(qemu_version())
+            )
+            .as_str()]
+        );
+        assert_eq!(reconnect_option(Some((8, 2))), "reconnect=1");
+        assert_eq!(reconnect_option(None), "reconnect=1");
+        assert_eq!(reconnect_option(Some((9, 2))), "reconnect-ms=1000");
+        assert_eq!(reconnect_option(Some((10, 2))), "reconnect-ms=1000");
+        assert!(
+            values(&args, "-device")
+                .contains(&"vhost-user-blk-pci,chardev=chr-disk0,num-queues=1,id=vd0,bootindex=1")
+        );
+        assert!(
+            !values(&args, "-blockdev")
+                .iter()
+                .any(|b| b.contains("0123")),
+            "no blockdev for it"
+        );
     }
 
     #[test]

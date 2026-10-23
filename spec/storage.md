@@ -1,6 +1,7 @@
 # Datastores
 
-Status: **S0–S6 implemented; S7 design.** Implemented:
+Status: **S0–S6 and S8 implemented; S7 design.** Decisions S20–S24 and
+host checks H8–H9 are open for the owner's review. Implemented:
 - S0's fixes 1–4 (§15);
 - S1, the driver trait (§7);
 - S2, the `Datastore` resource with registered `dir` datastores (§4.3),
@@ -15,9 +16,11 @@ Status: **S0–S6 implemented; S7 design.** Implemented:
 - S6b, `lvm` datastores: the driver, block bindings and device access
   (§11.1 as built);
 - S6c, moves to and from `lvm`, metering of volumes, and VMs booted from
-  them (§11.1 as built).
+  them (§11.1 as built);
+- S8, `hyperstor` datastores: volumes of a hyperstor cluster, served to
+  VMs over vhost-user-blk (§11.2).
 
-S7 is still design. The milestones are S0–S7
+S7 is still design. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
 are applied (§18).
@@ -86,6 +89,11 @@ later milestones (§11, §12).
 | S17 | **Block volumes go through `glidex-stord`, a root helper on netd's model** (§11.1): a Unix socket for the `glidex` group, newline JSON with a `hello` handshake, peer-uid authorization and a per-op policy. It acts only on volume groups the operator lists in `/etc/glidex/stord.json` (`allowed_vgs`), and only on logical volumes named `gx-d-<disk-id>` or `gx-i-<image-id>`. | Creating and activating LVs needs root, and the control plane must stay unprivileged. The allow-list and the name rule mean a compromised control plane can make and remove glidex's own volumes, but can't touch the host's root LV or another application's. |
 | S18 | **Device access is per VM** (§11.1). At activation stord makes the LV's device node `glidex:glidex 0600`. Before a VM starts, stord writes a drop-in for its `glidex-vm@<id>` unit, `DeviceAllow=` for exactly its volumes, and reloads systemd. The control plane's own unit gets `DeviceAllow=block-device-mapper rw`, to make and edit glidex-owned volumes; file ownership is what limits it. | `DevicePolicy=closed` on the VM unit then still keeps each hypervisor to its own disks. `systemctl set-property` is not used: its reset line drops the unit's own devices (`/dev/kvm`) (§19, H5). |
 | S19 | **The first block driver is `lvm`: node-local LVM-thin** in a volume group and thin pool the operator made (§11.1). Volumes are raw. A linked disk is a thin snapshot of the node's image LV; a full one is a copy. Disks grow, and never shrink. glidex takes no volume lock of its own on them: on one node the hypervisors' own locks refuse a second instance (§19, H6). `shared-lvm` and `rbd` come later. | Thin pools give the same thin, overcommitted, fast-clone behaviour as qcow2 files, on the device a site gives VMs. Raw block devices carry no qcow2 metadata, so H2's refcount rewrite can't happen. |
+| S20 | **Glidex enrolls with a hyperstor cluster as a management identity of its own** (§11.2): the operator makes a single-use `mgmt` token (`hyperstorctl token create --role mgmt --name glidex`) and gives it to `datastore create`. The server that takes the request makes a key, joins with the token (TLS pinned to the root the token names) and seals the key with the cluster's secrets key; the record keeps the certificate. The leader renews it when a third of its life is left. | No hyperstor password or admin certificate passes through glidex, and the key never leaves it unsealed. The token is single-use and short-lived, as glidex's own join tokens are. hyperstor's audit log and access rules then see glidex as itself. |
+| S21 | **Disk bytes go through `hyperstorctl write-volume` and `read-volume`**, straight to the map service and the storage nodes, holding the volume's lease: filling an image's volume (zeros skipped) and the partition code's reads and writes (§11.2). For the partition code a volume is the path `hyperstor://<map>/<volume>`. | There is no block device to give `qemu-img` or `sgdisk`, and making one (ublk) needs root. Glidex already edits partitions through a shadow file (H7); only the region reads and writes change. Holding the lease means a volume a VM has attached is refused, not corrupted. |
+| S22 | **A hyperstor disk's worker is a server.** Its volume operations (create, clone, grow, delete) run where glidex's identity can be opened, whatever node its VM runs on; staging is the VM's node's, through its `hyperstor-vhost`, and needs no identity. | Agents don't hold the secrets key (tenancy.md §13). Staging talks only to the node's local `hyperstor-vhost`, which the node's own certificate lets in. |
+| S23 | **A VM's disks preempt their leases only when it was placed again after its node was forgotten as fenced** (`takeover_disks`, set by `place` for a `Lost` VM, cleared at the next launch). Every other attach waits for the holder. | hyperstor's preemption cuts the holder off (hyperstor D119): safe only when the operator has said the old node is fenced (S10, D8). A normal restart elsewhere finds the volume detached by the stop. |
+| S24 | **Image volumes are named for their datastore, and the leader removes those whose image is gone.** `glidex image <image> on <datastore id>`; each probe round, the leader deletes this datastore's image volumes whose image no longer exists; one a clone still needs is left for the next round. | A deleted disk's volume goes to hyperstor's trash, where its clone still needs the image's snapshot, so deleting the image's volume with the image fails until the trash is purged. Naming them by datastore keeps two glidex clusters sharing a hyperstor pool from removing each other's. |
 
 ## 3. What changes, at a glance
 
@@ -1003,6 +1011,101 @@ host check after S6.
   it, and remove the disk, then the image's volume with the image. All
   passed on the loop-device VG.
 
+### 11.2 The `hyperstor` driver (S8)
+
+A `hyperstor` datastore is a pool of a
+[hyperstor](https://github.com/CMKL-APEX/hyperstor) cluster: a disk is
+a replicated hyperstor volume, served to its VM by the node's
+`hyperstor-vhost` over vhost-user-blk. Its topology is shared: a VM can
+run on any node with `hyperstor-vhost`, and one placed again after its
+node is lost reaches the same volume.
+
+**Record.** `DriverSpec::Hyperstor { api, map, pool, identity }`:
+- `api`: the cluster API's addresses, tried in turn;
+- `map`: the map service's addresses, from the join's answer;
+- `pool`: the data pool, checked at enrollment (`GetStatus`; not the
+  map's pool 0);
+- `identity`: the certificate, its root, the identity's URI and its
+  expiry. The key is sealed with the secrets key under
+  `hyperstor:<datastore id>` (S20) and removed with the datastore.
+
+**Volumes:**
+- A disk's volume id is its UUID's 32 hex digits; its serial (what the
+  guest sees in `/sys/block/vda/serial`) the first 20.
+- **Blank**: `CreateVolume`. **Full** from an image: a volume filled
+  from the image converted to raw (`qemu-img convert`, then
+  `hyperstorctl write-volume --sparse`). **Linked**: a clone of the
+  image volume's snapshot `golden`, then `ExpandVolume` to the disk's
+  size.
+- **The image volume** (one per image and datastore, its id derived
+  from the image's) is made by the first linked disk that needs it:
+  filled, then snapshotted. A second worker finding it waits while its
+  filler holds the lease, and redoes one left unfinished (no `golden`,
+  not attached).
+- There is no rename, so a volume can't be built aside. A volume under
+  the disk's id before the disk is ready is a failed attempt's, and is
+  deleted first.
+- `prepare` (extend the root partition) runs on the tool binding: the
+  partition code reads and writes regions through `hyperstorctl` with
+  `--map` (S21).
+- Shrinking is refused; moves onto and off hyperstor are refused
+  (`copy_in`, `move_volume`) until a copy path exists.
+
+**Staging** (the VM's node):
+- `attach_for_vm` asks `hyperstor-vhost`'s control socket
+  (`/run/hyperstor/vhost/control.sock`, newline JSON) to attach the
+  volume with the disk's serial, `take: "preempt"` only for a VM placed
+  again from a fenced node (S23); it answers with the socket the
+  hypervisor opens. A volume held by another node is `Busy`, so the VM
+  waits.
+- `VolumeBinding::VhostUserBlk { socket, volume, map }`. Cloud
+  Hypervisor gets `--disk vhost_user=on,socket=…,num_queues=1`; QEMU a
+  `socket` chardev that reconnects (H8) and `vhost-user-blk-pci` with
+  `num-queues=1` (its default is one per vCPU, more than
+  `hyperstor-vhost` offers by default). Both need shared guest memory,
+  which the VM gets whenever a disk is vhost-user.
+- The VM's staged disks are recorded (`staged_disks`); stopping and
+  deleting the VM detach them.
+- The disk is 512e: 512-byte logical blocks on the volume's 4 KiB
+  blocks (hyperstor D125), so cloud images' partition tables and
+  firmware work (H9).
+
+**Probe.** Each node: `hyperstor-vhost` answers `hello`
+(`VhostUnavailable` otherwise). Each server also: the API answers with
+the identity (`ApiUnavailable`). Sizes are 0: hyperstor reports no free
+space to glidex yet, so `overcommit: false` is refused at creation.
+
+**Images on hyperstor** use the image volume, not a copy of the image
+file: `Datastore::holds_image_files` is true only for `shared-dir`
+(store copies and a linked disk's backing file).
+
+**Depends on** hyperstor's `mgmt` tokens, `ExpandVolume` and
+`hyperstorctl write-volume`/`read-volume` (hyperstor D122–D124), and
+512e in `hyperstor-vhost` (D125). glidex depends on `hyperstor-api` and
+`hyperstor-pki` as pinned git dependencies.
+
+**As built (S8):**
+- **API, gxctl, UI:** `driver: DATASTORE_DRIVER_HYPERSTOR` with
+  `hyperstor_api`, `hyperstor_pool`, `hyperstor_token`; `gxctl
+  datastore create NAME --hyperstor API,… --pool N --token-file F`; the
+  Datastores page's *hyperstor cluster*. The answer shows the identity
+  and its expiry, never the key or the token.
+- **Tests:** unit tests for the volume names, the control-socket client
+  (attach, preempt only when asked, held is busy, detach) and region
+  I/O through a stand-in `hyperstorctl`; hypervisor argument tests for
+  vhost-user disks; ignored `hyperstor_root_disk_boots` and
+  `qemu_hyperstor_root_disk_boots`, which enroll with a real cluster,
+  boot a cloud image from a linked 6 GiB disk (root grown, serial
+  checked), delete it all and, given an admin certificate, purge the
+  disk's clone and see the leader remove the image volume. Both passed
+  on a scratch all-in-one cluster (3 nodes, 8 GiB devices) with
+  Ubuntu 24.04's cloud image, Cloud Hypervisor's `CLOUDHV.fd` and QEMU
+  8.2.2's OVMF.
+- **Not checked:** a multi-node glidex cluster (agents staging, a
+  server as worker); `hyperstor-vhost` as a service with `--allow-uid`
+  and `--group` for glidex under the systemd runner; renewal (the
+  certificates last longer than the tests).
+
 ## 12. CSI
 
 ### 12.1 Why not first (S1)
@@ -1215,6 +1318,7 @@ described below; fix 5 is part of S2.
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores). **Implemented** (§8.3 as built); between nodes goes through a shared datastore. | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer), S6b the `lvm` datastore, block bindings and device access, S6c moves, metering and VM boots from volumes. **Implemented** (§11.1 as built). Then `shared-lvm` and `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
+| S8 | The `hyperstor` driver (§11.2, S20–S24): enrollment, volumes, images as cloned volumes, vhost-user disks for both hypervisors. **Implemented** (§11.2 as built). | S3, hyperstor HS3 |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 
 ## 17. Questions
@@ -1378,3 +1482,23 @@ two separate clients. Everything was removed afterwards.
   unmapped LV doesn't have. On a regular file it works, so block
   volumes take `partition::edit`'s shadow-file path.
 
+
+**H8. QEMU's reconnecting socket chardev (open).**
+- QEMU 8.2.2 (Ubuntu 24.04) accepts `reconnect=1` on a `socket` chardev
+  and refuses `reconnect-ms` ("Invalid parameter"). Checked on the dev
+  host on 2026-10-23.
+- **To check:** that QEMU 9.2 and later take `reconnect-ms` (which glidex
+  passes from 9.2, by `qemu --version`) and that `reconnect` is
+  deprecated there; and that a VM's disk survives `hyperstor-vhost`
+  restarting under both hypervisors.
+
+**H9. Firmware and 512-byte sectors on vhost-user-blk.**
+- With 4 KiB logical blocks (hyperstor-vhost before D125), Cloud
+  Hypervisor's `CLOUDHV.fd` (edk2 `ch-811ce5ea35`) found no bootable
+  device on a volume holding Ubuntu 24.04's cloud image, whose GPT is
+  in 512-byte sectors; the same image booted from a file.
+- With 512e (512-byte logical, 4 KiB physical blocks) it boots under
+  Cloud Hypervisor and under QEMU 8.2.2 with OVMF, and the guest sees
+  `logical_block_size` 512 and `physical_block_size` 4096. Checked on
+  the dev host on 2026-10-23, with `hyperstor-vhost` from hyperstor's
+  512e change.

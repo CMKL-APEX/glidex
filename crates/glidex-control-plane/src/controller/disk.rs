@@ -38,7 +38,13 @@ impl VmManager {
     /// `None`: no node reaches it now.
     async fn pick_worker(&self, d: &Disk) -> Option<String> {
         use crate::datastore::record;
-        if let Some(vm) = d.attached_to.as_ref() {
+        let db = self.store.database();
+        let ds = record::find(&db, &d.datastore).ok().flatten()?;
+        // A hyperstor disk's operations call hyperstor's API as glidex's
+        // identity, which only servers can open (S22): a server acts on
+        // it, wherever its VM runs.
+        let hyperstor = ds.driver.is_hyperstor();
+        if let Some(vm) = d.attached_to.as_ref().filter(|_| !hyperstor) {
             let placed = self
                 .vms
                 .read()
@@ -49,8 +55,6 @@ impl VmManager {
                 return placed;
             }
         }
-        let db = self.store.database();
-        let ds = record::find(&db, &d.datastore).ok().flatten()?;
         let rows = record::rows(&db, &ds.id).unwrap_or_default();
         let nodes = self.nodes().list().unwrap_or_default();
         let fit = |n: &str| {
@@ -60,6 +64,7 @@ impl VmManager {
                     x.meta.id == n
                         && !x.status.phase.is_tombstone()
                         && x.status.ready == Tristate::True
+                        && (!hyperstor || x.spec.role == crate::node::NodeRole::Server)
                 })
         };
         if let Some(w) = d.worker.as_ref().filter(|w| fit(w)) {

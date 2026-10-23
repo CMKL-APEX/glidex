@@ -40,6 +40,9 @@ use zeroize::Zeroizing;
 const CONNECTORS: TableDefinition<&str, &[u8]> = TableDefinition::new("connectors");
 const SECRETS: TableDefinition<&str, &[u8]> = TableDefinition::new("connector_secrets");
 const KEYS: TableDefinition<&str, &[u8]> = TableDefinition::new("directory_keys");
+/// The pseudo-directory whose data key seals values that belong to no
+/// connector (`ConnectorStore::set_value`).
+const VALUES_DIRECTORY: &str = "glidex-values";
 
 pub const FILE_PAM: &str = "file-pam";
 pub const FILE_OIDC: &str = "file-oidc";
@@ -907,6 +910,57 @@ impl ConnectorStore {
             crate::tenancy::now(),
         );
         self.put_raw(SECRETS, &format!("{}/{field}", c.id), &sealed)
+    }
+
+    /// Seals `value` as `owner`'s `field`, beside connectors' secrets, under
+    /// the data key of the pseudo-directory `values` (rotated with the
+    /// others). A hyperstor datastore's key (spec/storage.md S20).
+    pub fn set_value(&self, owner: &str, field: &str, value: &str) -> Result<(), ConnectorError> {
+        if value.is_empty() || value.len() > 16384 {
+            return Err(ConnectorError::Invalid(
+                "a sealed value is 1-16384 bytes".into(),
+            ));
+        }
+        let dk = self.data_key(VALUES_DIRECTORY)?;
+        let sealed = secrets::seal(
+            &dk,
+            VALUES_DIRECTORY,
+            owner,
+            field,
+            value,
+            crate::tenancy::now(),
+        );
+        self.put_raw(
+            SECRETS,
+            &format!("{VALUES_DIRECTORY}/{owner}/{field}"),
+            &sealed,
+        )
+    }
+
+    /// A value [`Self::set_value`] sealed, in clear.
+    pub fn value(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<Option<Zeroizing<String>>, ConnectorError> {
+        let Some(sealed) = self
+            .get_raw::<secrets::Sealed>(SECRETS, &format!("{VALUES_DIRECTORY}/{owner}/{field}"))?
+        else {
+            return Ok(None);
+        };
+        let dk = self.data_key(VALUES_DIRECTORY)?;
+        Ok(Some(secrets::open(
+            &dk,
+            VALUES_DIRECTORY,
+            owner,
+            field,
+            &sealed,
+        )?))
+    }
+
+    pub fn remove_value(&self, owner: &str, field: &str) -> Result<(), ConnectorError> {
+        self.remove_raw(SECRETS, &format!("{VALUES_DIRECTORY}/{owner}/{field}"))
+            .map(|_| ())
     }
 
     /// A secret in clear, for the connector code path only.

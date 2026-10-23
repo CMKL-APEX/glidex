@@ -1038,6 +1038,9 @@ pub struct ImageManager {
     local: Arc<crate::datastore::file::FileDriver>,
     /// This node's id: which of a datastore's paths is this node's (S14).
     node_id: arc_swap::ArcSwap<String>,
+    /// The holder of the secrets key, once the API's auth service exists:
+    /// opens a hyperstor datastore's key on servers (spec/storage.md S20).
+    secrets: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -1106,6 +1109,7 @@ impl ImageManager {
                 settings.disk_dir.clone(),
             )),
             node_id: arc_swap::ArcSwap::from_pointee(crate::authz::node_id()),
+            secrets: std::sync::OnceLock::new(),
             db,
             settings,
             images: RwLock::new(HashMap::new()),
@@ -1370,6 +1374,11 @@ impl ImageManager {
         if !ds.on_node(&node) {
             return Err(missing("which this node isn't on"));
         }
+        if let Some(d) =
+            crate::datastore::hyperstor::HyperstorDriver::of(&ds, self.hyperstor_identity(&ds))
+        {
+            return Ok(Arc::new(d));
+        }
         if let crate::datastore::record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
             return Ok(Arc::new(crate::datastore::lvm::LvmDriver::new(
                 ds.path_for(&node).to_string(),
@@ -1399,6 +1408,45 @@ impl ImageManager {
     /// The node this manager works for (cluster attach and detach).
     pub fn set_node_id(&self, id: &str) {
         self.node_id.store(Arc::new(id.to_string()));
+    }
+
+    /// Whether `d` is on a hyperstor datastore (spec/storage.md §11.2).
+    pub fn is_hyperstor(&self, d: &Disk) -> bool {
+        d.datastore != crate::datastore::LOCAL
+            && crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| ds.driver.is_hyperstor())
+    }
+
+    pub fn set_secrets(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
+        let _ = self.secrets.set(s);
+    }
+
+    /// A hyperstor datastore's identity, opened: on servers, whose key
+    /// opens the sealed key; `None` elsewhere (S20, S22).
+    pub fn hyperstor_identity(
+        &self,
+        ds: &crate::datastore::record::Datastore,
+    ) -> Option<crate::datastore::hyperstor::Identity> {
+        use crate::datastore::record::{DriverSpec, hyperstor_secret_owner};
+        let DriverSpec::Hyperstor {
+            identity: Some(id), ..
+        } = &ds.driver
+        else {
+            return None;
+        };
+        let key = self
+            .secrets
+            .get()?
+            .open_value(&hyperstor_secret_owner(&ds.id), "key")
+            .ok()
+            .flatten()?;
+        Some(crate::datastore::hyperstor::Identity {
+            cert: id.cert.clone(),
+            key: zeroize::Zeroizing::new(key.to_string()),
+            root: id.root.clone(),
+        })
     }
 
     // ---- persistence -------------------------------------------------------

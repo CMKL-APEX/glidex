@@ -730,7 +730,7 @@ fn print_help() {
     );
     println!(
         "  {} - Register a directory under /srv/glidex",
-        "datastore create <name> (--path P [--shared] | --lvm VG/POOL) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+        "datastore create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
     println!(

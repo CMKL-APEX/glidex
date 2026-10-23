@@ -1632,9 +1632,12 @@ dependencies = [
  "glidex-stord",
  "glidex-tls",
  "glidex-vm-shim",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hyperstor-api",
+ "hyperstor-pki",
  "jsonwebtoken",
  "libc",
  "lzma-rs",
@@ -2086,6 +2089,32 @@ dependencies = [
  "tower-service",
  "tracing",
  "windows-registry",
+]
+
+[[package]]
+name = "hyperstor-api"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=6115d8512edd8c9f8c885deb5f754ea4e821fbaa#6115d8512edd8c9f8c885deb5f754ea4e821fbaa"
+dependencies = [
+ "buffa",
+ "buffa-types",
+ "connectrpc",
+ "connectrpc-build",
+ "protox",
+ "serde",
+]
+
+[[package]]
+name = "hyperstor-pki"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=6115d8512edd8c9f8c885deb5f754ea4e821fbaa#6115d8512edd8c9f8c885deb5f754ea4e821fbaa"
+dependencies = [
+ "rcgen",
+ "ring",
+ "rustls",
+ "rustls-native-certs",
+ "time",
+ "x509-parser",
 ]
 
 [[package]]

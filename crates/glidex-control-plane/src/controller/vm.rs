@@ -509,9 +509,12 @@ impl VmManager {
             if live {
                 return self.stop_round(&vm, st, events).await;
             }
-            // ---- 4. stopped: release the ports ------------------------------
+            // ---- 4. stopped: release the ports and disks -------------------
             if !st.nics.is_empty() {
                 self.detach_ports(&vm.id, &mut st, None).await?;
+            }
+            if !st.staged_disks.is_empty() {
+                st.staged_disks = self.unstage_disks(&vm.id, &st.staged_disks).await;
             }
             st.phase = VmPhase::Stopped;
             st.stop_deadline = None;
@@ -793,6 +796,33 @@ impl VmManager {
         )))
     }
 
+    /// Lets go of what staging held for `vm_id`'s disks `ids` (a hyperstor
+    /// volume's lease, spec/storage.md §11.2); returns those that couldn't
+    /// be, to try again.
+    pub(crate) async fn unstage_disks(&self, vm_id: &str, ids: &[String]) -> Vec<String> {
+        let images = self.images.clone();
+        let ids = ids.to_vec();
+        let vm_id = vm_id.to_string();
+        blocking(move || {
+            ids.into_iter()
+                .filter(|id| {
+                    let Ok(d) = images.get_disk(id) else {
+                        return false;
+                    };
+                    match images.driver(&d).and_then(|drv| drv.unstage(&d)) {
+                        Ok(()) => false,
+                        Err(e) => {
+                            tracing::warn!(vm_id = %vm_id, disk = %d.name, "detaching the disk: {}", e);
+                            true
+                        }
+                    }
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// Detach this VM's ports: all of them, or those `keep` rejects.
     pub(crate) async fn detach_ports(
         &self,
@@ -912,6 +942,19 @@ impl VmManager {
                     "Ready",
                     "",
                 );
+                // What staging attached here, to detach once it stops.
+                let c = vm.config();
+                st.staged_disks = c
+                    .root_disk
+                    .iter()
+                    .chain(c.data_disks.iter())
+                    .filter(|id| {
+                        self.images
+                            .get_disk(id)
+                            .is_ok_and(|d| self.images.is_hyperstor(&d))
+                    })
+                    .cloned()
+                    .collect();
                 b
             }
             Err(e) => {
@@ -1284,6 +1327,8 @@ impl VmManager {
         let boot = glidex_vm_shim::util::boot_id()
             .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
         let c = vm.config();
+        // Started with its disks: a takeover is done.
+        st.takeover_disks = false;
         st.instance = Some(InstanceRef {
             instance_id: instance_id.clone(),
             runner: runner.record(&vm.id),
@@ -1939,7 +1984,20 @@ impl VmManager {
                 Err(e) => return Err(e.into()),
             }
         }
-        // Disks: claims cleared, the owned root disk deleted (unless kept).
+        // Disks: what staging held let go first (a hyperstor volume can't
+        // be deleted while attached), then claims cleared, the owned root
+        // disk deleted (unless kept).
+        if has(FINALIZER_DISKS) && !vm.status.staged_disks.is_empty() {
+            let left = self.unstage_disks(&vm.id, &vm.status.staged_disks).await;
+            if !left.is_empty() {
+                return Err(ImageError::Busy(format!(
+                    "VM {}'s disks couldn't be detached yet: {}",
+                    vm.name,
+                    left.join(", ")
+                ))
+                .into());
+            }
+        }
         let mut detach = Vec::new();
         let mut owned = None;
         if has(FINALIZER_DISKS) {

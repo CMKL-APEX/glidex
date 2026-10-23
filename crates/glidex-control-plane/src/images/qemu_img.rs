@@ -326,6 +326,10 @@ pub fn read_region(
 ) -> Result<(), ImageError> {
     debug_assert!(offset.is_multiple_of(512) && len.is_multiple_of(512));
     let _ = std::fs::remove_file(out);
+    // A hyperstor volume (spec/storage.md §11.2).
+    if crate::datastore::hyperstor::parse_tool_path(path).is_some() {
+        return crate::datastore::hyperstor::read_region(path, offset, len, out);
+    }
     let mut cmd = QEMU_IMG.command()?;
     // qemu-img dd counts `count` from the start of the input, skipped
     // blocks included (unlike dd(1)), so it is the end block here.
@@ -370,6 +374,11 @@ pub fn write_region(
     len: u64,
 ) -> Result<(), ImageError> {
     debug_assert!(!src.contains(' ') && !src.contains('/'));
+    // A hyperstor volume (spec/storage.md §11.2).
+    if crate::datastore::hyperstor::parse_tool_path(path).is_some() {
+        let _ = (format, len);
+        return crate::datastore::hyperstor::write_region(path, &dir.join(src), offset, false);
+    }
     let mut cmd = QEMU_IO.command()?;
     cmd.current_dir(dir)
         .arg("-f")

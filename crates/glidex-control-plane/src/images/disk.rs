@@ -314,8 +314,10 @@ impl ImageManager {
         let _lock = driver.lock(&disk)?;
         if driver.exists(&disk) {
             let made = driver.binding(&disk);
-            let info = qemu_img::info(made.path(), Some(disk.format))?;
-            disk.size_bytes = info.virtual_size;
+            disk.size_bytes = match driver.volume_size(&disk) {
+                Some(s) => s,
+                None => qemu_img::info(&made.path(), Some(disk.format))?.virtual_size,
+            };
             disk.phase = DiskPhase::Ready;
             disk.create = None;
             return Ok(MaterializeOutcome {
@@ -351,7 +353,7 @@ impl ImageManager {
                 let store = (mode == CloneMode::Linked)
                     .then(|| crate::datastore::record::find(&self.db, &disk.datastore))
                     .and_then(|r| r.ok().flatten())
-                    .filter(|ds| ds.is_shared());
+                    .filter(|ds| ds.holds_image_files());
                 image_path = match &store {
                     Some(ds) => ds.image_copy_path(&self.node_id.load(), &img.id),
                     None => self.image_path(&img.id),
@@ -385,7 +387,7 @@ impl ImageManager {
         let mut warnings = Vec::new();
         driver.create_volume(&disk.clone(), size, source, &mut |made| {
             if extend {
-                match self.extend_root_at(made.path(), &mut disk, ExtendMode::Offline) {
+                match self.extend_root_at(&made.path(), &mut disk, ExtendMode::Offline) {
                     Ok((_, mut w)) => warnings.append(&mut w),
                     Err(ImageError::InvalidDisk { message, .. }) => {
                         warnings.push(format!("root partition not extended: {}", message));
@@ -419,7 +421,7 @@ impl ImageManager {
 
     /// Minimum size a disk can be shrunk to.
     pub fn shrink_minimum(&self, disk: &Disk) -> Result<(u64, TableKind), ImageError> {
-        let path = self.driver(disk)?.stage(disk)?.path().to_path_buf();
+        let path = self.driver(disk)?.tool_binding(disk)?.path().to_path_buf();
         let table = partition::read_table(&path, disk.format, disk.size_bytes)?.ok_or_else(|| {
             ImageError::invalid_disk("disk has no partition table, so where its data ends is unknown; it cannot be shrunk")
         })?;
@@ -447,7 +449,7 @@ impl ImageManager {
         let mut disk = self.get_disk(disk_id)?;
         let driver = self.driver(&disk)?;
         let _lock = driver.lock(&disk)?;
-        let path = driver.stage(&disk)?.path().to_path_buf();
+        let path = driver.tool_binding(&disk)?.path().to_path_buf();
         let new_size = round_up(new_size, MIB);
         if new_size == disk.size_bytes {
             return Ok((disk, None, vec!["size unchanged".into()]));
@@ -558,7 +560,7 @@ impl ImageManager {
             .shrink_volume(disk, new_size, &mut |copy| {
                 if kind == TableKind::Gpt {
                     partition::edit(
-                        copy.path(),
+                        &copy.path(),
                         disk.format,
                         new_size,
                         qemu_img::sgdisk_relocate_backup,
@@ -582,7 +584,7 @@ impl ImageManager {
         let mut disk = self.get_disk(disk_id)?;
         let driver = self.driver(&disk)?;
         let _lock = driver.lock(&disk)?;
-        let path = driver.stage(&disk)?.path().to_path_buf();
+        let path = driver.tool_binding(&disk)?.path().to_path_buf();
         let (outcome, warnings) = self.extend_root_at(&path, &mut disk, mode)?;
         self.put_disk(&disk)?;
         Ok((disk, outcome, warnings))
@@ -662,7 +664,14 @@ impl ImageManager {
         let (from, to) = (self.driver(src)?, self.driver(dst)?);
         let _src_lock = from.lock(src)?;
         let _dst_lock = to.lock(dst)?;
-        let path = from.stage(src)?.path().to_path_buf();
+        let source = from.tool_binding(src)?;
+        if matches!(source, crate::models::VolumeBinding::VhostUserBlk { .. }) {
+            return Err(ImageError::invalid_disk(format!(
+                "disk {} can't be moved off a hyperstor datastore yet",
+                src.name
+            )));
+        }
+        let path = source.path().to_path_buf();
         if to.exists(dst) {
             return Ok(());
         }
@@ -675,9 +684,10 @@ impl ImageManager {
         };
         to.copy_in(dst, &path, src.format, flatten, &mut |made| {
             if let Some(b) = &backing {
-                let dir = made.path().parent().unwrap_or(Path::new("."));
+                let made_path = made.path();
+                let dir = made_path.parent().unwrap_or(Path::new("."));
                 let rel = crate::paths::relative_to(b, dir).unwrap_or_else(|| b.clone());
-                qemu_img::rebase_unsafe(made.path(), &rel)?;
+                qemu_img::rebase_unsafe(&made.path(), &rel)?;
             }
             Ok(())
         })?;
@@ -691,7 +701,7 @@ impl ImageManager {
         let img = self.get_image(image_id)?;
         let ds = crate::datastore::record::find(&self.db, &dst.datastore)
             .map_err(|e| ImageError::Io(e.to_string()))?
-            .filter(|ds| ds.is_shared());
+            .filter(|ds| ds.holds_image_files());
         let path = match &ds {
             Some(ds) => ds.image_copy_path(&self.node_id.load(), image_id),
             None => self.image_path(image_id),
