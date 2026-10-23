@@ -1067,7 +1067,7 @@ node is lost reaches the same volume.
 - The VM's staged disks are recorded (`staged_disks`); stopping and
   deleting the VM detach them.
 - The disk is 512e: 512-byte logical blocks on the volume's 4 KiB
-  blocks (hyperstor D125), so cloud images' partition tables and
+  blocks (hyperstor D126), so cloud images' partition tables and
   firmware work (H9).
 
 **Probe.** Each node: `hyperstor-vhost` answers `hello`
@@ -1081,7 +1081,7 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
 
 **Depends on** hyperstor's `mgmt` tokens, `ExpandVolume` and
 `hyperstorctl write-volume`/`read-volume` (hyperstor D122–D124), and
-512e in `hyperstor-vhost` (D125). glidex depends on `hyperstor-api` and
+512e in `hyperstor-vhost` (D126). glidex depends on `hyperstor-api` and
 `hyperstor-pki` as pinned git dependencies.
 
 **As built (S8):**
@@ -1493,7 +1493,7 @@ two separate clients. Everything was removed afterwards.
   restarting under both hypervisors.
 
 **H9. Firmware and 512-byte sectors on vhost-user-blk.**
-- With 4 KiB logical blocks (hyperstor-vhost before D125), Cloud
+- With 4 KiB logical blocks (hyperstor-vhost before D126), Cloud
   Hypervisor's `CLOUDHV.fd` (edk2 `ch-811ce5ea35`) found no bootable
   device on a volume holding Ubuntu 24.04's cloud image, whose GPT is
   in 512-byte sectors; the same image booted from a file.
