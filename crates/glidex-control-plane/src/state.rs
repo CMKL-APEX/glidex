@@ -4589,6 +4589,7 @@ impl VmManager {
                         bridge: net.bridge.clone(),
                         subnet: req.subnet,
                         dns: req.dns,
+                        host_api_ports: self.host_api_ports(&net),
                     }));
                     if let Err(e) = res {
                         let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge {
@@ -4893,6 +4894,39 @@ impl VmManager {
     }
 
     /// Set which projects may use a host network.
+    /// The host's ports netd opens to `net`'s guests: the API's, on a node
+    /// NAT network with `host_api` or on a host with `nat_host_api`
+    /// (spec/workload-identity.md §15).
+    pub(crate) fn host_api_ports(&self, net: &Network) -> Vec<u16> {
+        let s = self.settings();
+        if net.mode == NetworkMode::Nat && (net.host_api || s.nat_host_api) {
+            s.api_ports.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Open (or close) this host's API to `id`'s guests: a node NAT
+    /// network's `host_api`, applied by its controller.
+    pub fn set_network_host_api(
+        &self,
+        id: &str,
+        host_api: bool,
+    ) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(id)?;
+        if net.mode != NetworkMode::Nat || net.scope != crate::network::NetworkScope::Node {
+            return Err(NetError::Invalid(
+                "only a node NAT network's guests are kept from the host's API".into(),
+            )
+            .into());
+        }
+        net.host_api = host_api;
+        self.networks.put(&net)?;
+        self.queue
+            .add(crate::controller::queue::Key::Network(net.id.clone()));
+        Ok(net)
+    }
+
     pub fn grant_network(
         &self,
         id: &str,

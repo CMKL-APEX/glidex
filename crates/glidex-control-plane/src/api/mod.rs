@@ -468,6 +468,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         put(net::grant_network),
     )
     .add(
+        "PUT",
+        "/networks/{id}/host_api",
+        "setNetworkHostApi",
+        put(net::set_network_host_api),
+    )
+    .add(
         "POST",
         "/networks/{id}/shares",
         "offerNetworkShare",

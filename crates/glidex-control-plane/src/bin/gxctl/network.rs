@@ -305,6 +305,9 @@ async fn show(client: &ApiClient, net: &str) {
         None => println!("  Scope:      {}", scope),
     }
     println!("  Bridge:     {}", n.bridge);
+    if n.host_api == Some(true) {
+        println!("  Host API:   open to its guests");
+    }
     if let Some(v) = n.vlan {
         println!("  VLAN:       {}", v);
     }
@@ -366,7 +369,7 @@ fn share_line(sh: &NetworkShare) -> String {
 // ---- `network …` ----------------------------------------------------------------
 
 pub async fn network(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: network list | show <net> | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | grant <host-net> [--project P]... [--tenant T]... [--all-projects] | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
+    let u = "Usage: network list | show <net> | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | grant <host-net> [--project P]... [--tenant T]... [--all-projects] | host-api <net> on|off | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => list_networks(client).await,
         "show" | "get" => match args.get(1) {
@@ -441,6 +444,36 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                     println!("  projects: {}", n.grants.join(", "));
                     println!("  tenants:  {}", n.tenant_grants.join(", "));
                 }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // A node NAT network's guests and this host's API
+        // (spec/workload-identity.md §15).
+        "host-api" => {
+            let (Some(net), Some(onoff)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            let host_api = match *onoff {
+                "on" => true,
+                "off" => false,
+                _ => return usage(u),
+            };
+            let req = SetNetworkHostApiRequest {
+                id: net.to_string(),
+                host_api,
+                ..Default::default()
+            };
+            match svc!(rpc(client)).set_network_host_api(req).await {
+                Ok(_) if host_api => println!(
+                    "{} the guests of {} reach this host's API",
+                    "Opened:".green(),
+                    net.yellow()
+                ),
+                Ok(_) => println!(
+                    "{} the guests of {} are kept from this host's API",
+                    "Closed:".green(),
+                    net.yellow()
+                ),
                 Err(e) => err(rpc_err(e)),
             }
         }

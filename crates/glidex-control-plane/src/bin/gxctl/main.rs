@@ -1232,8 +1232,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     (
         "network",
         &[
-            "list", "show", "create", "rm", "grant", "share", "unshare", "shares", "accept",
-            "leave",
+            "list", "show", "create", "rm", "grant", "host-api", "share", "unshare", "shares",
+            "accept", "leave",
         ],
     ),
 ];

@@ -99,6 +99,15 @@ pub async fn delete_network(
     })
 }
 
+pub async fn set_network_host_api(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::SetNetworkHostApiRequest = body_with(v, &[("id", &id)])?;
+    Ok(Proto(StatusCode::OK, svc::set_network_host_api(&c, req)?))
+}
+
 pub async fn grant_network(
     c: Caller,
     Path(id): Path<String>,

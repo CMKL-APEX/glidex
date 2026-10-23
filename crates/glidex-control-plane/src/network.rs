@@ -79,6 +79,11 @@ pub struct Network {
     /// The network created its bridge (and NAT) and removes them on delete.
     #[serde(default)]
     pub owns_bridge: bool,
+    /// Node NAT networks: its guests may reach this host's API (its
+    /// `listen` ports), which netd's `input` chain otherwise closes to them
+    /// (spec/workload-identity.md §15). Set by host network administrators.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_api: bool,
     pub created_at: u64,
     /// Project networks (spec/security.md §6.2) belong to a project and
     /// are usable by it and the projects in `shares`. Host networks have
@@ -401,6 +406,7 @@ impl CreateNetworkRequest {
             mtu: self.mtu,
             dns: self.dns,
             owns_bridge: self.mode != NetworkMode::Bridged,
+            host_api: false,
             created_at: now(),
             project: None,
             all_projects: false,

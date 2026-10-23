@@ -30,6 +30,12 @@ pub struct NatSpec {
     pub subnet: Option<Ipv4Net>,
     #[serde(default = "default_true")]
     pub dns: bool,
+    /// TCP ports of the host its guests may reach (the control plane's API,
+    /// when the network allows it): opened in `input` for this bridge, on
+    /// every host address. Empty: the host is closed to them but for DHCP,
+    /// DNS, ping and the metadata endpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_api_ports: Vec<u16>,
 }
 
 fn default_true() -> bool {
@@ -47,6 +53,9 @@ pub struct NatState {
     /// MAC → reserved address; a VM keeps its address across restarts.
     #[serde(default)]
     pub reservations: BTreeMap<String, Ipv4Addr>,
+    /// See [`NatSpec::host_api_ports`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_api_ports: Vec<u16>,
 }
 
 impl NatState {
@@ -69,6 +78,7 @@ impl NatState {
                 .ok_or_else(|| OvsError::invalid("subnet too small"))?,
             dns,
             reservations: BTreeMap::new(),
+            host_api_ports: Vec::new(),
         })
     }
 
@@ -233,6 +243,7 @@ pub fn plan(
         (None, None) => choose_subnet(supernet, &routes, &taken)?,
     };
     let mut state = NatState::new(&spec.bridge, subnet, spec.dns)?;
+    state.host_api_ports = spec.host_api_ports.clone();
     if let Some(e) = existing
         && e.subnet == subnet
     {
@@ -378,6 +389,16 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str], metadata_ports: &[u16]) 
             "    iifname \"{}\" ip daddr {} icmp type echo-request accept\n",
             n.bridge, n.gateway
         ));
+        // The host's API, when the network allows it: any host address
+        // (the API's published name resolves to one of them).
+        if !n.host_api_ports.is_empty() {
+            let ports: Vec<String> = n.host_api_ports.iter().map(u16::to_string).collect();
+            s.push_str(&format!(
+                "    iifname \"{}\" tcp dport {{ {} }} accept\n",
+                n.bridge,
+                ports.join(", ")
+            ));
+        }
     }
     let fenced: Vec<&str> = nat_names
         .iter()
@@ -567,6 +588,14 @@ pub fn iptables_input_rules(nats: &[NatState]) -> Vec<Vec<String>> {
             .map(String::from)
             .to_vec(),
         );
+        for p in &n.host_api_ports {
+            let p = p.to_string();
+            rules.push(
+                ["-i", br, "-p", "tcp", "--dport", &p, "-j", "ACCEPT"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+        }
     }
     rules
         .into_iter()
@@ -673,6 +702,7 @@ mod tests {
             bridge: "gxbr-nat".into(),
             subnet: None,
             dns: true,
+            host_api_ports: vec![],
         };
         let state = plan(&exec, &spec, net(DEFAULT_SUPERNET), &[], None).unwrap();
         assert_eq!(state.subnet, net("10.88.0.0/24"));
@@ -906,6 +936,44 @@ table inet glidex {
             nft_script(&[a], &["gxp-11111111", "gxbr-iso"], &[1, 2])
         );
         print!("{}", nft_script(&[], &["gxp-11111111"], &[]));
+    }
+
+    #[test]
+    fn a_network_may_open_the_hosts_api_to_its_guests() {
+        let mut a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let b = NatState::new("gxbr-p1", net("10.88.1.0/24"), true).unwrap();
+        a.host_api_ports = vec![8841];
+        let script = nft_script(&[a.clone(), b.clone()], &[], &[]);
+        assert!(
+            script.contains("    iifname \"gxbr-nat\" tcp dport { 8841 } accept\n"),
+            "{script}"
+        );
+        assert!(
+            !script.contains("iifname \"gxbr-p1\" tcp dport"),
+            "{script}"
+        );
+        // Before the bridge's final drop.
+        assert!(
+            script.find("tcp dport { 8841 } accept").unwrap()
+                < script
+                    .find("iifname { \"gxbr-nat\", \"gxbr-p1\" } drop")
+                    .unwrap()
+        );
+        let rules: Vec<String> = iptables_input_rules(&[a, b])
+            .into_iter()
+            .map(|r| r.join(" "))
+            .collect();
+        assert!(
+            rules
+                .iter()
+                .any(|r| r == "-w -A GLIDEX-INPUT -i gxbr-nat -p tcp --dport 8841 -j ACCEPT"),
+            "{rules:#?}"
+        );
+        assert!(
+            !rules
+                .iter()
+                .any(|r| r.contains("-i gxbr-p1 -p tcp --dport 8841"))
+        );
     }
 
     #[test]
