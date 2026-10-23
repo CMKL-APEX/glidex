@@ -5695,9 +5695,7 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
     } else {
         "aarch64"
     };
-    // The agent says it is of that architecture, with KVM.
     let db = server.manager.database();
-    let n = node_with(&server, &agent_id, arch);
     // A disk image only the agent has.
     let data = vec![3u8; 64 * 1024];
     let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(&data));
@@ -5734,15 +5732,8 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
             .contains(&format!("no other ready node is {arch} with KVM")),
         "{v}"
     );
-    db.write(
-        Origin::Api,
-        |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Nodes.definition())?
-                .insert(agent_id.as_str(), n.to_string().as_bytes())?;
-            Ok(())
-        },
-    )
-    .unwrap();
+    // The agent says it is of that architecture, with KVM.
+    node_with(&server, &agent_id, arch).await;
     wait_for("the agent's copy recorded", || async {
         server
             .manager
@@ -5759,12 +5750,12 @@ async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
         .images()
         .set_extractor_job(fake_extractor(arch, Some(fail.clone())));
 
-    let (s, v) = call(
+    let (s, v) = call_with_ready_node(
         &server,
+        (&agent_id, arch),
         "POST",
         "/images",
         Some(json!({ "kernel_from": src_id })),
-        &[],
     )
     .await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
@@ -5843,17 +5834,60 @@ fn test_kernel(arch: &str) -> Vec<u8> {
     }
 }
 
-/// Node `id`'s record, saying it is of `arch` with KVM (written back by the
-/// caller; the node reports itself again only every two minutes).
-fn node_with(cp: &Cp, id: &str, arch: &str) -> Value {
-    use glidex_control_plane::store::TableId;
-    let db = cp.manager.database();
-    let txn = db.begin_read().unwrap();
-    let t = txn.open_table(TableId::Nodes.definition()).unwrap();
-    let mut n: Value = serde_json::from_slice(t.get(id).unwrap().unwrap().value()).unwrap();
-    n["status"]["features"]["arch"] = json!(arch);
-    n["status"]["features"]["kvm"] = json!(true);
-    n
+/// Make node `id` say it is of `arch` with KVM, and wait until it is ready
+/// so (the node reports itself again only every two minutes).
+async fn node_with(cp: &Cp, id: &str, arch: &str) {
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    use redb::ReadableTable;
+    // Read and written in one transaction: the leader's liveness loop
+    // writes the record's `ready`, and a copy read before its write would
+    // put the old value back.
+    cp.manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            let mut t = tx.open_table(TableId::Nodes.definition())?;
+            let raw = t.get(id)?.expect("the node's record").value().to_vec();
+            let mut n: Value = serde_json::from_slice(&raw).unwrap();
+            n["status"]["features"]["arch"] = json!(arch);
+            n["status"]["features"]["kvm"] = json!(true);
+            t.insert(id, n.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the node ready, of its architecture, with KVM", || async {
+        cp.manager.nodes().get(id).ok().flatten().is_some_and(|n| {
+            n.status.ready == glidex_control_plane::models::Tristate::True
+                && n.status.features.kvm
+                && n.status.features.arch == arch
+        })
+    })
+    .await;
+}
+
+/// `call` as a request that node `id` (of `arch`, with KVM) must be ready
+/// for: again while the leader refuses it as not ready. On a busy runner a
+/// late heartbeat makes the leader count a node unreachable for a moment
+/// (the tests' 8 s grace against its 5 s heartbeat), and the node's own
+/// report may undo the test's features; both are set again first.
+async fn call_with_ready_node(
+    cp: &Cp,
+    (id, arch): (&str, &str),
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        node_with(cp, id, arch).await;
+        let (s, v) = call(cp, method, uri, body.clone(), &[]).await;
+        let refused = v.to_string().contains("it is not ready")
+            || v.to_string().contains("it has no KVM")
+            || v.to_string().contains("no other ready node");
+        if !refused || tokio::time::Instant::now() > deadline {
+            return (s, v);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// The extractor appliance, standing in (spec/kernel-boot.md §10.3): it
@@ -5904,8 +5938,8 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     let (server, agent) = server_and_agent().await;
     let agent_id = agent.manager.local_node_id();
     let arch = std::env::consts::ARCH;
-    let n = node_with(&server, &agent_id, arch);
-    // A kernel image to start from, and the agent with KVM.
+    // The agent with KVM, and a kernel image to start from.
+    node_with(&server, &agent_id, arch).await;
     let kernel = test_kernel(arch);
     let sha =
         glidex_control_plane::cluster::pki::hex(&<sha2::Sha256 as sha2::Digest>::digest(&kernel));
@@ -5920,8 +5954,6 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
         .write(
             Origin::Api,
             |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-                tx.open_table(TableId::Nodes.definition())?
-                    .insert(agent_id.as_str(), n.to_string().as_bytes())?;
                 tx.open_table(TableId::Images.definition())?
                     .insert("k0", k0.to_string().as_bytes())?;
                 Ok(())
@@ -5971,12 +6003,12 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     .await;
 
     // `extract-kernel` from the server: the agent extracts, the leader records.
-    let (s, v) = call(
+    let (s, v) = call_with_ready_node(
         &server,
+        (&agent_id, arch),
         "POST",
         &format!("/vms/{vm_id}/extract-kernel"),
         None,
-        &[],
     )
     .await;
     assert!(s.is_success(), "{s} {v}");
