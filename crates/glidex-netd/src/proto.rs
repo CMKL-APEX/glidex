@@ -319,6 +319,11 @@ pub struct AttachResult {
     /// Reserved address when the bridge is a NAT network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv4: Option<Ipv4Addr>,
+    /// The port's index for the metadata endpoint on a NAT network
+    /// (spec/workload-identity.md §7.1): metad sees its requests come from
+    /// `glidex_ovs::metadata::peer_address(index)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_index: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +334,8 @@ pub struct VmPortRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv4: Option<Ipv4Addr>,
     pub owner_uid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_index: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

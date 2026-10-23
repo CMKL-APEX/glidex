@@ -292,7 +292,11 @@ pub fn ensure_ip_forward(exec: &dyn Exec) -> Result<bool, OvsError> {
 /// §8.4). netd leaves their host interface down, so they have no host
 /// address; the fence is defense in depth for when something brings it
 /// up and the kernel gives it an IPv6 link-local address.
-pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
+///
+/// `metadata_ports` are the indexes of VM ports on NAT bridges: the
+/// metadata endpoint's rules (spec/workload-identity.md §7.1,
+/// [`crate::metadata`]).
+pub fn nft_script(nats: &[NatState], isolated: &[&str], metadata_ports: &[u16]) -> String {
     let mut s = format!("table inet {t}\ndelete table inet {t}\n", t = NFT_TABLE);
     if nats.is_empty() && isolated.is_empty() {
         return s;
@@ -308,6 +312,8 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
         }
         s.push_str("  }\n");
     }
+    let nat_names: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
+    s.push_str(&crate::metadata::nft_chains(&nat_names, metadata_ports));
     s.push_str("  chain forward {\n    type filter hook forward priority filter; policy accept;\n");
     // Isolated networks have no path out, and nothing is routed in.
     if !isolated.is_empty() {
@@ -350,7 +356,8 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
     s.push_str(
         "  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n",
     );
-    let nat_names: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
+    // First: only a marked request from a VM port reaches metad.
+    s.push_str(&crate::metadata::input_rules(&nat_names));
     if !nats.is_empty() {
         let all = ifname_set(&nat_names);
         s.push_str(&format!(
@@ -388,8 +395,17 @@ fn ifname_set(names: &[&str]) -> String {
     format!("{{ {} }}", quoted.join(", "))
 }
 
-pub fn apply_nft(exec: &dyn Exec, nats: &[NatState], isolated: &[&str]) -> Result<(), OvsError> {
-    exec.check(&Cmd::new(Program::Nft, ["-f", "-"]).stdin(nft_script(nats, isolated)))?;
+pub fn apply_nft(
+    exec: &dyn Exec,
+    nats: &[NatState],
+    isolated: &[&str],
+    metadata_ports: &[u16],
+) -> Result<(), OvsError> {
+    exec.check(&Cmd::new(Program::Nft, ["-f", "-"]).stdin(nft_script(
+        nats,
+        isolated,
+        metadata_ports,
+    )))?;
     Ok(())
 }
 
@@ -530,6 +546,23 @@ pub fn iptables_input_rules(nats: &[NatState]) -> Vec<Vec<String>> {
                 "echo-request",
                 "-j",
                 "ACCEPT",
+            ]
+            .map(String::from)
+            .to_vec(),
+        );
+        // A VM port's marked metadata request, after its DNAT to metad
+        // (spec/workload-identity.md §7.1).
+        let md = crate::metadata::ADDRESS.to_string();
+        let port = crate::metadata::LISTEN_PORT.to_string();
+        let mark = format!(
+            "{:#x}/{:#x}",
+            crate::metadata::MARK_BASE,
+            crate::metadata::MARK_MASK
+        );
+        rules.push(
+            [
+                "-i", br, "-d", &md, "-p", "tcp", "--dport", &port, "-m", "mark", "--mark", &mark,
+                "-j", "ACCEPT",
             ]
             .map(String::from)
             .to_vec(),
@@ -766,7 +799,7 @@ mod tests {
     #[test]
     fn nft_script_is_atomic_and_complete() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        let script = nft_script(&[a], &[]);
+        let script = nft_script(&[a], &[], &[]);
         assert!(script.starts_with("table inet glidex\ndelete table inet glidex\n"));
         assert!(script.contains("ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade"));
         assert!(script.contains("iifname \"gxbr-nat\" ip saddr 10.88.0.0/24 accept"));
@@ -779,7 +812,7 @@ mod tests {
             "a single network has nothing to isolate from"
         );
         assert_eq!(
-            nft_script(&[], &[]),
+            nft_script(&[], &[], &[]),
             "table inet glidex\ndelete table inet glidex\n"
         );
     }
@@ -789,7 +822,7 @@ mod tests {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         let b = NatState::new("gxbr-p1", net("10.88.1.0/24"), false).unwrap();
         let c = NatState::new("gxbr-p2", net("10.88.2.0/24"), true).unwrap();
-        let script = nft_script(&[a, b, c], &[]);
+        let script = nft_script(&[a, b, c], &[], &[]);
         let expected = r#"table inet glidex
 delete table inet glidex
 table inet glidex {
@@ -798,6 +831,10 @@ table inet glidex {
     ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade
     ip saddr 10.88.1.0/24 ip daddr != 10.88.1.0/24 masquerade
     ip saddr 10.88.2.0/24 ip daddr != 10.88.2.0/24 masquerade
+  }
+  chain metadata_pre {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } ip daddr 169.254.169.254 tcp dport 80 meta mark & 0xffffc000 == 0x6d000000 dnat ip to 169.254.169.254:8775
   }
   chain forward {
     type filter hook forward priority filter; policy accept;
@@ -813,6 +850,8 @@ table inet glidex {
   }
   chain input {
     type filter hook input priority filter; policy accept;
+    iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } ip daddr 169.254.169.254 tcp dport 8775 meta mark & 0xffffc000 == 0x6d000000 accept
+    ip daddr 169.254.169.254 tcp dport 8775 drop
     iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } ct state established,related accept
     iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } udp dport 67 accept
     iifname "gxbr-nat" ip daddr 10.88.0.1 udp dport 53 accept
@@ -832,7 +871,7 @@ table inet glidex {
     #[test]
     fn nft_script_fences_isolated_bridges() {
         // Isolated only: no NAT chains, nothing in or out.
-        let script = nft_script(&[], &["gxp-11111111"]);
+        let script = nft_script(&[], &["gxp-11111111"], &[]);
         assert_eq!(
             script,
             "table inet glidex\ndelete table inet glidex\ntable inet glidex {\n\
@@ -844,7 +883,7 @@ table inet glidex {
         // With a NAT network: the isolated bridge gets no DHCP or replies,
         // and is in the final drop with the NAT bridge.
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        let script = nft_script(&[a], &["gxp-11111111"]);
+        let script = nft_script(&[a], &["gxp-11111111"], &[]);
         assert!(script.contains("    iifname { \"gxbr-nat\" } udp dport 67 accept\n"));
         assert!(script.contains("    iifname { \"gxbr-nat\", \"gxp-11111111\" } drop\n  }\n}\n"));
         let forward =
@@ -862,18 +901,28 @@ table inet glidex {
     #[ignore = "prints a script for nft -c"]
     fn print_script_for_nft_check() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        print!("{}", nft_script(&[a], &["gxp-11111111", "gxbr-iso"]));
-        print!("{}", nft_script(&[], &["gxp-11111111"]));
+        print!(
+            "{}",
+            nft_script(&[a], &["gxp-11111111", "gxbr-iso"], &[1, 2])
+        );
+        print!("{}", nft_script(&[], &["gxp-11111111"], &[]));
     }
 
     #[test]
     fn nft_input_chain_for_one_network() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        let script = nft_script(&[a], &[]);
+        let script = nft_script(&[a], &[], &[1, 2]);
+        // The metadata endpoint's peer addresses (spec/workload-identity.md §7.1).
+        assert!(
+            script.contains("  map metadata_peer {\n    type mark : ipv4_addr\n    elements = { 0x6d000001 : 169.254.192.1, 0x6d000002 : 169.254.192.2 }\n  }\n"),
+            "{script}"
+        );
         let input = &script[script.find("  chain input").unwrap()..];
         assert_eq!(
             input,
             "  chain input {\n    type filter hook input priority filter; policy accept;\n\
+             \x20   iifname { \"gxbr-nat\" } ip daddr 169.254.169.254 tcp dport 8775 meta mark & 0xffffc000 == 0x6d000000 accept\n\
+             \x20   ip daddr 169.254.169.254 tcp dport 8775 drop\n\
              \x20   iifname { \"gxbr-nat\" } ct state established,related accept\n\
              \x20   iifname { \"gxbr-nat\" } udp dport 67 accept\n\
              \x20   iifname \"gxbr-nat\" ip daddr 10.88.0.1 udp dport 53 accept\n\
@@ -968,6 +1017,7 @@ table inet glidex {
                 "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
                 "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
                 "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 169.254.169.254 -p tcp --dport 8775 -m mark --mark 0x6d000000/0xffffc000 -j ACCEPT",
                 "iptables -w -C INPUT -j GLIDEX-INPUT",
                 "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
             ]

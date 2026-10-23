@@ -38,6 +38,8 @@ fn exec() -> Arc<RecordingExec> {
         "ovs-vsctl --format=json --columns=name,external_ids,type find Interface",
         Output::ok(OWNED_IF),
     );
+    // A VM port's OpenFlow number, for its metadata rule.
+    exec.on("ovs-vsctl get Interface", Output::ok("5\n"));
     exec.on(
         "ip -4 -j route show",
         Output::ok(r#"[{"dst":"default","dev":"eth0"}]"#),
@@ -1889,4 +1891,64 @@ fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
     // At boot the VF count is set.
     let r = netd.apply_boot_devices(&cfg, true);
     assert_eq!(r.sriov, [("0000:61:00.0".to_string(), 8)], "{r:?}");
+}
+
+/// spec/workload-identity.md §7.1: a VM port on a NAT network gets a
+/// metadata index; its OpenFlow rule marks its requests and `inet glidex`
+/// maps the mark to its peer address; it keeps the index when attached
+/// again, and the rule and the map entry go with the port.
+#[test]
+fn nat_ports_get_a_metadata_index_and_rule() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    exec.clear_calls();
+
+    let res: AttachResult =
+        serde_json::from_value(netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap())
+            .unwrap();
+    assert_eq!(res.metadata_index, Some(1));
+    let calls = exec.calls();
+    assert!(
+        calls.iter().any(|c| c == "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"),
+        "{calls:#?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "ip addr replace 169.254.169.254/32 dev lo"),
+        "{calls:#?}"
+    );
+    let nft = calls.iter().rfind(|c| c.starts_with("nft -f -")).unwrap();
+    assert!(nft.contains("0x6d000001 : 169.254.192.1"), "{nft}");
+    let ports: Vec<VmPortRecord> =
+        serde_json::from_value(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap();
+    assert_eq!(ports[0].metadata_index, Some(1));
+
+    // Attached again (a VM start after netd restarted, say): the same index.
+    let again: AttachResult =
+        serde_json::from_value(netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap())
+            .unwrap();
+    assert_eq!(again.metadata_index, Some(1));
+
+    // Detached: its rule and its map entry go.
+    exec.clear_calls();
+    netd.handle(
+        Op::DetachVmPort {
+            vm_id: VM.into(),
+            nic_index: 0,
+        },
+        &peer(),
+    )
+    .unwrap();
+    let calls = exec.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "ovs-ofctl del-flows gxbr-nat cookie=0x6d000001/-1"),
+        "{calls:#?}"
+    );
+    let nft = calls.iter().rfind(|c| c.starts_with("nft -f -")).unwrap();
+    assert!(!nft.contains("metadata_peer"), "{nft}");
 }
