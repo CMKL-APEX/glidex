@@ -381,6 +381,7 @@ pub struct VmManager {
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
+    api_app: std::sync::OnceLock<Arc<crate::api::App>>,
     secrets_key: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
     node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
@@ -566,6 +567,7 @@ impl VmManager {
             db_path,
             cluster: arc_swap::ArcSwapOption::empty(),
             api_router: std::sync::OnceLock::new(),
+            api_app: std::sync::OnceLock::new(),
             secrets_key: std::sync::OnceLock::new(),
             node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
@@ -1406,6 +1408,15 @@ impl VmManager {
         let _ = self.api_router.set(router);
     }
 
+    /// Record the API's app, so a cluster's leader can answer the metadata
+    /// questions of its nodes (spec/workload-identity.md §15).
+    pub fn set_api_app(&self, app: Arc<crate::api::App>) {
+        if let Some(c) = self.cluster() {
+            c.set_app(app.clone());
+        }
+        let _ = self.api_app.set(app);
+    }
+
     /// Record the secrets key's holder, for a cluster to send to and
     /// receive from other servers (spec/tenancy.md §13).
     pub fn set_secrets_key(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
@@ -1428,6 +1439,9 @@ impl VmManager {
     pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
         if let Some(r) = self.api_router.get() {
             cluster.set_api(r.clone());
+        }
+        if let Some(a) = self.api_app.get() {
+            cluster.set_app(a.clone());
         }
         if let Some(s) = self.secrets_key.get() {
             cluster.set_secrets(s.clone());

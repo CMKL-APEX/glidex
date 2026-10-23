@@ -343,12 +343,31 @@ async fn main() {
         match auth::AuthService::new(vm_manager.database(), with_secrets_key(&cfg, &vm_manager)) {
             Ok(auth) => {
                 vm_manager.set_secrets_key(auth.clone());
-                let router = api::router(Arc::new(api::App {
+                let app_state = Arc::new(api::App {
                     manager: vm_manager.clone(),
                     auth,
-                }));
+                });
+                let router = api::router(app_state.clone());
                 vm_manager.set_api_router(router.clone());
                 let app = router.layer(TraceLayer::new_for_http());
+                // glidex-metad's socket: an agent finds its VM and asks the
+                // leader for tokens (spec/workload-identity.md §15).
+                let metad_sock = cfg.metad_socket_path();
+                match serve::bind_unix(&metad_sock) {
+                    Ok(l) => {
+                        servers.push(tokio::spawn(serve::serve_unix(
+                            l,
+                            api::metad::router(app_state).layer(TraceLayer::new_for_http()),
+                            api::Listener::Metad,
+                            stop_rx.clone(),
+                        )));
+                    }
+                    Err(e) => eprintln!(
+                        "  Warning: cannot listen on {}: {}",
+                        metad_sock.display(),
+                        e
+                    ),
+                }
                 let ui_sock = cfg.ui_socket_path();
                 match serve::bind_unix(&ui_sock) {
                     Ok(l) => {
@@ -416,8 +435,10 @@ async fn main() {
     });
     // Feeds from the directories this cluster trusts (spec/tenancy.md D67).
     api::trust::spawn_feeds(app_state.clone());
-    // glidex-metad's own socket and router (spec/workload-identity.md W11).
+    // glidex-metad's own socket and router (spec/workload-identity.md W11);
+    // as the leader, the app answers its nodes' metadata questions (§15).
     let metad_router = api::metad::router(app_state.clone()).layer(TraceLayer::new_for_http());
+    vm_manager.set_api_app(app_state.clone());
     let router = api::router(app_state);
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());

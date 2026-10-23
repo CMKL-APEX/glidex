@@ -47,6 +47,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/watch", get(node_watch))
         .route("/cluster/v1/heartbeat", post(heartbeat))
         .route("/cluster/v1/status-write", post(status_write))
+        .route(crate::api::metad::LEADER_PATH, post(metadata))
         .route("/cluster/v1/ledger", post(ledger_ship))
         .route("/cluster/v1/vms/{id}/console", get(relay_console))
         .route("/cluster/v1/vms/{id}/console-log", get(relay_console_log))
@@ -1386,6 +1387,34 @@ async fn heartbeat(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 }
 
 /// `POST /cluster/v1/status-write` (§8.3): a node's write set, checked.
+/// A node's metadata question about a VM of its own
+/// (spec/workload-identity.md §15): the leader signs and records, for a VM
+/// placed on the asking node only.
+async fn metadata(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    Json(q): Json<crate::api::metad::Question>,
+) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
+        return not_leader(&c);
+    }
+    let Some(app) = c.app.get() else {
+        return fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "the API isn't up yet",
+        );
+    };
+    match crate::api::metad::leader_answer(app, &me.node_id, &q).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
 async fn status_write(
     State(c): Ctx,
     p: Option<Extension<PeerCert>>,
