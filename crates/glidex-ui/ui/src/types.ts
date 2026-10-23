@@ -767,10 +767,15 @@ export interface DatastoreNode {
 export interface Datastore {
   id: string;
   name: string;
-  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM";
+  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM" | "DATASTORE_DRIVER_HYPERSTOR";
   /** `lvm`: the volume group (`node_paths`: each node's own) and its thin pool. */
   volume_group?: string;
   thin_pool?: string;
+  /** `hyperstor`: its cluster API (`path` is the map service's addresses), pool, and the identity glidex enrolled with. */
+  hyperstor_api?: string[];
+  hyperstor_pool?: number;
+  hyperstor_identity?: string;
+  hyperstor_identity_expires?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -795,6 +800,11 @@ export interface DatastoreInput {
   shared?: boolean;
   /** Create only: LVM-thin (`lvm`), with `volume_group` and `thin_pool` instead of `path`. */
   lvm?: boolean;
+  /** Create only: a hyperstor cluster's pool, with `hyperstor_api`, `hyperstor_pool` and a `mgmt` token to enroll with. */
+  hyperstor?: boolean;
+  hyperstor_api?: string[];
+  hyperstor_pool?: number;
+  hyperstor_token?: string;
   volume_group?: string;
   thin_pool?: string;
   path?: string;

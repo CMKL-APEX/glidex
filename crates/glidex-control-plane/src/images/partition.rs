@@ -107,16 +107,23 @@ pub fn read_table(
 fn read_head(path: &Path, format: DiskFormat, disk_size: u64) -> Result<Vec<u8>, ImageError> {
     let len = window_for(disk_size);
     let mut buf = vec![0u8; len as usize];
+    let remote = crate::datastore::hyperstor::parse_tool_path(path).is_some();
     match format {
-        DiskFormat::Raw => {
+        DiskFormat::Raw if !remote => {
             let f = File::open(path).map_err(|e| io(path, e))?;
             let n = f.read_at(&mut buf, 0).map_err(|e| io(path, e))?;
             buf.truncate(n);
         }
-        DiskFormat::Qcow2 => {
+        DiskFormat::Raw | DiskFormat::Qcow2 => {
+            // A hyperstor volume's "directory" is no place for a file.
+            let dir = if remote {
+                std::env::temp_dir()
+            } else {
+                path.parent().unwrap_or(Path::new(".")).to_path_buf()
+            };
             let tmp = tempfile::Builder::new()
                 .prefix(".gx-head")
-                .tempfile_in(path.parent().unwrap_or(Path::new(".")))
+                .tempfile_in(&dir)
                 .map_err(|e| io(path, e))?;
             qemu_img::read_region(path, format, 0, len, tmp.path())?;
             buf.clear();
@@ -308,7 +315,9 @@ pub fn edit<T>(
     f: impl FnOnce(&Path) -> Result<T, ImageError>,
 ) -> Result<T, ImageError> {
     use std::os::unix::fs::FileTypeExt;
-    let block = std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device());
+    // A hyperstor volume is edited like a block device: through a shadow.
+    let block = std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device())
+        || crate::datastore::hyperstor::parse_tool_path(path).is_some();
     if format == DiskFormat::Raw && !block {
         return f(path);
     }

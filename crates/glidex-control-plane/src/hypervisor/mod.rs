@@ -219,6 +219,9 @@ pub(crate) struct VmDisk {
     pub shared: bool,
     /// A block device (an LVM volume, spec/storage.md §11.1), raw.
     pub block: bool,
+    /// A vhost-user-blk socket (a hyperstor volume, spec/storage.md
+    /// §11.2): `path` is the socket the hypervisor connects to.
+    pub vhost: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
@@ -238,6 +241,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: *backing_files,
             shared: lock.is_some(),
             block: false,
+            vhost: false,
         },
         VolumeBinding::Block { path } => VmDisk {
             path: path.clone(),
@@ -246,6 +250,16 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: true,
+            vhost: false,
+        },
+        VolumeBinding::VhostUserBlk { socket, .. } => VmDisk {
+            path: socket.clone(),
+            read_only: false,
+            format: Some(ImageType::Raw),
+            backing_files: false,
+            shared: false,
+            block: false,
+            vhost: true,
         },
     };
     let root = match &config.root_disk_binding {
@@ -257,6 +271,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: false,
+            vhost: false,
         },
     };
     std::iter::once(root)
@@ -268,6 +283,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: false,
+            vhost: false,
         }))
         .collect()
 }
@@ -306,12 +322,18 @@ pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     mem.is_multiple_of(2) && hugepages_spare_mib(2048, None) >= mem + (mem / 4).max(256)
 }
 
-/// vhost-user: OVS maps guest RAM, so it must be shared.
+/// vhost-user: OVS, or `hyperstor-vhost` for a hyperstor disk, maps guest
+/// RAM, so it must be shared.
 pub(crate) fn needs_shared_memory(config: &VmConfig) -> bool {
     config
         .nic_bindings
         .iter()
         .any(|n| matches!(n.binding, VmPortBinding::VhostUser { .. }))
+        || config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .any(|b| matches!(b, VolumeBinding::VhostUserBlk { .. }))
 }
 
 /// Extract the BDF (e.g. "0000:41:00.0") from a sysfs device path.

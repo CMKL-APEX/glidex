@@ -217,6 +217,10 @@ impl VmManager {
                 // The forgotten node's instance is gone with it.
                 vm.status.instance = None;
                 vm.status.phase = VmPhase::Stopped;
+                // Its node was forgotten as fenced: its disks' leases are
+                // taken from it (S23).
+                vm.status.takeover_disks = true;
+                vm.status.staged_disks.clear();
             }
             vm.status
                 .conditions

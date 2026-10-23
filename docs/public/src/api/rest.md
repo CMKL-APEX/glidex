@@ -387,7 +387,7 @@ name.
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/datastores` | List datastores, with each node's status (everyone) |
-| `POST` | `/datastores` | Register one: `name`, `driver` (`DATASTORE_DRIVER_DIR`, `DATASTORE_DRIVER_SHARED_DIR` or `DATASTORE_DRIVER_LVM`), `path` (or, for LVM, `volume_group` and `thin_pool` and no `path`), optional `node_paths` (node → path; for LVM, node → that node's volume group), `nodes`, `default_for_disks`, `overcommit` (default on); `201`. A wrong combination is `400 invalid_datastore` |
+| `POST` | `/datastores` | Register one: `name`, `driver` (`DATASTORE_DRIVER_DIR`, `DATASTORE_DRIVER_SHARED_DIR`, `DATASTORE_DRIVER_LVM` or `DATASTORE_DRIVER_HYPERSTOR`), `path` (or, for LVM, `volume_group` and `thin_pool` and no `path`; for hyperstor, `hyperstor_api`, `hyperstor_pool` and `hyperstor_token` and no `path`), optional `node_paths` (node → path; for LVM, node → that node's volume group), `nodes`, `default_for_disks`, `overcommit` (default on); `201`. A wrong combination is `400 invalid_datastore` |
 | `GET` | `/datastores/{id}` | Get a datastore |
 | `PATCH` | `/datastores/{id}` | Change `node_paths`, `nodes`, `default_for_disks` or `overcommit` |
 | `DELETE` | `/datastores/{id}` | Delete a datastore no disk is on and, for LVM-thin, where no node keeps image volumes (`409` otherwise); `204` |

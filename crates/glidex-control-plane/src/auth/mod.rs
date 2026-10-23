@@ -328,6 +328,28 @@ impl crate::cluster::runtime::SecretsKey for AuthService {
     fn kek_id(&self) -> String {
         self.connectors.kek_id()
     }
+
+    fn seal_value(&self, owner: &str, field: &str, value: &str) -> Result<(), String> {
+        self.connectors
+            .set_value(owner, field, value)
+            .map_err(|e| e.to_string())
+    }
+
+    fn open_value(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.connectors
+            .value(owner, field)
+            .map_err(|e| e.to_string())
+    }
+
+    fn forget_value(&self, owner: &str, field: &str) -> Result<(), String> {
+        self.connectors
+            .remove_value(owner, field)
+            .map_err(|e| e.to_string())
+    }
 }
 
 pub fn connector_err(e: crate::directory::ConnectorError) -> AuthError {

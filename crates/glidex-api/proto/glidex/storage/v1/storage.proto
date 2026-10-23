@@ -816,6 +816,9 @@ enum DatastoreDriver {
   // LVM-thin on each node, through glidex-stord: raw volumes in a volume
   // group and thin pool the operator made (spec/storage.md §11.1).
   DATASTORE_DRIVER_LVM = 3;
+  // A hyperstor cluster's pool: volumes served to VMs over vhost-user-blk
+  // by each node's hyperstor-vhost (spec/storage.md §11.2).
+  DATASTORE_DRIVER_HYPERSTOR = 4;
 }
 
 enum DatastoreTopology {
@@ -875,6 +878,14 @@ message Datastore {
   // empty.
   string volume_group = 14 [json_name = "volume_group"];
   string thin_pool = 15 [json_name = "thin_pool"];
+  // `hyperstor`: its cluster API's addresses (`host:port`) and pool. `path`
+  // is the map service's addresses.
+  repeated string hyperstor_api = 16 [json_name = "hyperstor_api"];
+  uint32 hyperstor_pool = 17 [json_name = "hyperstor_pool"];
+  // The identity glidex enrolled with, `hyperstor://<cluster>/mgmt/<name>`,
+  // and when its certificate expires (renewed before that, S20).
+  string hyperstor_identity = 18 [json_name = "hyperstor_identity"];
+  google.protobuf.Timestamp hyperstor_identity_expires = 19 [json_name = "hyperstor_identity_expires"];
 }
 
 message ListDatastoresRequest {}
@@ -903,6 +914,12 @@ message CreateDatastoreRequest {
   // own) and its thin pool.
   string volume_group = 8 [json_name = "volume_group"];
   string thin_pool = 9 [json_name = "thin_pool"];
+  // `hyperstor` instead of `path`: its cluster API's addresses, the pool,
+  // and a `mgmt` token from `hyperstorctl token create --role mgmt`, which
+  // glidex enrolls with (never stored; spec/storage.md S20).
+  repeated string hyperstor_api = 10 [json_name = "hyperstor_api"];
+  uint32 hyperstor_pool = 11 [json_name = "hyperstor_pool"];
+  string hyperstor_token = 12 [json_name = "hyperstor_token"];
 }
 message CreateDatastoreResponse {
   Datastore datastore = 1;

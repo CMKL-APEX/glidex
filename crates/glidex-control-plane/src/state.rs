@@ -1121,6 +1121,10 @@ impl VmManager {
         if !self.datastores_supported() {
             return;
         }
+        // The leader keeps hyperstor's certificates renewed (S20) and
+        // removes image volumes left behind (S24).
+        self.renew_hyperstor_identities();
+        self.collect_hyperstor_image_volumes();
         let db = self.store.database();
         let me = self.local_node_id();
         let Ok(all) = record::list(&db) else { return };
@@ -1167,6 +1171,15 @@ impl VmManager {
                     &crate::datastore::lvm::socket_path(),
                     now,
                 )
+            } else if let (true, record::DriverSpec::Hyperstor { map, .. }) =
+                (ds.on_node(&me), &ds.driver)
+            {
+                let driver = crate::datastore::hyperstor::HyperstorDriver::of(
+                    &ds,
+                    self.images.hyperstor_identity(&ds),
+                )
+                .expect("a hyperstor datastore");
+                crate::datastore::hyperstor::probe(&driver, map, now)
             } else if ds.on_node(&me) {
                 probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {
@@ -1419,10 +1432,16 @@ impl VmManager {
 
     /// Record the secrets key's holder, for a cluster to send to and
     /// receive from other servers (spec/tenancy.md §13).
+    /// The holder of the secrets key, once the API's auth service exists.
+    pub(crate) fn secrets_key(&self) -> Option<Arc<dyn crate::cluster::runtime::SecretsKey>> {
+        self.secrets_key.get().cloned()
+    }
+
     pub fn set_secrets_key(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
         if let Some(c) = self.cluster() {
             c.set_secrets(s.clone());
         }
+        self.images.set_secrets(s.clone());
         let _ = self.secrets_key.set(s);
     }
 
@@ -2690,7 +2709,10 @@ impl VmManager {
                 ))
                 .into());
             }
-            let b = self.images.driver(&d)?.stage(&d)?;
+            let b = self
+                .images
+                .driver(&d)?
+                .attach_for_vm(&d, vm.status.takeover_disks)?;
             Ok((b, d))
         };
         let root = vm.config().root_disk.as_deref().map(bind).transpose()?;

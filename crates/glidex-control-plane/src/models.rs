@@ -434,6 +434,15 @@ pub struct VmStatus {
     /// node (`local`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,
+    /// Re-placed from a node forgotten as fenced: its next start takes its
+    /// hyperstor disks' leases even from a holder that still renews
+    /// (spec/storage.md S23); cleared once it has started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takeover_disks: bool,
+    /// Its hyperstor disks, attached on its node for it: detached once it
+    /// has stopped (spec/storage.md §11.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged_disks: Vec<String>,
     #[serde(default)]
     pub observed_generation: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
