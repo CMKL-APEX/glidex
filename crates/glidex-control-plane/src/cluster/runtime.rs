@@ -95,6 +95,9 @@ pub struct Cluster {
     pub(crate) ca: Mutex<Option<Ca>>,
     /// The API router, served to forwarded requests; set once the app exists.
     pub(crate) api: OnceLock<axum::Router>,
+    /// The API's app, for the metadata questions nodes ask the leader
+    /// (spec/workload-identity.md §15).
+    pub(crate) app: OnceLock<Arc<crate::api::App>>,
     stop: tokio::sync::watch::Sender<bool>,
     barrier: Arc<Barrier>,
     /// Servers only: recent applied write sets for watches.
@@ -270,6 +273,7 @@ impl Cluster {
             config,
             ca: Mutex::new(ca),
             api: OnceLock::new(),
+            app: OnceLock::new(),
             secrets: OnceLock::new(),
             stop,
             barrier: Arc::new(Barrier::default()),
@@ -321,6 +325,10 @@ impl Cluster {
     /// the leader. Agents ask any server they know of (§8).
     pub fn set_api(&self, router: axum::Router) {
         let _ = self.api.set(router);
+    }
+
+    pub fn set_app(&self, app: Arc<crate::api::App>) {
+        let _ = self.app.set(app);
     }
 
     pub fn set_secrets(&self, s: Arc<dyn SecretsKey>) {

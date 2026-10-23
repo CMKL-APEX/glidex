@@ -6098,3 +6098,218 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
         v.status.conditions
     );
 }
+
+/// spec/workload-identity.md §15 (WI1b-2): an agent can't sign or record,
+/// so its metad answers come from the leader, asked as the agent (its
+/// certificate on :8842); the leader answers only about a VM placed on the
+/// asking node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agents_metadata_tokens_come_from_the_leader() {
+    let _one = serial().await;
+    let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap();
+    let cfg = test_config();
+    let server = with_secrets(new_cp());
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    // The leader's app, with an issuer and its keys.
+    let mut scfg = test_config();
+    scfg.auth.secrets_key = Some(server._dir.path().join("secrets.kek"));
+    scfg.auth.issuer_base = Some("https://glidex.example.org".into());
+    let sauth =
+        glidex_control_plane::auth::AuthService::disabled_with(server.manager.database(), scfg)
+            .unwrap();
+    sauth
+        .connectors
+        .maintain_signing_keys("local", glidex_control_plane::auth::store::now())
+        .unwrap();
+    server
+        .manager
+        .set_api_app(Arc::new(glidex_control_plane::api::App {
+            manager: server.manager.clone(),
+            auth: sauth,
+        }));
+
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent.manager.node_link().unwrap().clone();
+    assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+
+    // A VM on the agent, running with NIC metadata index 3, as the agent's
+    // controller would report it.
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("md-on-agent", "agent1")),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    wait_for("the VM in the agent's cache", || async {
+        agent.manager.list_vms().await.iter().any(|v| v.id == id)
+    })
+    .await;
+    let mut rec = agent
+        .manager
+        .list_vms()
+        .await
+        .into_iter()
+        .find(|v| v.id == id)
+        .unwrap();
+    rec.resource_version += 1;
+    rec.status.phase = glidex_control_plane::models::VmPhase::Running;
+    rec.status.nics = vec![glidex_control_plane::models::NicStatus {
+        network: "n".into(),
+        nic_index: 0,
+        mac: "02:00:00:00:00:03".into(),
+        port: Some("gx00000000-0".into()),
+        ipv4: None,
+        port_ok: true,
+        metadata_index: Some(3),
+    }];
+    let ws = glidex_control_plane::store::WriteSet {
+        format: 1,
+        origin: glidex_control_plane::store::Origin::Controller,
+        ops: vec![glidex_control_plane::store::Op::Put {
+            table: glidex_control_plane::store::TableId::Vms,
+            key: id.as_bytes().to_vec(),
+            value: serde_json::to_vec(&rec).unwrap(),
+        }],
+    };
+    let c = cluster(&agent);
+    let r = c
+        .client
+        .request(
+            &server.addr.to_string(),
+            hyper::Method::POST,
+            "/cluster/v1/status-write",
+            &[("content-type", "application/json".into())],
+            serde_json::to_vec(&ws).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    wait_for("the agent to see its VM running with index 3", || async {
+        agent
+            .manager
+            .list_vms()
+            .await
+            .iter()
+            .any(|v| v.id == id && v.status.nics.iter().any(|n| n.metadata_index == Some(3)))
+    })
+    .await;
+
+    // The agent's metad router: the leader signs.
+    let mut acfg = test_config();
+    acfg.metad_user = me.name.clone();
+    let aauth =
+        glidex_control_plane::auth::AuthService::disabled_with(agent.manager.database(), acfg)
+            .unwrap();
+    let router =
+        glidex_control_plane::api::metad::router(Arc::new(glidex_control_plane::api::App {
+            manager: agent.manager.clone(),
+            auth: aauth,
+        }));
+    let mut req = Request::post("/v1/identity")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"peer": "169.254.192.3", "audience": "gx-test"}).to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::PeerUid(me.uid.as_raw()));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let jwt = body["token"].as_str().unwrap();
+    let claims: Value = {
+        use base64::Engine as _;
+        let p = jwt.split('.').nth(1).unwrap();
+        serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(p)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert!(
+        claims["sub"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/vm/{id}")),
+        "{claims}"
+    );
+    assert_eq!(
+        claims["iss"], "https://glidex.example.org/d/local",
+        "{claims}"
+    );
+
+    // The leader answers nothing about a VM that isn't the asking node's.
+    let (s, other) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("md-on-server", &server.manager.local_node_id())),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{other}");
+    let other_id = vm_of(&other)["id"].as_str().unwrap().to_string();
+    let q = json!({"vm_id": other_id, "kind": "identity", "audience": "gx-test"});
+    let r = c
+        .client
+        .request(
+            &server.addr.to_string(),
+            hyper::Method::POST,
+            glidex_control_plane::api::metad::LEADER_PATH,
+            &[("content-type", "application/json".into())],
+            serde_json::to_vec(&q).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert!(String::from_utf8_lossy(&r.body).contains("not_placed_here"));
+}
