@@ -292,7 +292,8 @@ impl HyperstorDriver {
             else {
                 continue;
             };
-            if live(image) || v.id != image_volume_id(image) {
+            // One being purged is on its way already.
+            if live(image) || v.id != image_volume_id(image) || v.state != "active" {
                 continue;
             }
             match self.delete(&v.id) {
