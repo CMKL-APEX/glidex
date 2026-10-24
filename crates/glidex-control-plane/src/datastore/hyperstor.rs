@@ -223,6 +223,11 @@ fn block_on<T: Send>(f: impl std::future::Future<Output = T> + Send) -> T {
 }
 
 /// An API error as the image code's.
+/// Whether hyperstor's answer says the volume isn't there (any more).
+fn is_gone(m: &str) -> bool {
+    m.contains("no such volume") || m.contains("not found") || m.contains("no volume ")
+}
+
 fn api_err(e: connectrpc::ConnectError) -> ImageError {
     use connectrpc::ErrorCode as C;
     let msg = e.message.clone().unwrap_or_else(|| "request failed".into());
@@ -413,9 +418,7 @@ impl HyperstorDriver {
         });
         match r {
             // Gone already.
-            Err(ImageError::Io(m)) if m.contains("no such volume") || m.contains("not found") => {
-                Ok(())
-            }
+            Err(ImageError::Io(m)) if is_gone(&m) => Ok(()),
             r => r,
         }
     }
@@ -452,9 +455,7 @@ impl HyperstorDriver {
         match r {
             // Not in the trash (purged already, or never deleted).
             Err(ImageError::Busy(_)) => Ok(()),
-            Err(ImageError::Io(m)) if m.contains("no such volume") || m.contains("not found") => {
-                Ok(())
-            }
+            Err(ImageError::Io(m)) if is_gone(&m) => Ok(()),
             r => r,
         }
     }
@@ -467,24 +468,31 @@ impl HyperstorDriver {
         self.purge(id)
     }
 
-    /// Makes `id` free to create: a volume a creation left under it is
-    /// discarded, and its purge waited for (S25).
+    /// Makes `id` free to create (S25): a volume a creation left under it
+    /// is deleted and purged, and the purge waited for. A volume being
+    /// purged (`deleting`) still holds the id, out of the trash.
     fn free_id(&self, id: &str) -> Result<(), ImageError> {
-        if self.volume(id)?.is_some() {
-            self.delete(id)?;
-        }
-        if !self.in_trash(id)? {
-            return Ok(());
-        }
-        self.purge(id)?;
+        let (mut deleted, mut purged) = (false, false);
         for _ in 0..120 {
-            std::thread::sleep(Duration::from_secs(1));
-            if !self.in_trash(id)? {
-                return Ok(());
+            match self.volume(id)? {
+                Some(v) if v.state == "active" && !deleted => {
+                    self.delete(id)?;
+                    deleted = true;
+                    continue;
+                }
+                // Being purged (or a delete still landing): wait.
+                Some(_) => {}
+                None if !self.in_trash(id)? => return Ok(()),
+                None if !purged => {
+                    self.purge(id)?;
+                    purged = true;
+                }
+                None => {}
             }
+            std::thread::sleep(Duration::from_secs(1));
         }
         Err(ImageError::NotReady(format!(
-            "hyperstor volume {id} is still being purged"
+            "hyperstor volume {id} is still being deleted; its id is taken until then"
         )))
     }
 
