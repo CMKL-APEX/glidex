@@ -308,6 +308,29 @@ impl HyperstorDriver {
         F: Fn(hyperstor_api::ClusterServiceClient<connectrpc::client::HttpClient>) -> Fut + Sync,
         Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send,
     {
+        self.call_on(hyperstor_api::ClusterServiceClient::new, f)
+    }
+
+    /// [`Self::call`] on the trash's service.
+    fn trash<T, F, Fut>(&self, f: F) -> Result<T, ImageError>
+    where
+        T: Send,
+        F: Fn(hyperstor_api::TrashServiceClient<connectrpc::client::HttpClient>) -> Fut + Sync,
+        Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send,
+    {
+        self.call_on(hyperstor_api::TrashServiceClient::new, f)
+    }
+
+    fn call_on<C, T, F, Fut>(
+        &self,
+        make: fn(connectrpc::client::HttpClient, connectrpc::client::ClientConfig) -> C,
+        f: F,
+    ) -> Result<T, ImageError>
+    where
+        T: Send,
+        F: Fn(C) -> Fut + Sync,
+        Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send,
+    {
         let id = self.identity.as_ref().ok_or_else(|| {
             ImageError::NotReady(
                 "hyperstor volumes are managed from glidex's servers, which hold its identity"
@@ -325,7 +348,7 @@ impl HyperstorDriver {
                 };
                 let config =
                     connectrpc::client::ClientConfig::new(uri).with_default_timeout(API_TIMEOUT);
-                let client = hyperstor_api::ClusterServiceClient::new(
+                let client = make(
                     connectrpc::client::HttpClient::with_tls(tls.clone()),
                     config,
                 );
@@ -397,6 +420,74 @@ impl HyperstorDriver {
         }
     }
 
+    /// Whether volume `id` is in hyperstor's trash, where its id stays
+    /// taken until it is purged.
+    fn in_trash(&self, id: &str) -> Result<bool, ImageError> {
+        let pool = self.pool;
+        let items = self.trash(|c| async move {
+            c.list_trash(pb::ListTrashRequest {
+                pool,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned().items)
+        })?;
+        Ok(items.iter().any(|i| i.kind == "volume" && i.id == id))
+    }
+
+    /// Purges volume `id` from the trash; it goes in the background.
+    fn purge(&self, id: &str) -> Result<(), ImageError> {
+        let id = id.to_string();
+        let r = self.trash(|c| {
+            let id = id.clone();
+            async move {
+                c.purge_from_trash(pb::PurgeFromTrashRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await
+                .map(|_| ())
+            }
+        });
+        match r {
+            // Not in the trash (purged already, or never deleted).
+            Err(ImageError::Busy(_)) => Ok(()),
+            Err(ImageError::Io(m)) if m.contains("no such volume") || m.contains("not found") => {
+                Ok(())
+            }
+            r => r,
+        }
+    }
+
+    /// Removes a volume a creation left (it never held a disk's data) for
+    /// good, so that its id can be made again (spec/storage.md S25):
+    /// deleted, it would stay in hyperstor's trash, and its id with it.
+    fn discard(&self, id: &str) -> Result<(), ImageError> {
+        self.delete(id)?;
+        self.purge(id)
+    }
+
+    /// Makes `id` free to create: a volume a creation left under it is
+    /// discarded, and its purge waited for (S25).
+    fn free_id(&self, id: &str) -> Result<(), ImageError> {
+        if self.volume(id)?.is_some() {
+            self.delete(id)?;
+        }
+        if !self.in_trash(id)? {
+            return Ok(());
+        }
+        self.purge(id)?;
+        for _ in 0..120 {
+            std::thread::sleep(Duration::from_secs(1));
+            if !self.in_trash(id)? {
+                return Ok(());
+            }
+        }
+        Err(ImageError::NotReady(format!(
+            "hyperstor volume {id} is still being purged"
+        )))
+    }
+
     fn expand(&self, id: &str, size: u64) -> Result<(), ImageError> {
         let id = id.to_string();
         self.call(|c| {
@@ -441,23 +532,24 @@ impl HyperstorDriver {
         file: &Path,
         size: u64,
     ) -> Result<(), ImageError> {
-        self.create(id, name, size)?;
+        // Converted first, so that the volume exists only while it is
+        // written (holding its lease: another worker sees it filling).
         let tmp = tempfile::Builder::new()
             .prefix(".gx-hyperstor")
             .tempdir()
             .map_err(|e| ImageError::Io(format!("temporary directory: {e}")))?;
         let raw = tmp.path().join("image.raw");
-        let r = qemu_img::convert(file, DiskFormat::Qcow2, &raw, DiskFormat::Raw).and_then(|()| {
-            write_region_with(
-                &self.ctl,
-                Path::new(&tool_path(&self.map, id)),
-                &raw,
-                0,
-                true,
-            )
-        });
+        qemu_img::convert(file, DiskFormat::Qcow2, &raw, DiskFormat::Raw)?;
+        self.create(id, name, size)?;
+        let r = write_region_with(
+            &self.ctl,
+            Path::new(&tool_path(&self.map, id)),
+            &raw,
+            0,
+            true,
+        );
         if r.is_err() {
-            let _ = self.delete(id);
+            let _ = self.discard(id);
         }
         r
     }
@@ -474,7 +566,16 @@ impl HyperstorDriver {
     ) -> Result<(String, u64), ImageError> {
         let id = image_volume_id(image_id);
         let deadline = std::time::Instant::now() + Duration::from_secs(30 * 60);
+        // Each round makes progress or waits; a few rounds of another
+        // worker's volume coming and going, and it's that worker's error.
+        let mut rounds = 0;
         loop {
+            rounds += 1;
+            if rounds > 20 {
+                return Err(ImageError::Busy(format!(
+                    "image {image_id}'s volume keeps changing under this worker"
+                )));
+            }
             match self.volume(&id)? {
                 Some(_) => {
                     if let Some(epoch) = self.golden(&id)? {
@@ -484,9 +585,11 @@ impl HyperstorDriver {
                     let filling = v.as_ref().is_some_and(|v| !v.attached_by.is_empty());
                     if !filling {
                         // Left unfinished by a worker that stopped: redo it.
-                        self.delete(&id)?;
+                        self.free_id(&id)?;
                         continue;
                     }
+                    // Waiting doesn't count as a round.
+                    rounds -= 1;
                     if std::time::Instant::now() > deadline {
                         return Err(ImageError::Busy(format!(
                             "image {image_id}'s volume is still being filled"
@@ -495,6 +598,8 @@ impl HyperstorDriver {
                     std::thread::sleep(Duration::from_secs(2));
                 }
                 None => {
+                    // Free if a deleted one is still in the trash.
+                    self.free_id(&id)?;
                     match self.fill_from_image(&id, &self.image_volume_name(image_id), file, size) {
                         Ok(()) => {}
                         // Another worker made it first.
@@ -667,9 +772,7 @@ impl StorageDriver for HyperstorDriver {
         // Left by an attempt that didn't finish: there is no rename to
         // build it aside (a volume under the disk's id is not yet the
         // disk's until this returns).
-        if self.volume(&id)?.is_some() {
-            self.delete(&id)?;
-        }
+        self.free_id(&id)?;
         let made = match source {
             VolumeSource::Blank => self.create(&id, &disk.name, size),
             VolumeSource::Image {
@@ -712,7 +815,7 @@ impl StorageDriver for HyperstorDriver {
         };
         let r = made.and_then(|()| prepare(&self.tool_binding_of(&id)));
         if r.is_err() {
-            let _ = self.delete(&id);
+            let _ = self.discard(&id);
         }
         r
     }

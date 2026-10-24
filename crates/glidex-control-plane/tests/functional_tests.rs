@@ -2936,6 +2936,35 @@ async fn root_disk_e2e(hypervisor: &str, image_env: &str, datastore: Value) {
 
     let (s, v) = request(&app, "POST", "/datastores", Some(datastore)).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
+    // A deleted volume keeps its id in hyperstor's trash: plant one under
+    // the image's volume id, as a failed fill leaves it, and the driver
+    // must purge it before making the volume (S25), not loop on "exists".
+    if let (false, Ok(tls)) = (lvm, std::env::var("GLIDEX_TEST_HYPERSTOR_ADMIN_TLS")) {
+        let api = std::env::var("GLIDEX_TEST_HYPERSTOR_API").unwrap();
+        let ctl = std::env::var("GLIDEX_HYPERSTORCTL").unwrap_or_else(|_| "hyperstorctl".into());
+        let hs = |args: &[&str]| {
+            run_ok(
+                Command::new(&ctl)
+                    .args(["--api", &api, "--tls", &tls])
+                    .args(args),
+            )
+        };
+        let vol = glidex_control_plane::datastore::hyperstor::image_volume_id(&img_id);
+        hs(&[
+            "create-volume",
+            "--size",
+            "4M",
+            "--name",
+            "leftover",
+            "--id",
+            &vol,
+        ]);
+        hs(&["delete-volume", "--id", &vol]);
+        assert!(
+            hs(&["trash", "list"]).contains(&vol),
+            "planted in the trash"
+        );
+    }
     let username = "gxtester";
     let password = uuid::Uuid::new_v4().simple().to_string();
     let (s, v) = request(
