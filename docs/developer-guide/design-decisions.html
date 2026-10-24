@@ -1,0 +1,1183 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Design decisions and trade-offs - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-a4ecf34d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/developer-guide/design-decisions.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="design-decisions-and-trade-offs"><a class="header" href="#design-decisions-and-trade-offs">Design decisions and trade-offs</a></h1>
+<p>This page explains why Glidex is built the way it is. It covers the
+choices a contributor is most likely to question, says what each one
+costs, and says when it should be looked at again. For what the parts
+are and how they talk to each other, see <a href="architecture.html">Architecture</a>.
+For how specific mechanisms work (the write lane, placement, the
+metering ledger), see <a href="algorithms.html">Algorithms</a>. For how Glidex
+compares with other products, see <a href="comparison.html">Glidex compared</a>.</p>
+<h2 id="how-decisions-are-recorded"><a class="header" href="#how-decisions-are-recorded">How decisions are recorded</a></h2>
+<p>Decisions live in the design specs in
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/spec"><code>spec/</code></a>, not in this
+book. Each spec has a decision table near the top, with a number, the
+decision and the reason:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Spec</th><th>Numbering</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md">reconciliation.md</a></td><td>D1–D20</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md">clustering.md</a></td><td>D1–D22</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md">security.md</a></td><td>decisions 1–19</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md">tenancy.md</a></td><td>D1–D71</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md">grpc.md</a></td><td>G-D1–G-D12</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md">storage.md</a></td><td>S1–S19</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/networking.md">networking.md</a></td><td>decisions 1–10</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md">kernel-boot.md</a></td><td>K1–K13</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md">host-topology.md</a></td><td>H1–H19</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md">gpu-vms.md</a></td><td>G1–G10</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md">metering.md</a></td><td>D1–D18</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md">passkeys.md</a></td><td>P1–P6</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/tailscale-tls.md">tailscale-tls.md</a></td><td>T1–T11</td></tr>
+<tr><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/gxctl-auth.md">gxctl-auth.md</a></td><td>A1–A9</td></tr>
+</tbody>
+</table>
+</div>
+<p>The numbers are scoped to their spec, so “D8” alone is ambiguous. The
+specs write <code>reconciliation.md D8</code>, and so does this page. Where the
+reason for a single rule doesn’t fit a table, the spec carries a <code>Why:</code>
+or <code>Invariant:</code> note next to it. Settled open questions are kept, marked
+<strong>Settled</strong>, with the answer. Specs also record what they <em>rejected</em>, in
+“Settled questions” or “Why not” sections (for example
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#121-why-not-first-s1">storage.md §12.1</a>).</p>
+<p><strong>To change a decision:</strong></p>
+<ol>
+<li>Open a pull request that edits the spec first: change the decision’s
+row (keep its number) or add a new row with the next free number, and
+give the reason. If a decision is replaced, say so in the row rather
+than deleting it silently.</li>
+<li>List the other specs the change touches. Larger designs do this in a
+section of their own (for example clustering.md §16).</li>
+<li>Land the code in the PR of the milestone that changes the behaviour,
+and update the spec’s status table there.</li>
+</ol>
+<p>Many past changes were reviewed this way: a “Spec: …” pull request, then
+one PR per milestone. See <a href="contributing.html">Contributing</a> for the rest
+of the workflow.</p>
+<p>The “Why” and “Alternatives considered” below come from the specs and
+from pull request descriptions. Where the project has not written a
+reason down, this page says so.</p>
+<h2 id="platform"><a class="header" href="#platform">Platform</a></h2>
+<h3 id="rust-and-one-control-plane-binary"><a class="header" href="#rust-and-one-control-plane-binary">Rust, and one control-plane binary</a></h3>
+<p><strong>Decision.</strong> Glidex is written in Rust. One binary,
+<code>glidex-control-plane</code>, runs on every host. It always runs the <strong>node</strong>
+role (VM, disk and image controllers, metering sampler, netd sync). On
+server hosts it also runs the <strong>server</strong> role (API, Raft, scheduler,
+cluster controllers, ledger). A standalone host runs both roles in one
+process
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#3-decisions">clustering.md D4</a>).
+Small companion binaries exist only where a separate process is needed:
+the per-VM shim, the root helpers, <code>glidex-ui</code> and <code>gxctl</code>.</p>
+<p><strong>Why.</strong> The maintainers chose Rust for two reasons. <strong>Safety:</strong> memory
+and thread safety without a garbage collector, for a long-running
+service that holds root-adjacent privileges and talks to hypervisors,
+OVS and the store. <strong>AI-friendly code generation:</strong> much of Glidex is
+written with AI assistance, and Rust’s strict types and compiler checks
+catch generated mistakes at build time instead of in production. The
+specs also show a steady preference for pure-Rust dependencies over C
+ones. ReDB was
+“chosen over SQLite to avoid a C dependency”
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md#storage">data-model.md</a>).
+Protobuf code is generated by <code>protox</code> so that <code>cargo</code> alone builds the
+workspace (G-D9). WebAuthn is checked in “pure Rust, no OpenSSL”
+(passkeys.md §7). Cloud Hypervisor, the default hypervisor, is also
+Rust.
+For one binary, the reason is recorded: the node role is the host-facing
+code, unchanged in substance, so a cluster adds the server role around
+it rather than a second program. README goal 4 asks for minimal host
+dependencies, and clustering.md D1 adds “no new service to install,
+secure or upgrade”.</p>
+<p><strong>Alternatives considered.</strong> Separate binaries per role (an API server
+plus a node agent, as many orchestrators do). The specs don’t argue
+against this directly. D4’s reason is that the node role is the same
+code a standalone host already runs.</p>
+<p><strong>Consequences.</strong> Upgrades are one binary per host, and a standalone
+host carries no cluster cost (clustering.md D5). The binary is large and
+every host builds or receives all of it, including server-only code.
+Mixed versions during rolling upgrades are handled by versioned API
+packages (G-D7) and by write sets that replicate bytes, not logic (see
+<a href="#leader-computed-write-sets">below</a>).</p>
+<h2 id="hypervisors"><a class="header" href="#hypervisors">Hypervisors</a></h2>
+<h3 id="cloud-hypervisor-and-qemu-with-one-feature-set-driven-directly"><a class="header" href="#cloud-hypervisor-and-qemu-with-one-feature-set-driven-directly">Cloud Hypervisor and QEMU, with one feature set, driven directly</a></h3>
+<p><strong>Decision.</strong> Glidex supports two hypervisors, Cloud Hypervisor (the
+default) and QEMU, behind one stateless driver trait
+(<code>HypervisorDriver</code>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/hypervisors.md">hypervisors.md</a>).
+Callers see the same features on both (README goal 1). Glidex builds the
+hypervisor command line itself and talks to the hypervisor’s own API
+socket (Cloud Hypervisor’s HTTP API, QEMU’s QMP). There is no libvirt.</p>
+<p><strong>Why.</strong> Goal 1 of
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md#goals">spec/README.md</a>
+is “uniform microVM control across hypervisors … including VFIO PCI
+passthrough and interactive console I/O”. The parity work was done
+explicitly: PR #2 (“Bring QEMU to parity with Cloud Hypervisor”) gave
+QEMU tap and vhost-user NICs, UEFI boot of cloud images, the generated
+cloud-init seed and graceful stop, and added the <code>qemu_*</code> end-to-end
+tests. The driver is stateless (everything it needs is a socket path),
+so a restarted control plane manages a VM exactly as the one that
+launched it did. “Launch = configured” (reconciliation.md D9): both
+hypervisors get their whole configuration on the command line, so
+there is no half-configured instance and no crash window between
+“launched” and “booted”.</p>
+<p>Libvirt was set aside for two reasons, in the maintainers’ words: it is
+XML-based (a domain definition format from older designs, which every
+feature would have to be expressed through), and it brings many external
+dependencies onto every host, against README goal 4 (minimal host
+dependencies). What the design needs from a VM runtime is also recorded,
+and it is specific: a supervisor per VM that owns
+the console PTY and the exit record (reconciliation.md D1), restart
+policy in one place (D6), and everything needed to adopt an instance
+persisted in its runtime directory (D7). Glidex runs alongside libvirt
+on the same host, and treats devices a libvirt-managed QEMU holds as
+not ready (host-topology.md §5, PR #133).</p>
+<p><strong>Alternatives considered.</strong></p>
+<ul>
+<li><strong>Firecracker</strong> was considered first and supported early on, then
+removed (commit “Drop Firecracker support”) because it has no PCI
+passthrough, so no GPUs for VMs. It also has no UEFI firmware boot,
+which booting stock distro cloud images through EDK2 needs. It may come
+back later as the VMM of a lightweight, container-compatible layer,
+where its small footprint and fast start matter more than devices.
+Old Firecracker records are skipped at load, not treated as fatal
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md">data-model.md</a>).</li>
+<li><strong>One hypervisor only (Cloud Hypervisor).</strong> QEMU is kept because it
+can also <em>emulate</em>: run a VM of another architecture on a host, or run
+VMs on a host without KVM, in software (TCG). Cloud Hypervisor needs
+KVM and the host’s own architecture. This is the maintainers’ reason
+for keeping QEMU; emulation isn’t wired up yet. Today the QEMU driver
+runs <code>qemu-system-x86_64</code> with <code>-enable-kvm</code>, and the scheduler places
+a VM only on nodes of its architecture.</li>
+</ul>
+<p><strong>Consequences.</strong> Every feature is built and tested twice. The specs
+are full of per-backend details: Cloud Hypervisor needs <code>CAP_NET_ADMIN</code>
+for taps (networking.md decision 9), QEMU needs a per-VM UEFI variable
+store, vCPU pinning differs (host-topology.md H9), and Cloud Hypervisor
+reports no usable disk latency (metering.md D17). Features that only one
+backend can offer have to wait or be refused. Revisit if one backend
+falls behind on a feature users need, or if maintaining parity starts
+to block features.</p>
+<h2 id="vm-lifecycle"><a class="header" href="#vm-lifecycle">VM lifecycle</a></h2>
+<h3 id="a-shim-per-vm-in-its-own-systemd-unit"><a class="header" href="#a-shim-per-vm-in-its-own-systemd-unit">A shim per VM, in its own systemd unit</a></h3>
+<p><strong>Decision.</strong> Each running VM is supervised by its own
+<code>glidex-vm-shim</code>. The shim is the hypervisor’s parent, owns the PTY
+master, the console socket and log, and records the exit
+(reconciliation.md D1). Under systemd the shim runs as
+<code>glidex-vm@&lt;vm-id&gt;.service</code>, started by the control plane over systemd’s
+D-Bus API (<code>zbus</code>) and allowed by a polkit rule (D2). systemd never
+restarts a VM (<code>Restart=no</code>); restart policy belongs to the VM
+controller (D6).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>Whatever holds the PTY master and reaps the hypervisor must not be the
+control plane, or the guest dies, or loses console output, with it
+(D1). This makes “VMs survive control-plane restarts” (README goal 2)
+true: stopping, crashing or upgrading the control plane leaves guests
+running, and it adopts them on startup.</li>
+<li>Only a separate unit escapes the control plane’s cgroup. A unit per VM
+gives per-VM accounting, journal and shutdown ordering (D2). Metering
+reads CPU and memory from that cgroup (metering.md D3).</li>
+<li>Two supervisors with restart policies fight, and only the controller
+knows why a VM exited (D6).</li>
+<li>D-Bus rather than <code>systemctl</code>, for typed errors and unit signals.
+Polkit rather than netd, so netd stays networking-only (D2).</li>
+</ul>
+<p><strong>Alternatives considered.</strong></p>
+<ul>
+<li><strong>Hypervisors as children of the control plane</strong>, which is what Glidex
+did before PR #4. A control-plane restart killed or deafened every VM.</li>
+<li><strong><code>KillMode=process</code> on the control plane’s unit</strong>: it leaves VMs in a
+cgroup systemd believes is stopped, without accounting (D2).</li>
+<li>The same split exists elsewhere: containerd-shim and conmon (D1).</li>
+</ul>
+<p><strong>Consequences.</strong> The control plane never holds a process handle. It
+reaches a VM only through files and sockets in the VM’s runtime
+directory, and everything needed to talk to an instance is persisted
+(D7). Adoption after a restart is therefore the normal code path, not a
+recovery path. Before any launch the controller must positively
+establish that no instance is live, and reports <code>Unknown</code> when it can’t
+(D8). The price is one more process and one systemd unit per VM, a
+polkit rule the installer must install, and a second runner (a
+double-forked shim in its own session) for development and tests.</p>
+<h3 id="desired-state-and-level-triggered-controllers"><a class="header" href="#desired-state-and-level-triggered-controllers">Desired state and level-triggered controllers</a></h3>
+<p><strong>Decision.</strong> Every persisted resource is <code>{meta, spec, status}</code>. The
+API writes <code>spec</code>; only controllers write <code>status</code> (D3). Controllers are
+level-triggered, fed by a deduplicating work queue and a periodic resync
+(D4). Admission (validation, authorization, quotas, exclusive claims)
+stays synchronous; host actions are asynchronous and report in <code>status</code>
+(D5).</p>
+<p><strong>Why.</strong> “The user wants it running” survives “it isn’t running right
+now” (D3). Missed events are harmless, and the global lock that used to
+be held across hypervisor I/O is gone (D4). Invariants that protect data
+(exclusive disk use, quotas) must hold at commit time, not eventually
+(D5).</p>
+<p><strong>Alternatives considered.</strong> The earlier synchronous design, where a
+request did the host action under a global write lock (PR #4 describes
+the change).</p>
+<p><strong>Consequences.</strong> API writes answer <code>202</code> unless the caller passes
+<code>?wait</code>. <code>?wait</code> returns the same errors the synchronous calls used to
+return, so clients kept their behaviour (D20). Clients have to wait on
+<code>Ready</code>, which means “converged to the spec”, including for a VM that
+should be stopped (D13).</p>
+<h2 id="privilege-separation"><a class="header" href="#privilege-separation">Privilege separation</a></h2>
+<h3 id="an-unprivileged-control-plane-with-small-root-helpers"><a class="header" href="#an-unprivileged-control-plane-with-small-root-helpers">An unprivileged control plane with small root helpers</a></h3>
+<p><strong>Decision.</strong> The control plane runs as the unprivileged user <code>glidex</code>,
+under a tight systemd sandbox, and runs no hypervisor itself. Work that
+needs root goes to small helpers, each over a Unix socket with
+peer-credential checks and a per-operation allow-list:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Helper</th><th>Does</th><th>Spec</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex-netd</code></td><td>OVS, bridges, uplinks, NAT, DHCP, VM ports, <code>vfio-pci</code> binding</td><td>networking.md decision 1, security.md §8</td></tr>
+<tr><td><code>glidex-authd</code></td><td>PAM password checks</td><td>security.md decision 6, §5.3</td></tr>
+<tr><td><code>glidex-stord</code></td><td>LVM volumes and device access for VM units</td><td>storage.md S12, S17, S18</td></tr>
+<tr><td>polkit rule</td><td>lets <code>glidex</code> start and stop <code>glidex-vm@</code> units</td><td>reconciliation.md D2</td></tr>
+</tbody>
+</table>
+</div>
+<p>The web UI’s server, <code>glidex-ui</code>, runs as its own user with no authority
+of its own: it serves files and proxies <code>/api</code> (security.md decision 4).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>netd is root “from the first milestone” (networking.md decision 1).
+The control plane is the policy point for users; netd only decides
+which local processes may ask it for what (security.md decision 2,
+§8), so netd doesn’t need Cedar.</li>
+<li>PAM: a non-root process can’t check other users’ passwords with
+<code>pam_unix</code>. authd is separate from netd “so netd stays network-only”
+(security.md decision 6).</li>
+<li>stord: creating and activating logical volumes needs root, and “the
+control plane must stay unprivileged”. Its allow-list of volume groups
+and its volume-name rule mean the control plane can make and remove
+Glidex’s own volumes and nothing else (storage.md S17).</li>
+<li>Local callers are identified by <code>SO_PEERCRED</code>, never by claims in the
+request (security.md decision 5).</li>
+</ul>
+<p><strong>Alternatives considered.</strong> Running the control plane as root (the
+simplest option, and common for VM managers); one root helper for
+everything. The specs reject the second explicitly, each time keeping a
+helper to one job.</p>
+<p><strong>Consequences.</strong> Each helper is a protocol to version and a unit to
+install. Some things the control plane can’t do for itself: it can’t
+widen its own sandbox, which is why datastores must be mounted under
+one root, <code>/srv/glidex</code> (storage.md S11), and why per-VM CPU binding is
+done by the shim rather than by systemd drop-ins (host-topology.md H9).
+Cloud Hypervisor still needs <code>cap_net_admin</code> on its binary to bring taps
+up (networking.md decision 9). See <a href="../operator-guide/access-control.html">Access control</a>
+and <a href="../operator-guide/installation.html">Installation</a> for what the
+installer sets up.</p>
+<h2 id="state-and-clustering"><a class="header" href="#state-and-clustering">State and clustering</a></h2>
+<h3 id="redb-as-the-store"><a class="header" href="#redb-as-the-store">ReDB as the store</a></h3>
+<p><strong>Decision.</strong> All control-plane state is in one ReDB file. Values are
+serde JSON.</p>
+<p><strong>Why.</strong> ReDB is an embedded, copy-on-write, ACID key-value store,
+“chosen over SQLite to avoid a C dependency and over sled for its
+simpler transactional model”
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md#storage">data-model.md</a>).
+See the <a href="https://github.com/cberner/redb">redb project</a>.</p>
+<p><strong>Alternatives considered.</strong> SQLite and sled, as above. An external
+database is discussed in the next section.</p>
+<p><strong>Consequences.</strong> No SQL: queries are code over tables, and migrations
+are code with a schema version. Every write goes through one store API
+(<code>Db</code>/<code>Tx</code>), which records the write set; a lint in CI
+(<code>scripts/lint-store-writes.sh</code>) keeps it that way.</p>
+<h3 id="embedded-raft-openraft-not-etcd-or-an-external-database"><a class="header" href="#embedded-raft-openraft-not-etcd-or-an-external-database">Embedded Raft (openraft), not etcd or an external database</a></h3>
+<p><strong>Decision.</strong> In a cluster, the ReDB database is replicated by Raft
+embedded in the control plane, using the
+<a href="https://github.com/databendlabs/openraft"><code>openraft</code></a> crate, pinned to
+an exact version. The state machine is the existing ReDB database
+(clustering.md D1). The store and its Raft integration are the
+<code>glidex-raftstore</code> crate.</p>
+<p><strong>Why.</strong> “No new service to install, secure or upgrade.” Every table,
+migration and test keeps working on ReDB (D1). Losing a minority of
+servers doesn’t stop management, and VMs keep running through any
+control-plane outage anyway (clustering.md §2).</p>
+<p><strong>Alternatives considered</strong> (from D1):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Why not</th></tr>
+</thead>
+<tbody>
+<tr><td>etcd</td><td>A separate daemon, value-size and per-transaction operation limits, and a rewrite of every table access</td></tr>
+<tr><td>dqlite (Incus’s choice)</td><td>C, and a move to SQL</td></tr>
+<tr><td>An external database such as PostgreSQL</td><td>Not discussed directly; it falls under the “no new external database” goal (clustering.md §2)</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Consequences.</strong> Glidex owns its consensus code paths: snapshots,
+membership changes, and a voter that lost its state must never rejoin as
+the same voter (D18). The replicated store holds metering history,
+about 12 MB per VM, on every server; that sets the ceiling of roughly
+5,000 VMs (§4.1). Past it, the plan is to move metering history out of
+the replicated store first. <code>openraft</code> is pre-1.0 and is upgraded
+deliberately.</p>
+<h3 id="leader-computed-write-sets"><a class="header" href="#leader-computed-write-sets">Leader-computed write sets</a></h3>
+<p><strong>Decision.</strong> A write runs once, on the leader, against its applied
+state. The result, an ordered list of <code>put</code>/<code>delete</code> operations on table
+keys, is the Raft log entry. Applying an entry is a pure byte operation
+(D2). Writes go through one lane on the leader: a write’s closure runs
+only after the previous write is applied locally (D3).</p>
+<p><strong>Why.</strong> Admission, quotas and claims need serialized read-then-write
+logic. Replicating <em>commands</em> would need identical logic, clocks and
+UUID generation on every replica and every version, which breaks under
+rolling upgrades. Byte write sets are deterministic by construction and
+version-independent (D2). With one lane, the closure reads exactly the
+state its write set will apply to, so no conflict detection is needed;
+control-plane write rates of tens per second fit in a LAN round trip
+(D3).</p>
+<p><strong>Alternatives considered.</strong> Command replication (above). Optimistic
+concurrency with conflict detection, which the single lane makes
+unnecessary.</p>
+<p><strong>Consequences.</strong> Throughput is bounded by one lane: about 150–300
+writes per second (§4.1). Status is written only when it changes, or a
+resync round alone would flood the log. Pipelining the lane is listed
+as later work (§18). See <a href="algorithms.html">Algorithms</a> for how the lane
+works.</p>
+<h3 id="standalone-stays-non-raft"><a class="header" href="#standalone-stays-non-raft">Standalone stays non-Raft</a></h3>
+<p><strong>Decision.</strong> A single host keeps writing ReDB directly. The store has
+two modes behind one API, local and replicated, and both take the same
+write sets. <code>gxctl cluster init</code> switches a host to replicated with one
+voter (D5).</p>
+<p><strong>Why.</strong> Existing single-host users carry no Raft cost and no risk until
+they opt in, and the code paths stay common (D5).</p>
+<p><strong>Consequences.</strong> Both modes must stay tested. Joining a cluster is an
+explicit, backed-up step (clustering.md §5.1), not a default.</p>
+<h3 id="servers-and-agents"><a class="header" href="#servers-and-agents">Servers and agents</a></h3>
+<p><strong>Decision.</strong> A cluster has 1, 3 or 5 <strong>server</strong> hosts (Raft voters,
+API, cluster controllers) and any number of <strong>agent</strong> hosts (node role
+only) (clustering.md §2). Agents serve no API: an agent’s web UI
+redirects browsers to a server (host-page.md W5). Node liveness is held
+in the leader’s memory; only transitions go through Raft (D7). There is
+no automatic failover of VMs (D8), and placement is sticky (D6).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>Raft needs an odd, small voter set; the rest of the hosts only run
+VMs.</li>
+<li>Root on a server already holds the whole database; root on an agent
+holds only its own VMs and must not escalate to the cluster, so
+break-glass access is honoured on servers only (D14).</li>
+<li>A heartbeat per node every 5 s through Raft would be pure log churn
+(D7).</li>
+<li>A partitioned node may still be running its VMs. Starting copies
+elsewhere would put two writers on one disk (D8), and “at most one
+instance per VM, ever” (reconciliation.md D8) comes first.</li>
+<li>One origin for the browser: SSO, passkeys and cookies work
+(host-page.md W5).</li>
+</ul>
+<p><strong>Alternatives considered.</strong> Automatic restart of a lost host’s VMs
+elsewhere, rejected without fencing (clustering.md §2, D8).</p>
+<p><strong>Consequences.</strong> When a host dies, its VMs are <code>Unknown</code> until an
+operator acts. A VM whose disks are all on shared datastores can then be
+placed again after <code>node forget --fenced</code> (storage.md S10). Fencing and
+automatic evacuation are later work (§18). See
+<a href="../operator-guide/clusters.html">Clusters</a>.</p>
+<h2 id="api"><a class="header" href="#api">API</a></h2>
+<h3 id="one-service-layer-under-rest-and-rpc"><a class="header" href="#one-service-layer-under-rest-and-rpc">One service layer under REST and RPC</a></h3>
+<p><strong>Decision.</strong> Every operation is a transport-neutral service function.
+REST and RPC adapters only decode, call it and encode (grpc.md G-D1).
+RPCs are served on the same listeners and port as REST (G-D2). REST/JSON
+stays permanently, for curl, scripts and HTTP-only protocols (OIDC
+callbacks, SCIM, the console WebSocket) (grpc.md §1).</p>
+<p><strong>Why.</strong> Authorization, quota and audit are written once. “Two copies of
+a Cedar check is exactly the kind of drift that becomes a cross-tenant
+bug” (G-D1). One port means no new firewall rule or certificate name, and
+the existing TLS, pinning and peer-uid identification are reused (G-D2).
+The RPC side gives typed contracts, generated clients, a compatibility
+check in CI, and server streaming for watch (grpc.md §1).</p>
+<p><strong>Alternatives considered.</strong> Hand-written REST types mirrored by hand in
+<code>gxctl</code>, which is what Glidex had before (grpc.md §1). gRPC as a
+replacement for REST, rejected: REST stays.</p>
+<p><strong>Consequences.</strong> Every operation declares whether it reads or writes,
+because every RPC is a <code>POST</code> and cluster forwarding must still tell
+reads from writes (G-D6). See <a href="../api/README.html">API overview</a>.</p>
+<h3 id="proto-as-the-source-of-truth"><a class="header" href="#proto-as-the-source-of-truth">Proto as the source of truth</a></h3>
+<p><strong>Decision.</strong> Every API type is defined in protobuf, in the <code>glidex-api</code>
+crate. REST JSON is the proto3 JSON form of the same messages (G-D3),
+with field names in <code>snake_case</code> (G-D11). Packages are versioned,
+<code>glidex.&lt;area&gt;.v1</code> (G-D7). <code>buf</code> lints, checks breaking changes and
+generates TypeScript; Rust code is generated in <code>build.rs</code> from a
+descriptor set made by <code>protox</code> (G-D9).</p>
+<p><strong>Why.</strong> Two type systems for one API drift apart; one definition serves
+REST, gRPC, <code>gxctl</code> and the UI (G-D3). proto3 JSON defaults to
+<code>lowerCamelCase</code>, and the REST API is <code>snake_case</code>; declaring the name in
+the proto keeps every generator on the same names (G-D11). Contributors
+and packaging build with <code>cargo</code> alone, with no <code>protoc</code> or <code>buf</code> (G-D9).
+Rolling upgrades run mixed versions, so field numbers and names are the
+compatibility contract (G-D7).</p>
+<p><strong>Alternatives considered.</strong> Rewriting descriptors at build time to fix
+JSON names (rejected in G-D11). A transition release carrying both REST
+shapes, waived because no release had shipped the proto shapes yet
+(G-D12).</p>
+<p><strong>Consequences.</strong> Porting a family of endpoints changed its REST shape
+once (G5). <code>build.rs</code> refuses an RPC without its operation option, a JSON
+name that isn’t the field name, or a secret field that can reach a
+response.</p>
+<h3 id="connectrpc-rather-than-tonic"><a class="header" href="#connectrpc-rather-than-tonic">connectrpc rather than tonic</a></h3>
+<p><strong>Decision.</strong> The RPC runtime is
+<a href="https://github.com/connectrpc"><code>connectrpc</code></a> for Rust, with <code>buffa</code>
+messages, pinned to an exact pre-1.0 version (G-D10). One tower service
+answers Connect, gRPC and gRPC-Web.</p>
+<p><strong>Why.</strong> It replaces <code>tonic</code>, <code>tonic-web</code>, <code>tonic-health</code>, <code>prost</code> and
+<code>pbjson</code> with one stack from the Connect project, the same protocol
+family as the browser client. Its messages carry their own proto3 JSON,
+which REST needs. It passes the ConnectRPC conformance suite (G-D10).</p>
+<p><strong>Alternatives considered.</strong> <code>tonic</code> with its companions, above.</p>
+<p><strong>Consequences.</strong> A pre-1.0 API that may still move; it is upgraded
+deliberately, like <code>openraft</code> (G-D10).</p>
+<h3 id="connect-es-and-grpc-web-in-the-browser"><a class="header" href="#connect-es-and-grpc-web-in-the-browser">Connect-ES and gRPC-Web in the browser</a></h3>
+<p><strong>Decision.</strong> The web UI uses
+<a href="https://connectrpc.com/docs/web/getting-started">Connect-ES</a>
+(<code>@connectrpc/connect-web</code>) with a gRPC-Web transport and TypeScript
+generated by <code>protoc-gen-es</code> (G-D8). Session cookies are accepted only
+for gRPC-Web from <code>glidex-ui</code> on its socket (G-D4).</p>
+<p><strong>Why.</strong> gRPC-Web works over HTTP/1.1 without HTTP/2 trailers, so
+<code>glidex-ui</code> keeps proxying <code>/api</code> unchanged. The UI gets typed clients
+from the same protos as <code>gxctl</code>, and server streaming for watch (G-D8).
+Keeping cookies on the one browser path keeps CSRF and Origin rules where
+browsers are (G-D4).</p>
+<p><strong>Consequences.</strong> A few calls stay REST in the UI: login and logout,
+<code>whoami</code> (which provides the CSRF value), OIDC redirects, CSV exports
+and the console WebSocket (PR #41).</p>
+<h2 id="authorization"><a class="header" href="#authorization">Authorization</a></h2>
+<h3 id="cedar"><a class="header" href="#cedar">Cedar</a></h3>
+<p><strong>Decision.</strong> Authorization is <a href="https://www.cedarpolicy.com">Cedar</a>
+policy, evaluated in process with the <code>cedar-policy</code> crate (security.md
+decision 9, §7). Roles are template-linked policies; invariants are
+<code>forbid</code> policies; every policy is validated against a schema. Every
+route maps to one Cedar action, and a route without one fails a test
+(decision 7). Operators add site policies through the API (decision 10).</p>
+<p><strong>Why</strong> (security.md §7):</p>
+<ul>
+<li>roles, project scoping, grants and host-wide rules are policies
+instead of <code>if</code> chains spread over handlers;</li>
+<li>strict validation against a schema: a typo in a policy fails startup
+instead of quietly allowing or denying;</li>
+<li><code>forbid</code> always overrides <code>permit</code>, so invariants such as step-up and
+same-project-only can’t be overridden by any role or site policy;</li>
+<li>sites add rules without code changes;</li>
+<li>every decision names the policies that produced it, which goes into
+the audit log.</li>
+</ul>
+<p>What stays in code: authentication, quotas (they need counts), path
+canonicalization and netd’s peer check.</p>
+<p><strong>Alternatives considered.</strong> Not compared in the spec. The two usual
+alternatives are role tables in the database (RBAC), which can’t express
+the <code>forbid</code> invariants or site rules without code, and an external
+policy service such as <a href="https://www.openpolicyagent.org/">OPA</a>, which
+would be another service to run; security.md says “there is no separate
+policy service”.</p>
+<p><strong>Consequences.</strong> Contributors change the schema and policies
+(<code>crates/glidex-control-plane/policies/</code>) along with handlers. Tenants
+can’t author Cedar; site policies belong to operators and directory
+owners (tenancy.md D28), because tenant-authored policies would need
+per-tenant validation scopes and lock-out rules. See
+<a href="../operator-guide/access-control.html">Access control</a>.</p>
+<h3 id="a-shared-authentication-crate-and-ui-kit"><a class="header" href="#a-shared-authentication-crate-and-ui-kit">A shared authentication crate and UI kit</a></h3>
+<p><strong>Decision.</strong> The parts of authentication that aren’t Glidex-specific
+live in their own crate,
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-auth"><code>glidex-auth</code></a>:
+secrets, session and token rules, the Cedar engine (generic over a
+<code>Model</code> that supplies the schema, policies, entity types and
+break-glass rule) and OIDC login. The control plane specializes them in
+<code>auth/</code>, <code>authz.rs</code> and <code>directory/oidc.rs</code>. The web UI’s login and
+session pieces live in <code>@glidex/ui-kit</code>
+(<code>crates/glidex-ui/kit</code>), which talks to the app through an <code>AuthApi</code>
+adapter.</p>
+<p><strong>Why.</strong> Other management services reuse the same sign-in, session,
+token and policy rules instead of reimplementing them, so a fix lands
+once.</p>
+<p><strong>Consequences.</strong> The crate and the kit must not depend on Glidex’s own
+records or <code>api.ts</code>; Glidex-only pieces (stored users, directories,
+passkeys, capability checks) stay in the control plane and the UI.</p>
+<h2 id="tenancy-and-directories"><a class="header" href="#tenancy-and-directories">Tenancy and directories</a></h2>
+<p><strong>Decision.</strong> A <strong>tenant</strong> is an organization’s account. Every project,
+VM, disk, network and credential belongs to exactly one tenant
+(tenancy.md D1). Each tenant is in exactly one <strong>directory</strong>, which holds
+its users, teams and connectors to the organization’s own identity
+provider (D2). Operator tenants operate clusters; only their members pass
+host-scoped actions, enforced by a <code>forbid</code> (D4). A cluster trusts a
+directory only after a pairwise handshake (D8), keeps a read-only replica
+of what the directory sends it (D12), and accepts only tokens addressed
+to it (D11, §7.3).</p>
+<p><strong>Why</strong> (tenancy.md):</p>
+<ul>
+<li>Organizations keep their own identity and records; nothing about one
+is stored in another’s directory (D2).</li>
+<li>Single sign-on is something organizations choose by sharing a
+directory, not something Glidex arranges across them (D3).</li>
+<li>Independent organizations each decide whom they trust; adding a
+cluster or a directory touches only the pairs involved (D8).</li>
+<li>Organizations and datacenters fail and partition independently; a
+cluster, compromised or not, can’t write a directory on anyone’s
+behalf (D12).</li>
+<li>A cluster can’t replay a credential it received to another cluster or
+directory (§7.3).</li>
+</ul>
+<p><strong>Alternatives considered.</strong></p>
+<ul>
+<li>A global registry or shared store across clusters: rejected in favour
+of pairwise trust and feeds (“no Raft across clusters or directories”,
+D12). Fleets broker trust at scale without becoming a shared store
+(D33).</li>
+<li>SAML connectors: rejected. Every listed IdP offers OIDC, and XML
+signature verification is a long-running source of bypasses (D30).</li>
+<li>A built-in identity provider is a non-goal at the host level (spec
+README); a directory is an OIDC provider for its own users, which log
+in through their organization’s IdP.</li>
+</ul>
+<p><strong>Consequences.</strong> A cluster cut off from a directory keeps running
+workloads and serving credentials it can verify, and stops accepting that
+directory’s credentials after <code>max_staleness</code> (D13): an operator-chosen
+balance between availability and revocation. The model is large (over
+seventy decisions); the implemented parts are tracked in tenancy.md §23.</p>
+<h3 id="workload-federation"><a class="header" href="#workload-federation">Workload federation</a></h3>
+<p><strong>Decision.</strong> A tenant can trust an external JWT issuer (GitHub Actions,
+GitLab CI, any OIDC workload issuer) and map matching tokens to a
+service account; <code>POST /auth/exchange</code> returns a short-lived token acting
+as that service account (D26, D48–D51). Rules match exact claim values
+only and must name a repository, project path or subject (D50).</p>
+<p><strong>Why.</strong> CI uses the identity it already has (D26). Rights stay in one
+place, the service account’s role links, and a leaked exchanged token is
+short-lived and tied to one job (D48).</p>
+<p><strong>Alternatives considered.</strong> Long-lived API tokens stored as CI secrets,
+which is what federation replaces.</p>
+<p><strong>Consequences.</strong> Exchanged tokens last at most an hour and can’t be
+renewed. Identity for Glidex’s own VMs (a metadata endpoint and SPIFFE
+IDs) is a separate draft,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/workload-identity.md">workload-identity.md</a>,
+not implemented. See <a href="../operator-guide/workload-federation.html">Workload federation</a>.</p>
+<h2 id="networking"><a class="header" href="#networking">Networking</a></h2>
+<h3 id="open-vswitch-driven-through-netd"><a class="header" href="#open-vswitch-driven-through-netd">Open vSwitch, driven through netd</a></h3>
+<p><strong>Decision.</strong> VM networking is Open vSwitch. The control plane asks
+<code>glidex-netd</code> (root) for bridges, uplinks, NAT and VM ports. Glidex can
+install OVS from distro packages by profile (networking.md decision 6),
+or from a pinned source build when the distro lacks features (decision
+10). Addressing is DHCP plus NAT through the host’s existing route
+(decision 4).</p>
+<p><strong>Why.</strong> OVS covers every port type Glidex uses under one model: tap and
+vhost-user VM ports, and kernel, AF_XDP and DPDK uplinks (networking.md
+§2; clustering.md D15). It is also the base OVN needs for clusters. Its
+bridge-port counters are the one metering source that covers every port
+type, since vhost-user ports have no kernel network device
+(metering.md D5).</p>
+<p><strong>Alternatives considered.</strong> Linux bridges on a single host. They are
+simpler and in every kernel, but the maintainers chose OVS everywhere
+for <strong>one configuration model for a single host and a cluster</strong>: the
+same bridges, ports and counters on a standalone host as on a cluster
+node, so a host joins a cluster (and OVN) without its networking being
+redone. Linux bridges also have no userspace datapath for vhost-user or
+DPDK and no path to OVN.</p>
+<p><strong>Consequences.</strong> OVS is a large host dependency, and an OVS upgrade
+restarts <code>ovs-vswitchd</code> and interrupts VM traffic, so the installer
+leaves OVS upgrades to the distro (installer.md). Static guest addressing
+and persistent host network changes are non-goals. See
+<a href="../operator-guide/host-networking.html">Host networking</a>.</p>
+<h3 id="ovn-for-cluster-networks"><a class="header" href="#ovn-for-cluster-networks">OVN for cluster networks</a></h3>
+<p><strong>Decision.</strong> Networks that span hosts use <a href="https://www.ovn.org/">OVN</a> on
+the OVS each host already runs. The leader’s network controller writes
+the OVN northbound database; netd only joins the host to OVN and plugs VM
+ports (clustering.md D9). Node-scoped OVS networks remain (D10). IPAM
+belongs to the control plane, not to OVN (D12). NAT egress is
+centralized on high-availability gateway chassis (D11).</p>
+<p><strong>Why.</strong> OVN provides the overlay, logical switches and routers, DHCP,
+SNAT gateway HA, port security and, later, multi-chassis port binding
+for live migration. The northbound database is reached over TLS, so the
+unprivileged control plane can write it while netd keeps everything
+privileged (D9). Centralized SNAT needs one external IP per router
+instead of one per VM, and is OVN’s standard HA gateway pattern (D11).
+One IPAM source of truth survives restarts and serves port security
+(D12).</p>
+<p><strong>Alternatives considered.</strong></p>
+<ul>
+<li>An eBPF datapath: rejected (D15). It would cover tap only, so Glidex
+would maintain two datapaths, with no migration or performance gain for
+tap VMs.</li>
+<li>Distributed SNAT: needs an external IP per VM (D11).</li>
+<li>OVN’s dynamic addressing: not used (D12).</li>
+<li>Converting node networks to cluster networks: out of scope, because it
+means renumbering running VMs (D10).</li>
+</ul>
+<p><strong>Consequences.</strong> Two Raft groups run on the servers, Glidex’s and
+OVSDB’s, kept separate on purpose (clustering.md §4). External traffic
+on OVN is metered from conntrack accounting in each router’s SNAT zone,
+because OVN exposes no counters on logical objects (D22). Routed
+networks, floating IPs and security groups are later work (§18).</p>
+<h2 id="storage"><a class="header" href="#storage">Storage</a></h2>
+<h3 id="datastores-behind-a-csi-shaped-driver-trait"><a class="header" href="#datastores-behind-a-csi-shaped-driver-trait">Datastores behind a CSI-shaped driver trait</a></h3>
+<p><strong>Decision.</strong> A <strong>datastore</strong> is a cluster-scoped record naming where
+disks and images live (storage.md S2). A driver creates, sizes, deletes
+and opens volumes in it, and a topology says which nodes reach it (S4).
+The drivers are <code>dir</code> (node-local; the built-in <code>local</code> datastore),
+<code>shared-dir</code> (a filesystem the operator mounts on every node: NFS,
+CephFS, GPFS…) and <code>lvm</code> (node-local LVM-thin). Glidex’s driver trait,
+<code>StorageDriver</code>, follows CSI’s split between controller and node
+operations and its topology and capability model, but Glidex does not
+host CSI plugins yet (S1).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>Nearly every vendor and open-source system offers an NFS or POSIX
+mount. A mount keeps qcow2 and its features (linked clones, sparse
+files, resize and shrink) and needs no root, because the mount is done
+outside Glidex (S1).</li>
+<li>The existing directories become <code>local</code> with no file moves; nobody
+sees a change until an operator adds a datastore (S3).</li>
+<li>New disks stay on <code>local</code> by default: it is the fastest store, and
+choosing shared storage is the operator’s call (S13).</li>
+<li>LVM-thin gives the same thin, overcommitted, fast-clone behaviour as
+qcow2 files, on the devices a site gives VMs (S19).</li>
+</ul>
+<p><strong>Alternatives considered.</strong></p>
+<ul>
+<li><strong><a href="https://github.com/container-storage-interface/spec">CSI</a> as the
+first interface</strong>, rejected for now (S1, §12.1). Many plugins assume
+Kubernetes sidecars and objects (Secrets, CRDs, node labels); node
+plugins run as root, usually in privileged containers; VMs need CSI’s
+<code>Block</code> mode, which gives up qcow2; each plugin is another per-node
+service with its own release cycle; and nobody has asked for a
+particular plugin. The trait keeps the door open: a CSI adapter is
+milestone S7, gated on a real need (§12.3).</li>
+<li><strong>Ceph built in.</strong> Not discussed as such. Ceph is reachable as CephFS
+through <code>shared-dir</code>, and an <code>rbd</code> driver is planned after <code>lvm</code>
+(S19). Running a storage cluster is outside what Glidex installs:
+“glidex never mounts” shared filesystems (S1), and README goal 4 asks
+for minimal host dependencies.</li>
+</ul>
+<p><strong>Consequences.</strong> Moving a VM is explicit and offline, and needs every
+disk on a shared datastore (S10). Exactly one node acts on a volume’s
+files at a time, its <strong>worker</strong> (S6), and Glidex takes its own lock file
+on shared volumes, because placement alone can’t stop a partitioned node
+that kept running (S16). Mount points must live under <code>/srv/glidex</code>
+(S11). Block volumes are raw, grow and never shrink (S19). Live
+migration, snapshots and per-datastore quotas are out of scope for now.
+See <a href="../operator-guide/datastores.html">Datastores</a>.</p>
+<h2 id="images"><a class="header" href="#images">Images</a></h2>
+<h3 id="a-catalog-of-checksum-verified-cloud-images-and-linked-disks"><a class="header" href="#a-catalog-of-checksum-verified-cloud-images-and-linked-disks">A catalog of checksum-verified cloud images, and linked disks</a></h3>
+<p><strong>Decision.</strong> <code>POST /images {"catalog": …}</code> downloads a distro cloud
+image and verifies it against the checksum file the vendor publishes
+next to it, fetched over HTTPS (images.md §4). Firmware is different: its
+digest is pinned. A VM’s root disk is usually <strong>linked</strong>, a qcow2 overlay
+whose backing file is the image. Files are named only by id.</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>Cloud images are rebuilt weekly with security fixes, so pinning their
+digests would ship stale, vulnerable guests; a “current” image plus the
+vendor’s published checksum avoids that (images.md §4). One tested
+firmware build is what guests should boot, so firmware is pinned
+(§4.1).</li>
+<li>Debian’s OVMF build is used because upstream EDK2 publishes no
+prebuilt OVMF and nightly builds can’t be pinned (§4.1).</li>
+<li>Files named by id: renaming a record never touches the file, and a
+name can’t escape the directory (§2).</li>
+<li>Orphan files and missing files are reported, never deleted: Glidex
+never destroys data because it guessed wrong (§2).</li>
+<li>Everything runs as the control-plane user; no step needs root (goal
+4).</li>
+<li>On datastores, an overlay names its backing file by a relative path,
+because nodes may mount a datastore at different paths (storage.md
+S8).</li>
+</ul>
+<p><strong>Alternatives considered.</strong> Pinned digests for cloud images (above).
+Full copies instead of overlays remain available (<code>clone: full</code>).</p>
+<p><strong>Consequences.</strong> An image can’t be deleted while a linked disk uses it
+(images.md §3). A linked disk needs its image copy in the same
+datastore (S8). Disk snapshots, image building and non-cloud images
+(installer ISOs) are non-goals. See
+<a href="../user-guide/images-and-disks.html">Images and disks</a>.</p>
+<h3 id="kernel-extraction-inside-a-vm"><a class="header" href="#kernel-extraction-inside-a-vm">Kernel extraction inside a VM</a></h3>
+<p><strong>Decision.</strong> To boot a cloud image’s own kernel directly, Glidex reads
+the image’s filesystems <strong>inside a short-lived VM</strong>, never on the host.
+It boots a pinned extractor kernel and initramfs with the image attached
+read-only and no network; the extractor writes the boot files to a raw
+disk in a simple stream format that the host parses with strict limits
+(kernel-boot.md K9).</p>
+<p><strong>Why.</strong> No new host packages, no root, no loop devices, and the host
+never parses an untrusted filesystem (K9). A disk image, especially from
+a URL or a VM’s own disk, may hold a filesystem crafted to attack its
+parser; inside the extractor, the worst outcome is a failed extraction
+(§8). Extracting from the image also guarantees that the kernel matches
+the image’s modules (K3).</p>
+<p><strong>Alternatives considered</strong> (kernel-boot.md §9):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Why not</th></tr>
+</thead>
+<tbody>
+<tr><td>Host tools per filesystem (<code>debugfs</code>, <code>btrfs restore</code>)</td><td>Parse untrusted filesystems on the host; nothing for XFS</td></tr>
+<tr><td><a href="https://libguestfs.org/">libguestfs</a></td><td>Also uses a VM, but adds a large host dependency whose appliance needs a readable host kernel</td></tr>
+<tr><td>Downloading distro kernel packages</td><td>No initrd</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Consequences.</strong> Extraction costs a VM boot per image, on a node of the
+image’s architecture. Firmware boot stays the default; kernel boot as
+the default is to be revisited “once boot-time numbers exist” (K2). See
+<a href="../user-guide/kernel-boot.html">Kernel boot</a>.</p>
+<h3 id="a-generated-cloud-init-seed"><a class="header" href="#a-generated-cloud-init-seed">A generated cloud-init seed</a></h3>
+<p><strong>Decision.</strong> Before each launch, the VM controller builds a NoCloud
+seed, a FAT volume labelled <code>CIDATA</code>, with <code>mkdosfs</code> and <code>mcopy</code>
+(<code>cloud_init.rs</code>). A VM gets a login only if it names a stored
+credential; there are no host-wide default keys or passwords
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/credentials.md">credentials.md</a>).</p>
+<p><strong>Why.</strong> Distro cloud images ship with no usable login and wait for
+cloud-init. <code>mkdosfs</code>/<code>mcopy</code> build the volume without root or loop
+mounts, the same approach as Cloud Hypervisor’s own script. One host-wide
+key or password would open VMs in every project (security.md §6.2).</p>
+<p><strong>Consequences.</strong> The seed holds a password hash and is created <code>0600</code>.
+cloud-init provisions users once per instance id, so changing a
+credential later doesn’t change an already-provisioned guest. See
+<a href="../user-guide/credentials.html">Guest credentials</a>.</p>
+<h2 id="devices-and-topology"><a class="header" href="#devices-and-topology">Devices and topology</a></h2>
+<h3 id="pci-passthrough-device-pools-and-numa"><a class="header" href="#pci-passthrough-device-pools-and-numa">PCI passthrough, device pools and NUMA</a></h3>
+<p><strong>Decision.</strong></p>
+<ul>
+<li>A device is identified per node, <code>(node, address)</code>; VFIO claims are
+per node and by IOMMU group (host-topology.md H3).</li>
+<li>Each node reads its topology from sysfs, with no new dependency (H1). A
+small summary goes in replicated node status for the scheduler; the
+full PCIe tree stays on the node (H2).</li>
+<li>Users request devices by class from <strong>pools</strong> the operator defines,
+not by raw PCI class codes; pools are what tenants are granted
+(H10, H11, H17).</li>
+<li>VMs choose a NUMA policy (<code>none</code>, <code>preferred</code>, <code>strict</code>, and
+<code>aligned</code> for multi-GPU VMs) and a CPU policy (<code>shared</code> or
+<code>dedicated</code>) (H5, H6, gpu-vms.md G2).</li>
+<li>The scheduler, not the node, picks exact CPUs (H8). Hugepages are a
+resource of their own, never overcommitted (H19).</li>
+<li>Glidex can bind a device to <code>vfio-pci</code> through netd, but never changes
+the kernel command line or firmware (H12).</li>
+</ul>
+<p><strong>Why.</strong> The scheduler needs topology on the leader, but the full tree
+is only for display, so Raft state stays small (H2). Address-wide claims
+broke once there were several nodes (H3). Pools let operators name
+devices by vendor, model or label and grant them, instead of every user
+knowing addresses (H10). One writer for CPU sets means two VMs can’t take
+the same CPU (H8). <code>aligned</code> is the only layout that keeps every GPU
+local once a VM outgrows one NUMA node, and a guest topology that mirrors
+the host makes <code>nvidia-smi topo</code> and NCCL see the real layout (G2, G3).</p>
+<p><strong>Alternatives considered.</strong> <code>hwloc</code> or <code>lspci</code> for discovery (rejected
+for a dependency-free sysfs reader, H1). systemd drop-ins for CPU
+binding (dropped: the unprivileged control plane can’t write them, H9).
+Guessing a device’s NUMA node from its bus number (rejected, H4).
+Running NVIDIA Fabric Manager on the host for NVLink (an option, not the
+default; a service VM keeps the driver off the host kernel, G6).</p>
+<p><strong>Consequences.</strong> Kernel parameters (IOMMU, hugepages) remain the
+operator’s job. Device health is reported, not used to refuse devices
+(H18). See <a href="../operator-guide/pci-passthrough.html">PCI passthrough</a> and
+<a href="../operator-guide/host-resources.html">Host resources</a>.</p>
+<h2 id="console"><a class="header" href="#console">Console</a></h2>
+<p><strong>Decision.</strong> Each VM has one console (a serial port or virtio console on
+a PTY). The <strong>shim</strong> owns the PTY master, writes <code>console.log</code>, and
+serves any number of clients on a console socket. A new client first
+gets the current log replayed, then live output
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/console.md">console.md</a>).
+Logs are appended across restarts and rotated once at 16 MiB
+(reconciliation.md D14).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>Output the hypervisor wrote stays readable on the master after the
+hypervisor exits. When Cloud Hypervisor owned the master, its hangup
+on exit threw away unread output, so a guest’s last line (“reboot:
+Power down”) was routinely lost. Owning the master also captures
+firmware output from before boot completes (console.md, “Why the shim
+owns the master”).</li>
+<li>The shim, not the control plane, because whoever holds the master
+decides when the guest’s terminal hangs up; while the control plane
+held it, a restart killed or deafened every VM.</li>
+<li>Replay gives late-joining browsers the boot output (README goal 3).</li>
+<li>Appending keeps the output from before a crash after the crash-restart
+(D14).</li>
+</ul>
+<p><strong>Alternatives considered.</strong> The hypervisor’s own PTY mode (above).
+A console held by the control plane (the design before PR #4).</p>
+<p><strong>Consequences.</strong> The browser reaches the console through a WebSocket
+with a single-use ticket, <code>gxctl</code> through a bidirectional RPC. The
+browser terminal is <a href="https://github.com/coder/ghostty-web">ghostty-web</a>
+by default, with xterm.js as a choice, because ghostty-web renders to a
+canvas that screen readers can’t read (PR #50). See
+<a href="../user-guide/console.html">Console</a>.</p>
+<h2 id="metering"><a class="header" href="#metering">Metering</a></h2>
+<p><strong>Decision.</strong> The meter runs inside the control plane (metering.md D1).
+It samples cumulative counters and stores deltas (D2), into an hourly,
+UTC ledger that is immutable once closed, with a per-source cursor
+written in the same transaction as the deltas it produced (D8). Sources:
+the VM unit’s cgroup for CPU and memory (D3), the hypervisor for disk
+operations (D4), OVS port counters for traffic (D5). Bandwidth and disk
+I/O also get a 5-minute 95th percentile per billing month (D15, D16).</p>
+<p><strong>Why.</strong></p>
+<ul>
+<li>The control plane already knows every VM, disk and NIC and holds the
+database; a separate daemon would duplicate adoption logic. Counters
+are cumulative, so downtime loses no data (D1, D2).</li>
+<li>Without the cursor in the same transaction, a crash between “record
+delta” and “advance cursor” would count a delta twice or never (D8).</li>
+<li>The shim writes a final counter snapshot when the hypervisor exits,
+because the cgroup and counters vanish with the unit (D12).</li>
+<li>5-minute p95 on the larger direction is the industry convention for
+burstable billing, so customers can check figures with their own
+tools. Group figures are the p95 of the summed series, because summing
+p95s over-bills (D15). Disk I/O uses read+write combined, because
+reads and writes share one queue (D16).</li>
+<li>No disk latency for Cloud Hypervisor VMs, because its latency fields
+can’t give a correct average for any period, and a wrong figure is
+worse than none (D17).</li>
+</ul>
+<p><strong>Alternatives considered.</strong> A separate metering daemon (D1). Rates
+computed upstream (D2). OVS flow statistics or eBPF for external traffic
+(rejected for conntrack accounting, clustering.md D15, D22).</p>
+<p><strong>Consequences.</strong> Metering history lives in the replicated store and is
+its largest table, about 12 MB per VM (clustering.md §4.1); moving it
+out is the first step past the scale ceiling. Usage outlives the VM and
+keeps the project and name from when it was sampled (D13). See
+<a href="../user-guide/usage.html">Usage</a> and <a href="algorithms.html">Algorithms</a>.</p>
+<h2 id="tls-and-sign-in"><a class="header" href="#tls-and-sign-in">TLS and sign-in</a></h2>
+<h3 id="self-signed-by-default-pinned-by-fingerprint"><a class="header" href="#self-signed-by-default-pinned-by-fingerprint">Self-signed by default, pinned by fingerprint</a></h3>
+<p><strong>Decision.</strong> The control plane (port 8841) and the web UI (port 5173)
+serve HTTPS on every address by default, with a self-signed ECDSA P-256
+certificate unless one is configured (PR #7). <code>gxctl</code> trusts a
+self-signed control plane by pinning the leaf certificate’s SHA-256,
+trusted on first use at <code>gxctl auth login</code> (security.md decision 18,
+gxctl-auth.md A4). A verify-nothing mode exists only as an explicitly
+confirmed, per-profile, loudly marked escape hatch (A5).</p>
+<p><strong>Why.</strong> A fresh host has no name a public CA would sign, but its API
+still must not be plain HTTP on the network. Pinning keeps signature,
+date and name checks running against the pinned certificate, instead of
+skipping verification (A4). A profile records the cluster id, and a
+server reporting another id is a hard error (A6). The certificate is
+reused until near expiry so the fingerprint stays stable (PR #7).</p>
+<p><strong>Alternatives considered.</strong> Plain HTTP on loopback, the earlier default
+(replaced in PR #7). A “skip verification” flag as the normal way to
+reach a self-signed server (rejected, A4, A5). Running a private CA for
+every standalone host (not discussed; clusters do have their own CA,
+clustering.md D20).</p>
+<p><strong>Consequences.</strong> Browsers show a warning for the self-signed
+certificate, and HSTS is sent only with a configured certificate,
+because it would make that warning impossible to bypass (PR #7). See
+<a href="../operator-guide/tls.html">TLS</a>.</p>
+<h3 id="tailscale-certificates-for-the-web-ui"><a class="header" href="#tailscale-certificates-for-the-web-ui">Tailscale certificates for the web UI</a></h3>
+<p><strong>Decision.</strong> On a host on a tailnet, <code>glidex-ui</code> may serve the node’s
+Tailscale (Let’s Encrypt) certificate for its <code>ts.net</code> names, fetched
+from the host’s <code>tailscaled</code> and chosen by SNI; every other name keeps
+the usual certificate (tailscale-tls.md T1–T3). It is opt-in (T4). The
+control plane keeps its own certificate (T8).</p>
+<p><strong>Why.</strong> Browser-trusted HTTPS with no certificate management. Opt-in
+because the node’s name is published in Certificate Transparency logs
+(T4). A Tailscale failure never fails a handshake; <code>ts.net</code> names fall
+back to the default certificate (T5).</p>
+<p><strong>Alternatives considered.</strong> Embedding Tailscale’s Rust library,
+tailscale-rs: it doesn’t issue certificates yet and is a later phase
+(T1).</p>
+<p><strong>Consequences.</strong> The installer must grant <code>glidex-ui</code> access through
+<code>tailscaled</code>’s <code>TS_PERMIT_CERT_UID</code>, and refuses when another user
+already holds it (T6).</p>
+<h3 id="passkeys"><a class="header" href="#passkeys">Passkeys</a></h3>
+<p><strong>Decision.</strong> Users of a local directory can sign in with
+<a href="https://www.w3.org/TR/webauthn-3/">WebAuthn</a> passkeys. Credentials are
+discoverable, user verification is required, and a passkey sign-in counts
+as multi-factor (passkeys.md P3). No attestation is trusted (P1). Only the
+user adds its own passkeys, and a user can’t be left with a single
+passkey as its only sign-in (P4). The checks are implemented in Glidex
+(<code>auth/webauthn.rs</code>, pure Rust).</p>
+<p><strong>Why.</strong> No account names to type or enumerate; with verification, a
+passkey is possession plus a factor (P3). Trusting attestation would
+need an allow-list of authenticator makers that nobody asked for (P1).
+Losing one device must not lock a person out, and nobody can plant a
+passkey on another person’s account (P4). Passkeys belong to a
+configurable relying-party id so that passkeys made on one name of the
+UI work on its others and on other servers (P2).</p>
+<p><strong>Alternatives considered.</strong> Trusting attestation (P1).</p>
+<p><strong>Consequences.</strong> The ceremonies are HTTP-only, like OIDC callbacks,
+because WebAuthn is a browser protocol (P6). <code>gxctl</code> keeps its own
+logins. See <a href="../operator-guide/authentication.html#passkeys">Authentication</a>.</p>
+<h2 id="web-ui"><a class="header" href="#web-ui">Web UI</a></h2>
+<p><strong>Decision.</strong> The UI is a Vite + React + TypeScript single-page app,
+managed with <a href="https://bun.sh/">Bun</a> (<code>bun.lock</code>). A small Rust binary,
+<code>glidex-ui</code>, serves the built files over HTTPS and proxies <code>/api</code> to the
+control plane; <code>glidex-ui --dev</code> runs the Vite dev server instead
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/web-ui.md">web-ui.md</a>).</p>
+<p><strong>Why.</strong> <code>glidex-ui</code> is a proxy with no authority of its own; the
+control plane authenticates and authorizes every request (security.md
+decision 4). Running it as its own user means a UI compromise can’t
+reach what the control plane can (security.md §4). Proxying keeps the
+browser on one origin, which cookies, CSRF checks, SSO and passkeys rely
+on. React, Vite and Bun were chosen for speed and ecosystem: <strong>Vite and
+Bun</strong> for fast builds, dev-server reloads and dependency installs;
+<strong>React</strong> for its ecosystem of components and libraries, and its
+TypeScript support, which the generated Connect-ES types build on.</p>
+<p><strong>Alternatives considered.</strong> Serving the UI from the control plane
+itself; not discussed in the specs.</p>
+<p><strong>Consequences.</strong> Building the UI needs Bun and the JavaScript
+dependencies; the installer installs a pinned Bun and verifies it.
+Generated Connect-ES code is committed, and CI fails if it is stale.</p>
+<h2 id="installer"><a class="header" href="#installer">Installer</a></h2>
+<p><strong>Decision.</strong> Glidex is installed from a source checkout with
+<code>cargo run -p glidex-install</code>. The installer is one linear,
+non-interactive and convergent program: each run detects what is missing
+or outdated and fixes just that, so the same command installs Glidex and
+later keeps it up to date
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/installer.md">installer.md</a>).
+It installs system dependencies through the host’s package manager
+(apt, dnf/yum or pacman). <code>--prebuilt</code> uses binaries already built in
+the checkout.</p>
+<p><strong>Why.</strong> README goal 4: minimal host dependencies and one command that
+stands the system up. Keeping all “check and fix” logic in one place
+lets the other crates assume their dependencies are present
+(installer.md “Philosophy”). Downloads are pinned and verified: the
+firmware and Cloud Hypervisor by sha256, and Rust and Bun at pinned
+versions with their published checksums (security.md §9).</p>
+<p><strong>Alternatives considered.</strong> Distro packages (<code>.deb</code>, <code>.rpm</code>) and
+prebuilt binaries. Installing from source is a stage, not a final
+choice: Glidex is under active development, so hosts follow <code>main</code>.
+Prebuilt binaries and distro packages are planned once it stabilizes.
+Much of what the installer does is host configuration that a package
+would also have to script: users and groups, units and the polkit rule,
+file capabilities, the OVS profile, hugepages and boot-time VFIO
+bindings.</p>
+<p><strong>Consequences.</strong> Each host needs a Rust toolchain and a build, unless
+<code>--prebuilt</code> is used. OVS upgrades are left to the distro, because they
+interrupt VM traffic. The installer never touches the firewall. See
+<a href="../operator-guide/installation.html">Installation</a>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/algorithms.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/algorithms.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

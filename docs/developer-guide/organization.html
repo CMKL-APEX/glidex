@@ -1,0 +1,532 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Repository and code organization - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-a4ecf34d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/developer-guide/organization.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="repository-and-code-organization"><a class="header" href="#repository-and-code-organization">Repository and code organization</a></h1>
+<p>This page maps the repository: what each crate is, which process runs
+where, how the control plane is split into modules, and where the
+protos, the web UI, the packaging and the docs live. For how these
+pieces work together at run time, see <a href="architecture.html">Architecture</a>.</p>
+<p>Links to source files point at <code>main</code> on GitHub.</p>
+<h2 id="top-level"><a class="header" href="#top-level">Top level</a></h2>
+<pre><code class="language-text">glidex/
+├── Cargo.toml        workspace: 15 crates, edition 2024, MIT OR Apache-2.0
+├── rustfmt.toml      rustfmt's defaults (edition only)
+├── crates/           all Rust code, the web UI and its e2e suite
+├── spec/             design specs (contributors)
+├── docs/
+│   ├── public/       this book (mdBook)
+│   ├── internal/     book config that builds spec/ as a book
+│   └── site/         landing page of the published site
+├── packaging/        systemd units, polkit rule, PAM file, config example
+├── scripts/          CI lint and dev/test helpers
+├── LICENSES/         MIT and Apache-2.0 texts, COPYRIGHT
+└── .github/workflows CI: rust.yml, docs.yml
+</code></pre>
+<h2 id="crates"><a class="header" href="#crates">Crates</a></h2>
+<p>Every crate is in <code>crates/</code> and listed in the workspace
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/Cargo.toml"><code>Cargo.toml</code></a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Kind</th><th>What it is</th><th>Used by</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex-control-plane</code></td><td>lib + bins <code>glidex-control-plane</code>, <code>gxctl</code></td><td>The server: REST and RPC API, auth and Cedar authorization, the store, controllers, hypervisor drivers, scheduler, clustering, metering. Also the <code>gxctl</code> CLI.</td><td>Run as a service; its tests</td></tr>
+<tr><td><code>glidex-api</code></td><td>lib</td><td>The RPC API: protos, generated messages, services and clients, and the operation table.</td><td>Control plane (server), <code>gxctl</code> (client); the UI through generated TypeScript</td></tr>
+<tr><td><code>glidex-vm-shim</code></td><td>lib + bin</td><td>Per-VM supervisor: parent of the hypervisor, owner of its console (PTY, console socket, log) and exit record. The library half holds the file formats (<code>launch.json</code>, <code>instance.json</code>) and the <code>shim.sock</code> client.</td><td>Started by the control plane, one per VM</td></tr>
+<tr><td><code>glidex-hv-client</code></td><td>lib</td><td>Blocking clients for Cloud Hypervisor’s HTTP API and QEMU’s QMP.</td><td>Shim and control plane</td></tr>
+<tr><td><code>glidex-ovs</code></td><td>lib</td><td>Everything Glidex does to the host network: OVS install, bridges, uplinks, NAT, VM ports, VFIO and SR-IOV, meters. Depends on no other Glidex crate.</td><td><code>glidex-netd</code>, <code>glidex-ovn</code>, <code>glidex-install</code>, control plane</td></tr>
+<tr><td><code>glidex-ovn</code></td><td>lib</td><td>OVN northbound database as Glidex uses it: a desired state and a <code>sync</code> that touches only rows Glidex owns.</td><td>Control plane (cluster networks)</td></tr>
+<tr><td><code>glidex-netd</code></td><td>lib + bin</td><td>Root network helper daemon wrapping <code>glidex-ovs</code>; the library is its wire protocol and client.</td><td>Control plane (client), installer</td></tr>
+<tr><td><code>glidex-stord</code></td><td>lib + bin</td><td>Root storage helper for LVM-thin datastores; protocol and client in the library.</td><td>Control plane</td></tr>
+<tr><td><code>glidex-authd</code></td><td>lib + bin</td><td>Root PAM helper that checks local passwords; protocol and client in the library.</td><td>Control plane</td></tr>
+<tr><td><code>glidex-auth</code></td><td>lib</td><td>Core authentication, kept free of Glidex’s own records so other services can reuse it: secrets (random values, base62, SHA-256, constant-time compare), session and token rules, a Cedar policy engine generic over a <code>Model</code> (schema, policies, entity types, break-glass rule), and OIDC login (code flow with PKCE, device grant, JWKS).</td><td>Control plane (<code>auth/</code>, <code>authz.rs</code>, <code>directory/oidc.rs</code> specialize it for Glidex), <code>glidex-authd</code></td></tr>
+<tr><td><code>glidex-tls</code></td><td>lib</td><td>HTTPS listeners, self-signed certificates, reloadable certificates chosen by SNI, client trust.</td><td>Control plane, <code>gxctl</code>, <code>glidex-ui</code>, installer</td></tr>
+<tr><td><code>glidex-raftstore</code></td><td>lib</td><td>A replicated ReDB store on openraft: transactions recorded as write sets, applied as bytes on every member; an in-process test cluster.</td><td>Control plane (<code>store/</code>, <code>cluster/raft/</code>)</td></tr>
+<tr><td><code>glidex-ui</code></td><td>bin + web app</td><td>The Rust binary serves the built UI and proxies <code>/api</code> to the control plane; <code>ui/</code> is the Vite + React app; <code>e2e/</code> its Playwright suite.</td><td>Run as a service</td></tr>
+<tr><td><code>glidex-install</code></td><td>bin</td><td>Installer and uninstaller: packages, hypervisors, firmware, OVS, users and groups, units, the UI build.</td><td>Run by hand</td></tr>
+<tr><td><code>glidex-e2e</code></td><td>test crate</td><td>Helpers and the nested cluster test that installs Glidex into VMs of the host’s own Glidex.</td><td><code>cargo test -p glidex-e2e</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Each library’s crate-level doc (<code>//!</code> in <code>src/lib.rs</code>) is the place to
+start reading it.</p>
+<h2 id="processes"><a class="header" href="#processes">Processes</a></h2>
+<pre><code class="language-text">             browser                     gxctl / scripts
+                │ :5173                        │ :8841 or api.sock
+                ▼                              ▼
+        glidex-ui (glidex-ui) ── ui.sock ─▶ glidex-control-plane (glidex)
+                                           │   │   │        ▲
+                    ┌──────────────────────┘   │   └──┐     │ :8842, mutual TLS
+                    ▼ unix sockets             ▼      ▼     ▼
+   glidex-netd · glidex-stord · glidex-authd   systemd   other nodes' control planes
+          (root helpers)                       │
+                                               ▼
+                               glidex-vm@&lt;id&gt;.service (glidex)
+                                 glidex-vm-shim ─▶ cloud-hypervisor | qemu
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binary</th><th>Runs as</th><th>Started by</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex-control-plane</code></td><td><code>glidex</code></td><td><code>glidex-control-plane.service</code></td><td>REST and RPC on <code>:8841</code>, <code>/run/glidex-cp/api.sock</code> (local users) and <code>/run/glidex-cp/ui.sock</code> (the UI); node API on <code>:8842</code> in a cluster. A few flags run a one-off recovery and exit (<code>--force-new-cluster</code>, <code>--leave-removed</code>, <code>--detach-offline</code>).</td></tr>
+<tr><td><code>glidex-vm-shim</code></td><td><code>glidex</code></td><td><code>glidex-vm@&lt;id&gt;.service</code>, in <code>glidex-vms.slice</code>, started and stopped by the control plane through systemd (allowed by a polkit rule)</td><td><code>--vm &lt;id&gt; --dir /run/glidex-cp/vms/&lt;id&gt;</code>. Kernel extraction jobs use the same template (<code>glidex-vm@extract-&lt;uuid&gt;</code>).</td></tr>
+<tr><td><code>glidex-ui</code></td><td><code>glidex-ui</code></td><td><code>glidex-ui.service</code></td><td><code>:5173</code>. <code>--dev</code> runs the Vite dev server instead.</td></tr>
+<tr><td><code>glidex-netd</code></td><td>root</td><td><code>glidex-netd.service</code></td><td>Socket under <code>/run/glidex</code>. <code>glidex-netd --boot-devices</code> also runs once per boot from <code>glidex-vfio-boot.service</code>.</td></tr>
+<tr><td><code>glidex-stord</code></td><td>root</td><td><code>glidex-stord.service</code></td><td>Socket under <code>/run/glidex-stord</code>; idle until a volume group is allowed.</td></tr>
+<tr><td><code>glidex-authd</code></td><td>root</td><td><code>glidex-authd.socket</code> (socket activation)</td><td><code>/run/glidex-authd/auth.sock</code>, group <code>glidex</code>.</td></tr>
+<tr><td><code>gxctl</code></td><td>you</td><td>you</td><td><code>api.sock</code> on the host; HTTPS with a token elsewhere.</td></tr>
+<tr><td><code>glidex-install</code></td><td>you, with <code>sudo</code></td><td><code>cargo run -p glidex-install</code></td><td>Fills in the <code>.in</code> units (service user, binary paths) and installs them.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The unit files are in <a href="#packaging"><code>packaging/</code></a>. The <a href="../operator-guide/README.html#components">Operator
+guide</a> describes the same units
+from the operator’s side.</p>
+<h2 id="glidex-api-protos-and-generated-code"><a class="header" href="#glidex-api-protos-and-generated-code">glidex-api: protos and generated code</a></h2>
+<p>The proto files are the source of truth for every API type
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md"><code>spec/grpc.md</code></a>
+G-D3).</p>
+<pre><code class="language-text">crates/glidex-api/
+├── build.rs        protox → checks → operations.rs, fields.rs → connectrpc-build
+├── buf.yaml        buf lint (STANDARD) and breaking (FILE) rules
+├── buf.gen.yaml    TypeScript for the UI → ../glidex-ui/ui/src/gen
+├── proto/glidex/&lt;area&gt;/v1/&lt;area&gt;.proto
+│                   access, auth, cluster, common, directory, host,
+│                   network, storage, system, tenancy, usage, vm, watch
+├── proto/glidex/api/v1/options.proto   (glidex.api.v1.op), (glidex.api.v1.secret)
+├── proto/glidex/api/v1/errors.proto, types.proto
+├── proto/google/rpc/error_details.proto   vendored ErrorInfo
+└── src/lib.rs      generated modules, OPERATIONS, operation(), unknown_field()
+</code></pre>
+<p>What
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-api/build.rs"><code>build.rs</code></a>
+does on every <code>cargo build</code>, with no <code>protoc</code> or <code>buf</code> needed:</p>
+<ol>
+<li>Compiles every <code>.proto</code> under <code>proto/</code> with <code>protox</code>.</li>
+<li>Fails the build if a rule is broken:
+<ul>
+<li>every RPC has a <code>(glidex.api.v1.op)</code> option with an action, a kind
+(<code>KIND_READ</code> or <code>KIND_WRITE</code>) and, if any, a REST twin in the form
+<code>"&lt;METHOD&gt; /path"</code>;</li>
+<li>every field’s JSON name equals its proto name (<code>json_name</code>, G-D11),
+so REST stays <code>snake_case</code>;</li>
+<li>no response message reaches a field marked
+<code>[(glidex.api.v1.secret) = true]</code>.</li>
+</ul>
+</li>
+<li>Writes <code>operations.rs</code> (<code>glidex_api::OPERATIONS</code>: procedure, service,
+method, Cedar action, kind, REST twin, streaming) and <code>fields.rs</code>
+(every message’s JSON field names, which the server uses to refuse
+unknown fields).</li>
+<li>Writes a descriptor set (<code>glidex_api::DESCRIPTOR_SET</code>, for server
+reflection) and runs <code>connectrpc-build</code> for messages (<code>buffa</code> types),
+service traits and clients, included as <code>glidex_api::proto</code>.</li>
+</ol>
+<p>The TypeScript for the UI is not generated by cargo: run <code>buf generate</code>
+in <code>crates/glidex-api</code> (after <code>bun install</code> in <code>crates/glidex-ui/ui</code>).
+Its output in <code>crates/glidex-ui/ui/src/gen/</code> is committed, and CI fails
+when it is stale.</p>
+<h2 id="glidex-control-plane"><a class="header" href="#glidex-control-plane">glidex-control-plane</a></h2>
+<p>The control plane is one library (<code>src/lib.rs</code>) with two binaries:
+<code>src/main.rs</code> (the server) and <code>src/bin/gxctl/</code> (the CLI). Its tests
+are in <code>tests/</code>; the Cedar schema and shipped policies in <code>policies/</code>.</p>
+<h3 id="request-path"><a class="header" href="#request-path">Request path</a></h3>
+<pre><code class="language-text"> HTTP request
+   │  api/mod.rs      router: global layers (UI relay, authenticate, cluster gate)
+   ├─▶ REST route     api/&lt;area&gt;.rs     decode JSON → call service → encode
+   └─▶ RPC procedure  api/rpc/&lt;area&gt;.rs decode message → call service → encode
+                         │
+                         ▼
+                      service/&lt;area&gt;.rs   Cedar checks, not-found vs forbidden,
+                         │                quotas, names, the store write
+                         ▼
+                      state.rs (VmManager), store/, images/, datastore/, …
+                         │  spec written; controllers woken
+                         ▼
+                      controller/*        observe the host, take the next step
+</code></pre>
+<h3 id="module-map"><a class="header" href="#module-map">Module map</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Area</th><th>Modules</th><th>What is there</th></tr>
+</thead>
+<tbody>
+<tr><td>API adapters</td><td><code>api/mod.rs</code>, <code>api/&lt;area&gt;.rs</code></td><td>The router and the route table (<code>routes</code>: method, path, Cedar action, handler), the <code>Caller</code>, auth and audit layers, REST handlers. <code>api/errors.rs</code> maps internal errors to REST responses.</td></tr>
+<tr><td></td><td><code>api/rpc/</code></td><td>RPC adapters per proto package (<code>vm.rs</code>, <code>storage.rs</code>, …) and <code>unary</code>, which finds the operation, applies the listener rules, runs the service function and audits.</td></tr>
+<tr><td></td><td><code>api/gate.rs</code>, <code>api/relay.rs</code></td><td>In a cluster: reads after a barrier, writes forwarded to the leader; host-only requests relayed to the node they name.</td></tr>
+<tr><td></td><td><code>api/op.rs</code>, <code>api/issuer.rs</code>, <code>api/scim.rs</code>, <code>api/trust.rs</code>, …</td><td>HTTP-only endpoints: a directory’s OpenID provider, SCIM, trust between clusters and directories.</td></tr>
+<tr><td>Service layer</td><td><code>service/</code></td><td>One transport-neutral function per operation (<code>service::storage::move_disk</code>, …). Every decision is made here, so REST and RPC can’t drift apart. <code>ServiceError</code> carries the stable error code both transports send.</td></tr>
+<tr><td>Admission</td><td><code>state.rs</code></td><td><code>VmManager</code>: validates and writes desired state, then wakes the controllers.</td></tr>
+<tr><td>Controllers</td><td><code>controller/</code></td><td>Level-triggered loops on one work queue (<code>queue.rs</code>): <code>vm.rs</code>, <code>disk.rs</code>, <code>image.rs</code>, <code>network.rs</code>, <code>ovn.rs</code>, <code>placement.rs</code>, <code>extract.rs</code>, <code>image_cache.rs</code>, <code>store_copies.rs</code>; <code>startup.rs</code> for adoption at start.</td></tr>
+<tr><td>Store</td><td><code>store/</code></td><td><code>db.rs</code>: Glidex’s tables (<code>tables!</code>) on <code>glidex-raftstore</code>. <code>mod.rs</code>: the VM envelopes, events, <code>SCHEMA_VERSION</code> and <code>migrate</code>.</td></tr>
+<tr><td>Cluster</td><td><code>cluster/</code></td><td>Membership, join tokens, node PKI and CA rotation, server and agent runtimes, import and departure; <code>cluster/raft/</code> wires <code>glidex-raftstore</code> to Glidex’s schema.</td></tr>
+<tr><td>Scheduling</td><td><code>scheduler.rs</code>, <code>node.rs</code>, <code>topology.rs</code>, <code>pci.rs</code></td><td>Where a VM runs (decided once, then sticky), nodes, NUMA topology, PCI devices and pools.</td></tr>
+<tr><td>VM instances</td><td><code>instance/</code>, <code>hypervisor/</code>, <code>paths.rs</code>, <code>devaccess.rs</code></td><td>Running the shim (<code>instance/runner.rs</code>: a systemd unit, or detached for dev runs and tests), liveness; drivers turning a VM config into a Cloud Hypervisor or QEMU command line; per-VM runtime directories.</td></tr>
+<tr><td>Images and disks</td><td><code>images/</code>, <code>cloud_init.rs</code>, <code>credentials.rs</code></td><td>Catalog, verified download, firmware, kernel extraction, disk create/resize/extend; cloud-init seeds; guest credentials.</td></tr>
+<tr><td>Datastores</td><td><code>datastore/</code></td><td>Datastore records, the driver trait with file and LVM drivers, probing on each node.</td></tr>
+<tr><td>Networking</td><td><code>network.rs</code>, <code>ipam.rs</code>, <code>router.rs</code>, <code>ovn_settings.rs</code></td><td>VM networks and the <code>glidex-netd</code> client, cluster IPAM, VPC routers, OVN settings.</td></tr>
+<tr><td>Authentication</td><td><code>auth/</code></td><td>Principals from peer uid, sessions, tokens and passkeys; the bridge to Cedar.</td></tr>
+<tr><td>Authorization</td><td><code>authz.rs</code>, <code>policies/</code></td><td>Glidex’s Cedar <code>Model</code> (entities, roles, break-glass) over <code>glidex-auth</code>’s engine. <code>glidex.cedarschema</code> declares every action and its groups; <code>base.cedar</code> and <code>roles.cedar</code> are the shipped policies and role templates.</td></tr>
+<tr><td>Tenancy and directories</td><td><code>tenancy.rs</code>, <code>tenants.rs</code>, <code>directory/</code>, <code>trust.rs</code></td><td>Projects and quotas; tenants and admissions; directory connectors (PAM, OIDC, presets), invitations, SCIM, sync, federation; trust between clusters and directories.</td></tr>
+<tr><td>Metering</td><td><code>metering/</code></td><td>Samplers and sources, the hourly exactly-once ledger, rates, retention, queries.</td></tr>
+<tr><td>Configuration</td><td><code>config.rs</code>, <code>serve.rs</code>, <code>restart.rs</code></td><td><code>/etc/glidex/control-plane.json</code> (or <code>GLIDEX_CONFIG</code>), the listeners, restarting into another mode.</td></tr>
+<tr><td>Shared types</td><td><code>models.rs</code></td><td>VM spec, status and phases, and other internal types.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="gxctl"><a class="header" href="#gxctl">gxctl</a></h3>
+<p><code>src/bin/gxctl/main.rs</code> holds the interactive shell (rustyline) and the
+dispatch; each area has its own file (<code>vm.rs</code>, <code>storage.rs</code>,
+<code>network.rs</code>, <code>access.rs</code>, <code>cluster.rs</code>, <code>host.rs</code>, <code>directory.rs</code>,
+<code>tenancy.rs</code>, <code>usage.rs</code>, <code>admin.rs</code>). <code>client.rs</code> has the REST client
+and the Connect transport that carries the generated RPC clients over
+gxctl’s own connection; <code>config.rs</code> the login profiles; <code>console.rs</code>
+the console attach loop. Only the global options are clap; commands
+are parsed by hand.</p>
+<h3 id="tests"><a class="header" href="#tests">Tests</a></h3>
+<p><code>tests/</code> holds one integration test binary per area (<code>vm_tests.rs</code>,
+<code>storage_tests.rs</code>, <code>datastore_tests.rs</code>, <code>cluster_tests.rs</code>,
+<code>rpc_tests.rs</code>, <code>tenancy_tests.rs</code>, …) with shared helpers in
+<code>tests/common/</code>. <code>functional_tests.rs</code> boots real guests; most of it is
+<code>#[ignore]</code>d. See <a href="contributing.html#tests">Contributing</a>.</p>
+<h2 id="web-ui"><a class="header" href="#web-ui">Web UI</a></h2>
+<pre><code class="language-text">crates/glidex-ui/
+├── src/main.rs        serve ui/dist (or GLIDEX_UI_DIR), proxy /api, TLS, Host allowlist; --dev
+├── ui/                Vite + React + TypeScript + Tailwind
+│   ├── src/App.tsx    routes → pages
+│   ├── src/pages/     one file per page: Dashboard, VmDetail, Disks, Datastores, Cluster, …
+│   ├── src/components/  forms, dialogs, cards (CreateVmForm, VmActions, PlacementPicker, …)
+│   ├── src/api.ts     every API call; rpc() for RPCs, REST for the rest
+│   ├── src/session.tsx  the kit's session layer with Glidex's adapter; capability checks (useCan)
+│   ├── src/live.tsx   WatchService stream: live updates
+│   └── src/gen/       generated by buf generate (committed; don't edit)
+├── kit/               @glidex/ui-kit: Modal, TokenReveal, password form, SSO buttons,
+│                      step-up dialog, session provider; takes an AuthApi adapter
+└── e2e/               Playwright suite, run with bun
+</code></pre>
+<p><code>api.ts</code> sends RPCs over gRPC-Web (<code>createGrpcWebTransport</code>, base
+<code>/api</code>) with JSON messages, through <code>rpc(Service.method.x, req)</code>, which
+returns the proto JSON the REST twin would answer. REST stays for what
+has no RPC (health, login and logout, OIDC redirects, CSV exports, the
+console WebSocket, <code>GET /auth/whoami</code>). The browser reaches the control
+plane through <code>glidex-ui</code>, which forwards <code>/api</code> to <code>ui.sock</code>; that is
+the only listener that takes gRPC-Web with a session cookie.</p>
+<p>The UI is built with bun (<code>bun install</code>, <code>bun run build</code>), never npm.
+<code>ui/</code> is the bun workspace root and lists <code>../kit</code> as a workspace, so
+<code>bun install</code> in <code>ui/</code> covers both. The kit holds the login and session
+pieces that aren’t Glidex-specific, for reuse by other management UIs:
+it never imports <code>api.ts</code> or <code>types.ts</code>; the app hands it an <code>AuthApi</code>
+adapter (<code>methods</code>, <code>whoami</code>, <code>login</code>, <code>startSso</code>, <code>logout</code>).
+Passkeys, accounts, roles and capability checks stay in <code>ui/</code>. See
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-ui/kit/README.md"><code>kit/README.md</code></a>.</p>
+<h2 id="packaging"><a class="header" href="#packaging">Packaging</a></h2>
+<p><a href="https://github.com/CMKL-APEX/glidex/blob/main/packaging/"><code>packaging/</code></a>
+holds what the installer puts on a host:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>File</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex-control-plane.service.in</code>, <code>glidex-vm@.service.in</code></td><td>Control plane and per-VM units; <code>@USER@</code> and <code>@BIN@</code> filled in by the installer.</td></tr>
+<tr><td><code>glidex-vms.slice</code></td><td>Slice for every VM unit.</td></tr>
+<tr><td><code>glidex-ui.service</code>, <code>glidex-netd.service</code>, <code>glidex-stord.service</code>, <code>glidex-authd.socket</code>, <code>glidex-authd.service</code>, <code>glidex-vfio-boot.service</code></td><td>The other units.</td></tr>
+<tr><td><code>50-glidex-vm.rules.in</code></td><td>Polkit rule: the control plane’s user may start, stop and kill its own <code>glidex-vm@</code> units, nothing else.</td></tr>
+<tr><td><code>glidex.pam</code></td><td>PAM service for <code>glidex-authd</code>.</td></tr>
+<tr><td><code>control-plane.json.example</code></td><td>Every control plane setting with its default; a test keeps it loadable.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="scripts"><a class="header" href="#scripts">Scripts</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Script</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr><td><code>scripts/lint-store-writes.sh</code></td><td>CI lint: database writes in the control plane go through the store (see <a href="contributing.html#conventions">Contributing</a>).</td></tr>
+<tr><td><code>scripts/dev/ui-e2e.sh</code></td><td>Run the UI e2e suite against a throwaway control plane.</td></tr>
+<tr><td><code>scripts/dev/ui-e2e-full.sh</code></td><td>The same with nothing skipped (needs an image, KVM and <code>glidex-netd</code>).</td></tr>
+<tr><td><code>scripts/dev/fake-lan-setup.sh</code>, <code>fake-lan-teardown.sh</code></td><td>A fake LAN in a network namespace for the uplink tests (root).</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="specs-and-docs"><a class="header" href="#specs-and-docs">Specs and docs</a></h2>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md"><code>spec/</code></a>:
+one file per area (<code>architecture.md</code>, <code>reconciliation.md</code>,
+<code>storage.md</code>, <code>clustering.md</code>, <code>grpc.md</code>, <code>security.md</code>,
+<code>tenancy.md</code>, …). Its README has a table of contents with each
+file’s scope and status (design, draft, implemented). Code cites them
+by path, so they are never moved or renamed.</li>
+<li><code>docs/public/</code>: this book. <code>docs/internal/</code>: the mdBook config that
+builds <code>spec/</code> as a book. <code>docs/site/</code>: the landing page.</li>
+</ul>
+<h2 id="where-do-i-find"><a class="header" href="#where-do-i-find">Where do I find…</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>What</th><th>Where</th></tr>
+</thead>
+<tbody>
+<tr><td>A REST route and its Cedar action</td><td><code>routes</code> in <code>crates/glidex-control-plane/src/api/mod.rs</code> (<code>.add("POST", "/disks/{id}/move", "moveDisk", …)</code>); handler in <code>api/&lt;area&gt;.rs</code></td></tr>
+<tr><td>An RPC</td><td><code>crates/glidex-api/proto/glidex/&lt;area&gt;/v1/&lt;area&gt;.proto</code>; adapter in <code>api/rpc/&lt;area&gt;.rs</code></td></tr>
+<tr><td>The logic of an operation</td><td><code>crates/glidex-control-plane/src/service/&lt;area&gt;.rs</code></td></tr>
+<tr><td>A Cedar action, its groups and resource type</td><td><code>crates/glidex-control-plane/policies/glidex.cedarschema</code></td></tr>
+<tr><td>Who may do what by default</td><td><code>policies/roles.cedar</code>, <code>policies/base.cedar</code></td></tr>
+<tr><td>A controller</td><td><code>crates/glidex-control-plane/src/controller/&lt;object&gt;.rs</code></td></tr>
+<tr><td>A store table</td><td><code>tables!</code> in <code>crates/glidex-control-plane/src/store/db.rs</code></td></tr>
+<tr><td>A schema migration</td><td><code>migrate</code> and <code>SCHEMA_VERSION</code> in <code>crates/glidex-control-plane/src/store/mod.rs</code></td></tr>
+<tr><td>A configuration setting</td><td><code>crates/glidex-control-plane/src/config.rs</code>; <code>packaging/control-plane.json.example</code></td></tr>
+<tr><td>A <code>gxctl</code> command</td><td><code>crates/glidex-control-plane/src/bin/gxctl/&lt;area&gt;.rs</code></td></tr>
+<tr><td>A UI page</td><td>Route in <code>crates/glidex-ui/ui/src/App.tsx</code>; page in <code>ui/src/pages/</code></td></tr>
+<tr><td>A UI API call</td><td><code>crates/glidex-ui/ui/src/api.ts</code></td></tr>
+<tr><td>A hypervisor command line</td><td><code>crates/glidex-control-plane/src/hypervisor/cloud_hypervisor.rs</code>, <code>qemu.rs</code></td></tr>
+<tr><td>What happens on the host network</td><td><code>crates/glidex-ovs/src/</code>, behind <code>glidex-netd</code></td></tr>
+<tr><td>A systemd unit</td><td><code>packaging/</code></td></tr>
+<tr><td>A CI job</td><td><code>.github/workflows/rust.yml</code>, <code>docs.yml</code></td></tr>
+<tr><td>The design behind any of these</td><td>The <code>spec/…</code> reference in the file’s <code>//!</code> header</td></tr>
+</tbody>
+</table>
+</div>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/architecture.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/architecture.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

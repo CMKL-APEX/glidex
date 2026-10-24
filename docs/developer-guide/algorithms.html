@@ -1,0 +1,1225 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Algorithms - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-a4ecf34d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/developer-guide/algorithms.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="algorithms"><a class="header" href="#algorithms">Algorithms</a></h1>
+<p>This page explains how the non-trivial parts of Glidex work, as the code
+implements them. Each section covers the problem, the inputs and outputs,
+the steps, the invariants, where the code lives, and the tests that pin it.
+Section numbers in links point into the design specs, which hold the
+reasoning. Where a spec and this page disagree, the code is what this page
+describes.</p>
+<p>For how the pieces fit together, see <a href="architecture.html">Architecture</a>. For
+why they were built this way, see
+<a href="design-decisions.html">Design decisions and trade-offs</a>.</p>
+<p>Paths are relative to <code>crates/glidex-control-plane/src/</code> unless another
+crate is named.</p>
+<ul>
+<li><a href="#scheduler">Scheduler</a></li>
+<li><a href="#vm-reconciliation">VM reconciliation</a></li>
+<li><a href="#replicated-store-and-raft">Replicated store and Raft</a></li>
+<li><a href="#metering">Metering</a></li>
+<li><a href="#images-and-disks">Images and disks</a></li>
+<li><a href="#kernel-extraction">Kernel extraction</a></li>
+<li><a href="#disk-move-and-volume-locks">Disk move and volume locks</a></li>
+<li><a href="#directory-pull-sync">Directory pull sync</a></li>
+<li><a href="#console-log-replay-filter">Console log replay filter</a></li>
+<li><a href="#ipam">IPAM</a></li>
+<li><a href="#ovn-northbound-sync">OVN northbound sync</a></li>
+<li><a href="#rate-limiting">Rate limiting</a></li>
+<li><a href="#ca-rotation-and-certificate-renewal">CA rotation and certificate renewal</a></li>
+</ul>
+<h2 id="scheduler"><a class="header" href="#scheduler">Scheduler</a></h2>
+<p><strong>Problem.</strong> Choose the node a VM runs on. The choice includes the node’s
+NUMA node, dedicated CPUs, hugepage size and pool devices. A VM is placed
+once and stays where it is placed (spec decision D6). Nothing moves it
+automatically afterwards.</p>
+<p><strong>Inputs.</strong></p>
+<ul>
+<li>A <code>Request</code>: vCPUs, memory, hypervisor, architecture, hugepages, NUMA and
+CPU policy, pin, disks and the nodes they are bound to, datastore
+reachability, networks, physnets, VFIO devices, pool requests, and the
+cluster’s ovn-northd version.</li>
+<li>Every node, with the <code>Load</code> already placed on it. A placed VM counts
+whether it is running or not.</li>
+</ul>
+<p><strong>Output.</strong> A <code>Choice</code> (node, <code>page_kib</code>, NUMA node or NUMA shares, CPUs,
+pool devices), or a list of why each node refused.</p>
+<p><strong>Load.</strong> <code>loads()</code> folds every placed VM into a per-node <code>Load</code>:</p>
+<ul>
+<li>vCPUs;</li>
+<li>ordinary memory and hugepage memory, kept apart and keyed by page size;</li>
+<li>memory bound to each NUMA node;</li>
+<li>dedicated CPUs held;</li>
+<li>claimed PCI devices (address → VM name).</li>
+</ul>
+<p>Claims are not stored separately. They are recomputed from placements each
+time.</p>
+<p><strong>Filters.</strong> <code>failing()</code> checks one node, in this order. The first failure
+is the node’s reason.</p>
+<pre><code class="language-text">pin matches (id or name)
+phase Active, not draining (unschedulable), Ready=True
+shared vCPUs + req.vcpus &lt;= (allocatable cpus - held dedicated) * cpu_overcommit
+page size: page_kib()            # explicit hugepages must fit; vhost-user may get 2M pages
+ordinary memory &lt;= allocatable * memory_overcommit   # hugepage RAM not counted here
+hypervisor installed
+architecture matches (empty on either side matches)
+every physnet mapped on the node
+ovn-controller major.minor &gt;= cluster ovn-northd       # cluster networks only
+br-int on the netdev datapath                          # vhost-user NIC on a cluster network
+each VFIO device: present, not cordoned, not taken (address or IOMMU group)
+devices granted to the project on this node
+node-local disks unbound or bound here
+every datastore of an unbound disk reachable from here
+node-scoped networks are on this node
+place_on(): pool devices, then NUMA fit
+memory recheck if implicit hugepages fell back to ordinary memory
+dedicated CPUs leave enough shared capacity
+</code></pre>
+<p><code>allocatable</code> is the node’s capacity minus a reserve (1 CPU and 2048 MiB by
+default) minus the hugepage pool (<code>node.rs</code>). The overcommit defaults are
+<code>cpu_overcommit = 4.0</code> and <code>memory_overcommit = 1.0</code>. Hugepages are never
+overcommitted (<code>cluster/config.rs</code>, <code>SchedulerConfig</code>).</p>
+<p><strong>Device claims.</strong> <code>device_taken()</code> refuses a device in two cases: it is
+claimed, or another device in its IOMMU group is claimed. Devices in one
+group cannot be split between VMs. A node that reports no groups is checked
+by address only.</p>
+<p><strong>Hugepages.</strong> <code>page_kib()</code> works as follows:</p>
+<ul>
+<li><strong>Asked-for hugepages:</strong> the node’s default size, or the requested size.
+The memory must be a whole number of pages, and <code>taken + mem &lt;= capacity</code>.</li>
+<li><strong>A vhost-user NIC without hugepages asked for:</strong> 2 MiB pages, if spare
+pages cover the memory plus max(memory/4, 256 MiB). Otherwise ordinary
+memory.</li>
+</ul>
+<p><strong>NUMA fit.</strong> <code>numa_fit()</code> applies after the filters:</p>
+<ul>
+<li>Dedicated CPUs without a NUMA policy imply <code>preferred</code>.</li>
+<li><code>aligned</code> without devices behaves as <code>preferred</code>.</li>
+<li>No policy and shared CPUs: no NUMA work is done.</li>
+</ul>
+<pre><code class="language-text">candidates = NUMA nodes (strict: only those holding the VM's devices)
+order candidates by (devices held desc, usage after placing asc, id)
+for k in candidates:
+    fit_on_numa(k)    # memory or hugepages on k; dedicated CPUs from k
+take the best fit
+none fits: strict -&gt; refuse; preferred -&gt; whole host, NumaAligned=False
+</code></pre>
+<ul>
+<li><code>fit_on_numa()</code> charges each NUMA node its bound load. Load not bound to a
+NUMA node is spread over the NUMA nodes by their share of memory (or of
+pages).</li>
+<li><code>pick_cpus()</code> takes isolated cores first, then cores by id. It takes whole
+SMT cores unless <code>dedicated_whole_cores</code> is off.</li>
+<li>The first core of each NUMA node is kept for the host unless the operator
+lists reserved CPUs (<code>reserved_cpus()</code>).</li>
+</ul>
+<p><strong>Aligned (GPU) placement.</strong> <code>aligned_fit()</code> uses exactly the NUMA nodes
+that hold the VM’s devices. It splits vCPUs and memory between them in
+proportion to their device counts, using the largest-remainder method
+(<code>split_by()</code>). Each share must fit its NUMA node, and every share must use
+the same page size.</p>
+<p><strong>Pools.</strong> <code>pick_pool_devices()</code> chooses devices for pool requests:</p>
+<ul>
+<li>Candidates are ready, not cordoned and not taken.</li>
+<li>It prefers devices on the NUMA node of the VM’s other devices, then goes
+by address.</li>
+<li>Under <code>aligned</code>, it uses as few NUMA nodes as it can.</li>
+<li>With <code>same_switch</code>, all devices come from one PCIe switch, preferring a
+switch the VM already uses.</li>
+</ul>
+<p>A <code>gpus</code> request is expanded before scheduling, in <code>service/vm.rs</code>
+<code>expand_gpus()</code> and <code>apply_gpus()</code>:</p>
+<ul>
+<li>It becomes a pool request.</li>
+<li>The NUMA policy defaults to <code>aligned</code>.</li>
+<li>vCPUs and memory default to the pool’s <code>per_device</code> sizing × count.</li>
+</ul>
+<p><strong>Score.</strong> <code>evaluate()</code> scores each node that fits:</p>
+<pre><code class="language-text">score = max(cpu share, memory share, hugepage share)   # after placing the VM
+order: fits first; then score asc; then fewest VMs; then node name
+</code></pre>
+<p>The result is deterministic. <code>schedule()</code> returns the first node in that
+order. <code>explain()</code> joins the refusals, capped at 8 nodes plus “and N more”.
+The preview endpoint (<code>POST /scheduler/preview</code>) returns the full
+<code>evaluate()</code> list.</p>
+<p><strong>Where it runs.</strong></p>
+<ul>
+<li>At VM create, under the write lock on the VM map (<code>state.rs</code>,
+<code>pick_node()</code>).</li>
+<li>Again for VMs created without a placement: the leader runs
+<code>place_pending()</code> (<code>controller/placement.rs</code>) every 3 s.</li>
+<li>The placement, the disk bindings and the IPAM reservations are recorded in
+one store commit.</li>
+<li>A standalone host runs the same <code>place_on()</code> against itself.</li>
+<li>A change to a placed VM re-fits it on its own node (<code>refit_placement()</code>).
+What no longer fits is refused with 409.</li>
+</ul>
+<p><strong>Code.</strong> <code>scheduler.rs</code>: <code>schedule</code>, <code>evaluate</code>, <code>failing</code>, <code>place_on</code>,
+<code>numa_fit</code>, <code>aligned_fit</code>, <code>pick_pool_devices</code>, <code>page_kib</code>, <code>device_taken</code>,
+<code>loads</code>.</p>
+<p><strong>Tests.</strong> In <code>scheduler.rs</code>:</p>
+<ul>
+<li><code>the_least_allocated_node_wins_and_ties_break_by_count_then_name</code></li>
+<li><code>capacity_counts_stopped_vms_and_the_overcommit_factors</code></li>
+<li><code>devices_are_claimed_per_node_and_by_iommu_group</code></li>
+<li><code>hugepages_are_counted_apart_from_memory_and_never_overcommitted</code></li>
+<li><code>the_hugepage_share_counts_in_the_score</code></li>
+<li><code>preferred_falls_back_to_the_whole_host_and_says_so</code></li>
+<li><code>aligned_over_two_numa_nodes_splits_cpus_memory_and_devices</code></li>
+<li><code>pools_give_devices_near_each_other</code></li>
+</ul>
+<p>Integration tests in <code>tests/cluster_tests.rs</code>:
+<code>vfio_devices_are_claimed_per_node_and_by_iommu_group</code> and
+<code>hugepages_are_counted_per_node_and_fill_up</code>.</p>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#91-scheduler">clustering.md §9.1</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md#8-scheduler">host-topology.md §8</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md#8a-hugepages">host-topology.md §8a</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md#4-placement-aligned">gpu-vms.md §4</a></li>
+</ul>
+<p>The code goes slightly beyond §9.1 in two ways: the score also includes the
+hugepage share, and placement also happens at VM create, not only on the
+leader’s pass.</p>
+<h2 id="vm-reconciliation"><a class="header" href="#vm-reconciliation">VM reconciliation</a></h2>
+<p><strong>Problem.</strong> Make each VM’s instance (the shim and its hypervisor) match
+the VM’s spec. This must survive crashes of the control plane, the shim
+and the host.</p>
+<p><strong>Desired state.</strong></p>
+<ul>
+<li><code>spec.power</code>: <code>Running</code>, <code>Paused</code> or <code>Stopped</code>.</li>
+<li><code>restart_policy</code>: <code>OnFailure</code> (default) or <code>Never</code>.</li>
+<li><code>on_host_boot</code>: <code>Resume</code> (default) or <code>Stop</code>.</li>
+</ul>
+<p><strong>Observed state.</strong> <code>status.phase</code> is one of <code>Stopped</code>, <code>Provisioning</code>,
+<code>Starting</code>, <code>Running</code>, <code>Paused</code>, <code>Stopping</code>, <code>Failed</code> or <code>Unknown</code>, plus
+conditions such as <code>Ready</code>, <code>CrashLoopBackOff</code> and <code>RestartRequired</code>.</p>
+<h3 id="liveness"><a class="header" href="#liveness">Liveness</a></h3>
+<p>Before acting, the controller establishes whether an instance exists.
+<code>instance::liveness()</code> runs these checks, and the first that shows life
+wins:</p>
+<pre><code class="language-text">1. the systemd unit is active
+2. shim or hypervisor (pid, start time) is alive, from status.instance and
+   instance.json, but only if their boot id is the current boot id
+3. api.sock or shim.sock accepts a connection
+all checks made, none alive   -&gt; Dead
+any check could not be made   -&gt; Unknown   # never acted on
+</code></pre>
+<p>The start time guards against pid reuse. The boot id makes a host reboot
+read as “no instance”.</p>
+<h3 id="one-round"><a class="header" href="#one-round">One round</a></h3>
+<p><code>controller/vm.rs</code> <code>reconcile_vm()</code> runs one round. Every step is
+idempotent. A round ends with “done” or “requeue after <em>t</em>”.</p>
+<pre><code class="language-text">skip VMs placed on another node
+observe liveness
+Unknown                      -&gt; phase Unknown, Ready=Unknown, requeue 10 s
+Live, instance.json has an id we have no record of -&gt; adopt it (AdoptedUnrecorded)
+Live, shim reports Exited    -&gt; release the shim, phase Stopping
+not Live, instance recorded  -&gt; finish_exit (exit cause, restart policy)
+deleting and not Live        -&gt; run finalizers in order
+desired Stopped:  Live -&gt; stop_round   else detach ports, phase Stopped, Ready=True
+desired Running/Paused:  not Live -&gt; launch_round   else running_round (drift)
+</code></pre>
+<ul>
+<li>
+<p><strong><code>stop_round</code>:</strong> asks the shim to stop with the VM’s grace period. The
+deadline is grace + 15 s. Past the deadline it escalates to stopping the
+unit, and 15 s later to killing it.</p>
+</li>
+<li>
+<p><strong><code>launch_round</code>:</strong></p>
+<ol>
+<li>Waits for <code>next_restart_at</code>.</li>
+<li>Checks that disks, images and network records are there.</li>
+<li>Provisions: seed, NIC ports, <code>launch.json</code>.</li>
+<li>Writes the intent record (<code>status.instance</code>) <strong>before</strong> it starts the
+runner.</li>
+</ol>
+<p>A failure before the intent detaches the ports that this round added. A
+failure after it is found by the next round’s observation.</p>
+</li>
+<li>
+<p><strong><code>running_round</code>:</strong> corrects drift: pause and resume, VFIO hot-plug,
+ports and CPU affinity. It sets <code>RestartRequired</code> when a launch-relevant
+field differs from what was launched.</p>
+</li>
+</ul>
+<h3 id="exit-handling-and-restart-policy"><a class="header" href="#exit-handling-and-restart-policy">Exit handling and restart policy</a></h3>
+<p><code>finish_exit()</code> first classifies how the instance ended:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>How it ended</th><th>Cause</th></tr>
+</thead>
+<tbody>
+<tr><td>Boot id changed</td><td><code>HostReboot</code></td></tr>
+<tr><td>The shim recorded an exit</td><td>that cause</td></tr>
+<tr><td>No <code>instance.json</code></td><td><code>Lost</code> (an intent that never launched)</td></tr>
+<tr><td><code>instance.json</code> without an exit record</td><td><code>Lost</code> (the shim died)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Then it acts on the cause:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Cause</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Requested</code>; <code>Lost</code> that never launched</td><td>none</td></tr>
+<tr><td><code>Terminated</code> (unit stopped outside Glidex), <code>CleanExit</code> (guest powered off)</td><td>set <code>spec.power = Stopped</code></td></tr>
+<tr><td><code>HostReboot</code></td><td><code>Resume</code>: launch again; <code>Stop</code>: set <code>spec.power = Stopped</code></td></tr>
+<tr><td><code>LaunchFailed</code></td><td>phase <code>Failed</code>; retry after <code>backoff(launch_failures)</code></td></tr>
+<tr><td><code>Crashed</code>; <code>Lost</code> from a dead shim</td><td><code>OnFailure</code>: restart after <code>crash_delay(n)</code>, <code>CrashLoopBackOff</code>; <code>Never</code>: set <code>spec.power = Stopped</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-text">crash_delay(n) = min(10 s &lt;&lt; (n-1), 300 s)        # 10, 20, 40, ... 300
+restart_count resets after 600 s of running (STABLE_SECS)
+backoff(n)     = clamp(1 s &lt;&lt; (n-1), 1 s, 300 s)  # queue and launch failures
+</code></pre>
+<p>There is no limit on the number of restarts. They continue at most 300 s
+apart. When the controller sets the spec to stopped, it writes only if the
+generation has not changed since it observed the exit
+(<code>stop_spec_after_exit()</code>).</p>
+<h3 id="work-queue"><a class="header" href="#work-queue">Work queue</a></h3>
+<p><code>controller/queue.rs</code> holds one queue for every kind of object, keyed by
+<code>(kind, id)</code>.</p>
+<ul>
+<li>A key is queued at most once.</li>
+<li>A key is processed by at most one worker at a time. A key added while it
+is being processed is marked dirty and processed again afterwards.</li>
+<li>Failures back off per key with <code>backoff(n)</code>. A success resets the count.
+An explicit “requeue after” is not a failure.</li>
+</ul>
+<p>Triggers:</p>
+<ul>
+<li>API writes.</li>
+<li>A pidfd exit watch on each live shim and hypervisor (<code>controller/mod.rs</code>
+<code>wait_for_exit()</code>).</li>
+<li>Cross-object events, such as a disk becoming ready.</li>
+<li>A resync of every object every <code>resync_secs</code> (30 s by default), spread
+evenly over the period.</li>
+</ul>
+<p><code>reconcile.workers</code> (4 by default) run rounds in parallel.</p>
+<h3 id="adoption-after-a-restart"><a class="header" href="#adoption-after-a-restart">Adoption after a restart</a></h3>
+<p><code>controller/startup.rs</code> <code>adopt_instances()</code> runs before any controller
+starts. It launches, stops and changes nothing. For each local VM:</p>
+<ul>
+<li>If the VM is live, it refreshes the recorded pids. If <code>instance.json</code>
+names an instance the record lacks, it rebuilds the record from
+<code>instance.json</code> and <code>launch.json</code>. It emits <code>Adopted</code>.</li>
+<li>Runtime directories and units with no VM record are reported as orphans
+and never touched.</li>
+<li>Only after this does it tell netd which VMs own ports.</li>
+</ul>
+<p>There are no pid files. A running VM is found again from:</p>
+<ul>
+<li><code>instance.json</code>, which the shim writes;</li>
+<li>the persisted <code>status.instance</code>;</li>
+<li>the systemd unit <code>glidex-vm@&lt;id&gt;.service</code>.</li>
+</ul>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>queue.rs</code>: <code>dedupes_and_never_runs_a_key_twice_at_once</code>,
+<code>delayed_keys_come_when_due</code>, <code>backoff_doubles_and_caps</code>.</li>
+<li><code>vm.rs</code>: <code>crash_backoff_is_10s_doubling_to_5min</code>,
+<code>an_unchanged_status_writes_nothing</code>.</li>
+<li><code>instance/mod.rs</code>: <code>each_check_alone_shows_life</code>.</li>
+<li>Restart and adoption end to end: <code>restart_e2e</code> in
+<code>tests/functional_tests.rs</code>, and <code>systemd_runner_launches_adopts_and_stops</code>.</li>
+</ul>
+<!-- TODO(verify): no test pins on_host_boot (HostReboot Resume vs Stop) or restart_policy Never; behaviour above is from the code only. -->
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#91-reconcile">reconciliation.md §9.1</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#93-work-queue">§9.3</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#94-startup-order">§9.4</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#75-exit-handling">§7.5</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#87-liveness-establishing-no-instance-d8">§8.7</a></li>
+</ul>
+<h2 id="replicated-store-and-raft"><a class="header" href="#replicated-store-and-raft">Replicated store and Raft</a></h2>
+<p><strong>Problem.</strong> Keep one database consistent across the cluster’s servers.
+Applying the replicated log must give the same bytes on every member and on
+every software version.</p>
+<p><strong>Library.</strong> <a href="https://docs.rs/openraft/0.9.25/openraft/">openraft</a> 0.9.25,
+pinned exactly. It implements <a href="https://raft.github.io/raft.pdf">Raft</a>. The
+store is <a href="https://docs.rs/redb">redb</a>. Code: crate <code>glidex-raftstore</code>
+(<code>store.rs</code>, <code>raft/</code>) and <code>cluster/</code>.</p>
+<h3 id="write-sets"><a class="header" href="#write-sets">Write sets</a></h3>
+<p>A <strong>write set</strong> is the ordered list of key changes one write made:</p>
+<pre><code class="language-text">WriteSet { format, origin, ops: [ Put{table, key, value} | Delete{table, key} ] }
+</code></pre>
+<p>The leader computes write sets. <code>Db::write(origin, f)</code> works like this:</p>
+<pre><code class="language-text">take the single write lane
+new leader? first apply everything committed before it (ensure_linearizable)
+open a real redb write transaction; run f against it
+    every insert/remove is recorded as an Op; reads see the transaction's writes
+empty write set   -&gt; abort, nothing happens
+local mode        -&gt; commit
+replicated mode   -&gt; abort the local transaction, propose the write set,
+                     return once it is committed and applied
+</code></pre>
+<p>Application logic runs only on the leader. The Raft log entry holds the
+outcome, not the request.</p>
+<p>Followers, and the leader itself, apply each entry with <code>Db::apply()</code>. This
+is a pure byte operation: the puts and deletes are applied in one redb
+transaction, and <code>last_applied</code> is written in that same transaction. A
+crash therefore never applies an entry twice and never skips one. After
+the commit, the revision becomes the Raft index and subscribers are told.</p>
+<p>Constraints:</p>
+<ul>
+<li>A write set larger than the schema’s limit (4 MiB of JSON) is refused.</li>
+<li>Table ids are append-only, because they are stored in the log.</li>
+</ul>
+<p><strong>Replay check.</strong> Setting <code>GLIDEX_CHECK_WRITE_SETS</code> enables the replay
+check. CI runs <code>cargo test</code> with it set. With the variable set:</p>
+<ol>
+<li>Every fresh database journals the write sets it publishes.</li>
+<li>When the database is dropped, the journal is replayed into an empty
+database.</li>
+<li>The two databases must dump identically, otherwise the test panics.</li>
+</ol>
+<p>This pins the invariant that the write set alone reproduces the state
+(<code>Drop for Db</code>, <code>Db::replay</code>).</p>
+<p><strong>Snapshots.</strong></p>
+<ul>
+<li>A snapshot is a read-transaction view of the live database, so building
+one costs nothing.</li>
+<li>It is streamed to a file only when it has to be sent to a member.</li>
+<li>Installing it replaces the replicated tables and sets <code>last_applied</code> in
+one transaction.</li>
+<li>The log is a separate redb file, <code>raft/log.redb</code>. Entries are durable
+before they are acknowledged.</li>
+</ul>
+<p><strong>Defaults.</strong> Heartbeat 250 ms, election timeout 1000–2000 ms, 10,000 log
+entries kept.</p>
+<h3 id="writes-on-a-follower"><a class="header" href="#writes-on-a-follower">Writes on a follower</a></h3>
+<ul>
+<li><strong>API writes.</strong> A follower forwards the whole HTTP or RPC request to the
+leader over the cluster port, with the authenticated principal attached
+(<code>api/gate.rs</code>, <code>cluster_gate()</code> and <code>forward()</code>).
+<ul>
+<li>The leader accepts forwarded requests only from server certificates. It
+authorizes the request itself.</li>
+<li>With no leader known, the follower waits up to 3 s, then answers <code>503</code>.</li>
+<li>A <code>421</code> that names the leader is retried.</li>
+</ul>
+</li>
+<li><strong>Node status writes</strong> (controller, images and network origins). These go
+to the leader as write sets. The leader replays them inside its own write,
+under a check of what that node may write (<code>cluster/sync.rs</code>,
+<code>check_status_write()</code>). The node then waits until its replica reaches
+the returned index (read-your-writes).</li>
+<li><strong>Agents</strong> (nodes that are not servers) keep a mirror of the store. Status
+writes they can’t deliver are queued on disk and resent.</li>
+</ul>
+<h3 id="reads"><a class="header" href="#reads">Reads</a></h3>
+<p>Reads are linearizable by default:</p>
+<pre><code class="language-text">leader:   read index = raft.get_read_log_id()
+follower: ask the leader for its read index (POST /cluster/v1/read-index)
+wait until the local replica has applied that index (&lt;= 10 s)
+read the local replica
+</code></pre>
+<p>Concurrent reads share one round trip. Without a quorum, a read fails with
+<code>503 cluster_unavailable</code>, unless the client asks for a possibly stale
+local read with <code>X-Glidex-Consistency: local</code>. Read responses carry
+<code>X-Glidex-Revision</code>.</p>
+<h3 id="liveness-and-readiness"><a class="header" href="#liveness-and-readiness">Liveness and readiness</a></h3>
+<ul>
+<li>Each node sends a heartbeat to the leader every 5 s.</li>
+<li>Every 2 s, the leader compares each node’s silence with
+<code>cluster.node_grace_secs</code> (40 s by default).</li>
+<li>A silent node becomes <code>Ready=Unknown/NodeUnreachable</code>. So do its VMs, in
+the same write. Nothing is stopped or moved.</li>
+<li>A new leader resets every node’s grace to the time it took over, so a
+leader change never marks healthy nodes unreachable
+(<code>cluster/lifecycle.rs</code> <code>liveness_round()</code>, <code>cluster/sync.rs</code>
+<code>Liveness</code>).</li>
+</ul>
+<p>A VM becomes <code>Lost</code> only when an operator forgets a fenced node.</p>
+<h3 id="watch-streams"><a class="header" href="#watch-streams">Watch streams</a></h3>
+<p>The public watch (<code>GET /watch</code> as server-sent events, and the RPC
+<code>WatchService.Watch</code>) works as follows:</p>
+<ol>
+<li>It sends every visible object as <code>added</code>, then <code>synced</code>.</li>
+<li>When the store’s change bell rings, or every 10 s, it waits 250 ms for
+changes to settle, lists again with the list endpoints’ own
+authorization, and sends the differences.</li>
+<li>Keep-alives go out every 15 s.</li>
+<li>A stream ends after 300 s. The client reconnects and gets a fresh
+snapshot, so policy changes always apply.</li>
+</ol>
+<p>Code: <code>service/watch.rs</code>, <code>api/watch.rs</code>, <code>api/rpc/watch.rs</code>.</p>
+<p>Agents follow the store with a long poll by revision (<code>/cluster/v1/watch</code>).
+A revision older than the server’s in-memory log gets <code>410 Gone</code>, and the
+agent lists again.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>glidex-raftstore</code>: <code>write_sets_replay_to_the_same_bytes</code>.</li>
+<li><code>glidex-raftstore/tests/raft.rs</code>: <code>a_lagging_learner_catches_up_from_a_snapshot</code>,
+<code>killing_the_leader_keeps_writes_going</code>,
+<code>a_partitioned_leaders_writes_are_rejected</code>.</li>
+<li><code>tests/cluster_tests.rs</code>:
+<code>reads_without_a_quorum_fail_unless_stale_is_asked_for</code>,
+<code>a_follower_server_writes_its_status_through_the_leader</code>,
+<code>a_silent_node_is_unreachable_not_gone</code>.</li>
+</ul>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#62-raft-integration">clustering.md §6.2</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#64-reads-writes-and-forwarding">§6.4</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#65-watch">§6.5</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#72-liveness">§7.2</a></li>
+</ul>
+<h2 id="metering"><a class="header" href="#metering">Metering</a></h2>
+<p><strong>Problem.</strong> Turn host counters and gauges into hourly usage rows that are
+counted exactly once. This must hold across crashes, counter resets and
+leader changes. Code: <code>metering/</code>.</p>
+<h3 id="sampling"><a class="header" href="#sampling">Sampling</a></h3>
+<p>A round runs every <code>sample_secs</code>: 30 s by default, which must divide 300,
+and rounds align to the wall clock (<code>metering/mod.rs</code>,
+<code>metering/sampler.rs</code>). Each round reads:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Source</th><th>Meters</th></tr>
+</thead>
+<tbody>
+<tr><td>cgroup (or <code>/proc</code>)</td><td>CPU time and memory</td></tr>
+<tr><td>Hypervisor</td><td>disk I/O</td></tr>
+<tr><td>OVS port statistics</td><td>NIC and bridge bytes</td></tr>
+<tr><td>nftables counters (NAT networks)</td><td>external traffic</td></tr>
+<tr><td>Conntrack (OVN gateways)</td><td>external traffic</td></tr>
+<tr><td>VM phase</td><td>allocation gauges</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="the-ledger"><a class="header" href="#the-ledger">The ledger</a></h3>
+<p><code>metering/ledger.rs</code> keeps:</p>
+<ul>
+<li>a <strong>cursor</strong> per counter: last value, time and reset key;</li>
+<li><strong>open-hour</strong> accumulators;</li>
+<li><strong>closed</strong> hourly rows;</li>
+<li><strong>5-minute slots</strong> for percentiles.</li>
+</ul>
+<pre><code class="language-text">counter reading (value, at) with reset key r:
+    same r, value &gt;= cursor  -&gt; delta = value - cursor
+    same r, value &lt;  cursor  -&gt; delta = value (a reset), flagged
+    new r (a new run)        -&gt; counted from 0 (from launch time if known)
+    first sight, before metering started -&gt; baseline only, no backfill
+gauge reading: integrate level x elapsed time; carry the sub-unit remainder
+spread each delta over [from, to] into hours and 5-minute slots by overlap
+commit: cursors + accumulators + slots in ONE transaction
+close every open hour that ended more than close_grace_secs (120 s) ago
+    first row for (hour, subject) has seq 0; a later one is an adjustment, seq n+1
+</code></pre>
+<p>Exactly once rests on the commit: a delta and the cursor that produced it
+commit together. A failed commit changes nothing, and the next round
+recomputes from the old cursor.</p>
+<p><code>split_by()</code> splits a delta with cumulative integer arithmetic, so the
+parts always sum exactly to the delta. A delta spread over a gap longer
+than two sampling intervals is flagged <code>interpolated</code> and gives no peak.</p>
+<h3 id="in-a-cluster"><a class="header" href="#in-a-cluster">In a cluster</a></h3>
+<ol>
+<li>Each node keeps its open state in a local <code>meter.db</code>.</li>
+<li>Every 60 s it ships its closed rows to the leader
+(<code>POST /cluster/v1/ledger</code>).</li>
+<li>The leader merges them in one replicated write (<code>Ledger::import()</code>). It
+records a key per node and row in <code>ledger_inbox</code>. A row already in the
+inbox is skipped.</li>
+<li>The node deletes its local copies only after the acknowledgement.</li>
+</ol>
+<p>Shipping is at least once and merging is idempotent, so the cluster ledger
+is exactly once. The cluster’s completeness is the least that any live
+node has closed.</p>
+<h3 id="billing-month"><a class="header" href="#billing-month">Billing month</a></h3>
+<ul>
+<li>A billing month is a calendar month in <code>metering.billing_timezone</code>.</li>
+<li>Only zones whose offset is a whole number of hours all year are accepted.
+An hour row therefore never straddles a month boundary, and month totals
+are exact sums of hourly rows, adjustments included (<code>metering/query.rs</code>
+<code>month_bounds()</code>).</li>
+<li>The open hour is reported as provisional.</li>
+</ul>
+<h3 id="95th-percentile"><a class="header" href="#95th-percentile">95th percentile</a></h3>
+<p>Bandwidth, disk I/O and compute percentiles use the 5-minute slots
+(<code>metering/rates.rs</code>):</p>
+<pre><code class="language-text">slots = 5-minute slots in range where any member of the group was present
+series[slot] = sum of members' deltas in that slot      # p95 of the sum (D15)
+sort series; rank = ceil(0.95 * N); p95 = series[rank - 1]   # nearest rank
+Mbps = bytes * 8 / 300 / 1e6
+billable = max(p95 rx, p95 tx)
+</code></pre>
+<p>Once a billing month is complete, its final percentiles are written once
+(<code>metering/retention.rs</code>). After retention, hourly rows roll up into daily
+rows at the billing zone’s midnight.</p>
+<h3 id="derived-meters"><a class="header" href="#derived-meters">Derived meters</a></h3>
+<p>Derived meters are computed at read time (<code>query.rs</code> <code>derive()</code>):</p>
+<ul>
+<li><code>net.bytes</code> = rx + tx.</li>
+<li><code>net.internal_bytes</code> = total − external.</li>
+<li>Average rates over the bucket.</li>
+<li>Disk latency = time / operations.</li>
+</ul>
+<p>Metering stops at usage. Glidex applies no prices.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>ledger.rs</code>: <code>exactly_once_across_rounds_and_failed_commits</code>,
+<code>counter_deltas_and_reset_cases</code>, <code>no_backfill_before_metering_started</code>,
+<code>split_parts_sum_to_amount</code>,
+<code>hours_close_with_grace_and_late_deltas_become_adjustments</code>,
+<code>shipped_hours_merge_exactly_once</code>, <code>gauges_lose_nothing_to_rounding</code>.</li>
+<li><code>rates.rs</code>: <code>nearest_rank</code>, <code>group_p95_is_of_the_summed_series</code>.</li>
+<li><code>query.rs</code>: <code>month_buckets_in_a_whole_hour_zone</code>.</li>
+</ul>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#6-collection-algorithm">metering.md §6</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#84-billing-month">§8.4</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#851-95th-percentile-d15">§8.5.1</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#131-node-local-accumulation-shipped-hours">clustering.md §13.1</a></li>
+</ul>
+<h2 id="images-and-disks"><a class="header" href="#images-and-disks">Images and disks</a></h2>
+<h3 id="verified-download"><a class="header" href="#verified-download">Verified download</a></h3>
+<p><code>images/download.rs</code> <code>run_download()</code> and <code>verify_and_install()</code>:</p>
+<pre><code class="language-text">stream to &lt;id&gt;.qcow2.part, hashing as bytes arrive
+    (sha256 always; also the vendor's algorithm, e.g. sha512)
+retry up to 4 attempts, backing off 2, 4, 8 s
+    resume with a Range request only if the server gave an ETag or Last-Modified;
+    the part already on disk is rehashed first
+compare digest with the expected one; mismatch -&gt; Failed
+qemu-img info: refuse a backing file, refuse over the size limit
+qcow2: re-probe with the format forced; raw: convert to qcow2 and rehash
+fsync, chmod 0444, rename into place
+</code></pre>
+<p>The rename is the commit. A file under its final name is complete and
+verified.</p>
+<h3 id="linked-disks"><a class="header" href="#linked-disks">Linked disks</a></h3>
+<p>A linked disk shares its image’s data and stores only its own writes.</p>
+<ul>
+<li><strong>File datastores</strong> (<code>datastore/file.rs</code>): a linked disk is a qcow2
+overlay whose backing file is the image. The backing path is relative to
+the datastore directory, so it doesn’t depend on where the directory is
+mounted. Every change is made on a dot-file and renamed into place.</li>
+<li><strong>LVM datastores</strong> (<code>datastore/lvm.rs</code>): each node builds the image’s
+thin volume <code>gx-i-&lt;image&gt;</code> once from the verified file, then <strong>seals</strong> it
+(makes it read-only). A linked disk is a thin snapshot of that volume.
+<ul>
+<li>A half-filled, unsealed image volume left by a crash is deleted and
+rebuilt.</li>
+<li>Disk volumes are built as <code>&lt;name&gt;.new</code> and renamed, so a volume under
+its final name is complete.</li>
+<li>Privileged LVM operations go through <code>glidex-stord</code>.</li>
+</ul>
+</li>
+</ul>
+<h3 id="extend-root"><a class="header" href="#extend-root">Extend root</a></h3>
+<p><code>images/partition.rs</code> and <code>images/disk.rs</code> <code>extend_root_at()</code> grow the root
+partition into free space at the end of the disk.</p>
+<pre><code class="language-text">read GPT or MBR from the disk's first MiB
+root = partition with the Discoverable Partitions root type for the arch,
+       else the physically last partition if it is a Linux filesystem
+refuse unless root is the physically last partition
+offline mode:
+    raw: edit in place
+    qcow2 or block: sparse "shadow" raw file the disk's size, holding copies of
+        the first and last windows (&lt;= 1 MiB each)
+    sgdisk -e (GPT), then growpart &lt;root&gt;
+    check the tools wrote nothing outside the windows; write changed windows back
+on-boot mode, or partition tools missing: set pending_growpart; the guest grows it
+</code></pre>
+<p>Only the partition table changes. The guest grows the filesystem on its
+next boot (cloud-init). The shadow file avoids FUSE and NBD exports, so no
+root privileges are needed. Partition numbers don’t matter; position does.</p>
+<h3 id="image-copies-across-nodes"><a class="header" href="#image-copies-across-nodes">Image copies across nodes</a></h3>
+<ul>
+<li>Each node holds its own copy of each image it needs
+(<code>controller/image_cache.rs</code>). A node fetches the file from a node that
+holds it, over the cluster port, checks its sha256 and renames it into
+place.</li>
+<li>A shared datastore with linked disks gets its own copy of the image
+(<code>controller/store_copies.rs</code>). The copy is made under a lock file, checked
+by digest, made read-only and renamed.</li>
+</ul>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>download.rs</code>: <code>hashing</code>.</li>
+<li><code>partition.rs</code>: <code>gpt_root_by_type_last</code>,
+<code>ubuntu_layout_root_is_partition_one_at_the_end</code>,
+<code>gpt_root_not_last_is_refused</code>, <code>edit_qcow2_through_shadow_keeps_data</code>.</li>
+<li><code>tests/datastore_tests.rs</code>:
+<code>a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy</code>.</li>
+</ul>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md#5-download-pipeline">images.md §5</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md#64-extend-root-partition">images.md §6.4</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#111-design-s6-glidex-stord-and-lvm">storage.md §11.1</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#92-images-and-disks">clustering.md §9.2</a></li>
+</ul>
+<h2 id="kernel-extraction"><a class="header" href="#kernel-extraction">Kernel extraction</a></h2>
+<p><strong>Problem.</strong> Boot a VM directly from a kernel, using the kernel, initramfs
+and command line found inside a disk image or the VM’s own disk. The guest’s
+filesystems must never be parsed on the host.</p>
+<p><strong>How.</strong> The extractor is a small appliance VM: a pinned Debian kernel with
+an initramfs that Glidex builds. It runs as a one-shot shim job with:</p>
+<ul>
+<li>1 vCPU and 1 GiB of memory;</li>
+<li>no NIC and no seed;</li>
+<li>the image attached read-only;</li>
+<li>an output disk;</li>
+<li>a 120 s timeout.</li>
+</ul>
+<p>Code: <code>images/extractor.rs</code>, <code>images/extract.rs</code> and <code>controller/extract.rs</code>.</p>
+<p>Inside the VM, the appliance mounts each partition read-only and writes one
+stream to the output disk. The stream holds the <code>vmlinuz-*</code> files, the
+initramfs files, <code>grub.cfg</code> and BLS entries:</p>
+<pre><code class="language-text">GXFILE &lt;partition&gt;:&lt;path&gt; &lt;size&gt;\n&lt;bytes&gt; ... GXEND\n
+</code></pre>
+<p>The host parses the stream with every length checked. It refuses:</p>
+<ul>
+<li>malformed headers;</li>
+<li>unsafe names;</li>
+<li>more than 64 files;</li>
+<li>oversized files;</li>
+<li>a total over 2 GiB.</li>
+</ul>
+<p><strong>Choosing.</strong> <code>choose()</code> picks the kernel and its command line:</p>
+<pre><code class="language-text">candidates = vmlinuz-&lt;v&gt; that have initrd.img-&lt;v&gt; or initramfs-&lt;v&gt;.img
+             (same partition preferred)
+kernel = highest &lt;v&gt;, compared segment by segment, digit runs numerically
+cmdline = "options" of the BLS entry whose "linux" names vmlinuz-&lt;v&gt;,
+          else the first grub.cfg "linux"/"linuxefi" line naming it
+drop $VARS, BOOT_IMAGE=, console=, earlyprintk=; append the arch's serial console
+no root= -&gt; fail
+</code></pre>
+<p>Boot loader defaults (GRUB <code>set default</code>, <code>saved_entry</code>) are not consulted.
+The newest kernel that has an initramfs wins.</p>
+<p><strong>Following the guest’s kernel.</strong> With <code>kernel_from_disk</code>, the VM controller
+checks the root disk before each launch:</p>
+<ul>
+<li>It compares the disk file’s size and modification time (<code>disk_stamp</code>) with
+the values at the last extraction.</li>
+<li>If they are unchanged and the kernel image is still usable, it boots that
+kernel without extracting.</li>
+<li>Otherwise it extracts again. A result whose digests match a stored kernel
+image reuses that image.</li>
+<li>On failure it boots the kernel it already has and sets
+<code>KernelExtracted=False</code>.</li>
+</ul>
+<p>The kernel that boots is recorded in <code>status.disk_kernel</code>, not in the spec.</p>
+<p><strong>Tests.</strong> In <code>extractor.rs</code>: <code>newest_kernel_with_an_initramfs</code>, <code>versions</code>,
+<code>choice_on_the_catalog_layouts</code>, <code>bad_streams_are_refused</code>,
+<code>choice_fails_cleanly</code>.</p>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#104-choosing-the-kernel-and-its-command-line">kernel-boot.md §10.4</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#105-from-a-vms-own-disk">§10.5</a></li>
+</ul>
+<h2 id="disk-move-and-volume-locks"><a class="header" href="#disk-move-and-volume-locks">Disk move and volume locks</a></h2>
+<h3 id="volume-locks"><a class="header" href="#volume-locks">Volume locks</a></h3>
+<p>On a shared datastore, two nodes must never open one volume.</p>
+<p>Glidex uses one lock file per volume, <code>&lt;datastore&gt;/.locks/&lt;disk-id&gt;.lock</code>,
+held with a non-blocking <code>fcntl(F_OFD_SETLK)</code> write lock. The lock is
+<code>glidex_vm_shim::util::try_lock_file()</code>.</p>
+<ul>
+<li>OFD locks belong to the open file, not to the process. The descriptor is
+close-on-exec, so a child process never inherits the lock.</li>
+<li>Over NFSv4 the lock applies cluster-wide.</li>
+<li>Node-local datastores take no lock file. Placement and claims already
+protect them.</li>
+</ul>
+<p>Holders:</p>
+<ul>
+<li><strong>The shim</strong> takes the locks of the VM’s shared disks before it starts
+the hypervisor, and holds them until it exits
+(<code>glidex-vm-shim/src/supervisor.rs</code>). A held lock fails the launch.</li>
+<li><strong>Disk operations</strong> take the lock around the work
+(<code>StorageDriver::lock()</code>). A held lock returns <code>Busy</code>, and the operation
+waits.</li>
+</ul>
+<p>The lock is on a separate file, not on the disk itself, because the
+hypervisor takes its own lock on the disk file.</p>
+<h3 id="moving-a-disk"><a class="header" href="#moving-a-disk">Moving a disk</a></h3>
+<p><code>POST /disks/{id}/move</code> is checked in <code>datastore/manage.rs</code> <code>move_disk()</code> and
+carried out by the disk controller’s <code>move_round()</code> (<code>controller/disk.rs</code>)
+using <code>images/disk.rs</code> <code>move_volume()</code>.</p>
+<pre><code class="language-text">preconditions: Ready, not deleting, not already moving, no running VM using it,
+               destination reachable from the mover and the VM's node, space
+choose one mover node: the disk's node (node-local), else its worker if that
+    reaches the destination, else a node reaching both datastores
+record disk.moving = {datastore, node, mover, flatten}; the disk stays Ready
+mover:
+    take source and destination volume locks
+    destination already there? done (resume after a crash)
+    copy to a temp: qemu-img convert when flattening, else a sparse copy
+    linked, not flattened: rebase (-u) onto the destination's image copy
+        (not there yet -&gt; MovePending, retry every 5 s)
+    qemu-img check (qcow2), rename into place
+one write: datastore, node, worker, origin mode; clear moving; event Moved
+delete the source file
+any other error: clear moving, event MoveFailed; the source is untouched
+</code></pre>
+<p>In a cluster, the mover’s final write is accepted only if it ends exactly
+the move that was asked for (<code>cluster/sync.rs</code> <code>check_move_write()</code>).
+Moving a node-local disk to another node goes through a shared datastore.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>datastore/file.rs</code>: <code>a_shared_volume_is_locked_once</code>.</li>
+<li><code>glidex-vm-shim</code>: <code>a_file_lock_is_held_once</code>, <code>a_locked_disk_stops_the_launch</code>.</li>
+<li><code>tests/datastore_tests.rs</code>: <code>disks_move_between_datastores</code>.</li>
+<li><code>tests/cluster_tests.rs</code>:
+<code>a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywhere</code>.</li>
+</ul>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#83-moving-a-disk-between-datastores">storage.md §8.3</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#10-exclusive-access">storage.md §10</a></li>
+</ul>
+<h2 id="directory-pull-sync"><a class="header" href="#directory-pull-sync">Directory pull sync</a></h2>
+<p><strong>Problem.</strong> Mirror an identity provider’s groups into users and teams,
+without letting a bad read disable everyone. Code: <code>directory/sync.rs</code>.</p>
+<p><strong>Steps.</strong></p>
+<ol>
+<li>Read a snapshot of the connector’s groups and their members (nested
+members included).</li>
+<li>Compute a plan with <code>plan()</code>, a pure function.</li>
+<li>Apply the plan in writes of at most 500 changes.</li>
+</ol>
+<pre><code class="language-text">wanted = members of the snapshot's groups that the snapshot has users for
+for each wanted source user s (matched by the IdP's user id, never by email):
+    a managed user with external_id = s.id  -&gt; Update if fields differ;
+                                               Enable if active and disabled by sync;
+                                               Disable if suspended or archived
+    else a user who signed in with that subject -&gt; Adopt (Disable if inactive)
+    else if active -&gt; Create
+managed users not wanted and not disabled -&gt; Disable
+groups: the snapshot's groups, members mapped to glidex ids
+</code></pre>
+<p>An administrator’s disable is never undone by sync. Only users that sync
+disabled are re-enabled.</p>
+<p><strong>Safety stop.</strong></p>
+<pre><code class="language-text">limit = max(managed users * max_disable% / 100, 5)    # max_disable defaults to 10
+if count(Disable ops) &gt; limit and the run isn't confirmed:
+    state Blocked, list who would be disabled, apply nothing
+</code></pre>
+<p>A failed read applies nothing.</p>
+<p><strong>Scheduling.</strong> The sync runs on the leader, or on a standalone host. It
+runs every <code>interval_minutes</code> (15 by default, at least 5) and at most one
+run per connector at a time. A blocked run is retried on the next interval.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>sync.rs</code>: <code>a_plan_follows_the_groups_and_states</code>,
+<code>the_disable_limit_has_a_floor</code>.</li>
+<li><code>tests/connector_tests.rs</code>:
+<code>a_pull_follows_the_directory_and_stops_before_removing_many</code>.</li>
+</ul>
+<p><strong>Spec.</strong> <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md#82-pull-sync">tenancy.md §8.2</a></p>
+<h2 id="console-log-replay-filter"><a class="header" href="#console-log-replay-filter">Console log replay filter</a></h2>
+<p><strong>Problem.</strong> A new console client is first sent the console log, then live
+output. The log holds the guest’s queries to its terminal; systemd, for
+example, probes a serial console’s size at each getty start. A terminal
+that receives a replayed query answers it again, and the guest reads the
+stale answer as typed input.</p>
+<p><strong>How.</strong> <code>glidex-vm-shim/src/replay.rs</code> <code>strip_queries()</code> removes queries
+from the replayed log only. Live output passes unchanged.</p>
+<pre><code class="language-text">scan the log; at ESC:
+    CSI ... final byte  -&gt; drop if a query: DSR (n), DA (c), DECRQM ($p),
+                           XTVERSION (&gt;q), kitty flags (?u), XTWINOPS reports (t)
+    DCS +q / $q ... ST  -&gt; drop (XTGETTCAP, DECRQSS)
+    OSC 4,5,10-19,52 with a "?" field ... ST or BEL -&gt; drop (colour/clipboard queries)
+    anything else       -&gt; copy
+unterminated string or a query cut off at the end -&gt; copy (the rest arrives live)
+</code></pre>
+<p>It runs in one pass, in linear time. It is used in <code>glidex-vm-shim/src/proxy.rs</code>
+when a client connects.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>replay.rs</code>: <code>systemds_serial_probes_are_left_out</code>,
+<code>every_kind_of_query_is_left_out</code>, <code>output_that_only_looks_alike_is_kept</code>,
+<code>a_query_cut_off_at_the_end_is_passed_on</code>,
+<code>an_abandoned_string_does_not_swallow_what_follows</code>.</li>
+<li><code>proxy.rs</code>: <code>replay_leaves_out_the_guests_terminal_queries</code>.</li>
+</ul>
+<p><strong>Spec.</strong> <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/console.md#log-files">console.md, log files</a></p>
+<h2 id="ipam"><a class="header" href="#ipam">IPAM</a></h2>
+<h3 id="cluster-ovn-networks"><a class="header" href="#cluster-ovn-networks">Cluster (OVN) networks</a></h3>
+<p><code>ipam.rs</code>. All allocations are store writes, so they replicate with
+everything else.</p>
+<pre><code class="language-text">allocate_subnet(network):
+    already has one -&gt; return it (idempotent)
+    requested       -&gt; /16../29, must not overlap the node NAT range or any subnet
+    else            -&gt; first /24 in ovn.nat_supernet (default 10.89.0.0/16)
+                       that overlaps nothing; none -&gt; SupernetFull
+    gateway = .1; pool = .2 .. last host
+reserve(network, mac):
+    already reserved -&gt; same address (stable across stops and restarts)
+    else lowest free address in the pool; none -&gt; PoolFull
+</code></pre>
+<ul>
+<li>Reservations are made at placement, in the same commit as the placement.</li>
+<li>They are freed when the VM or NIC is gone, by the leader’s OVN
+reconciler (<code>controller/ovn.rs</code> <code>gc_reservations()</code>).</li>
+<li>Each reservation becomes the port’s <code>addresses</code> and <code>port_security</code> in
+OVN. Addresses reach guests through OVN’s native DHCP.</li>
+<li>Router external addresses come from <code>allocate_external()</code>: the requested
+address, or the lowest free one.</li>
+</ul>
+<h3 id="node-local-nat-networks"><a class="header" href="#node-local-nat-networks">Node-local NAT networks</a></h3>
+<p>Node-local NAT networks follow the same rules in <code>glidex-ovs/src/nat.rs</code>:</p>
+<ul>
+<li>The first /24 of <code>10.88.0.0/16</code> that overlaps no host route and no other
+NAT network.</li>
+<li>dnsmasq serves DHCP with a hosts file of reservations.</li>
+</ul>
+<p>MAC addresses are <code>02:</code> followed by 5 bytes of SHA-256(VM id, NIC index):
+locally administered, and stable per NIC (<code>glidex-ovs/src/names.rs</code>).</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>ipam.rs</code>: <code>subnets_come_from_the_supernet_and_never_overlap</code>,
+<code>addresses_are_the_lowest_free_and_stable</code>,
+<code>external_addresses_come_from_the_pool_once_each</code>.</li>
+<li><code>nat.rs</code>: <code>picks_first_free_subnet</code>.</li>
+</ul>
+<p><strong>Spec.</strong> <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#114-ipam">clustering.md §11.4</a></p>
+<h2 id="ovn-northbound-sync"><a class="header" href="#ovn-northbound-sync">OVN northbound sync</a></h2>
+<p><strong>Problem.</strong> Keep the OVN northbound database equal to the cluster’s
+networks, routers and placed VM ports. Glidex must not disturb rows it
+didn’t create.</p>
+<p><strong>How.</strong> It reconciles declaratively.</p>
+<ol>
+<li>The leader’s network controller builds a <code>Desired</code> value from networks,
+IPAM and placements every 5 s (<code>controller/ovn.rs</code>).</li>
+<li><code>glidex_ovn::sync()</code> (<code>crates/glidex-ovn/src/lib.rs</code>) reads the rows,
+then creates, updates or deletes <strong>only</strong> rows tagged
+<code>external_ids:glidex-owner=glidex</code>.</li>
+<li>A foreign row where a Glidex object should go is reported, never changed.</li>
+<li>A row that already matches costs no write.</li>
+<li>Every call is an <code>ovn-nbctl</code> command line, so tests assert exact
+commands.</li>
+</ol>
+<p>Supporting details:</p>
+<ul>
+<li><code>derived_mac()</code> gives router ports stable, locally administered MACs
+(FNV-1a of a seed).</li>
+<li>DHCP options carry the gateway, MTU and DNS servers.</li>
+<li>Each port is bound to the chassis of the node its VM is placed on.</li>
+</ul>
+<p><strong>Tests.</strong> In <code>crates/glidex-ovn/src/tests.rs</code>:
+<code>a_port_that_is_already_right_costs_nothing</code>,
+<code>ports_and_networks_gone_from_the_plan_are_removed_and_foreign_rows_are_left</code>,
+<code>macs_are_stable_and_locally_administered</code>.</p>
+<p><strong>Spec.</strong> <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#11-ovn-networks">clustering.md §11</a></p>
+<h2 id="rate-limiting"><a class="header" href="#rate-limiting">Rate limiting</a></h2>
+<p>Glidex uses two simple in-memory limiters.</p>
+<p><strong>Token bucket.</strong> This limiter is used for passkey sign-in (per client),
+workload federation token exchange (per federation) and the SCIM endpoints
+(per connector). Each key holds <code>(last time, level)</code>:</p>
+<pre><code class="language-text">level = min(capacity, level + elapsed * refill_rate)
+if level &gt;= 1: level -= 1; allow
+else: refuse (429)
+</code></pre>
+<p>Code: <code>auth/passkeys.rs</code> <code>Ceremonies::attempt()</code>, <code>directory/exchange.rs</code>
+<code>take()</code>, <code>api/scim.rs</code> <code>take()</code>. See
+<a href="https://en.wikipedia.org/wiki/Token_bucket">token bucket</a>.</p>
+<p><strong>Sliding window of failures.</strong> <code>glidex-authd/src/limiter.rs</code> keeps the
+times of recent failed logins: one queue per user and one global queue.
+Old entries are pruned on each check. A login is refused while either queue
+is full. A success clears that user’s failures. Memory is bounded, because
+failures are not recorded while the global window is full.</p>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>limiter.rs</code>: <code>per_user_window_slides</code>, <code>global_window_slides</code>,
+<code>success_resets_the_user</code>.</li>
+<li><code>tests/passkey_tests.rs</code>: <code>sign_in_attempts_are_limited_by_the_real_client</code>.</li>
+</ul>
+<p><strong>Spec.</strong></p>
+<ul>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md#53-local-pam-glidex-authd">security.md §5.3</a></li>
+<li><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md">passkeys.md</a></li>
+</ul>
+<h2 id="ca-rotation-and-certificate-renewal"><a class="header" href="#ca-rotation-and-certificate-renewal">CA rotation and certificate renewal</a></h2>
+<p><strong>Problem.</strong> Replace the cluster CA with no downtime, and renew node
+certificates before they expire. Code: <code>cluster/rotation.rs</code>,
+<code>cluster/pki.rs</code>.</p>
+<p>Keys are ECDSA P-256. A node certificate lasts 365 days and the CA 10
+years. The signed subject is set by the CA from the node’s identity, never
+taken from the request.</p>
+<p><strong>Rotation state.</strong> One replicated row, <code>CaState</code>, holds:</p>
+<ul>
+<li>the trust bundle every node installs;</li>
+<li>the signing CA’s fingerprint;</li>
+<li>the retiring CAs’ fingerprints;</li>
+<li>the time the old CA is retired.</li>
+</ul>
+<pre><code class="language-text">leader: generate a new CA; send it to every live server (any refusal aborts)
+one write: trust = new + old, signing = new, retire_at = now + grace (7 days)
+every node, every 3 s:
+    trust_sync: install the replicated bundle if it differs, reload TLS
+    renew if the cert's issuer isn't the signing CA, or &lt; 30 days remain:
+        new key, CSR to the leader, save cert + key + bundle
+leader: once every member's latest cert is from the new CA (and its own),
+        or retire_at has passed:
+        one compare-and-swap write: trust = new only, clear retiring
+servers then delete the old CA key
+</code></pre>
+<p>During the window, every node trusts both CAs. A node with an old
+certificate and a node with a new one can therefore still talk to each
+other.</p>
+<p>Rotation starts:</p>
+<ul>
+<li>on demand (<code>gxctl cluster rotate-ca</code>);</li>
+<li>after a server leaves;</li>
+<li>when less than a year of CA validity remains.</li>
+</ul>
+<p><strong>Tests.</strong></p>
+<ul>
+<li><code>cluster/pki.rs</code>: <code>a_node_cert_is_signed_for_its_id_and_role</code>,
+<code>fingerprints_pin_the_ca</code>.</li>
+<li><code>cluster/identity.rs</code>:
+<code>identity_round_trips_and_the_signing_ca_is_found_in_a_bundle</code>.</li>
+<li><code>tests/cluster_tests.rs</code>:
+<code>the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired</code>.</li>
+</ul>
+<!-- TODO(verify): spec §12.5 says netd renews OVN certificates on rotation; not found in rotation.rs, glidex-netd or glidex-ovn. -->
+<p><strong>Spec.</strong> <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#125-ca-rotation">clustering.md §12.5</a></p>
+<p>For measured costs of these paths, see
+<a href="benchmarks.html">Performance and benchmarks</a>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/design-decisions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/benchmarks.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/design-decisions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/benchmarks.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

@@ -1,0 +1,607 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Troubleshooting - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-a4ecf34d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/troubleshooting.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
+<p>Start with the services and their logs, then look up the error code the
+API returned. Most problems are a stopped service, a missing group
+membership, a path the <code>glidex</code> user can’t read, or the host network.</p>
+<h2 id="check-the-services"><a class="header" href="#check-the-services">Check the services</a></h2>
+<pre><code class="language-bash">systemctl status glidex-control-plane glidex-netd glidex-ui glidex-authd.socket
+journalctl -u glidex-control-plane -b
+</code></pre>
+<p>At start, the control plane logs one line per check. Each should end in
+<code>OK</code>:</p>
+<pre><code class="language-text">  Checking disk tools... OK
+  Loading configuration... OK
+  Opening database... OK
+  Checking KVM access... OK (VMs open it in their glidex-vm units)
+  Loading VMs... OK (2 VMs, 1 running, VM runner: systemd)
+  Checking UEFI firmware (Cloud-Hypervisor)... OK (image cloudhv-edk2)
+  Checking UEFI firmware (QEMU)... OK (image ovmf)
+  Checking networking... OK
+  Loading authorization policies... OK
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Line</th><th>Means</th><th>Do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Checking disk tools... MISSING (...)</code></td><td><code>qemu-img</code>, <code>sgdisk</code> or another disk tool is missing; image and disk operations fail.</td><td>Re-run the installer.</td></tr>
+<tr><td><code>Loading configuration... FAILED</code></td><td><code>/etc/glidex/control-plane.json</code> has an error or an unknown key. The control plane doesn’t fall back to defaults.</td><td>Fix the file; the message names the field.</td></tr>
+<tr><td><code>Checking KVM access... MISSING</code></td><td>No <code>/dev/kvm</code>.</td><td>See <a href="#kvm">KVM</a>.</td></tr>
+<tr><td><code>Checking KVM access... NO ACCESS</code></td><td>The VMs, which run as <code>glidex</code>, can’t open <code>/dev/kvm</code>: <code>glidex</code> isn’t in its group (usually <code>kvm</code>), or its mode doesn’t let that group read and write it.</td><td><code>ls -l /dev/kvm</code>; re-run the installer, which adds <code>glidex</code> to the group.</td></tr>
+<tr><td><code>Checking networking... LIMITED</code></td><td>The control plane can only read netd’s status: it isn’t running as the <code>glidex</code> group.</td><td>Use the installed unit; don’t run the control plane by hand as yourself.</td></tr>
+<tr><td><code>Checking networking... UNAVAILABLE</code></td><td><code>glidex-netd</code> isn’t running or not installed.</td><td><code>systemctl status glidex-netd</code>; re-run the installer without <code>--no-networking</code>.</td></tr>
+<tr><td><code>Loading authorization policies... FAILED</code></td><td>A policy file in <code>/etc/glidex/policies</code> is invalid or unreadable.</td><td>Fix it; the directory must be <code>root:glidex</code>, mode 0750.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Logs of one VM: <code>journalctl -u glidex-vm@&lt;vm-id&gt;</code>, and <code>gxctl events &lt;vm&gt;</code> for what Glidex did with it. For log locations and more detail,
+see <a href="maintenance.html#logs">Maintenance</a>.</p>
+<h2 id="gxctl-cant-connect"><a class="header" href="#gxctl-cant-connect">gxctl can’t connect</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Message</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td>Permission denied on <code>/run/glidex-cp/api.sock</code></td><td>You aren’t in <code>glidex-users</code> (or <code>glidex-admin</code>), or you were added and haven’t logged out and back in since. Check with <code>id</code>.</td></tr>
+<tr><td>Connection refused on <code>https://localhost:8841</code>, or <code>unauthenticated</code> without <code>--url</code></td><td>With no local socket, <code>gxctl</code> falls back to TCP on this host. The control plane isn’t running (<code>systemctl status glidex-control-plane</code>), or <code>/run/glidex-cp/api.sock</code> is missing.</td></tr>
+<tr><td><code>this host is a cluster agent: it has no local API</code></td><td>Expected on an agent. Use a server: <code>gxctl auth login --url https://&lt;server&gt;:8841</code> (this works on the agent itself).</td></tr>
+<tr><td><code>no current profile; choose one with --profile</code></td><td>The current profile was removed (<code>auth profiles remove</code>) and others remain.</td></tr>
+<tr><td><code>unauthenticated</code> over TCP</td><td>No token, or an expired one. <code>gxctl login --oidc</code> or <code>--token</code>, or <code>gxctl auth login</code>.</td></tr>
+<tr><td>A TLS or certificate error over TCP</td><td>See <a href="#certificate-fingerprints">Certificate fingerprints</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="the-web-ui"><a class="header" href="#the-web-ui">The web UI</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td><code>421 Misdirected Request</code></td><td>The browser used a name the UI doesn’t serve. Add it to <code>GLIDEX_UI_HOSTS</code> (see <a href="configuration.html#web-ui">Configuration</a>).</td></tr>
+<tr><td><code>403 origin_not_allowed</code></td><td>A change came from a page on another site, or a page calls the API on port 8841 directly from an origin not in <code>auth.allowed_origins</code>. Pages served by the web UI don’t need that list.</td></tr>
+<tr><td>A page doesn’t load after an update</td><td>The tab still runs the old UI. Reload it.</td></tr>
+<tr><td><em>This host is a cluster agent</em> (<code>503</code>)</td><td>An agent’s web UI sends browsers to a server, and no server has published its web UI address yet. Open a server’s web UI, or set <code>cluster.ui_url</code>; see <a href="clusters.html#the-web-uis-address">The web UI’s address</a>.</td></tr>
+<tr><td><code>421 use_a_server</code> from an agent’s <code>https://&lt;agent&gt;:5173/api/…</code></td><td>Expected: agents serve no API. Use a server.</td></tr>
+<tr><td>No <strong>Sign in with a passkey</strong> button</td><td>Passkeys are off (<code>auth.passkeys.enabled</code>), or the page is plain <code>http</code>, where browsers offer no passkeys. Use <code>https</code>. See <a href="authentication.html#passkeys">Passkeys</a>.</td></tr>
+<tr><td><em>this page (…) isn’t under the passkeys’ domain …</em></td><td>The web UI was opened under a name outside <code>auth.passkeys.rp_id</code>. Use a name under it; see <a href="authentication.html#the-passkeys-domain">The passkeys’ domain</a>.</td></tr>
+<tr><td><em>That passkey can’t sign in here.</em> (<code>passkey_refused</code>)</td><td>The passkey was made under another name or domain, or removed, the user is disabled, or the prompt expired. Sign in another way; the reason is in the audit log.</td></tr>
+<tr><td>Every passkey stopped working after a configuration change</td><td><code>auth.passkeys.rp_id</code> changed. Users sign in another way and add new passkeys.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="error-codes"><a class="header" href="#error-codes">Error codes</a></h2>
+<p>API errors come back as JSON with a code, a message and sometimes
+details:</p>
+<pre><code class="language-json">{"error": "quota_exceeded", "message": "…", "details": {"quota": "…"}}
+</code></pre>
+<p><code>gxctl</code> and the web UI show the code and message. The common ones:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Code</th><th>Means</th><th>Do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>unauthenticated</code></td><td>No valid login or token.</td><td>Log in again; check the token’s expiry.</td></tr>
+<tr><td><code>reauth_required</code></td><td>The action needs a recent login (cluster changes, installing OVS, uplink and bridge changes, policies).</td><td>Log in again and retry.</td></tr>
+<tr><td><code>forbidden</code></td><td>Your roles or the site policies don’t allow it.</td><td>Check <code>gxctl whoami</code>; ask for a role. See <a href="access-control.html">Access control</a>.</td></tr>
+<tr><td><code>not_found</code></td><td>No such VM, network, image… in the project you’re using.</td><td>Check <code>--project</code> / your default project (<code>gxctl project use</code>).</td></tr>
+<tr><td><code>conflict</code></td><td>A name is taken, or the resource is in use or busy (a disk claimed by a VM or being moved, a PCI device used by another VM on the same host or sharing its IOMMU group, a DPDK NIC, a kernel image a VM boots, a datastore that still has disks or, for LVM-thin, image volumes).</td><td>Read the message: it names what holds it.</td></tr>
+<tr><td><code>ambiguous</code></td><td>A name matches more than one thing.</td><td>Use the id.</td></tr>
+<tr><td><code>invalid_state</code></td><td>The VM can’t do that now (start a running VM, attach what’s already attached).</td><td>Check its state with <code>gxctl get &lt;vm&gt;</code>.</td></tr>
+<tr><td><code>invalid_config</code>, <code>invalid</code>, <code>invalid_network</code>, <code>invalid_image</code>, <code>invalid_disk</code></td><td>A bad request: wrong path, out-of-range value, unknown network.</td><td>The message says which field.</td></tr>
+<tr><td><code>invalid_datastore</code></td><td>A datastore name or path that isn’t allowed: the path must be a directory under <code>/srv/glidex</code>; an LVM-thin datastore takes a volume group and thin pool, not a path.</td><td>See <a href="datastores.html#mount-it-under-srvglidex">Datastores</a> and <a href="datastores.html#register-an-lvm-thin-datastore">LVM-thin</a>.</td></tr>
+<tr><td><code>insufficient_storage</code> (<code>507</code>)</td><td>A datastore without overcommit lacks the space for a new or moved disk; <code>details</code> has <code>free_bytes</code> and <code>needed_bytes</code>.</td><td>Free space, pick another datastore, or allow overcommit; see <a href="datastores.html#overcommit-and-capacity">Overcommit and capacity</a>.</td></tr>
+<tr><td><code>quota_exceeded</code>, <code>tenant_quota_exceeded</code></td><td>The project or tenant would go over a quota.</td><td>Raise it (<code>gxctl project quota</code>) or free resources.</td></tr>
+<tr><td><code>device_flow_unsupported</code></td><td><code>gxctl auth login --oidc</code> through a <code>google</code> connector that has no device client.</td><td>Add a <em>TVs and Limited Input devices</em> client to the connector (<code>--device-client-id</code>, then <code>connector secret set &lt;id&gt; device_client_secret</code>); see <a href="authentication.html#google">Google</a>.</td></tr>
+<tr><td><code>cannot_delete_self</code>, <code>last_admin</code></td><td>Deleting yourself, or the last holder of <code>system-admin</code> or <code>directory-admin</code>.</td><td>Have another administrator do it; give the role to someone else first. See <a href="access-control.html#removing-people">Removing people</a>.</td></tr>
+<tr><td><code>last_identity</code></td><td>Removing a user’s last sign-in method, or one that would leave a single passkey as the only one.</td><td>Disable the user first, or add another sign-in method (or a second passkey).</td></tr>
+<tr><td><code>too_many_passkeys</code>, <code>passkey_not_added</code></td><td>Adding an 11th passkey; or adding one failed (the prompt expired, or the passkey is already registered).</td><td>Remove one first; try again. See <a href="authentication.html#passkeys">Passkeys</a>.</td></tr>
+<tr><td><code>passkey_refused</code>, <code>passkeys_disabled</code></td><td>A passkey sign-in was refused (the reason is in the audit log); passkeys are off.</td><td>See <a href="#the-web-ui">The web UI</a>.</td></tr>
+<tr><td><code>bad_target_node</code></td><td>A request named a node in <code>X-Glidex-Target-Node</code> on a path that isn’t about one host, an unknown or departed node, or went to a host that isn’t a server.</td><td>Send host requests for another node to a server, with the node’s id.</td></tr>
+<tr><td><code>node_departed</code></td><td>Giving a role on one host whose node has left the cluster.</td><td>Pick a current node (<code>gxctl nodes</code>).</td></tr>
+<tr><td><code>managed_by_connector</code></td><td>The user or team is managed by a SCIM connector or a directory sync: its name, whether it is enabled, or a membership the IdP gave, belongs to the IdP. Also deleting a managed user that is still enabled.</td><td>Change it at the IdP, or disable the user first. See <a href="access-control.html#users-an-idp-manages">Users an IdP manages</a>.</td></tr>
+<tr><td><code>not_provisioned</code></td><td>Making a SCIM token for a connector that isn’t provisioned by SCIM.</td><td><code>gxctl connector update &lt;id&gt; --no-jit --provisioning scim</code> first.</td></tr>
+<tr><td><code>not_pulled</code>, <code>no_source</code></td><td>Running a directory sync of a connector that isn’t <code>--provisioning pull</code>, or isn’t a Google Workspace connector.</td><td>See <a href="authentication.html#directory-sync-from-google-workspace">Directory sync from Google Workspace</a>.</td></tr>
+<tr><td><code>sync_running</code></td><td>A run of that connector’s directory sync is already going.</td><td>Wait, then <code>gxctl connector show &lt;id&gt;</code>.</td></tr>
+<tr><td><code>invalid_federation</code></td><td>A workload federation’s settings were refused: a rule that pins none of <code>repository</code>, <code>project_path</code>, <code>sub</code>, a <code>*</code> in a value, a service account that isn’t one of the tenant’s (or no longer exists), <code>--ttl</code> outside 60–3600, or over 20 federations or 50 rules.</td><td>The message names the rule; see <a href="workload-federation.html#the-federation">Workload federation</a>.</td></tr>
+<tr><td><code>issuer_unreachable</code></td><td>Glidex couldn’t read the issuer’s discovery document or keys when the federation was added or its issuer changed.</td><td>Check the issuer URL is exactly the tokens’ <code>iss</code>, served over <code>https</code> without redirects, and that the control plane can reach it; see <a href="workload-federation.html#the-issuer">The issuer</a>.</td></tr>
+<tr><td><code>login_not_allowed</code></td><td>The connector’s rules refused the login. Through a SCIM connector or a directory sync: the person wasn’t provisioned (pulled), or their account is disabled.</td><td>Check the user is assigned to the application at the IdP and was pushed; see <a href="authentication.html#provisioning-with-scim">Provisioning with SCIM</a>.</td></tr>
+<tr><td><code>precondition_failed</code></td><td>Someone changed the resource since you read it.</td><td>Read it again and retry.</td></tr>
+<tr><td><code>hypervisor_unavailable</code></td><td>The VM’s hypervisor isn’t installed on this host.</td><td>Re-run the installer (without <code>--no-qemu</code> for QEMU).</td></tr>
+<tr><td><code>hypervisor_error</code></td><td>The hypervisor refused or failed.</td><td><code>journalctl -u glidex-vm@&lt;vm-id&gt;</code>, <code>gxctl events &lt;vm&gt;</code>.</td></tr>
+<tr><td><code>tool_unavailable</code></td><td>A disk tool is missing.</td><td>Re-run the installer.</td></tr>
+<tr><td><code>image_error</code></td><td>Download, checksum or disk operation failed.</td><td>The message says which; check disk space under <code>/var/lib/glidex-control-plane</code>.</td></tr>
+<tr><td><code>netd_unavailable</code></td><td><code>glidex-netd</code> isn’t reachable.</td><td><code>systemctl status glidex-netd</code>.</td></tr>
+<tr><td><code>netd_permission_denied</code></td><td>netd refused the control plane’s request.</td><td>Check <code>/etc/glidex/netd.json</code>’s <code>policy</code>, if you set one.</td></tr>
+<tr><td><code>netd_error</code>, <code>unsupported_on_host</code></td><td>netd failed, or the host can’t do it (missing DPDK, AF_XDP, IOMMU).</td><td><code>gxctl ovs status</code> lists what is missing.</td></tr>
+<tr><td><code>host_interface_in_use</code></td><td>The NIC carries the host’s address.</td><td>Add the uplink with <code>--migrate-ip</code>; see <a href="host-networking.html#moving-the-hosts-address-onto-the-bridge">Host networking</a>.</td></tr>
+<tr><td><code>confirmation_required</code></td><td>The change restarts Open vSwitch or similar.</td><td>Repeat with <code>--force</code> (or confirm in the UI) when traffic may be interrupted.</td></tr>
+<tr><td><code>migration_rolled_back</code></td><td>Moving the host’s address to a bridge failed the gateway check and was undone.</td><td>Fix the network, then <code>gxctl uplink-reapply</code>.</td></tr>
+<tr><td><code>not_a_server</code>, <code>use_a_server</code>, <code>cluster_unavailable</code>, <code>leader_changed</code></td><td>In a cluster: asked an agent, no server reachable, or no leader right now.</td><td>Use a server; check <code>gxctl cluster status</code>; retry.</td></tr>
+<tr><td><code>node_unreachable</code></td><td>The VM’s node can’t be reached.</td><td>Check that node; see <a href="clusters.html#a-node-is-down-for-a-while">Clusters</a>.</td></tr>
+<tr><td><code>gateway_not_ready</code></td><td>A gateway node doesn’t map the edge’s physical network or runs <code>br-int</code> in userspace.</td><td>See <a href="host-networking.html#gateway-edge-nodes">Gateway nodes</a>.</td></tr>
+<tr><td><code>internal</code>, <code>persistence_error</code></td><td>A bug or a storage problem.</td><td><code>journalctl -u glidex-control-plane</code>; check disk space.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="scim-provisioning"><a class="header" href="#scim-provisioning">SCIM provisioning</a></h2>
+<p>When an IdP can’t provision a <a href="authentication.html#provisioning-with-scim">SCIM connector</a>,
+its test or logs show the endpoint’s answer:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Answer</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td><code>401</code></td><td>A wrong, expired or revoked token, or another connector’s. Check <code>gxctl connector scim-token list &lt;id&gt;</code>, make a new token, and enter it in the IdP.</td></tr>
+<tr><td><code>403</code></td><td>The connector is disabled, or isn’t <code>--provisioning scim</code>.</td></tr>
+<tr><td><code>400 invalidFilter</code></td><td>The IdP filters on an attribute Glidex doesn’t: users by <code>userName</code>, <code>externalId</code>, <code>emails</code>, <code>displayName</code>; groups by <code>displayName</code>, <code>externalId</code>.</td></tr>
+<tr><td><code>409 uniqueness</code></td><td>A user with that <code>userName</code>, or a group with that name, already exists for the connector.</td></tr>
+<tr><td><code>413</code></td><td>A request body over 1 MiB.</td></tr>
+<tr><td><code>429</code></td><td>Over 20 requests a second for the connector. IdPs retry after <code>Retry-After</code>.</td></tr>
+<tr><td>The connection fails or times out</td><td>The endpoint isn’t reachable from the IdP, or the path isn’t published; see <a href="authentication.html#making-the-endpoint-reachable">Making the endpoint reachable</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every SCIM write is in the audit log as <code>system:scim:&lt;connector-id&gt;</code>:
+<code>gxctl audit --limit 50</code>.</p>
+<h2 id="workload-federation"><a class="header" href="#workload-federation">Workload federation</a></h2>
+<p>When a CI job can’t get a token from <code>POST /auth/exchange</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Answer</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td><code>400 invalid_request</code></td><td>The request is malformed: check <code>grant_type</code>, <code>subject_token_type</code> and <code>federation</code> (<code>&lt;tenant slug&gt;/&lt;federation id&gt;</code>); see <a href="workload-federation.html#the-exchange">The exchange</a>.</td></tr>
+<tr><td><code>400 invalid_grant</code></td><td>The same answer for every refusal. The reason is in the audit log: <code>gxctl audit --limit 50</code>, entries <code>exchangeToken</code> by <code>system:federation:&lt;tenant&gt;/&lt;id&gt;</code>. Common ones: the federation is disabled or misnamed; the job asked for another audience; no rule matches (the branch, environment or repository differs; claims match exactly); the token was already exchanged (get a new one per exchange); the rule’s service account was revoked or expired.</td></tr>
+<tr><td><code>429 slow_down</code></td><td>Over 30 exchanges a minute for the federation. Exchange once per job and reuse the token while it lives.</td></tr>
+<tr><td><code>401 unauthenticated</code> on later calls</td><td>The Glidex token expired (<code>expires_in</code>), or the federation was disabled or removed, its rule changed, or the service account revoked.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="certificate-fingerprints"><a class="header" href="#certificate-fingerprints">Certificate fingerprints</a></h2>
+<p>Both the API (port 8841) and the web UI (port 5173) use a self-signed
+certificate unless you configured one. Before trusting it from another
+machine, compare its SHA-256 fingerprint with the one on the host:</p>
+<pre><code class="language-bash">sudo openssl x509 -in /run/glidex-cp/tls.crt -noout -fingerprint -sha256              # API
+sudo openssl x509 -in /var/lib/glidex-ui/tls/ui.crt -noout -fingerprint -sha256       # web UI
+</code></pre>
+<p>The installer also prints both at the end.</p>
+<ul>
+<li>
+<p><strong>The browser’s fingerprint differs.</strong> Something between you and the
+host presents another certificate (a proxy, or the wrong host). Don’t
+accept it until you know why.</p>
+</li>
+<li>
+<p><strong><code>gxctl</code> says the certificate is not among the profile’s pins.</strong> The
+host’s certificate changed. Glidex regenerates it only in narrow
+cases (a configured certificate replaced, which is served within a
+minute without a restart; <code>cluster rotate-ca</code>; a re-init). Confirm
+the new fingerprint on the host through another
+channel, then:</p>
+<pre><code class="language-bash">gxctl auth login --profile &lt;name&gt; --pin sha256/&lt;new fingerprint&gt; --rebind
+</code></pre>
+<p><code>gxctl auth trust list</code> shows a profile’s pins; <code>gxctl auth trust fetch</code> shows what a server presents.</p>
+</li>
+<li>
+<p><strong>The <code>ts.net</code> name still gets a certificate warning</strong> with
+<code>--tailscale-cert</code> on. The UI serves its usual certificate until
+<code>tailscaled</code> hands it one: <code>journalctl -u glidex-ui</code> says why (HTTPS
+certificates not enabled for the tailnet, <code>TS_PERMIT_CERT_UID</code> not
+<code>glidex-ui</code>, the first certificate still being issued). See
+<a href="tls.html#tailscale-certificates">Tailscale certificates</a>.</p>
+</li>
+<li>
+<p><strong>A join says the server’s CA is not the one the token names.</strong> The
+cluster CA rotated after the token was issued (for example a server
+left). Issue a new token.</p>
+</li>
+</ul>
+<p>See <a href="tls.html">TLS certificates</a> to use your own certificates.</p>
+<h2 id="paths-the-glidex-user-cant-read"><a class="header" href="#paths-the-glidex-user-cant-read">Paths the <code>glidex</code> user can’t read</a></h2>
+<p>The control plane and every VM run as the <code>glidex</code> system user, in a
+sandbox. Paths you give the API (disk images, kernels, cloud-init files)
+are opened by that user, so:</p>
+<ul>
+<li>They must be readable by <code>glidex</code>. Your home directory usually isn’t,
+and <code>/home</code>, <code>/root</code> and <code>/run/user</code> are hidden from the services
+entirely.</li>
+<li>They must not be under <code>/tmp</code> or <code>/var/tmp</code>: VMs have a private
+<code>/tmp</code>. The API refuses such paths (<code>… is under /tmp, which VMs cannot see</code>).</li>
+<li>Passing host paths at all needs the <code>host.paths</code> permission
+(<code>system-admin</code>).</li>
+</ul>
+<p>Put such files in a directory of their own, such as <code>/srv/vm-files</code>:
+<code>sudo chgrp -R glidex /srv/vm-files &amp;&amp; sudo chmod -R g+rX /srv/vm-files</code>.
+Not under <code>/srv/glidex</code>: that is where <a href="datastores.html">datastores</a> are
+mounted and registered, and the installer offers what is mounted there
+as datastores. Better still, import them as images (a kernel as a
+<a href="../user-guide/kernel-boot.html#from-host-files">kernel image</a>), which
+Glidex stores itself.</p>
+<h2 id="kvm"><a class="header" href="#kvm">KVM</a></h2>
+<pre><code class="language-bash">ls -l /dev/kvm
+lsmod | grep kvm
+</code></pre>
+<ul>
+<li><strong>No <code>/dev/kvm</code>.</strong> Turn on virtualization (VT-x / AMD-V) in the
+firmware settings, then <code>sudo modprobe kvm_intel</code> or
+<code>sudo modprobe kvm_amd</code>. In a VM, nested virtualization must be on in
+the outer hypervisor.</li>
+<li><strong><code>/dev/kvm</code> exists but VMs fail with permission denied.</strong> The
+<code>glidex</code> user must be in the <code>kvm</code> group:
+<code>id glidex</code>. The installer adds it when the group exists; re-run it,
+then restart the control plane.</li>
+</ul>
+<h2 id="pci-devices"><a class="header" href="#pci-devices">PCI devices</a></h2>
+<ul>
+<li>
+<p><strong><code>PCI device … is used by VM …</code> or <code>… shares IOMMU group … with …</code>.</strong>
+Another VM on that host holds the device or a device of its IOMMU
+group. Claims are per host: in a cluster, an unpinned VM goes to a node
+where the device is free.</p>
+</li>
+<li>
+<p><strong>A VM with PCI devices waits for a node.</strong> Its page lists each
+node’s reason: <code>no PCI device …</code> (the node doesn’t report it), or the
+VM holding it on every node that has it.</p>
+</li>
+<li>
+<p><strong>A VM’s <code>DeviceHealthy</code> condition is <code>False</code>.</strong> One of its devices
+fell off the bus or had new uncorrectable PCIe errors (event
+<code>DeviceError</code>). Glidex leaves the VM running; check
+<code>gxctl node topology &lt;node&gt; --devices</code> and the host’s <code>dmesg</code>, and
+<a href="host-resources.html#device-health-and-cordoning">cordon</a> the device
+if you don’t trust it.</p>
+</li>
+<li>
+<p><strong>A VM’s <code>NumaAligned</code> condition is <code>False</code>.</strong> A <code>NUMA_POLICY_PREFERRED</code>
+VM didn’t fit on one NUMA node and spans the host.</p>
+</li>
+<li>
+<p><strong>A device on <code>vfio-pci</code> is not ready: <code>in use by &lt;process&gt; (pid …)</code></strong>,
+or release and VF counts are refused with <code>IOMMU group … is in use by …</code>. A VM, Glidex’s or another hypervisor’s, has the group open. Stop
+it; see <a href="pci-passthrough.html#devices-another-hypervisor-holds">Devices another hypervisor
+holds</a>.</p>
+</li>
+<li>
+<p><strong>After a reboot, devices are back on their host drivers, or VFs are
+gone.</strong> Keep them with the installer’s <code>--vfio-devices</code> and <code>--sriov</code>;
+<code>journalctl -u glidex-vfio-boot</code> shows what was bound, skipped or
+failed. See <a href="pci-passthrough.html#keep-it-across-reboots">Keep it across reboots</a>.</p>
+</li>
+<li>
+<p><strong>A GPU request is refused: <code>PCI device … has no NUMA node</code>.</strong> The
+firmware reports no NUMA node for the device (<code>-1</code>), common on
+one-socket hosts; <code>gpus</code> aligns to NUMA nodes. Send <code>numa_policy: NUMA_POLICY_PREFERRED</code> with <code>gpus</code>. See <a href="host-resources.html#gpu-requests">GPU
+requests</a>.</p>
+</li>
+</ul>
+<p>See <a href="pci-passthrough.html#troubleshooting">PCI passthrough</a> for host setup
+problems (IOMMU, <code>vfio-pci</code>, <code>/dev/vfio</code> permissions), and <a href="host-resources.html#troubleshooting">Host
+resources</a> for hugepages, NUMA,
+dedicated CPUs, device pools and cordoned devices.</p>
+<h2 id="datastores-and-disks"><a class="header" href="#datastores-and-disks">Datastores and disks</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td>A node doesn’t reach a datastore (<code>NODES OK</code> below the node count)</td><td><code>gxctl datastore show &lt;ds&gt;</code> gives each node’s reason (<code>OutsideRoot</code>, <code>Missing</code>, <code>NotADirectory</code>, <code>ReadOnly</code>, <code>NoMarker</code>, <code>ForeignMarker</code>, <code>NotEmpty</code>; for LVM-thin <code>StordUnavailable</code>, <code>NotAllowed</code>, <code>NoVolumeGroup</code>, <code>NoThinPool</code>); see <a href="datastores.html#what-reachable-means">What “reachable” means</a> and <a href="datastores.html#node-status">LVM-thin node status</a>.</td></tr>
+<tr><td>A node shows <em>reachable, with warnings</em> (<code>warning:</code> lines under it in <code>gxctl datastore show</code>)</td><td>The shared datastore is mounted over NFS with risky options: <code>soft</code>/<code>softerr</code> (<em>mounted soft: …</em>: an NFS server outage fails the guests’ disk writes), or node-local locks, <code>nolock</code> or <code>local_lock=</code> other than <code>none</code> (<em>NFS locks are local to this node …</em>: <a href="datastores.html#volume-locks">volume locks</a> no longer keep other nodes off a disk). The datastore stays usable. Remount it <code>hard</code> with NFS locking on; the warning goes at the node’s next check. See <a href="datastores.html#mount-warnings">Mount warnings</a>.</td></tr>
+<tr><td>A VM waits for a node: <code>datastore … is not reachable here</code></td><td>Its disks are on a datastore that node doesn’t reach. Fix the datastore on the nodes it should be on.</td></tr>
+<tr><td>A VM doesn’t start: <code>disk … is in use elsewhere (… is locked)</code> (condition reason <code>DiskBusy</code>)</td><td>Another node holds the disk’s <a href="datastores.html#volume-locks">volume lock</a>, for example a node that seemed gone still runs the VM. Find and stop it there; the VM starts once the lock is free.</td></tr>
+<tr><td>A disk shows <em>· moving</em>, or <code>Ready</code> <code>False</code> with reason <code>MovePending</code></td><td>A move is going on (<code>MovePending</code>: it waits, for example for a VM to let go of the disk or for the image’s copy). The disk’s events say <code>Moved</code> when it is done, or <code>MoveFailed</code> with the reason; it then stays where it was. While it moves, resizing it is refused (<code>409 conflict</code>), adding it to a VM is refused (<code>400 invalid_config</code>), and its VM waits to start (reason <code>DiskNotReady</code>: <em>disk … is moving to datastore …</em>).</td></tr>
+<tr><td>A linked disk waits: <code>image … has not been copied into datastore … yet</code></td><td>The disk’s worker copies the image into the shared datastore first; it carries on by itself. See <a href="datastores.html#images-on-a-shared-datastore">Images on a shared datastore</a>.</td></tr>
+<tr><td><code>place</code> answers <em>Not placed yet</em></td><td>No node can take the VM yet; the reason follows. The VM’s events record <code>Replacing</code>. See <a href="datastores.html#placing-a-stopped-or-lost-vm-again">Placing a stopped or lost VM again</a>.</td></tr>
+<tr><td>An LVM-thin datastore shows <code>StordUnavailable</code> on a node</td><td><code>glidex-stord</code> isn’t running there: not installed (<code>--no-services</code>), or <code>/etc/glidex/stord.json</code> is invalid. <code>systemctl status glidex-stord</code>, <code>journalctl -u glidex-stord</code>; fix the file and restart it.</td></tr>
+<tr><td>An LVM-thin datastore shows <code>NotAllowed</code></td><td>Its volume group isn’t in stord’s <code>allowed_vgs</code>. re-run the installer with <code>--stord-allow-vg &lt;vg&gt;</code>, or edit <code>/etc/glidex/stord.json</code> and restart <code>glidex-stord</code>. See <a href="datastores.html#allow-it-in-glidex-stord">Allow it in glidex-stord</a>.</td></tr>
+<tr><td>An LVM-thin datastore shows <code>NoVolumeGroup</code>, the message saying <code>lvs</code> isn’t found</td><td>The LVM tools aren’t installed: install <code>lvm2</code>.</td></tr>
+<tr><td>A warning <em>the thin pool is N% full</em> (or <em>the thin pool’s metadata is N% full</em>), or guests on an LVM-thin datastore hang on I/O</td><td>The thin pool is filling; guests stall when it is full. Extend it from free space in the volume group (<code>lvextend</code>, <code>lvextend --poolmetadatasize</code>). See <a href="datastores.html#thin-pool-space">Thin pool space</a>.</td></tr>
+<tr><td>Deleting an LVM-thin datastore is refused: <em>it still holds volumes of images …</em></td><td>Nodes keep image volumes in it. Delete those images, or remove their <code>gx-i-*</code> volumes from the volume group, then wait for the next check (about a minute). See <a href="datastores.html#deleting-an-lvm-thin-datastore">Deleting an LVM-thin datastore</a>.</td></tr>
+<tr><td>A disk on an LVM-thin datastore is refused: <em>raw volumes; leave format out</em>, or <em>can’t be made smaller</em></td><td>Disks there are raw and only grow. Leave the format out (in the web UI pick raw).</td></tr>
+<tr><td>A VM doesn’t start: <em>disk … volume is missing</em></td><td>Its LVM volume was removed by hand, or the node’s own volume group changed.</td></tr>
+<tr><td>A datastore can’t be changed or deleted (<code>409 conflict</code>)</td><td>The message gives the reason: it is <code>local</code>, disks are still on it, a running VM with a disk open on a node whose path changes, or a node a disk is bound to. See <a href="datastores.html#changing-and-deleting">Changing and deleting</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="kernel-boot"><a class="header" href="#kernel-boot">Kernel boot</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Cause and fix</th></tr>
+</thead>
+<tbody>
+<tr><td>A kernel image stays <code>failed</code></td><td>The extraction failed: its message says why. <code>gxctl image retry &lt;image&gt;</code> (or <strong>Retry</strong>) runs it again. The image’s events (<code>GET /images/{id}/events</code>) record <code>Retrying</code> and, once done, <code>Extracted</code>.</td></tr>
+<tr><td><code>kernel_from</code> refused with <code>400 invalid_image</code> (<em>kernels can’t be extracted here</em>), or catalog pulls bring no kernel</td><td>The message says why: extraction is off on this host (<code>GLIDEX_KERNEL_EXTRACTION=off</code>), there is no extractor for the image’s architecture, or the host is of another architecture than the image (x86_64 images are extracted on x86_64 hosts, aarch64 on aarch64). The host also needs Cloud Hypervisor (or QEMU, on x86_64 only). See <a href="configuration.html#environment-variables">Configuration</a>.</td></tr>
+<tr><td>Extraction fails with <em>the extractor did not start: systemd refused (is the glidex polkit rule installed?)</em></td><td>The host’s polkit rule predates kernel extraction and lets the control plane start only VM units. Re-run the installer (<code>cargo run -p glidex-install</code>) to update it, then <strong>Retry</strong> the kernel image.</td></tr>
+<tr><td>The first extraction fails to download</td><td>It fetches pinned Debian packages over HTTPS from <code>snapshot.debian.org</code> once; allow that, or add kernel images from a URL or host files.</td></tr>
+<tr><td>An aarch64 kernel-boot VM’s console is silent</td><td>It was made with <code>console=ttyS0</code>. Set its <code>kernel_args</code> to <code>console=ttyAMA0 …</code>; new aarch64 VMs get that by default. See <a href="../user-guide/kernel-boot.html#the-console">The console</a>.</td></tr>
+<tr><td>A VM’s <code>KernelExtracted</code> condition is <code>False</code> (reason <code>ExtractFailed</code>, event <code>KernelExtractFailed</code>)</td><td>Following the guest’s kernel failed; the VM boots the kernel it has, and the next start tries again. See <a href="../user-guide/kernel-boot.html#following-the-guests-kernel">Following the guest’s kernel</a>.</td></tr>
+<tr><td>A VM doesn’t start: <code>Ready</code> <code>False</code>, reason <code>KernelNotExtracted</code></td><td>A VM that follows its guest’s kernel has no kernel to boot yet. Fix the cause in the message, or set <code>kernel</code> to a ready kernel image.</td></tr>
+<tr><td>A VM waits: <code>kernel … has not been copied to this node yet</code> (<code>DisksReady</code> <code>False</code>, <code>DiskNotReady</code>)</td><td>The node fetches its copy of the kernel image; the VM carries on by itself.</td></tr>
+<tr><td><code>409 conflict</code> deleting a kernel image</td><td>VMs boot it or keep it to go back to; the message names them. A VM-owned kernel image goes by itself once unused (event <code>Unused</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="networking"><a class="header" href="#networking">Networking</a></h2>
+<p>Start with what the host can do:</p>
+<pre><code class="language-bash">gxctl ovs status            # netd access, OVS version and state, what is missing
+gxctl networks              # networks and their status
+gxctl bridges
+sudo ovs-vsctl show
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Check</th></tr>
+</thead>
+<tbody>
+<tr><td>The Networking page says <code>glidex-netd is not reachable</code></td><td><code>systemctl status glidex-netd</code>, <code>journalctl -u glidex-netd</code>.</td></tr>
+<tr><td>A network stays not ready</td><td><code>gxctl networks</code> and the network’s status in the UI give the reason.</td></tr>
+<tr><td>A VM on a NAT network gets no address</td><td>dnsmasq is installed (<code>gxctl ovs status</code>); a host firewall (ufw, firewalld) may drop DHCP or forwarded traffic: allow the NAT subnet.</td></tr>
+<tr><td>A VM has an address but no internet</td><td>IP forwarding (<code>sysctl net.ipv4.ip_forward</code> is 1), the host’s own route out, and the firewall’s FORWARD policy.</td></tr>
+<tr><td>A bridged VM gets no address</td><td>The bridge has an uplink (<code>gxctl uplinks &lt;bridge&gt;</code>), the link is up, and the LAN has a DHCP server (Glidex doesn’t run one there).</td></tr>
+<tr><td>An uplink is held off the bridge after a reboot</td><td>The gateway didn’t answer at boot. Fix it, then <code>gxctl uplink-reapply &lt;bridge&gt; &lt;uplink&gt;</code>.</td></tr>
+<tr><td>vhost-user NICs fail</td><td>The host needs the <code>dpdk</code> profile, DPDK initialized and hugepages: <code>gxctl ovs status</code>.</td></tr>
+<tr><td>The installer says <code>OVS still runs DPDK from an earlier dpdk profile</code></td><td>The kernel profile turns DPDK off by restarting <code>ovs-vswitchd</code>. Re-run with <code>--allow-ovs-restart</code>, or with <code>--ovs-profile dpdk</code> to keep DPDK. See <a href="host-networking.html#back-to-the-kernel-profile">Back to the kernel profile</a>.</td></tr>
+<tr><td>The installer says <code>OVS-DPDK stays on: DPDK ports need DPDK: …</code></td><td>A DPDK uplink or vhost-user VM NIC is still on OVS. Remove the uplink and stop or move those VMs, then re-run.</td></tr>
+<tr><td><code>br-int</code> stays userspace (netdev) after going back to the kernel profile</td><td>It switches only while no VM port is on <code>br-int</code>: stop or move the node’s VMs on cluster networks.</td></tr>
+<tr><td>Cluster VMs on different nodes can’t reach each other</td><td>UDP 6081 (Geneve) between the nodes’ tunnel addresses; the <strong>OVN</strong> card on the Cluster page shows the tunnels.</td></tr>
+<tr><td><code>gxctl cluster status</code> lists ports that don’t answer</td><td>Open them; see <a href="host-networking.html#ports-between-nodes">Ports between nodes</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>If the host lost its own connectivity after an uplink change, wait a
+minute: an uncommitted address move is rolled back by itself. If you
+need to act at the console, <code>gxctl uplink-rm &lt;bridge&gt; &lt;uplink&gt;</code> puts the
+address back on the NIC.</p>
+<h2 id="getting-help"><a class="header" href="#getting-help">Getting help</a></h2>
+<p>When you report a problem, include the Glidex version (<code>gxctl cluster status</code> in a cluster, or the control plane’s startup banner), what you
+ran, the error code and message, and the relevant journal lines. Remove
+host names, addresses, user names and anything secret from them first,
+and never include tokens, passwords or private keys.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/maintenance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/maintenance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

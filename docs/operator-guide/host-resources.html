@@ -1,0 +1,660 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Host resources - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-a4ecf34d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/host-resources.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="host-resources"><a class="header" href="#host-resources">Host resources</a></h1>
+<p>Besides vCPUs and memory, Glidex knows how each host is built: its NUMA
+nodes and cores, its hugepages, and its PCIe tree with the devices a VM
+could be given. It uses that to:</p>
+<ul>
+<li>keep a VM’s memory, vCPUs and devices on one NUMA node, or split a
+GPU VM over exactly its GPUs’ NUMA nodes, and give it dedicated host
+CPUs;</li>
+<li>count hugepages per node and page size, so VMs that need them get
+them;</li>
+<li>hand out devices from <strong>pools</strong> by count, near each other, and size
+a VM that asks for GPUs from what each GPU brings;</li>
+<li>prepare devices for passthrough, watch their health, and cordon the
+ones you don’t trust.</li>
+</ul>
+<p>All of this works on a single host and in a cluster. On a single host
+the node is called <code>local</code>. Passing a device through by its address,
+and what the host needs for VFIO, is in
+<a href="pci-passthrough.html">PCI passthrough</a>.</p>
+<h2 id="host-topology"><a class="header" href="#host-topology">Host topology</a></h2>
+<p>Each node reads its topology from sysfs. A summary (NUMA nodes, cores,
+memory, hugepages, reserved CPUs, assignable devices) goes in the
+node’s record and is refreshed every two minutes, and right after a
+device is prepared or released. The full tree is read fresh on the node
+each time you ask for it.</p>
+<pre><code class="language-bash">gxctl node topology &lt;node&gt;             # NUMA nodes with CPUs, memory, hugepages and devices; reserved CPUs; warnings
+gxctl node topology &lt;node&gt; --devices   # devices with NUMA node, root port, switch, link, VFs, PCIe errors
+gxctl pci                              # this host's PCI devices, with NUMA node and readiness
+gxctl pci 0000:41:00.0                 # one device, and why it isn't ready
+</code></pre>
+<p><code>&lt;node&gt;</code> is a node name or id. In the web UI, a node’s page (<strong>Cluster</strong>
+→ a node) has a <strong>Topology</strong> card: one column per NUMA node with its
+CPUs, memory, hugepages and devices, then devices with no NUMA node,
+the reserved CPUs, and the warnings.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Shown</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>CPUs, cores</td><td>The NUMA node’s CPUs, grouped by core (hyperthreads of one core together).</td></tr>
+<tr><td>Memory</td><td>The node’s memory, without its hugepage pool.</td></tr>
+<tr><td>Hugepages</td><td>Pages per size on that NUMA node, less what OVS-DPDK takes there.</td></tr>
+<tr><td>Devices</td><td>The devices a VM could be given: GPUs, NICs, NVMe drives, accelerators, and anything bound to <code>vfio-pci</code>. Each with its class, ids, driver, IOMMU group, readiness and, with <code>--devices</code>, its root port, the PCIe switch above it, its link speed and width, SR-IOV VFs and PCIe error counts.</td></tr>
+<tr><td>Reserved CPUs</td><td>CPUs no VM gets: OVS-DPDK’s PMD and lcore CPUs, and <code>cluster.node_reserved.cpu_list</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Reading a node’s topology needs a host role (<code>auditor</code>, <code>net-admin</code> or
+<code>system-admin</code>) on that host. Over the API it is
+<code>GET /nodes/{id}/topology</code> (read on that node) or <code>GET /host/topology</code>
+(the host that answers).</p>
+<h3 id="ready-devices"><a class="header" href="#ready-devices">Ready devices</a></h3>
+<p>A device is <strong>ready</strong> for passthrough when:</p>
+<ul>
+<li>the host has an IOMMU and the device has an IOMMU group;</li>
+<li>it is bound to <code>vfio-pci</code>;</li>
+<li>the other functions of its IOMMU group are on <code>vfio-pci</code> or unbound
+(bridges stay with the host);</li>
+<li>the <code>glidex</code> user can open <code>/dev/vfio/&lt;group&gt;</code>, judged by the file’s
+owner, group and mode, as a VM’s unit would open it;</li>
+<li>it isn’t an OVS-DPDK uplink;</li>
+<li>no process other than Glidex’s own VMs has its IOMMU group open, such
+as a VM of libvirt or OpenNebula on the same host.</li>
+</ul>
+<p>A device that isn’t says why:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Fix</th></tr>
+</thead>
+<tbody>
+<tr><td><code>not bound to vfio-pci (driver: nvidia)</code></td><td><a href="#prepare-devices">Prepare</a> it.</td></tr>
+<tr><td><code>IOMMU group 30 also holds 0000:07:00.1 on snd_hda_intel</code></td><td>Prepare it: the whole group goes to <code>vfio-pci</code>.</td></tr>
+<tr><td><code>/dev/vfio/30 can't be opened by this user</code></td><td>Prepare it (its udev rule gives the group device to <code>glidex</code>), or see <a href="pci-passthrough.html#let-the-glidex-user-open-it">PCI passthrough</a>.</td></tr>
+<tr><td><code>in use by qemu-kvm-one (pid 37226)</code></td><td>Another hypervisor’s VM holds it. Being on <code>vfio-pci</code> doesn’t make it free. See <a href="pci-passthrough.html#devices-another-hypervisor-holds">Devices another hypervisor holds</a>.</td></tr>
+<tr><td><code>it is an OVS-DPDK uplink</code></td><td>Not for passthrough.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Pools hand out ready devices only. Who holds a group is asked of
+<code>glidex-netd</code>, which can see every process; without it, that check is
+skipped.</p>
+<h3 id="warnings"><a class="header" href="#warnings">Warnings</a></h3>
+<p>The topology reports what it notices. Glidex never acts on these.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Warning</th><th>Meaning</th><th>What to do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>iommu_off</code></td><td>No IOMMU groups.</td><td>Turn on VT-d or AMD-Vi and the kernel option; see <a href="pci-passthrough.html#iommu">PCI passthrough</a>.</td></tr>
+<tr><td><code>numa_unknown</code></td><td>A device has no NUMA node (firmware reports <code>-1</code>) on a host with several.</td><td>A firmware setting or update. <code>NUMA_POLICY_STRICT</code> VMs can’t have it.</td></tr>
+<tr><td><code>group_shared</code></td><td>A device shares its IOMMU group with a device of another class.</td><td>Passing one through takes the other; move the card to another slot.</td></tr>
+<tr><td><code>link_degraded</code></td><td>A device’s PCIe link runs slower or narrower than it can. GPUs aren’t flagged: they slow their link when idle.</td><td>Reseat the card, or check the slot.</td></tr>
+<tr><td><code>hugepages_unbalanced</code></td><td>A device sits on a NUMA node with no hugepages while other NUMA nodes have some.</td><td>Reserve hugepages on that NUMA node too (see <a href="#hugepages">Hugepages</a>).</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="numa-nodes"><a class="header" href="#numa-nodes">NUMA nodes</a></h2>
+<p>On a host with several NUMA nodes, a VM is faster when its memory, its
+vCPUs and its devices are on one of them. A VM asks for that with
+<code>numa_policy</code> (see
+<a href="../user-guide/vms.html#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a>):</p>
+<ul>
+<li><code>NUMA_POLICY_PREFERRED</code>: on one NUMA node if one fits, else anywhere
+on the host. Then the VM’s <code>NumaAligned</code> condition is <code>False</code>.</li>
+<li><code>NUMA_POLICY_STRICT</code>: on one NUMA node, or not on that host. It
+refuses devices on two NUMA nodes and devices with no NUMA node.</li>
+<li><code>NUMA_POLICY_ALIGNED</code>: on exactly the NUMA nodes of its devices, its
+vCPUs and memory split between them by device count, and the same
+layout shown to the guest. A <a href="#gpu-requests">GPU request</a> sets it.
+Every device needs a NUMA node, and each node’s share must fit there
+(<code>NUMA node 7: not enough memory (… of … MiB taken)</code>).</li>
+</ul>
+<p>Glidex picks the NUMA node with most of the VM’s devices, then the
+least allocated, then the lowest number. Each NUMA node’s room is its
+memory times <code>cluster.scheduler.memory_overcommit</code>, and its hugepages
+of each size. VMs bound to a NUMA node count there; VMs without a
+policy count on every NUMA node in proportion to its size.</p>
+<p>The guest’s memory is bound to the NUMA node (to each node’s share,
+when aligned). Shared vCPUs still float over the whole host, so no
+node’s CPUs sit idle. The VM shows where it went: <code>numa_node</code>, or
+<code>numa</code> (one share per node) when aligned over several, and for
+dedicated vCPUs <code>cpus</code>. Before an aligned VM starts, each node is
+checked for its share of free hugepages.</p>
+<p>In a cluster, a strict VM that fits no node waits as <strong>Unschedulable</strong>
+with each node’s reason (<code>NUMA node 1: not enough memory (… of … MiB taken)</code>, <code>its PCI devices are on NUMA nodes 0 and 1</code>). On a single host
+the create is refused with <code>409</code>. A change to a placed VM’s vCPUs,
+memory, policies, devices or networks is fitted again on its node;
+what no longer fits is refused with <code>409</code>.</p>
+<h2 id="dedicated-cpus"><a class="header" href="#dedicated-cpus">Dedicated CPUs</a></h2>
+<p>A VM with <code>cpu_policy: CPU_POLICY_DEDICATED</code> gets a host CPU of its own
+for each vCPU, on one NUMA node if it can (it implies
+<code>NUMA_POLICY_PREFERRED</code>). Its vCPU threads are pinned there; other VMs
+don’t run on them.</p>
+<ul>
+<li><strong>Whole cores.</strong> By default a dedicated VM takes both hyperthreads of
+each core, so no other VM shares a core with it. Turn this off with
+<code>cluster.scheduler.dedicated_whole_cores: false</code> to hand out single
+threads.</li>
+<li><strong>Isolated CPUs first.</strong> CPUs the kernel keeps tasks off (<code>isolcpus</code>,
+<code>nohz_full</code>) are used first.</li>
+<li><strong>Reserved CPUs are never given out:</strong> OVS-DPDK’s PMD and lcore CPUs,
+and by default the first core of each NUMA node, for the host.
+<code>cluster.node_reserved.cpu_list</code> replaces that default with your own
+list; an empty list reserves none.</li>
+<li><strong>Shared VMs give way.</strong> Once a node holds dedicated CPUs, VMs with
+shared vCPUs run only on the CPUs left, and running ones are moved
+when that set changes.</li>
+</ul>
+<pre><code class="language-json">{
+  "cluster": {
+    "scheduler": { "dedicated_whole_cores": true },
+    "node_reserved": { "cpu_list": "0-1,64-65" }
+  }
+}
+</code></pre>
+<p><code>cluster.node_reserved.cpu_list</code> is per host: set it in each host’s
+<code>/etc/glidex/control-plane.json</code>. The reserved CPUs show in
+<code>gxctl node topology</code>. Restart the control plane after changing either
+key.</p>
+<!-- TODO(verify): dedicated_whole_cores is read by the scheduler on the leader; confirm it must be set the same on every server. -->
+<p>When no NUMA node has enough free CPUs, the reason says so
+(<code>NUMA node 0: not enough free CPUs (8 dedicated vCPUs, 6 CPUs free)</code>).</p>
+<h2 id="hugepages"><a class="header" href="#hugepages">Hugepages</a></h2>
+<p>Hugepages are their own resource, counted per node and page size.
+Glidex doesn’t reserve them; the kernel does, at boot or later:</p>
+<pre><code class="language-text"># kernel command line: reserve 1G pages at boot, before memory fragments
+default_hugepagesz=1G hugepagesz=1G hugepages=64
+</code></pre>
+<pre><code class="language-bash"># 2M pages, at run time, on NUMA node 1
+echo 4096 | sudo tee /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+</code></pre>
+<p>The node reads its pools per size and NUMA node (again within two
+minutes of a change). How they are counted:</p>
+<ul>
+<li><strong>What VMs may take</strong> is the pool less what OVS-DPDK takes for
+<code>dpdk-socket-mem</code>. Hugepages aren’t ordinary memory: a node’s
+allocatable memory leaves the pool out.</li>
+<li><strong>A VM with <code>hugepages</code></strong> takes its whole memory in pages of its
+<code>hugepage_size</code> (<code>2M</code> or <code>1G</code>; default: the host’s default size,
+usually 2M). They are never overcommitted, and a placed VM holds them
+whether it runs or not. Refusals: <code>not enough 2M hugepages (2048 of 2048 MiB taken)</code>, <code>no 1G hugepages</code>, <code>1536 MiB is not a whole number of 1G pages</code>.</li>
+<li><strong>A VM with a vhost-user NIC</strong> needs shared memory. It gets 2M pages
+without asking when the node has its memory plus a quarter (at least
+256 MiB) to spare, and ordinary memory otherwise.</li>
+<li><strong>The VM’s <code>page_kib</code></strong> says what it got: 4 for ordinary memory, else
+the page size in KiB.</li>
+<li><strong>Before a VM starts</strong>, its node checks that enough pages of the size
+are free (on its NUMA node, if it has one). If not, the start fails
+with the counts. Hugepages used outside Glidex show up this way.</li>
+</ul>
+<p>On a single host, Glidex records the size of asked-for hugepages but
+doesn’t count them ahead; the check at start is what stops a VM. The
+size of vhost-user hugepages is decided at start too.</p>
+<!-- TODO(verify): on a single host, do VMs with a NUMA or CPU policy have their hugepages counted against the NUMA node at create (standalone_fit)? -->
+<h2 id="device-pools"><a class="header" href="#device-pools">Device pools</a></h2>
+<p>A pool is a named set of devices, matched by ids or addresses. Instead
+of naming devices by address, a VM asks for a number of devices from a
+pool, and Glidex picks them. Pools are defined in
+<code>/etc/glidex/control-plane.json</code> (on each server, the same):</p>
+<pre><code class="language-json">{
+  "pci": {
+    "pools": [
+      { "name": "a100", "class": "gpu",
+        "match": { "vendor_id": "0x10de", "device_id": "0x20b0" },
+        "prepare": true,
+        "per_device": { "vcpus": 14, "memory_mib": 57344,
+                        "hugepages": true, "cpu_policy": "dedicated" } },
+      { "name": "cx7", "class": "nic",
+        "match": { "vendor_id": "0x15b3", "device_id": "0x1021" },
+        "nodes": ["gpu-01", "gpu-02"] }
+    ],
+    "allow": [
+      { "pool": "a100", "tenants": ["research"] },
+      { "pool": "cx7", "projects": ["ml-team"] }
+    ]
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>name</code></td><td>The pool’s name. Unique.</td></tr>
+<tr><td><code>class</code></td><td>A label for people and usage reports: <code>gpu</code>, <code>nic</code>, <code>nvme</code>, <code>dpu</code>, <code>accelerator</code>. <code>gpu</code> also marks the pools a <a href="#gpu-requests">GPU request</a> can use without naming one, and that the web UI’s create form sizes VMs from.</td></tr>
+<tr><td><code>match</code></td><td><code>vendor_id</code>, <code>device_id</code>, <code>class_code</code> (or its start, <code>0x0302</code>) and <code>addresses</code>. Every key given must match. A pool must have a match. With <code>vf_of</code> (itself a match of physical functions), the pool takes those functions’ SR-IOV virtual functions; see <a href="pci-passthrough.html#sr-iov-virtual-functions">SR-IOV virtual functions</a>.</td></tr>
+<tr><td><code>nodes</code></td><td>Node names or ids the pool is on. Default: every node.</td></tr>
+<tr><td><code>prepare</code></td><td>Each node binds its devices of the pool to <code>vfio-pci</code> when glidex starts (see <a href="#prepare-devices">Prepare devices</a>).</td></tr>
+<tr><td><code>per_device</code></td><td>What a VM asking for <code>gpus</code> from the pool gets per device, unless it sizes itself: <code>vcpus</code> and <code>memory_mib</code> (both required), and optionally <code>hugepages</code> (<code>true</code>/<code>false</code>) and <code>cpu_policy</code> (<code>shared</code> or <code>dedicated</code>). See <a href="#gpu-requests">GPU requests</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The control plane refuses to start with two pools of the same name, a
+pool without a match, two pools with the same match on the same nodes,
+or a grant naming an unknown pool. Restart the control plane after
+changing pools or grants.</p>
+<h3 id="who-may-use-a-pool"><a class="header" href="#who-may-use-a-pool">Who may use a pool</a></h3>
+<p>A <code>pci.allow</code> entry with <code>pool</code> grants the pool to projects (ids or
+names) or tenants (ids or slugs), like device grants (see
+<a href="pci-passthrough.html#who-may-use-a-device">Who may use a device</a>).
+<code>net-admin</code> and <code>system-admin</code> may use any pool. In policies the
+permission is <code>usePciPool</code>.</p>
+<h3 id="how-vms-get-devices"><a class="header" href="#how-vms-get-devices">How VMs get devices</a></h3>
+<p>A VM asks with <code>devices</code>, for example <code>[{"pool": "a100", "count": 2, "same_switch": true}]</code> (in <code>gxctl create</code>, <code>a100:2:switch</code>; in the
+web UI’s VM form, <strong>Device Pools</strong>). Glidex picks devices of the pool
+that are ready, not cordoned and not held by another VM (whole IOMMU
+groups counted), on the NUMA node of the VM’s other devices first, then
+by address. With <code>same_switch</code>, all of them sit under one PCIe switch,
+the one the VM already uses if it can.</p>
+<p>The picks are shown on the VM as <code>pool_devices</code> and are passed through
+at its next start. They are claims like devices named by address: the
+VM keeps them while it exists. When a pool is short, the reason says
+why: <code>pool a100: 1 of 2 free</code>, <code>pool a100: no 2 free devices under one PCIe switch</code>, <code>pool a100 is not on this node</code>. In a cluster the VM
+waits for a node; on a single host the request is refused with <code>409</code>.</p>
+<h3 id="gpu-requests"><a class="header" href="#gpu-requests">GPU requests</a></h3>
+<p>A user can ask for GPUs by count instead of sizing the VM:
+<code>"gpus": {"count": 4, "pool": "a100"}</code> (in <code>gxctl create</code>, <code>4:a100</code>;
+in the web UI, a GPU pool’s count). Glidex turns it into:</p>
+<ul>
+<li>a pool request for 4 devices of <code>a100</code>;</li>
+<li><code>NUMA_POLICY_ALIGNED</code>, so the VM spans exactly its GPUs’ NUMA nodes
+(see <a href="#numa-nodes">NUMA nodes</a>);</li>
+<li>4 × the pool’s <code>per_device</code> vCPUs and memory, its <code>hugepages</code> and its
+<code>cpu_policy</code>.</li>
+</ul>
+<p>What the VM’s request gives itself wins. Without <code>pool</code>, the project’s
+only usable pool of class <code>gpu</code> is taken (cluster or tenant pool). A
+tenant pool sizes like its cluster pool. Quotas, grants and metering
+are those of the pool. Users see the sizing in the create form and as
+<code>per_device_vcpus</code> and <code>per_device_memory_mib</code> in the project’s pool
+listing. The refusals are in the user guide’s
+<a href="../user-guide/vms.html#gpus">GPUs</a>.</p>
+<p>Size <code>per_device</code> so the GPUs of one NUMA node fit that node: its
+cores less the reserved ones, and its memory less the host’s share,
+divided by its GPUs. For a node with 16 cores (32 threads), one core
+reserved and 2 GPUs: 15 cores leave 7 each, so 14 vCPUs with whole
+cores, and about 56 GiB each out of 126 GiB. A VM that asks for more
+than a node can give is refused there, naming the node.</p>
+<p><code>"nvlink": true</code> is refused for now: NVLink between passed-through
+GPUs on NVSwitch boards needs a fabric Glidex doesn’t run yet.</p>
+<h3 id="see-what-pools-hold"><a class="header" href="#see-what-pools-hold">See what pools hold</a></h3>
+<pre><code class="language-bash">gxctl pci pools                 # each pool's devices per node: free, held by a VM, cordoned or not ready
+gxctl pci pools --project lab   # the pools project lab may use, with free counts
+</code></pre>
+<p>The full listing (<code>GET /pci-pools</code>) needs a host role. With
+<code>--project</code> (<code>GET /pci-pools?project=&lt;p&gt;</code>), anyone who can read the
+project sees the pools it may use and how many devices are free,
+without addresses or holders; it lists the project’s tenant pools too.</p>
+<h3 id="quotas"><a class="header" href="#quotas">Quotas</a></h3>
+<p>A project quota <code>devices.&lt;pool&gt;</code> limits how many devices of a pool the
+project’s VMs ask for, counted like <code>vcpus</code> over all its VMs:</p>
+<pre><code class="language-bash">gxctl project quota lab devices.a100=2
+</code></pre>
+<p>Over the limit, a request is refused with <code>quota_exceeded</code> (resource
+<code>devices.a100</code>). A tenant’s cap limits the same over all its projects
+(<code>tenant_quota_exceeded</code>). A pool without a quota is unlimited. In the
+web UI, the project’s <strong>Quotas and usage</strong> card shows <strong>Devices:
+&lt;pool&gt;</strong> for each pool with a limit or in use, and <strong>Edit quotas</strong>
+offers a field for each pool the project may use. See
+<a href="../user-guide/projects.html#quotas">Projects</a>.</p>
+<h3 id="tenant-pools"><a class="header" href="#tenant-pools">Tenant pools</a></h3>
+<p>A tenant granted a pool can split its share among its projects. Its
+<code>tenant-admin</code> creates <strong>tenant pools</strong>, each drawing from a cluster
+pool, with a maximum and the projects that may use it:</p>
+<pre><code class="language-bash">gxctl tenant device-pool set acme team-a-gpus --from a100 --max 4 --projects team-a,team-a-ci
+gxctl tenant device-pools acme                 # pool, cluster pool, held/max, free, projects
+gxctl tenant device-pool remove acme team-a-gpus
+</code></pre>
+<p>In the web UI it is the tenant page’s <strong>Device pools</strong> card. Over the
+API, <code>PUT /tenants/{id}/device-pools</code> replaces the tenant’s whole set.</p>
+<ul>
+<li>The name is 1-63 lowercase letters, digits and dashes, and can’t be a
+cluster pool’s name. <code>--from</code> must be a cluster pool granted to the
+tenant, <code>--max</code> at least 1, and the projects the tenant’s.</li>
+<li>A VM of one of those projects asks for <code>{"pool": "team-a-gpus"}</code>. It
+gets devices of <code>a100</code>, and the VM shows <code>"pool": "a100", "tenant_pool": "team-a-gpus"</code>. Other projects are refused (<code>403</code>).</li>
+<li>The tenant pool’s projects together ask for at most <code>max</code> devices
+(<code>tenant_quota_exceeded</code>, resource <code>tenant_pool.team-a-gpus</code>). The
+tenant’s cap and the project quota on <code>a100</code> still apply.</li>
+<li>If the tenant loses its grant on <code>a100</code>, the tenant pool shows
+<code>ungranted</code> and gives nothing new. VMs that hold devices keep them,
+as do VMs of a tenant pool you remove.</li>
+</ul>
+<h3 id="usage"><a class="header" href="#usage">Usage</a></h3>
+<p>Metering counts <code>device.alloc.&lt;pool&gt;</code>: the devices of a pool a VM holds,
+in device-hours, from its start to its exit (paused too). Devices of a
+tenant pool count under the cluster pool’s name. Devices named by
+address aren’t metered. See <a href="../user-guide/usage.html">Usage</a>.</p>
+<h2 id="prepare-devices"><a class="header" href="#prepare-devices">Prepare devices</a></h2>
+<p>Glidex can bind a device to <code>vfio-pci</code> for you, on any node:</p>
+<pre><code class="language-bash">gxctl node prepare-device &lt;node&gt; 0000:41:00.0   # its whole IOMMU group to vfio-pci
+gxctl node release-device &lt;node&gt; 0000:41:00.0   # back on the drivers it had
+</code></pre>
+<p>In the web UI, the node’s <strong>Topology</strong> card has <strong>Prepare</strong> and
+<strong>Release</strong> next to each device. Over the API:
+<code>POST /nodes/{id}/devices/{address}/prepare</code> and <code>.../release</code>.</p>
+<p>Preparing:</p>
+<ul>
+<li>binds every function of the device’s IOMMU group to <code>vfio-pci</code>.
+Bridges stay with the host;</li>
+<li>remembers the drivers they had, for release;</li>
+<li>writes <code>/etc/udev/rules.d/90-glidex-vfio-&lt;group&gt;.rules</code>, which gives
+<code>/dev/vfio/&lt;group&gt;</code> to the <code>glidex</code> group with mode <code>0660</code>, and
+applies it at once;</li>
+<li>refuses a group holding a NIC the host uses (one with addresses or
+routes), an OVS-DPDK uplink, or a device without an IOMMU group.</li>
+</ul>
+<p>The host’s driver lets go of the devices: a GPU on <code>nvidia</code> stops being
+the host’s. Release works with any function of the group, and refuses a
+device Glidex didn’t prepare.</p>
+<p>Release refuses a group that a process has open, a VM’s included
+(<code>IOMMU group 30 is in use by qemu-kvm-one (pid 37226)</code>), and so does
+a change to a PF’s VF count while its group or a VF’s is open.</p>
+<p>Preparing and releasing need <code>net-admin</code> or <code>system-admin</code> on that
+host. A prepared device goes back to its usual driver at reboot. For
+devices that should always be ready:</p>
+<ul>
+<li>give their pool <code>prepare: true</code>: each node then prepares its devices
+of the pool that aren’t ready when glidex starts, skipping devices
+without an IOMMU group and OVS-DPDK uplinks. A device that can’t be
+prepared stays not ready, and the control plane’s log says why;</li>
+<li>or bind them at boot, before glidex and any other hypervisor starts,
+with the installer’s <code>--vfio-devices</code> (and keep VF counts with
+<code>--sriov</code>); see <a href="pci-passthrough.html#keep-it-across-reboots">Keep it across reboots</a>.</li>
+</ul>
+<h2 id="device-health-and-cordoning"><a class="header" href="#device-health-and-cordoning">Device health and cordoning</a></h2>
+<p>Each node reads its devices’ PCIe error counters (AER: correctable,
+non-fatal, fatal). <code>gxctl node topology &lt;node&gt; --devices</code> shows them as
+<code>aer correctable/nonfatal/fatal</code>, and the <strong>Topology</strong> card marks a
+device with uncorrectable errors (<strong>PCIe errors</strong>).</p>
+<p>Glidex watches the devices of running VMs. If one falls off the bus, or
+has new uncorrectable errors since the VM started, the VM’s
+<code>DeviceHealthy</code> condition turns <code>False</code> with the reason, and a
+<code>DeviceError</code> event is recorded once (<code>gxctl events &lt;vm&gt;</code>). Glidex
+doesn’t stop the VM or take the device away. Errors inside the guest
+(an NVIDIA Xid, say) only the guest sees.</p>
+<p>To keep a device you don’t trust from new VMs, cordon it:</p>
+<pre><code class="language-bash">gxctl node cordon-device &lt;node&gt; 0000:41:00.0
+gxctl node uncordon-device &lt;node&gt; 0000:41:00.0
+</code></pre>
+<p>Or <strong>Cordon</strong> and <strong>Uncordon</strong> on the <strong>Topology</strong> card, where a
+cordoned device is marked <strong>cordoned</strong>. Over the API:
+<code>POST /nodes/{id}/devices/{address}/cordon</code> and <code>.../uncordon</code>.</p>
+<p>A cordoned device is refused to new VMs by address
+(<code>PCI device 0000:41:00.0 is cordoned</code>), and pools skip it. The VM that
+holds it keeps it. Cordoning needs <code>net-admin</code> or <code>system-admin</code> on
+that host. The node records its cordoned devices, so they stay cordoned
+across restarts.</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Check</th></tr>
+</thead>
+<tbody>
+<tr><td><code>not enough 2M hugepages (… of … MiB taken)</code></td><td>The node’s pool of that size is used up. Reserve more, or use another size. <code>gxctl node topology &lt;node&gt;</code> shows the pool per NUMA node.</td></tr>
+<tr><td><code>no 1G hugepages</code></td><td>That node has none of that size. 1G pages are reserved on the kernel command line.</td></tr>
+<tr><td>The start fails with hugepage counts</td><td>Pages the scheduler counted as free are in use outside Glidex (another process, or DPDK beyond <code>dpdk-socket-mem</code>).</td></tr>
+<tr><td><code>NumaAligned</code> is <code>False</code></td><td>A <code>PREFERRED</code> VM didn’t fit on one NUMA node and spans the host. Free room on one NUMA node, then stop and start the VM.</td></tr>
+<tr><td><code>its PCI devices are on NUMA nodes 0 and 1</code>, <code>PCI device … has no NUMA node</code></td><td>A <code>STRICT</code> VM can’t have these devices together. Use <code>PREFERRED</code>, or devices on one NUMA node.</td></tr>
+<tr><td><code>not enough free CPUs (… dedicated vCPUs, … CPUs free)</code></td><td>Dedicated VMs hold the rest, or the CPUs are reserved. See <code>reserved cpus</code> in <code>gxctl node topology</code>.</td></tr>
+<tr><td><code>pool …: 1 of 2 free</code></td><td>Other VMs hold the pool’s devices, or some aren’t ready or are cordoned: <code>gxctl pci pools</code>.</td></tr>
+<tr><td><code>no device pool …</code> (<code>400</code>)</td><td>No such pool, or a tenant pool of another tenant.</td></tr>
+<tr><td><code>forbidden</code> asking for a pool</td><td>The project has no grant for it in <code>pci.allow</code>, or isn’t one of the tenant pool’s projects.</td></tr>
+<tr><td><code>PCI device … is cordoned</code></td><td>An administrator cordoned it: <code>gxctl node uncordon-device</code>.</td></tr>
+<tr><td>A device on <code>vfio-pci</code> is not ready: <code>in use by … (pid …)</code></td><td>Another hypervisor’s VM on the host has it. Pools skip it. See <a href="pci-passthrough.html#devices-another-hypervisor-holds">Devices another hypervisor holds</a>.</td></tr>
+<tr><td>A device is not ready: <code>/dev/vfio/&lt;n&gt; can't be opened by this user</code></td><td>The group device’s owner, group and mode don’t let <code>glidex</code> open it. Prepare the device, or add the udev rule.</td></tr>
+<tr><td><code>PCI device … has no NUMA node</code> for a GPU request</td><td><code>NUMA_POLICY_ALIGNED</code> needs a NUMA node on each device, even on a one-node host. The user can set <code>NUMA_POLICY_PREFERRED</code> with <code>gpus</code>.</td></tr>
+<tr><td><code>NUMA node …: not enough …</code> for a GPU request</td><td>One node’s share of the VM doesn’t fit there. Lower <code>per_device</code>, or free that node.</td></tr>
+<tr><td><code>gpus: give vcpu_count and mem_size_mib, or set per_device on pool …</code></td><td>The pool has no <code>per_device</code>.</td></tr>
+<tr><td>A VM shows <code>DeviceHealthy=False</code></td><td>The device fell off the bus or had PCIe errors: <code>gxctl node topology &lt;node&gt; --devices</code>, and the host’s <code>dmesg</code>.</td></tr>
+<tr><td>Preparing is refused</td><td>The group holds a NIC the host uses or an OVS-DPDK uplink, or the IOMMU is off.</td></tr>
+<tr><td>Release or a VF count is refused: <code>IOMMU group … is in use by …</code></td><td>A VM (Glidex’s or another hypervisor’s) has the group open. Stop that VM first.</td></tr>
+</tbody>
+</table>
+</div>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/pci-passthrough.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/clusters.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/pci-passthrough.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/clusters.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
