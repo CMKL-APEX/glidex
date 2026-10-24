@@ -4,6 +4,7 @@
      A new spec needs an entry here and in README.md. -->
 
 [Overview](README.md)
+[Progress](progress.md)
 
 # Core
 

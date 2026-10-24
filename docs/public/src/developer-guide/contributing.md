@@ -550,6 +550,13 @@ mdbook build docs/internal        # the specs -> target/docs/internal
 4. Describe the pull request with a summary, the changes and how you
    tested them, including any ignored or e2e tests you ran by hand.
 5. CI must pass: build and tests, `fmt`, `proto` and the docs builds.
+6. Several people and coding agents work on Glidex at once.
+   [`AGENTS.md`](https://github.com/CMKL-APEX/glidex/blob/main/AGENTS.md)
+   has the working rules they share (a worktree each, the checks on
+   every commit of a stack, how stacks are merged), and
+   [`spec/progress.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/progress.md)
+   what is built, claimed and next; a pull request that starts or
+   finishes a milestone updates it.
 
 Contributions are dual-licensed MIT OR Apache-2.0, as the [README](https://github.com/CMKL-APEX/glidex/blob/main/README.md#contribution)
 says.
