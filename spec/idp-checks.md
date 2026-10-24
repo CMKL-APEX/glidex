@@ -154,7 +154,7 @@ No IdP is involved; the accounts are the directory's own.
    the cluster with `--via` it; `whoami` there names the directory's
    user with method `directory`, and the tenant's project is listed.
 6. A browser signed in at the directory opens the cluster's web UI:
-   **Sign in with <tenant>** brings it back signed in to the cluster.
+   **Sign in with &lt;tenant&gt;** brings it back signed in to the cluster.
 7. An API token made at the directory with `--cluster <cluster id>`:
    refused at the cluster, working after the next feed, refused again
    after it is revoked at the directory.

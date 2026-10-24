@@ -13,6 +13,7 @@ fresh reader cannot infer just by reading the source.
 
 | Document | Scope |
 |---|---|
+| [progress.md](progress.md) | What is built, in flight and next across the areas; the test hosts; known flakes. Kept current by each PR ([AGENTS.md](../AGENTS.md)) |
 | [architecture.md](architecture.md) | Processes, layers, and request/data flow |
 | [data-model.md](data-model.md) | VM envelope (`spec`/`status`), VmConfig, phases, persistence schema |
 | [reconciliation.md](reconciliation.md) | Desired state, the VM controller, detached VM instances (`glidex-vm-shim`, `glidex-vm@` units), adoption |

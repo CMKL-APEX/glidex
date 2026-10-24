@@ -1604,9 +1604,9 @@ T7 gets its own task list when it starts; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T5 are implemented (T5: kind `jwt`); T6 is in progress (task 2
-below); T2b, T4b, T6b and T7 are not started. What
-follows is per milestone.
+T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
+check with two organizations); T2b, T4b, T6b and T7 are not started.
+What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
 operated and owned by tenant `admin`, with tenant `default` holding the
@@ -2006,7 +2006,7 @@ Task 7a, staleness:
 
 | Spec | Code |
 |---|---|
-| D13 | A feed answer (new content, or `304`) records when the directory last answered (`FeedState.checked_at`, written at most once a minute, `TrustStore::mark_checked`); `TrustStore::lag` is the time since. `TrustedDirectory.max_staleness_minutes` (else `trust.default_max_staleness_minutes`, 60) is the limit; `api::trust::freshness` compares them, refusing an id it can't resolve. The API middleware refuses a principal of a trusted directory past its limit with `401 directory_stale`, but on `/auth/…` (to see who one is and log out), and adds `X-Glidex-Directory-Lag: <seconds>` once the lag passes 90 s (three missed pulls). `AdmissionService.SetTrustedDirectory` (`PATCH /admissions/directories/{id}`, `manageAdmissions`) sets the limit; `ListTrustedDirectories` shows the limit, the last feed, the lag and `stale`; gxctl `admission directories` and `admission staleness <directory> <minutes|default>` |
+| D13 | A feed answer (new content, or `304`) records when the directory last answered (`FeedState.checked_at`, written at most once a minute, `TrustStore::mark_checked`); `TrustStore::lag` is the time since. `TrustedDirectory.max_staleness_minutes` (else `trust.default_max_staleness_minutes`, 60) is the limit; `api::trust::freshness` compares them, refusing an id it can't resolve. The API middleware refuses a principal of a trusted directory past its limit with `401 directory_stale`, but on `/auth/…` (to see who one is and log out), and adds `X-Glidex-Directory-Lag: <seconds>` once the lag passes 90 s (three missed pulls). `AdmissionService.SetTrustedDirectory` (`PATCH /admissions/directories/{id}`, `manageAdmissions`) sets the limit; `ListTrustedDirectories` shows the limit, the last feed, the lag and `stale`; gxctl `admission directories` and `admission staleness <directory> <minutes>` (or `default`) |
 | Tests | `trust_tests.rs::a_directory_out_of_reach_too_long_is_refused` (no header while fresh; the lag once behind; past a 1-minute limit refused but on `/auth/whoami`, the cluster's own administrator unaffected; the next feed restoring it; back to the default) |
 | Not yet | API tokens' `clusters` (§7.4) and their feed: task 7b |
 
