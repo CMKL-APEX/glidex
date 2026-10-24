@@ -20,7 +20,7 @@ host checks H8–H9 are open for the owner's review. Implemented:
 - S8, `hyperstor` datastores: volumes of a hyperstor cluster, served to
   VMs over vhost-user-blk (§11.2).
 
-S7 is still design. The milestones are S0–S8
+S7 is still design. Decision S25 is open for review too. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
 are applied (§18).
@@ -94,6 +94,7 @@ later milestones (§11, §12).
 | S22 | **A hyperstor disk's worker is a server.** Its volume operations (create, clone, grow, delete) run where glidex's identity can be opened, whatever node its VM runs on; staging is the VM's node's, through its `hyperstor-vhost`, and needs no identity. | Agents don't hold the secrets key (tenancy.md §13). Staging talks only to the node's local `hyperstor-vhost`, which the node's own certificate lets in. |
 | S23 | **A VM's disks preempt their leases only when it was placed again after its node was forgotten as fenced** (`takeover_disks`, set by `place` for a `Lost` VM, cleared at the next launch). Every other attach waits for the holder. | hyperstor's preemption cuts the holder off (hyperstor D119): safe only when the operator has said the old node is fenced (S10, D8). A normal restart elsewhere finds the volume detached by the stop. |
 | S24 | **Image volumes are named for their datastore, and the leader removes those whose image is gone.** `glidex image <image> on <datastore id>`; each probe round, the leader deletes this datastore's image volumes whose image no longer exists; one a clone still needs is left for the next round. | A deleted disk's volume goes to hyperstor's trash, where its clone still needs the image's snapshot, so deleting the image's volume with the image fails until the trash is purged. Naming them by datastore keeps two glidex clusters sharing a hyperstor pool from removing each other's. |
+| S25 | **A volume a failed creation left is discarded for good, not kept in hyperstor's trash** (open for review): the driver deletes it and purges it from the trash, and before making a volume it frees the id (a leftover under it deleted, a trashed one purged and waited for, up to 2 min). The image volume is converted before it is made, so it exists only while being written, holding its lease. Retrying an image volume is bounded. A disk a person deletes still goes to the trash. | hyperstor keeps a deleted volume's id taken until it is purged, and glidex's volume ids are derived from the disk's or image's: a failed fill, deleted, made every retry fail with "exists" (on prism2 the image loop retried without pause, about 100 refused calls a second into hyperstor's audit log). A failed creation's volume never held a disk's data, so the trash protects nothing there. |
 
 ## 3. What changes, at a glance
 
@@ -1105,6 +1106,14 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
   server as worker); `hyperstor-vhost` as a service with `--allow-uid`
   and `--group` for glidex under the systemd runner; renewal (the
   certificates last longer than the tests).
+- **Failed creations (S25), found installing on prism2** against a
+  three-member map service: `hyperstorctl --map` took one address
+  (hyperstor I176), so the fill failed; the deleted image volume then
+  sat in hyperstor's trash, and the image loop retried "exists" without
+  pause. Now leftovers are discarded for good and ids freed first; the
+  boot tests plant a trashed volume under the image's volume id (with an
+  admin certificate) and the disk is still made. Without freeing it, the
+  disk never gets ready (checked).
 
 ## 12. CSI
 

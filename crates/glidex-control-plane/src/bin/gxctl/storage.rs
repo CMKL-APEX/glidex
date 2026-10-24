@@ -947,7 +947,10 @@ fn print_datastore(d: &Datastore) {
         }
     );
     println!("  id: {}", d.id);
-    if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED) {
+    // A shared filesystem; a hyperstor datastore says what it is below.
+    if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED)
+        && d.driver.as_known() != Some(DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR)
+    {
         println!("  shared: the same files from every node (one mount)");
     }
     if d.driver.as_known() == Some(DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR) {

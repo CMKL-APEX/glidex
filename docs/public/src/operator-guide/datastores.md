@@ -646,7 +646,10 @@ space are shown as 0.
 ### Deleting
 
 A deleted disk's volume goes to hyperstor's trash, where hyperstor's
-operators can bring it back until its grace period ends. A clone there
+operators can bring it back until its grace period ends. A volume left
+by a disk or image that failed to be made holds no one's data: Glidex
+deletes it for good (purging it from the trash), so that a retry can
+make it again. A clone there
 still needs its image's volume, so when the image is deleted that
 volume stays until the clone is purged; the leader then removes it,
 within a minute. Deleting the datastore removes Glidex's sealed key; it
