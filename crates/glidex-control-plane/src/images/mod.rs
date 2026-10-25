@@ -1705,8 +1705,9 @@ impl ImageManager {
         }
     }
 
-    /// `with_detail` runs `qemu-img info` and reads the partition table;
-    /// blocking, so only for single-disk responses.
+    /// `with_detail` runs `qemu-img info` (for a hyperstor volume, asks the
+    /// driver its size) and reads the partition table; blocking, so only
+    /// for single-disk responses.
     pub fn disk_response(&self, d: &Disk, with_detail: bool) -> DiskResponse {
         let path = self.disk_path(d);
         let busy_op = self.busy_op(&d.id);
@@ -1721,7 +1722,30 @@ impl ImageManager {
             DiskPhase::Missing => "missing",
             _ => "ready",
         };
-        let (info, table) = if with_detail && status == "ready" && path.exists() {
+        // A hyperstor volume's path names it for the disk tools; it is no
+        // file to look for, nor one `qemu-img info` opens (storage.md §11.2).
+        let volume = crate::datastore::hyperstor::parse_tool_path(&path).is_some();
+        let (info, table) = if !with_detail || status != "ready" {
+            (None, None)
+        } else if volume {
+            let driver = self.driver(d).ok();
+            let size = driver.as_ref().and_then(|dr| dr.volume_size(d));
+            (
+                size.map(|virtual_size| qemu_img::ImgInfo {
+                    format: d.format.as_str().to_string(),
+                    virtual_size,
+                    actual_size: driver
+                        .as_ref()
+                        .and_then(|dr| dr.stored_bytes(d))
+                        .unwrap_or(0),
+                    backing_filename: None,
+                    backing_format: None,
+                }),
+                partition::read_table(&path, d.format, size.unwrap_or(d.size_bytes))
+                    .ok()
+                    .flatten(),
+            )
+        } else if path.exists() {
             (
                 qemu_img::info(&path, Some(d.format)).ok(),
                 partition::read_table(&path, d.format, d.size_bytes)
@@ -2000,6 +2024,103 @@ mod tests {
         for bad in ["", ".hidden", "a/b", "../x", "a b", &"x".repeat(65)] {
             assert!(validate_name("disk", bad).is_err(), "{:?}", bad);
         }
+    }
+
+    /// A hyperstor disk's detail reads its partition table through
+    /// hyperstorctl: its path names a volume, not a file (issue #187).
+    #[test]
+    fn a_hyperstor_disk_shows_its_partition_table() {
+        use crate::datastore::record::{Datastore, DriverSpec};
+        use std::os::unix::fs::PermissionsExt;
+        let Some(sgdisk) = qemu_img::SGDISK.find() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // The volume's bytes: a GPT with an ESP and a root.
+        let img = dir.path().join("volume.raw");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let st = std::process::Command::new(sgdisk)
+            .args([
+                "-n",
+                "1:2048:+8M",
+                "-t",
+                "1:ef00",
+                "-n",
+                "2:0:0",
+                "-t",
+                "2:8300",
+            ])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{}",
+            String::from_utf8_lossy(&st.stderr)
+        );
+        // hyperstorctl, standing in: `read-volume` copies the range asked.
+        let log = dir.path().join("args");
+        let ctl = dir.path().join("hyperstorctl");
+        std::fs::write(
+            &ctl,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {log}\n[ \"$3\" = read-volume ] || exit 1\ndd if={img} of=\"${{11}}\" bs=512 skip=$(($7 / 512)) count=$(($9 / 512)) 2>/dev/null\n",
+                log = log.display(),
+                img = img.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: test-only; no other test reads it.
+        unsafe { std::env::set_var("GLIDEX_HYPERSTORCTL", &ctl) };
+
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
+        let ds = Datastore {
+            id: "hs".into(),
+            name: "hs".into(),
+            driver: DriverSpec::Hyperstor {
+                api: vec!["127.0.0.1:1".into()],
+                map: "m:1".into(),
+                pool: 1,
+                identity: None,
+                node_paths: Default::default(),
+            },
+            nodes: Vec::new(),
+            default_for_disks: false,
+            overcommit: true,
+            created_at: 1,
+        };
+        db.write(
+            crate::store::Origin::Api,
+            |tx| -> Result<(), crate::store::StoreError> {
+                tx.open_table(crate::store::TableId::Datastores.definition())?
+                    .insert("hs", serde_json::to_vec(&ds).unwrap().as_slice())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path())).unwrap();
+        let d: Disk = serde_json::from_value(serde_json::json!({
+            "id": "6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab", "name": "root", "project": "p",
+            "format": "raw", "size_bytes": 64u64 << 20, "origin": { "kind": "blank" },
+            "created_at": 1, "phase": "ready", "datastore": "hs",
+        }))
+        .unwrap();
+
+        let r = mgr.disk_response(&d, true);
+        assert!(r.path.starts_with("hyperstor://m:1/"), "{}", r.path);
+        let table = r.partition_table.expect("the volume's partition table");
+        assert_eq!(table.partitions.len(), 2, "{table:?}");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            calls.contains("read-volume --id 6f1c0d2e9a4b4c1d8e2f0123456789ab --offset 0"),
+            "{calls}"
+        );
+        // The list leaves the detail out.
+        assert!(mgr.disk_response(&d, false).partition_table.is_none());
     }
 
     #[test]
