@@ -16,6 +16,7 @@ enum Hypervisor {
   HYPERVISOR_UNSPECIFIED = 0;
   HYPERVISOR_CLOUD_HYPERVISOR = 1;
   HYPERVISOR_QEMU = 2;
+  HYPERVISOR_PYLON = 3;
 }
 
 enum ConditionStatus {

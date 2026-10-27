@@ -1256,7 +1256,8 @@ impl VmManager {
             }
             let pins = held[..n].to_vec();
             match vm.hypervisor() {
-                crate::hypervisor::HypervisorType::CloudHypervisor => {
+                crate::hypervisor::HypervisorType::CloudHypervisor
+                | crate::hypervisor::HypervisorType::Pylon => {
                     config.vcpu_pins = pins;
                     (held, Vec::new())
                 }

@@ -519,7 +519,11 @@ impl VmManager {
             .unwrap_or_else(|| PathBuf::from("."));
         let changed = store.database().bell();
         let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
-        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+        for ty in [
+            HypervisorType::CloudHypervisor,
+            HypervisorType::Qemu,
+            HypervisorType::Pylon,
+        ] {
             if !crate::hypervisor::driver(ty).is_available() {
                 tracing::warn!(
                     "Hypervisor {} binary {:?} not found — VMs configured for it will fail to start",
@@ -2495,7 +2499,10 @@ impl VmManager {
                 fw.name
             )));
         }
-        if fw.hypervisor != Some(hypervisor) {
+        let matches_hv = fw.hypervisor == Some(hypervisor)
+            || (hypervisor == crate::hypervisor::HypervisorType::Pylon
+                && fw.hypervisor == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
+        if !matches_hv {
             return Err(invalid(format!(
                 "firmware {} is built for {}, not {}",
                 fw.name,

@@ -16,6 +16,7 @@ type KernelSource = "image" | "path";
 const FIRMWARE_KEY: Record<HypervisorType, string> = {
   cloudhypervisor: "cloudhv-edk2",
   qemu: "ovmf",
+  pylon: "cloudhv-edk2",
 };
 /** Where the last credential a user gave a VM in a project is kept (this browser). */
 const lastCredentialKey = (user: string | undefined, project: string | null | undefined) =>

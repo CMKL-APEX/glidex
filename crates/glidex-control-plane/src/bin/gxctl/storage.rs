@@ -276,11 +276,12 @@ pub(crate) async fn list_images(client: &ApiClient) -> Result<Vec<Image>, String
         .map_err(rpc_err)
 }
 
-/// `cloudhypervisor` / `qemu`, as gxctl names hypervisors.
+/// `cloudhypervisor` / `qemu` / `pylon`, as gxctl names hypervisors.
 pub(crate) fn hypervisor_name(h: &EnumValue<Hypervisor>) -> &'static str {
     match h.as_known() {
         Some(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR) => "cloudhypervisor",
         Some(Hypervisor::HYPERVISOR_QEMU) => "qemu",
+        Some(Hypervisor::HYPERVISOR_PYLON) => "pylon",
         _ => "",
     }
 }
@@ -291,6 +292,7 @@ fn parse_hypervisor(s: &str) -> Option<Hypervisor> {
             Some(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR)
         }
         "qemu" => Some(Hypervisor::HYPERVISOR_QEMU),
+        "pylon" => Some(Hypervisor::HYPERVISOR_PYLON),
         _ => None,
     }
 }
@@ -332,7 +334,7 @@ fn image_status(img: &Image) -> String {
 
 /// `image …`
 pub async fn image(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--no-kernel] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull <url> --kernel [--sha256 H] [--initrd-url U [--initrd-sha256 H]] [--cmdline S] | pull --kernel-path P [--initrd-path P] [--cmdline S] | pull --firmware <key> [--name N] | extract-kernel <image> [--name N] | retry <name|id> | rm <name|id>";
+    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--no-kernel] [--firmware-for <cloudhypervisor|qemu|pylon> [--vars-url U] [--vars-sha256 H]] | pull <url> --kernel [--sha256 H] [--initrd-url U [--initrd-sha256 H]] [--cmdline S] | pull --kernel-path P [--initrd-path P] [--cmdline S] | pull --firmware <key> [--name N] | extract-kernel <image> [--name N] | retry <name|id> | rm <name|id>";
     let t = match rpc(client).await {
         Ok(t) => t,
         Err(e) => return err(e),
@@ -479,7 +481,7 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
             if let Some(h) = flag_value(args, "--firmware-for") {
                 let Some(h) = parse_hypervisor(h) else {
                     return err(format!(
-                        "unknown hypervisor '{}' (cloudhypervisor or qemu)",
+                        "unknown hypervisor '{}' (cloudhypervisor, qemu or pylon)",
                         h
                     ));
                 };

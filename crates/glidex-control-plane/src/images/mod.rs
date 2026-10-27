@@ -1888,8 +1888,11 @@ impl ImageManager {
             .unwrap()
             .values()
             .filter(|i| {
+                let matches_hv = i.hypervisor == Some(hypervisor)
+                    || (hypervisor == crate::hypervisor::HypervisorType::Pylon
+                        && i.hypervisor == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
                 i.is_firmware()
-                    && i.hypervisor == Some(hypervisor)
+                    && matches_hv
                     && i.usable()
                     && arch.is_none_or(|a| i.arch == a)
             })

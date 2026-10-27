@@ -650,6 +650,7 @@ impl SelfProbe {
         let hypervisors = [
             crate::hypervisor::HypervisorType::CloudHypervisor,
             crate::hypervisor::HypervisorType::Qemu,
+            crate::hypervisor::HypervisorType::Pylon,
         ]
         .into_iter()
         .filter(|t| crate::hypervisor::driver(*t).is_available())

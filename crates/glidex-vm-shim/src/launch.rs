@@ -231,7 +231,9 @@ fn default_binaries() -> Vec<PathBuf> {
     let qemu = format!("qemu-system-{}", std::env::consts::ARCH);
     ["/usr/local/bin", "/usr/bin"]
         .iter()
-        .flat_map(|dir| ["cloud-hypervisor", qemu.as_str()].map(|name| Path::new(dir).join(name)))
+        .flat_map(|dir| {
+            ["cloud-hypervisor", "pylon", qemu.as_str()].map(|name| Path::new(dir).join(name))
+        })
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect()
 }

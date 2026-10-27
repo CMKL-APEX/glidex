@@ -35,6 +35,7 @@ pub fn hypervisor_pb(h: crate::hypervisor::HypervisorType) -> pb::Hypervisor {
     match h {
         HypervisorType::CloudHypervisor => pb::Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR,
         HypervisorType::Qemu => pb::Hypervisor::HYPERVISOR_QEMU,
+        HypervisorType::Pylon => pb::Hypervisor::HYPERVISOR_PYLON,
     }
 }
 
@@ -43,6 +44,7 @@ pub fn hypervisor_of(h: pb::Hypervisor) -> Option<crate::hypervisor::HypervisorT
     match h {
         pb::Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR => Some(HypervisorType::CloudHypervisor),
         pb::Hypervisor::HYPERVISOR_QEMU => Some(HypervisorType::Qemu),
+        pb::Hypervisor::HYPERVISOR_PYLON => Some(HypervisorType::Pylon),
         pb::Hypervisor::HYPERVISOR_UNSPECIFIED => None,
     }
 }

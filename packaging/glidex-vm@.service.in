@@ -50,7 +50,7 @@ ProtectHome=yes
 # The service home (disks, images, firmware and its variable stores), this
 # VM's runtime directory (sockets, console log), vhost-user sockets in
 # glidex-netd's directory, and registered datastores (spec/storage.md S11).
-ReadWritePaths=@HOME@ /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex
+ReadWritePaths=@HOME@ /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv/glidex
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/vfio/vfio rw

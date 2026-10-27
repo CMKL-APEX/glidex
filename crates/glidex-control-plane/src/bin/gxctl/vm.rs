@@ -734,7 +734,7 @@ pub async fn create(client: &ApiClient) {
     .parse()
     .unwrap_or(mem_default);
 
-    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
+    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor): ")
         .to_lowercase()
         .as_str()
     {
@@ -742,6 +742,7 @@ pub async fn create(client: &ApiClient) {
             Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
         }
         "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
+        "pylon" | "p" => Hypervisor::HYPERVISOR_PYLON,
         other => {
             println!(
                 "{} Unknown hypervisor '{}', using cloudhypervisor",
@@ -757,6 +758,7 @@ pub async fn create(client: &ApiClient) {
     let (firmware, firmware_path) = {
         let ty = match hypervisor {
             Hypervisor::HYPERVISOR_QEMU => "qemu",
+            Hypervisor::HYPERVISOR_PYLON => "pylon",
             _ => "cloudhypervisor",
         };
         let ready: Vec<String> = storage::list_images(client)
@@ -765,8 +767,10 @@ pub async fn create(client: &ApiClient) {
             .into_iter()
             .rev() // newest first
             .filter(|i| {
+                let matches_hv = storage::hypervisor_name(&i.hypervisor) == ty
+                    || (ty == "pylon" && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
                 storage::is_firmware(i)
-                    && storage::hypervisor_name(&i.hypervisor) == ty
+                    && matches_hv
                     && storage::is_ready(i)
                     && i.deleting != Some(true)
             })
