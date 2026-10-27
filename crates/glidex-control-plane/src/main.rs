@@ -293,11 +293,7 @@ async fn main() {
             "cloudhv-edk2",
         ),
         (hypervisor::HypervisorType::Qemu, "QEMU", "ovmf"),
-        (
-            hypervisor::HypervisorType::Pylon,
-            "Pylon",
-            "cloudhv-edk2",
-        ),
+        (hypervisor::HypervisorType::Pylon, "Pylon", "cloudhv-edk2"),
     ] {
         print_status(&format!("Checking UEFI firmware ({})", label));
         match vm_manager.default_firmware_name(ty) {

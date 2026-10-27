@@ -1890,11 +1890,9 @@ impl ImageManager {
             .filter(|i| {
                 let matches_hv = i.hypervisor == Some(hypervisor)
                     || (hypervisor == crate::hypervisor::HypervisorType::Pylon
-                        && i.hypervisor == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
-                i.is_firmware()
-                    && matches_hv
-                    && i.usable()
-                    && arch.is_none_or(|a| i.arch == a)
+                        && i.hypervisor
+                            == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
+                i.is_firmware() && matches_hv && i.usable() && arch.is_none_or(|a| i.arch == a)
             })
             .max_by_key(|i| i.created_at)
             .cloned()

@@ -1128,22 +1128,29 @@ mod tests {
         let mut host = full_install();
         host.paths.insert(PathBuf::from("/usr/local/bin/pylon"));
         host.paths.insert(PathBuf::from("/usr/local/bin/pylond"));
-        host.paths.insert(PathBuf::from(
-            "/etc/systemd/system/glidex-pylond.service",
-        ));
+        host.paths
+            .insert(PathBuf::from("/etc/systemd/system/glidex-pylond.service"));
         host.units.insert("glidex-pylond.service".into());
         host.caps.insert(PathBuf::from("/usr/local/bin/pylon"));
 
         // Default uninstall: drops capabilities, disables unit, keeps binaries
         let l_default = lines(&plan(&host, &Options::default(), Path::new("/home/alice")));
-        assert!(l_default.iter().any(|s| s.contains("systemctl disable --now")
-            && s.contains("glidex-pylond.service")));
-        assert!(l_default
-            .iter()
-            .any(|s| s == "run: setcap -r /usr/local/bin/pylon"));
-        assert!(!l_default
-            .iter()
-            .any(|s| s == "remove: /usr/local/bin/pylon"));
+        assert!(
+            l_default
+                .iter()
+                .any(|s| s.contains("systemctl disable --now")
+                    && s.contains("glidex-pylond.service"))
+        );
+        assert!(
+            l_default
+                .iter()
+                .any(|s| s == "run: setcap -r /usr/local/bin/pylon")
+        );
+        assert!(
+            !l_default
+                .iter()
+                .any(|s| s == "remove: /usr/local/bin/pylon")
+        );
 
         // --remove-pylon: removes binaries
         let opts = Options {
@@ -1152,12 +1159,16 @@ mod tests {
         };
         let l_remove = lines(&plan(&host, &opts, Path::new("/home/alice")));
         assert!(l_remove.iter().any(|s| s == "remove: /usr/local/bin/pylon"));
-        assert!(l_remove
-            .iter()
-            .any(|s| s == "remove: /usr/local/bin/pylond"));
-        assert!(l_remove
-            .iter()
-            .any(|s| s == "remove: /etc/systemd/system/glidex-pylond.service"));
+        assert!(
+            l_remove
+                .iter()
+                .any(|s| s == "remove: /usr/local/bin/pylond")
+        );
+        assert!(
+            l_remove
+                .iter()
+                .any(|s| s == "remove: /etc/systemd/system/glidex-pylond.service")
+        );
     }
 
     #[test]

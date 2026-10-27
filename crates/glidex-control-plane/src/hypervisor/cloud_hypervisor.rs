@@ -112,7 +112,11 @@ fn net_args(config: &VmConfig) -> Vec<String> {
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
     a.push("--cpus".into());
-    let mut cpus = format!("boot={},max={}", config.vcpu_count, config.effective_max_vcpus());
+    let mut cpus = format!(
+        "boot={},max={}",
+        config.vcpu_count,
+        config.effective_max_vcpus()
+    );
     // Dedicated vCPUs (spec/host-topology.md §7.2): vCPU i on its host CPU.
     if !config.vcpu_pins.is_empty() {
         let pins: Vec<String> = config

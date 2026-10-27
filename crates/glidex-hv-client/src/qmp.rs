@@ -172,7 +172,9 @@ impl QmpClient {
         let peripherals = self.execute(&serde_json::json!({
             "execute": "qom-list", "arguments": { "path": "/machine/peripheral" }
         }))?;
-        let cpus = self.execute(&serde_json::json!({ "execute": "query-cpus-fast" })).ok();
+        let cpus = self
+            .execute(&serde_json::json!({ "execute": "query-cpus-fast" }))
+            .ok();
         let vcpu_count = cpus
             .as_ref()
             .and_then(|c| c.as_array())

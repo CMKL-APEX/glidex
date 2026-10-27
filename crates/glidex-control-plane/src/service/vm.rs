@@ -1076,14 +1076,14 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                         c.vcpu_count = Some(change.vcpu_count.min(u32::from(u8::MAX)) as u8)
                     }
                     "min_vcpus" => {
-                        c.min_vcpus = Some(change.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                        c.min_vcpus =
+                            Some(change.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
                     }
                     "max_vcpus" => {
-                        c.max_vcpus = Some(change.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                        c.max_vcpus =
+                            Some(change.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
                     }
-                    "cpu_weight" => {
-                        c.cpu_weight = Some(change.cpu_weight)
-                    }
+                    "cpu_weight" => c.cpu_weight = Some(change.cpu_weight),
                     "mem_size_mib" => c.mem_size_mib = Some(change.mem_size_mib),
                     "kernel_args" => c.kernel_args = Some(change.kernel_args.clone()),
                     // Absent: the VM loses its credential.

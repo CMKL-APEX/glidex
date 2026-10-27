@@ -748,24 +748,25 @@ pub async fn create(client: &ApiClient) {
     .parse()
     .unwrap_or(mem_default);
 
-    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor): ")
-        .to_lowercase()
-        .as_str()
-    {
-        "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
-            Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-        }
-        "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
-        "pylon" | "p" => Hypervisor::HYPERVISOR_PYLON,
-        other => {
-            println!(
-                "{} Unknown hypervisor '{}', using cloudhypervisor",
-                "Warning:".yellow(),
-                other
-            );
-            Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-        }
-    };
+    let hypervisor =
+        match prompt("Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor): ")
+            .to_lowercase()
+            .as_str()
+        {
+            "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
+                Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
+            }
+            "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
+            "pylon" | "p" => Hypervisor::HYPERVISOR_PYLON,
+            other => {
+                println!(
+                    "{} Unknown hypervisor '{}', using cloudhypervisor",
+                    "Warning:".yellow(),
+                    other
+                );
+                Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
+            }
+        };
 
     // A disk image boots through UEFI firmware: a firmware image built for
     // the hypervisor (spec images.md §7), or a host path (admins only).
@@ -782,7 +783,8 @@ pub async fn create(client: &ApiClient) {
             .rev() // newest first
             .filter(|i| {
                 let matches_hv = storage::hypervisor_name(&i.hypervisor) == ty
-                    || (ty == "pylon" && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
+                    || (ty == "pylon"
+                        && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
                 storage::is_firmware(i)
                     && matches_hv
                     && storage::is_ready(i)

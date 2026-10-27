@@ -2243,8 +2243,7 @@ fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
         } else {
             println!("{} {}", "Up to date:".green(), dst);
         }
-        let has_cap = run_capture("getcap", &[&dst])
-            .is_ok_and(|o| o.contains("cap_net_admin"));
+        let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
         if !has_cap {
             sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
             println!("{} cap_net_admin on {}", "Granted:".green(), dst);
@@ -3646,8 +3645,8 @@ fn install_services(
     let pylond_unit = root.join("packaging/glidex-pylond.service");
     let pylond_installed =
         pylond_unit.exists() && Path::new(&format!("{}/pylond", BIN_DIR)).exists();
-    let pylond_unit_changed = pylond_installed
-        && install_if_changed(&pylond_unit, PYLOND_UNIT, "0644")?;
+    let pylond_unit_changed =
+        pylond_installed && install_if_changed(&pylond_unit, PYLOND_UNIT, "0644")?;
     let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
         || stord_unit_changed
@@ -3707,11 +3706,7 @@ fn install_services(
         if changed.pylond || pylond_unit_changed || !unit_active(pylond) {
             sudo(&argv(&["systemctl", "restart", pylond]))?;
         }
-        println!(
-            "{} {} (/run/pylon/pylond.sock)",
-            "Running:".green(),
-            pylond
-        );
+        println!("{} {} (/run/pylon/pylond.sock)", "Running:".green(), pylond);
     }
 
     // Control plane: VMs run in their own units and survive a restart. A
@@ -4787,8 +4782,9 @@ mod tests {
 
     #[test]
     fn pylond_unit_is_sandboxed_with_glidex_group() {
-        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-pylond.service"))
-            .unwrap();
+        let unit =
+            std::fs::read_to_string(workspace_root().join("packaging/glidex-pylond.service"))
+                .unwrap();
         let s = settings(&unit);
         for line in [
             "Type=simple",
