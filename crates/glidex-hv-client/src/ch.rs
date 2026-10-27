@@ -333,4 +333,25 @@ mod tests {
             Err(HvError::Connect(_))
         ));
     }
+
+    #[test]
+    fn resize_vcpus_sends_desired_vcpus() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("api.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .resize_vcpus(8)
+            .unwrap();
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("PUT /api/v1/vm.resize HTTP/1.1\r\n"),
+            "{req}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "desired_vcpus": 8 }), "{req}");
+    }
 }

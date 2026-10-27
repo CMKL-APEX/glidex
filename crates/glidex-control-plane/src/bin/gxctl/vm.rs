@@ -768,6 +768,37 @@ pub async fn create(client: &ApiClient) {
             }
         };
 
+    let (min_vcpus, max_vcpus, cpu_weight, vcpu_count) = {
+        let is_pylon = hypervisor == Hypervisor::HYPERVISOR_PYLON;
+        let default_ans = if is_pylon { "y" } else { "n" };
+        let elastic_prompt = prompt(&format!(
+            "Configure elastic CPU scaling (min/max vCPUs, weight)? [y/N] [{}]: ",
+            default_ans
+        ));
+        let want_elastic = if elastic_prompt.is_empty() {
+            is_pylon
+        } else {
+            elastic_prompt.to_lowercase().starts_with('y')
+        };
+        if want_elastic {
+            let min_default = 1u32;
+            let min: u32 = prompt(&format!("Min vCPUs [{}]: ", min_default))
+                .parse()
+                .unwrap_or(min_default);
+            let max_default = (vcpu_count as u32).max(4);
+            let max: u32 = prompt(&format!("Max vCPUs [{}]: ", max_default))
+                .parse()
+                .unwrap_or(max_default);
+            let weight: u32 = prompt("CPU weight (1-10000) [100]: ")
+                .parse()
+                .unwrap_or(100);
+            let vcpus = if is_pylon { max as u8 } else { vcpu_count };
+            (Some(min), Some(max), Some(weight), vcpus)
+        } else {
+            (None, None, None, vcpu_count)
+        }
+    };
+
     // A disk image boots through UEFI firmware: a firmware image built for
     // the hypervisor (spec images.md §7), or a host path (admins only).
     let (firmware, firmware_path) = {
@@ -1098,6 +1129,9 @@ pub async fn create(client: &ApiClient) {
         name,
         project: client.project(),
         vcpu_count: vcpu_count.into(),
+        min_vcpus,
+        max_vcpus,
+        cpu_weight,
         mem_size_mib,
         kernel_image_path,
         initrd_path,
