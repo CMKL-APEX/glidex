@@ -99,9 +99,22 @@ fn crash_delay(restarts: u32) -> u64 {
 /// The spec fields that need a new launch to take effect (§7.3).
 fn launch_relevant(spec: &VmSpec) -> serde_json::Value {
     let c = &spec.config;
+    let is_elastic = c.is_elastic();
+    let vcpu_count_repr = if is_elastic {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(c.vcpu_count)
+    };
     serde_json::json!({
-        "vcpu_count": c.vcpu_count, "mem_size_mib": c.mem_size_mib, "kernel_args": c.kernel_args,
-        "credential": c.credential, "hugepages": c.hugepages, "data_disks": c.data_disks, "networks": c.networks,
+        "vcpu_count": vcpu_count_repr,
+        "min_vcpus": c.min_vcpus,
+        "max_vcpus": c.max_vcpus,
+        "mem_size_mib": c.mem_size_mib,
+        "kernel_args": c.kernel_args,
+        "credential": c.credential,
+        "hugepages": c.hugepages,
+        "data_disks": c.data_disks,
+        "networks": c.networks,
     })
 }
 
@@ -571,6 +584,7 @@ impl VmManager {
             growpart_disk: None,
             growpart_seq: None,
             cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
+            launched_max_vcpus: Some(c.effective_max_vcpus()),
             device_errors: device_errors_now(&c.vfio_devices),
         }
     }
@@ -1256,7 +1270,8 @@ impl VmManager {
             }
             let pins = held[..n].to_vec();
             match vm.hypervisor() {
-                crate::hypervisor::HypervisorType::CloudHypervisor => {
+                crate::hypervisor::HypervisorType::CloudHypervisor
+                | crate::hypervisor::HypervisorType::Pylon => {
                     config.vcpu_pins = pins;
                     (held, Vec::new())
                 }
@@ -1303,6 +1318,7 @@ impl VmManager {
             meter_poll_secs: settings.meter_poll_secs,
             cpu_affinity: cpu_affinity.clone(),
             vcpu_pins: launch_pins,
+            cpu_weight: config.effective_cpu_weight(),
             job: false,
         };
         launch
@@ -1349,6 +1365,7 @@ impl VmManager {
             growpart_disk,
             growpart_seq,
             cpu_affinity,
+            launched_max_vcpus: Some(config.effective_max_vcpus()),
             device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
@@ -1712,6 +1729,50 @@ impl VmManager {
         held.retain(|p| wanted.contains(p) || have.contains(&vfio_device_id(p)));
         if let Some(inst) = st.instance.as_mut() {
             inst.vfio_devices = held;
+        }
+
+        // 7b. vCPU resize / live elasticity drift (spec/pylon.md §4.3)
+        if let Some(observed_vcpus) = observed.vcpu_count {
+            let desired_vcpus = vm.spec.config.vcpu_count;
+            let launched_max = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.launched_max_vcpus)
+                .unwrap_or_else(|| vm.spec.config.effective_max_vcpus());
+            let floor = if vm.hypervisor() == HypervisorType::Pylon {
+                0
+            } else {
+                1
+            };
+            if observed_vcpus != desired_vcpus && (floor..=launched_max).contains(&desired_vcpus) {
+                if guest != GuestState::Running {
+                    set_cond(
+                        &mut st.conditions,
+                        "VcpuResizePending",
+                        Tristate::True,
+                        "GuestPaused",
+                        "vCPU resize applies once the guest runs",
+                    );
+                } else {
+                    let api = paths.api_socket.clone();
+                    match blocking(move || d.resize_vcpus(&api, desired_vcpus)).await? {
+                        Ok(()) => {
+                            clear_cond(&mut st.conditions, "VcpuResizePending");
+                        }
+                        Err(e) => {
+                            set_cond(
+                                &mut st.conditions,
+                                "VcpuResizePending",
+                                Tristate::True,
+                                "ResizeFailed",
+                                e.to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                clear_cond(&mut st.conditions, "VcpuResizePending");
+            }
         }
 
         st.phase = if guest == GuestState::Paused {

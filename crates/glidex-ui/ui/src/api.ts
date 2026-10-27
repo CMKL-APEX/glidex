@@ -1207,6 +1207,9 @@ export interface GpuRequest {
 export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   hypervisor?: ProtoHypervisor;
   node?: string;

@@ -441,7 +441,8 @@ impl ImageManager {
                 if firmware_url {
                     hypervisor = Some(req.hypervisor.ok_or_else(|| {
                         ImageError::InvalidImage(
-                            "a firmware download needs hypervisor (cloudhypervisor or qemu)".into(),
+                            "a firmware download needs hypervisor (cloudhypervisor, qemu or pylon)"
+                                .into(),
                         )
                     })?);
                 }

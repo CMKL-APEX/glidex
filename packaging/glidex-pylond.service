@@ -1,0 +1,20 @@
+[Unit]
+Description=glidex Pylon microsecond core arbiter daemon
+Documentation=https://github.com/CMKL-APEX/pylon
+Before=glidex-control-plane.service
+
+[Service]
+Type=simple
+User=root
+Group=glidex
+UMask=0007
+RuntimeDirectory=pylon
+RuntimeDirectoryMode=0750
+Environment="PYLON_CORES=2-7"
+EnvironmentFile=-/etc/default/glidex-pylond
+ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -96,6 +96,15 @@ pub const MAX_STOP_GRACE_SECS: u32 = 300;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VmConfig {
     pub vcpu_count: u8,
+    /// Minimum active vCPUs (`0..=vcpu_count` on Pylon; `1..=vcpu_count` on CH/QEMU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_vcpus: Option<u8>,
+    /// Maximum active vCPUs (`vcpu_count..=64` on Pylon; `vcpu_count..=255` on CH/QEMU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_vcpus: Option<u8>,
+    /// Relative CPU scheduling weight (`1..=10000`, default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_weight: Option<u32>,
     pub mem_size_mib: u32,
     #[serde(default)]
     pub kernel_image_path: String,
@@ -219,6 +228,26 @@ pub struct VmConfig {
 }
 
 impl VmConfig {
+    /// Minimum active vCPUs, defaulting to `vcpu_count`.
+    pub fn effective_min_vcpus(&self) -> u8 {
+        self.min_vcpus.unwrap_or(self.vcpu_count)
+    }
+
+    /// Maximum active vCPUs, defaulting to `vcpu_count`.
+    pub fn effective_max_vcpus(&self) -> u8 {
+        self.max_vcpus.unwrap_or(self.vcpu_count)
+    }
+
+    /// Relative CPU weight for cgroup / pylond, defaulting to 100.
+    pub fn effective_cpu_weight(&self) -> u32 {
+        self.cpu_weight.unwrap_or(100)
+    }
+
+    /// True if the VM is configured to scale elastically.
+    pub fn is_elastic(&self) -> bool {
+        self.effective_min_vcpus() < self.effective_max_vcpus()
+    }
+
     /// Whether the VM controller generates a cloud-init seed for it: never
     /// with a custom `cloud_init_path`; else as recorded at create, or,
     /// for records from before that, on firmware boot.
@@ -554,6 +583,9 @@ pub struct InstanceRef {
     /// (spec/host-topology.md §7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_affinity: Vec<u32>,
+    /// Maximum active vCPUs configured at launch (ACPI slots or Pylon max cores).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_max_vcpus: Option<u8>,
     /// Uncorrectable AER errors each of its VFIO devices had at launch
     /// (address → count, spec/host-topology.md §5.4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]

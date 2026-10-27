@@ -12,6 +12,7 @@
 - [Data model](data-model.md)
 - [Reconciliation](reconciliation.md)
 - [Hypervisors](hypervisors.md)
+- [Pylon and CPU elasticity](pylon.md)
 - [Direct kernel boot](kernel-boot.md)
 - [Images and disks](images.md)
 - [Datastores](storage.md)

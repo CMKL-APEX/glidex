@@ -824,6 +824,7 @@ message NodeFeatures {
   map<string, BridgeAddr> bridge_addrs = 9 [json_name = "bridge_addrs"];
   optional string arch = 10;
   repeated SpareFile spare_image_files = 11 [json_name = "spare_image_files"];
+  optional bool pylond = 12;
 }
 
 message NodeStatus {

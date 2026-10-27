@@ -350,7 +350,21 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
         );
     }
     println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
-    println!("  vCPUs:      {}", vm.vcpu_count);
+    if let (Some(min), Some(max)) = (vm.min_vcpus, vm.max_vcpus) {
+        if min < max {
+            println!(
+                "  vCPUs:      {} (elastic: {}–{}, weight: {})",
+                vm.vcpu_count,
+                min,
+                max,
+                vm.cpu_weight.unwrap_or(100)
+            );
+        } else {
+            println!("  vCPUs:      {}", vm.vcpu_count);
+        }
+    } else {
+        println!("  vCPUs:      {}", vm.vcpu_count);
+    }
     println!("  Memory:     {} MiB", vm.mem_size_mib);
     if let Some(sa) = &vm.service_account {
         println!(
@@ -734,29 +748,32 @@ pub async fn create(client: &ApiClient) {
     .parse()
     .unwrap_or(mem_default);
 
-    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
-        .to_lowercase()
-        .as_str()
-    {
-        "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
-            Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-        }
-        "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
-        other => {
-            println!(
-                "{} Unknown hypervisor '{}', using cloudhypervisor",
-                "Warning:".yellow(),
-                other
-            );
-            Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-        }
-    };
+    let hypervisor =
+        match prompt("Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor): ")
+            .to_lowercase()
+            .as_str()
+        {
+            "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
+                Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
+            }
+            "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
+            "pylon" | "p" => Hypervisor::HYPERVISOR_PYLON,
+            other => {
+                println!(
+                    "{} Unknown hypervisor '{}', using cloudhypervisor",
+                    "Warning:".yellow(),
+                    other
+                );
+                Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
+            }
+        };
 
     // A disk image boots through UEFI firmware: a firmware image built for
     // the hypervisor (spec images.md §7), or a host path (admins only).
     let (firmware, firmware_path) = {
         let ty = match hypervisor {
             Hypervisor::HYPERVISOR_QEMU => "qemu",
+            Hypervisor::HYPERVISOR_PYLON => "pylon",
             _ => "cloudhypervisor",
         };
         let ready: Vec<String> = storage::list_images(client)
@@ -765,8 +782,11 @@ pub async fn create(client: &ApiClient) {
             .into_iter()
             .rev() // newest first
             .filter(|i| {
+                let matches_hv = storage::hypervisor_name(&i.hypervisor) == ty
+                    || (ty == "pylon"
+                        && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
                 storage::is_firmware(i)
-                    && storage::hypervisor_name(&i.hypervisor) == ty
+                    && matches_hv
                     && storage::is_ready(i)
                     && i.deleting != Some(true)
             })

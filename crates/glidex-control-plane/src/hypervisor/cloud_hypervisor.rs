@@ -112,7 +112,11 @@ fn net_args(config: &VmConfig) -> Vec<String> {
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
     a.push("--cpus".into());
-    let mut cpus = format!("boot={0},max={0}", config.vcpu_count);
+    let mut cpus = format!(
+        "boot={},max={}",
+        config.vcpu_count,
+        config.effective_max_vcpus()
+    );
     // Dedicated vCPUs (spec/host-topology.md §7.2): vCPU i on its host CPU.
     if !config.vcpu_pins.is_empty() {
         let pins: Vec<String> = config
@@ -333,6 +337,10 @@ impl HypervisorDriver for CloudHypervisorDriver {
             .or_else(|_| ch.remove_device(&super::legacy_vfio_device_id(device_path)))?;
         Ok(())
     }
+
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
+        Ok(ChClient::new(api_socket).resize_vcpus(desired)?)
+    }
 }
 
 #[cfg(test)]
@@ -386,6 +394,19 @@ mod tests {
             (vec!["tty"], vec!["off"])
         );
         assert!(!a.iter().any(|x| x == "--net" || x == "--device"));
+    }
+
+    #[test]
+    fn elastic_cpus_boot_and_max() {
+        let a = args(
+            &config(serde_json::json!({
+                "vcpu_count": 2,
+                "min_vcpus": 1,
+                "max_vcpus": 8,
+            })),
+            "/run/glidex-cp/vms/x/api.sock",
+        );
+        assert_eq!(values(&a, "--cpus"), ["boot=2,max=8"]);
     }
 
     #[test]

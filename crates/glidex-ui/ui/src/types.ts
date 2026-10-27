@@ -56,11 +56,12 @@ export interface ExitRecord {
   launched_at?: string;
 }
 
-export type HypervisorType = "cloudhypervisor" | "qemu";
+export type HypervisorType = "cloudhypervisor" | "qemu" | "pylon";
 
 export const HYPERVISOR_LABELS: Record<HypervisorType, string> = {
   cloudhypervisor: "Cloud Hypervisor",
   qemu: "QEMU",
+  pylon: "Pylon",
 };
 
 /** A VM (glidex.vm.v1.Vm). */
@@ -89,6 +90,9 @@ export interface VmResponse {
   /** That node's name (spec/clustering-ui.md §9). */
   node_name?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   /** Read with `vmHypervisor`. */
   hypervisor?: ProtoHypervisor;
@@ -273,6 +277,9 @@ export interface CreateVmRequest {
   /** Project id or name; default: the caller's default project. */
   project?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   kernel_image_path: string;
   /** Firmware image id/name (spec/images.md §7); default: the newest for the hypervisor. */
@@ -374,16 +381,18 @@ export function archToProto(a: string): Arch {
   return (a.startsWith("ARCH_") ? a : `ARCH_${a.toUpperCase()}`) as Arch;
 }
 
-export type ProtoHypervisor = "HYPERVISOR_CLOUD_HYPERVISOR" | "HYPERVISOR_QEMU";
+export type ProtoHypervisor = "HYPERVISOR_CLOUD_HYPERVISOR" | "HYPERVISOR_QEMU" | "HYPERVISOR_PYLON";
 
 export const HYPERVISOR_FROM_PROTO: Record<ProtoHypervisor, HypervisorType> = {
   HYPERVISOR_CLOUD_HYPERVISOR: "cloudhypervisor",
   HYPERVISOR_QEMU: "qemu",
+  HYPERVISOR_PYLON: "pylon",
 };
 
 export const HYPERVISOR_TO_PROTO: Record<HypervisorType, ProtoHypervisor> = {
   cloudhypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
   qemu: "HYPERVISOR_QEMU",
+  pylon: "HYPERVISOR_PYLON",
 };
 
 /** A storage object's hypervisor in the VM API's form. */
@@ -587,7 +596,11 @@ export interface PullImageResponse {
 /** Ready firmware images for `hypervisor`, newest first (the server's default). */
 export function firmwareFor(images: ImageInfo[], hypervisor: HypervisorType): ImageInfo[] {
   return images
-    .filter((i) => isFirmware(i) && hypervisorOf(i.hypervisor) === hypervisor && imageState(i) === "ready" && !i.deleting)
+    .filter((i) => {
+      const hv = hypervisorOf(i.hypervisor);
+      const matchesHv = hv === hypervisor || (hypervisor === "pylon" && hv === "cloudhypervisor");
+      return isFirmware(i) && matchesHv && imageState(i) === "ready" && !i.deleting;
+    })
     .sort((a, b) => tsSecs(b.created_at) - tsSecs(a.created_at));
 }
 

@@ -219,6 +219,9 @@ pub struct NodeFeatures {
     /// (spec/clustering.md §9.2.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spare_image_files: Vec<crate::images::spare::SpareFile>,
+    /// Whether glidex-pylond daemon is running on this node (spec/pylon.md §8.1).
+    #[serde(default)]
+    pub pylond: bool,
 }
 
 impl NodeFeatures {
@@ -650,14 +653,17 @@ impl SelfProbe {
         let hypervisors = [
             crate::hypervisor::HypervisorType::CloudHypervisor,
             crate::hypervisor::HypervisorType::Qemu,
+            crate::hypervisor::HypervisorType::Pylon,
         ]
         .into_iter()
         .filter(|t| crate::hypervisor::driver(*t).is_available())
         .map(|t| t.to_string())
         .collect();
+        let pylond = std::path::Path::new(crate::hypervisor::pylon::DEFAULT_PYLOND_SOCKET).exists();
         let features = NodeFeatures {
             kvm: std::path::Path::new("/dev/kvm").exists(),
             hypervisors,
+            pylond,
             iommu: std::fs::read_dir("/sys/kernel/iommu_groups")
                 .map(|mut d| d.next().is_some())
                 .unwrap_or(false),

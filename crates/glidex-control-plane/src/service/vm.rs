@@ -187,6 +187,9 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         deleting: vm.deletion_requested_at.is_some().then_some(true),
         node: vm.status.placement.as_ref().map(|p| p.node.clone()),
         vcpu_count: u32::from(config.vcpu_count),
+        min_vcpus: config.min_vcpus.map(u32::from),
+        max_vcpus: config.max_vcpus.map(u32::from),
+        cpu_weight: config.cpu_weight,
         mem_size_mib: config.mem_size_mib,
         hypervisor: hypervisor_pb(config.hypervisor).into(),
         vfio_devices: config.vfio_devices.clone(),
@@ -896,6 +899,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
     let config = VmConfig {
         gpus,
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
+        min_vcpus: req.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8),
+        max_vcpus: req.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8),
+        cpu_weight: req.cpu_weight,
         mem_size_mib: req.mem_size_mib,
         kernel_image_path: m::expand_tilde(req.kernel_image_path),
         initrd_path: req.initrd_path.map(m::expand_tilde),
@@ -1029,6 +1035,9 @@ pub const UPDATABLE: &[&str] = &[
     "on_host_boot",
     "stop_grace_secs",
     "vcpu_count",
+    "min_vcpus",
+    "max_vcpus",
+    "cpu_weight",
     "mem_size_mib",
     "kernel_args",
     "credential",
@@ -1066,6 +1075,15 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                     "vcpu_count" => {
                         c.vcpu_count = Some(change.vcpu_count.min(u32::from(u8::MAX)) as u8)
                     }
+                    "min_vcpus" => {
+                        c.min_vcpus =
+                            Some(change.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                    }
+                    "max_vcpus" => {
+                        c.max_vcpus =
+                            Some(change.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                    }
+                    "cpu_weight" => c.cpu_weight = Some(change.cpu_weight),
                     "mem_size_mib" => c.mem_size_mib = Some(change.mem_size_mib),
                     "kernel_args" => c.kernel_args = Some(change.kernel_args.clone()),
                     // Absent: the VM loses its credential.
@@ -1224,6 +1242,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
     if let Some(cp) = &patch.config {
         let cur = vm.config();
         update |= cp.vcpu_count.is_some_and(|v| v != cur.vcpu_count)
+            || cp.min_vcpus.is_some_and(|v| v != cur.min_vcpus)
+            || cp.max_vcpus.is_some_and(|v| v != cur.max_vcpus)
+            || cp.cpu_weight.is_some_and(|v| v != cur.cpu_weight)
             || cp.mem_size_mib.is_some_and(|v| v != cur.mem_size_mib)
             || cp
                 .kernel_args

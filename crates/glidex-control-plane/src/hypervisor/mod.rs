@@ -8,6 +8,7 @@
 //! Process lifetime belongs to `glidex-vm-shim`.
 
 pub mod cloud_hypervisor;
+pub mod pylon;
 pub mod qemu;
 
 use crate::images::catalog::Arch;
@@ -27,6 +28,7 @@ pub enum HypervisorType {
     #[default]
     CloudHypervisor,
     Qemu,
+    Pylon,
 }
 
 impl HypervisorType {
@@ -35,6 +37,7 @@ impl HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => "cloud-hypervisor",
             HypervisorType::Qemu => "qemu-system-x86_64",
+            HypervisorType::Pylon => "pylon",
         }
     }
 
@@ -51,7 +54,9 @@ impl HypervisorType {
     /// OVMF build for QEMU. The path may not exist.
     pub fn default_firmware_path(&self) -> Option<std::path::PathBuf> {
         match self {
-            HypervisorType::CloudHypervisor => cloud_hypervisor::default_firmware_path(),
+            HypervisorType::CloudHypervisor | HypervisorType::Pylon => {
+                cloud_hypervisor::default_firmware_path()
+            }
             HypervisorType::Qemu => qemu::default_firmware_path(),
         }
     }
@@ -59,7 +64,9 @@ impl HypervisorType {
     /// The shim's name for it (`launch.json`).
     pub fn launch_kind(&self) -> glidex_vm_shim::HypervisorKind {
         match self {
-            HypervisorType::CloudHypervisor => glidex_vm_shim::HypervisorKind::CloudHypervisor,
+            HypervisorType::CloudHypervisor | HypervisorType::Pylon => {
+                glidex_vm_shim::HypervisorKind::CloudHypervisor
+            }
             HypervisorType::Qemu => glidex_vm_shim::HypervisorKind::Qemu,
         }
     }
@@ -70,6 +77,7 @@ impl fmt::Display for HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => write!(f, "cloudhypervisor"),
             HypervisorType::Qemu => write!(f, "qemu"),
+            HypervisorType::Pylon => write!(f, "pylon"),
         }
     }
 }
@@ -184,12 +192,15 @@ pub trait HypervisorDriver: Send + Sync {
     /// Hot-plug a VFIO device under its deterministic id.
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+    /// Resize the running guest's active vCPU count to `desired`.
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError>;
 }
 
 pub fn driver(ty: HypervisorType) -> &'static dyn HypervisorDriver {
     match ty {
         HypervisorType::CloudHypervisor => &cloud_hypervisor::CloudHypervisorDriver,
         HypervisorType::Qemu => &qemu::QemuDriver,
+        HypervisorType::Pylon => &pylon::PylonDriver,
     }
 }
 
@@ -432,6 +443,7 @@ mod tests {
             "cloud-hypervisor"
         );
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
+        assert_eq!(HypervisorType::Pylon.binary_name(), "pylon");
     }
 
     #[test]
@@ -461,7 +473,11 @@ mod tests {
 
     #[test]
     fn drivers_report_their_hypervisor_type() {
-        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+        for ty in [
+            HypervisorType::CloudHypervisor,
+            HypervisorType::Qemu,
+            HypervisorType::Pylon,
+        ] {
             assert_eq!(driver(ty).hypervisor_type(), ty);
             let _ = driver(ty).is_available();
         }
