@@ -89,11 +89,6 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
 
     a.push("--pylon".into());
     a.push(pylon_opt);
-    // Disable internal CH seccomp trap so pylon initialization (shm creation,
-    // pylond Unix socket connection via SCM_RIGHTS) can run on startup.
-    // Sandboxing is enforced externally by systemd (glidex-vm@.service).
-    a.push("--seccomp".into());
-    a.push("false".into());
     a
 }
 
@@ -224,11 +219,6 @@ mod tests {
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=500"));
         assert!(val.contains("vm_id=1"));
-        let seccomp_pos = a
-            .iter()
-            .position(|x| x == "--seccomp")
-            .expect("--seccomp flag");
-        assert_eq!(&a[seccomp_pos + 1], "false");
     }
 
     #[test]
