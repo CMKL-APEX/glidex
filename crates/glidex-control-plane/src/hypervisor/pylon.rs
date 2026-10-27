@@ -50,7 +50,10 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let max_vcpus = config.effective_max_vcpus();
     let min_cores = config.effective_min_vcpus();
     let priority_weight = config.effective_cpu_weight();
-    let initial_active_vcpus = config.vcpu_count;
+    // All max_vcpus must start active so guest SMP boot (INIT/SIPI) can
+    // bring them online into Linux. Pylond then manages cooperative core
+    // arbitration within [min_cores, max_cores] during runtime.
+    let initial_active_vcpus = max_vcpus;
 
     // On Pylon, all max_vcpus exist in the guest at boot (boot=max,max=max)
     // and higher vCPUs start parked.
@@ -216,7 +219,7 @@ mod tests {
             val.contains("shm=/run/glidex-cp/vms/00000000-0000-0000-0000-000000000001/pylon.shm")
         );
         assert!(val.contains("socket=/run/pylon/pylond.sock"));
-        assert!(val.contains("initial_active_vcpus=4"));
+        assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=2"));
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=500"));
@@ -242,7 +245,7 @@ mod tests {
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
-        assert!(val.contains("initial_active_vcpus=2"));
+        assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=0"));
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=200"));
