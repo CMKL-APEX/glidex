@@ -19,6 +19,7 @@ fresh reader cannot infer just by reading the source.
 | [reconciliation.md](reconciliation.md) | Desired state, the VM controller, detached VM instances (`glidex-vm-shim`, `glidex-vm@` units), adoption |
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor driver contract and per-backend command lines |
+| [pylon.md](pylon.md) | Pylon hypervisor (`CMKL-APEX/pylon`, `pylond`, `scx_pylon`) and generalized CPU elasticity (`min_vcpus`, `max_vcpus`, `cpu_weight`) with ACPI CPU hotplug fallback on Cloud Hypervisor and QEMU; milestones P0–P4 |
 | [kernel-boot.md](kernel-boot.md) | Direct kernel boot on par with firmware boot (draft): kernel images (kernel + initramfs + cmdline) extracted from the cloud image by a short-lived extractor VM, from a URL or the host; initramfs for both backends; console device chosen by `console=`; generated seeds and credentials on kernel boot; milestones K0–K4 |
 | [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
