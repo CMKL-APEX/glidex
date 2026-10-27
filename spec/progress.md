@@ -19,13 +19,13 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| — | — | — | Nothing claimed as of 2026-10-24. |
+| Tenancy and directories | T6 leftovers | `feat/t6-loose-ends` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); then audit per directory, the two-control-plane UI e2e |
 
 ## Areas
 
 | Area | Spec | Built | Next | Status in the spec |
 |---|---|---|---|---|
-| Tenancy and directories | [tenancy.md](tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled**. T6 leftovers: cluster logout ending the directory's chain, a changed UI address registered again, the UI e2e with two control planes | §23 Implementation status |
+| Tenancy and directories | [tenancy.md](tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled**. T6 leftovers: audit per directory, the UI e2e with two control planes | §23 Implementation status |
 | Workload identity | [workload-identity.md](workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [apps.md](apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [storage.md](storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |

@@ -1131,7 +1131,7 @@ pub async fn opt_in_cluster(
     c.api = token.api.clone();
     c.ui_callback = answer["ui_callback"]
         .as_str()
-        .filter(|u| url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http")))
+        .filter(|u| crate::api::trust::valid_callback(u))
         .map(String::from);
     c.tls_sha256 = token.tls_sha256.clone();
     c.jwks = answer["cluster_key"].clone();
