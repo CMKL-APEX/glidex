@@ -1209,6 +1209,9 @@ pub struct AuditQuery {
     user: Option<String>,
     #[serde(default)]
     limit: Option<u32>,
+    /// A hosted directory's own audit (spec/tenancy.md D74).
+    #[serde(default)]
+    directory: Option<String>,
 }
 
 /// `GET /audit` → `{entries}`.
@@ -1228,6 +1231,7 @@ pub async fn read_audit(
         project: q.project,
         user: q.user,
         limit: q.limit,
+        directory: q.directory,
         ..Default::default()
     };
     Ok(Proto(StatusCode::OK, acc::read_audit(&c, req)?))

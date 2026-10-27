@@ -4788,6 +4788,137 @@ async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
     );
 }
 
+/// spec/tenancy.md D74: a hosted directory keeps its own audit. Its
+/// people's directory actions are written there and not to the cluster's;
+/// its directory admin reads it, by default; another directory's admin,
+/// the host's own people and its operator don't; and it goes with the
+/// directory.
+#[tokio::test]
+async fn a_hosted_directory_keeps_its_own_audit() {
+    let h = harness();
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let mut admins = Vec::new();
+    for d in ["acme", "beta"] {
+        let (_, owner) = h
+            .app
+            .auth
+            .tenants
+            .create_directory(d, d, &format!("{d}-admin"))
+            .unwrap();
+        let id = h
+            .app
+            .auth
+            .store
+            .user_for_identity_in(d, &format!("test-{d}"), "admin", "admin", None, true)
+            .unwrap()
+            .unwrap()
+            .id;
+        h.app
+            .auth
+            .tenants
+            .add_member(&owner.id, Ent::User(id.clone()), "test")
+            .unwrap();
+        h.app
+            .auth
+            .add_link(
+                "role.directory-admin",
+                Ent::User(id.clone()),
+                Ent::Directory(d.into()),
+                "test",
+            )
+            .unwrap();
+        admins.push(h.session(&id));
+    }
+    let (acme, beta) = (&admins[0], &admins[1]);
+    let (s, v) = h
+        .rest("POST", "/teams", Some(json!({"name": "acme-lab"})), acme)
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (s, v) = h
+        .rest("POST", "/teams", Some(json!({"name": "host-lab"})), &op)
+        .await;
+    assert!(s.is_success(), "{v}");
+
+    let actions = |v: &Value| -> Vec<String> {
+        v["entries"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e["action"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let teams = |v: &Value| -> usize {
+        v["entries"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|e| e["action"] == "manageTeams" || e["action"] == "createTeam")
+                    .count()
+            })
+            .unwrap_or_default()
+    };
+    // Acme's admin reads acme's, without asking for it.
+    let (s, v) = h.rest("GET", "/audit", None, acme).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(teams(&v), 1, "acme's own team only: {:?}", actions(&v));
+    let (s, v) = h.rest("GET", "/audit?directory=acme", None, acme).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(teams(&v), 1, "{v}");
+    // Not beta's, and nobody else reads acme's.
+    let (s, _) = h.rest("GET", "/audit?directory=acme", None, beta).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = h.rest("GET", "/audit", None, beta).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(teams(&v), 0, "{v}");
+    let alice = h.user("alice");
+    let (s, _) = h
+        .rest("GET", "/audit?directory=acme", None, &h.session(&alice))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // The cluster's audit has the host's team, not acme's.
+    let (s, v) = h.rest("GET", "/audit", None, &op).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(teams(&v), 1, "the host's own: {:?}", actions(&v));
+    // The host's operator sees that acme exists, not what is in it.
+    let (s, _) = h.rest("GET", "/audit?directory=acme", None, &op).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = h.rest("GET", "/audit?directory=nope", None, &op).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Deleted with its directory.
+    assert!(
+        !h.app
+            .auth
+            .store
+            .directory_audit("beta", 0, 10, |_| true)
+            .unwrap()
+            .is_empty(),
+        "beta's refused read was audited there"
+    );
+    let n = h.app.auth.store.remove_directory_audit("beta").unwrap();
+    assert!(n > 0);
+    assert!(
+        h.app
+            .auth
+            .store
+            .directory_audit("beta", 0, 10, |_| true)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !h.app
+            .auth
+            .store
+            .directory_audit("acme", 0, 10, |_| true)
+            .unwrap()
+            .is_empty(),
+        "acme's stays"
+    );
+}
+
 /// spec/tenancy.md D58: two directories on one host. Each administrator
 /// sees and changes only its own directory's users, teams, tenants and
 /// connectors; the other's records answer as missing; nobody becomes a

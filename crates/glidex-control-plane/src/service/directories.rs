@@ -181,5 +181,9 @@ pub fn delete_directory(
     a.connectors
         .forget_directory_keys(&req.id)
         .map_err(|e| internal(e.to_string()))?;
+    // Its own audit goes with it (D74); the cluster's keeps what was done here.
+    a.store
+        .remove_directory_audit(&req.id)
+        .map_err(|e| internal(e.to_string()))?;
     Ok(pb::DeleteDirectoryResponse::default())
 }

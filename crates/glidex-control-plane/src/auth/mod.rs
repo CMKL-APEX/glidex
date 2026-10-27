@@ -2102,7 +2102,39 @@ impl AuthService {
             details,
         };
         tracing::info!(target: "glidex_audit", "{}", serde_json::to_string(&entry).unwrap_or_default());
-        if let Err(e) = self.store.append_audit(&entry) {
+        let dir = self.system_directory(who).filter(|d| is_hosted(d));
+        self.write_audit(dir.as_deref(), &entry);
+    }
+
+    /// The directory a system actor acts for: `directory:<id>`, a
+    /// connector's SCIM or sync (`system:scim:<id>`, `system:sync:<id>`), a
+    /// tenant's federation (`system:federation:<tenant>/<id>`).
+    fn system_directory(&self, who: &str) -> Option<String> {
+        if let Some(d) = who.strip_prefix("directory:") {
+            return Some(d.to_string());
+        }
+        if let Some(c) = who
+            .strip_prefix("system:scim:")
+            .or_else(|| who.strip_prefix("system:sync:"))
+        {
+            return Some(self.connectors.get(c).ok()??.directory_id);
+        }
+        let (tenant, _) = who.strip_prefix("system:federation:")?.split_once('/')?;
+        Some(self.tenants.resolve(tenant).ok()?.directory_id)
+    }
+
+    /// Write `entry` to the audit it belongs to (D74): a hosted directory's
+    /// own (`dir`), and the cluster's unless it is only that directory's
+    /// business (it names no project of this cluster).
+    fn write_audit(&self, dir: Option<&str>, entry: &AuditEntry) {
+        if let Some(d) = dir
+            && let Err(e) = self.store.append_directory_audit(d, entry)
+        {
+            tracing::error!(directory = d, "audit write failed: {}", e);
+        }
+        if (dir.is_none() || entry.project.is_some())
+            && let Err(e) = self.store.append_audit(entry)
+        {
             tracing::error!("audit write failed: {}", e);
         }
     }
@@ -2135,9 +2167,8 @@ impl AuthService {
             details,
         };
         tracing::info!(target: "glidex_audit", "{}", serde_json::to_string(&entry).unwrap_or_default());
-        if let Err(e) = self.store.append_audit(&entry) {
-            tracing::error!("audit write failed: {}", e);
-        }
+        let dir = p.map(|p| p.directory.as_str()).filter(|d| is_hosted(d));
+        self.write_audit(dir, &entry);
         let n = self
             .audit_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2148,6 +2179,12 @@ impl AuthService {
                 .prune_audit(store::now_millis().saturating_sub(keep));
         }
     }
+}
+
+/// A directory this host keeps for another organization (D27): not its
+/// own `local`, nor a trusted directory's replica.
+pub fn is_hosted(dir: &str) -> bool {
+    dir != crate::tenants::LOCAL_DIRECTORY && !dir.starts_with("trusted-")
 }
 
 pub enum LinkedProjects {

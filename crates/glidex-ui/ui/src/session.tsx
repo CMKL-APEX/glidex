@@ -40,6 +40,8 @@ const HOST_ACTION_RESOURCE = {
   readPolicy: "Cluster",
   writePolicy: "Cluster",
   readAudit: "Cluster",
+  // A hosted directory's own audit (spec/tenancy.md D74).
+  readDirectoryAudit: "Directory",
   readUsage: "Cluster",
   manageAnyTokens: "Directory",
   createNetwork: "Host",
@@ -85,6 +87,12 @@ const HOST_ACTION_RESOURCE = {
   syncConnector: "Directory",
   confirmConnectorSync: "Directory",
 } as const satisfies Record<string, HostResourceType>;
+
+/** A directory this host keeps for another organization: not its own
+ * `local`, nor a trusted directory's replica (spec/tenancy.md D74). */
+export function isHostedDirectory(id: string | undefined | null): boolean {
+  return !!id && id !== "local" && !id.startsWith("trusted-");
+}
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;
 const HOST_ACTIONS = Object.keys(HOST_ACTION_RESOURCE) as HostAction[];
