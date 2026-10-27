@@ -1432,6 +1432,116 @@ pub async fn service_account(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// `scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]`:
+/// show or update VM CPU sizing and microsecond elasticity policy.
+pub async fn scale(client: &ApiClient, args: &[&str]) {
+    let u = "Usage: scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]";
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let rest = &args[1..];
+    let vm = match client.get_vm(&vm_id).await {
+        Ok(vm) => vm,
+        Err(e) => return err(e),
+    };
+
+    let parse_flag = |name: &str| -> Result<Option<u32>, String> {
+        if let Some(val) = flag_value(rest, name) {
+            val.parse::<u32>()
+                .map(Some)
+                .map_err(|_| format!("Invalid value for {name}: {val}"))
+        } else {
+            Ok(None)
+        }
+    };
+
+    let vcpus_opt = match parse_flag("--vcpus") {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let min_opt = match parse_flag("--min") {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let max_opt = match parse_flag("--max") {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let weight_opt = match parse_flag("--weight") {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+
+    let has_any_flag =
+        vcpus_opt.is_some() || min_opt.is_some() || max_opt.is_some() || weight_opt.is_some();
+
+    if !has_any_flag {
+        if !rest.is_empty() {
+            return usage(u);
+        }
+        println!("VM:         {}", vm.name);
+        println!("Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
+        if let (Some(min), Some(max)) = (vm.min_vcpus, vm.max_vcpus) {
+            if min < max {
+                println!(
+                    "vCPUs:      {} (elastic: {}–{}, weight: {})",
+                    vm.vcpu_count,
+                    min,
+                    max,
+                    vm.cpu_weight.unwrap_or(100)
+                );
+            } else {
+                println!("vCPUs:      {}", vm.vcpu_count);
+            }
+        } else {
+            println!("vCPUs:      {}", vm.vcpu_count);
+        }
+        return;
+    }
+
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+
+    let mut change = VmChange::default();
+    let mut paths = Vec::new();
+
+    if let Some(v) = vcpus_opt {
+        change.vcpu_count = v;
+        paths.push("vcpu_count".into());
+    }
+    if let Some(min) = min_opt {
+        change.min_vcpus = Some(min);
+        paths.push("min_vcpus".into());
+    }
+    if let Some(max) = max_opt {
+        change.max_vcpus = Some(max);
+        paths.push("max_vcpus".into());
+    }
+    if let Some(w) = weight_opt {
+        change.cpu_weight = Some(w);
+        paths.push("cpu_weight".into());
+    }
+
+    let req = UpdateVmRequest {
+        id: vm_id.clone(),
+        change: change.into(),
+        update_mask: buffa_types::google::protobuf::FieldMask {
+            paths,
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+
+    if let Err(e) = svc.update_vm(req).await {
+        return err(rpc_err(e));
+    }
+
+    println!("{} CPU policy updated for {}", "Success:".green(), vm.name);
+}
+
 #[cfg(test)]
 mod tests {
 
