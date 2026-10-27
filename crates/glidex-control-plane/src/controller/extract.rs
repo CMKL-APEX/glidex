@@ -952,6 +952,7 @@ impl VmManager {
             meter_poll_secs: 0,
             cpu_affinity: Vec::new(),
             vcpu_pins: Vec::new(),
+            cpu_weight: 100,
             job: true,
             volume_locks: Vec::new(),
         }

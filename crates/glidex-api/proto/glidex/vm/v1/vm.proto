@@ -349,6 +349,9 @@ message Vm {
   // What it asked for with `gpus`, expanded into devices, policies and
   // sizing above.
   GpuRequest gpus = 43;
+  optional uint32 min_vcpus = 45 [json_name = "min_vcpus"];
+  optional uint32 max_vcpus = 46 [json_name = "max_vcpus"];
+  optional uint32 cpu_weight = 47 [json_name = "cpu_weight"];
 }
 
 // How a VM boots (spec/kernel-boot.md).
@@ -456,6 +459,9 @@ message CreateVmRequest {
   // N GPUs: expands to a pool request, NUMA_POLICY_ALIGNED and the pool's
   // per-device sizing; fields given here win (spec/gpu-vms.md §3).
   GpuRequest gpus = 34;
+  optional uint32 min_vcpus = 36 [json_name = "min_vcpus"];
+  optional uint32 max_vcpus = 37 [json_name = "max_vcpus"];
+  optional uint32 cpu_weight = 38 [json_name = "cpu_weight"];
 }
 
 // The answer to a VM write (§12.3).
@@ -486,6 +492,9 @@ message PreviewPlacementRequest {
   repeated DeviceRequest devices = 14;
   // As CreateVmRequest.gpus.
   GpuRequest gpus = 15;
+  optional uint32 min_vcpus = 16 [json_name = "min_vcpus"];
+  optional uint32 max_vcpus = 17 [json_name = "max_vcpus"];
+  optional uint32 cpu_weight = 18 [json_name = "cpu_weight"];
 }
 message NodeFit {
   string id = 1;
@@ -553,6 +562,9 @@ message VmChange {
   optional string kernel = 17;
   // Changing `kernel` without this in the mask turns it off.
   optional bool kernel_from_disk = 18 [json_name = "kernel_from_disk"];
+  optional uint32 min_vcpus = 20 [json_name = "min_vcpus"];
+  optional uint32 max_vcpus = 21 [json_name = "max_vcpus"];
+  optional uint32 cpu_weight = 22 [json_name = "cpu_weight"];
 }
 
 message UpdateVmRequest {

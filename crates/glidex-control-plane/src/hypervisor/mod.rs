@@ -192,6 +192,8 @@ pub trait HypervisorDriver: Send + Sync {
     /// Hot-plug a VFIO device under its deterministic id.
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+    /// Resize the running guest's active vCPU count to `desired`.
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError>;
 }
 
 pub fn driver(ty: HypervisorType) -> &'static dyn HypervisorDriver {

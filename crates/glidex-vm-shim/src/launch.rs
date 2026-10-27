@@ -72,6 +72,13 @@ pub struct LaunchFile {
     /// meanwhile (spec/storage.md S16). Empty: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_locks: Vec<String>,
+    /// Cgroup v2 `cpu.weight` (1..=10000, default 100); spec/pylon.md §5.
+    #[serde(default = "default_cpu_weight")]
+    pub cpu_weight: u32,
+}
+
+pub fn default_cpu_weight() -> u32 {
+    100
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -264,6 +271,7 @@ mod tests {
             vcpu_pins: vec![],
             job: false,
             volume_locks: vec![],
+            cpu_weight: 100,
         }
     }
 

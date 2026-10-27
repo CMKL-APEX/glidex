@@ -350,7 +350,21 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
         );
     }
     println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
-    println!("  vCPUs:      {}", vm.vcpu_count);
+    if let (Some(min), Some(max)) = (vm.min_vcpus, vm.max_vcpus) {
+        if min < max {
+            println!(
+                "  vCPUs:      {} (elastic: {}–{}, weight: {})",
+                vm.vcpu_count,
+                min,
+                max,
+                vm.cpu_weight.unwrap_or(100)
+            );
+        } else {
+            println!("  vCPUs:      {}", vm.vcpu_count);
+        }
+    } else {
+        println!("  vCPUs:      {}", vm.vcpu_count);
+    }
     println!("  Memory:     {} MiB", vm.mem_size_mib);
     if let Some(sa) = &vm.service_account {
         println!(

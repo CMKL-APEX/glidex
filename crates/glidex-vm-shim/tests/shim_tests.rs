@@ -42,6 +42,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         vcpu_pins: vec![],
         job: false,
         volume_locks: vec![],
+        cpu_weight: 100,
     }
 }
 

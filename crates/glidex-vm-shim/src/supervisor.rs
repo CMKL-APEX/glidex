@@ -518,6 +518,7 @@ impl Supervisor {
     /// Spawn `argv` on a fresh raw PTY (stdin/stdout) with stderr on a pipe,
     /// both handed to the console proxy.
     fn spawn(&self, argv: &[String]) -> std::io::Result<Child> {
+        apply_cpu_weight(self.launch.cpu_weight);
         let OpenptyResult { master, slave } = openpty(None, None).map_err(std::io::Error::from)?;
         // openpty's fds are inheritable: a hypervisor holding the master
         // itself would never see the hangup when the shim dies.
@@ -831,6 +832,24 @@ impl Supervisor {
             &self.launch.shim_socket,
         ] {
             let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Apply cgroup v2 `cpu.weight` (1..=10000) to this process's cgroup if supported.
+fn apply_cpu_weight(weight: u32) {
+    if !(1..=10000).contains(&weight) {
+        return;
+    }
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup")
+        && let Some(path) = cgroup
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .map(|p| Path::new("/sys/fs/cgroup").join(p.trim_start_matches('/')))
+    {
+        let weight_file = path.join("cpu.weight");
+        if weight_file.exists() {
+            let _ = std::fs::write(&weight_file, weight.to_string());
         }
     }
 }

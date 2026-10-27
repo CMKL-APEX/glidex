@@ -229,6 +229,11 @@ export default function VmDetail() {
                 </h3>
                 <p className="text-lg font-semibold text-gray-900">
                   {vm.vcpu_count}
+                  {vm.min_vcpus !== undefined && vm.max_vcpus !== undefined && vm.min_vcpus < vm.max_vcpus && (
+                    <span className="text-xs font-normal text-gray-500 ml-2">
+                      (elastic: {vm.min_vcpus}–{vm.max_vcpus}, weight: {vm.cpu_weight ?? 100})
+                    </span>
+                  )}
                 </p>
               </div>
               <div>

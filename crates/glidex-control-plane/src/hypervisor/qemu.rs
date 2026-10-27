@@ -222,7 +222,16 @@ impl LaunchSpec<'_> {
             push(&mut args, "-cpu", "host".into());
         }
         push(&mut args, "-m", format!("{}M", config.mem_size_mib));
-        push(&mut args, "-smp", config.vcpu_count.to_string());
+        let smp = if config.effective_max_vcpus() > config.vcpu_count {
+            let max = config.effective_max_vcpus();
+            format!(
+                "cpus={},maxcpus={},sockets=1,cores={},threads=1",
+                config.vcpu_count, max, max
+            )
+        } else {
+            config.vcpu_count.to_string()
+        };
+        push(&mut args, "-smp", smp);
         let hugetlb = match (config.hugepages, &config.hugepage_size) {
             (true, Some(size)) => format!(",hugetlb=on,hugetlbsize={size}"),
             (true, None) => ",hugetlb=on".into(),
@@ -664,6 +673,10 @@ impl HypervisorDriver for QemuDriver {
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
         Ok(QmpClient::new(api_socket).device_del(&vfio_device_id(device_path))?)
     }
+
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
+        Ok(QmpClient::new(api_socket).resize_vcpus(desired)?)
+    }
 }
 
 /// The kernel extractor's run (spec/kernel-boot.md §10.2), as
@@ -849,6 +862,20 @@ mod tests {
         // D9: started running, not held at reset.
         assert!(!args.iter().any(|a| a == "-S"));
         assert!(values(&args, "-device").contains(&"virtio-rng-pci,rng=rng0"));
+    }
+
+    #[test]
+    fn elastic_smp_cpus_and_maxcpus() {
+        let config = config(serde_json::json!({
+            "vcpu_count": 2,
+            "min_vcpus": 1,
+            "max_vcpus": 8,
+        }));
+        let args = spec(&config).args();
+        assert_eq!(
+            values(&args, "-smp"),
+            ["cpus=2,maxcpus=8,sockets=1,cores=8,threads=1"]
+        );
     }
 
     #[test]

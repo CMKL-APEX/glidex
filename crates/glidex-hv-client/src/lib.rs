@@ -45,6 +45,8 @@ pub enum GuestState {
 pub struct Observed {
     pub guest: GuestState,
     pub device_ids: Vec<String>,
+    /// Currently online/allocated vCPUs reported by the VMM, when known.
+    pub vcpu_count: Option<u8>,
 }
 
 /// How long a single request may take.

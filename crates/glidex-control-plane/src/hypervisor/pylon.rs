@@ -47,13 +47,35 @@ pub const DEFAULT_PYLOND_SOCKET: &str = "/run/pylon/pylond.sock";
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a = cloud_hypervisor::args(config, api_socket);
 
+    let max_vcpus = config.effective_max_vcpus();
+    let min_cores = config.effective_min_vcpus();
+    let priority_weight = config.effective_cpu_weight();
+    let initial_active_vcpus = config.vcpu_count;
+
+    // On Pylon, all max_vcpus exist in the guest at boot (boot=max,max=max)
+    // and higher vCPUs start parked.
+    if let Some(pos) = a.iter().position(|x| x == "--cpus")
+        && pos + 1 < a.len()
+    {
+        let mut cpus = format!("boot={},max={}", max_vcpus, max_vcpus);
+        if !config.vcpu_pins.is_empty() {
+            let pins: Vec<String> = config
+                .vcpu_pins
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{i}@[{c}]"))
+                .collect();
+            cpus.push_str(&format!(",affinity=[{}]", pins.join(",")));
+        }
+        a[pos + 1] = cpus;
+    }
+
     let shm = pylon_shm_path(api_socket);
     let vm_id = pylon_vm_id(api_socket);
-    let vcpu_count = config.vcpu_count;
 
     let pylon_opt = format!(
-        "shm={},socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores=1,max_cores={},priority_weight=100,vm_id={}",
-        shm, DEFAULT_PYLOND_SOCKET, vcpu_count, vcpu_count, vm_id
+        "shm={},socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores={},max_cores={},priority_weight={},vm_id={}",
+        shm, DEFAULT_PYLOND_SOCKET, initial_active_vcpus, min_cores, max_vcpus, priority_weight, vm_id
     );
 
     a.push("--pylon".into());
@@ -109,6 +131,10 @@ impl HypervisorDriver for PylonDriver {
             .or_else(|_| ch.remove_device(&super::legacy_vfio_device_id(device_path)))?;
         Ok(())
     }
+
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
+        Ok(ChClient::new(api_socket).resize_vcpus(desired)?)
+    }
 }
 
 #[cfg(test)]
@@ -128,17 +154,23 @@ mod tests {
     #[test]
     fn pylon_args_contain_pylon_flag() {
         let c = serde_json::from_value(serde_json::json!({
-            "vcpu_count": 4, "mem_size_mib": 1024, "rootfs_path": "/r",
+            "vcpu_count": 4, "min_vcpus": 2, "max_vcpus": 8, "cpu_weight": 500,
+            "mem_size_mib": 1024, "rootfs_path": "/r",
             "kernel_image_path": "/k", "kernel_args": "console=hvc0 root=/dev/vda",
         }))
         .unwrap();
         let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000001/api.sock";
         let a = args(&c, api);
+        let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
+        assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
         assert!(val.contains("shm=/run/glidex-cp/vms/00000000-0000-0000-0000-000000000001/pylon.shm"));
         assert!(val.contains("socket=/run/pylon/pylond.sock"));
         assert!(val.contains("initial_active_vcpus=4"));
+        assert!(val.contains("min_cores=2"));
+        assert!(val.contains("max_cores=8"));
+        assert!(val.contains("priority_weight=500"));
         assert!(val.contains("vm_id=1"));
     }
 }

@@ -138,6 +138,7 @@ impl ChClient {
             return Ok(Observed {
                 guest: GuestState::NotCreated,
                 device_ids: Vec::new(),
+                vcpu_count: None,
             });
         }
         let v: serde_json::Value = serde_json::from_str(body.as_deref().unwrap_or("{}"))
@@ -189,6 +190,13 @@ impl ChClient {
         self.expect_success("PUT", "/vm.remove-device", Some(&body))
             .map(|_| ())
     }
+
+    /// Resize the running guest's active vCPU count to `desired`.
+    pub fn resize_vcpus(&self, desired: u8) -> Result<(), HvError> {
+        let body = serde_json::json!({ "desired_vcpus": desired }).to_string();
+        self.expect_success("PUT", "/vm.resize", Some(&body))
+            .map(|_| ())
+    }
 }
 
 fn parse_vm_info(v: &serde_json::Value) -> Observed {
@@ -208,7 +216,15 @@ fn parse_vm_info(v: &serde_json::Value) -> Observed {
                 .collect()
         })
         .unwrap_or_default();
-    Observed { guest, device_ids }
+    let vcpu_count = v
+        .pointer("/config/cpus/boot_vcpus")
+        .and_then(|c| c.as_u64())
+        .map(|n| n.min(255) as u8);
+    Observed {
+        guest,
+        device_ids,
+        vcpu_count,
+    }
 }
 
 #[cfg(test)]
@@ -248,13 +264,17 @@ mod tests {
     fn vm_info_state_and_devices() {
         let v = serde_json::json!({
             "state": "Running",
-            "config": { "devices": [ { "path": "/sys/bus/pci/devices/0000:41:00.0", "id": "_vfio_0000_41_00_0" } ] }
+            "config": {
+                "devices": [ { "path": "/sys/bus/pci/devices/0000:41:00.0", "id": "_vfio_0000_41_00_0" } ],
+                "cpus": { "boot_vcpus": 4 }
+            }
         });
         assert_eq!(
             parse_vm_info(&v),
             Observed {
                 guest: GuestState::Running,
-                device_ids: vec!["_vfio_0000_41_00_0".into()]
+                device_ids: vec!["_vfio_0000_41_00_0".into()],
+                vcpu_count: Some(4),
             }
         );
         assert_eq!(

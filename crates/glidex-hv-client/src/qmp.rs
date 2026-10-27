@@ -165,14 +165,83 @@ impl QmpClient {
             .map(|_| ())
     }
 
-    /// The guest's state (`query-status`) and the ids of user-created
-    /// devices (`qom-list /machine/peripheral`).
+    /// The guest's state (`query-status`), devices (`qom-list /machine/peripheral`),
+    /// and current vCPU count (`query-cpus-fast`).
     pub fn observe(&self) -> Result<Observed, HvError> {
         let status = self.execute(&serde_json::json!({ "execute": "query-status" }))?;
         let peripherals = self.execute(&serde_json::json!({
             "execute": "qom-list", "arguments": { "path": "/machine/peripheral" }
         }))?;
-        Ok(parse_observed(&status, &peripherals))
+        let cpus = self.execute(&serde_json::json!({ "execute": "query-cpus-fast" })).ok();
+        let vcpu_count = cpus
+            .as_ref()
+            .and_then(|c| c.as_array())
+            .map(|a| a.len().min(255) as u8);
+        let mut obs = parse_observed(&status, &peripherals);
+        obs.vcpu_count = vcpu_count;
+        Ok(obs)
+    }
+
+    /// Resize active vCPUs to `desired` using ACPI CPU hotplug via QMP
+    /// (`query-hotpluggable-cpus`, `device_add`, `device_del`).
+    pub fn resize_vcpus(&self, desired: u8) -> Result<(), HvError> {
+        let slots = self.execute(&serde_json::json!({ "execute": "query-hotpluggable-cpus" }))?;
+        let slots_arr = slots.as_array().ok_or_else(|| {
+            HvError::Api("query-hotpluggable-cpus did not return an array".into())
+        })?;
+
+        struct CpuSlot {
+            core_id: u64,
+            populated: bool,
+            driver: String,
+            props: Value,
+            id: String,
+        }
+
+        let mut parsed_slots: Vec<CpuSlot> = Vec::new();
+        for slot in slots_arr {
+            let props = slot.get("props").cloned().unwrap_or(Value::Null);
+            let core_id = props.get("core-id").and_then(|c| c.as_u64()).unwrap_or(0);
+            let populated = slot.get("qom-path").is_some();
+            let driver = slot
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("qemu64-x86_64-cpu")
+                .to_string();
+            let id = format!("vcpu_{}", core_id);
+            parsed_slots.push(CpuSlot {
+                core_id,
+                populated,
+                driver,
+                props,
+                id,
+            });
+        }
+
+        parsed_slots.sort_by_key(|s| s.core_id);
+
+        for slot in &parsed_slots {
+            if (slot.core_id as u8) < desired {
+                if !slot.populated {
+                    let mut args = serde_json::Map::new();
+                    args.insert("driver".into(), Value::String(slot.driver.clone()));
+                    args.insert("id".into(), Value::String(slot.id.clone()));
+                    if let Value::Object(props_map) = &slot.props {
+                        for (k, v) in props_map {
+                            args.insert(k.clone(), v.clone());
+                        }
+                    }
+                    self.execute(&serde_json::json!({
+                        "execute": "device_add",
+                        "arguments": args
+                    }))?;
+                }
+            } else if slot.populated {
+                let _ = self.device_del(&slot.id);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -220,7 +289,11 @@ fn parse_observed(status: &Value, peripherals: &Value) -> Observed {
                 .collect()
         })
         .unwrap_or_default();
-    Observed { guest, device_ids }
+    Observed {
+        guest,
+        device_ids,
+        vcpu_count: None,
+    }
 }
 
 #[cfg(test)]

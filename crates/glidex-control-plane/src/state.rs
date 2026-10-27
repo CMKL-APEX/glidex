@@ -253,6 +253,12 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub vcpu_count: Option<u8>,
     #[serde(default)]
+    pub min_vcpus: Option<Option<u8>>,
+    #[serde(default)]
+    pub max_vcpus: Option<Option<u8>>,
+    #[serde(default)]
+    pub cpu_weight: Option<Option<u32>>,
+    #[serde(default)]
     pub mem_size_mib: Option<u32>,
     #[serde(default)]
     pub kernel_args: Option<String>,
@@ -1938,6 +1944,44 @@ impl VmManager {
         Ok(())
     }
 
+    /// Check CPU sizing, elasticity bounds (spec/pylon.md §3.2) and weights.
+    fn check_elasticity(config: &VmConfig) -> Result<(), VmManagerError> {
+        if config.vcpu_count == 0 {
+            return Err(invalid("vcpu_count must be greater than 0"));
+        }
+        let min = config.effective_min_vcpus();
+        let max = config.effective_max_vcpus();
+        let cur = config.vcpu_count;
+
+        if min > cur || cur > max {
+            return Err(invalid(format!(
+                "invalid vcpu bounds: min_vcpus ({min}) <= vcpu_count ({cur}) <= max_vcpus ({max}) required"
+            )));
+        }
+
+        if config.min_vcpus == Some(0) && config.hypervisor != HypervisorType::Pylon {
+            return Err(invalid(
+                "min_vcpus = 0 (scale-to-zero) requires the pylon hypervisor; cloudhypervisor and qemu require min_vcpus >= 1",
+            ));
+        }
+
+        if config.hypervisor == HypervisorType::Pylon && max > 64 {
+            return Err(invalid("max_vcpus on pylon cannot exceed 64"));
+        }
+
+        if let Some(w) = config.cpu_weight
+            && !(1..=10000).contains(&w)
+        {
+            return Err(invalid("cpu_weight must be between 1 and 10000"));
+        }
+
+        if config.cpu_policy == crate::models::CpuPolicy::Dedicated && config.is_elastic() {
+            return Err(invalid("dedicated cpu_policy cannot be elastic"));
+        }
+
+        Ok(())
+    }
+
     fn check_options(opts: &VmOptions) -> Result<(), VmManagerError> {
         if opts
             .stop_grace_secs
@@ -2157,9 +2201,7 @@ impl VmManager {
                 a.as_str()
             )));
         }
-        if config.vcpu_count == 0 {
-            return Err(invalid("vcpu_count must be greater than 0"));
-        }
+        Self::check_elasticity(&config)?;
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
         }
@@ -2934,6 +2976,16 @@ impl VmManager {
                 delta.vcpus = (v as u64).saturating_sub(config.vcpu_count as u64);
                 config.vcpu_count = v;
             }
+            if let Some(min) = c.min_vcpus {
+                config.min_vcpus = min;
+            }
+            if let Some(max) = c.max_vcpus {
+                config.max_vcpus = max;
+            }
+            if let Some(weight) = c.cpu_weight {
+                config.cpu_weight = weight;
+            }
+            Self::check_elasticity(config)?;
             if let Some(m) = c.mem_size_mib {
                 if m == 0 {
                     return Err(invalid("mem_size_mib must be greater than 0"));
@@ -5618,4 +5670,83 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
         }
     };
     r.map_err(VmManagerError::Network)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(json: serde_json::Value) -> VmConfig {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn elasticity_checks_bounds() {
+        let ok = test_config(serde_json::json!({
+            "vcpu_count": 4, "min_vcpus": 2, "max_vcpus": 8, "cpu_weight": 200,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&ok).is_ok());
+
+        let bad_min = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 4, "max_vcpus": 8,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&bad_min).is_err());
+
+        let bad_max = test_config(serde_json::json!({
+            "vcpu_count": 8, "min_vcpus": 2, "max_vcpus": 4,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&bad_max).is_err());
+    }
+
+    #[test]
+    fn scale_to_zero_pylon_only() {
+        let pylon = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 0, "max_vcpus": 4, "hypervisor": "pylon",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&pylon).is_ok());
+
+        let ch = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 0, "max_vcpus": 4, "hypervisor": "cloudhypervisor",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        let err = VmManager::check_elasticity(&ch).unwrap_err();
+        assert!(err.to_string().contains("scale-to-zero"), "{err}");
+    }
+
+    #[test]
+    fn pylon_max_vcpus_cap() {
+        let over = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 1, "max_vcpus": 128, "hypervisor": "pylon",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&over).is_err());
+    }
+
+    #[test]
+    fn cpu_weight_bounds() {
+        let zero = test_config(serde_json::json!({
+            "vcpu_count": 2, "cpu_weight": 0,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&zero).is_err());
+
+        let high = test_config(serde_json::json!({
+            "vcpu_count": 2, "cpu_weight": 20000,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&high).is_err());
+    }
+
+    #[test]
+    fn dedicated_cannot_be_elastic() {
+        let ded = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 1, "max_vcpus": 4, "cpu_policy": "dedicated",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&ded).is_err());
+    }
 }

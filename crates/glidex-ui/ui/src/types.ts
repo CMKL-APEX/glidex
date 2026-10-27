@@ -90,6 +90,9 @@ export interface VmResponse {
   /** That node's name (spec/clustering-ui.md §9). */
   node_name?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   /** Read with `vmHypervisor`. */
   hypervisor?: ProtoHypervisor;
@@ -274,6 +277,9 @@ export interface CreateVmRequest {
   /** Project id or name; default: the caller's default project. */
   project?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   kernel_image_path: string;
   /** Firmware image id/name (spec/images.md §7); default: the newest for the hypervisor. */

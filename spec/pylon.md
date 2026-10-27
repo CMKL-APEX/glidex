@@ -383,7 +383,7 @@ Stacked PRs on `main`:
 | Milestone | Spec | Code | Tests | Not yet |
 |---|---|---|---|---|
 | P0 | Done | — | — | — |
-| P1 | Done | Not yet | Not yet | Driver, proto, shim allowlist, UI |
-| P2 | Done | Not yet | Not yet | `min_vcpus`/`max_vcpus`/`cpu_weight`, live ACPI resize |
+| P1 | Done | Done | Done | — |
+| P2 | Done | Done | Done | — |
 | P3 | Done | Not yet | Not yet | `glidex-pylond.service`, installer |
 | P4 | Done | Not yet | Not yet | Host e2e |

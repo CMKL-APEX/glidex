@@ -34,6 +34,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const { project, me } = useSession();
   const [name, setName] = useState("");
   const [vcpuCount, setVcpuCount] = useState(1);
+  const [isElastic, setIsElastic] = useState(false);
+  const [minVcpus, setMinVcpus] = useState<number | "">("");
+  const [maxVcpus, setMaxVcpus] = useState<number | "">("");
+  const [cpuWeight, setCpuWeight] = useState<number | "">("");
   const [memSizeMib, setMemSizeMib] = useState(1024);
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
@@ -261,6 +265,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       await onSubmit({
         name,
         vcpu_count: vcpuCount,
+        min_vcpus: isElastic && minVcpus !== "" ? Number(minVcpus) : undefined,
+        max_vcpus: isElastic && maxVcpus !== "" ? Number(maxVcpus) : undefined,
+        cpu_weight: isElastic && cpuWeight !== "" ? Number(cpuWeight) : undefined,
         mem_size_mib: memSizeMib,
         kernel_image_path: !firmware && kernelSource === "path" ? kernelPath : "",
         initrd_path: !firmware && kernelSource === "path" && initrdPath ? initrdPath : undefined,
@@ -382,6 +389,62 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             }}
           />
         </div>
+      </div>
+
+      <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/50">
+        <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-700">
+          <input
+            type="checkbox"
+            className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+            checked={isElastic}
+            onChange={(e) => {
+              setIsElastic(e.target.checked);
+              if (e.target.checked) {
+                if (minVcpus === "") setMinVcpus(vcpuCount);
+                if (maxVcpus === "") setMaxVcpus(Math.max(vcpuCount, 4));
+              }
+            }}
+          />
+          Elastic CPU scaling (min/max vCPUs, weight)
+        </label>
+        {isElastic && (
+          <div className="grid grid-cols-3 gap-3 mt-2">
+            <div>
+              <label className="block text-xs font-medium text-gray-600">Min vCPUs</label>
+              <input
+                type="number"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                min={hypervisor === "pylon" ? 0 : 1}
+                max={vcpuCount}
+                value={minVcpus}
+                onChange={(e) => setMinVcpus(e.target.value === "" ? "" : Number(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600">Max vCPUs</label>
+              <input
+                type="number"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                min={vcpuCount}
+                max={hypervisor === "pylon" ? 64 : 255}
+                value={maxVcpus}
+                onChange={(e) => setMaxVcpus(e.target.value === "" ? "" : Number(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600">Weight (1–10000)</label>
+              <input
+                type="number"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                min="1"
+                max="10000"
+                placeholder="100"
+                value={cpuWeight}
+                onChange={(e) => setCpuWeight(e.target.value === "" ? "" : Number(e.target.value))}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div>
