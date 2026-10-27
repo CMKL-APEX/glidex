@@ -12,6 +12,7 @@ use super::{
 };
 use crate::models::VmConfig;
 use glidex_hv_client::{Observed, ch::ChClient};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Derive the shared memory path for a Pylon VM from its api socket path.
@@ -141,13 +142,112 @@ impl HypervisorDriver for PylonDriver {
         Ok(())
     }
 
-    fn resize_vcpus(&self, _api_socket: &str, _desired: u8) -> Result<(), HypervisorError> {
-        // Pylon operates with all max_vcpus booted in the guest MADT and manages
-        // elasticity cooperatively via pylond / shared memory (GPA 0xFEDF_0000).
-        // It avoids ACPI CPU hotplug/unplug, which causes guest stop_machine stalls
-        // and offline failures in guest SMP.
-        Ok(())
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
+        let vm_id = pylon_vm_id(api_socket);
+        send_pylon_policy_update(
+            DEFAULT_PYLOND_SOCKET,
+            vm_id,
+            None,
+            Some(desired as u32),
+            None,
+        )
     }
+
+    fn update_policy(
+        &self,
+        api_socket: &str,
+        min_cores: Option<u32>,
+        max_cores: Option<u32>,
+        priority_weight: Option<u32>,
+    ) -> Result<(), HypervisorError> {
+        let vm_id = pylon_vm_id(api_socket);
+        send_pylon_policy_update(
+            DEFAULT_PYLOND_SOCKET,
+            vm_id,
+            min_cores,
+            max_cores,
+            priority_weight,
+        )
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct VmPolicyUpdateRequest {
+    vm_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_cores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_cores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority_weight: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct VmPolicyUpdateResponse {
+    accepted: bool,
+    message: String,
+    #[serde(default)]
+    min_cores: Option<u32>,
+    #[serde(default)]
+    max_cores: Option<u32>,
+    #[serde(default)]
+    priority_weight: Option<u32>,
+}
+
+pub fn send_pylon_policy_update(
+    pylond_socket: &str,
+    vm_id: u64,
+    min_cores: Option<u32>,
+    max_cores: Option<u32>,
+    priority_weight: Option<u32>,
+) -> Result<(), HypervisorError> {
+    let path = Path::new(pylond_socket);
+    if !path.exists() {
+        return Ok(());
+    }
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(path).map_err(|e| {
+        HypervisorError::SocketConnection(format!(
+            "failed to connect to pylond socket {pylond_socket}: {e}"
+        ))
+    })?;
+    let req = VmPolicyUpdateRequest {
+        vm_id,
+        min_cores,
+        max_cores,
+        priority_weight,
+    };
+    let payload = serde_json::to_vec(&req).map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to serialize pylond policy update: {e}"))
+    })?;
+    stream.write_all(&payload).map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to send policy update to pylond: {e}"))
+    })?;
+    stream.flush().map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to flush policy update to pylond: {e}"))
+    })?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    let mut resp_buf = Vec::new();
+    stream.read_to_end(&mut resp_buf).map_err(|e| {
+        HypervisorError::ApiRequest(format!(
+            "failed to read policy update response from pylond: {e}"
+        ))
+    })?;
+    let resp: VmPolicyUpdateResponse = serde_json::from_slice(&resp_buf).map_err(|e| {
+        HypervisorError::ApiRequest(format!(
+            "failed to parse pylond policy update response: {e}"
+        ))
+    })?;
+    if !resp.accepted {
+        return Err(HypervisorError::ApiRequest(format!(
+            "pylond rejected policy update for VM {vm_id}: {}",
+            resp.message
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

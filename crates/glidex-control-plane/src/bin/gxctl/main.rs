@@ -612,6 +612,10 @@ fn print_help() {
         "service-account <name|id> [--set <service account> | --none]".cyan()
     );
     println!(
+        "  {} - Scale or adjust VM CPU elasticity (min/max vCPUs, weight)",
+        "scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -1458,6 +1462,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "pause" => vm::pause(client, &parts[1..]).await,
         "kernel" => vm::kernel(client, &parts[1..]).await,
         "service-account" => vm::service_account(client, &parts[1..]).await,
+        "scale" => vm::scale(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {

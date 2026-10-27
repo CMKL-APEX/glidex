@@ -26,6 +26,7 @@ import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
 import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
+import VmCpuScale from "../components/VmCpuScale";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -235,6 +236,7 @@ export default function VmDetail() {
                     </span>
                   )}
                 </p>
+                <VmCpuScale vm={vm} onChanged={fetchVm} />
               </div>
               <div>
                 <h3 className="text-sm font-medium text-gray-500">Memory</h3>

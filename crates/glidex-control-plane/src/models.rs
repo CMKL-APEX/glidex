@@ -586,10 +586,21 @@ pub struct InstanceRef {
     /// Maximum active vCPUs configured at launch (ACPI slots or Pylon max cores).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_max_vcpus: Option<u8>,
+    /// Currently applied elastic CPU policy (min/max vCPUs, weight) in pylond / hypervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_cpu_policy: Option<AppliedCpuPolicy>,
     /// Uncorrectable AER errors each of its VFIO devices had at launch
     /// (address → count, spec/host-topology.md §5.4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub device_errors: std::collections::BTreeMap<String, u64>,
+}
+
+/// The running guest's applied CPU policy parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedCpuPolicy {
+    pub min_vcpus: u8,
+    pub max_vcpus: u8,
+    pub weight: u32,
 }
 
 pub use glidex_vm_shim::state::ExitCause;

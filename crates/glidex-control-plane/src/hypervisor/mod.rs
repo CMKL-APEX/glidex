@@ -194,6 +194,17 @@ pub trait HypervisorDriver: Send + Sync {
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
     /// Resize the running guest's active vCPU count to `desired`.
     fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError>;
+    /// Update elastic CPU policy (min/max vCPUs, weight) on running guest.
+    fn update_policy(
+        &self,
+        api_socket: &str,
+        min_cores: Option<u32>,
+        max_cores: Option<u32>,
+        priority_weight: Option<u32>,
+    ) -> Result<(), HypervisorError> {
+        let _ = (api_socket, min_cores, max_cores, priority_weight);
+        Ok(())
+    }
 }
 
 pub fn driver(ty: HypervisorType) -> &'static dyn HypervisorDriver {

@@ -100,15 +100,24 @@ fn crash_delay(restarts: u32) -> u64 {
 fn launch_relevant(spec: &VmSpec) -> serde_json::Value {
     let c = &spec.config;
     let is_elastic = c.is_elastic();
-    let vcpu_count_repr = if is_elastic {
+    let is_pylon = c.hypervisor == HypervisorType::Pylon;
+    let vcpu_count_repr = if is_elastic || is_pylon {
         serde_json::Value::Null
     } else {
         serde_json::json!(c.vcpu_count)
     };
+    let (min_vcpus_repr, max_vcpus_repr) = if is_pylon {
+        (serde_json::Value::Null, serde_json::Value::Null)
+    } else {
+        (
+            serde_json::json!(c.min_vcpus),
+            serde_json::json!(c.max_vcpus),
+        )
+    };
     serde_json::json!({
         "vcpu_count": vcpu_count_repr,
-        "min_vcpus": c.min_vcpus,
-        "max_vcpus": c.max_vcpus,
+        "min_vcpus": min_vcpus_repr,
+        "max_vcpus": max_vcpus_repr,
         "mem_size_mib": c.mem_size_mib,
         "kernel_args": c.kernel_args,
         "credential": c.credential,
@@ -585,6 +594,7 @@ impl VmManager {
             growpart_seq: None,
             cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
             launched_max_vcpus: Some(c.effective_max_vcpus()),
+            applied_cpu_policy: None,
             device_errors: device_errors_now(&c.vfio_devices),
         }
     }
@@ -1366,6 +1376,11 @@ impl VmManager {
             growpart_seq,
             cpu_affinity,
             launched_max_vcpus: Some(config.effective_max_vcpus()),
+            applied_cpu_policy: Some(crate::models::AppliedCpuPolicy {
+                min_vcpus: config.effective_min_vcpus(),
+                max_vcpus: config.effective_max_vcpus(),
+                weight: config.effective_cpu_weight(),
+            }),
             device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
@@ -1735,7 +1750,76 @@ impl VmManager {
         // Pylon boots with all max_vcpus in the MADT and arbitrates cores cooperatively
         // via pylond without ACPI hot-unplug.
         if vm.hypervisor() == HypervisorType::Pylon {
-            clear_cond(&mut st.conditions, "VcpuResizePending");
+            let desired_min = vm.spec.config.effective_min_vcpus();
+            let desired_max = vm.spec.config.effective_max_vcpus();
+            let desired_weight = vm.spec.config.effective_cpu_weight();
+            let launched_max = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.launched_max_vcpus)
+                .unwrap_or(desired_max);
+
+            let applied = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.applied_cpu_policy.as_ref());
+
+            let current_min = applied.map(|a| a.min_vcpus).unwrap_or(desired_min);
+            let current_max = applied.map(|a| a.max_vcpus).unwrap_or(launched_max);
+            let current_weight = applied.map(|a| a.weight).unwrap_or(desired_weight);
+
+            let drift = applied.is_none()
+                || current_min != desired_min
+                || current_max != desired_max
+                || current_weight != desired_weight;
+
+            if drift {
+                if guest != GuestState::Running {
+                    set_cond(
+                        &mut st.conditions,
+                        "VcpuResizePending",
+                        Tristate::True,
+                        "GuestPaused",
+                        "vCPU policy applies once the guest runs",
+                    );
+                } else {
+                    let api = paths.api_socket.clone();
+                    let effective_max = desired_max.min(launched_max);
+                    let effective_min = desired_min.min(effective_max);
+                    match blocking(move || {
+                        d.update_policy(
+                            &api,
+                            Some(effective_min as u32),
+                            Some(effective_max as u32),
+                            Some(desired_weight),
+                        )
+                    })
+                    .await?
+                    {
+                        Ok(()) => {
+                            clear_cond(&mut st.conditions, "VcpuResizePending");
+                            if let Some(inst) = st.instance.as_mut() {
+                                inst.applied_cpu_policy = Some(crate::models::AppliedCpuPolicy {
+                                    min_vcpus: effective_min,
+                                    max_vcpus: effective_max,
+                                    weight: desired_weight,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            set_cond(
+                                &mut st.conditions,
+                                "VcpuResizePending",
+                                Tristate::True,
+                                "ResizeFailed",
+                                e.to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                clear_cond(&mut st.conditions, "VcpuResizePending");
+            }
         } else if let Some(observed_vcpus) = observed.vcpu_count {
             let desired_vcpus = vm.spec.config.vcpu_count;
             let launched_max = st
@@ -1800,9 +1884,16 @@ impl VmManager {
 
         // ---- 8. RestartRequired, Ready ------------------------------------------
         let launched = blocking(move || launched_spec(&paths)).await?;
-        let restart_required = launched
-            .as_ref()
-            .is_some_and(|l| launch_relevant(l) != launch_relevant(&vm.spec));
+        let restart_required = launched.as_ref().is_some_and(|l| {
+            if vm.hypervisor() == HypervisorType::Pylon {
+                let launched_max = l.config.effective_max_vcpus();
+                let desired_max = vm.spec.config.effective_max_vcpus();
+                if desired_max > launched_max {
+                    return true;
+                }
+            }
+            launch_relevant(l) != launch_relevant(&vm.spec)
+        });
         if restart_required {
             set_cond(
                 &mut st.conditions,
@@ -2249,6 +2340,29 @@ mod tests {
             launch_relevant(&elastic_spec),
             launch_relevant(&elastic_spec_resized),
             "changing vcpu_count within elastic range must NOT change launch_relevant"
+        );
+
+        let pylon_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "hypervisor": "pylon",
+                "vcpu_count": 4,
+                "min_vcpus": 1,
+                "max_vcpus": 4,
+                "cpu_weight": 100,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut pylon_spec_scaled = pylon_spec.clone();
+        pylon_spec_scaled.config.min_vcpus = Some(2);
+        pylon_spec_scaled.config.cpu_weight = Some(250);
+        assert_eq!(
+            launch_relevant(&pylon_spec),
+            launch_relevant(&pylon_spec_scaled),
+            "changing min_vcpus or cpu_weight on Pylon VM must NOT change launch_relevant"
         );
     }
 }

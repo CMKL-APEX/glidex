@@ -772,6 +772,20 @@ export function setVmKernel(id: string, change: { kernel?: string; follow?: bool
   return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
 }
 
+/** Adjust elastic CPU scaling policy (min/max vCPUs, weight, vcpu count). */
+export function setVmCpuPolicy(
+  id: string,
+  policy: { vcpu_count?: number; min_vcpus?: number; max_vcpus?: number; cpu_weight?: number },
+) {
+  return vmWrite(
+    rpc(VmService.method.updateVm, {
+      id,
+      change: policy,
+      update_mask: maskOf(policy),
+    }) as Promise<VmWriteResponse>,
+  );
+}
+
 /** Give a VM a service account, or take it away (`null`); it applies to the
  * VM's next token, no restart (spec/workload-identity.md W5). */
 export const setVmServiceAccount = (id: string, serviceAccount: string | null) =>
