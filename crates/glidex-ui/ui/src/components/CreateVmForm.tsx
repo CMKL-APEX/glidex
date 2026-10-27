@@ -264,7 +264,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     try {
       await onSubmit({
         name,
-        vcpu_count: vcpuCount,
+        vcpu_count: hypervisor === "pylon" && isElastic && maxVcpus !== "" ? Number(maxVcpus) : vcpuCount,
         min_vcpus: isElastic && minVcpus !== "" ? Number(minVcpus) : undefined,
         max_vcpus: isElastic && maxVcpus !== "" ? Number(maxVcpus) : undefined,
         cpu_weight: isElastic && cpuWeight !== "" ? Number(cpuWeight) : undefined,
@@ -415,7 +415,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 type="number"
                 className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
                 min={hypervisor === "pylon" ? 0 : 1}
-                max={vcpuCount}
+                max={hypervisor === "pylon" ? (typeof maxVcpus === "number" ? maxVcpus : 64) : vcpuCount}
                 value={minVcpus}
                 onChange={(e) => setMinVcpus(e.target.value === "" ? "" : Number(e.target.value))}
               />
@@ -425,10 +425,16 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <input
                 type="number"
                 className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
-                min={vcpuCount}
+                min={hypervisor === "pylon" ? (typeof minVcpus === "number" ? minVcpus : 1) : vcpuCount}
                 max={hypervisor === "pylon" ? 64 : 255}
                 value={maxVcpus}
-                onChange={(e) => setMaxVcpus(e.target.value === "" ? "" : Number(e.target.value))}
+                onChange={(e) => {
+                  const val = e.target.value === "" ? "" : Number(e.target.value);
+                  setMaxVcpus(val);
+                  if (hypervisor === "pylon" && typeof val === "number") {
+                    setVcpuCount(val);
+                  }
+                }}
               />
             </div>
             <div>

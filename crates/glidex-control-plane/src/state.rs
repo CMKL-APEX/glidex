@@ -2206,6 +2206,9 @@ impl VmManager {
                 a.as_str()
             )));
         }
+        if config.hypervisor == HypervisorType::Pylon && config.is_elastic() {
+            config.vcpu_count = config.effective_max_vcpus();
+        }
         Self::check_elasticity(&config)?;
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
@@ -2989,6 +2992,9 @@ impl VmManager {
             }
             if let Some(weight) = c.cpu_weight {
                 config.cpu_weight = weight;
+            }
+            if config.hypervisor == HypervisorType::Pylon && config.is_elastic() {
+                config.vcpu_count = config.effective_max_vcpus();
             }
             Self::check_elasticity(config)?;
             if let Some(m) = c.mem_size_mib {

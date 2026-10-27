@@ -1732,18 +1732,18 @@ impl VmManager {
         }
 
         // 7b. vCPU resize / live elasticity drift (spec/pylon.md §4.3)
-        if let Some(observed_vcpus) = observed.vcpu_count {
+        // Pylon boots with all max_vcpus in the MADT and arbitrates cores cooperatively
+        // via pylond without ACPI hot-unplug.
+        if vm.hypervisor() == HypervisorType::Pylon {
+            clear_cond(&mut st.conditions, "VcpuResizePending");
+        } else if let Some(observed_vcpus) = observed.vcpu_count {
             let desired_vcpus = vm.spec.config.vcpu_count;
             let launched_max = st
                 .instance
                 .as_ref()
                 .and_then(|i| i.launched_max_vcpus)
                 .unwrap_or_else(|| vm.spec.config.effective_max_vcpus());
-            let floor = if vm.hypervisor() == HypervisorType::Pylon {
-                0
-            } else {
-                1
-            };
+            let floor = 1;
             if observed_vcpus != desired_vcpus && (floor..=launched_max).contains(&desired_vcpus) {
                 if guest != GuestState::Running {
                     set_cond(

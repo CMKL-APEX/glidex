@@ -141,8 +141,12 @@ impl HypervisorDriver for PylonDriver {
         Ok(())
     }
 
-    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
-        Ok(ChClient::new(api_socket).resize_vcpus(desired)?)
+    fn resize_vcpus(&self, _api_socket: &str, _desired: u8) -> Result<(), HypervisorError> {
+        // Pylon operates with all max_vcpus booted in the guest MADT and manages
+        // elasticity cooperatively via pylond / shared memory (GPA 0xFEDF_0000).
+        // It avoids ACPI CPU hotplug/unplug, which causes guest stop_machine stalls
+        // and offline failures in guest SMP.
+        Ok(())
     }
 }
 
@@ -305,15 +309,8 @@ mod tests {
         let req = s.join().unwrap();
         assert!(req.starts_with("PUT /api/v1/vm.resume HTTP/1.1"));
 
-        // resize_vcpus
-        let s = serve_once(
-            &sock,
-            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        );
+        // resize_vcpus (no-op on pylon to avoid destructive ACPI CPU unplug)
         driver.resize_vcpus(sock_str, 6).unwrap();
-        let req = s.join().unwrap();
-        assert!(req.starts_with("PUT /api/v1/vm.resize HTTP/1.1"));
-        assert!(req.contains("\"desired_vcpus\":6") || req.contains("\"desired_vcpus\": 6"));
 
         // add_device
         let s = serve_once(
