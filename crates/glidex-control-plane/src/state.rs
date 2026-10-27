@@ -1296,6 +1296,11 @@ impl VmManager {
             t.reserve(glidex_ovs::tuning::parse_cpu_list(list), "config");
             t.reserved_by_config = true;
         }
+        if probe.features.pylond
+            && let Some(t) = probe.topology.as_mut()
+        {
+            t.reserve_pylon_cores();
+        }
         // The devices a VM could be given, with their readiness, for pools
         // (spec/host-topology.md §9).
         if let Some(t) = probe.topology.as_mut() {

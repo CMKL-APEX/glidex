@@ -385,5 +385,5 @@ Stacked PRs on `main`:
 | P0 | Done | — | — | — |
 | P1 | Done | Done | Done | — |
 | P2 | Done | Done | Done | — |
-| P3 | Done | Not yet | Not yet | `glidex-pylond.service`, installer |
+| P3 | Done | Done | Done | — |
 | P4 | Done | Not yet | Not yet | Host e2e |

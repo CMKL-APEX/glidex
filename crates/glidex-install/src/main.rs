@@ -64,6 +64,7 @@ const METAD_UNIT: &str = "/etc/systemd/system/glidex-metad.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
 const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
 const STORD_UNIT: &str = "/etc/systemd/system/glidex-stord.service";
+const PYLOND_UNIT: &str = "/etc/systemd/system/glidex-pylond.service";
 /// glidex-stord's settings: the volume groups it may use
 /// (spec/storage.md S17). The administrator's; the installer only adds the
 /// `--stord-allow-vg` ones.
@@ -173,6 +174,7 @@ fn main() -> Result<()> {
         ensure_service_user(user.as_deref())?;
     }
     install_cloud_hypervisor(&platform)?;
+    install_pylon(&opts, &mut changed)?;
     install_binaries(&opts, &user_home, &mut changed)?;
     install_ui_assets()?;
     // Our own home, not SUDO_USER's: a root run mustn't leave root-owned
@@ -835,6 +837,8 @@ struct Options {
     sriov: Vec<(String, u32)>,
     /// `--now`: apply the boot devices now as well. Never saved.
     vfio_now: bool,
+    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/pylon.md §9).
+    with_pylon: Option<bool>,
 }
 
 /// `a,b , c` → `[a, b, c]`.
@@ -922,6 +926,7 @@ impl Default for Options {
             vfio_devices: Vec::new(),
             sriov: Vec::new(),
             vfio_now: false,
+            with_pylon: None,
         }
     }
 }
@@ -942,6 +947,7 @@ impl Options {
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
                 "ovn" => o.ovn = v == "true",
                 "tailscale_cert" => o.tailscale_cert = Some(v == "true"),
+                "with_pylon" => o.with_pylon = Some(v == "true"),
                 "vfio_devices" => o.vfio_devices = split_list(v),
                 "sriov" => {
                     o.sriov = split_list(v)
@@ -976,6 +982,8 @@ impl Options {
                 "--ovn" => o.ovn = true,
                 "--no-ovn" => o.ovn = false,
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
+                "--with-pylon" | "--pylon" => o.with_pylon = Some(true),
+                "--no-pylon" => o.with_pylon = Some(false),
                 "--datastore" => o
                     .datastores
                     .push(DatastoreReg::parse(&value("--datastore")?, true)?),
@@ -1100,6 +1108,9 @@ impl Options {
         if let Some(t) = self.tailscale_cert {
             text.push_str(&format!("tailscale_cert={t}\n"));
         }
+        if let Some(w) = self.with_pylon {
+            text.push_str(&format!("with_pylon={w}\n"));
+        }
         if !self.vfio_devices.is_empty() {
             text.push_str(&format!("vfio_devices={}\n", self.vfio_devices.join(",")));
         }
@@ -1137,6 +1148,8 @@ fn print_help() {
          \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
+         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/pylon.md)\n\
+         \x20     --no-pylon             skip Pylon hypervisor and pylond\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
          \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
          \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
@@ -2103,6 +2116,7 @@ struct Changes {
     /// stord.json changed: stord reads it at start.
     stord_config: bool,
     metad: bool,
+    pylond: bool,
 }
 
 /// `cloud-hypervisor v53.0` (possibly with a suffix) → `v53.0`.
@@ -2171,6 +2185,86 @@ fn warn_shadowed(name: &str, ours: &str) {
             );
         }
     }
+}
+
+fn find_pylon_source() -> Option<PathBuf> {
+    let release = target_dir().join("release");
+    let in_release = release.join("pylon");
+    if in_release.exists() {
+        return Some(in_release);
+    }
+    if let Some(parent) = workspace_root().parent() {
+        let pylon_target = parent.join("pylon/target/release");
+        let pylon_bin = pylon_target.join("pylon");
+        if pylon_bin.exists() {
+            return Some(pylon_bin);
+        }
+        let ch_bin = pylon_target.join("cloud-hypervisor");
+        if ch_bin.exists() {
+            return Some(ch_bin);
+        }
+    }
+    None
+}
+
+fn find_pylond_source() -> Option<PathBuf> {
+    let release = target_dir().join("release");
+    let in_release = release.join("pylond");
+    if in_release.exists() {
+        return Some(in_release);
+    }
+    if let Some(parent) = workspace_root().parent() {
+        let pylond_bin = parent.join("pylon/target/release/pylond");
+        if pylond_bin.exists() {
+            return Some(pylond_bin);
+        }
+    }
+    None
+}
+
+/// Installs Pylon hypervisor and pylond daemon when requested or present
+/// in the local build / release bundle (spec/pylon.md §9).
+fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
+    let pylon_src = find_pylon_source();
+    let pylond_src = find_pylond_source();
+    let want = match opts.with_pylon {
+        Some(true) => true,
+        Some(false) => false,
+        None => pylon_src.is_some() || pylond_src.is_some(),
+    };
+    if !want {
+        return Ok(());
+    }
+    section("Pylon & pylond");
+    if let Some(src) = pylon_src {
+        let dst = format!("{}/pylon", BIN_DIR);
+        if install_if_changed(&src, &dst, "0755")? {
+            println!("{} {}", "Updated:".green(), dst);
+        } else {
+            println!("{} {}", "Up to date:".green(), dst);
+        }
+        let has_cap = run_capture("getcap", &[&dst])
+            .is_ok_and(|o| o.contains("cap_net_admin"));
+        if !has_cap {
+            sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
+            println!("{} cap_net_admin on {}", "Granted:".green(), dst);
+        }
+    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
+        bail!("--with-pylon: pylon binary not found in target/release or adjacent pylon repo");
+    }
+
+    if let Some(src) = pylond_src {
+        let dst = format!("{}/pylond", BIN_DIR);
+        if install_if_changed(&src, &dst, "0755")? {
+            println!("{} {}", "Updated:".green(), dst);
+            changed.pylond = true;
+        } else {
+            println!("{} {}", "Up to date:".green(), dst);
+        }
+    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylond", BIN_DIR)).exists() {
+        bail!("--with-pylon: pylond binary not found in target/release or adjacent pylon repo");
+    }
+    Ok(())
 }
 
 /// UEFI firmware asset name and its sha256 for `EDK2_FIRMWARE_VERSION`.
@@ -2948,6 +3042,23 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
             ch_binary.display()
         );
     }
+    let pylon_binary = PathBuf::from(format!("{}/pylon", BIN_DIR));
+    if pylon_binary.exists() {
+        let has_cap = run_capture("getcap", &[&pylon_binary.to_string_lossy()])
+            .is_ok_and(|o| o.contains("cap_net_admin"));
+        if !has_cap {
+            sudo(&argv(&[
+                "setcap",
+                "cap_net_admin+ep",
+                &pylon_binary.to_string_lossy(),
+            ]))?;
+            println!(
+                "{} cap_net_admin on {}",
+                "Granted:".green(),
+                pylon_binary.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -3532,6 +3643,11 @@ fn install_services(
         STORD_UNIT,
         "0644",
     )?;
+    let pylond_unit = root.join("packaging/glidex-pylond.service");
+    let pylond_installed =
+        pylond_unit.exists() && Path::new(&format!("{}/pylond", BIN_DIR)).exists();
+    let pylond_unit_changed = pylond_installed
+        && install_if_changed(&pylond_unit, PYLOND_UNIT, "0644")?;
     let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
         || stord_unit_changed
@@ -3540,6 +3656,7 @@ fn install_services(
         || authd_socket_changed
         || authd_service_changed
         || vm_units_changed
+        || pylond_unit_changed
         || ts.reload
     {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
@@ -3553,6 +3670,9 @@ fn install_services(
     }
     enable_unit("glidex-authd.socket")?;
     enable_unit("glidex-stord.service")?;
+    if pylond_installed {
+        enable_unit("glidex-pylond.service")?;
+    }
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
     if metad {
@@ -3581,6 +3701,18 @@ fn install_services(
         "{} glidex-stord (/run/glidex-stord/stord.sock)",
         "Running:".green()
     );
+
+    if pylond_installed {
+        let pylond = "glidex-pylond.service";
+        if changed.pylond || pylond_unit_changed || !unit_active(pylond) {
+            sudo(&argv(&["systemctl", "restart", pylond]))?;
+        }
+        println!(
+            "{} {} (/run/pylon/pylond.sock)",
+            "Running:".green(),
+            pylond
+        );
+    }
 
     // Control plane: VMs run in their own units and survive a restart. A
     // control plane from before that still stops every VM when it stops,
@@ -3763,6 +3895,8 @@ fn shim_allowlist(exists: impl Fn(&str) -> bool) -> String {
         "/usr/bin/cloud-hypervisor".to_string(),
         format!("/usr/bin/{}", qemu),
         format!("/usr/local/bin/{}", qemu),
+        "/usr/local/bin/pylon".to_string(),
+        "/usr/bin/pylon".to_string(),
     ];
     let list: Vec<&String> = candidates.iter().filter(|p| exists(p)).collect();
     serde_json::to_string_pretty(&serde_json::json!({ "hypervisors": list })).unwrap_or_default()
@@ -4118,6 +4252,27 @@ mod tests {
                 .tailscale_cert,
             Some(false),
             "a 'no' is remembered too: not asked again"
+        );
+
+        // The Pylon hypervisor: not saved until chosen, then kept; flags override.
+        assert_eq!(Options::default().with_pylon, None);
+        assert!(!Options::default().render().contains("with_pylon"));
+        let pylon_on = Options::parse(None, &args(&["--with-pylon"])).unwrap();
+        assert!(
+            pylon_on.render().ends_with("with_pylon=true\n"),
+            "{}",
+            pylon_on.render()
+        );
+        let kept_pylon = Options::parse(Some(&pylon_on.render()), &[]).unwrap();
+        assert_eq!(kept_pylon.with_pylon, Some(true));
+        let pylon_off = Options::parse(Some(&pylon_on.render()), &args(&["--no-pylon"])).unwrap();
+        assert_eq!(pylon_off.with_pylon, Some(false));
+        assert_eq!(
+            Options::parse(Some(&pylon_off.render()), &[])
+                .unwrap()
+                .with_pylon,
+            Some(false),
+            "a 'no' is remembered too"
         );
 
         assert!(Options::parse(None, &args(&["--bogus"])).is_err());
@@ -4587,7 +4742,7 @@ mod tests {
             "Restart=no",
             "Slice=glidex-vms.slice",
             "PrivateTmp=yes",
-            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex",
+            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv/glidex",
             "DeviceAllow=/dev/kvm rw",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
@@ -4622,6 +4777,30 @@ mod tests {
             list,
             serde_json::json!({ "hypervisors": ["/usr/local/bin/cloud-hypervisor"] })
         );
+        let list_pylon: serde_json::Value =
+            serde_json::from_str(&shim_allowlist(|p| p == "/usr/local/bin/pylon")).unwrap();
+        assert_eq!(
+            list_pylon,
+            serde_json::json!({ "hypervisors": ["/usr/local/bin/pylon"] })
+        );
+    }
+
+    #[test]
+    fn pylond_unit_is_sandboxed_with_glidex_group() {
+        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-pylond.service"))
+            .unwrap();
+        let s = settings(&unit);
+        for line in [
+            "Type=simple",
+            "User=root",
+            "Group=glidex",
+            "UMask=0007",
+            "RuntimeDirectory=pylon",
+            "RuntimeDirectoryMode=0750",
+            "Before=glidex-control-plane.service",
+        ] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
     }
 
     #[test]
