@@ -314,6 +314,24 @@ mod tests {
     }
 
     #[test]
+    fn cpu_weight_rounds_trip_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), "/bin/true");
+        f.cpu_weight = 500;
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap().cpu_weight, 500);
+
+        // Omitted cpu_weight in JSON defaults to 100
+        let mut v = serde_json::to_value(sample(dir.path(), "/bin/true")).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("cpu_weight");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let parsed = LaunchFile::read(&path).unwrap();
+        assert_eq!(parsed.cpu_weight, 100);
+    }
+
+    #[test]
     fn placement_fields_are_validated() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("hv");

@@ -146,6 +146,23 @@ impl HypervisorDriver for PylonDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    fn serve_once(
+        path: &std::path::Path,
+        response: &'static str,
+    ) -> std::thread::JoinHandle<String> {
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        })
+    }
 
     #[test]
     fn pylon_paths_and_ids() {
@@ -155,6 +172,25 @@ mod tests {
             "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000042/pylon.shm"
         );
         assert_eq!(pylon_vm_id(sock), 0x42);
+    }
+
+    #[test]
+    fn pylon_vm_id_edge_cases() {
+        // Non-UUID directory path falls back to 1
+        assert_eq!(pylon_vm_id("/run/glidex-cp/vms/non-uuid-name/api.sock"), 1);
+        // All-zero UUID yields 0, which filters to 1
+        assert_eq!(
+            pylon_vm_id("/run/glidex-cp/vms/00000000-0000-0000-0000-000000000000/api.sock"),
+            1
+        );
+        // Symmetric UUID where high == low yields 0 XOR, which filters to 1
+        assert_eq!(
+            pylon_vm_id("/run/glidex-cp/vms/01234567-89ab-cdef-0123-456789abcdef/api.sock"),
+            1
+        );
+        // Valid non-zero UUID
+        let id = pylon_vm_id("/run/glidex-cp/vms/a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d/api.sock");
+        assert_ne!(id, 0);
     }
 
     #[test]
@@ -180,5 +216,122 @@ mod tests {
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=500"));
         assert!(val.contains("vm_id=1"));
+    }
+
+    #[test]
+    fn pylon_args_scale_to_zero() {
+        let c = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 0, "max_vcpus": 8, "cpu_weight": 200,
+            "mem_size_mib": 1024, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": "console=hvc0 root=/dev/vda",
+        }))
+        .unwrap();
+        let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000002/api.sock";
+        let a = args(&c, api);
+        let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
+        assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
+        let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
+        let val = &a[pos + 1];
+        assert!(val.contains("initial_active_vcpus=2"));
+        assert!(val.contains("min_cores=0"));
+        assert!(val.contains("max_cores=8"));
+        assert!(val.contains("priority_weight=200"));
+        assert!(val.contains("vm_id=2"));
+    }
+
+    #[test]
+    fn pylon_args_fixed_size_vm() {
+        let c = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 4,
+            "mem_size_mib": 2048, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": "console=hvc0 root=/dev/vda",
+        }))
+        .unwrap();
+        let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000003/api.sock";
+        let a = args(&c, api);
+        let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
+        assert_eq!(&a[cpus_pos + 1], "boot=4,max=4");
+        let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
+        let val = &a[pos + 1];
+        assert!(val.contains("initial_active_vcpus=4"));
+        assert!(val.contains("min_cores=4"));
+        assert!(val.contains("max_cores=4"));
+        assert!(val.contains("priority_weight=100"));
+        assert!(val.contains("vm_id=3"));
+    }
+
+    #[test]
+    fn pylon_args_with_vcpu_pins() {
+        let mut c: VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 2,
+            "mem_size_mib": 1024, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": "console=hvc0 root=/dev/vda",
+        }))
+        .unwrap();
+        c.vcpu_pins = vec![12, 14];
+        let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000004/api.sock";
+        let a = args(&c, api);
+        let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
+        assert_eq!(&a[cpus_pos + 1], "boot=2,max=2,affinity=[0@[12],1@[14]]");
+    }
+
+    #[test]
+    fn pylon_driver_methods() {
+        let driver = PylonDriver;
+        assert_eq!(driver.hypervisor_type(), HypervisorType::Pylon);
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("api.sock");
+        let sock_str = sock.to_str().unwrap();
+
+        // pause
+        let s = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        driver.pause(sock_str).unwrap();
+        let req = s.join().unwrap();
+        assert!(req.starts_with("PUT /api/v1/vm.pause HTTP/1.1"));
+
+        // resume
+        let s = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        driver.resume(sock_str).unwrap();
+        let req = s.join().unwrap();
+        assert!(req.starts_with("PUT /api/v1/vm.resume HTTP/1.1"));
+
+        // resize_vcpus
+        let s = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        driver.resize_vcpus(sock_str, 6).unwrap();
+        let req = s.join().unwrap();
+        assert!(req.starts_with("PUT /api/v1/vm.resize HTTP/1.1"));
+        assert!(req.contains("\"desired_vcpus\":6") || req.contains("\"desired_vcpus\": 6"));
+
+        // add_device
+        let s = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        driver
+            .add_device(sock_str, "/sys/bus/pci/devices/0000:41:00.0")
+            .unwrap();
+        let req = s.join().unwrap();
+        assert!(req.starts_with("PUT /api/v1/vm.add-device HTTP/1.1"));
+
+        // remove_device
+        let s = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        driver
+            .remove_device(sock_str, "/sys/bus/pci/devices/0000:41:00.0")
+            .unwrap();
+        let req = s.join().unwrap();
+        assert!(req.starts_with("PUT /api/v1/vm.remove-device HTTP/1.1"));
     }
 }

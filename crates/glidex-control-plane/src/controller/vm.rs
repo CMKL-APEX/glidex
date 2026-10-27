@@ -2210,4 +2210,45 @@ mod tests {
             .unwrap();
         assert_eq!(db.revision(), before + 1);
     }
+
+    #[test]
+    fn launch_relevant_elastic_vs_fixed() {
+        let fixed_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 2,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut fixed_spec_changed = fixed_spec.clone();
+        fixed_spec_changed.config.vcpu_count = 4;
+        assert_ne!(
+            launch_relevant(&fixed_spec),
+            launch_relevant(&fixed_spec_changed),
+            "changing vcpu_count on fixed VM must change launch_relevant"
+        );
+
+        let elastic_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 2,
+                "min_vcpus": 1,
+                "max_vcpus": 8,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut elastic_spec_resized = elastic_spec.clone();
+        elastic_spec_resized.config.vcpu_count = 6;
+        assert_eq!(
+            launch_relevant(&elastic_spec),
+            launch_relevant(&elastic_spec_resized),
+            "changing vcpu_count within elastic range must NOT change launch_relevant"
+        );
+    }
 }

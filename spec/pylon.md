@@ -386,4 +386,4 @@ Stacked PRs on `main`:
 | P1 | Done | Done | Done | — |
 | P2 | Done | Done | Done | — |
 | P3 | Done | Done | Done | — |
-| P4 | Done | Not yet | Not yet | Host e2e |
+| P4 | Done | Done | Done | Host e2e |
