@@ -1993,7 +1993,7 @@ Task 6b, browser logins at a trusted directory:
 | D72 | `AuthService::end_session_hash` queues a trusted directory's session's `sid` (`trust::EndedChains`, at most 1000); on every server, `api::trust::end_chains` posts each to its directory (`POST /d/{dir}/trust/v1/logout`, `purpose: logout`); at the directory `logout_at_directory` checks the assertion against the `TrustedCluster`'s key and ends only that client's chain (`RefreshTokens::end_client_family`), `204` either way, audited as `endClusterSession` when it ended one |
 | D73 | `push_report` sends `ui_callback` (`trusted_login::callback_url`); `api::trust::report` registers it when it is an `http(s)` URL (`valid_callback`) and differs, audited `registerCallback` |
 | Tests | `trust_tests.rs::logging_out_at_the_cluster_ends_the_directorys_chain`, `a_changed_web_ui_address_is_registered_again` |
-| Not yet | the UI e2e with two control planes (task 8's real check) |
+| UI e2e | `two-organizations.spec.ts`, on two more scratch control planes with their own web UIs over HTTPS (`e2e/scripts/start-peers.sh`): an offer made on north's Admissions page and accepted on acme's tenant page, north's feed, *Sign in with Acme* at north and back, logging out there ending the chain at acme (D72), and north's report on acme's tenant page (D70) |
 
 Task 6c, accounts in one browser:
 

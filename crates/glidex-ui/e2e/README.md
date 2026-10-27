@@ -23,7 +23,7 @@ runs the suite with that group as your primary group for that run only
 
 The script installs the UI's and the suite's dependencies and
 Playwright's Chromium (into `~/.cache/ms-playwright`) when missing,
-refuses to start if `:8851` / `:5174` / `:5175` are taken, and passes everything
+refuses to start if `:8851` / `:5174` / `:5175` (or the peers' `:8861`, `:5186`, `:8862`, `:5187`) are taken, and passes everything
 after `--` to `playwright test`. Without the script:
 
 ```bash
@@ -33,7 +33,7 @@ GLIDEX_TEST_IMAGE=~/images/resolute-server-cloudimg-amd64.img bun run test   # o
 
 ## What runs
 
-Playwright starts three servers (`playwright.config.ts`, `webServer`):
+Playwright starts four servers (`playwright.config.ts`, `webServer`):
 
 - `scripts/start-control-plane.sh` builds and runs the branch's
   `glidex-control-plane` on `127.0.0.1:8851` (`E2E_API_PORT`) with
@@ -51,6 +51,15 @@ Playwright starts three servers (`playwright.config.ts`, `webServer`):
   `glidex-ui` on `127.0.0.1:5175` (`E2E_UI_SERVER_PORT`) in front of the
   scratch control plane over TCP, for the Host allowlist, security
   headers, CSP and the console through its WebSocket proxy.
+- `scripts/start-peers.sh`: two more control planes for
+  `two-organizations.spec.ts`, under `/tmp/glidex-ui-e2e-peers`
+  (`GLIDEX_E2E_PEERS_HOME`): **north**, a cluster (API `:8861`, web UI
+  `https://localhost:5186`), and **acme**, another organization's
+  directory (API `:8862`, web UI `https://127.0.0.1:5187`). Both serve
+  HTTPS with self-signed certificates, as trust between organizations
+  needs, and the two web UIs are on different host names so their
+  session cookies stay apart. They don't use glidex-netd. The test user
+  is the break-glass admin on each `api.sock`.
 
 **Signing in.** The `setup` project (`tests/auth.setup.ts`) runs first:
 over `api.sock` it gives the test user's glidex user `role.system-admin`
