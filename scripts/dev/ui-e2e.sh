@@ -47,9 +47,11 @@ command -v cargo >/dev/null || die "cargo is not installed"
 api_port=${E2E_API_PORT:-8851}
 ui_port=${E2E_UI_PORT:-5174}
 ui_server_port=${E2E_UI_SERVER_PORT:-5175}
-for port in "$api_port" "$ui_port" "$ui_server_port"; do
+# The two-organization spec's control planes and web UIs (start-peers.sh).
+peer_ports=("${E2E_NORTH_API_PORT:-8861}" "${E2E_NORTH_UI_PORT:-5186}" "${E2E_ACME_API_PORT:-8862}" "${E2E_ACME_UI_PORT:-5187}")
+for port in "$api_port" "$ui_port" "$ui_server_port" "${peer_ports[@]}"; do
   if ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
-    die "port $port is in use (a previous run still going?); set E2E_API_PORT / E2E_UI_PORT / E2E_UI_SERVER_PORT"
+    die "port $port is in use (a previous run still going?); set E2E_API_PORT / E2E_UI_PORT / E2E_UI_SERVER_PORT (or E2E_NORTH_* / E2E_ACME_*)"
   fi
 done
 
