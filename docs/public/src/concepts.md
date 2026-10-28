@@ -133,11 +133,20 @@ Each VM runs on one **hypervisor**:
 - **Cloud Hypervisor** (`cloudhypervisor` in `gxctl`,
   `HYPERVISOR_CLOUD_HYPERVISOR` in the API), the default.
 - **QEMU** (`qemu` in `gxctl`, `HYPERVISOR_QEMU` in the API).
+- **Pylon** (`pylon` in `gxctl`, `HYPERVISOR_PYLON` in the API), a
+  Cloud Hypervisor fork for elastic VMs, on hosts installed with
+  `--with-pylon`.
 
-Both support the same features in Glidex: UEFI boot of cloud images,
+All three support the same features in Glidex: UEFI boot of cloud images,
 direct kernel boot, networks, disks, PCI passthrough (VFIO), pause and
 resume, and graceful shutdown. You pick the hypervisor when you create
-the VM.
+the VM. Pylon boots through the same firmware as Cloud Hypervisor.
+
+A VM can be **elastic**: it has a minimum and a maximum number of vCPUs,
+and a CPU weight. On Pylon the guest has all its maximum vCPUs and the
+host parks the idle ones in microseconds; on Cloud Hypervisor and QEMU
+you change the count of a running VM within the range. See
+[Elastic CPU](user-guide/vms.md#elastic-cpu).
 
 ## Images and firmware images
 

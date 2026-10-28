@@ -89,6 +89,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `pause <vm> [--no-wait]` | Pause |
 | `service-account <vm> [--set <account> \| --none]` | Show or change the VM's service account, the identity its guest gets glidex tokens for (from its next token) |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
+| `scale <vm> [--vcpus N] [--min N] [--max N] [--weight N]` | Show a VM's vCPUs, elastic range and weight, or change them. On an elastic Pylon VM the vCPU count is the maximum. See [Elastic CPU](../user-guide/vms.md#elastic-cpu) |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
 | `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; `system-admin`). Prints the node, or *Not placed yet* with the reason it waits |
 | `events <vm>` | What happened to the VM: starts, exits, restarts |
