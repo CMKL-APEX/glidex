@@ -127,6 +127,8 @@ tables! {
     FeedState = 61 => "feed_state",
     // The directory's chains ended in the last 12 h, for feeds (D67).
     EndedSids = 62 => "ended_sids",
+    // Each hosted directory's own audit, keyed by directory (D74).
+    DirectoryAudit = 63 => "directory_audit",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -148,7 +150,7 @@ impl TableId {
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
             | FederatedTokens | Passkeys | SigningKeys | RefreshTokens | TrustedClusters
-            | EndedSids => Scope::Directory,
+            | EndedSids | DirectoryAudit => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

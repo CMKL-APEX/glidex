@@ -1949,6 +1949,14 @@ pub fn reload_policies(
 
 pub fn read_audit(call: &Call, req: pb::ReadAuditRequest) -> ServiceResult<pb::ReadAuditResponse> {
     let all = call.allowed("readAudit", Ent::Cluster, EntitySet::new());
+    // A hosted directory's own (D74): asked for, or the caller's.
+    let directory = req.directory.clone().or_else(|| {
+        let mine = call.p.directory_id().to_string();
+        (req.project.is_none() && crate::auth::is_hosted(&mine)).then_some(mine)
+    });
+    if let Some(dir) = directory.filter(|d| crate::auth::is_hosted(d)) {
+        return read_directory_audit(call, &req, &dir);
+    }
     let project = match &req.project {
         Some(p) => Some(call.target_project(Some(p))?),
         None => None,
@@ -1976,6 +1984,58 @@ pub fn read_audit(call: &Call, req: pb::ReadAuditRequest) -> ServiceResult<pb::R
         .store
         .audit(since_ms, limit, |e| {
             project
+                .as_ref()
+                .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
+                && req.user.as_ref().is_none_or(|u| {
+                    e.principal.get("user").and_then(|v| v.as_str()) == Some(u.as_str())
+                })
+        })
+        .map_err(store_err)?;
+    Ok(pb::ReadAuditResponse {
+        entries: entries.iter().map(audit_pb).collect(),
+        ..Default::default()
+    })
+}
+
+/// Hosted directory `dir`'s own audit (D74): its directory readers' only;
+/// the host's operator sees that a directory exists, not what is in it.
+fn read_directory_audit(
+    call: &Call,
+    req: &pb::ReadAuditRequest,
+    dir: &str,
+) -> ServiceResult<pb::ReadAuditResponse> {
+    if call
+        .auth()
+        .tenants
+        .get_directory(dir)
+        .map_err(|e| {
+            ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+        })?
+        .is_none()
+    {
+        return Err(ServiceError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such directory",
+        ));
+    }
+    call.require_action(
+        "readDirectoryAudit",
+        Ent::Directory(dir.to_string()),
+        EntitySet::new(),
+        &[],
+    )?;
+    let since_ms = req
+        .since
+        .as_option()
+        .map(|t| (t.seconds.max(0) as u64) * 1000 + (t.nanos.max(0) as u64) / 1_000_000)
+        .unwrap_or(0);
+    let limit = req.limit.map(|l| l as usize).unwrap_or(500).min(5000);
+    let entries = call
+        .auth()
+        .store
+        .directory_audit(dir, since_ms, limit, |e| {
+            req.project
                 .as_ref()
                 .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
                 && req.user.as_ref().is_none_or(|u| {

@@ -360,6 +360,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [User], context: Ctx };
   action readAudit in ["system.audit", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // A hosted directory's own audit (spec/tenancy.md D74).
+  action readDirectoryAudit in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action writePolicy, deletePolicy, reloadPolicies in ["policy.write", "host-scoped"]

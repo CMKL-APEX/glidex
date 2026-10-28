@@ -940,6 +940,10 @@ message ReadAuditRequest {
   optional string user = 3;
   // Default 500, at most 5000.
   optional uint32 limit = 4;
+  // A hosted directory's own audit (spec/tenancy.md D74), for its
+  // directory auditors and administrators. Left out by someone of a
+  // hosted directory (without a project), theirs.
+  optional string directory = 5;
 }
 message ReadAuditResponse {
   repeated AuditEntry entries = 1;

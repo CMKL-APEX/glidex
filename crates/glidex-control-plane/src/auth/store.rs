@@ -29,6 +29,9 @@ const SITE_POLICY_VERSIONS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("site_policy_versions");
 /// `<unix millis, zero-padded>-<seq>` → audit entry.
 const AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
+/// `<directory>/<unix millis, zero-padded>-<seq>` → audit entry of a
+/// hosted directory (spec/tenancy.md D74).
+const DIRECTORY_AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("directory_audit");
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -1286,14 +1289,23 @@ impl IdentityStore {
 
     // ---- audit ----------------------------------------------------------
 
-    pub fn append_audit(&self, e: &AuditEntry) -> Result<(), StoreError> {
+    fn audit_key(&self, e: &AuditEntry) -> String {
         let seq = self
             .audit_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{:016}-{:08}", e.time, seq % 100_000_000)
+    }
+
+    pub fn append_audit(&self, e: &AuditEntry) -> Result<(), StoreError> {
+        put(&self.db, AUDIT, &self.audit_key(e), e)
+    }
+
+    /// An entry of hosted directory `dir`'s own audit (D74).
+    pub fn append_directory_audit(&self, dir: &str, e: &AuditEntry) -> Result<(), StoreError> {
         put(
             &self.db,
-            AUDIT,
-            &format!("{:016}-{:08}", e.time, seq % 100_000_000),
+            DIRECTORY_AUDIT,
+            &format!("{dir}/{}", self.audit_key(e)),
             e,
         )
     }
@@ -1305,12 +1317,41 @@ impl IdentityStore {
         limit: usize,
         filter: impl Fn(&AuditEntry) -> bool,
     ) -> Result<Vec<AuditEntry>, StoreError> {
+        self.audit_in(AUDIT, "", since, limit, filter)
+    }
+
+    /// The same, of hosted directory `dir`'s own audit (D74).
+    pub fn directory_audit(
+        &self,
+        dir: &str,
+        since: u64,
+        limit: usize,
+        filter: impl Fn(&AuditEntry) -> bool,
+    ) -> Result<Vec<AuditEntry>, StoreError> {
+        self.audit_in(DIRECTORY_AUDIT, &format!("{dir}/"), since, limit, filter)
+    }
+
+    fn audit_in(
+        &self,
+        table: crate::store::Def,
+        prefix: &str,
+        since: u64,
+        limit: usize,
+        filter: impl Fn(&AuditEntry) -> bool,
+    ) -> Result<Vec<AuditEntry>, StoreError> {
         let txn = self.db.begin_read()?;
-        let t = txn.open_table(AUDIT)?;
-        let start = format!("{:016}", since);
+        let t = match txn.open_table(table) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let start = format!("{prefix}{:016}", since);
         let mut out = Vec::new();
         for e in t.range(start.as_str()..)? {
-            let (_, v) = e?;
+            let (k, v) = e?;
+            if !k.value().starts_with(prefix) {
+                break;
+            }
             let entry: AuditEntry = serde_json::from_slice(v.value())?;
             if filter(&entry) {
                 out.push(entry);
@@ -1322,8 +1363,47 @@ impl IdentityStore {
         Ok(out)
     }
 
-    /// Delete entries older than `before` (unix millis).
+    /// Remove hosted directory `dir`'s audit (the directory is deleted).
+    pub fn remove_directory_audit(&self, dir: &str) -> Result<usize, StoreError> {
+        let prefix = format!("{dir}/");
+        self.remove_audit_where(DIRECTORY_AUDIT, |k| k.starts_with(&prefix))
+    }
+
+    /// Remove the entries of `table` whose keys `pick` chooses.
+    fn remove_audit_where(
+        &self,
+        table: crate::store::Def,
+        pick: impl Fn(&str) -> bool,
+    ) -> Result<usize, StoreError> {
+        let txn = self.db.begin(crate::store::Origin::Auth)?;
+        let n = {
+            let mut t = txn.open_table(table)?;
+            let keys: Vec<String> = t
+                .iter()?
+                .filter_map(|e| e.ok())
+                .map(|(k, _)| k.value().to_string())
+                .filter(|k| pick(k))
+                .collect();
+            for k in &keys {
+                t.remove(k.as_str())?;
+            }
+            keys.len()
+        };
+        txn.commit()?;
+        Ok(n)
+    }
+
+    /// Delete entries older than `before` (unix millis), the hosted
+    /// directories' too.
     pub fn prune_audit(&self, before: u64) -> Result<usize, StoreError> {
+        let end = format!("{:016}", before);
+        let dirs = self.remove_audit_where(DIRECTORY_AUDIT, |k| {
+            k.split_once('/').is_some_and(|(_, t)| t < end.as_str())
+        })?;
+        Ok(dirs + self.prune_cluster_audit(before)?)
+    }
+
+    fn prune_cluster_audit(&self, before: u64) -> Result<usize, StoreError> {
         let txn = self.db.begin(crate::store::Origin::Auth)?;
         let n = {
             let mut t = txn.open_table(AUDIT)?;

@@ -1201,11 +1201,14 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
 // ---- audit --------------------------------------------------------------------
 
 pub async fn audit(client: &ApiClient, args: &[&str]) {
+    // A hosted directory's own audit names no default project (D74).
+    let directory = flag_value(args, "--directory").map(str::to_string);
     let mut req = ReadAuditRequest {
         project: flag_value(args, "--project")
             .map(str::to_string)
-            .or_else(|| client.project()),
+            .or_else(|| directory.is_none().then(|| client.project()).flatten()),
         user: flag_value(args, "--user").map(str::to_string),
+        directory,
         ..Default::default()
     };
     if let Some(v) = flag_value(args, "--since") {
