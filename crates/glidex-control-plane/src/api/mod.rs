@@ -871,6 +871,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(trust::end_at_directory),
     )
+    .add(
+        "POST",
+        "/d/{dir}/trust/v1/logout",
+        PUBLIC,
+        post(trust::logout_at_directory),
+    )
     .add("POST", "/d/{dir}/feed/v1", PUBLIC, post(trust::feed))
     .add(
         "POST",
@@ -2622,6 +2628,7 @@ mod tests {
                 "/trust/v1/redeem",
                 "/trust/v1/end",
                 "/d/{dir}/trust/v1/end",
+                "/d/{dir}/trust/v1/logout",
                 "/d/{dir}/feed/v1",
                 "/d/{dir}/feed/v1/report",
                 "/auth/passkeys/login/start",

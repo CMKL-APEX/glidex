@@ -277,6 +277,8 @@ pub struct AuthService {
     pub peer_replays: crate::directory::peer::Replays,
     /// Browser logins at trusted directories under way (D69).
     pub trusted_logins: crate::trust::PendingLogins,
+    /// Their sessions' chains to end at the directory (D72).
+    pub ended_chains: crate::trust::EndedChains,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -392,6 +394,7 @@ impl AuthService {
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
             trusted_logins: Default::default(),
+            ended_chains: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -440,6 +443,7 @@ impl AuthService {
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
             trusted_logins: Default::default(),
+            ended_chains: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -1408,8 +1412,16 @@ impl AuthService {
     }
 
     /// End the session with hash `h`, and the clusters' browser logins it
-    /// approved (D69).
+    /// approved (D69). A session from a trusted directory's login has its
+    /// chain ended there too (D72).
     pub fn end_session_hash(&self, h: &str) -> Result<(), AuthError> {
+        if let Some(s) = self.store.session(h)?
+            && let Some(sid) = s.sid
+            && let Some(u) = self.store.user(&s.user_id)?
+            && u.directory_id.starts_with("trusted-")
+        {
+            self.ended_chains.push(u.directory_id, sid);
+        }
         self.store.remove_session(h)?;
         if let Err(e) = self.refresh_tokens.end_session(h) {
             tracing::warn!("ending the session's chains: {}", e);

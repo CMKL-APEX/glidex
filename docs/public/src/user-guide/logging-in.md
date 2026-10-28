@@ -150,7 +150,9 @@ sign in at their own organization's Glidex. Its sign-in page then has a
 **Sign in with &lt;tenant&gt;** button for each such organization (with
 *at &lt;host&gt;* under it). It takes you to your organization's sign-in
 and brings you back signed in to the cluster. Signing out there signs
-you out of the cluster too, within a minute.
+you out of the cluster too, within a minute. Logging out of the cluster
+signs you out of the cluster only: you stay signed in at your
+organization.
 
 ### Several accounts in one browser
 

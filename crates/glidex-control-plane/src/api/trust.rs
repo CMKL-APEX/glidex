@@ -4,7 +4,7 @@
 //! - at a cluster: `POST /trust/v1/redeem` (a directory redeems an offer)
 //!   and `POST /trust/v1/end` (a trusted directory ends a tenant's trust);
 //! - at a directory: `POST /d/{dir}/trust/v1/end` (a trusted cluster ends
-//!   it).
+//!   it) and `POST /d/{dir}/trust/v1/logout` (a session there ended, D72).
 //!
 //! Every refusal answers the same way; the reason goes to the audit log.
 
@@ -749,7 +749,9 @@ pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
     let path = format!("/d/{}/feed/v1/report", d.directory);
-    let body = json!({ "cluster_id": cluster, "report": report });
+    // The callback as it is now, should the web UI's address have changed (D73).
+    let ui_callback = super::trusted_login::callback_url(app, &d.id);
+    let body = json!({ "cluster_id": cluster, "report": report, "ui_callback": ui_callback });
     match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
         (204, _) | (200, _) => Ok(()),
         (s, _) => Err(format!("the directory answered {s}")),
@@ -760,11 +762,13 @@ pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), Str
 pub struct ReportBody {
     cluster_id: String,
     report: trust::ClusterReport,
+    #[serde(default)]
+    ui_callback: Option<String>,
 }
 
-/// `POST /d/{dir}/feed/v1/report {cluster_id, report}`, at the directory
-/// (D70): kept on the cluster's record, only for the tenants opted in to
-/// it.
+/// `POST /d/{dir}/feed/v1/report {cluster_id, report, ui_callback}`, at
+/// the directory (D70): kept on the cluster's record, only for the tenants
+/// opted in to it; a changed callback registered in its place (D73).
 pub async fn report(
     State(app): State<AppState>,
     Path(dir): Path<String>,
@@ -805,8 +809,132 @@ pub async fn report(
     r.tenants.retain(|t| c.tenants.contains(&t.tenant));
     r.tenants.truncate(c.tenants.len());
     c.report = Some(r);
+    if let Some(u) = b.ui_callback.filter(|u| valid_callback(u))
+        && c.ui_callback.as_deref() != Some(u.as_str())
+    {
+        app.auth.audit_system(
+            &format!("cluster:{}", c.cluster_id),
+            "",
+            "registerCallback",
+            Some(&format!("cluster:{}", c.cluster_id)),
+            "allowed",
+            None,
+            json!({ "from": c.ui_callback, "to": u }),
+        );
+        c.ui_callback = Some(u);
+    }
     match app.auth.trust.put_cluster(&c) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
+    }
+}
+
+/// A web UI callback a cluster may register: an `http(s)` URL.
+pub fn valid_callback(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http"))
+}
+
+// ---- logouts (D72) -----------------------------------------------------------------
+
+/// Tell the trusted directories whose cluster sessions ended here to end
+/// those chains (D72), best effort: a chain not ended lapses there unused.
+pub async fn end_chains(app: &AppState) {
+    let ended = app.auth.ended_chains.take();
+    if ended.is_empty() {
+        return;
+    }
+    let cluster = super::op::cluster_id(app);
+    let dirs = app.auth.trust.directories().unwrap_or_default();
+    for (id, sid) in ended {
+        let Some(d) = dirs.iter().find(|d| d.id == id) else {
+            continue;
+        };
+        let sent = async {
+            let a = peer::assertion(
+                &app.auth.connectors,
+                CLUSTER_OWNER,
+                &cluster,
+                &d.issuer,
+                trust::LOGOUT,
+                now(),
+            )
+            .map_err(|e| e.to_string())?;
+            let path = format!("/d/{}/trust/v1/logout", d.directory);
+            let body = json!({ "cluster_id": cluster, "sid": sid });
+            match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
+                (204, _) | (200, _) => Ok(()),
+                (s, _) => Err(format!("the directory answered {s}")),
+            }
+        };
+        if let Err(e) = sent.await {
+            tracing::warn!(directory = %d.issuer, "ending a logged-out session's chain: {}", e);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LogoutBody {
+    cluster_id: String,
+    sid: String,
+}
+
+/// `POST /d/{dir}/trust/v1/logout {cluster_id, sid}`, at the directory
+/// (D72): a trusted cluster's session from chain `sid` ended, so the chain
+/// ends; only that cluster's own chains. `204` whether or not it was alive.
+pub async fn logout_at_directory(
+    State(app): State<AppState>,
+    Path(dir): Path<String>,
+    headers: HeaderMap,
+    Json(b): Json<LogoutBody>,
+) -> Response {
+    const ACTION: &str = "endClusterSession";
+    let Some(assertion) = peer::from_headers(&headers) else {
+        return refused(&app, ACTION, "no assertion");
+    };
+    let Ok(Some(c)) = app.auth.trust.cluster(&dir, &b.cluster_id) else {
+        return refused(&app, ACTION, "not a trusted cluster");
+    };
+    let Some(iss) = app
+        .auth
+        .tenants
+        .get_directory(&dir)
+        .ok()
+        .flatten()
+        .and_then(|d| d.issuer)
+    else {
+        return refused(&app, ACTION, "no issuer");
+    };
+    if let Err(e) = peer::verify(
+        &assertion,
+        &c.jwks,
+        &c.cluster_id,
+        &iss,
+        trust::LOGOUT,
+        &app.auth.peer_replays,
+        now(),
+    ) {
+        return refused(&app, ACTION, &e.to_string());
+    }
+    let client = format!("{}{}", op::CLUSTER_CLIENT, c.cluster_id);
+    match app
+        .auth
+        .refresh_tokens
+        .end_client_family(&dir, &client, &b.sid)
+    {
+        Ok(n) => {
+            if n > 0 {
+                app.auth.audit_system(
+                    &format!("cluster:{}", c.cluster_id),
+                    "",
+                    ACTION,
+                    None,
+                    "allowed",
+                    None,
+                    json!({ "sid": b.sid }),
+                );
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
     }
 }
@@ -848,8 +976,16 @@ pub fn freshness(app: &AppState, id: &str) -> Option<Result<u64, u64>> {
 const FEED_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The task that pulls every trusted directory's feed: on a standalone
-/// host, or the cluster's leader (where writes go).
+/// host, or the cluster's leader (where writes go). And, on every server,
+/// the one that tells directories of the sessions that ended (D72).
 pub fn spawn_feeds(app: AppState) {
+    let logouts = app.clone();
+    tokio::spawn(async move {
+        loop {
+            logouts.auth.ended_chains.wait().await;
+            end_chains(&logouts).await;
+        }
+    });
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FEED_EVERY);
         loop {

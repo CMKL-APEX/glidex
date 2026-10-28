@@ -884,6 +884,255 @@ async fn a_browser_logs_in_to_the_cluster_at_its_directory() {
     assert_eq!(whoami(session).await.0, StatusCode::UNAUTHORIZED);
 }
 
+/// Erin's browser logs in to north at acme (D69): north's session cookie
+/// (`gx_session=…`) and its secret.
+async fn erin_at_north(
+    north: &Cp,
+    acme: &Cp,
+    erin: &str,
+    d: &glidex_control_plane::trust::TrustedDirectory,
+) -> (String, String) {
+    let u = acme.app.auth.store.user(erin).unwrap().unwrap();
+    let (cookie, _) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+    let at_acme = format!("{}={cookie}", auth::SESSION_COOKIE);
+    let (_, to, set) = browse(
+        &north.router,
+        &format!("/auth/t/{}/start?return_to=/vms", d.id),
+        &[],
+    )
+    .await;
+    let tlogin = set
+        .into_iter()
+        .find(|c| c.starts_with("gx_tlogin="))
+        .unwrap();
+    let (s, back, _) = browse(&acme.router, &path_of(&to), &[at_acme]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(query_of(&back, "code").is_some(), "{back}");
+    let (s, _, set) = browse(&north.router, &ui_path(&back), &[tlogin]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let session = set
+        .into_iter()
+        .find(|c| c.starts_with(&format!("{}=", auth::SESSION_COOKIE)))
+        .expect("a session at north");
+    let secret = session.split_once('=').unwrap().1.to_string();
+    (session, secret)
+}
+
+/// D72: logging out at the cluster ends the chain at the directory that
+/// signed the session in; a chain of another cluster can't be ended that
+/// way, and an unsigned request is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logging_out_at_the_cluster_ends_the_directorys_chain() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let (cookie, secret) = erin_at_north(&north, &acme, &erin, &d).await;
+    let hash = auth::sha256_hex(secret.as_bytes());
+    let sid = north
+        .app
+        .auth
+        .store
+        .session(&hash)
+        .unwrap()
+        .unwrap()
+        .sid
+        .expect("the session carries its chain");
+    let t = auth::store::now();
+    assert!(acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap());
+
+    // Unsigned: refused, and the chain lives on.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let body = json!({ "cluster_id": north_id, "sid": sid });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/trust/v1/logout",
+        "",
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 403);
+    assert!(acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap());
+
+    // Erin logs out at north.
+    let resp = north
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/auth/logout")
+                .header(header::COOKIE, cookie)
+                .header(header::ORIGIN, ORIGIN)
+                .header(
+                    auth::CSRF_HEADER,
+                    north.app.auth.store.session(&hash).unwrap().unwrap().csrf,
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    glidex_control_plane::api::trust::end_chains(&north.app).await;
+    assert!(
+        !acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap(),
+        "the chain ended at acme"
+    );
+    let ended = acme
+        .app
+        .auth
+        .refresh_tokens
+        .ended_since("local", &format!("cluster:{north_id}"), 0)
+        .unwrap();
+    assert_eq!(ended, vec![sid.clone()]);
+
+    // Another of her chains, gxctl's, stays: north can end only its own.
+    let grant = glidex_control_plane::directory::op::Grant {
+        user_id: erin.clone(),
+        auth_time: t,
+        amr: vec!["pwd".into()],
+        mfa: false,
+        session: None,
+    };
+    let (_, rt) = acme
+        .app
+        .auth
+        .refresh_tokens
+        .start("local", "gxctl", "openid", &grant, 86_400, t)
+        .unwrap();
+    let other_sid = rt.family;
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::LOGOUT,
+        auth::store::now(),
+    )
+    .unwrap();
+    let body = json!({ "cluster_id": north_id, "sid": other_sid });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/trust/v1/logout",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    assert!(
+        acme.app
+            .auth
+            .refresh_tokens
+            .family_alive(&other_sid, t)
+            .unwrap(),
+        "not north's chain"
+    );
+}
+
+/// D73: when the cluster's web UI address changes, its next report
+/// registers the new callback at the directory, and logins come back
+/// there; a callback that isn't an http(s) URL is ignored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_changed_web_ui_address_is_registered_again() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let callback = |acme: &Cp| {
+        acme.app
+            .auth
+            .trust
+            .clusters("local")
+            .unwrap()
+            .pop()
+            .unwrap()
+            .ui_callback
+    };
+    assert_eq!(
+        callback(&acme).as_deref(),
+        Some(format!("{ORIGIN}/api/auth/t/{}/callback", d.id).as_str())
+    );
+    north
+        .app
+        .manager
+        .set_ui_url(Some("https://north.example:5173".into()));
+    glidex_control_plane::api::trust::push_report(&north.app, &d)
+        .await
+        .unwrap();
+    let moved = format!("https://north.example:5173/api/auth/t/{}/callback", d.id);
+    assert_eq!(callback(&acme).as_deref(), Some(moved.as_str()));
+
+    // A login comes back to the new address.
+    let u = acme.app.auth.store.user(&erin).unwrap().unwrap();
+    let (cookie, _) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+    let (_, to, _) = browse(&north.router, &format!("/auth/t/{}/start", d.id), &[]).await;
+    let (s, back, _) = browse(
+        &acme.router,
+        &path_of(&to),
+        &[format!("{}={cookie}", auth::SESSION_COOKIE)],
+    )
+    .await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(back.starts_with(&moved), "{back}");
+
+    // Not a URL: the registered one stays.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let report = glidex_control_plane::api::trust::report_for(&north.app, &d)
+        .await
+        .unwrap();
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::REPORT,
+        auth::store::now(),
+    )
+    .unwrap();
+    let body =
+        json!({ "cluster_id": north_id, "report": report, "ui_callback": "javascript:alert(1)" });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    assert_eq!(callback(&acme).as_deref(), Some(moved.as_str()));
+}
+
 /// D70: with its feed, north reports to acme what it holds of acme's
 /// tenant; acme keeps it on the cluster's record and the tenant's cluster
 /// list shows it; a report naming a tenant not opted in to north keeps

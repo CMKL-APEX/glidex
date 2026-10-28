@@ -18,6 +18,8 @@ pub const END: &str = "end";
 pub const FEED: &str = "feed";
 /// A cluster reporting what it holds of a directory's tenants (D70).
 pub const REPORT: &str = "report";
+/// A cluster telling a directory that one of its sessions ended (D72).
+pub const LOGOUT: &str = "logout";
 
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
 
@@ -107,6 +109,36 @@ impl PendingLogins {
             .unwrap()
             .remove(state)
             .filter(|p| p.created + LOGIN_SECS > now)
+    }
+}
+
+/// Chains of trusted directories whose cluster sessions ended here, for
+/// those directories to end too (D72): `(trusted directory id, sid)`.
+#[derive(Default)]
+pub struct EndedChains {
+    queue: std::sync::Mutex<Vec<(String, String)>>,
+    wake: tokio::sync::Notify,
+}
+
+/// At most this many wait; older ones lapse at the directory anyway.
+const ENDED_CHAINS_MAX: usize = 1000;
+
+impl EndedChains {
+    pub fn push(&self, directory: String, sid: String) {
+        let mut q = self.queue.lock().unwrap();
+        if q.len() < ENDED_CHAINS_MAX {
+            q.push((directory, sid));
+        }
+        self.wake.notify_one();
+    }
+
+    pub fn take(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.queue.lock().unwrap())
+    }
+
+    /// Until something is pushed.
+    pub async fn wait(&self) {
+        self.wake.notified().await
     }
 }
 

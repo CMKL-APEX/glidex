@@ -436,9 +436,11 @@ Once trust is set up:
   cluster only. For that,
   the directory must know this cluster's web UI address: it learns it
   when the tenant opts in (the published address, or the first of
-  `auth.allowed_origins`). If the address changes, have the tenant opt
-  in again with a new offer. Signing out at the directory ends the
-  cluster's sessions made from it with the next feed.
+  `auth.allowed_origins`). If the address changes, the cluster sends
+  the new one with its next report, within a minute. Signing out at the
+  directory ends the cluster's sessions made from it with the next feed;
+  logging out on this cluster ends, at the directory, the sign-in it was
+  made from (and not the person's session there, or on other clusters).
 - **Reports.** After each feed, this cluster tells the directory what it
   holds of each of its tenants: the admission (admitted or suspended,
   and the cap), and counts of projects, VMs (and running ones), disks
