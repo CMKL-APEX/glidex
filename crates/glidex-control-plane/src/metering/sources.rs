@@ -29,6 +29,17 @@ pub struct HostIo {
     pub write_ops: u64,
 }
 
+/// Real-time statistics from pylond for a Pylon-managed VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PylonVmStats {
+    pub vm_id: u64,
+    pub current_cores: u32,
+    pub allocated_core_usec: u64,
+    pub cooperative_yields: u64,
+    pub forced_preemptions: u64,
+    pub runnable_threads: u32,
+}
+
 /// Root of the host's filesystems (`/` in production).
 #[derive(Debug, Clone)]
 pub struct Host {
@@ -36,6 +47,8 @@ pub struct Host {
     pub cgroup_root: PathBuf,
     /// `/sys` (block device stacking for `io.stat`).
     pub sys_root: PathBuf,
+    /// `/run/pylon/pylond.sock` control socket path.
+    pub pylon_socket: PathBuf,
 }
 
 impl Default for Host {
@@ -44,6 +57,7 @@ impl Default for Host {
             proc_root: "/proc".into(),
             cgroup_root: "/sys/fs/cgroup".into(),
             sys_root: "/sys".into(),
+            pylon_socket: "/run/pylon/pylond.sock".into(),
         }
     }
 }
@@ -93,6 +107,62 @@ impl Host {
             memory_bytes: current.saturating_sub(inactive_file),
             from_proc: false,
             io,
+        })
+    }
+
+    /// Query real-time statistics for a VM from pylond if available.
+    pub fn pylon_stats(&self, vm_id: u64) -> Option<PylonVmStats> {
+        if !self.pylon_socket.exists() {
+            return None;
+        }
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let mut stream = UnixStream::connect(&self.pylon_socket).ok()?;
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+
+        let req = serde_json::json!({
+            "action": "stats",
+            "vm_id": vm_id,
+        });
+        let payload = serde_json::to_vec(&req).ok()?;
+        stream.write_all(&payload).ok()?;
+        stream.flush().ok()?;
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+
+        let mut resp_buf = Vec::new();
+        stream.read_to_end(&mut resp_buf).ok()?;
+
+        #[derive(serde::Deserialize)]
+        struct RawPylonVmStats {
+            vm_id: u64,
+            current_cores: u32,
+            allocated_core_microseconds: u64,
+            cooperative_yields: u64,
+            forced_preemptions: u64,
+            runnable_threads: u32,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RawStatsResponse {
+            accepted: bool,
+            vms: Vec<RawPylonVmStats>,
+        }
+
+        let resp: RawStatsResponse = serde_json::from_slice(&resp_buf).ok()?;
+        if !resp.accepted {
+            return None;
+        }
+        let raw = resp.vms.into_iter().find(|v| v.vm_id == vm_id)?;
+        Some(PylonVmStats {
+            vm_id: raw.vm_id,
+            current_cores: raw.current_cores,
+            allocated_core_usec: raw.allocated_core_microseconds,
+            cooperative_yields: raw.cooperative_yields,
+            forced_preemptions: raw.forced_preemptions,
+            runnable_threads: raw.runnable_threads,
         })
     }
 
@@ -245,6 +315,7 @@ mod tests {
             proc_root: dir.path().join("proc"),
             cgroup_root: dir.path().join("cg"),
             sys_root: dir.path().join("sys"),
+            pylon_socket: dir.path().join("pylond.sock"),
         };
         (dir, host)
     }
