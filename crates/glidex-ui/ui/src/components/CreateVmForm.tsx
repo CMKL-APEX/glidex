@@ -160,6 +160,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const changeHypervisor = (next: HypervisorType) => {
     setFirmwareImage(firmwareFor(firmwareImages, next).filter((i) => ofVmArch(i.arch))[0]?.id ?? "");
     setHypervisor(next);
+    // An elastic Pylon guest boots with all max_vcpus (spec/pylon.md P2).
+    if (next === "pylon" && isElastic && typeof maxVcpus === "number") setVcpuCount(maxVcpus);
   };
 
   useEffect(() => {
@@ -367,11 +369,17 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             min="1"
             max="255"
             value={vcpuCount}
+            disabled={hypervisor === "pylon" && isElastic}
             onChange={(e) => {
               setSizedByHand(true);
               setVcpuCount(Number(e.target.value));
             }}
           />
+          {hypervisor === "pylon" && isElastic && (
+            <p className="mt-1 text-xs text-gray-500">
+              Max vCPUs: an elastic Pylon guest boots with all of them.
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700">
@@ -401,7 +409,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               setIsElastic(e.target.checked);
               if (e.target.checked) {
                 if (minVcpus === "") setMinVcpus(vcpuCount);
-                if (maxVcpus === "") setMaxVcpus(Math.max(vcpuCount, 4));
+                const max = maxVcpus === "" ? Math.max(vcpuCount, 4) : maxVcpus;
+                setMaxVcpus(max);
+                if (hypervisor === "pylon") setVcpuCount(max);
               }
             }}
           />
