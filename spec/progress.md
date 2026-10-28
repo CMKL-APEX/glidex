@@ -20,6 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
+| Pylon | Fix: elastic vCPUs in the UI | #200 | An elastic Pylon VM's vCPU count follows max in the create form and the Scale CPU dialog; public docs for Pylon and elastic CPU |
 
 ## Areas
 
@@ -69,9 +70,9 @@ when asked; say here what you left.
 
 | Host | Role | Runs | For |
 |---|---|---|---|
-| gpu-dev2 | Server of the test cluster, with OVN; the Tailscale certificate on | Reinstalled 2026-10-23 by another session (build not recorded here: record it in the next install) | UI e2e, cluster checks, GPU passthrough |
-| prism1 | Agent of gpu-dev2's cluster; two sockets | #168's build (2026-10-22) | NUMA and passthrough (host topology) |
-| spark-1 | **Standalone** since 2026-10-22: its own directory, tenant `spark-lab` admitted on gpu-dev2's cluster as another organization (T6 check). gpu-dev2's cluster still lists it as `Removed` | #168's build (2026-10-22) | aarch64; the two-organization check. Rejoining the cluster takes a reinstall with `--join`, and the aarch64 images re-imported |
+| gpu-dev2 | **Standalone** server since 2026-10-28, with Pylon (`--with-pylon`; `pylond` on, `scx_pylon` not attached, kernel 6.8 has no `sched_ext`); OVN installed, off; the Tailscale certificate on. Found empty that day: the earlier cluster's state was gone | #200's branch (2026-10-28) | UI e2e, Pylon, GPU passthrough |
+| prism1 | Was an agent of gpu-dev2's cluster, which is gone since gpu-dev2 was found empty (2026-10-28); not touched since. Rejoining takes a reinstall with `--join`; two sockets | #168's build (2026-10-22) | NUMA and passthrough (host topology) |
+| spark-1 | **Standalone** since 2026-10-22: its own directory, tenant `spark-lab` was admitted on gpu-dev2's cluster as another organization (T6 check); that admission went with gpu-dev2's state (2026-10-28), so the check needs it admitted again | #168's build (2026-10-22) | aarch64; the two-organization check. Rejoining the cluster takes a reinstall with `--join`, and the aarch64 images re-imported |
 
 ## Known flakes
 
