@@ -4,6 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { api, bootPrerequisites, CLEAN_POWEROFF, consoleTerminal, consoleText, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard, showAdvanced } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
@@ -15,7 +16,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   const vmName = `ui-${short}`;
   const network = `ui-${short}`;
   const username = `ui${short}`;
-  const password = `Gx-${Math.random().toString(36).slice(2, 12)}`;
+  const password = `Gx-${randomBytes(8).toString("hex")}`;
   const disk = `${E2E_HOME}/images/${vmName}.img`;
   execFileSync("cp", ["--sparse=always", testImage()!, disk]);
   const vm = async () => (await listVms()).find((v) => v.name === vmName);
