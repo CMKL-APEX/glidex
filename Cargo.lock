@@ -1565,6 +1565,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-auth"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.22.1",
+ "cedar-policy",
+ "getrandom 0.3.4",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "glidex-authd"
 version = "0.1.0"
 dependencies = [
@@ -1603,6 +1622,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "glidex-api",
+ "glidex-auth",
  "glidex-authd",
  "glidex-hv-client",
  "glidex-netd",
@@ -1612,9 +1632,12 @@ dependencies = [
  "glidex-stord",
  "glidex-tls",
  "glidex-vm-shim",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hyperstor-api",
+ "hyperstor-pki",
  "jsonwebtoken",
  "libc",
  "lzma-rs",
@@ -1662,6 +1685,7 @@ dependencies = [
 name = "glidex-e2e"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde_json",
  "uuid",
 ]
@@ -1689,6 +1713,24 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "glidex-metad"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "form_urlencoded",
+ "glidex-ovs",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1763,11 +1805,16 @@ name = "glidex-tls"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "nix",
  "rcgen",
  "rustls-native-certs",
  "rustls-pki-types",
+ "serde_json",
  "sha2 0.10.9",
  "socket2",
  "tempfile",
@@ -2042,6 +2089,32 @@ dependencies = [
  "tower-service",
  "tracing",
  "windows-registry",
+]
+
+[[package]]
+name = "hyperstor-api"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=be587343892cdcb16bb74a28cb801e226de92873#be587343892cdcb16bb74a28cb801e226de92873"
+dependencies = [
+ "buffa",
+ "buffa-types",
+ "connectrpc",
+ "connectrpc-build",
+ "protox",
+ "serde",
+]
+
+[[package]]
+name = "hyperstor-pki"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=be587343892cdcb16bb74a28cb801e226de92873#be587343892cdcb16bb74a28cb801e226de92873"
+dependencies = [
+ "rcgen",
+ "ring",
+ "rustls",
+ "rustls-native-certs",
+ "time",
+ "x509-parser",
 ]
 
 [[package]]

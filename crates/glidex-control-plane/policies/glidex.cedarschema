@@ -235,6 +235,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
   action useCredential in ["vm.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
+  // Giving a VM a service account (workload-identity.md W5): on the service
+  // account's project, with those who manage its service tokens;
+  // context.project is the VM's.
+  action useServiceAccount in ["project.members", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Project], context: ProjectCtx };
   action prepareDevice, releaseDevice, cordonDevice, setSriovVfs in ["host.devices", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action usePciPool in ["host.devices", "shared"]
@@ -291,7 +296,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  action deleteNetwork, grantNetwork in ["host.network", "host-scoped"]
+  action deleteNetwork, grantNetwork, setNetworkHostApi in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink, deleteBridge in ["host.network.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };

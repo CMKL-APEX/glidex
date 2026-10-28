@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { currentPath, PamForm, SsoButtons as KitSsoButtons, type SsoProvider } from "@glidex/ui-kit";
 import * as api from "../api";
+import { AccountList } from "../components/Accounts";
 import PasskeyButton from "../components/PasskeyButton";
 import { secondaryButton } from "../components/ui";
 import { isOidcKind, offersSso, type AuthMethods } from "../types";
@@ -7,100 +9,17 @@ import { isOidcKind, offersSso, type AuthMethods } from "../types";
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
 
-/** Username and password for a PAM login (also the re-login dialog). */
-export function PamForm({
-  initialUsername = "",
-  submitLabel,
-  onDone,
-}: {
-  initialUsername?: string;
-  submitLabel: string;
-  onDone: () => void;
-}) {
-  const [username, setUsername] = useState(initialUsername);
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.loginPam(username, password);
-      setPassword("");
-      onDone();
-    } catch (err) {
-      setError(err instanceof api.ApiRequestError && err.code === "login_failed" ? "Wrong username or password." : String(err instanceof Error ? err.message : err));
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <div>
-        <label htmlFor="login-username" className="block text-sm font-medium text-gray-700">
-          Username
-        </label>
-        <input
-          id="login-username"
-          className={inputClass}
-          autoComplete="username"
-          required
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-      </div>
-      <div>
-        <label htmlFor="login-password" className="block text-sm font-medium text-gray-700">
-          Password
-        </label>
-        <input
-          id="login-password"
-          type="password"
-          className={inputClass}
-          autoComplete="current-password"
-          required
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-      </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      <button
-        type="submit"
-        disabled={submitting}
-        className="w-full px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50"
-      >
-        {submitting ? "Signing in..." : submitLabel}
-      </button>
-    </form>
-  );
-}
-
-function currentPath(): string {
-  return window.location.pathname + window.location.search;
-}
-
-/** One button per OIDC-code connector of the directory (`oidc`, the
- *  `google` and `jumpcloud` presets); one plain "SSO" button for a server
- *  that doesn't list them. */
-export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; reauth?: boolean }) {
+/** The single sign-on choices: one per OIDC-code connector of the
+ *  directory (`oidc`, the `google` and `jumpcloud` presets); one plain
+ *  "SSO" for a server that doesn't list them. */
+export function ssoProviders(methods: AuthMethods): SsoProvider[] {
   const oidc = methods.connectors?.filter((c) => isOidcKind(c.kind));
-  const buttons = oidc ? oidc.map((c) => ({ id: c.id as string | undefined, label: c.display_name || "SSO" })) : [{ id: undefined, label: "SSO" }];
-  return (
-    <div className="space-y-2">
-      {buttons.map((b) => (
-        <button
-          key={b.id ?? "sso"}
-          type="button"
-          onClick={() => api.startOidc(currentPath(), reauth, b.id)}
-          className="w-full px-4 py-2 text-sm font-medium text-sky-700 bg-white border border-sky-300 hover:bg-sky-50 rounded-lg"
-        >
-          Sign in with {b.label}
-        </button>
-      ))}
-    </div>
-  );
+  return oidc ? oidc.map((c) => ({ id: c.id as string | undefined, label: c.display_name || "SSO" })) : [{ id: undefined, label: "SSO" }];
+}
+
+/** A "Sign in with" button for each of ssoProviders(). */
+export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; reauth?: boolean }) {
+  return <KitSsoButtons providers={ssoProviders(methods)} reauth={reauth} />;
 }
 
 /** "Sign in with <organization>" for each directory of another
@@ -185,6 +104,9 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
         {sso && <SsoButtons methods={methods} />}
         {methods.passkeys && (methods.pam || sso) && <div className="my-3" />}
         {methods.passkeys && <PasskeyButton onDone={onLoggedIn} />}
+        <div className="mt-4">
+          <AccountList heading="Your accounts in this browser" />
+        </div>
         {directory === "local" && <TrustedButtons methods={methods} />}
         {directory === "local" && <EmailRoute current={directory} />}
         {none && !methods.passkeys && (

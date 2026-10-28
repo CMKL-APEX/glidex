@@ -42,6 +42,8 @@ const CAPS = [
   "manageTenantInvitations",
   "readTenantDevicePools",
   "manageTenantDevicePools",
+  "readTenantClusters",
+  "manageTenantClusters",
   "readTenantFederations",
   "manageTenantFederations",
 ] as const;
@@ -49,6 +51,142 @@ type Cap = (typeof CAPS)[number];
 
 /** The tenant's shares of cluster device pools, split among its projects
  *  (spec/host-topology.md §9.1a). */
+/** The clusters of other organizations the tenant uses, and what each last
+ *  reported of it (spec/tenancy.md D70). */
+function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
+  const [clusters, setClusters] = useState<api.TenantCluster[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [offer, setOffer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [leaving, setLeaving] = useState<api.TenantCluster | null>(null);
+  const refresh = useCallback(() => {
+    api
+      .listTenantClusters(tenant.id)
+      .then(setClusters)
+      .catch((e) => setError(errorMessage(e)));
+  }, [tenant.id]);
+  useEffect(() => refresh(), [refresh]);
+  // An offer from another organization's operator (D65).
+  const optIn = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.optInCluster(tenant.id, offer.trim());
+      setOffer("");
+      refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (clusters !== null && clusters.length === 0 && !error && !canManage) return null;
+  return (
+    <Card title="Clusters of other organizations">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {canManage && (
+        <form onSubmit={optIn} className="mb-4 flex flex-wrap items-end gap-2">
+          <div className="flex-1 min-w-[16rem]">
+            <Field label="Use a cluster: the offer its operator sent you" htmlFor="opt-in-offer">
+              <input
+                id="opt-in-offer"
+                className={`${inputClass} font-mono`}
+                required
+                value={offer}
+                onChange={(e) => setOffer(e.target.value)}
+                placeholder="gxo_…"
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+          <button type="submit" className={primaryButton} disabled={busy || !offer.trim().startsWith("gxo_")}>
+            Accept offer
+          </button>
+        </form>
+      )}
+      {clusters !== null && clusters.length === 0 && <p className="text-sm text-gray-500">This tenant uses no cluster of another organization.</p>}
+      {clusters === null ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : clusters.length === 0 ? null : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="tenant-clusters">
+            <thead>
+              <tr className="text-left text-xs text-gray-500">
+                <th className="py-1 pr-3 font-medium">Cluster</th>
+                <th className="py-1 pr-3 font-medium">Admission</th>
+                <th className="py-1 pr-3 font-medium">Projects</th>
+                <th className="py-1 pr-3 font-medium">VMs</th>
+                <th className="py-1 pr-3 font-medium">Disks</th>
+                <th className="py-1 pr-3 font-medium">Networks</th>
+                <th className="py-1 font-medium">Reported</th>
+                {canManage && <th className="py-1" />}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {clusters.map((c) => {
+                const r = c.report;
+                return (
+                  <tr key={c.cluster_id}>
+                    <td className="py-1.5 pr-3">
+                      <div className="text-gray-800">{c.name || c.cluster_id}</div>
+                      <div className="text-xs text-gray-500 font-mono">{c.api}</div>
+                    </td>
+                    {r ? (
+                      <>
+                        <td className="py-1.5 pr-3">{r.status === "ADMISSION_STATUS_SUSPENDED" ? <span className="text-amber-700">suspended</span> : "admitted"}</td>
+                        <td className="py-1.5 pr-3">{r.projects ?? 0}</td>
+                        <td className="py-1.5 pr-3">
+                          {r.vms ?? 0}
+                          {Number(r.running_vms ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.running_vms} running)</span>}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {r.disks ?? 0}
+                          {Number(r.disk_gib ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.disk_gib} GiB)</span>}
+                        </td>
+                        <td className="py-1.5 pr-3">{r.networks ?? 0}</td>
+                        <td className="py-1.5 text-xs text-gray-500">{r.reported_at ? new Date(r.reported_at).toLocaleString() : "—"}</td>
+                      </>
+                    ) : (
+                      <td colSpan={6} className="py-1.5 text-xs text-gray-500">
+                        No report yet
+                      </td>
+                    )}
+                    {canManage && (
+                      <td className="py-1.5 text-right">
+                        <button type="button" className={dangerLink} onClick={() => setLeaving(c)}>
+                          Opt out
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {leaving && (
+        <ConfirmDialog
+          title="Opt Out"
+          consequence={
+            <p>
+              This tenant stops using <span className="font-semibold">{leaving.name || leaving.cluster_id}</span>: its people lose access there, and the cluster is
+              told. What the tenant has there stays until that cluster's operator removes it.
+            </p>
+          }
+          actionLabel="Opt out"
+          onConfirm={async () => {
+            await api.optOutCluster(tenant.id, leaving.cluster_id ?? "");
+            refresh();
+          }}
+          onClose={() => setLeaving(null)}
+        />
+      )}
+    </Card>
+  );
+}
+
 function DevicePoolsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
   const [pools, setPools] = useState<api.TenantDevicePool[] | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
@@ -702,6 +840,7 @@ export default function TenantDetail() {
       {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
 
       {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
+      {can("readTenantClusters") && <ClustersCard tenant={tenant} canManage={can("manageTenantClusters")} />}
 
       {can("readTenantFederations") && <FederationsCard tenant={tenant} canManage={can("manageTenantFederations")} />}
 

@@ -35,6 +35,15 @@ pub struct Config {
     pub ui_socket: Option<PathBuf>,
     /// The user glidex-ui runs as; only it may use `ui_socket`.
     pub ui_user: String,
+    /// Unix socket for glidex-metad (spec/workload-identity.md W11).
+    /// Default: `<run dir>/metad.sock`.
+    pub metad_socket: Option<PathBuf>,
+    /// The user glidex-metad runs as; only it may use `metad_socket`.
+    pub metad_user: String,
+    /// Open this host's API (the `listen` ports) to the guests of every
+    /// node NAT network on it, as each network's `host_api` does for one
+    /// (spec/workload-identity.md §15). Default: closed.
+    pub nat_host_api: bool,
     /// Group whose members may use `api_socket`.
     pub users_group: String,
     /// Group whose members are break-glass administrators on `api_socket`.
@@ -49,6 +58,8 @@ pub struct Config {
     pub metering: MeteringConfig,
     /// Clustering tunables (spec/clustering.md §10.2).
     pub cluster: crate::cluster::config::ClusterConfig,
+    /// Directories of other organizations (spec/tenancy.md D13).
+    pub trust: TrustConfig,
 }
 
 impl Default for Config {
@@ -60,6 +71,9 @@ impl Default for Config {
             api_socket: None,
             ui_socket: None,
             ui_user: "glidex-ui".into(),
+            metad_socket: None,
+            metad_user: "glidex-metad".into(),
+            nat_host_api: false,
             users_group: "glidex-users".into(),
             admin_group: "glidex-admin".into(),
             auth: AuthConfig::default(),
@@ -71,6 +85,7 @@ impl Default for Config {
             console: ConsoleConfig::default(),
             metering: MeteringConfig::default(),
             cluster: Default::default(),
+            trust: TrustConfig::default(),
         }
     }
 }
@@ -530,6 +545,22 @@ impl PciConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
+pub struct TrustConfig {
+    /// How long a trusted directory's credentials stay good here after
+    /// its last feed, unless set for that directory (spec/tenancy.md D13).
+    pub default_max_staleness_minutes: u64,
+}
+
+impl Default for TrustConfig {
+    fn default() -> Self {
+        Self {
+            default_max_staleness_minutes: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct AuditConfig {
     pub retention_days: u64,
 }
@@ -750,6 +781,12 @@ impl Config {
         self.ui_socket
             .clone()
             .unwrap_or_else(|| crate::paths::run_dir().join("ui.sock"))
+    }
+
+    pub fn metad_socket_path(&self) -> PathBuf {
+        self.metad_socket
+            .clone()
+            .unwrap_or_else(|| crate::paths::run_dir().join("metad.sock"))
     }
 }
 

@@ -50,6 +50,7 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **Boot Disk** | **New disk from an image**, **Existing disk** (an unattached disk of the project), or **Disk image file path**. |
 | **Image**, **Root disk (GiB)** | For a new disk from an image: a linked disk is created for this VM, its root partition extended, and deleted with the VM. |
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
+| **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
 | **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
 | **VFIO PCI Devices (optional)** | Host PCI devices to pass through. See [Devices](#pci-devices). |
 | **Device Pools (optional)** | How many devices to take from each pool your project may use. A GPU pool's count sizes the VM; see [GPUs](#gpus). |
@@ -238,6 +239,44 @@ guest has no login. See [Guest credentials](credentials.md).
 
 `cloud_init_path` replaces the generated seed with your own (a host
 path, see above); a `credential` can't be combined with it.
+
+### Workload identity
+
+Software in a VM can prove which VM it is, and act as a **service
+account**, without any secret stored in the guest. It asks the metadata
+endpoint at `169.254.169.254`, which only answers from inside the VM,
+with the header `Metadata-Flavor: Glidex`:
+
+```bash
+H='Metadata-Flavor: Glidex'
+curl -s -H "$H" http://169.254.169.254/v1/instance          # which VM this is
+curl -s -H "$H" 'http://169.254.169.254/v1/identity?audience=sts.amazonaws.com'
+curl -s -H "$H" http://169.254.169.254/v1/glidex/token      # needs a service account
+```
+
+- **Identity tokens** are short-lived JWTs (15 minutes; ask for 10 to 60
+  with `&ttl=<seconds>`) for the audience you name, signed by your
+  directory. Their subject is the VM's SPIFFE ID,
+  `spiffe://<trust domain>/tenant/<t>/project/<p>/vm/<id>`. Outside
+  services that trust your directory's issuer (AWS, Vault, Kubernetes, or
+  glidex itself) can verify them against its published keys.
+- **Glidex tokens** act as the VM's **service account**, for 15 minutes,
+  with that account's roles. Give a VM one in the create form, on its
+  page, with `gxctl service-account <vm> --set <account>`, or with
+  `"service_account"` in `POST /vms`. That needs the right to manage the
+  account's project's service tokens (project owners), and needs no
+  restart: the next token is for the new account. The endpoint hands out
+  the same token until 80% of its life has passed, then a fresh one, so
+  ask again whenever you need one.
+- An identity token addressed to your cluster can also be exchanged for a
+  glidex token at `POST /auth/exchange` with `federation=<tenant>/vm`.
+- Every process in the guest can ask, as on any cloud. Requests through a
+  proxy in the guest (`Forwarded`, `X-Forwarded-For`) are refused.
+
+The endpoint serves VMs on single-host NAT networks, on any node of a
+cluster; OVN networks and isolated or bridged networks come later. A NAT
+network's guests reach the host's own API only if the network allows it
+([The host from a NAT network](networks.md#the-host-from-a-nat-network)).
 
 ### Networks
 

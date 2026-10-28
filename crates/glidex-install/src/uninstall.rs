@@ -22,7 +22,9 @@ use std::process::Command;
 /// glidex-stord, then netd.
 pub const UNITS: &[&str] = &[
     "glidex-ui.service",
+    "glidex-metad.service",
     "glidex-control-plane.service",
+    "glidex-pylond.service",
     "glidex-authd.service",
     "glidex-authd.socket",
     "glidex-stord.service",
@@ -44,12 +46,15 @@ pub const BINARIES: &[&str] = &[
     "glidex-authd",
     "glidex-stord",
     "glidex-vm-shim",
+    "glidex-metad",
 ];
 /// The VM unit template and its slice (spec/reconciliation.md §13).
 pub const VM_UNIT_FILES: &[&str] = &["glidex-vm@.service", "glidex-vms.slice"];
 pub const GROUP: &str = "glidex";
 /// The web UI's user; its own group of the same name.
 pub const UI_USER: &str = crate::UI_USER;
+/// The metadata endpoint's user; its own group of the same name.
+pub const METAD_USER: &str = crate::METAD_USER;
 /// Groups of people (spec/security.md §4), removed with glidex.
 pub const PEOPLE_GROUPS: &[&str] = &[crate::USERS_GROUP, crate::ADMIN_GROUP];
 pub const CONFIG_DIR: &str = "/etc/glidex";
@@ -90,6 +95,7 @@ pub struct Options {
     pub remove_ovs: bool,
     pub reset_dpdk: bool,
     pub remove_cloud_hypervisor: bool,
+    pub remove_pylon: bool,
     pub purge_user_data: bool,
 }
 
@@ -103,6 +109,7 @@ impl Options {
                 "--remove-ovs" => o.remove_ovs = true,
                 "--reset-dpdk" => o.reset_dpdk = true,
                 "--remove-cloud-hypervisor" => o.remove_cloud_hypervisor = true,
+                "--remove-pylon" => o.remove_pylon = true,
                 "--purge-user-data" => o.purge_user_data = true,
                 "-h" | "--help" => {
                     print_help();
@@ -121,6 +128,7 @@ impl Options {
             (self.remove_ovs, "--remove-ovs"),
             (self.reset_dpdk, "--reset-dpdk"),
             (self.remove_cloud_hypervisor, "--remove-cloud-hypervisor"),
+            (self.remove_pylon, "--remove-pylon"),
             (self.purge_user_data, "--purge-user-data"),
         ] {
             if on {
@@ -143,6 +151,7 @@ fn print_help() {
          \x20                              or the glidex source build in /opt/glidex)\n\
          \x20     --reset-dpdk             clear DPDK settings glidex put in OVS\n\
          \x20     --remove-cloud-hypervisor also delete the cloud-hypervisor binary\n\
+         \x20     --remove-pylon           also delete the pylon and pylond binaries\n\
          \x20     --purge-user-data        also delete ~/.glidex and the glidex user's home,\n\
          \x20                              /var/lib/glidex-control-plane (VMs, credentials,\n\
          \x20                              firmware, images, disks), and the site\n\
@@ -255,6 +264,18 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
             } else if host.has_net_admin(&ch) {
                 steps.push(run(&["setcap", "-r", &ch.to_string_lossy()]));
             }
+        }
+        let pylon = dir.join("pylon");
+        if host.exists(&pylon) {
+            if opts.remove_pylon {
+                steps.push(Step::Remove(pylon));
+            } else if host.has_net_admin(&pylon) {
+                steps.push(run(&["setcap", "-r", &pylon.to_string_lossy()]));
+            }
+        }
+        let pylond = dir.join("pylond");
+        if host.exists(&pylond) && opts.remove_pylon {
+            steps.push(Step::Remove(pylond));
         }
         for b in BINARIES {
             let p = dir.join(b);
@@ -386,12 +407,12 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
     // Users first: groupdel refuses a user's primary group. (userdel may
     // already remove a same-named group; groupdel then just warns.)
-    for user in [SERVICE_USER, UI_USER] {
+    for user in [SERVICE_USER, UI_USER, METAD_USER] {
         if host.user_exists(user) {
             steps.push(run(&["userdel", user]));
         }
     }
-    for group in [GROUP, UI_USER].iter().chain(PEOPLE_GROUPS) {
+    for group in [GROUP, UI_USER, METAD_USER].iter().chain(PEOPLE_GROUPS) {
         if host.group_exists(group) {
             steps.push(run(&["groupdel", group]));
         }
@@ -702,7 +723,7 @@ fn execute(step: &Step) -> Result<()> {
             // The metering table goes too: the only place it is deleted
             // (spec/metering.md D14).
             let script =
-                glidex_ovs::nat::nft_script(&[], &[]) + &glidex_ovs::nat_meter::drop_script();
+                glidex_ovs::nat::nft_script(&[], &[], &[]) + &glidex_ovs::nat_meter::drop_script();
             child
                 .stdin
                 .take()
@@ -1099,6 +1120,54 @@ mod tests {
         assert!(
             !l.iter().any(|s| s.contains("setcap -r")),
             "binary removed instead"
+        );
+    }
+
+    #[test]
+    fn pylon_removal_and_setcap_reset() {
+        let mut host = full_install();
+        host.paths.insert(PathBuf::from("/usr/local/bin/pylon"));
+        host.paths.insert(PathBuf::from("/usr/local/bin/pylond"));
+        host.paths
+            .insert(PathBuf::from("/etc/systemd/system/glidex-pylond.service"));
+        host.units.insert("glidex-pylond.service".into());
+        host.caps.insert(PathBuf::from("/usr/local/bin/pylon"));
+
+        // Default uninstall: drops capabilities, disables unit, keeps binaries
+        let l_default = lines(&plan(&host, &Options::default(), Path::new("/home/alice")));
+        assert!(
+            l_default
+                .iter()
+                .any(|s| s.contains("systemctl disable --now")
+                    && s.contains("glidex-pylond.service"))
+        );
+        assert!(
+            l_default
+                .iter()
+                .any(|s| s == "run: setcap -r /usr/local/bin/pylon")
+        );
+        assert!(
+            !l_default
+                .iter()
+                .any(|s| s == "remove: /usr/local/bin/pylon")
+        );
+
+        // --remove-pylon: removes binaries
+        let opts = Options {
+            remove_pylon: true,
+            ..Options::default()
+        };
+        let l_remove = lines(&plan(&host, &opts, Path::new("/home/alice")));
+        assert!(l_remove.iter().any(|s| s == "remove: /usr/local/bin/pylon"));
+        assert!(
+            l_remove
+                .iter()
+                .any(|s| s == "remove: /usr/local/bin/pylond")
+        );
+        assert!(
+            l_remove
+                .iter()
+                .any(|s| s == "remove: /etc/systemd/system/glidex-pylond.service")
         );
     }
 

@@ -1,4 +1,4 @@
-# Real-IdP checks (spec/tenancy.md §17, T2–T5)
+# Real-IdP checks (spec/tenancy.md §17, T2–T6)
 
 The connector presets are tested in CI against a mock IdP
 (`tests/connector_tests.rs`). What a mock can't show — how the real
@@ -133,10 +133,39 @@ a chat. Turn the Funnel off after the checks.
 10. Note what JumpCloud sends that glidex ignores (attributes), and any
     request that failed (status and `scimType` from the audit log).
 
+## Two organizations (T6)
+
+Two installs that share nothing but the network: a cluster (here
+gpu-dev2, with an agent) and a standalone host serving another
+organization's directory (here spark-1, split off the cluster for it).
+No IdP is involved; the accounts are the directory's own.
+
+1. At the directory host: a tenant with a project, and a user who is its
+   tenant admin.
+2. At the cluster: `gxctl admission offer <tenant> --directory <issuer>`
+   (the directory's issuer, `https://<host>:5173/d/<dir>`). Carry the
+   token to the tenant admin outside any chat or file in the repository.
+3. At the directory: `gxctl tenant opt-in <tenant> --offer …` (or the
+   tenant page). Both sides list the other (`admission directories`,
+   `tenant clusters`).
+4. Within a minute: the cluster's last feed is seconds old, and the
+   directory's tenant page shows the cluster's report.
+5. gxctl: a profile for the directory host (`--directory`), then one for
+   the cluster with `--via` it; `whoami` there names the directory's
+   user with method `directory`, and the tenant's project is listed.
+6. A browser signed in at the directory opens the cluster's web UI:
+   **Sign in with &lt;tenant&gt;** brings it back signed in to the cluster.
+7. An API token made at the directory with `--cluster <cluster id>`:
+   refused at the cluster, working after the next feed, refused again
+   after it is revoked at the directory.
+8. `gxctl --profile <directory profile> auth logout --revoke`: its access
+   token is refused at once and its refresh token too.
+
 ## Results
 
 | Date | Build | Check | Result |
 |---|---|---|---|
 | — | T4 (#74–#85) | Google Workspace directory sync (`provisioning: pull`) | **not run yet**: deferred by the operator; run it before relying on the pull |
+| 2026-10-22 | `ac5a0e2` (T6 #165, #167, #168) | Two organizations: steps 1–8 above, between a cluster and a standalone host on a tailnet | pass (step 8 at `985e97b`), after three fixes found by it and made in #168: a standalone host's server-info now names its token audience (gxctl's directory login asked for the wrong one); a tenant role lists the tenant's projects; `auth logout --revoke` ends a directory login (it refused for want of an API token id). Staleness and logout at the directory ending cluster sessions were checked in-process only |
 | — | T5 (#92–#100) | GitHub Actions workload federation | **not run yet**: needs a test repository and a tunnel; run it before relying on federation with GitHub |
 | 2026-10-19 | `4a2c488` (T3, #61–#69) | JumpCloud SCIM, through a Cloudflare quick tunnel that published only `/api/scim/v2/`. JumpCloud did lookups (`GET /Users` with a filter), created and updated users (`POST`, `PUT`), created groups and changed their members (`POST`, `PATCH`), and removed a user and a group (`DELETE`); it never called `/ServiceProviderConfig` | pass: every request succeeded (no 4xx or 5xx from JumpCloud) |

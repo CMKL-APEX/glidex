@@ -940,6 +940,27 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             pb::DatastoreDriver::DATASTORE_DRIVER_LVM,
             pb::DatastoreTopology::DATASTORE_TOPOLOGY_NODE_LOCAL,
         ),
+        DriverSpec::Hyperstor { .. } => (
+            pb::DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR,
+            pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
+        ),
+    };
+    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires) = match &d.driver {
+        DriverSpec::Hyperstor {
+            api,
+            pool,
+            identity,
+            ..
+        } => (
+            api.clone(),
+            *pool,
+            identity
+                .as_ref()
+                .map(|i| i.name.clone())
+                .unwrap_or_default(),
+            identity.as_ref().map(|i| i.not_after),
+        ),
+        _ => (Vec::new(), 0, String::new(), None),
     };
     let (path, volume_group, thin_pool) = match &d.driver {
         DriverSpec::Lvm { vg, thin_pool, .. } => (String::new(), vg.clone(), thin_pool.clone()),
@@ -978,6 +999,10 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             })
             .collect(),
         disks: v.disks,
+        hyperstor_api,
+        hyperstor_pool,
+        hyperstor_identity,
+        hyperstor_identity_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
         ..Default::default()
     }
 }
@@ -1025,10 +1050,35 @@ pub async fn create_datastore(
 ) -> ServiceResult<pb::CreateDatastoreResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
     let invalid = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_datastore", m);
+    let mut hyperstor = None;
     let (shared, lvm) = match req.driver.as_known() {
         Some(pb::DatastoreDriver::DATASTORE_DRIVER_DIR)
         | Some(pb::DatastoreDriver::DATASTORE_DRIVER_UNSPECIFIED) => (false, None),
         Some(pb::DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR) => (true, None),
+        Some(pb::DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR) => {
+            if req.hyperstor_api.is_empty()
+                || req.hyperstor_token.is_empty()
+                || req.hyperstor_pool == 0
+                || !req.path.is_empty()
+            {
+                return Err(invalid(
+                    "a hyperstor datastore takes hyperstor_api, hyperstor_pool and hyperstor_token, not path",
+                ));
+            }
+            // hyperstor's volumes are thin and it doesn't report free space
+            // yet, so glidex can't keep disks within it (S22).
+            if req.overcommit == Some(false) {
+                return Err(invalid(
+                    "a hyperstor datastore can't refuse to overcommit: hyperstor doesn't report its free space yet",
+                ));
+            }
+            hyperstor = Some(crate::datastore::manage::NewHyperstor {
+                api: req.hyperstor_api.clone(),
+                pool: req.hyperstor_pool,
+                token: zeroize::Zeroizing::new(req.hyperstor_token.clone()),
+            });
+            (true, None)
+        }
         Some(pb::DatastoreDriver::DATASTORE_DRIVER_LVM) => {
             if req.volume_group.is_empty() || req.thin_pool.is_empty() || !req.path.is_empty() {
                 return Err(invalid(
@@ -1040,7 +1090,7 @@ pub async fn create_datastore(
                 Some((req.volume_group.clone(), req.thin_pool.clone())),
             )
         }
-        None => return Err(invalid("driver: dir, shared-dir or lvm")),
+        None => return Err(invalid("driver: dir, shared-dir, lvm or hyperstor")),
     };
     let v = call
         .manager()
@@ -1053,6 +1103,7 @@ pub async fn create_datastore(
             overcommit: req.overcommit,
             shared,
             lvm,
+            hyperstor,
         })
         .await
         .map_err(manager_err)?;

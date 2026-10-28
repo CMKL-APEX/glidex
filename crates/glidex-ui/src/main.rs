@@ -1901,19 +1901,19 @@ mod tests {
         const NODE: &str = "node.tail.ts.net";
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<html>ui</html>").unwrap();
-        let ts_pair = tailscale::tests::pair(&[NODE], 80);
+        let ts_pair = tailscale::testing::pair(&[NODE], 80);
         let ts_cert = dir.path().join("ts.crt");
         std::fs::write(
             &ts_cert,
             &ts_pair[ts_pair.find("-----BEGIN CERTIFICATE").unwrap()..],
         )
         .unwrap();
-        let fake = Arc::new(Mutex::new(tailscale::tests::Fake {
+        let fake = Arc::new(Mutex::new(tailscale::testing::Fake {
             domains: Some(vec![NODE.into()]),
             pairs: HashMap::from([(NODE.into(), ts_pair.clone())]),
             ..Default::default()
         }));
-        let sock = tailscale::tests::serve_fake(dir.path(), fake);
+        let sock = tailscale::testing::serve_fake(dir.path(), fake);
 
         let ui = glidex_tls::ensure_self_signed(&dir.path().join("ui"), "ui", &local()).unwrap();
         let files = glidex_tls::FileCert::load(&ui.cert, &ui.key).unwrap();

@@ -851,11 +851,19 @@ fn offer_pb(o: &tenants::Offer) -> pb::Offer {
 /// Where directories reach this cluster's API (D64): `cluster.api_url`,
 /// else the web UI's published host on the API's port.
 pub fn offer_api(call: &Call) -> Option<String> {
-    let cfg = &call.auth().config;
+    api_endpoint(&call.auth().config, call.manager())
+}
+
+/// This host's public API address: `cluster.api_url`, else the web UI's
+/// host on the API's port.
+pub fn api_endpoint(
+    cfg: &crate::config::Config,
+    manager: &crate::state::VmManager,
+) -> Option<String> {
     if let Some(u) = cfg.cluster.ui_origin_of(cfg.cluster.api_url.as_deref()) {
         return Some(u);
     }
-    let ui = call.manager().ui_url()?;
+    let ui = manager.ui_url()?;
     let host = ui.parse::<axum::http::Uri>().ok()?.host()?.to_string();
     let port = cfg.listen.first().map_or(8841, |a| a.port());
     Some(format!("https://{host}:{port}"))
@@ -967,12 +975,35 @@ fn trust_err(e: crate::trust::StoreError) -> ServiceError {
     ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
 }
 
-fn tenant_cluster_pb(c: &crate::trust::TrustedCluster) -> pb::TenantCluster {
+/// Trusted cluster `c` as tenant `tenant` sees it, with what the cluster
+/// last reported of it (D70).
+fn tenant_cluster_pb(c: &crate::trust::TrustedCluster, tenant: &str) -> pb::TenantCluster {
+    let report = c.report.as_ref().and_then(|r| {
+        let t = r.tenants.iter().find(|t| t.tenant == tenant)?;
+        Some(pb::TenantClusterReport {
+            reported_at: ts(r.at).into(),
+            status: if t.suspended {
+                pb::AdmissionStatus::ADMISSION_STATUS_SUSPENDED
+            } else {
+                pb::AdmissionStatus::ADMISSION_STATUS_ADMITTED
+            }
+            .into(),
+            cap: quotas_to_pb(&t.cap).into(),
+            projects: t.projects,
+            vms: t.vms,
+            running_vms: t.running_vms,
+            disks: t.disks,
+            disk_gib: t.disk_gib,
+            networks: t.networks,
+            ..Default::default()
+        })
+    });
     pb::TenantCluster {
         cluster_id: c.cluster_id.clone(),
         name: c.name.clone(),
         api: c.api.clone(),
         created_at: ts(c.created_at).into(),
+        report: report.into(),
         ..Default::default()
     }
 }
@@ -992,7 +1023,7 @@ pub fn list_tenant_clusters(
         clusters: all
             .iter()
             .filter(|c| c.tenants.contains(&t.id))
-            .map(tenant_cluster_pb)
+            .map(|c| tenant_cluster_pb(c, &t.id))
             .collect(),
         ..Default::default()
     })
@@ -1095,11 +1126,12 @@ pub async fn opt_in_cluster(
             tenants: Vec::new(),
             created_at: now,
             ui_callback: None,
+            report: None,
         });
     c.api = token.api.clone();
     c.ui_callback = answer["ui_callback"]
         .as_str()
-        .filter(|u| url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http")))
+        .filter(|u| crate::api::trust::valid_callback(u))
         .map(String::from);
     c.tls_sha256 = token.tls_sha256.clone();
     c.jwks = answer["cluster_key"].clone();
@@ -1110,7 +1142,7 @@ pub async fn opt_in_cluster(
     call.set_target(format!("tenant:{}", t.id));
     call.detail("cluster", serde_json::json!(c.cluster_id));
     Ok(pb::OptInClusterResponse {
-        cluster: tenant_cluster_pb(&c).into(),
+        cluster: tenant_cluster_pb(&c, &t.id).into(),
         ..Default::default()
     })
 }
@@ -1185,25 +1217,82 @@ pub fn list_trusted_directories(
     call.require(Ent::Cluster, EntitySet::new())?;
     let all = call.auth().trust.directories().map_err(trust_err)?;
     Ok(pb::ListTrustedDirectoriesResponse {
-        directories: all
+        directories: all.iter().map(|d| trusted_directory_pb(call, d)).collect(),
+        ..Default::default()
+    })
+}
+
+/// A trusted directory with how fresh its replica is here (D13).
+fn trusted_directory_pb(call: &Call, d: &crate::trust::TrustedDirectory) -> pb::TrustedDirectory {
+    let now = crate::auth::store::now();
+    let st = call.auth().trust.feed_state(&d.id).unwrap_or_default();
+    let last = st.checked_at.max(st.applied_at);
+    let lag = call.auth().trust.lag(d, now).unwrap_or(u64::MAX);
+    let max = d
+        .max_staleness_minutes
+        .unwrap_or(call.auth().config.trust.default_max_staleness_minutes);
+    pb::TrustedDirectory {
+        id: d.id.clone(),
+        issuer: d.issuer.clone(),
+        tenants: d
+            .tenants
             .iter()
-            .map(|d| pb::TrustedDirectory {
-                id: d.id.clone(),
-                issuer: d.issuer.clone(),
-                tenants: d
-                    .tenants
-                    .iter()
-                    .map(|t| pb::RemoteTenant {
-                        id: t.id.clone(),
-                        slug: t.slug.clone(),
-                        display_name: t.display_name.clone(),
-                        ..Default::default()
-                    })
-                    .collect(),
-                created_at: ts(d.created_at).into(),
+            .map(|t| pb::RemoteTenant {
+                id: t.id.clone(),
+                slug: t.slug.clone(),
+                display_name: t.display_name.clone(),
                 ..Default::default()
             })
             .collect(),
+        created_at: ts(d.created_at).into(),
+        max_staleness_minutes: d.max_staleness_minutes,
+        effective_max_staleness_minutes: max,
+        last_sync: if last > 0 {
+            ts(last).into()
+        } else {
+            Default::default()
+        },
+        lag_seconds: lag,
+        stale: lag > max * 60,
+        ..Default::default()
+    }
+}
+
+pub fn set_trusted_directory(
+    call: &Call,
+    req: pb::SetTrustedDirectoryRequest,
+) -> ServiceResult<pb::SetTrustedDirectoryResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    if req.max_staleness_minutes == Some(0) {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "max_staleness_minutes is at least 1",
+        ));
+    }
+    let mut d = call
+        .auth()
+        .trust
+        .directories()
+        .map_err(trust_err)?
+        .into_iter()
+        .find(|d| d.id == req.id)
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "no such trusted directory",
+            )
+        })?;
+    d.max_staleness_minutes = req.max_staleness_minutes;
+    call.auth().trust.put_directory(&d).map_err(trust_err)?;
+    call.set_target(format!("directory:{}", d.issuer));
+    call.detail(
+        "max_staleness_minutes",
+        serde_json::json!(d.max_staleness_minutes),
+    );
+    Ok(pb::SetTrustedDirectoryResponse {
+        directory: trusted_directory_pb(call, &d).into(),
         ..Default::default()
     })
 }

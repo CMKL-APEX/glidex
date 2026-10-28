@@ -9,6 +9,7 @@
 #![allow(clippy::result_large_err)] // handlers return (StatusCode, Json<ApiError>), as before
 
 mod access;
+mod accounts;
 mod cluster;
 mod connectors;
 pub(crate) mod errors;
@@ -17,6 +18,7 @@ mod federations;
 pub mod gate;
 mod invitations;
 pub mod issuer;
+pub mod metad;
 mod net;
 pub(crate) mod nodes;
 pub mod op;
@@ -76,6 +78,9 @@ pub enum Listener {
     /// (spec/clustering-ui.md §3.6): authenticated here like `Ui`, with the
     /// Origin already checked by the agent.
     Relay,
+    /// `metad.sock`: glidex-metad, with its own router
+    /// (spec/workload-identity.md W11).
+    Metad,
 }
 
 /// The node that relayed a UI request (`Listener::Relay`).
@@ -461,6 +466,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/networks/{id}/grants",
         "grantNetwork",
         put(net::grant_network),
+    )
+    .add(
+        "PUT",
+        "/networks/{id}/host_api",
+        "setNetworkHostApi",
+        put(net::set_network_host_api),
     )
     .add(
         "POST",
@@ -860,7 +871,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(trust::end_at_directory),
     )
+    .add(
+        "POST",
+        "/d/{dir}/trust/v1/logout",
+        PUBLIC,
+        post(trust::logout_at_directory),
+    )
     .add("POST", "/d/{dir}/feed/v1", PUBLIC, post(trust::feed))
+    .add(
+        "POST",
+        "/d/{dir}/feed/v1/report",
+        PUBLIC,
+        post(trust::report),
+    )
     .add(
         "POST",
         "/d/{dir}/device/inspect",
@@ -942,6 +965,28 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/auth/c/{id}/callback",
         PUBLIC,
         get(access::connector_callback),
+    )
+    // A browser's accounts in several directories (spec/tenancy.md D71):
+    // public, so a browser without an active session can switch back.
+    .add("GET", "/auth/accounts", PUBLIC, get(accounts::list))
+    .add(
+        "POST",
+        "/auth/accounts/switch",
+        PUBLIC,
+        post(accounts::switch),
+    )
+    .add("POST", "/auth/accounts/add", PUBLIC, post(accounts::add))
+    .add(
+        "POST",
+        "/auth/accounts/remove",
+        PUBLIC,
+        post(accounts::remove),
+    )
+    .add(
+        "POST",
+        "/auth/accounts/logout-all",
+        PUBLIC,
+        post(accounts::logout_all),
     )
     // Logins at a trusted directory (spec/tenancy.md D69).
     .add(
@@ -1406,6 +1451,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         get(tenants::list_trusted_directories),
     )
     .add(
+        "PATCH",
+        "/admissions/directories/{id}",
+        "manageAdmissions",
+        patch(tenants::set_trusted_directory),
+    )
+    .add(
         "GET",
         "/tenants/{id}/clusters",
         "readTenantClusters",
@@ -1717,7 +1768,7 @@ pub(crate) fn client_ip(
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
         Listener::Tcp => peer.map(|a| a.ip()),
-        Listener::Api | Listener::Cluster => None,
+        Listener::Api | Listener::Cluster | Listener::Metad => None,
     }
 }
 
@@ -1781,6 +1832,10 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 None => Ok(None),
             },
             Listener::Cluster => gate::forwarded_principal(&headers),
+            // metad.sock serves its own router (api::metad), never this one.
+            Listener::Metad => {
+                return plain_error(StatusCode::FORBIDDEN, "forbidden", "not on this socket");
+            }
             Listener::Ui | Listener::Tcp | Listener::Relay => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>())
                 {
@@ -1802,6 +1857,23 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                         app.auth.token_principal(&token, Transport::Tcp, ip)
                     };
                     match found {
+                        // An API token only on the clusters it lists
+                        // (spec/tenancy.md §7.4); one fed from a trusted
+                        // directory was made elsewhere.
+                        Ok(Some(p))
+                            if p.token.as_ref().is_some_and(|t| {
+                                !t.good_on(
+                                    &op::cluster_id(&app),
+                                    !p.directory.starts_with("trusted-"),
+                                )
+                            }) =>
+                        {
+                            return plain_error(
+                                StatusCode::UNAUTHORIZED,
+                                "unauthenticated",
+                                "this token isn't for this cluster",
+                            );
+                        }
                         Ok(Some(p)) => Ok(Some(p)),
                         Ok(None) => {
                             return plain_error(
@@ -1864,12 +1936,44 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             }
         }
     };
+    // A trusted directory's people (spec/tenancy.md D13): refused once its
+    // replica here is older than its `max_staleness`, since a revocation
+    // may be missing; behind, they are told by how much. `/auth/…` stays
+    // open to them, to see who they are and to log out.
+    let mut lag = None;
+    if let Some(p) = &principal
+        && let Some(f) = trust::freshness(&app, &p.directory)
+    {
+        match f {
+            Ok(l) => lag = (l > trust::BEHIND_SECS).then_some(l),
+            Err(l) if !req.uri().path().starts_with("/auth/") => {
+                let when = if l == u64::MAX {
+                    "for a while".to_string()
+                } else {
+                    format!("for {} minutes", l / 60)
+                };
+                return plain_error(
+                    StatusCode::UNAUTHORIZED,
+                    "directory_stale",
+                    &format!(
+                        "this cluster hasn't heard from your organization's directory {when}: its accounts are paused here until it does"
+                    ),
+                );
+            }
+            Err(l) => lag = Some(l),
+        }
+    }
     if let Some(p) = principal {
         req.extensions_mut().insert(p);
     }
     let mut resp = next.run(req).await;
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         resp.headers_mut().insert("x-request-id", v);
+    }
+    if let Some(l) = lag.filter(|l| *l != u64::MAX)
+        && let Ok(v) = HeaderValue::from_str(&l.to_string())
+    {
+        resp.headers_mut().insert("x-glidex-directory-lag", v);
     }
     resp
 }
@@ -2524,7 +2628,9 @@ mod tests {
                 "/trust/v1/redeem",
                 "/trust/v1/end",
                 "/d/{dir}/trust/v1/end",
+                "/d/{dir}/trust/v1/logout",
                 "/d/{dir}/feed/v1",
+                "/d/{dir}/feed/v1/report",
                 "/auth/passkeys/login/start",
                 "/auth/passkeys/login/finish",
                 "/auth/c/{id}/start",
@@ -2533,6 +2639,11 @@ mod tests {
                 "/auth/invitation/passkey/start",
                 "/auth/invitation/passkey/finish",
                 "/auth/c/{id}/callback",
+                "/auth/accounts",
+                "/auth/accounts/switch",
+                "/auth/accounts/add",
+                "/auth/accounts/remove",
+                "/auth/accounts/logout-all",
                 "/auth/t/{trusted}/start",
                 "/auth/t/{trusted}/callback",
                 "/auth/c/{id}/device",

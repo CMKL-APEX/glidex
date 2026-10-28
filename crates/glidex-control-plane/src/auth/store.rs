@@ -309,6 +309,24 @@ pub struct Token {
     /// audit only, never checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
+    /// The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+    /// `all`; empty: only where it was made. Fed to the others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clusters: Vec<String>,
+}
+
+/// A token's `clusters` naming every cluster its tenant uses.
+pub const ALL_CLUSTERS: &str = "all";
+
+impl Token {
+    /// Whether it is good on cluster `id`, `here` being where it lives:
+    /// listed there, or `all`; with no list, only where it was made.
+    pub fn good_on(&self, id: &str, here_made: bool) -> bool {
+        if self.clusters.is_empty() {
+            return here_made;
+        }
+        self.clusters.iter().any(|c| c == id || c == ALL_CLUSTERS)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -339,6 +339,15 @@ mod tests {
         // process's would be: OFD locks belong to the open file.
         assert!(try_lock_file(&p).unwrap().is_none());
         drop(first);
-        assert!(try_lock_file(&p).unwrap().is_some());
+        // A child another test thread forks shares the open file (and so
+        // the lock) until it execs, close-on-exec or not: allow it that.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while try_lock_file(&p).unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock outlived its file"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

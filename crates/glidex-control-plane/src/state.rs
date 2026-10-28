@@ -253,12 +253,21 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub vcpu_count: Option<u8>,
     #[serde(default)]
+    pub min_vcpus: Option<Option<u8>>,
+    #[serde(default)]
+    pub max_vcpus: Option<Option<u8>>,
+    #[serde(default)]
+    pub cpu_weight: Option<Option<u32>>,
+    #[serde(default)]
     pub mem_size_mib: Option<u32>,
     #[serde(default)]
     pub kernel_args: Option<String>,
     /// `null` removes the credential.
     #[serde(default)]
     pub credential: Option<serde_json::Value>,
+    /// A token id, or `null` to remove the service account.
+    #[serde(default)]
+    pub service_account: Option<serde_json::Value>,
     #[serde(default)]
     pub hugepages: Option<bool>,
     /// `2M`, `1G`, or `null` for the node's default size.
@@ -378,6 +387,7 @@ pub struct VmManager {
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
+    api_app: std::sync::OnceLock<Arc<crate::api::App>>,
     secrets_key: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
     node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
@@ -515,7 +525,11 @@ impl VmManager {
             .unwrap_or_else(|| PathBuf::from("."));
         let changed = store.database().bell();
         let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
-        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+        for ty in [
+            HypervisorType::CloudHypervisor,
+            HypervisorType::Qemu,
+            HypervisorType::Pylon,
+        ] {
             if !crate::hypervisor::driver(ty).is_available() {
                 tracing::warn!(
                     "Hypervisor {} binary {:?} not found — VMs configured for it will fail to start",
@@ -563,6 +577,7 @@ impl VmManager {
             db_path,
             cluster: arc_swap::ArcSwapOption::empty(),
             api_router: std::sync::OnceLock::new(),
+            api_app: std::sync::OnceLock::new(),
             secrets_key: std::sync::OnceLock::new(),
             node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
@@ -1116,6 +1131,10 @@ impl VmManager {
         if !self.datastores_supported() {
             return;
         }
+        // The leader keeps hyperstor's certificates renewed (S20) and
+        // removes image volumes left behind (S24).
+        self.renew_hyperstor_identities();
+        self.collect_hyperstor_image_volumes();
         let db = self.store.database();
         let me = self.local_node_id();
         let Ok(all) = record::list(&db) else { return };
@@ -1162,6 +1181,15 @@ impl VmManager {
                     &crate::datastore::lvm::socket_path(),
                     now,
                 )
+            } else if let (true, record::DriverSpec::Hyperstor { map, .. }) =
+                (ds.on_node(&me), &ds.driver)
+            {
+                let driver = crate::datastore::hyperstor::HyperstorDriver::of(
+                    &ds,
+                    self.images.hyperstor_identity(&ds),
+                )
+                .expect("a hyperstor datastore");
+                crate::datastore::hyperstor::probe(&driver, map, now)
             } else if ds.on_node(&me) {
                 probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {
@@ -1267,6 +1295,11 @@ impl VmManager {
         if let (Some(t), Some(list)) = (probe.topology.as_mut(), &self.reserved.load().cpu_list) {
             t.reserve(glidex_ovs::tuning::parse_cpu_list(list), "config");
             t.reserved_by_config = true;
+        }
+        if probe.features.pylond
+            && let Some(t) = probe.topology.as_mut()
+        {
+            t.reserve_pylon_cores();
         }
         // The devices a VM could be given, with their readiness, for pools
         // (spec/host-topology.md §9).
@@ -1403,12 +1436,27 @@ impl VmManager {
         let _ = self.api_router.set(router);
     }
 
+    /// Record the API's app, so a cluster's leader can answer the metadata
+    /// questions of its nodes (spec/workload-identity.md §15).
+    pub fn set_api_app(&self, app: Arc<crate::api::App>) {
+        if let Some(c) = self.cluster() {
+            c.set_app(app.clone());
+        }
+        let _ = self.api_app.set(app);
+    }
+
     /// Record the secrets key's holder, for a cluster to send to and
     /// receive from other servers (spec/tenancy.md §13).
+    /// The holder of the secrets key, once the API's auth service exists.
+    pub(crate) fn secrets_key(&self) -> Option<Arc<dyn crate::cluster::runtime::SecretsKey>> {
+        self.secrets_key.get().cloned()
+    }
+
     pub fn set_secrets_key(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
         if let Some(c) = self.cluster() {
             c.set_secrets(s.clone());
         }
+        self.images.set_secrets(s.clone());
         let _ = self.secrets_key.set(s);
     }
 
@@ -1425,6 +1473,9 @@ impl VmManager {
     pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
         if let Some(r) = self.api_router.get() {
             cluster.set_api(r.clone());
+        }
+        if let Some(a) = self.api_app.get() {
+            cluster.set_app(a.clone());
         }
         if let Some(s) = self.secrets_key.get() {
             cluster.set_secrets(s.clone());
@@ -1898,6 +1949,44 @@ impl VmManager {
         Ok(())
     }
 
+    /// Check CPU sizing, elasticity bounds (spec/pylon.md §3.2) and weights.
+    fn check_elasticity(config: &VmConfig) -> Result<(), VmManagerError> {
+        if config.vcpu_count == 0 {
+            return Err(invalid("vcpu_count must be greater than 0"));
+        }
+        let min = config.effective_min_vcpus();
+        let max = config.effective_max_vcpus();
+        let cur = config.vcpu_count;
+
+        if min > cur || cur > max {
+            return Err(invalid(format!(
+                "invalid vcpu bounds: min_vcpus ({min}) <= vcpu_count ({cur}) <= max_vcpus ({max}) required"
+            )));
+        }
+
+        if config.min_vcpus == Some(0) && config.hypervisor != HypervisorType::Pylon {
+            return Err(invalid(
+                "min_vcpus = 0 (scale-to-zero) requires the pylon hypervisor; cloudhypervisor and qemu require min_vcpus >= 1",
+            ));
+        }
+
+        if config.hypervisor == HypervisorType::Pylon && max > 64 {
+            return Err(invalid("max_vcpus on pylon cannot exceed 64"));
+        }
+
+        if let Some(w) = config.cpu_weight
+            && !(1..=10000).contains(&w)
+        {
+            return Err(invalid("cpu_weight must be between 1 and 10000"));
+        }
+
+        if config.cpu_policy == crate::models::CpuPolicy::Dedicated && config.is_elastic() {
+            return Err(invalid("dedicated cpu_policy cannot be elastic"));
+        }
+
+        Ok(())
+    }
+
     fn check_options(opts: &VmOptions) -> Result<(), VmManagerError> {
         if opts
             .stop_grace_secs
@@ -2117,9 +2206,10 @@ impl VmManager {
                 a.as_str()
             )));
         }
-        if config.vcpu_count == 0 {
-            return Err(invalid("vcpu_count must be greater than 0"));
+        if config.hypervisor == HypervisorType::Pylon && config.is_elastic() {
+            config.vcpu_count = config.effective_max_vcpus();
         }
+        Self::check_elasticity(&config)?;
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
         }
@@ -2459,7 +2549,10 @@ impl VmManager {
                 fw.name
             )));
         }
-        if fw.hypervisor != Some(hypervisor) {
+        let matches_hv = fw.hypervisor == Some(hypervisor)
+            || (hypervisor == crate::hypervisor::HypervisorType::Pylon
+                && fw.hypervisor == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
+        if !matches_hv {
             return Err(invalid(format!(
                 "firmware {} is built for {}, not {}",
                 fw.name,
@@ -2673,7 +2766,10 @@ impl VmManager {
                 ))
                 .into());
             }
-            let b = self.images.driver(&d)?.stage(&d)?;
+            let b = self
+                .images
+                .driver(&d)?
+                .attach_for_vm(&d, vm.status.takeover_disks)?;
             Ok((b, d))
         };
         let root = vm.config().root_disk.as_deref().map(bind).transpose()?;
@@ -2888,6 +2984,19 @@ impl VmManager {
                 delta.vcpus = (v as u64).saturating_sub(config.vcpu_count as u64);
                 config.vcpu_count = v;
             }
+            if let Some(min) = c.min_vcpus {
+                config.min_vcpus = min;
+            }
+            if let Some(max) = c.max_vcpus {
+                config.max_vcpus = max;
+            }
+            if let Some(weight) = c.cpu_weight {
+                config.cpu_weight = weight;
+            }
+            if config.hypervisor == HypervisorType::Pylon && config.is_elastic() {
+                config.vcpu_count = config.effective_max_vcpus();
+            }
+            Self::check_elasticity(config)?;
             if let Some(m) = c.mem_size_mib {
                 if m == 0 {
                     return Err(invalid("mem_size_mib must be greater than 0"));
@@ -2976,6 +3085,13 @@ impl VmManager {
                     serde_json::Value::Null => None,
                     serde_json::Value::String(s) => Some(s),
                     _ => return Err(invalid("credential must be a username or null")),
+                };
+            }
+            if let Some(sa) = c.service_account {
+                config.service_account = match sa {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    _ => return Err(invalid("service_account must be a token id or null")),
                 };
             }
             if let Some(devs) = c.vfio_devices {
@@ -3649,9 +3765,21 @@ impl VmManager {
         // A catalog pull brings the image's kernel (spec/kernel-boot.md K10).
         let with_kernel = req.with_kernel.unwrap_or(req.catalog.is_some());
         let (name, nodes) = (req.name.clone(), req.nodes.clone());
+        // Extracted on this host, or another node of the image's (§10.2).
+        if let Some(src) = req
+            .kernel_from
+            .as_deref()
+            .and_then(|k| self.images.get_image(k).ok())
+            && let Some(why) = self.extraction_unavailable(src.arch)
+        {
+            return Err(ImageError::InvalidImage(format!(
+                "kernels can't be extracted here: {why}"
+            ))
+            .into());
+        }
         let (img, created) = self.images.pull_image(req).await?;
         if created && img.kind == images::ImageKind::Disk && with_kernel {
-            if let Some(why) = self.images.extraction_refused(img.arch) {
+            if let Some(why) = self.extraction_unavailable(img.arch) {
                 tracing::info!(image = %img.name, "no kernel extracted: {why}");
             } else {
                 let kernel_name = name.map(|n| {
@@ -4567,6 +4695,7 @@ impl VmManager {
                         bridge: net.bridge.clone(),
                         subnet: req.subnet,
                         dns: req.dns,
+                        host_api_ports: self.host_api_ports(&net),
                     }));
                     if let Err(e) = res {
                         let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge {
@@ -4871,6 +5000,39 @@ impl VmManager {
     }
 
     /// Set which projects may use a host network.
+    /// The host's ports netd opens to `net`'s guests: the API's, on a node
+    /// NAT network with `host_api` or on a host with `nat_host_api`
+    /// (spec/workload-identity.md §15).
+    pub(crate) fn host_api_ports(&self, net: &Network) -> Vec<u16> {
+        let s = self.settings();
+        if net.mode == NetworkMode::Nat && (net.host_api || s.nat_host_api) {
+            s.api_ports.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Open (or close) this host's API to `id`'s guests: a node NAT
+    /// network's `host_api`, applied by its controller.
+    pub fn set_network_host_api(
+        &self,
+        id: &str,
+        host_api: bool,
+    ) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(id)?;
+        if net.mode != NetworkMode::Nat || net.scope != crate::network::NetworkScope::Node {
+            return Err(NetError::Invalid(
+                "only a node NAT network's guests are kept from the host's API".into(),
+            )
+            .into());
+        }
+        net.host_api = host_api;
+        self.networks.put(&net)?;
+        self.queue
+            .add(crate::controller::queue::Key::Network(net.id.clone()));
+        Ok(net)
+    }
+
     pub fn grant_network(
         &self,
         id: &str,
@@ -5519,4 +5681,83 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
         }
     };
     r.map_err(VmManagerError::Network)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(json: serde_json::Value) -> VmConfig {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn elasticity_checks_bounds() {
+        let ok = test_config(serde_json::json!({
+            "vcpu_count": 4, "min_vcpus": 2, "max_vcpus": 8, "cpu_weight": 200,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&ok).is_ok());
+
+        let bad_min = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 4, "max_vcpus": 8,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&bad_min).is_err());
+
+        let bad_max = test_config(serde_json::json!({
+            "vcpu_count": 8, "min_vcpus": 2, "max_vcpus": 4,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&bad_max).is_err());
+    }
+
+    #[test]
+    fn scale_to_zero_pylon_only() {
+        let pylon = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 0, "max_vcpus": 4, "hypervisor": "pylon",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&pylon).is_ok());
+
+        let ch = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 0, "max_vcpus": 4, "hypervisor": "cloudhypervisor",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        let err = VmManager::check_elasticity(&ch).unwrap_err();
+        assert!(err.to_string().contains("scale-to-zero"), "{err}");
+    }
+
+    #[test]
+    fn pylon_max_vcpus_cap() {
+        let over = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 1, "max_vcpus": 128, "hypervisor": "pylon",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&over).is_err());
+    }
+
+    #[test]
+    fn cpu_weight_bounds() {
+        let zero = test_config(serde_json::json!({
+            "vcpu_count": 2, "cpu_weight": 0,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&zero).is_err());
+
+        let high = test_config(serde_json::json!({
+            "vcpu_count": 2, "cpu_weight": 20000,
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&high).is_err());
+    }
+
+    #[test]
+    fn dedicated_cannot_be_elastic() {
+        let ded = test_config(serde_json::json!({
+            "vcpu_count": 2, "min_vcpus": 1, "max_vcpus": 4, "cpu_policy": "dedicated",
+            "mem_size_mib": 1024, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        assert!(VmManager::check_elasticity(&ded).is_err());
+    }
 }

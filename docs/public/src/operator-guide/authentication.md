@@ -795,6 +795,12 @@ Create one on the web UI's **Hosting** page, or with gxctl:
 gxctl directory create acme --name "Acme Corp" --admin-email it@acme.example
 ```
 
+Add `--trust-domain acme.example` to name the directory's **trust
+domain**, the name its VMs' workload identities carry (a domain the
+organization owns). Without it the directory gets `<id>.<this host>`.
+Either way it can't change once the directory has issued a workload
+identity token.
+
 It prints an invitation link, once. Send it to that person: they open
 it, create a passkey on their device, and are the directory's first
 administrator. From there they add their organization's sign-in

@@ -16,17 +16,23 @@ const TRUSTED_CLUSTERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tru
 pub const REDEEM: &str = "redeem";
 pub const END: &str = "end";
 pub const FEED: &str = "feed";
+/// A cluster reporting what it holds of a directory's tenants (D70).
+pub const REPORT: &str = "report";
+/// A cluster telling a directory that one of its sessions ended (D72).
+pub const LOGOUT: &str = "logout";
 
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
 
 /// The tables a feed carries rows of (D67), by name.
-pub const FEED_TABLES: [&str; 6] = [
+pub const FEED_TABLES: [&str; 7] = [
     "users",
     "teams",
     "tenants",
     "tenant_members",
     "projects",
     "policy_links",
+    // API tokens that list the cluster, by their hash (§7.4).
+    "api_tokens",
 ];
 
 fn table(name: &str) -> Option<TableDefinition<'static, &'static str, &'static [u8]>> {
@@ -63,6 +69,10 @@ pub struct FeedState {
     /// `(table, key)` of every row it wrote.
     pub rows: Vec<(String, String)>,
     pub applied_at: u64,
+    /// When the directory last answered a feed request (new content or
+    /// not), to the minute: the replica is that fresh (D13).
+    #[serde(default)]
+    pub checked_at: u64,
 }
 
 /// A browser login at a trusted directory under way (D69): what its
@@ -99,6 +109,36 @@ impl PendingLogins {
             .unwrap()
             .remove(state)
             .filter(|p| p.created + LOGIN_SECS > now)
+    }
+}
+
+/// Chains of trusted directories whose cluster sessions ended here, for
+/// those directories to end too (D72): `(trusted directory id, sid)`.
+#[derive(Default)]
+pub struct EndedChains {
+    queue: std::sync::Mutex<Vec<(String, String)>>,
+    wake: tokio::sync::Notify,
+}
+
+/// At most this many wait; older ones lapse at the directory anyway.
+const ENDED_CHAINS_MAX: usize = 1000;
+
+impl EndedChains {
+    pub fn push(&self, directory: String, sid: String) {
+        let mut q = self.queue.lock().unwrap();
+        if q.len() < ENDED_CHAINS_MAX {
+            q.push((directory, sid));
+        }
+        self.wake.notify_one();
+    }
+
+    pub fn take(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.queue.lock().unwrap())
+    }
+
+    /// Until something is pushed.
+    pub async fn wait(&self) {
+        self.wake.notified().await
     }
 }
 
@@ -185,6 +225,10 @@ pub struct TrustedDirectory {
     pub jwks: Value,
     pub tenants: Vec<RemoteTenant>,
     pub created_at: u64,
+    /// How long its credentials stay good after its last feed (D13);
+    /// `None`: `trust.default_max_staleness_minutes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_staleness_minutes: Option<u64>,
 }
 
 /// The id a trusted directory's records take here.
@@ -212,6 +256,32 @@ pub struct TrustedCluster {
     /// `redirect_uri` its client `cluster:<id>` may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_callback: Option<String>,
+    /// What it last reported of the opted-in tenants (D70).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<ClusterReport>,
+}
+
+/// A cluster's report to a trusted directory (D70): per tenant, its
+/// admission and what it holds there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterReport {
+    pub at: u64,
+    pub tenants: Vec<TenantReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantReport {
+    /// The tenant's id (the same at both).
+    pub tenant: String,
+    /// Admitted, or suspended (D9).
+    pub suspended: bool,
+    pub cap: crate::tenancy::Quotas,
+    pub projects: u64,
+    pub vms: u64,
+    pub running_vms: u64,
+    pub disks: u64,
+    pub disk_gib: u64,
+    pub networks: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -408,12 +478,54 @@ impl TrustStore {
                 revision: snap.revision.clone(),
                 rows: written.clone(),
                 applied_at: now,
+                checked_at: now,
             };
             txn.open_table(FEED_STATE)?
                 .insert(d.id.as_str(), serde_json::to_vec(&st)?.as_slice())?;
         }
         txn.commit()?;
         Ok(written.len())
+    }
+
+    /// The directory answered a feed request at `now` with nothing new;
+    /// written at most once a minute.
+    pub fn mark_checked(&self, id: &str, now: u64) -> Result<(), StoreError> {
+        let mut st = self.feed_state(id)?;
+        if now < st.checked_at + 60 {
+            return Ok(());
+        }
+        st.checked_at = now;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        txn.open_table(FEED_STATE)?
+            .insert(id, serde_json::to_vec(&st)?.as_slice())?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Move `id`'s feed times `secs` into the past, as if the directory
+    /// had been unreachable that long (tests and drills).
+    #[doc(hidden)]
+    pub fn backdate_feed(&self, id: &str, secs: u64) -> Result<(), StoreError> {
+        let mut st = self.feed_state(id)?;
+        st.applied_at = st.applied_at.saturating_sub(secs);
+        st.checked_at = st.checked_at.saturating_sub(secs);
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        txn.open_table(FEED_STATE)?
+            .insert(id, serde_json::to_vec(&st)?.as_slice())?;
+        txn.commit()?;
+        if let Some(mut d) = self.directories()?.into_iter().find(|d| d.id == id) {
+            d.created_at = d.created_at.saturating_sub(secs);
+            self.put_directory(&d)?;
+        }
+        Ok(())
+    }
+
+    /// How far behind `d`'s replica is at `now`, in seconds: since the
+    /// directory last answered a feed (since trust began, before any).
+    pub fn lag(&self, d: &TrustedDirectory, now: u64) -> Result<u64, StoreError> {
+        let st = self.feed_state(&d.id)?;
+        let last = st.checked_at.max(st.applied_at).max(d.created_at);
+        Ok(now.saturating_sub(last))
     }
 
     /// Forget trusted directory `id`'s replica (trust ended, D66).
@@ -456,6 +568,7 @@ mod tests {
             jwks: Value::Null,
             tenants: vec![],
             created_at: 0,
+            max_staleness_minutes: None,
         };
         let row = |key: &str| Row {
             table: "users".into(),

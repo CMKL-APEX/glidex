@@ -34,6 +34,16 @@ pub struct NewDatastore {
     /// `lvm`: (volume group, thin pool) instead of `path`; `node_paths`
     /// then name each node's volume group.
     pub lvm: Option<(String, String)>,
+    /// `hyperstor`: its cluster API, pool and a `mgmt` token to enroll
+    /// with (spec/storage.md S20).
+    pub hyperstor: Option<NewHyperstor>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NewHyperstor {
+    pub api: Vec<String>,
+    pub pool: u32,
+    pub token: zeroize::Zeroizing<String>,
 }
 
 /// `PATCH /datastores/{id}`: what is `Some` changes.
@@ -125,10 +135,19 @@ impl VmManager {
         req: NewDatastore,
     ) -> Result<DatastoreView, VmManagerError> {
         self.require_datastores()?;
+        let id = uuid::Uuid::new_v4().to_string();
+        // A hyperstor datastore: enroll now, so a token that doesn't work
+        // makes no datastore (S20).
+        let hyperstor = match req.hyperstor {
+            None => None,
+            Some(h) => Some(self.enroll_hyperstor(&id, h).await?),
+        };
         let ds = Datastore {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.clone(),
             name: req.name,
-            driver: if let Some((vg, thin_pool)) = req.lvm {
+            driver: if let Some(spec) = hyperstor {
+                spec
+            } else if let Some((vg, thin_pool)) = req.lvm {
                 DriverSpec::Lvm {
                     vg,
                     thin_pool,
@@ -150,9 +169,127 @@ impl VmManager {
             overcommit: req.overcommit.unwrap_or(true),
             created_at: crate::tenancy::now(),
         };
-        record::put(&self.database(), &ds, &record::root())?;
+        if let Err(e) = record::put(&self.database(), &ds, &record::root()) {
+            if ds.driver.is_hyperstor() {
+                self.forget_hyperstor_key(&id);
+            }
+            return Err(e.into());
+        }
         self.probe_soon();
         Ok(self.datastore_view(ds))
+    }
+
+    /// Enrolls with a hyperstor cluster for datastore `id`, checks its pool
+    /// as the new identity, and seals the key (S20). Only a server, which
+    /// holds the secrets key, can.
+    async fn enroll_hyperstor(
+        &self,
+        id: &str,
+        h: NewHyperstor,
+    ) -> Result<DriverSpec, VmManagerError> {
+        use super::hyperstor;
+        let invalid = |m: String| -> VmManagerError { DatastoreError::Invalid(m).into() };
+        if h.api.is_empty() {
+            return Err(invalid(
+                "a hyperstor datastore names its cluster API (host:port)".into(),
+            ));
+        }
+        let secrets = self
+            .secrets_key()
+            .ok_or_else(|| invalid("only a server can enroll with hyperstor".into()))?;
+        let enrolled = hyperstor::enroll(&h.api, &h.token)
+            .await
+            .map_err(|e| invalid(format!("enrolling with hyperstor: {e}")))?;
+        let opened = hyperstor::Identity {
+            cert: enrolled.identity.cert.clone(),
+            key: enrolled.key.clone(),
+            root: enrolled.identity.root.clone(),
+        };
+        hyperstor::check_pool(&h.api, &opened, h.pool)
+            .await
+            .map_err(|e| invalid(format!("hyperstor: {e}")))?;
+        secrets
+            .seal_value(&record::hyperstor_secret_owner(id), "key", &enrolled.key)
+            .map_err(|e| invalid(format!("sealing hyperstor's key: {e}")))?;
+        Ok(DriverSpec::Hyperstor {
+            api: h.api,
+            map: enrolled.map,
+            pool: h.pool,
+            identity: Some(enrolled.identity),
+            node_paths: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn forget_hyperstor_key(&self, id: &str) {
+        if let Some(s) = self.secrets_key() {
+            let _ = s.forget_value(&record::hyperstor_secret_owner(id), "key");
+        }
+    }
+
+    /// Renews every hyperstor datastore's certificate that is due (a third
+    /// of its life left): a new key, sealed, and the record updated. The
+    /// leader's, from its probe rounds (S20).
+    pub(crate) fn renew_hyperstor_identities(&self) {
+        let db = self.database();
+        if !db.can_write() {
+            return;
+        }
+        let Some(secrets) = self.secrets_key() else {
+            return;
+        };
+        for mut ds in record::list(&db).unwrap_or_default() {
+            let Some(opened) = self.images.hyperstor_identity(&ds) else {
+                continue;
+            };
+            let DriverSpec::Hyperstor { api, identity, .. } = &mut ds.driver else {
+                continue;
+            };
+            match super::hyperstor::renew(api, &opened) {
+                Ok(None) => {}
+                Ok(Some(new)) => {
+                    let owner = record::hyperstor_secret_owner(&ds.id);
+                    if let Err(e) = secrets.seal_value(&owner, "key", &new.key) {
+                        tracing::warn!(datastore = %ds.name, error = %e, "sealing hyperstor's renewed key");
+                        continue;
+                    }
+                    *identity = Some(new.identity);
+                    if let Err(e) = record::put(&db, &ds, &record::root()) {
+                        tracing::warn!(datastore = %ds.name, error = %e, "recording hyperstor's renewed certificate");
+                    } else {
+                        tracing::info!(datastore = %ds.name, "renewed hyperstor's certificate");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(datastore = %ds.name, error = %e, "renewing hyperstor's certificate");
+                }
+            }
+        }
+    }
+
+    /// Removes hyperstor image volumes whose image is gone (S24). The
+    /// leader's, from its probe rounds.
+    pub(crate) fn collect_hyperstor_image_volumes(&self) {
+        if !self.database().can_write() {
+            return;
+        }
+        for ds in record::list(&self.database()).unwrap_or_default() {
+            let Some(d) = self
+                .images
+                .hyperstor_identity(&ds)
+                .and_then(|i| super::hyperstor::HyperstorDriver::of(&ds, Some(i)))
+            else {
+                continue;
+            };
+            match d.collect_image_volumes(|image| self.images.get_image(image).is_ok()) {
+                Ok(0) => {}
+                Ok(n) => {
+                    tracing::info!(datastore = %ds.name, "removed {n} image volumes left behind")
+                }
+                Err(e) => {
+                    tracing::debug!(datastore = %ds.name, error = %e, "looking for image volumes left behind")
+                }
+            }
+        }
     }
 
     pub async fn update_datastore(
@@ -260,6 +397,9 @@ impl VmManager {
                 .unwrap_or_else(|_| id.to_string())
         };
         record::delete(&db, &ds.id, &node_name, &image_name)?;
+        if ds.driver.is_hyperstor() {
+            self.forget_hyperstor_key(&ds.id);
+        }
         Ok(())
     }
 }

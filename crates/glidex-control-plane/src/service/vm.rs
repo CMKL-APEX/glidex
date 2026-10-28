@@ -187,10 +187,14 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         deleting: vm.deletion_requested_at.is_some().then_some(true),
         node: vm.status.placement.as_ref().map(|p| p.node.clone()),
         vcpu_count: u32::from(config.vcpu_count),
+        min_vcpus: config.min_vcpus.map(u32::from),
+        max_vcpus: config.max_vcpus.map(u32::from),
+        cpu_weight: config.cpu_weight,
         mem_size_mib: config.mem_size_mib,
         hypervisor: hypervisor_pb(config.hypervisor).into(),
         vfio_devices: config.vfio_devices.clone(),
         credential: config.credential.clone(),
+        service_account: config.service_account.clone(),
         nics: config
             .networks
             .iter()
@@ -828,6 +832,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         es.project(&project);
         call.require_action("useCredential", e, es, with_project)?;
     }
+    if let Some(sa) = &req.service_account {
+        check_service_account(call, &project, sa, with_project)?;
+    }
     if !req.networks.is_empty() {
         call.require_action("attachNetwork", pent.clone(), pes.clone(), &[])?;
         for att in &req.networks {
@@ -892,12 +899,16 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
     let config = VmConfig {
         gpus,
         vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
+        min_vcpus: req.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8),
+        max_vcpus: req.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8),
+        cpu_weight: req.cpu_weight,
         mem_size_mib: req.mem_size_mib,
         kernel_image_path: m::expand_tilde(req.kernel_image_path),
         initrd_path: req.initrd_path.map(m::expand_tilde),
         firmware_path: req.firmware_path.map(m::expand_tilde),
         cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
         credential: req.credential,
+        service_account: req.service_account,
         rootfs_path: m::expand_tilde(req.rootfs_path),
         // The manager fills in the default (spec/kernel-boot.md K7): a
         // kernel image's command line, else the default for the
@@ -1024,9 +1035,13 @@ pub const UPDATABLE: &[&str] = &[
     "on_host_boot",
     "stop_grace_secs",
     "vcpu_count",
+    "min_vcpus",
+    "max_vcpus",
+    "cpu_weight",
     "mem_size_mib",
     "kernel_args",
     "credential",
+    "service_account",
     "hugepages",
     "hugepage_size",
     "numa_policy",
@@ -1060,12 +1075,28 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                     "vcpu_count" => {
                         c.vcpu_count = Some(change.vcpu_count.min(u32::from(u8::MAX)) as u8)
                     }
+                    "min_vcpus" => {
+                        c.min_vcpus =
+                            Some(change.min_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                    }
+                    "max_vcpus" => {
+                        c.max_vcpus =
+                            Some(change.max_vcpus.map(|v| v.min(u32::from(u8::MAX)) as u8))
+                    }
+                    "cpu_weight" => c.cpu_weight = Some(change.cpu_weight),
                     "mem_size_mib" => c.mem_size_mib = Some(change.mem_size_mib),
                     "kernel_args" => c.kernel_args = Some(change.kernel_args.clone()),
                     // Absent: the VM loses its credential.
                     "credential" => {
                         c.credential = Some(match &change.credential {
                             Some(u) => serde_json::Value::String(u.clone()),
+                            None => serde_json::Value::Null,
+                        })
+                    }
+                    // Absent: the VM loses its service account.
+                    "service_account" => {
+                        c.service_account = Some(match &change.service_account {
+                            Some(t) => serde_json::Value::String(t.clone()),
                             None => serde_json::Value::Null,
                         })
                     }
@@ -1123,6 +1154,44 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
     Ok(p)
 }
 
+/// Giving a VM of `project` service account `sa` (workload-identity.md
+/// W5): a live service account, and `useServiceAccount` on its project,
+/// which base policy keeps in the VM's tenant.
+fn check_service_account(
+    call: &Call,
+    project: &str,
+    sa: &str,
+    with_project: &[(&'static str, Ent)],
+) -> ServiceResult<()> {
+    let bad = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_config", m.to_string());
+    let now = crate::auth::store::now();
+    let token = call
+        .auth()
+        .store
+        .token_by_id(sa)
+        .map_err(|e| {
+            ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+        })?
+        .map(|(_, t)| t)
+        .filter(|t| t.expires_at > now)
+        .ok_or_else(|| bad("no such service account"))?;
+    let crate::auth::store::TokenKind::ServiceAccount {
+        project: sa_project,
+    } = &token.kind
+    else {
+        return Err(bad("that token isn't a service account"));
+    };
+    let mut es = project_entities(sa_project);
+    es.project(project);
+    call.require_action(
+        "useServiceAccount",
+        Ent::Project(sa_project.clone()),
+        es,
+        with_project,
+    )?;
+    Ok(())
+}
+
 /// Authorized per changed field (§12.1): power → start/stop/pauseVm,
 /// devices → attach/detachDevice + usePciDevice, data disks →
 /// attach/detachDisk + useDisk, networks → attach/detachNetwork +
@@ -1173,6 +1242,9 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
     if let Some(cp) = &patch.config {
         let cur = vm.config();
         update |= cp.vcpu_count.is_some_and(|v| v != cur.vcpu_count)
+            || cp.min_vcpus.is_some_and(|v| v != cur.min_vcpus)
+            || cp.max_vcpus.is_some_and(|v| v != cur.max_vcpus)
+            || cp.cpu_weight.is_some_and(|v| v != cur.cpu_weight)
             || cp.mem_size_mib.is_some_and(|v| v != cur.mem_size_mib)
             || cp
                 .kernel_args
@@ -1201,6 +1273,12 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 let (ce, mut ces) = credential_entities(&project, username);
                 ces.project(&project);
                 call.require_action("useCredential", ce, ces, with_project)?;
+            }
+        }
+        if let Some(sa) = &cp.service_account {
+            update = true;
+            if let Some(sa) = sa.as_str() {
+                check_service_account(call, &project, sa, with_project)?;
             }
         }
         if let Some(rs) = &cp.devices

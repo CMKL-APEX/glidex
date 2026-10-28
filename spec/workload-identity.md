@@ -1,6 +1,6 @@
 # Workload identity
 
-Status: **draft** (proposal); nothing implemented. Extends
+Status: **draft**; WI0, WI1a and WI1b-1 implemented (§13, §15). Extends
 [tenancy.md](tenancy.md) (§7 tokens, §9 workload federation, T6),
 [security.md](security.md) (§7 Cedar) and [networking.md](networking.md).
 §11 lists the changes other documents need once this is accepted.
@@ -57,7 +57,7 @@ guests.
 | W2 | Who vouches for the VM | The **cluster** running the VM is the only one that knows which VM asks; it attests, the directory's key signs. Before T6 (one control plane, directory `local`) that is one process. With T6 the directory gives each cluster it trusts a **delegated signing key** (§6) that it lists in its own JWKS, so a cluster mints tokens while cut off from its directory, and a relying party still trusts the directory alone. | Clusters keep running workloads through a partition (tenancy.md T6 staleness); the directory stays the single root and can withdraw a cluster's key at once. |
 | W3 | Delivery | A **link-local metadata endpoint** at `169.254.169.254:80` on every network a VM has, answered by a per-node daemon, **`glidex-metad`** (W11). It identifies the VM by the **port** a request arrives on, never by a source address alone. Requests need the header `Metadata-Flavor: Glidex`; replies leave with IP TTL 1. vsock is a second channel (W12). | Works from any cloud image with `curl`, on every network the VM has, with no agent. The port is what OVN and the node bridge already bind to the VM, so a guest can't claim to be another VM; the header and TTL defeat request forgery (SSRF) through a proxy in the guest and forwarding beyond it. |
 | W4 | Every VM has an identity | Any running VM may fetch its **identity token** (§4.2) for any audience; it grants nothing in glidex by itself. Rights come only from an attached service account (W5). | Identity is safe to give: an outside service decides what a VM's identity may do, as with any OIDC issuer. |
-| W5 | Service account on a VM | A VM may name **one service account** (`service_account`: a `SERVICE_ACCOUNT` token of a project of the VM's tenant). Setting it needs `useServiceAccount` on that service account (§7), not only `updateVm`. It can change while the VM runs and applies to the next token. | Without its own action, anyone who can create VMs could act as every service account in reach (the escalation GCP guards with `iam.serviceAccountUser`). |
+| W5 | Service account on a VM | A VM may name **one service account** (`service_account`: a `SERVICE_ACCOUNT` token of a project of the VM's tenant). Setting it needs `useServiceAccount` on that service account's project (§7), not only `updateVm`. It can change while the VM runs and applies to the next token. | Without its own action, anyone who can create VMs could act as every service account in reach (the escalation GCP guards with `iam.serviceAccountUser`). |
 | W6 | Glidex tokens for the VM | `GET /v1/glidex/token` on the metadata endpoint returns an **access token for the cluster** (`aud` = cluster id, tenancy.md §7.3) acting as the VM's service account: a federated token (D48) with origin `vm`, TTL 15 min by default, at most 1 h, never past the service account's own expiry. No service account, no token (`404`). | The guest never holds a `gxt_` secret; rights stay on the service account's role links, as for T5. |
 | W7 | Outside relying parties | The directory publishes `/.well-known/openid-configuration` and its JWKS (already needed for T6 logins). An identity token's `aud` is what the guest asks for; there is no default audience. | AWS IAM OIDC providers, Vault's JWT auth, Google workload identity federation and Kubernetes accept any issuer that publishes these. |
 | W8 | Lifetimes and revocation | **Identity tokens 15 min** by default; a guest may ask for 10 min to 1 h. **Glidex tokens 15 min** (T5's default, D48), at most 1 h. `glidex-metad` hands out the same token until 80% of its lifetime has passed, then a new one, so a guest that asks again always holds one with time left (§4.4). Deleting or stopping the VM, detaching or revoking its service account, or (T6) withdrawing the cluster's key, stops new tokens at once; issued tokens live until `exp`. | Short lifetimes are the revocation; relying parties need no revocation list. Shorter than GCP's and Kubernetes' 1 h because asking is local and cheap; longer than SPIRE's 5 min JWT-SVIDs so a guest that caches naively doesn't fail; well short of Azure's 24 h tokens that can't be revoked (§4.4). |
@@ -205,11 +205,14 @@ When directory and cluster are apart:
 
 - **VM field** `service_account` (create and update, `UpdateVm` mask
   `serviceAccount`); shown on the VM page and by `gxctl get`.
-- **Cedar:** `action useServiceAccount in ["vm.write"] appliesTo
-  { principal: [User, Token], resource: [Token], context: ProjectCtx }`.
-  Base policies allow it where the caller could also create a token
-  with that service account's roles; a site policy can narrow it. The
-  service account must belong to a project of the VM's tenant.
+- **Cedar:** `action useServiceAccount in ["project.members"] appliesTo
+  { principal: [User, Token], resource: [Project], context: ProjectCtx }`:
+  on the service account's project (the `Token` entity carries no
+  project), `context.project` the VM's. It is in the group of
+  `manageServiceTokens`, so whoever may give a VM a service account could
+  already make that service account's tokens (project owners; not
+  editors). `base.service-account-same-tenant` forbids one of another
+  tenant; a site policy can narrow it further.
 - **Audit:** each glidex token minted for a VM (`issueVmToken`, actor
   `system:vm:<vm id>`, the service account, the cluster) and every call
   made with it (the service account's `Token` as principal, with
@@ -228,19 +231,43 @@ When directory and cluster are apart:
 
 ### 7.1 The network channel
 
-- **Node networks** (bridge and NAT): netd adds a rule per VM port that
-  steers `169.254.169.254:80` arriving on that port to `glidex-metad`,
-  so that metad learns the port each connection came in on (a mark or
-  a per-port listener, settled in WI1). The guest's source address is
-  never trusted.
+- **Node NAT networks** (WI1b-1): the port's identity travels as a
+  packet mark, then as an address only netd hands out.
+  1. netd gives each VM port on a NAT bridge a **metadata index**
+     (1–16383 per node, kept across re-attaches) and an OpenFlow rule on
+     its bridge: `in_port=<port>,tcp,nw_dst=169.254.169.254,tp_dst=80 →
+     set pkt_mark 0x6d000000|index, NORMAL`. Only that rule sets such a
+     mark, and only for its port.
+  2. `inet glidex` (netd's table): a `prerouting` NAT rule DNATs marked
+     requests from NAT bridges to `169.254.169.254:8775`, where metad
+     listens (the address is on `lo`); an `input` NAT rule SNATs them to
+     the port's **peer address** `169.254.192.0/18 + index` (a map
+     generated from the port records). The `input` filter accepts only
+     marked connections to metad's port and drops everything else for it,
+     host processes included. Behind ufw, `GLIDEX-INPUT` gets the same
+     marked accept.
+  3. metad, unprivileged, reads the peer address `accept` gives it and
+     sends only that to the control plane; the control plane finds the
+     running VM on its own node whose NIC status has that index
+     (`NicStatus.metadata_index`, recorded from netd's `AttachResult`).
+  - The guest's source address is never trusted: a guest on another port
+    can spoof it but has no mark, and can't complete a handshake for an
+    address that isn't its own.
+  - Not used: `net.ipv4.tcp_fwmark_accept` (host-wide, it would change
+    other services' sockets), a network namespace for metad (a mark
+    doesn't cross namespaces), `100.64.0.0/10` (Tailscale's).
+  - OVS keeps no OpenFlow rules across a restart: netd puts them back at
+    start; a port that had none (attached before this) gets one when it
+    is attached again.
+- **Isolated and bridged node networks, DPDK bridges** (WI1b-3): no host
+  address on the bridge, or a userspace datapath where the mark doesn't
+  reach the host stack; to design.
 - **OVN networks:** on each node, a local port per network with VMs
   there answers `169.254.169.254` (the OpenStack OVN metadata agent's
   design) and hands requests to metad. OVN port security binds each
   VM port's MAC and addresses, so on such a network the (network,
   source address) pair names one port; glidex's OVN ports get address
-  port security for this (checked in WI1).
-- netd feeds metad the port-to-VM map as VMs start and stop; metad
-  answers `403` on a port it doesn't know.
+  port security for this (checked in WI1b-2).
 
 ### 7.2 The vsock channel
 
@@ -252,7 +279,7 @@ When directory and cluster are apart:
   port and maps the peer CID to the VM.
 - The same API, as HTTP/1.1 over the stream. The port number, the
   devices each hypervisor needs in its unit (`/dev/vhost-vsock` for
-  QEMU) and the guest helper are settled in WI1b.
+  QEMU) and the guest helper are settled in WI1c.
 
 ## 8. Agents (WI3)
 
@@ -332,7 +359,7 @@ W10 keeps the token and audit formats ready for this; the grants
 | Question | Answer |
 |---|---|
 | Where the endpoint is served | A per-node `glidex-metad` fed by netd (W11, §7.1). |
-| vsock | A second channel beside the network one (W12, §7.2), milestone WI1b. |
+| vsock | A second channel beside the network one (W12, §7.2), milestone WI1c. |
 | Trust domain naming | Per directory, `<slug>.<issuer host>` by default or the organization's own name, fixed at the first token; no public URL needed except for relying parties that fetch discovery (W13). |
 | Default lifetimes | 15 min for identity and glidex tokens, refreshed at 80% (W8, §4.4). |
 
@@ -340,9 +367,12 @@ W10 keeps the token and audit formats ready for this; the grants
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **WI0** issuer | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
-| **WI1** VMs | `glidex-metad` and netd's steering on node and OVN networks (§7.1); `service_account` on VMs; `useServiceAccount`; glidex tokens (W6); exchange (§5); audit; UI and gxctl | §10 API and functional tests. |
-| **WI1b** vsock | vsock devices on both hypervisors, the shim relay (Cloud Hypervisor) and metad's vsock listener (QEMU), the guest helper | The functional test over vsock on a VM with no network. |
+| **WI0** issuer *(done)* | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
+| **WI1a** VMs' service accounts *(done)* | `service_account` on VMs; `useServiceAccount`; glidex tokens (W6); exchange (§5); audit; UI and gxctl | §10 API tests. |
+| **WI1b-1** the endpoint on NAT networks *(done)* | `glidex-metad`, the control plane's `metad.sock`, netd's steering on node NAT networks (§7.1); installer; user guide | The e2e test from inside a guest (§15). |
+| **WI1b-2** OVN networks and clusters | The per-network local port on OVN networks, address port security on OVN ports; on a node that isn't the leader, metad's asks forwarded to the leader as that node | A guest on an OVN network, on an agent node. |
+| **WI1b-3** isolated, bridged and DPDK node networks | The endpoint where the bridge has no host address, or the datapath is userspace | Their own designs. |
+| **WI1c** vsock | vsock devices on both hypervisors, the shim relay (Cloud Hypervisor) and metad's vsock listener (QEMU), the guest helper | The functional test over vsock on a VM with no network. |
 | **WI2** outside | Docs and checks for AWS, Vault, Google and Kubernetes as relying parties; per-VM metering of tokens | The interop checks of §10. |
 | **WI3** delegation | Agent grants, the actor exchange, `auth.actor` in Cedar, audit | Design review, then its own tests. |
 | **WI4** T6 | Delegated cluster keys (§6) | Lands with T6: tokens minted on a cluster apart from its directory verify against the directory's JWKS; a withdrawn cluster key stops verifying. |
@@ -368,3 +398,107 @@ W10 keeps the token and audit formats ready for this; the grants
   Kubernetes `ServiceAccountTokenProjection` and kubelet token rotation,
   Google Compute Engine metadata server tokens, Azure managed identity
   token caching.
+
+## 15. Implementation status
+
+**WI0** is implemented. The directory's keys, discovery and JWKS came
+with tenancy.md T6 task 2 (D52, D53); on top of them:
+
+| Spec | Code |
+|---|---|
+| Identity token claims, lifetimes, SPIFFE ID, trust domain names, audiences (§4.2, §4.4, W9, W13) | `directory/workload.rs` (`identity_claims`, `ttl`, `spiffe_id`, `valid_trust_domain`, `default_trust_domain`, `valid_audience`) |
+| Minting for a VM (W4) | `api::issuer::vm_identity` (a running VM's tenant, project and directory; `409 not_running`), `api::issuer::sign_identity` (typed `JWT`, signed with the directory's keys through `api::issuer::sign`) |
+| Trust domain per directory (W13) | `Directory.trust_domain`, fixed by `TenantStore::set_trust_domain` at the first identity token or at creation (`CreateDirectoryRequest.trust_domain`, gxctl `directory create --trust-domain`, the Hosting page); `HostedDirectory.trust_domain` shows it, or the default it would get |
+| Never a bearer token (§3) | `api::op::access_principal` takes only `typ: at+jwt` |
+| Tests | `directory::workload` unit tests; `connector_tests.rs`: `vm_identity_tokens_verify_against_the_directory_jwks` (verified with `jsonwebtoken` against the served discovery and JWKS), `a_directory_keeps_the_trust_domain_it_was_created_with` |
+
+Nothing calls `sign_identity` for guests yet: the metadata endpoint is
+WI1.
+
+**WI1a** (the API half of WI1) is implemented; the metadata endpoint is
+WI1b.
+
+| Spec | Code |
+|---|---|
+| `service_account` on VMs (W5) | `VmConfig.service_account`; `service_account` in `CreateVmRequest`, `Vm` and `VmChange` (mask `service_account`, `null` removes it); not launch-relevant, so no `RestartRequired` |
+| `useServiceAccount` (§7) | `policies/glidex.cedarschema`, `base.service-account-same-tenant` in `policies/base.cedar`; `service::vm::check_service_account` (a live `SERVICE_ACCOUNT` token, else `400`) on create and on a changed `service_account` |
+| Glidex tokens for a VM (W6) | `api::issuer::vm_glidex_token`: a `FederatedToken` with `federation` `vm:<tenant id>` and `rule` `vm:<vm id>`, 15 min, never past the service account's expiry; `AuthService::federated_principal` checks only the service account for those (W8); audited `issueVmToken` as `system:vm:<id>` |
+| Exchange (§5) | `directory::exchange::exchange_vm` for `federation=<tenant>/vm`: `api::issuer::verify_identity` (typed `JWT`, the directory's keys and issuer, `aud` this cluster), a running VM of that tenant, each token once (`replay_key` `jti:<jti>`); `vm` is refused as a federation id |
+| UI and gxctl | the create form's *Service Account* picker and the VM page's `VmServiceAccount`; gxctl `service-account <vm>` |
+| Tests | `connector_tests.rs`: `giving_a_vm_a_service_account_needs_use_service_account`, `a_vm_gets_glidex_tokens_for_its_service_account`, `the_vm_exchange_takes_only_a_running_vms_identity_token`; UI e2e `vm-identity.spec.ts`. An exchange that succeeds needs a running VM: WI1b's functional test |
+
+**WI1b-1** (the endpoint on node NAT networks) is implemented; §7.1
+describes the datapath.
+
+| Spec | Code |
+|---|---|
+| Marks, peer addresses, the OpenFlow rule, the `inet glidex` rules (§7.1) | `glidex-ovs`: `metadata.rs` (`mark`, `peer_address`, `index_of`, `allocate`, `flow`, `add_flow`, `del_flow`, `ensure_address`, `nft_chains`, `input_rules`), `nat::nft_script`'s `metadata_ports`, `iptables_input_rules` |
+| Indexes per VM port | `glidex-netd`: `VmPortRecord.metadata_index` and `AttachResult.metadata_index`; `attach` (kept across re-attaches), `remove_port` and `move_port` drop the rule; `reconcile_startup` puts the rules back |
+| The control plane's side (W11) | `api::metad` on `metad.sock` (`metad_socket`, only `metad_user`): `/v1/instance`, `/v1/identity`, `/v1/glidex/token`, for the running VM on this node with that index (`NicStatus.metadata_index`); answers kept until 80% of their life, by VM (`reuse`, `remember`); `503 not_leader` where writes don't go (WI1b-2 forwards) |
+| `glidex-metad` | the crate: `Metadata-Flavor: Glidex`, `Forwarded`/`X-Forwarded-For` refused, peer addresses only, 10 requests a second per port, IP TTL 1, `application/jwt` identity tokens; `packaging/glidex-metad.service` (its own user, no capabilities) |
+| Installer | the `glidex-metad` user and group, binary and unit, with networking and services; uninstall removes them |
+| Tests | `glidex-ovs` (`metadata`, the ruleset goldens, checked with `nft -c`), `netd_tests.rs::nat_ports_get_a_metadata_index_and_rule`, `glidex-metad`'s own, `connector_tests.rs::metad_socket_answers_metad_alone_and_only_for_vm_ports`; `glidex-e2e`'s `metadata.rs` from inside a guest, the successful exchange included |
+
+Known limits of WI1b-1:
+- **A NAT guest reaches the host's API only where allowed**: netd's
+  `input` chain drops everything from NAT bridges to the host but DHCP,
+  DNS, ping and the metadata endpoint. A network's `host_api`
+  (`SetNetworkHostApi`, `setNetworkHostApi` in `host.network`: host
+  network administrators, never a project's own) or a host's
+  `nat_host_api` opens the API's `listen` ports from that bridge (on
+  every host address, `inet glidex` and `GLIDEX-INPUT`); the network
+  controller keeps netd's `NatState.host_api_ports` as they should be.
+- In a cluster, nodes that can't write (followers, agents) forward to the
+  leader since WI1b-2's first part, below.
+- The control plane keeps each answer until 80% of its lifetime (§4.4),
+  keyed by the VM, its service account and the question, never by the
+  peer address: netd hands a freed index to the next VM, and an answer
+  kept by address would reach it (the e2e test checks this). A changed
+  service account gets a fresh token at once (W5).
+
+**WI1b-2, first part: answers from the leader.** A node that can't write
+(a follower server or an agent) finds the VM behind the peer address in
+its own cache (an agent's holds only its VMs, so only the id) and asks
+the leader as itself: `POST /cluster/v1/metadata` on :8842 with its node
+certificate, `{vm_id, kind, audience, ttl}`. The leader answers only
+about a running VM **placed on the asking node** (spec/clustering.md
+§12.3), signs and records as it would for itself (D53), and keeps its
+answers by VM as before.
+
+| Spec | Code |
+|---|---|
+| Asking | `api::metad::answer` (local when `can_write`, else `ask_leader` through `NodeLink::post_leader` or `Cluster::post_leader`), `Question`, `Kind` |
+| Answering | `cluster::server::metadata` (`caller`, leader only), `api::metad::leader_answer` (`not_placed_here` unless the VM's placement is the node's); `Cluster::app`, set by `VmManager::set_api_app` |
+| Agents | `main.rs`: an agent serves `metad.sock` too |
+| Tests | `cluster_tests.rs::an_agents_metadata_tokens_come_from_the_leader` (an agent's identity token signed by the leader; a VM of another node refused) |
+
+**WI1b-2, second part: OVN and isolated networks (design, prototyped).**
+Their guests' requests never reach the host stack (OVN switches them in
+its pipeline; isolated bridges have no host address), so netd's rules
+can't catch them. Two designs:
+
+- **tc/eBPF at the VM's port** (prototyped,
+  `scripts/dev/spikes/metadata-ebpf/`). A tc ingress program on every
+  VM's tap sees its packets before OVS or OVN. For `169.254.169.254:80`
+  it rewrites the source to the port's peer address and the port to
+  metad's, remembers the VM's address and MAC in a map, and redirects
+  the packet into the host stack through a dummy device; a tc egress
+  program on that device rewrites replies back and redirects them out of
+  the right tap. The spike, on a bridge with no host address or route,
+  identified two VMs by their ports, kept a VM spoofing the other's
+  address as itself, and dropped a port without an index. One mechanism
+  for node NAT, OVN, isolated and bridged networks (any kernel-datapath
+  tap), unaffected by OVS restarts, identity from the tap. Costs: BPF
+  code in netd (aya or libbpf), a recent kernel, harder debugging; no
+  help for vhost-user/DPDK ports (WI1c's vsock). Guests still need a
+  route to `169.254.169.254` (a gateway, or an on-link route and an ARP
+  answer for it, which the program would give).
+- **OVN localports** (OpenStack's design): a namespace with a proxy per
+  OVN network on each node, identity from (network, source address)
+  under port security. More processes and namespaces, and isolated node
+  networks would still need something else.
+
+Recommendation: tc/eBPF, replacing the OpenFlow mark on node NAT
+networks too, once it handles ARP for `169.254.169.254` and the
+DPDK-port exclusion.
+

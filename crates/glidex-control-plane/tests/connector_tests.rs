@@ -5264,3 +5264,500 @@ async fn an_admission_is_offered_to_another_directorys_tenant() {
     let (_, l) = h.rest("GET", "/admissions/offers", None, &op).await;
     assert!(l["offers"].as_array().is_none_or(|a| a.is_empty()), "{l}");
 }
+
+/// workload-identity.md §4.2, W4, W13 (WI0): a VM's identity token is signed
+/// with its directory's keys and verifies against the published JWKS with
+/// another JWT library; the first one fixes the directory's trust domain;
+/// a stopped VM has none; no API takes one as a bearer token.
+#[tokio::test]
+async fn vm_identity_tokens_verify_against_the_directory_jwks() {
+    use glidex_control_plane::directory::workload::VmIdentity;
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let o = h.token(&root);
+    h.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", auth::store::now())
+        .unwrap();
+    // Until a token is issued, the default it would get, nothing fixed.
+    let (s, v) = h.rest("GET", "/directories", None, &h.session(&root)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let local = v["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == "local")
+        .unwrap();
+    assert_eq!(local["trust_domain"], "local.glidex.example.org", "{v}");
+    let fixed = || {
+        h.app
+            .auth
+            .tenants
+            .get_directory("local")
+            .unwrap()
+            .unwrap()
+            .trust_domain
+    };
+    assert_eq!(fixed(), None);
+
+    // A VM that isn't running has no identity.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/vms",
+            Some(
+                json!({"name": "w1", "project": "default", "vcpu_count": 1, "mem_size_mib": 128,
+                "kernel_image_path": "/tmp/vmlinux", "rootfs_path": "/tmp/rootfs.ext4"}),
+            ),
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm = v["vm"]["id"].as_str().unwrap().to_string();
+    let e = api::issuer::vm_identity(&h.app, &vm).await.unwrap_err();
+    assert_eq!(e.0, StatusCode::CONFLICT);
+    let e = api::issuer::vm_identity(&h.app, "nope").await.unwrap_err();
+    assert_eq!(e.0, StatusCode::NOT_FOUND);
+
+    // As it would be for that VM running.
+    let who = VmIdentity {
+        tenant: "default".into(),
+        project: "default".into(),
+        vm_id: vm.clone(),
+        vm_name: "w1".into(),
+        cluster: api::op::cluster_id(&h.app),
+        service_account: None,
+    };
+    let jwt = api::issuer::sign_identity(&h.app, "local", &who, "sts.amazonaws.com", None).unwrap();
+    assert_eq!(fixed().as_deref(), Some("local.glidex.example.org"));
+
+    // Verified as a relying party would: discovery, then the JWKS.
+    let (_, disc) = h
+        .rest("GET", "/d/local/.well-known/openid-configuration", None, "")
+        .await;
+    assert_eq!(
+        disc["issuer"], "https://glidex.example.org/d/local",
+        "{disc}"
+    );
+    let (_, jwks) = h.rest("GET", "/d/local/jwks.json", None, "").await;
+    let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(jwks).unwrap();
+    let header = jsonwebtoken::decode_header(&jwt).unwrap();
+    assert_eq!(header.typ.as_deref(), Some("JWT"));
+    let key = jwks.find(header.kid.as_deref().unwrap()).unwrap();
+    let mut val = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    val.set_audience(&["sts.amazonaws.com"]);
+    val.set_issuer(&["https://glidex.example.org/d/local"]);
+    let c = jsonwebtoken::decode::<Value>(
+        &jwt,
+        &jsonwebtoken::DecodingKey::from_jwk(key).unwrap(),
+        &val,
+    )
+    .unwrap()
+    .claims;
+    assert_eq!(
+        c["sub"],
+        format!("spiffe://local.glidex.example.org/tenant/default/project/default/vm/{vm}")
+    );
+    assert_eq!(c["exp"].as_u64().unwrap() - c["iat"].as_u64().unwrap(), 900);
+    assert_eq!(c["glidex"]["vm"]["name"], "w1");
+
+    // What a guest may not ask for.
+    assert!(api::issuer::sign_identity(&h.app, "local", &who, "", None).is_err());
+    assert!(api::issuer::sign_identity(&h.app, "local", &who, "a", Some(30)).is_err());
+
+    // Addressed to this very cluster, it still isn't an access token.
+    let to_us =
+        api::issuer::sign_identity(&h.app, "local", &who, &api::op::cluster_id(&h.app), None)
+            .unwrap();
+    let (s, _) = h.rest("GET", "/vms", None, &to_us).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// workload-identity.md W13: a directory created with a trust domain keeps
+/// it for good; an invalid one is refused.
+#[tokio::test]
+async fn a_directory_keeps_the_trust_domain_it_was_created_with() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let op = h.session(&root);
+    let body = |td: &str| {
+        json!({"id": "acme", "name": "Acme", "owner": "acme-admin",
+            "admin_email": "it@acme.example", "trust_domain": td})
+    };
+    let (s, v) = h
+        .rest("POST", "/directories", Some(body("Acme.com/x")), &op)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = h
+        .rest("POST", "/directories", Some(body("acme.com")), &op)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["directory"]["trust_domain"], "acme.com", "{v}");
+    let d = h
+        .app
+        .auth
+        .tenants
+        .set_trust_domain("acme", "other.example")
+        .unwrap();
+    assert_eq!(d.trust_domain.as_deref(), Some("acme.com"));
+}
+
+fn vm_with_sa(name: &str, sa: Option<&str>) -> Value {
+    let mut v = json!({"name": name, "project": "default", "vcpu_count": 1, "mem_size_mib": 128,
+        "kernel_image_path": "/tmp/vmlinux", "rootfs_path": "/tmp/rootfs.ext4"});
+    if let Some(sa) = sa {
+        v["service_account"] = sa.into();
+    }
+    v
+}
+
+/// workload-identity.md W5: giving a VM a service account needs
+/// `useServiceAccount` (a project owner's right, not an editor's), a live
+/// service account, and one of the VM's own tenant; it can change and go
+/// away without a restart.
+#[tokio::test]
+async fn giving_a_vm_a_service_account_needs_use_service_account() {
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let o = h.token(&root);
+    let sa = service_account(&h, &root);
+    let project = h.app.manager.projects().resolve("default").unwrap().id;
+    let bob = h.user("bob");
+    h.app
+        .auth
+        .add_link(
+            "role.editor",
+            Ent::User(bob.clone()),
+            Ent::Project(project.clone()),
+            "test",
+        )
+        .unwrap();
+    let b = h.token(&bob);
+
+    // An editor changes VMs, but can't hand them the project's identity.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("v1", None)), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let v1 = v["vm"]["id"].as_str().unwrap().to_string();
+    let (s, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{v1}"),
+            Some(json!({"change": {"service_account": sa}, "update_mask": "service_account"})),
+            &b,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("useServiceAccount"),
+        "{v}"
+    );
+
+    // An owner can; the VM shows it.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("v2", Some(&sa))), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["vm"]["service_account"], sa.as_str(), "{v}");
+    let vm = v["vm"]["id"].as_str().unwrap().to_string();
+
+    // Only a live service account.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("v3", Some("nope"))), &o)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let personal = h.token(&root);
+    let pid = h
+        .app
+        .auth
+        .token_principal(&personal, glidex_control_plane::auth::Transport::Tcp, None)
+        .unwrap()
+        .unwrap()
+        .token
+        .unwrap()
+        .id;
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("v3", Some(&pid))), &o)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a personal token: {v}");
+
+    // Never another tenant's, even for its system administrator.
+    let other = h
+        .app
+        .auth
+        .tenants
+        .create("acme", "Acme".into(), false)
+        .unwrap();
+    let theirs = h
+        .app
+        .manager
+        .projects()
+        .create_in(&other.id, "web", String::new(), None)
+        .unwrap();
+    let foreign = h
+        .app
+        .auth
+        .create_token(
+            "ci",
+            TokenKind::ServiceAccount { project: theirs.id },
+            &root,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .1
+        .id;
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("v4", Some(&foreign))), &o)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("useServiceAccount"),
+        "{v}"
+    );
+
+    // Removed and given back through UpdateVm's mask.
+    let (s, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{vm}"),
+            Some(json!({"change": {}, "update_mask": "service_account"})),
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert!(v["vm"].get("service_account").is_none(), "{v}");
+    let (s, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{vm}"),
+            Some(json!({"change": {"service_account": sa}, "update_mask": "service_account"})),
+            &b,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an editor again: {v}");
+    let (s, v) = h
+        .rest(
+            "PATCH",
+            &format!("/vms/{vm}"),
+            Some(json!({"change": {"service_account": sa}, "update_mask": "service_account"})),
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["vm"]["service_account"], sa.as_str(), "{v}");
+}
+
+/// workload-identity.md W6, W8: a VM's glidex token acts as its service
+/// account for 15 min, is audited, and ends with the service account.
+#[tokio::test]
+async fn a_vm_gets_glidex_tokens_for_its_service_account() {
+    use glidex_control_plane::directory::workload::VmIdentity;
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let o = h.token(&root);
+    let sa = service_account(&h, &root);
+    let project = h.app.manager.projects().resolve("default").unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.viewer",
+            Ent::Token(sa.clone()),
+            Ent::Project(project.id.clone()),
+            "test",
+        )
+        .unwrap();
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("w1", Some(&sa))), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm_id = v["vm"]["id"].as_str().unwrap().to_string();
+    let resolved = |sa: Option<String>| api::issuer::ResolvedVm {
+        directory: "local".into(),
+        tenant_id: project.tenant_id.clone(),
+        identity: VmIdentity {
+            tenant: "default".into(),
+            project: "default".into(),
+            vm_id: vm_id.clone(),
+            vm_name: "w1".into(),
+            cluster: api::op::cluster_id(&h.app),
+            service_account: sa,
+        },
+    };
+
+    let (secret, ttl) =
+        api::issuer::vm_glidex_token(&h.app, &resolved(Some(sa.clone())), None).unwrap();
+    assert_eq!(ttl, 900);
+    assert!(secret.starts_with("gxt_"));
+    // It acts as the service account: a viewer of the project.
+    let (s, v) = h.rest("GET", "/vms", None, &secret).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.to_string().contains(&vm_id), "{v}");
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("w2", None)), &secret)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "only a viewer: {v}");
+
+    // Audited as the VM.
+    let (_, a) = h
+        .rest("GET", "/audit?limit=100", None, &h.session(&root))
+        .await;
+    let text = a.to_string();
+    assert!(
+        text.contains(&format!("system:vm:{vm_id}")) && text.contains("issueVmToken"),
+        "{text}"
+    );
+    assert!(!text.contains(&secret[4..]), "never the secret");
+
+    // No service account, no token.
+    let e = api::issuer::vm_glidex_token(&h.app, &resolved(None), None).unwrap_err();
+    assert_eq!(e.0, StatusCode::NOT_FOUND);
+
+    // A replayed exchange key is refused.
+    let once = Some("jti:abc".to_string());
+    api::issuer::vm_glidex_token(&h.app, &resolved(Some(sa.clone())), once.clone()).unwrap();
+    let e = api::issuer::vm_glidex_token(&h.app, &resolved(Some(sa.clone())), once).unwrap_err();
+    assert_eq!(e.0, StatusCode::CONFLICT);
+
+    // Revoking the service account ends its VM's tokens at once.
+    h.app.auth.revoke_token(&sa).unwrap();
+    let (s, _) = h.rest("GET", "/vms", None, &secret).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let e = api::issuer::vm_glidex_token(&h.app, &resolved(Some(sa)), None).unwrap_err();
+    assert_eq!(e.0, StatusCode::NOT_FOUND);
+}
+
+/// workload-identity.md §5: `<tenant>/vm` takes only a running VM's own
+/// identity token for this cluster; `vm` can't name a federation.
+#[tokio::test]
+async fn the_vm_exchange_takes_only_a_running_vms_identity_token() {
+    use glidex_control_plane::directory::workload::VmIdentity;
+    let h = harness_with(|c| c.auth.issuer_base = Some("https://glidex.example.org".into()));
+    let root = h.admin("root");
+    let o = h.token(&root);
+    h.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", auth::store::now())
+        .unwrap();
+    let sa = service_account(&h, &root);
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_with_sa("x1", Some(&sa))), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let who = VmIdentity {
+        tenant: "default".into(),
+        project: "default".into(),
+        vm_id: v["vm"]["id"].as_str().unwrap().into(),
+        vm_name: "x1".into(),
+        cluster: api::op::cluster_id(&h.app),
+        service_account: Some(sa.clone()),
+    };
+    let exchange = |subject: String| {
+        json!({"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": subject, "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "federation": "default/vm"})
+    };
+    // For this cluster, but the VM isn't running.
+    let ours =
+        api::issuer::sign_identity(&h.app, "local", &who, &api::op::cluster_id(&h.app), None)
+            .unwrap();
+    let (s, v) = h
+        .rest("POST", "/auth/exchange", Some(exchange(ours)), "")
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+    // For someone else.
+    let theirs =
+        api::issuer::sign_identity(&h.app, "local", &who, "sts.amazonaws.com", None).unwrap();
+    let (s, v) = h
+        .rest("POST", "/auth/exchange", Some(exchange(theirs)), "")
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "{v}"
+    );
+    // Something that isn't one.
+    let (s, _) = h
+        .rest("POST", "/auth/exchange", Some(exchange("a.b.c".into())), "")
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, a) = h
+        .rest("GET", "/audit?limit=50", None, &h.session(&root))
+        .await;
+    assert!(
+        a.to_string().contains("system:federation:default/vm"),
+        "{a}"
+    );
+
+    // No federation may be called `vm`.
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/federations",
+            Some(json!({"federation": {"id": "vm",
+                "issuer": "https://token.actions.githubusercontent.com", "audience": "glidex",
+                "rules": [{"match": {"repository": "a/b"}, "service_account": sa}]}})),
+            &h.session(&root),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_federation")),
+        "{v}"
+    );
+}
+
+/// workload-identity.md W11: metad.sock answers glidex-metad's user only,
+/// and only for a peer address that is a VM port of this node.
+#[tokio::test]
+async fn metad_socket_answers_metad_alone_and_only_for_vm_ports() {
+    let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap();
+    let h = harness_with(|c| c.metad_user = me.name.clone());
+    let router = api::metad::router(h.app.clone());
+    let ask = |uid: u32, body: Value| {
+        let mut req = Request::post("/v1/instance")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        req.extensions_mut().insert(api::PeerUid(uid));
+        let router = router.clone();
+        async move {
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let uid = me.uid.as_raw();
+    // Anyone else: refused.
+    let (s, _) = ask(uid + 1, json!({"peer": "169.254.192.1"})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Not a VM port's peer address, or one no VM here has.
+    let (s, v) = ask(uid, json!({"peer": "10.88.0.5"})).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("unknown_port")),
+        "{v}"
+    );
+    let (s, v) = ask(uid, json!({"peer": "169.254.192.1"})).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("unknown_port")),
+        "{v}"
+    );
+    let (s, _) = ask(uid, json!({"peer": "nope"})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}

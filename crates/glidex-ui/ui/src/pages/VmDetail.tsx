@@ -25,6 +25,8 @@ import PlaceVm from "../components/PlaceVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
 import VmKernel from "../components/VmKernel";
+import VmServiceAccount from "../components/VmServiceAccount";
+import VmCpuScale from "../components/VmCpuScale";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -228,7 +230,13 @@ export default function VmDetail() {
                 </h3>
                 <p className="text-lg font-semibold text-gray-900">
                   {vm.vcpu_count}
+                  {vm.min_vcpus !== undefined && vm.max_vcpus !== undefined && vm.min_vcpus < vm.max_vcpus && (
+                    <span className="text-xs font-normal text-gray-500 ml-2">
+                      (elastic: {vm.min_vcpus}–{vm.max_vcpus}, weight: {vm.cpu_weight ?? 100})
+                    </span>
+                  )}
                 </p>
+                <VmCpuScale vm={vm} onChanged={fetchVm} />
               </div>
               <div>
                 <h3 className="text-sm font-medium text-gray-500">Memory</h3>
@@ -279,6 +287,7 @@ export default function VmDetail() {
                   <p className="text-sm text-gray-700">Kernel files on the host</p>
                 </div>
               )}
+              <VmServiceAccount vm={vm} onChanged={fetchVm} />
               {vm.root_disk && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>

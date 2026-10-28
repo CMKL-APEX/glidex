@@ -8,6 +8,7 @@
 //! Process lifetime belongs to `glidex-vm-shim`.
 
 pub mod cloud_hypervisor;
+pub mod pylon;
 pub mod qemu;
 
 use crate::images::catalog::Arch;
@@ -27,6 +28,7 @@ pub enum HypervisorType {
     #[default]
     CloudHypervisor,
     Qemu,
+    Pylon,
 }
 
 impl HypervisorType {
@@ -35,6 +37,7 @@ impl HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => "cloud-hypervisor",
             HypervisorType::Qemu => "qemu-system-x86_64",
+            HypervisorType::Pylon => "pylon",
         }
     }
 
@@ -51,7 +54,9 @@ impl HypervisorType {
     /// OVMF build for QEMU. The path may not exist.
     pub fn default_firmware_path(&self) -> Option<std::path::PathBuf> {
         match self {
-            HypervisorType::CloudHypervisor => cloud_hypervisor::default_firmware_path(),
+            HypervisorType::CloudHypervisor | HypervisorType::Pylon => {
+                cloud_hypervisor::default_firmware_path()
+            }
             HypervisorType::Qemu => qemu::default_firmware_path(),
         }
     }
@@ -59,7 +64,9 @@ impl HypervisorType {
     /// The shim's name for it (`launch.json`).
     pub fn launch_kind(&self) -> glidex_vm_shim::HypervisorKind {
         match self {
-            HypervisorType::CloudHypervisor => glidex_vm_shim::HypervisorKind::CloudHypervisor,
+            HypervisorType::CloudHypervisor | HypervisorType::Pylon => {
+                glidex_vm_shim::HypervisorKind::CloudHypervisor
+            }
             HypervisorType::Qemu => glidex_vm_shim::HypervisorKind::Qemu,
         }
     }
@@ -70,6 +77,7 @@ impl fmt::Display for HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => write!(f, "cloudhypervisor"),
             HypervisorType::Qemu => write!(f, "qemu"),
+            HypervisorType::Pylon => write!(f, "pylon"),
         }
     }
 }
@@ -184,12 +192,26 @@ pub trait HypervisorDriver: Send + Sync {
     /// Hot-plug a VFIO device under its deterministic id.
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+    /// Resize the running guest's active vCPU count to `desired`.
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError>;
+    /// Update elastic CPU policy (min/max vCPUs, weight) on running guest.
+    fn update_policy(
+        &self,
+        api_socket: &str,
+        min_cores: Option<u32>,
+        max_cores: Option<u32>,
+        priority_weight: Option<u32>,
+    ) -> Result<(), HypervisorError> {
+        let _ = (api_socket, min_cores, max_cores, priority_weight);
+        Ok(())
+    }
 }
 
 pub fn driver(ty: HypervisorType) -> &'static dyn HypervisorDriver {
     match ty {
         HypervisorType::CloudHypervisor => &cloud_hypervisor::CloudHypervisorDriver,
         HypervisorType::Qemu => &qemu::QemuDriver,
+        HypervisorType::Pylon => &pylon::PylonDriver,
     }
 }
 
@@ -219,6 +241,9 @@ pub(crate) struct VmDisk {
     pub shared: bool,
     /// A block device (an LVM volume, spec/storage.md §11.1), raw.
     pub block: bool,
+    /// A vhost-user-blk socket (a hyperstor volume, spec/storage.md
+    /// §11.2): `path` is the socket the hypervisor connects to.
+    pub vhost: bool,
 }
 
 /// `[root, data disks…, seed]`. Managed disks use the format recorded in
@@ -238,6 +263,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: *backing_files,
             shared: lock.is_some(),
             block: false,
+            vhost: false,
         },
         VolumeBinding::Block { path } => VmDisk {
             path: path.clone(),
@@ -246,6 +272,16 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: true,
+            vhost: false,
+        },
+        VolumeBinding::VhostUserBlk { socket, .. } => VmDisk {
+            path: socket.clone(),
+            read_only: false,
+            format: Some(ImageType::Raw),
+            backing_files: false,
+            shared: false,
+            block: false,
+            vhost: true,
         },
     };
     let root = match &config.root_disk_binding {
@@ -257,6 +293,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: false,
+            vhost: false,
         },
     };
     std::iter::once(root)
@@ -268,6 +305,7 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
             backing_files: false,
             shared: false,
             block: false,
+            vhost: false,
         }))
         .collect()
 }
@@ -306,12 +344,18 @@ pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     mem.is_multiple_of(2) && hugepages_spare_mib(2048, None) >= mem + (mem / 4).max(256)
 }
 
-/// vhost-user: OVS maps guest RAM, so it must be shared.
+/// vhost-user: OVS, or `hyperstor-vhost` for a hyperstor disk, maps guest
+/// RAM, so it must be shared.
 pub(crate) fn needs_shared_memory(config: &VmConfig) -> bool {
     config
         .nic_bindings
         .iter()
         .any(|n| matches!(n.binding, VmPortBinding::VhostUser { .. }))
+        || config
+            .root_disk_binding
+            .iter()
+            .chain(config.data_disk_bindings.iter())
+            .any(|b| matches!(b, VolumeBinding::VhostUserBlk { .. }))
 }
 
 /// Extract the BDF (e.g. "0000:41:00.0") from a sysfs device path.
@@ -410,6 +454,7 @@ mod tests {
             "cloud-hypervisor"
         );
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
+        assert_eq!(HypervisorType::Pylon.binary_name(), "pylon");
     }
 
     #[test]
@@ -439,7 +484,11 @@ mod tests {
 
     #[test]
     fn drivers_report_their_hypervisor_type() {
-        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+        for ty in [
+            HypervisorType::CloudHypervisor,
+            HypervisorType::Qemu,
+            HypervisorType::Pylon,
+        ] {
             assert_eq!(driver(ty).hypervisor_type(), ty);
             let _ = driver(ty).is_available();
         }

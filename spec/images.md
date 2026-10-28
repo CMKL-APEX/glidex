@@ -49,9 +49,9 @@ Non-goals:
 - Shrinking filesystems. Shrinking only gives back space that no partition
   uses (see [§6.3](#63-shrink)).
 - Disk snapshots, export/import, and image building or customization.
-- Block storage (Ceph RBD, iSCSI, LVM). Disks are files: on the node's
-  own filesystem, or on a filesystem every node mounts (NFS, CephFS), as
-  [datastores](storage.md).
+- Shared block storage (Ceph RBD, iSCSI). Disks are files, on the node's
+  own filesystem or on a filesystem every node mounts (NFS, CephFS), or
+  volumes in a node's LVM thin pool: see [datastores](storage.md).
 - Non-Linux guests, and images that are not cloud images (installer ISOs).
 - Live resize of a disk attached to a running VM. This is v1; see
   [§11](#11-future-work).

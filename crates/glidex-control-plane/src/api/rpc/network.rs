@@ -101,6 +101,14 @@ impl NetworkService for Svc {
         op!(self, ctx, req, svc::grant_network)
     }
 
+    async fn set_network_host_api(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetNetworkHostApiRequest>,
+    ) -> ServiceResult<SetNetworkHostApiResponse> {
+        op!(self, ctx, req, svc::set_network_host_api)
+    }
+
     async fn create_project_network(
         &self,
         ctx: RequestContext,

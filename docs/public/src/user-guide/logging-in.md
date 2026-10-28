@@ -88,7 +88,8 @@ invitation.
 
 ### Your account
 
-Click your name in the header for **Your account**. Its **Sign-in
+Click your name in the header and choose **Account settings** for
+**Your account**. Its **Sign-in
 methods** card lists the ways you can sign in as yourself, for example a
 local password and a Google account; each gives the same roles.
 
@@ -134,6 +135,51 @@ the passkey in your browser's prompt. Closing the prompt just cancels.
   you have no way left to sign in, ask an administrator.
 - `gxctl` doesn't use passkeys; use a password, single sign-on or a
   token there.
+
+### Your organization's sign-in
+
+A host can serve the sign-in of several organizations, each its own
+*directory* with its own people. Type your work email under *Signing in
+with your organization?* on the sign-in page: it takes you to your
+organization's page, which offers only its ways to sign in. Your
+administrator can also give you that page's address,
+`https://<host>:5173/login/<directory>`.
+
+A cluster can also admit a tenant of another organization, whose people
+sign in at their own organization's Glidex. Its sign-in page then has a
+**Sign in with &lt;tenant&gt;** button for each such organization (with
+*at &lt;host&gt;* under it). It takes you to your organization's sign-in
+and brings you back signed in to the cluster. Signing out there signs
+you out of the cluster too, within a minute. Logging out of the cluster
+signs you out of the cluster only: you stay signed in at your
+organization.
+
+### Several accounts in one browser
+
+If you have accounts in several directories (say, at your university
+and at a research partner), your browser can stay signed in to all of
+them and switch between them. Click your name in the header:
+
+- **Switch to** lists your other accounts. Click one to use it; the page
+  starts over as that account, in every open tab.
+- **Add another account** keeps the one you're using and opens the
+  sign-in page. Sign in to another directory; both are then in the list.
+- **Sign out of all accounts** signs out every one and empties the list.
+
+**Log out** signs out only the account you're using. Its directory stays
+in the list, marked *signed out*, and so does one whose session ended:
+click it to sign in there again. Under **Account settings**, *Your
+accounts in this browser* lists them all; **Remove** signs one out and
+takes it off the list. The sign-in page lists them too, so you can
+switch back without signing in again.
+
+You can hold up to 5 accounts, one per directory: signing in to a
+directory you already have replaces that account. The list is kept only
+in your browser: nobody else sees it, and the host keeps no record of
+which accounts you hold together. Each account keeps its own session
+limits, and switching is not a new sign-in, so an action that needs a
+recent login may still ask you to sign in again. On a computer you
+share, use **Sign out of all accounts** when you're done.
 
 ## gxctl on a Glidex host
 
@@ -255,6 +301,24 @@ Instead of a profile, a one-off `--url` connection trusts a self-signed
 certificate through `GLIDEX_CA_CERT`, the path of a PEM copy of the
 host's certificate that your operator provides.
 
+### A cluster of another organization
+
+If your tenant uses a cluster run by another organization, log in to it
+with your own directory's account: first make a profile for your
+directory's host (as above, `--directory`), then one for the cluster,
+reaching your directory through that first profile:
+
+```bash
+gxctl auth login --profile acme --url https://id.acme.example:8841 --directory local
+gxctl auth login --profile north --url https://north.example.org:8841 --directory local --via acme
+```
+
+The second login asks you to approve it at your directory, like the
+first. The `north` profile then holds a login of its own at your
+directory, and gets access tokens for the north cluster only; its
+refreshes and `auth logout --revoke` go to your directory through
+`acme`'s connection and certificate.
+
 ### Managing profiles
 
 ```bash
@@ -347,6 +411,15 @@ gxctl token revoke <token-id>
 `editor`, `owner` (see [Roles](projects.md#roles)). A service account's
 roles apply in its own project; without `--project` it goes into the
 project selected with `--project` or your default project.
+
+A token works only on the cluster where you make it. If your tenant also
+uses clusters of other organizations, `--cluster <cluster-id>` (repeat
+it) lets the token work on those as well, and `--all-clusters` on every
+cluster your tenant uses (`gxctl tenant clusters <tenant>` lists them).
+Those clusters receive the token's hash with their next update from your
+directory, within a minute; revoking it reaches them the same way. Ask
+for as few as you need: a cluster that can check a token could also
+replay it to the others it lists.
 
 ### Using a token
 

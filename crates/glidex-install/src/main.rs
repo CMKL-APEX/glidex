@@ -35,6 +35,9 @@ const SERVICE_USER: &str = "glidex";
 const NETD_GROUP: &str = "glidex";
 /// The web UI's own user (and group); not in `glidex`.
 const UI_USER: &str = "glidex-ui";
+/// The metadata endpoint's own user (and group): only it may use the
+/// control plane's metad.sock (spec/workload-identity.md W11).
+pub(crate) const METAD_USER: &str = "glidex-metad";
 /// Humans allowed to use gxctl on the control plane's api.sock.
 const USERS_GROUP: &str = "glidex-users";
 /// Break-glass administrators (api.sock as system-admin, netd directly).
@@ -57,9 +60,11 @@ pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
 const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
+const METAD_UNIT: &str = "/etc/systemd/system/glidex-metad.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
 const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
 const STORD_UNIT: &str = "/etc/systemd/system/glidex-stord.service";
+const PYLOND_UNIT: &str = "/etc/systemd/system/glidex-pylond.service";
 /// glidex-stord's settings: the volume groups it may use
 /// (spec/storage.md S17). The administrator's; the installer only adds the
 /// `--stord-allow-vg` ones.
@@ -169,6 +174,7 @@ fn main() -> Result<()> {
         ensure_service_user(user.as_deref())?;
     }
     install_cloud_hypervisor(&platform)?;
+    install_pylon(&opts, &mut changed)?;
     install_binaries(&opts, &user_home, &mut changed)?;
     install_ui_assets()?;
     // Our own home, not SUDO_USER's: a root run mustn't leave root-owned
@@ -831,6 +837,8 @@ struct Options {
     sriov: Vec<(String, u32)>,
     /// `--now`: apply the boot devices now as well. Never saved.
     vfio_now: bool,
+    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/pylon.md §9).
+    with_pylon: Option<bool>,
 }
 
 /// `a,b , c` → `[a, b, c]`.
@@ -918,6 +926,7 @@ impl Default for Options {
             vfio_devices: Vec::new(),
             sriov: Vec::new(),
             vfio_now: false,
+            with_pylon: None,
         }
     }
 }
@@ -938,6 +947,7 @@ impl Options {
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
                 "ovn" => o.ovn = v == "true",
                 "tailscale_cert" => o.tailscale_cert = Some(v == "true"),
+                "with_pylon" => o.with_pylon = Some(v == "true"),
                 "vfio_devices" => o.vfio_devices = split_list(v),
                 "sriov" => {
                     o.sriov = split_list(v)
@@ -972,6 +982,8 @@ impl Options {
                 "--ovn" => o.ovn = true,
                 "--no-ovn" => o.ovn = false,
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
+                "--with-pylon" | "--pylon" => o.with_pylon = Some(true),
+                "--no-pylon" => o.with_pylon = Some(false),
                 "--datastore" => o
                     .datastores
                     .push(DatastoreReg::parse(&value("--datastore")?, true)?),
@@ -1096,6 +1108,9 @@ impl Options {
         if let Some(t) = self.tailscale_cert {
             text.push_str(&format!("tailscale_cert={t}\n"));
         }
+        if let Some(w) = self.with_pylon {
+            text.push_str(&format!("with_pylon={w}\n"));
+        }
         if !self.vfio_devices.is_empty() {
             text.push_str(&format!("vfio_devices={}\n", self.vfio_devices.join(",")));
         }
@@ -1133,6 +1148,8 @@ fn print_help() {
          \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
+         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/pylon.md)\n\
+         \x20     --no-pylon             skip Pylon hypervisor and pylond\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
          \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
          \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
@@ -2098,6 +2115,8 @@ struct Changes {
     stord: bool,
     /// stord.json changed: stord reads it at start.
     stord_config: bool,
+    metad: bool,
+    pylond: bool,
 }
 
 /// `cloud-hypervisor v53.0` (possibly with a suffix) → `v53.0`.
@@ -2166,6 +2185,85 @@ fn warn_shadowed(name: &str, ours: &str) {
             );
         }
     }
+}
+
+fn find_pylon_source() -> Option<PathBuf> {
+    let release = target_dir().join("release");
+    let in_release = release.join("pylon");
+    if in_release.exists() {
+        return Some(in_release);
+    }
+    if let Some(parent) = workspace_root().parent() {
+        let pylon_target = parent.join("pylon/target/release");
+        let pylon_bin = pylon_target.join("pylon");
+        if pylon_bin.exists() {
+            return Some(pylon_bin);
+        }
+        let ch_bin = pylon_target.join("cloud-hypervisor");
+        if ch_bin.exists() {
+            return Some(ch_bin);
+        }
+    }
+    None
+}
+
+fn find_pylond_source() -> Option<PathBuf> {
+    let release = target_dir().join("release");
+    let in_release = release.join("pylond");
+    if in_release.exists() {
+        return Some(in_release);
+    }
+    if let Some(parent) = workspace_root().parent() {
+        let pylond_bin = parent.join("pylon/target/release/pylond");
+        if pylond_bin.exists() {
+            return Some(pylond_bin);
+        }
+    }
+    None
+}
+
+/// Installs Pylon hypervisor and pylond daemon when requested or present
+/// in the local build / release bundle (spec/pylon.md §9).
+fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
+    let pylon_src = find_pylon_source();
+    let pylond_src = find_pylond_source();
+    let want = match opts.with_pylon {
+        Some(true) => true,
+        Some(false) => false,
+        None => pylon_src.is_some() || pylond_src.is_some(),
+    };
+    if !want {
+        return Ok(());
+    }
+    section("Pylon & pylond");
+    if let Some(src) = pylon_src {
+        let dst = format!("{}/pylon", BIN_DIR);
+        if install_if_changed(&src, &dst, "0755")? {
+            println!("{} {}", "Updated:".green(), dst);
+        } else {
+            println!("{} {}", "Up to date:".green(), dst);
+        }
+        let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
+        if !has_cap {
+            sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
+            println!("{} cap_net_admin on {}", "Granted:".green(), dst);
+        }
+    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
+        bail!("--with-pylon: pylon binary not found in target/release or adjacent pylon repo");
+    }
+
+    if let Some(src) = pylond_src {
+        let dst = format!("{}/pylond", BIN_DIR);
+        if install_if_changed(&src, &dst, "0755")? {
+            println!("{} {}", "Updated:".green(), dst);
+            changed.pylond = true;
+        } else {
+            println!("{} {}", "Up to date:".green(), dst);
+        }
+    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylond", BIN_DIR)).exists() {
+        bail!("--with-pylon: pylond binary not found in target/release or adjacent pylon repo");
+    }
+    Ok(())
 }
 
 /// UEFI firmware asset name and its sha256 for `EDK2_FIRMWARE_VERSION`.
@@ -2304,6 +2402,9 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "-p",
         "glidex-vm-shim",
     ];
+    if opts.networking {
+        args.extend(["-p", "glidex-metad"]);
+    }
     if opts.services {
         args.extend(["-p", "glidex-authd", "-p", "glidex-stord"]);
     }
@@ -2370,6 +2471,10 @@ fn binaries(opts: &Options) -> Vec<&'static str> {
         v.push("glidex-authd");
         v.push("glidex-stord");
     }
+    // The metadata endpoint needs netd's rules and runs as a unit.
+    if opts.networking && opts.services {
+        v.push("glidex-metad");
+    }
     v
 }
 
@@ -2386,6 +2491,7 @@ fn install_binaries(opts: &Options, user_home: &Path, changed: &mut Changes) -> 
                 "glidex-netd" => changed.netd = true,
                 "glidex-authd" => changed.authd = true,
                 "glidex-stord" => changed.stord = true,
+                "glidex-metad" => changed.metad = true,
                 _ => {}
             }
         } else {
@@ -2484,6 +2590,8 @@ struct UserState<'a> {
     admin_group: bool,
     ui_group: bool,
     ui_user: bool,
+    metad_group: bool,
+    metad_user: bool,
     /// The invoking user (not root).
     member: Option<Member<'a>>,
 }
@@ -2576,6 +2684,26 @@ fn service_user_commands(s: &UserState, shell: &str) -> Vec<Vec<String>> {
         ]));
         cmds.push(cmd);
     }
+    if !s.metad_user {
+        let group: &[&str] = if s.metad_group {
+            &["--gid", METAD_USER]
+        } else {
+            &["--user-group"]
+        };
+        let mut cmd = argv(&["useradd", "--system"]);
+        cmd.extend(argv(group));
+        cmd.extend(argv(&[
+            "--home-dir",
+            "/nonexistent",
+            "--no-create-home",
+            "--shell",
+            shell,
+            "--comment",
+            "glidex metadata endpoint",
+            METAD_USER,
+        ]));
+        cmds.push(cmd);
+    }
     if let Some(m) = s.member {
         let missing: Vec<&str> = [(m.in_users, USERS_GROUP), (m.in_admin, ADMIN_GROUP)]
             .into_iter()
@@ -2618,6 +2746,8 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
         admin_group: group_exists(ADMIN_GROUP),
         ui_group: group_exists(UI_USER),
         ui_user: succeeds("getent", &["passwd", UI_USER]),
+        metad_group: group_exists(METAD_USER),
+        metad_user: succeeds("getent", &["passwd", METAD_USER]),
         member: invoking.map(|u| Member {
             name: u,
             in_netd_group: user_in_group(u, NETD_GROUP),
@@ -2910,6 +3040,23 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
             "Granted:".green(),
             ch_binary.display()
         );
+    }
+    let pylon_binary = PathBuf::from(format!("{}/pylon", BIN_DIR));
+    if pylon_binary.exists() {
+        let has_cap = run_capture("getcap", &[&pylon_binary.to_string_lossy()])
+            .is_ok_and(|o| o.contains("cap_net_admin"));
+        if !has_cap {
+            sudo(&argv(&[
+                "setcap",
+                "cap_net_admin+ep",
+                &pylon_binary.to_string_lossy(),
+            ]))?;
+            println!(
+                "{} cap_net_admin on {}",
+                "Granted:".green(),
+                pylon_binary.display()
+            );
+        }
     }
     Ok(())
 }
@@ -3472,6 +3619,14 @@ fn install_services(
     let vm_units_changed = install_vm_units(&root)?;
     let ui_unit_changed =
         install_if_changed(&root.join("packaging/glidex-ui.service"), UI_UNIT, "0644")?;
+    // With networking only (its binary is there then).
+    let metad = Path::new(BIN_DIR).join("glidex-metad").exists();
+    let metad_unit_changed = metad
+        && install_if_changed(
+            &root.join("packaging/glidex-metad.service"),
+            METAD_UNIT,
+            "0644",
+        )?;
     let authd_socket_changed = install_if_changed(
         &root.join("packaging/glidex-authd.socket"),
         AUTHD_SOCKET_UNIT,
@@ -3487,13 +3642,20 @@ fn install_services(
         STORD_UNIT,
         "0644",
     )?;
+    let pylond_unit = root.join("packaging/glidex-pylond.service");
+    let pylond_installed =
+        pylond_unit.exists() && Path::new(&format!("{}/pylond", BIN_DIR)).exists();
+    let pylond_unit_changed =
+        pylond_installed && install_if_changed(&pylond_unit, PYLOND_UNIT, "0644")?;
     let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
         || stord_unit_changed
         || ui_unit_changed
+        || metad_unit_changed
         || authd_socket_changed
         || authd_service_changed
         || vm_units_changed
+        || pylond_unit_changed
         || ts.reload
     {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
@@ -3507,8 +3669,14 @@ fn install_services(
     }
     enable_unit("glidex-authd.socket")?;
     enable_unit("glidex-stord.service")?;
+    if pylond_installed {
+        enable_unit("glidex-pylond.service")?;
+    }
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
+    if metad {
+        enable_unit("glidex-metad.service")?;
+    }
 
     // glidex-authd first, so the control plane finds its socket.
     for cmd in authd_actions(
@@ -3532,6 +3700,14 @@ fn install_services(
         "{} glidex-stord (/run/glidex-stord/stord.sock)",
         "Running:".green()
     );
+
+    if pylond_installed {
+        let pylond = "glidex-pylond.service";
+        if changed.pylond || pylond_unit_changed || !unit_active(pylond) {
+            sudo(&argv(&["systemctl", "restart", pylond]))?;
+        }
+        println!("{} {} (/run/pylon/pylond.sock)", "Running:".green(), pylond);
+    }
 
     // Control plane: VMs run in their own units and survive a restart. A
     // control plane from before that still stops every VM when it stops,
@@ -3596,6 +3772,18 @@ fn install_services(
         );
     } else {
         println!("{} {}", "Running:".green(), ui);
+    }
+
+    // The metadata endpoint: stateless, after the control plane (its
+    // metad.sock) and netd (its rules).
+    let md = "glidex-metad.service";
+    if metad {
+        if !unit_active(md) || changed.metad || metad_unit_changed || changed.control_plane {
+            sudo(&argv(&["systemctl", "restart", md]))?;
+            println!("{} {}", "Started:".green(), md);
+        } else {
+            println!("{} {}", "Running:".green(), md);
+        }
     }
 
     // The control plane used to run as the installing user, on its ~/.glidex.
@@ -3702,6 +3890,8 @@ fn shim_allowlist(exists: impl Fn(&str) -> bool) -> String {
         "/usr/bin/cloud-hypervisor".to_string(),
         format!("/usr/bin/{}", qemu),
         format!("/usr/local/bin/{}", qemu),
+        "/usr/local/bin/pylon".to_string(),
+        "/usr/bin/pylon".to_string(),
     ];
     let list: Vec<&String> = candidates.iter().filter(|p| exists(p)).collect();
     serde_json::to_string_pretty(&serde_json::json!({ "hypervisors": list })).unwrap_or_default()
@@ -4059,6 +4249,27 @@ mod tests {
             "a 'no' is remembered too: not asked again"
         );
 
+        // The Pylon hypervisor: not saved until chosen, then kept; flags override.
+        assert_eq!(Options::default().with_pylon, None);
+        assert!(!Options::default().render().contains("with_pylon"));
+        let pylon_on = Options::parse(None, &args(&["--with-pylon"])).unwrap();
+        assert!(
+            pylon_on.render().ends_with("with_pylon=true\n"),
+            "{}",
+            pylon_on.render()
+        );
+        let kept_pylon = Options::parse(Some(&pylon_on.render()), &[]).unwrap();
+        assert_eq!(kept_pylon.with_pylon, Some(true));
+        let pylon_off = Options::parse(Some(&pylon_on.render()), &args(&["--no-pylon"])).unwrap();
+        assert_eq!(pylon_off.with_pylon, Some(false));
+        assert_eq!(
+            Options::parse(Some(&pylon_off.render()), &[])
+                .unwrap()
+                .with_pylon,
+            Some(false),
+            "a 'no' is remembered too"
+        );
+
         assert!(Options::parse(None, &args(&["--bogus"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile", "fast"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile"])).is_err());
@@ -4302,6 +4513,8 @@ mod tests {
         admin_group: true,
         ui_group: true,
         ui_user: true,
+        metad_group: true,
+        metad_user: true,
         member: Some(ALICE_DONE),
     };
 
@@ -4317,6 +4530,8 @@ mod tests {
             admin_group: false,
             ui_group: false,
             ui_user: false,
+            metad_group: false,
+            metad_user: false,
             member: Some(ALICE_NEW),
         };
         assert_eq!(
@@ -4329,6 +4544,7 @@ mod tests {
                 "groupadd --system glidex-users",
                 "groupadd --system glidex-admin",
                 "useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin --comment glidex web UI glidex-ui",
+                "useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin --comment glidex metadata endpoint glidex-metad",
                 "usermod -aG glidex-users,glidex-admin alice",
             ]
         );
@@ -4521,7 +4737,7 @@ mod tests {
             "Restart=no",
             "Slice=glidex-vms.slice",
             "PrivateTmp=yes",
-            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex",
+            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv/glidex",
             "DeviceAllow=/dev/kvm rw",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
@@ -4556,6 +4772,31 @@ mod tests {
             list,
             serde_json::json!({ "hypervisors": ["/usr/local/bin/cloud-hypervisor"] })
         );
+        let list_pylon: serde_json::Value =
+            serde_json::from_str(&shim_allowlist(|p| p == "/usr/local/bin/pylon")).unwrap();
+        assert_eq!(
+            list_pylon,
+            serde_json::json!({ "hypervisors": ["/usr/local/bin/pylon"] })
+        );
+    }
+
+    #[test]
+    fn pylond_unit_is_sandboxed_with_glidex_group() {
+        let unit =
+            std::fs::read_to_string(workspace_root().join("packaging/glidex-pylond.service"))
+                .unwrap();
+        let s = settings(&unit);
+        for line in [
+            "Type=simple",
+            "User=root",
+            "Group=glidex",
+            "UMask=0007",
+            "RuntimeDirectory=pylon",
+            "RuntimeDirectoryMode=0750",
+            "Before=glidex-control-plane.service",
+        ] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
     }
 
     #[test]
@@ -4839,6 +5080,23 @@ mod tests {
     }
 
     #[test]
+    fn metad_unit_is_unprivileged() {
+        let s = std::fs::read_to_string(workspace_root().join("packaging/glidex-metad.service"))
+            .unwrap();
+        assert_eq!(unit_user(&s), Some(METAD_USER));
+        for line in [
+            "Group=glidex-metad",
+            "ExecStart=/usr/local/bin/glidex-metad",
+            "NoNewPrivileges=yes",
+            "CapabilityBoundingSet=",
+            "ProtectSystem=strict",
+            "InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd",
+        ] {
+            assert!(s.lines().any(|l| l == line), "missing {line:?}");
+        }
+    }
+
+    #[test]
     fn binaries_follow_options() {
         assert_eq!(
             binaries(&Options::default()),
@@ -4849,7 +5107,8 @@ mod tests {
                 "glidex-vm-shim",
                 "glidex-netd",
                 "glidex-authd",
-                "glidex-stord"
+                "glidex-stord",
+                "glidex-metad"
             ]
         );
         let no_net = Options {
@@ -4857,6 +5116,8 @@ mod tests {
             ..Options::default()
         };
         assert!(!binaries(&no_net).contains(&"glidex-netd"));
+        // The metadata endpoint needs netd's rules.
+        assert!(!binaries(&no_net).contains(&"glidex-metad"));
         let no_services = Options {
             services: false,
             ..Options::default()

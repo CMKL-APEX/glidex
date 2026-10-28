@@ -17,7 +17,13 @@ type Next = Result<Option<Duration>, VmManagerError>;
 const OWNED_KERNEL_GRACE_SECS: u64 = 300;
 
 impl VmManager {
-    fn image_event(&self, id: &str, kind: EventKind, reason: &str, message: impl Into<String>) {
+    pub(crate) fn image_event(
+        &self,
+        id: &str,
+        kind: EventKind,
+        reason: &str,
+        message: impl Into<String>,
+    ) {
         let _ = self.store.push_event(
             &event_key("image", id),
             Event::new("controller", kind, reason, message),
@@ -65,6 +71,12 @@ impl VmManager {
         // A node that doesn't write the catalog keeps only its copy, and
         // those of shared datastores it needs.
         if !leads {
+            // A kernel the leader asked this node to extract (§10.2).
+            if img.status == ImageStatus::Extracting
+                && img.extract_node.as_deref() == Some(self.local_node_id().as_str())
+            {
+                return self.extract_for_leader(&img);
+            }
             let own = self.reconcile_image_cache(&img).await?;
             let stores = self.reconcile_store_copies(&img).await?;
             return Ok(own.or(stores));
@@ -95,12 +107,7 @@ impl VmManager {
         match img.status.clone() {
             // A kernel extraction (spec/kernel-boot.md §10), resumed if its
             // task is gone (a restart).
-            ImageStatus::Extracting => {
-                if !self.images.download_running(&img.id) {
-                    self.spawn_extraction(&img.id);
-                }
-                Ok(Some(Duration::from_secs(10)))
-            }
+            ImageStatus::Extracting => self.lead_extraction(&mut img),
             ImageStatus::Downloading { .. } | ImageStatus::Verifying => {
                 if !self.images.download_running(&img.id) {
                     tracing::info!(image = %img.name, "resuming image download");
@@ -120,6 +127,14 @@ impl VmManager {
                 };
                 let _ = std::fs::remove_file(self.images.part_path(&img.id));
                 let _ = std::fs::remove_file(self.images.initrd_part_path(&img.id));
+                // Placed again (§10.2): the node that tried forgets its result.
+                // One from a VM's disk runs where the disk is, again.
+                if let Some(node) = img.extract_node.clone() {
+                    self.put_cache_row_of(&img.id, &node, None)?;
+                    if !img.extracted_from_disk() {
+                        img.extract_node = None;
+                    }
+                }
                 self.images.put_image(&img)?;
                 self.image_event(
                     &img.id,
@@ -132,10 +147,9 @@ impl VmManager {
                     ),
                 );
                 if extracted {
-                    self.spawn_extraction(&img.id);
-                } else {
-                    self.images.spawn_download(img.id.clone());
+                    return Ok(Some(Duration::from_secs(1)));
                 }
+                self.images.spawn_download(img.id.clone());
                 Ok(Some(Duration::from_secs(10)))
             }
             ImageStatus::Failed { .. } => Ok(None),

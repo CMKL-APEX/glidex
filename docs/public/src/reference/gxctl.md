@@ -87,6 +87,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
+| `service-account <vm> [--set <account> \| --none]` | Show or change the VM's service account, the identity its guest gets glidex tokens for (from its next token) |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
 | `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; `system-admin`). Prints the node, or *Not placed yet* with the reason it waits |
@@ -139,7 +140,7 @@ Private key files are refused before anything is sent. See
 | `disk rm <disk>` | Delete after confirmation |
 | `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` (empty for LVM-thin) |
 | `datastore show <datastore>`, `get` | Id, paths (for LVM-thin, the volume group and thin pool, and each node's own volume group), nodes, overcommit, disks, and each node's view: free space, why it can't reach it, mount or thin pool warnings and, for LVM-thin, the image volumes it keeps (`image volumes:`, by image id) |
-| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API…] --pool N --token-file F) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node, or with `--hyperstor` pool N of a hyperstor cluster, enrolling with the management token in F. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
 | `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit (`system-admin`) |
 | `datastore rm <datastore>`, `delete` | Delete one no disk is on and, for LVM-thin, where no node keeps image volumes; without confirmation; its files stay (`system-admin`) |
 
@@ -157,6 +158,7 @@ A datastore is named by its name or id. See
 | `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge |
 | `network create <name> --project P [--isolated] [--vhost-user] [--subnet CIDR] [--mtu N]` | Create a project network (NAT unless `--isolated`). Without `--project`, same as `network-add` |
 | `network rm <net>`, `network-rm`, `net-rm` | Delete, waiting up to a minute |
+| `network host-api <net> on\|off` | Open this host's API to a NAT network's guests, or close it (host network administrators) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | Who may use a host network (replaces the current grants) |
 | `network share <net> <project-id>` | Offer a project network to another project |
 | `network unshare <net> <project-id>` | Withdraw the offer |

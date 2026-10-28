@@ -56,11 +56,12 @@ export interface ExitRecord {
   launched_at?: string;
 }
 
-export type HypervisorType = "cloudhypervisor" | "qemu";
+export type HypervisorType = "cloudhypervisor" | "qemu" | "pylon";
 
 export const HYPERVISOR_LABELS: Record<HypervisorType, string> = {
   cloudhypervisor: "Cloud Hypervisor",
   qemu: "QEMU",
+  pylon: "Pylon",
 };
 
 /** A VM (glidex.vm.v1.Vm). */
@@ -89,6 +90,9 @@ export interface VmResponse {
   /** That node's name (spec/clustering-ui.md §9). */
   node_name?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   /** Read with `vmHypervisor`. */
   hypervisor?: ProtoHypervisor;
@@ -99,6 +103,8 @@ export interface VmResponse {
   /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/gpu-vms.md §4). */
   numa?: { node?: number; vcpus?: number; memory_mib?: number; devices?: string[] }[];
   credential?: string;
+  /** Its service account (a token id), for workload identity (spec/workload-identity.md W5). */
+  service_account?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
   firmware?: string;
@@ -271,6 +277,9 @@ export interface CreateVmRequest {
   /** Project id or name; default: the caller's default project. */
   project?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   kernel_image_path: string;
   /** Firmware image id/name (spec/images.md §7); default: the newest for the hypervisor. */
@@ -278,6 +287,8 @@ export interface CreateVmRequest {
   /** Host path of UEFI firmware (admins only); prefer `firmware`. */
   firmware_path?: string;
   credential?: string;
+  /** A service account (token id) for its workload identity (spec/workload-identity.md W5). */
+  service_account?: string;
   networks?: { network: string }[];
   rootfs_path?: string;
   /** Image id/name: glidex creates and owns a root disk from it. */
@@ -370,16 +381,18 @@ export function archToProto(a: string): Arch {
   return (a.startsWith("ARCH_") ? a : `ARCH_${a.toUpperCase()}`) as Arch;
 }
 
-export type ProtoHypervisor = "HYPERVISOR_CLOUD_HYPERVISOR" | "HYPERVISOR_QEMU";
+export type ProtoHypervisor = "HYPERVISOR_CLOUD_HYPERVISOR" | "HYPERVISOR_QEMU" | "HYPERVISOR_PYLON";
 
 export const HYPERVISOR_FROM_PROTO: Record<ProtoHypervisor, HypervisorType> = {
   HYPERVISOR_CLOUD_HYPERVISOR: "cloudhypervisor",
   HYPERVISOR_QEMU: "qemu",
+  HYPERVISOR_PYLON: "pylon",
 };
 
 export const HYPERVISOR_TO_PROTO: Record<HypervisorType, ProtoHypervisor> = {
   cloudhypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
   qemu: "HYPERVISOR_QEMU",
+  pylon: "HYPERVISOR_PYLON",
 };
 
 /** A storage object's hypervisor in the VM API's form. */
@@ -583,7 +596,11 @@ export interface PullImageResponse {
 /** Ready firmware images for `hypervisor`, newest first (the server's default). */
 export function firmwareFor(images: ImageInfo[], hypervisor: HypervisorType): ImageInfo[] {
   return images
-    .filter((i) => isFirmware(i) && hypervisorOf(i.hypervisor) === hypervisor && imageState(i) === "ready" && !i.deleting)
+    .filter((i) => {
+      const hv = hypervisorOf(i.hypervisor);
+      const matchesHv = hv === hypervisor || (hypervisor === "pylon" && hv === "cloudhypervisor");
+      return isFirmware(i) && matchesHv && imageState(i) === "ready" && !i.deleting;
+    })
     .sort((a, b) => tsSecs(b.created_at) - tsSecs(a.created_at));
 }
 
@@ -763,10 +780,15 @@ export interface DatastoreNode {
 export interface Datastore {
   id: string;
   name: string;
-  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM";
+  driver?: "DATASTORE_DRIVER_DIR" | "DATASTORE_DRIVER_SHARED_DIR" | "DATASTORE_DRIVER_LVM" | "DATASTORE_DRIVER_HYPERSTOR";
   /** `lvm`: the volume group (`node_paths`: each node's own) and its thin pool. */
   volume_group?: string;
   thin_pool?: string;
+  /** `hyperstor`: its cluster API (`path` is the map service's addresses), pool, and the identity glidex enrolled with. */
+  hyperstor_api?: string[];
+  hyperstor_pool?: number;
+  hyperstor_identity?: string;
+  hyperstor_identity_expires?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -791,6 +813,11 @@ export interface DatastoreInput {
   shared?: boolean;
   /** Create only: LVM-thin (`lvm`), with `volume_group` and `thin_pool` instead of `path`. */
   lvm?: boolean;
+  /** Create only: a hyperstor cluster's pool, with `hyperstor_api`, `hyperstor_pool` and a `mgmt` token to enroll with. */
+  hyperstor?: boolean;
+  hyperstor_api?: string[];
+  hyperstor_pool?: number;
+  hyperstor_token?: string;
   volume_group?: string;
   thin_pool?: string;
   path?: string;
@@ -999,6 +1026,17 @@ export interface AuthMethods {
   trusted_directories?: TrustedLogin[];
 }
 
+/** One of the browser's accounts (spec/tenancy.md D71). */
+export interface BrowserAccount {
+  directory: string;
+  directory_name: string;
+  /** `trusted`: another organization's directory (D69). */
+  kind: "hosted" | "trusted";
+  user_name?: string | null;
+  signed_in: boolean;
+  active: boolean;
+}
+
 /** "Sign in with <host>": a trusted directory's login (spec/tenancy.md D69). */
 export interface TrustedLogin {
   /** Its records' id here, `trusted-<hash>`. */
@@ -1180,6 +1218,8 @@ export interface ApiToken {
   device?: string;
   client?: string;
   roles?: Binding[];
+  /** The clusters it works on (spec/tenancy.md §7.4); none: only here. */
+  clusters?: string[];
 }
 
 export const isServiceToken = (t: Pick<ApiToken, "kind">) => t.kind === "TOKEN_KIND_SERVICE_ACCOUNT";
@@ -1192,6 +1232,9 @@ export interface CreateTokenRequest {
   roles?: { role: string; project?: string }[];
   device?: string;
   client?: string;
+  /** Clusters of other organizations it works on too, or `["all"]`
+   *  (spec/tenancy.md §7.4); none: only this cluster. */
+  clusters?: string[];
 }
 
 export interface CreatedToken {

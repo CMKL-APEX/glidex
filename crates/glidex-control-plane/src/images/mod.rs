@@ -304,6 +304,11 @@ pub struct Image {
     /// kernel is deleted once no VM uses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// The node extracting this kernel image, when not the leader
+    /// (spec/kernel-boot.md §10.2): one of the image's architecture with a
+    /// copy of the disk image. It reports the result in its cache row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_node: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -315,6 +320,17 @@ fn is_true(b: &bool) -> bool {
 }
 
 impl Image {
+    /// A kernel extracted from a VM's disk (§10.5), not a disk image.
+    pub fn extracted_from_disk(&self) -> bool {
+        matches!(
+            self.source,
+            ImageSource::Extracted {
+                disk_id: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Whether the file was checked against a digest the caller or vendor
     /// published (catalog images always are).
     pub fn verified(&self) -> bool {
@@ -994,6 +1010,11 @@ pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
     }
 }
 
+/// What stands in for the extractor appliance in tests: given the disk
+/// image's path, write the extractor's output stream (§10.3) to the path.
+pub type ExtractorJob =
+    Arc<dyn Fn(&std::path::Path, &std::path::Path) -> Result<(), String> + Send + Sync>;
+
 pub struct ImageManager {
     db: Arc<Db>,
     pub settings: ImageSettings,
@@ -1008,12 +1029,18 @@ pub struct ImageManager {
     /// download and assembly, done once.
     pub(crate) extractions: Arc<tokio::sync::Semaphore>,
     pub(crate) extractor_lock: tokio::sync::Mutex<()>,
+    /// Tests only: writes the extractor's output stream instead of booting
+    /// the appliance ([`ImageManager::set_extractor_job`]).
+    pub(crate) extractor_job: std::sync::RwLock<Option<ExtractorJob>>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
     /// The `local` datastore's driver, over `settings.disk_dir`.
     local: Arc<crate::datastore::file::FileDriver>,
     /// This node's id: which of a datastore's paths is this node's (S14).
     node_id: arc_swap::ArcSwap<String>,
+    /// The holder of the secrets key, once the API's auth service exists:
+    /// opens a hyperstor datastore's key on servers (spec/storage.md S20).
+    secrets: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -1057,6 +1084,13 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 }
 
 impl ImageManager {
+    /// Tests only: run kernel extractions through `job`, which writes the
+    /// extractor's output stream, instead of the appliance in a VM. The
+    /// stream is then read, checked and installed as for a real run.
+    pub fn set_extractor_job(&self, job: ExtractorJob) {
+        *self.extractor_job.write().unwrap() = Some(job);
+    }
+
     pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
         // Every image and disk path is built under these (paths::file_in).
         for dir in [&settings.image_dir, &settings.disk_dir] {
@@ -1068,12 +1102,14 @@ impl ImageManager {
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
             extractions: Arc::new(tokio::sync::Semaphore::new(settings.max_extractions)),
+            extractor_job: std::sync::RwLock::new(None),
             extractor_lock: tokio::sync::Mutex::new(()),
             http: download::http_client(settings.allow_private_urls)?,
             local: Arc::new(crate::datastore::file::FileDriver::new(
                 settings.disk_dir.clone(),
             )),
             node_id: arc_swap::ArcSwap::from_pointee(crate::authz::node_id()),
+            secrets: std::sync::OnceLock::new(),
             db,
             settings,
             images: RwLock::new(HashMap::new()),
@@ -1338,6 +1374,11 @@ impl ImageManager {
         if !ds.on_node(&node) {
             return Err(missing("which this node isn't on"));
         }
+        if let Some(d) =
+            crate::datastore::hyperstor::HyperstorDriver::of(&ds, self.hyperstor_identity(&ds))
+        {
+            return Ok(Arc::new(d));
+        }
         if let crate::datastore::record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
             return Ok(Arc::new(crate::datastore::lvm::LvmDriver::new(
                 ds.path_for(&node).to_string(),
@@ -1367,6 +1408,45 @@ impl ImageManager {
     /// The node this manager works for (cluster attach and detach).
     pub fn set_node_id(&self, id: &str) {
         self.node_id.store(Arc::new(id.to_string()));
+    }
+
+    /// Whether `d` is on a hyperstor datastore (spec/storage.md §11.2).
+    pub fn is_hyperstor(&self, d: &Disk) -> bool {
+        d.datastore != crate::datastore::LOCAL
+            && crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| ds.driver.is_hyperstor())
+    }
+
+    pub fn set_secrets(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
+        let _ = self.secrets.set(s);
+    }
+
+    /// A hyperstor datastore's identity, opened: on servers, whose key
+    /// opens the sealed key; `None` elsewhere (S20, S22).
+    pub fn hyperstor_identity(
+        &self,
+        ds: &crate::datastore::record::Datastore,
+    ) -> Option<crate::datastore::hyperstor::Identity> {
+        use crate::datastore::record::{DriverSpec, hyperstor_secret_owner};
+        let DriverSpec::Hyperstor {
+            identity: Some(id), ..
+        } = &ds.driver
+        else {
+            return None;
+        };
+        let key = self
+            .secrets
+            .get()?
+            .open_value(&hyperstor_secret_owner(&ds.id), "key")
+            .ok()
+            .flatten()?;
+        Some(crate::datastore::hyperstor::Identity {
+            cert: id.cert.clone(),
+            key: zeroize::Zeroizing::new(key.to_string()),
+            root: id.root.clone(),
+        })
     }
 
     // ---- persistence -------------------------------------------------------
@@ -1625,8 +1705,9 @@ impl ImageManager {
         }
     }
 
-    /// `with_detail` runs `qemu-img info` and reads the partition table;
-    /// blocking, so only for single-disk responses.
+    /// `with_detail` runs `qemu-img info` (for a hyperstor volume, asks the
+    /// driver its size) and reads the partition table; blocking, so only
+    /// for single-disk responses.
     pub fn disk_response(&self, d: &Disk, with_detail: bool) -> DiskResponse {
         let path = self.disk_path(d);
         let busy_op = self.busy_op(&d.id);
@@ -1641,7 +1722,30 @@ impl ImageManager {
             DiskPhase::Missing => "missing",
             _ => "ready",
         };
-        let (info, table) = if with_detail && status == "ready" && path.exists() {
+        // A hyperstor volume's path names it for the disk tools; it is no
+        // file to look for, nor one `qemu-img info` opens (storage.md §11.2).
+        let volume = crate::datastore::hyperstor::parse_tool_path(&path).is_some();
+        let (info, table) = if !with_detail || status != "ready" {
+            (None, None)
+        } else if volume {
+            let driver = self.driver(d).ok();
+            let size = driver.as_ref().and_then(|dr| dr.volume_size(d));
+            (
+                size.map(|virtual_size| qemu_img::ImgInfo {
+                    format: d.format.as_str().to_string(),
+                    virtual_size,
+                    actual_size: driver
+                        .as_ref()
+                        .and_then(|dr| dr.stored_bytes(d))
+                        .unwrap_or(0),
+                    backing_filename: None,
+                    backing_format: None,
+                }),
+                partition::read_table(&path, d.format, size.unwrap_or(d.size_bytes))
+                    .ok()
+                    .flatten(),
+            )
+        } else if path.exists() {
             (
                 qemu_img::info(&path, Some(d.format)).ok(),
                 partition::read_table(&path, d.format, d.size_bytes)
@@ -1784,10 +1888,11 @@ impl ImageManager {
             .unwrap()
             .values()
             .filter(|i| {
-                i.is_firmware()
-                    && i.hypervisor == Some(hypervisor)
-                    && i.usable()
-                    && arch.is_none_or(|a| i.arch == a)
+                let matches_hv = i.hypervisor == Some(hypervisor)
+                    || (hypervisor == crate::hypervisor::HypervisorType::Pylon
+                        && i.hypervisor
+                            == Some(crate::hypervisor::HypervisorType::CloudHypervisor));
+                i.is_firmware() && matches_hv && i.usable() && arch.is_none_or(|a| i.arch == a)
             })
             .max_by_key(|i| i.created_at)
             .cloned()
@@ -1922,6 +2027,103 @@ mod tests {
         }
     }
 
+    /// A hyperstor disk's detail reads its partition table through
+    /// hyperstorctl: its path names a volume, not a file (issue #187).
+    #[test]
+    fn a_hyperstor_disk_shows_its_partition_table() {
+        use crate::datastore::record::{Datastore, DriverSpec};
+        use std::os::unix::fs::PermissionsExt;
+        let Some(sgdisk) = qemu_img::SGDISK.find() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // The volume's bytes: a GPT with an ESP and a root.
+        let img = dir.path().join("volume.raw");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let st = std::process::Command::new(sgdisk)
+            .args([
+                "-n",
+                "1:2048:+8M",
+                "-t",
+                "1:ef00",
+                "-n",
+                "2:0:0",
+                "-t",
+                "2:8300",
+            ])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{}",
+            String::from_utf8_lossy(&st.stderr)
+        );
+        // hyperstorctl, standing in: `read-volume` copies the range asked.
+        let log = dir.path().join("args");
+        let ctl = dir.path().join("hyperstorctl");
+        std::fs::write(
+            &ctl,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {log}\n[ \"$3\" = read-volume ] || exit 1\ndd if={img} of=\"${{11}}\" bs=512 skip=$(($7 / 512)) count=$(($9 / 512)) 2>/dev/null\n",
+                log = log.display(),
+                img = img.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: test-only; no other test reads it.
+        unsafe { std::env::set_var("GLIDEX_HYPERSTORCTL", &ctl) };
+
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
+        let ds = Datastore {
+            id: "hs".into(),
+            name: "hs".into(),
+            driver: DriverSpec::Hyperstor {
+                api: vec!["127.0.0.1:1".into()],
+                map: "m:1".into(),
+                pool: 1,
+                identity: None,
+                node_paths: Default::default(),
+            },
+            nodes: Vec::new(),
+            default_for_disks: false,
+            overcommit: true,
+            created_at: 1,
+        };
+        db.write(
+            crate::store::Origin::Api,
+            |tx| -> Result<(), crate::store::StoreError> {
+                tx.open_table(crate::store::TableId::Datastores.definition())?
+                    .insert("hs", serde_json::to_vec(&ds).unwrap().as_slice())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path())).unwrap();
+        let d: Disk = serde_json::from_value(serde_json::json!({
+            "id": "6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab", "name": "root", "project": "p",
+            "format": "raw", "size_bytes": 64u64 << 20, "origin": { "kind": "blank" },
+            "created_at": 1, "phase": "ready", "datastore": "hs",
+        }))
+        .unwrap();
+
+        let r = mgr.disk_response(&d, true);
+        assert!(r.path.starts_with("hyperstor://m:1/"), "{}", r.path);
+        let table = r.partition_table.expect("the volume's partition table");
+        assert_eq!(table.partitions.len(), 2, "{table:?}");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            calls.contains("read-volume --id 6f1c0d2e9a4b4c1d8e2f0123456789ab --offset 0"),
+            "{calls}"
+        );
+        // The list leaves the detail out.
+        assert!(mgr.disk_response(&d, false).partition_table.is_none());
+    }
+
     #[test]
     fn image_cannot_be_deleted_while_a_clone_holds_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1955,6 +2157,7 @@ mod tests {
             kernel_release: None,
             for_image: None,
             owner: None,
+            extract_node: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");

@@ -1,9 +1,11 @@
 // The browser session (spec/security.md §5.5, §5.6): who is logged in,
 // the selected project, and what the caller may do on the host. Pages
 // read it through useSession(); the server still checks every request.
+// The login, step-up and whoami plumbing is the kit's SessionProvider
+// (crates/glidex-ui/kit); this adds glidex's projects and capabilities.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { SessionProvider as KitSessionProvider, useSession as useKitSession, type AuthApi } from "@glidex/ui-kit";
 import * as api from "./api";
-import { ApiRequestError } from "./api";
 import type { AuthMethods, EntityRef, ProjectView, SingletonEntityType, WhoAmI } from "./types";
 import Login from "./pages/Login";
 import ReauthDialog from "./components/ReauthDialog";
@@ -140,38 +142,35 @@ async function hostCapabilities(): Promise<Record<HostAction, boolean>> {
 const noHost = Object.fromEntries(HOST_ACTIONS.map((a) => [a, false])) as Record<HostAction, boolean>;
 const PROJECT_KEY = "glidex.project";
 
-type State =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "anonymous"; methods: AuthMethods }
-  | { kind: "ready"; me: WhoAmI; methods: AuthMethods; projects: ProjectView[]; host: Record<HostAction, boolean> };
+/** What the kit's session loads for glidex after whoami. */
+interface Extra {
+  projects: ProjectView[];
+  host: Record<HostAction, boolean>;
+}
+
+/** glidex's login API for the kit. */
+const glidexAuth: AuthApi<WhoAmI, AuthMethods> = {
+  methods: () => {
+    // `/login/<directory>`: that directory's login page (D61).
+    const m = window.location.pathname.match(/^\/login\/([a-z0-9-]{1,32})\/?$/);
+    return api.authMethods(m?.[1]);
+  },
+  whoami: api.whoami,
+  login: api.loginPam,
+  startSso: (connector, returnTo, reauth) => api.startOidc(returnTo, reauth, connector),
+  logout: api.logout,
+};
+
+const renderLogin = (methods: AuthMethods, onLoggedIn: () => void) => <Login methods={methods} onLoggedIn={onLoggedIn} />;
+
+const renderReauth = ({ methods, me, onDone, onCancel }: { methods: AuthMethods; me: WhoAmI; onDone: () => void; onCancel: () => void }) => (
+  <ReauthDialog methods={methods} username={me.user?.display_name ?? ""} onDone={onDone} onCancel={onCancel} />
+);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<State>({ kind: "loading" });
   const [project, setProject] = useState<string | null>(null);
-  const [reauth, setReauth] = useState<((ok: boolean) => void) | null>(null);
 
-  const load = useCallback(async () => {
-    let methods: AuthMethods;
-    try {
-      // `/login/<directory>`: that directory's login page (D61).
-      const m = window.location.pathname.match(/^\/login\/([a-z0-9-]{1,32})\/?$/);
-      methods = await api.authMethods(m?.[1]);
-    } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-      return;
-    }
-    let me: WhoAmI;
-    try {
-      me = await api.whoami();
-    } catch (e) {
-      if (e instanceof ApiRequestError && e.status === 401) {
-        setState({ kind: "anonymous", methods });
-      } else {
-        setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-      }
-      return;
-    }
+  const load = useCallback(async (me: WhoAmI): Promise<Extra> => {
     const [projects, host] = await Promise.all([api.listProjects().catch(() => [] as ProjectView[]), hostCapabilities()]);
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
@@ -181,107 +180,77 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (known(stored)) return stored;
       return projects[0]?.id ?? null;
     });
-    setState({ kind: "ready", me, methods, projects, host });
+    return { projects, host };
   }, []);
+
+  // Another tab switched accounts (spec/tenancy.md D71): start over as
+  // the new one.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === api.ACCOUNT_EVENT_KEY) window.location.assign("/");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  return (
+    <KitSessionProvider
+      auth={glidexAuth}
+      load={load}
+      login={renderLogin}
+      reauth={renderReauth}
+      loading={<Loading />}
+      unreachable="Can't reach the control plane"
+    >
+      <GlidexSession project={project} setProject={setProject}>
+        {children}
+      </GlidexSession>
+    </KitSessionProvider>
+  );
+}
+
+/** glidex's Session over the kit's, once signed in. */
+function GlidexSession({ project, setProject, children }: { project: string | null; setProject: (id: string) => void; children: ReactNode }) {
+  const kit = useKitSession<WhoAmI, AuthMethods, Extra>();
+  const { me, methods, extra, setExtra, refresh, logout } = kit;
 
   const refreshCapabilities = useCallback(async () => {
     const host = await hostCapabilities();
-    setState((s) => (s.kind === "ready" ? { ...s, host } : s));
-  }, []);
+    setExtra((x) => ({ ...x, host }));
+  }, [setExtra]);
 
-  useEffect(() => {
-    api.setSessionHandlers({
-      unauthenticated: () => {
-        api.setCsrf(null);
-        setState((s) => (s.kind === "ready" ? { kind: "anonymous", methods: s.methods } : s));
-      },
-      reauth: () => new Promise<boolean>((resolve) => setReauth(() => resolve)),
-    });
-    load();
-  }, [load]);
-
-  const finishReauth = (ok: boolean) => {
-    reauth?.(ok);
-    setReauth(null);
-  };
-
-  const session = useMemo<Session | null>(() => {
-    if (state.kind !== "ready") return null;
-    return {
-      me: state.me,
-      methods: state.methods,
-      projects: state.projects,
+  const session = useMemo<Session>(
+    () => ({
+      me,
+      methods,
+      projects: extra.projects,
       project,
-      host: state.host ?? noHost,
+      host: extra.host ?? noHost,
       projectName: (id) => {
         if (!id) return "—";
-        return state.projects.find((p) => p.id === id)?.name ?? id;
+        return extra.projects.find((p) => p.id === id)?.name ?? id;
       },
       selectProject: async (id: string) => {
         setProject(id);
         localStorage.setItem(PROJECT_KEY, id);
-        if (state.me.user && state.me.method !== "disabled") {
+        if (me.user && me.method !== "disabled") {
           // Remember it server-side too; not fatal if refused.
           await api.updateMe({ default_project: id }).catch(() => {});
         }
       },
-      refresh: load,
+      refresh,
       refreshCapabilities,
-      logout: async () => {
-        await api.logout().catch(() => {});
-        setState({ kind: "anonymous", methods: state.methods });
-      },
-    };
-  }, [state, project, load, refreshCapabilities]);
+      logout,
+    }),
+    [me, methods, extra, project, setProject, refresh, refreshCapabilities, logout],
+  );
 
   // A directory's authorize request sent the browser here to log in first
   // (spec/tenancy.md D54): signed in, it goes back there.
   useEffect(() => {
-    if (state.kind !== "ready") return;
     const next = new URLSearchParams(window.location.search).get("next");
     if (next && next.startsWith("/d/") && !next.startsWith("//")) window.location.replace(next);
-  }, [state.kind]);
+  }, []);
 
-  let body: ReactNode;
-  switch (state.kind) {
-    case "loading":
-      body = <Loading />;
-      break;
-    case "error":
-      body = (
-        <div className="max-w-lg mx-auto mt-24 p-6 bg-white rounded-xl shadow-md border border-red-200">
-          <h1 className="text-lg font-semibold text-red-700">Can't reach the control plane</h1>
-          <p className="mt-2 text-sm text-gray-600">{state.message}</p>
-          <button
-            className="mt-4 px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
-            onClick={() => {
-              setState({ kind: "loading" });
-              load();
-            }}
-          >
-            Retry
-          </button>
-        </div>
-      );
-      break;
-    case "anonymous":
-      body = <Login methods={state.methods} onLoggedIn={load} />;
-      break;
-    case "ready":
-      body = <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
-      break;
-  }
-  return (
-    <>
-      {body}
-      {reauth && state.kind === "ready" && (
-        <ReauthDialog
-          methods={state.methods}
-          username={state.me.user?.display_name ?? ""}
-          onDone={() => finishReauth(true)}
-          onCancel={() => finishReauth(false)}
-        />
-      )}
-    </>
-  );
+  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
 }

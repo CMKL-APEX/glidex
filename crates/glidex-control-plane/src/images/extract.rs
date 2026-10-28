@@ -12,6 +12,7 @@ use super::{
     validate_name,
 };
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -155,11 +156,6 @@ impl ImageManager {
                 src.name, src.status
             )));
         }
-        if let Some(why) = self.extraction_refused(src.arch) {
-            return Err(ImageError::InvalidImage(format!(
-                "kernels can't be extracted here: {why}"
-            )));
-        }
         if let Some(existing) = self.images.read().unwrap().values().find(|i| {
             i.for_image.as_deref() == Some(src.id.as_str())
                 && i.status == ImageStatus::Extracting
@@ -193,19 +189,16 @@ impl ImageManager {
     }
 
     /// A kernel image to extract from VM `vm`'s root disk `disk`, owned by
-    /// the VM (§10.5, K12), named after it.
+    /// the VM (§10.5, K12), named after it; on `node` when not here (the
+    /// disk's node, §10.2). The caller checks that it can be extracted.
     pub(crate) fn new_disk_kernel(
         &self,
         vm: &str,
         vm_name: &str,
         disk: &super::Disk,
         arch: Arch,
+        node: Option<&str>,
     ) -> Result<Image, ImageError> {
-        if let Some(why) = self.extraction_refused(arch) {
-            return Err(ImageError::InvalidImage(format!(
-                "kernels can't be extracted here: {why}"
-            )));
-        }
         let stem: String = vm_name
             .chars()
             .map(|c| {
@@ -230,6 +223,7 @@ impl ImageManager {
             verified: false,
         };
         img.owner = Some(vm.to_string());
+        img.extract_node = node.map(str::to_string);
         self.insert_image(&img)?;
         tracing::info!(image = %img.name, disk = %disk.name, "kernel extraction from a VM's disk queued");
         Ok(img)
@@ -323,7 +317,12 @@ impl ImageManager {
             )));
         }
         let mut img = self.get_image(id)?;
+        let from_header = installed.release.is_some();
         installed.apply(&mut img);
+        // An arm64 `Image` names no release: the file's name does (§10.4).
+        if !from_header {
+            img.kernel_release = Some(choice.version.clone());
+        }
         img.cmdline = Some(choice.cmdline);
         img.source = ImageSource::Extracted {
             image_id: origin.image_id.clone(),
@@ -333,6 +332,71 @@ impl ImageManager {
             verified: origin.verified,
         };
         Ok(img)
+    }
+}
+
+/// A kernel extracted on a node other than the leader (§10.2): the
+/// fields [`ImageManager::finish_extraction`] sets, which the node reports
+/// in its cache row and the leader copies onto the image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedKernel {
+    pub sha256: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_release: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<super::FileMeta>,
+    pub cmdline: String,
+    /// Where in the disk image it was (`vda13:/vmlinuz-…`).
+    pub path: String,
+    pub image_sha256: String,
+    pub verified: bool,
+}
+
+impl ExtractedKernel {
+    /// From the image [`ImageManager::finish_extraction`] made.
+    pub fn of(img: &Image) -> Option<Self> {
+        let ImageSource::Extracted {
+            path,
+            image_sha256,
+            verified,
+            ..
+        } = &img.source
+        else {
+            return None;
+        };
+        Some(ExtractedKernel {
+            sha256: img.sha256.clone(),
+            size_bytes: img.virtual_size_bytes,
+            kernel_release: img.kernel_release.clone(),
+            initrd: img.initrd.clone(),
+            cmdline: img.cmdline.clone().unwrap_or_default(),
+            path: path.clone(),
+            image_sha256: image_sha256.clone(),
+            verified: *verified,
+        })
+    }
+
+    /// Onto kernel image `img`, which then is the extracted kernel.
+    pub fn apply(&self, img: &mut Image) {
+        img.virtual_size_bytes = self.size_bytes;
+        img.file_size_bytes = self.size_bytes + self.initrd.as_ref().map_or(0, |i| i.size_bytes);
+        img.sha256 = self.sha256.clone();
+        img.format = super::DiskFormat::Raw;
+        img.kernel_release = self.kernel_release.clone();
+        img.initrd = self.initrd.clone();
+        img.cmdline = Some(self.cmdline.clone());
+        if let ImageSource::Extracted {
+            path,
+            image_sha256,
+            verified,
+            ..
+        } = &mut img.source
+        {
+            *path = self.path.clone();
+            *image_sha256 = self.image_sha256.clone();
+            *verified = self.verified;
+        }
     }
 }
 
@@ -387,6 +451,7 @@ fn extraction_record(name: String, arch: Arch, nodes: Vec<String>) -> Image {
         kernel_release: None,
         for_image: None,
         owner: None,
+        extract_node: None,
     }
 }
 

@@ -318,6 +318,24 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 Ok(r) => {
                     for c in &r.clusters {
                         println!("  {}  {:<20} {}", c.cluster_id.cyan(), c.name, c.api);
+                        // Its last report (spec/tenancy.md D70).
+                        match c.report.as_option() {
+                            Some(rep) => {
+                                let suspended = rep.status.as_known()
+                                    == Some(glidex_api::proto::glidex::tenancy::v1::AdmissionStatus::ADMISSION_STATUS_SUSPENDED);
+                                println!(
+                                    "      {}{} projects, {} VMs ({} running), {} disks ({} GiB), {} networks",
+                                    if suspended { "suspended; " } else { "" },
+                                    rep.projects,
+                                    rep.vms,
+                                    rep.running_vms,
+                                    rep.disks,
+                                    rep.disk_gib,
+                                    rep.networks
+                                );
+                            }
+                            None => println!("      {}", "no report yet".dimmed()),
+                        }
                     }
                 }
                 Err(e) => err(rpc_err(e)),
@@ -619,7 +637,7 @@ fn parse_cap(args: &[&str]) -> Result<Option<Quotas>, String> {
 }
 
 pub async fn admission(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories";
+    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | staleness <directory> <minutes|default>";
     let Some(t) = transport(client).await else {
         return;
     };
@@ -663,12 +681,56 @@ pub async fn admission(client: &ApiClient, args: &[&str]) {
             }
             Ok(r) => {
                 for d in &r.directories {
-                    let tenants: Vec<_> = d.tenants.iter().map(|t| t.slug.as_str()).collect();
-                    println!("  {}  tenants: {}", d.issuer.cyan(), tenants.join(", "));
+                    print_trusted_directory(d);
                 }
             }
             Err(e) => err(rpc_err(e)),
         },
+        // How long its credentials stay good without a feed (D13).
+        "staleness" => {
+            let (Some(id), Some(v)) = (args.get(1).map(|s| s.to_string()), args.get(2)) else {
+                return usage(u);
+            };
+            let minutes = match *v {
+                "default" => None,
+                m => match m.parse::<u64>() {
+                    Ok(n) if n > 0 => Some(n),
+                    _ => return usage(u),
+                },
+            };
+            // An issuer names it too.
+            let id = if id.starts_with("trusted-") {
+                id
+            } else {
+                match svc
+                    .list_trusted_directories(ListTrustedDirectoriesRequest::default())
+                    .await
+                    .map(|r| r.into_owned())
+                {
+                    Ok(r) => match r.directories.into_iter().find(|d| d.issuer == id) {
+                        Some(d) => d.id,
+                        None => return err(format!("no trusted directory {id}")),
+                    },
+                    Err(e) => return err(rpc_err(e)),
+                }
+            };
+            match svc
+                .set_trusted_directory(SetTrustedDirectoryRequest {
+                    id,
+                    max_staleness_minutes: minutes,
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    if let Some(d) = r.directory.as_option() {
+                        print_trusted_directory(d);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
         "offers" => match svc
             .list_offers(ListOffersRequest::default())
             .await
@@ -789,6 +851,40 @@ pub async fn admission(client: &ApiClient, args: &[&str]) {
             }
         }
         _ => usage(u),
+    }
+}
+
+/// A trusted directory: its tenants, and how fresh its replica is here.
+fn print_trusted_directory(d: &TrustedDirectory) {
+    let tenants: Vec<_> = d.tenants.iter().map(|t| t.slug.as_str()).collect();
+    println!(
+        "  {}  {}  tenants: {}",
+        d.id,
+        d.issuer.cyan(),
+        tenants.join(", ")
+    );
+    let limit = format!(
+        "{} min{}",
+        d.effective_max_staleness_minutes,
+        if d.max_staleness_minutes.is_some() {
+            ""
+        } else {
+            " (default)"
+        }
+    );
+    let synced = if d.last_sync.as_option().is_some() {
+        format!("last feed {} s ago", d.lag_seconds)
+    } else {
+        "no feed yet".to_string()
+    };
+    if d.stale {
+        println!(
+            "      {}; {}",
+            format!("STALE: its accounts are refused here; {synced}").red(),
+            limit
+        );
+    } else {
+        println!("      {synced}; credentials good up to {limit} without one");
     }
 }
 

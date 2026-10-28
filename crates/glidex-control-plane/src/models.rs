@@ -96,6 +96,15 @@ pub const MAX_STOP_GRACE_SECS: u32 = 300;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VmConfig {
     pub vcpu_count: u8,
+    /// Minimum active vCPUs (`0..=vcpu_count` on Pylon; `1..=vcpu_count` on CH/QEMU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_vcpus: Option<u8>,
+    /// Maximum active vCPUs (`vcpu_count..=64` on Pylon; `vcpu_count..=255` on CH/QEMU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_vcpus: Option<u8>,
+    /// Relative CPU scheduling weight (`1..=10000`, default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_weight: Option<u32>,
     pub mem_size_mib: u32,
     #[serde(default)]
     pub kernel_image_path: String,
@@ -138,6 +147,12 @@ pub struct VmConfig {
     /// generated cloud-init seed provisions as the guest login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// The service account (a `SERVICE_ACCOUNT` token's id, of a project of
+    /// the VM's tenant) whose glidex tokens the VM gets from its metadata
+    /// endpoint (spec/workload-identity.md W5, W6). Changing it needs no
+    /// restart: it applies to the next token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account: Option<String>,
     /// Path of the boot disk. For a managed root disk (`root_disk`) this
     /// is that disk's file, so backends see one field either way.
     pub rootfs_path: String,
@@ -213,6 +228,26 @@ pub struct VmConfig {
 }
 
 impl VmConfig {
+    /// Minimum active vCPUs, defaulting to `vcpu_count`.
+    pub fn effective_min_vcpus(&self) -> u8 {
+        self.min_vcpus.unwrap_or(self.vcpu_count)
+    }
+
+    /// Maximum active vCPUs, defaulting to `vcpu_count`.
+    pub fn effective_max_vcpus(&self) -> u8 {
+        self.max_vcpus.unwrap_or(self.vcpu_count)
+    }
+
+    /// Relative CPU weight for cgroup / pylond, defaulting to 100.
+    pub fn effective_cpu_weight(&self) -> u32 {
+        self.cpu_weight.unwrap_or(100)
+    }
+
+    /// True if the VM is configured to scale elastically.
+    pub fn is_elastic(&self) -> bool {
+        self.effective_min_vcpus() < self.effective_max_vcpus()
+    }
+
     /// Whether the VM controller generates a cloud-init seed for it: never
     /// with a custom `cloud_init_path`; else as recorded at create, or,
     /// for records from before that, on firmware boot.
@@ -428,6 +463,15 @@ pub struct VmStatus {
     /// node (`local`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,
+    /// Re-placed from a node forgotten as fenced: its next start takes its
+    /// hyperstor disks' leases even from a holder that still renews
+    /// (spec/storage.md S23); cleared once it has started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takeover_disks: bool,
+    /// Its hyperstor disks, attached on its node for it: detached once it
+    /// has stopped (spec/storage.md §11.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged_disks: Vec<String>,
     #[serde(default)]
     pub observed_generation: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -539,10 +583,24 @@ pub struct InstanceRef {
     /// (spec/host-topology.md §7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_affinity: Vec<u32>,
+    /// Maximum active vCPUs configured at launch (ACPI slots or Pylon max cores).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_max_vcpus: Option<u8>,
+    /// Currently applied elastic CPU policy (min/max vCPUs, weight) in pylond / hypervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_cpu_policy: Option<AppliedCpuPolicy>,
     /// Uncorrectable AER errors each of its VFIO devices had at launch
     /// (address → count, spec/host-topology.md §5.4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub device_errors: std::collections::BTreeMap<String, u64>,
+}
+
+/// The running guest's applied CPU policy parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedCpuPolicy {
+    pub min_vcpus: u8,
+    pub max_vcpus: u8,
+    pub weight: u32,
 }
 
 pub use glidex_vm_shim::state::ExitCause;
@@ -581,6 +639,10 @@ pub struct NicStatus {
     pub ipv4: Option<Ipv4Addr>,
     #[serde(default)]
     pub port_ok: bool,
+    /// The port's metadata index on a NAT network (spec/workload-identity.md
+    /// §7.1): how glidex-metad knows this NIC's requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_index: Option<u16>,
 }
 
 impl Vm {

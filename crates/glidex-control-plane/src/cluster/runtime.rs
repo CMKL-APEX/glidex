@@ -79,6 +79,18 @@ pub trait SecretsKey: Send + Sync {
     /// Re-wrap every data key with the current key; how many changed.
     fn rewrap(&self) -> Result<usize, String>;
     fn kek_id(&self) -> String;
+    /// Seals `value` as `owner`'s `field` in the replicated store, under a
+    /// data key the KEK wraps (a hyperstor datastore's key, spec/storage.md
+    /// S20).
+    fn seal_value(&self, owner: &str, field: &str, value: &str) -> Result<(), String>;
+    /// The value sealed as `owner`'s `field`, if any; `Err` where this
+    /// node's key can't open it (an agent).
+    fn open_value(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String>;
+    fn forget_value(&self, owner: &str, field: &str) -> Result<(), String>;
 }
 
 pub struct Cluster {
@@ -95,6 +107,9 @@ pub struct Cluster {
     pub(crate) ca: Mutex<Option<Ca>>,
     /// The API router, served to forwarded requests; set once the app exists.
     pub(crate) api: OnceLock<axum::Router>,
+    /// The API's app, for the metadata questions nodes ask the leader
+    /// (spec/workload-identity.md §15).
+    pub(crate) app: OnceLock<Arc<crate::api::App>>,
     stop: tokio::sync::watch::Sender<bool>,
     barrier: Arc<Barrier>,
     /// Servers only: recent applied write sets for watches.
@@ -103,6 +118,11 @@ pub struct Cluster {
     /// One CA operation at a time (rotation, retirement); and when the last
     /// rotation attempt failed, so a retry waits a while.
     pub(crate) ca_op: tokio::sync::Mutex<Option<std::time::Instant>>,
+    /// One writer of the departure files (pending database, its checksum,
+    /// the receipt) at a time: the node's departure tick, or a dissolve.
+    /// Without it the tick, finding no plan, discarded the pending database
+    /// a dissolve was writing.
+    pub(crate) departure_files: tokio::sync::Mutex<()>,
 }
 
 /// Raft messages over mTLS HTTP/2.
@@ -265,6 +285,7 @@ impl Cluster {
             config,
             ca: Mutex::new(ca),
             api: OnceLock::new(),
+            app: OnceLock::new(),
             secrets: OnceLock::new(),
             stop,
             barrier: Arc::new(Barrier::default()),
@@ -272,6 +293,7 @@ impl Cluster {
             liveness: Default::default(),
             handlers: OnceLock::new(),
             ca_op: tokio::sync::Mutex::new(None),
+            departure_files: tokio::sync::Mutex::new(()),
         });
         // A runtime that was just stopped may still hold the port for a moment.
         let mut bound = tokio::net::TcpListener::bind(listen).await;
@@ -315,6 +337,10 @@ impl Cluster {
     /// the leader. Agents ask any server they know of (§8).
     pub fn set_api(&self, router: axum::Router) {
         let _ = self.api.set(router);
+    }
+
+    pub fn set_app(&self, app: Arc<crate::api::App>) {
+        let _ = self.app.set(app);
     }
 
     pub fn set_secrets(&self, s: Arc<dyn SecretsKey>) {

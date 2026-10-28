@@ -76,7 +76,45 @@ pub enum DriverSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_vgs: BTreeMap<String, String>,
     },
+    /// A hyperstor cluster's pool (spec/storage.md §11.2): volumes served
+    /// to VMs over vhost-user-blk by each node's `hyperstor-vhost`.
+    Hyperstor {
+        /// The cluster API's addresses (`host:port`).
+        api: Vec<String>,
+        /// The map service's addresses, as the join gave them.
+        map: String,
+        pool: u32,
+        /// The identity glidex enrolled with (S20): its certificate and the
+        /// cluster's root, in clear; its key is sealed apart, under
+        /// [`hyperstor_secret_owner`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<HyperstorIdentity>,
+        /// Unused: a hyperstor datastore is the same from every node.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        node_paths: BTreeMap<String, String>,
+    },
 }
+
+/// A hyperstor datastore's certificate (S20): public, renewed by the
+/// leader before its 30 days run out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HyperstorIdentity {
+    /// The chain, leaf then intermediate, PEM.
+    pub cert: String,
+    /// hyperstor's root, PEM: what its API's certificate is checked against.
+    pub root: String,
+    /// The identity it names, `hyperstor://<cluster>/mgmt/<name>`.
+    pub name: String,
+    /// When it expires (Unix seconds).
+    pub not_after: u64,
+}
+
+/// Where a hyperstor datastore's key is sealed (`SecretsKey::seal_value`).
+pub fn hyperstor_secret_owner(datastore: &str) -> String {
+    format!("hyperstor:{datastore}")
+}
+
+static NO_PATHS: BTreeMap<String, String> = BTreeMap::new();
 
 /// Where a datastore's volumes can be reached from (S4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +134,8 @@ impl DriverSpec {
                 (path, node_paths)
             }
             DriverSpec::Lvm { vg, node_vgs, .. } => (vg, node_vgs),
+            // The map service's addresses stand for a path: there is none.
+            DriverSpec::Hyperstor { map, .. } => (map, &NO_PATHS),
         }
     }
 
@@ -105,12 +145,17 @@ impl DriverSpec {
                 node_paths
             }
             DriverSpec::Lvm { node_vgs, .. } => node_vgs,
+            DriverSpec::Hyperstor { node_paths, .. } => node_paths,
         }
     }
 
     /// Volumes are block devices (raw), not files.
     pub fn is_block(&self) -> bool {
-        matches!(self, DriverSpec::Lvm { .. })
+        matches!(self, DriverSpec::Lvm { .. } | DriverSpec::Hyperstor { .. })
+    }
+
+    pub fn is_hyperstor(&self) -> bool {
+        matches!(self, DriverSpec::Hyperstor { .. })
     }
 }
 
@@ -150,12 +195,19 @@ impl Datastore {
     pub fn topology(&self) -> Topology {
         match self.driver {
             DriverSpec::Dir { .. } | DriverSpec::Lvm { .. } => Topology::NodeLocal,
-            DriverSpec::SharedDir { .. } => Topology::Shared,
+            DriverSpec::SharedDir { .. } | DriverSpec::Hyperstor { .. } => Topology::Shared,
         }
     }
 
     pub fn is_shared(&self) -> bool {
         self.topology() == Topology::Shared
+    }
+
+    /// Whether linked disks here overlay the datastore's own copy of their
+    /// image file (S9). A hyperstor datastore is shared too, but its
+    /// driver makes the image's volume itself (§11.2).
+    pub fn holds_image_files(&self) -> bool {
+        matches!(self.driver, DriverSpec::SharedDir { .. })
     }
 
     /// `node`'s path to this datastore's copy of image `id` (S9).
@@ -282,6 +334,23 @@ fn validate(ds: &Datastore, others: &[Datastore], root: &Path) -> Result<(), Dat
             "a datastore named {} already exists",
             ds.name
         )));
+    }
+    if let DriverSpec::Hyperstor { api, map, .. } = &ds.driver {
+        if api.is_empty()
+            || api
+                .iter()
+                .any(|a| a.parse::<std::net::SocketAddr>().is_err() && !a.contains(':'))
+        {
+            return Err(DatastoreError::Invalid(
+                "a hyperstor datastore names its cluster API as host:port".into(),
+            ));
+        }
+        if map.is_empty() {
+            return Err(DatastoreError::Invalid(
+                "a hyperstor datastore needs its map service's addresses".into(),
+            ));
+        }
+        return Ok(());
     }
     if let DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
         let (vg, node_vgs) = ds.driver.paths();

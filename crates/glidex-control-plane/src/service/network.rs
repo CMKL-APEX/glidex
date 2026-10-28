@@ -132,6 +132,7 @@ pub fn network_pb(n: &Network) -> pb::Network {
         mtu: n.mtu.map(u32::from),
         dns: Some(n.dns),
         owns_bridge: Some(n.owns_bridge),
+        host_api: n.host_api.then_some(true),
         created_at: ts(n.created_at).into(),
         project: n.project.clone(),
         all_projects: Some(n.all_projects),
@@ -496,6 +497,27 @@ pub fn grant_network(
         .grant_network(&n.id, grants, tenants, req.all_projects)
         .map_err(manager_err)?;
     Ok(pb::GrantNetworkResponse {
+        network: network_pb(&n).into(),
+        ..Default::default()
+    })
+}
+
+/// Open or close this host's API to a node NAT network's guests
+/// (`setNetworkHostApi`, a host network administrator's).
+pub fn set_network_host_api(
+    call: &Call,
+    req: pb::SetNetworkHostApiRequest,
+) -> ServiceResult<pb::SetNetworkHostApiResponse> {
+    let n = visible_network(call, &req.id)?;
+    let mut es = EntitySet::new();
+    let e = add_network(&mut es, &n);
+    call.require(e, es)?;
+    call.detail("host_api", serde_json::json!(req.host_api));
+    let n = call
+        .manager()
+        .set_network_host_api(&n.id, req.host_api)
+        .map_err(manager_err)?;
+    Ok(pb::SetNetworkHostApiResponse {
         network: network_pb(&n).into(),
         ..Default::default()
     })

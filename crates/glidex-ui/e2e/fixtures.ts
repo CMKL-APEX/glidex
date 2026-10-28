@@ -68,6 +68,14 @@ export function field(page: Page, text: string) {
     .first();
 }
 
+/** Show the create form's advanced options (boot mode, firmware, kernel, restarts). */
+export async function showAdvanced(page: Page) {
+  const details = page.getByTestId("advanced-options");
+  if (!(await details.evaluate((d) => (d as HTMLDetailsElement).open))) {
+    await details.locator("summary").click();
+  }
+}
+
 /** A VM's card on the dashboard. */
 export function vmCard(page: Page, name: string) {
   return page

@@ -72,6 +72,13 @@ pub struct LaunchFile {
     /// meanwhile (spec/storage.md S16). Empty: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_locks: Vec<String>,
+    /// Cgroup v2 `cpu.weight` (1..=10000, default 100); spec/pylon.md §5.
+    #[serde(default = "default_cpu_weight")]
+    pub cpu_weight: u32,
+}
+
+pub fn default_cpu_weight() -> u32 {
+    100
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -231,7 +238,9 @@ fn default_binaries() -> Vec<PathBuf> {
     let qemu = format!("qemu-system-{}", std::env::consts::ARCH);
     ["/usr/local/bin", "/usr/bin"]
         .iter()
-        .flat_map(|dir| ["cloud-hypervisor", qemu.as_str()].map(|name| Path::new(dir).join(name)))
+        .flat_map(|dir| {
+            ["cloud-hypervisor", "pylon", qemu.as_str()].map(|name| Path::new(dir).join(name))
+        })
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect()
 }
@@ -262,6 +271,7 @@ mod tests {
             vcpu_pins: vec![],
             job: false,
             volume_locks: vec![],
+            cpu_weight: 100,
         }
     }
 
@@ -301,6 +311,24 @@ mod tests {
         std::fs::write(&path, v.to_string()).unwrap();
         let old = LaunchFile::read(&path).unwrap();
         assert!(old.cpu_affinity.is_empty() && old.vcpu_pins.is_empty());
+    }
+
+    #[test]
+    fn cpu_weight_rounds_trip_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), "/bin/true");
+        f.cpu_weight = 500;
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap().cpu_weight, 500);
+
+        // Omitted cpu_weight in JSON defaults to 100
+        let mut v = serde_json::to_value(sample(dir.path(), "/bin/true")).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("cpu_weight");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let parsed = LaunchFile::read(&path).unwrap();
+        assert_eq!(parsed.cpu_weight, 100);
     }
 
     #[test]

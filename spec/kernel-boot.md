@@ -164,7 +164,8 @@ the pinned version; QEMU from the host's packages):
   - `cmdline: Option<String>`, the default `kernel_args` (K7);
   - `kernel_release: Option<String>`, the kernel's version string from
     its header (bzImage `kernel_version` offset; ELF/`Image` don't carry
-    one, so `None`). Named so because `Image.release` already lists the
+    one, so `None`, except when extracted: then the `<v>` of the file's
+    name, §10.4). Named so because `Image.release` already lists the
     nodes asked to drop their copy;
   - `for_image: Option<String>`, the disk image (id) this kernel was
     extracted from (K3; not yet implemented);
@@ -465,9 +466,10 @@ release bump is a new directory.
   is built in. 13 MB in all.
 - **Architectures:** x86_64 and aarch64, one pin each (`EXTRACTORS`).
   The extractor runs under KVM, so an image's kernel is extracted only on
-  a host of its architecture: elsewhere, as for an architecture without a
-  pin, `kernel_from` is refused with the reason and catalog pulls don't
-  extract (`extraction_refused`).
+  a host of its architecture. In a cluster that may be another node
+  (§10.2). Where no host can, as for an architecture without a pin,
+  `kernel_from` is refused with the reason and catalog pulls don't
+  extract (`extraction_unavailable`).
 - `GLIDEX_KERNEL_EXTRACTION=off` turns extraction off on a host (an
   air-gapped one, or tests).
 
@@ -477,6 +479,27 @@ The image controller runs the extractor on a node holding a `Ready`
 copy of the disk image, under the extraction limit (one at a time per
 node by default, `GLIDEX_MAX_EXTRACTIONS`). It holds the disk image
 (`ImageHold`) for the run, so it can't be deleted meanwhile.
+
+**Where.** A standalone host runs it itself. In a cluster, the leader
+runs it when it can extract that architecture and has the disk image's
+file, or is downloading it. Otherwise, once the disk image is `Ready`, it
+picks a node that is ready, schedulable, of the image's architecture and
+with KVM, preferring one with a `Ready` copy; a node without one gets
+the disk image added to its `pinned`, so a copy comes to it (clustering.md
+§9.2.2). The kernel image records the node in `extract_node` (an event
+`Delegated` says so); with no such node it is `Failed` with the reason.
+
+**A run on another node.** That node's image controller sees the
+`Extracting` image naming it, waits for its copy of the disk image, and
+runs the extractor as below. It writes no catalog record: the result
+goes in its own `image_caches/<kernel image>/<node>` row, `Ready` with
+`extracted` (the kernel's sha256 and size, release, initrd, command
+line, and the source path and digest) or `Failed` with the error. The
+leader then records that on the image (`Ready`, event `Extracted … on
+<node>`) or fails it (`on <node>: <error>`). The kernel's files stay on
+that node, as a copy others fetch from (clustering.md §9.2). If the node
+leaves the cluster first, the leader picks again. A retry clears the
+node's row and picks again.
 
 - **As a VM instance, not a child process.** The installed control
   plane's sandbox closes `/dev` and sets `no_new_privs`; hypervisors only
@@ -528,7 +551,8 @@ path: files are kept in memory or written under the image's id.
 - **Kernel:** the highest version among `vmlinuz-<v>` that has an initrd
   for the same `<v>` (`initrd.img-<v>` or `initramfs-<v>.img`), compared
   segment by segment, numbers numerically. Then K8's header check, and
-  `kernel_release` must equal `<v>`.
+  a release in the header must equal `<v>`. A kernel whose header has
+  none (an arm64 `Image`) gets `<v>` as its `kernel_release`.
 - **Command line:** the BLS entry for `<v>` (`options`), else the first
   `grub.cfg` `linux` line naming `vmlinuz-<v>`. glidex drops
   `BOOT_IMAGE=`, every `console=` and `earlyprintk=`, and appends the
@@ -555,10 +579,12 @@ that disk.
 `ImageService.ExtractVmKernel`) answers `202` with a new kernel image,
 `extracting`; poll it, then PATCH the VM's `kernel` to it. The VM must
 be stopped (`409` otherwise), boot a kernel image and have a managed
-root disk (`400`); in a cluster, a server on a node that reaches the
-disk must answer (`409` names the disk otherwise), and a disk being moved
-is `409` too. The image is kept even if it duplicates a
-stored one: the caller holds its id.
+root disk (`400`); a disk being moved is `409`. In a cluster, a disk on
+another node is extracted there: the image records that node in
+`extract_node`, which runs it and reports as in §10.2 (`409` when that
+node isn't ready or has no KVM). A disk no node of this server's reaches
+otherwise is `409`, naming it. The image is kept even if it duplicates
+a stored one: the caller holds its id.
 
 **Every launch (K11, opt-in).** `VmConfig.kernel_from_disk` (default
 `false`; next launch) needs a kernel image (`kernel`) and a managed root
@@ -582,6 +608,19 @@ controller:
    anyway: condition `KernelExtracted=False` with the reason, event
    `KernelExtractFailed`; the next launch tries again. Only a VM with no
    kernel at all fails to launch (`Ready=False/KernelNotExtracted`).
+
+**On a node that doesn't write the catalog** (an agent, or a server
+that isn't the leader), step 3 goes through the leader (§10.2). The node
+creates the kernel image itself, `extracting` with `extract_node` set to
+itself: the one catalog write a node may make (clustering.md §8.3), and
+only for a kernel from the disk of a VM placed on it. It runs the
+extractor and reports in its cache row, and the leader records the
+image. Meanwhile the launch waits (`KernelExtracted=Unknown/Extracting`).
+The newest such image made since the disk's file last changed is the
+disk's: `Ready`, the VM boots it (or a stored twin, K12); `Failed`, step
+4 applies with its reason, and the disk must change before it is tried
+again. A twin it doesn't boot, or a failed one, is dropped once unused
+(K12's grace period).
 
 Why status: the controller writing the spec would bump the generation
 and fight `RestartRequired`, and the user's choice would be lost.

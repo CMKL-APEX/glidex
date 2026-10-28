@@ -16,6 +16,7 @@ pub mod exec;
 pub mod host;
 pub mod install;
 pub mod ipmigrate;
+pub mod metadata;
 pub mod names;
 pub mod nat;
 pub mod nat_meter;

@@ -441,7 +441,8 @@ impl ImageManager {
                 if firmware_url {
                     hypervisor = Some(req.hypervisor.ok_or_else(|| {
                         ImageError::InvalidImage(
-                            "a firmware download needs hypervisor (cloudhypervisor or qemu)".into(),
+                            "a firmware download needs hypervisor (cloudhypervisor, qemu or pylon)"
+                                .into(),
                         )
                     })?);
                 }
@@ -588,6 +589,7 @@ impl ImageManager {
             kernel_release: None,
             for_image: None,
             owner: None,
+            extract_node: None,
         };
         if let Some((kernel_file, initrd_file)) = kernel_import {
             // Copied before the record exists, so a failure leaves nothing.

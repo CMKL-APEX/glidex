@@ -54,6 +54,11 @@ fn disk_args(config: &VmConfig) -> Vec<String> {
     vm_disks(config)
         .into_iter()
         .map(|d| {
+            // A hyperstor volume: hyperstor-vhost serves its socket, one
+            // queue unless it offers more (spec/storage.md §11.2).
+            if d.vhost {
+                return format!("vhost_user=on,socket={},num_queues=1", q(&d.path));
+            }
             let mut v = format!("path={}", q(&d.path));
             if d.read_only {
                 v.push_str(",readonly=on");
@@ -107,7 +112,11 @@ fn net_args(config: &VmConfig) -> Vec<String> {
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
     a.push("--cpus".into());
-    let mut cpus = format!("boot={0},max={0}", config.vcpu_count);
+    let mut cpus = format!(
+        "boot={},max={}",
+        config.vcpu_count,
+        config.effective_max_vcpus()
+    );
     // Dedicated vCPUs (spec/host-topology.md §7.2): vCPU i on its host CPU.
     if !config.vcpu_pins.is_empty() {
         let pins: Vec<String> = config
@@ -328,6 +337,10 @@ impl HypervisorDriver for CloudHypervisorDriver {
             .or_else(|_| ch.remove_device(&super::legacy_vfio_device_id(device_path)))?;
         Ok(())
     }
+
+    fn resize_vcpus(&self, api_socket: &str, desired: u8) -> Result<(), HypervisorError> {
+        Ok(ChClient::new(api_socket).resize_vcpus(desired)?)
+    }
 }
 
 #[cfg(test)]
@@ -381,6 +394,19 @@ mod tests {
             (vec!["tty"], vec!["off"])
         );
         assert!(!a.iter().any(|x| x == "--net" || x == "--device"));
+    }
+
+    #[test]
+    fn elastic_cpus_boot_and_max() {
+        let a = args(
+            &config(serde_json::json!({
+                "vcpu_count": 2,
+                "min_vcpus": 1,
+                "max_vcpus": 8,
+            })),
+            "/run/glidex-cp/vms/x/api.sock",
+        );
+        assert_eq!(values(&a, "--cpus"), ["boot=2,max=8"]);
     }
 
     #[test]
@@ -456,6 +482,24 @@ mod tests {
             values(&args(&c, "/s"), "--disk"),
             ["path=/nonexistent/root.img"]
         );
+    }
+
+    /// A hyperstor volume (spec/storage.md §11.2): its vhost-user-blk socket,
+    /// and guest memory shared with hyperstor-vhost.
+    #[test]
+    fn hyperstor_disks_are_vhost_user_sockets_with_shared_memory() {
+        let mut c = config(serde_json::json!({}));
+        c.root_disk_binding = Some(VolumeBinding::VhostUserBlk {
+            socket: "/run/hyperstor/vhost/0123.sock".into(),
+            volume: "0123".into(),
+            map: "10.0.0.5:8849".into(),
+        });
+        let a = args(&c, "/s");
+        assert_eq!(
+            values(&a, "--disk"),
+            ["vhost_user=on,socket=/run/hyperstor/vhost/0123.sock,num_queues=1"]
+        );
+        assert!(values(&a, "--memory")[0].contains("shared=on"), "{a:?}");
     }
 
     #[test]

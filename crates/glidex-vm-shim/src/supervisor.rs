@@ -518,6 +518,7 @@ impl Supervisor {
     /// Spawn `argv` on a fresh raw PTY (stdin/stdout) with stderr on a pipe,
     /// both handed to the console proxy.
     fn spawn(&self, argv: &[String]) -> std::io::Result<Child> {
+        apply_cpu_weight(self.launch.cpu_weight);
         let OpenptyResult { master, slave } = openpty(None, None).map_err(std::io::Error::from)?;
         // openpty's fds are inheritable: a hypervisor holding the master
         // itself would never see the hangup when the shim dies.
@@ -835,6 +836,34 @@ impl Supervisor {
     }
 }
 
+/// Apply cgroup v2 `cpu.weight` (1..=10000) to this process's cgroup if supported.
+pub(crate) fn apply_cpu_weight_to_cgroup(
+    cgroup_content: &str,
+    cgroup_root: &Path,
+    weight: u32,
+) -> bool {
+    if !(1..=10000).contains(&weight) {
+        return false;
+    }
+    if let Some(path) = cgroup_content
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .map(|p| cgroup_root.join(p.trim_start_matches('/')))
+    {
+        let weight_file = path.join("cpu.weight");
+        if weight_file.exists() {
+            return std::fs::write(&weight_file, weight.to_string()).is_ok();
+        }
+    }
+    false
+}
+
+fn apply_cpu_weight(weight: u32) {
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") {
+        apply_cpu_weight_to_cgroup(&cgroup, Path::new("/sys/fs/cgroup"), weight);
+    }
+}
+
 fn bind_shim_socket(path: &Path) -> std::io::Result<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::remove_file(path);
@@ -987,5 +1016,30 @@ mod tests {
         );
         assert!(parse_args(std::iter::empty()).is_err());
         assert!(parse_args(["--bogus".to_string()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn cgroup_cpu_weight_applied_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let cgroup_dir = dir.path().join("system.slice/glidex-vm@test.service");
+        std::fs::create_dir_all(&cgroup_dir).unwrap();
+        let weight_file = cgroup_dir.join("cpu.weight");
+        std::fs::write(&weight_file, "100").unwrap();
+
+        let cgroup_entry = "0::/system.slice/glidex-vm@test.service\n";
+
+        // Valid weight
+        assert!(apply_cpu_weight_to_cgroup(cgroup_entry, dir.path(), 500));
+        assert_eq!(std::fs::read_to_string(&weight_file).unwrap(), "500");
+
+        // Out-of-bounds weight (0 or > 10000) is ignored
+        assert!(!apply_cpu_weight_to_cgroup(cgroup_entry, dir.path(), 0));
+        assert_eq!(std::fs::read_to_string(&weight_file).unwrap(), "500");
+        assert!(!apply_cpu_weight_to_cgroup(cgroup_entry, dir.path(), 10001));
+        assert_eq!(std::fs::read_to_string(&weight_file).unwrap(), "500");
+
+        // Missing weight file does not error
+        std::fs::remove_file(&weight_file).unwrap();
+        assert!(!apply_cpu_weight_to_cgroup(cgroup_entry, dir.path(), 200));
     }
 }

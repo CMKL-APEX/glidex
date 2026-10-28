@@ -517,6 +517,17 @@ impl RefreshTokens {
         self.end_where(|r| r.user_id == user)
     }
 
+    /// End chain `family` of `client_id` at directory `dir` (a cluster's
+    /// session from it ended, D72); the number of tokens.
+    pub fn end_client_family(
+        &self,
+        dir: &str,
+        client_id: &str,
+        family: &str,
+    ) -> Result<usize, StoreError> {
+        self.end_where(|r| r.directory_id == dir && r.client_id == client_id && r.family == family)
+    }
+
     /// End the chains browser session `hash` approved (its logout, D69).
     pub fn end_session(&self, hash: &str) -> Result<usize, StoreError> {
         self.end_where(|r| r.grant_info.session.as_deref() == Some(hash))

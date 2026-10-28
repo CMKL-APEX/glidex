@@ -59,10 +59,14 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   const [onNodes, setOnNodes] = useState<string[]>([]);
   const [paths, setPaths] = useState("");
   const [isDefault, setIsDefault] = useState(false);
-  const [kind, setKind] = useState<"dir" | "shared" | "lvm">("dir");
+  const [kind, setKind] = useState<"dir" | "shared" | "lvm" | "hyperstor">("dir");
   const [vg, setVg] = useState("");
   const [pool, setPool] = useState("");
   const lvm = kind === "lvm";
+  const hyperstor = kind === "hyperstor";
+  const [hsApi, setHsApi] = useState("");
+  const [hsPool, setHsPool] = useState("1");
+  const [hsToken, setHsToken] = useState("");
   const [overcommit, setOvercommit] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -76,7 +80,16 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
     try {
       await api.createDatastore({
         name,
-        ...(lvm ? { lvm: true, volume_group: vg, thin_pool: pool } : { path: path || `${ROOT}/${name}`, shared: kind === "shared" }),
+        ...(hyperstor
+          ? {
+              hyperstor: true,
+              hyperstor_api: hsApi.split(",").map((a) => a.trim()).filter(Boolean),
+              hyperstor_pool: Number(hsPool),
+              hyperstor_token: hsToken.trim(),
+            }
+          : lvm
+            ? { lvm: true, volume_group: vg, thin_pool: pool }
+            : { path: path || `${ROOT}/${name}`, shared: kind === "shared" }),
         node_paths,
         nodes: onNodes,
         default_for_disks: isDefault,
@@ -98,6 +111,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
             ["dir", "Directory on each node"],
             ["shared", "Shared filesystem"],
             ["lvm", "LVM-thin on each node"],
+            ["hyperstor", "hyperstor cluster"],
           ] as const
         ).map(([k, label]) => (
           <label key={k} className="flex items-center space-x-1">
@@ -107,7 +121,13 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         ))}
       </div>
       <p className="text-sm text-gray-600">
-        {lvm ? (
+        {hyperstor ? (
+          <>
+            A pool of a hyperstor cluster. Its volumes reach each node's VMs through{" "}
+            <span className="font-mono">hyperstor-vhost</span>, so a VM can run on any node that reaches it. glidex enrolls with a
+            token from <span className="font-mono">hyperstorctl token create --role mgmt --name glidex</span>, which isn't kept.
+          </>
+        ) : lvm ? (
           <>
             A volume group and thin pool you made on each node, allowed in glidex-stord's{" "}
             <span className="font-mono">/etc/glidex/stord.json</span>. Disks are raw volumes in it; each node checks it and says
@@ -124,7 +144,24 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         <label className="block text-sm font-medium text-gray-700">Name</label>
         <input className={inputClass} required pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]{0,63}" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
-      {lvm ? (
+      {hyperstor ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700">Cluster API</label>
+              <input className={`${inputClass} font-mono`} required placeholder="10.0.0.5:8850, 10.0.0.6:8850" value={hsApi} onChange={(e) => setHsApi(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Pool</label>
+              <input className={`${inputClass} font-mono`} required type="number" min={1} value={hsPool} onChange={(e) => setHsPool(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Token</label>
+            <input className={`${inputClass} font-mono`} required type="password" autoComplete="off" placeholder="hsj1-…" value={hsToken} onChange={(e) => setHsToken(e.target.value)} />
+          </div>
+        </div>
+      ) : lvm ? (
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-gray-700">Volume group</label>
@@ -159,7 +196,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           </div>
         </div>
       )}
-      {dir.clustered && (
+      {dir.clustered && !hyperstor && (
         <div>
           <label className="block text-sm font-medium text-gray-700">{lvm ? "Volume groups of their own" : "Paths of their own"}</label>
           <textarea
@@ -184,10 +221,12 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
         <span>New disks go here unless they name a datastore</span>
       </label>
-      <label className="flex items-center space-x-2 text-sm">
-        <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
-        <span>Overcommit: disks may promise more than the free space (thin files)</span>
-      </label>
+      {!hyperstor && (
+        <label className="flex items-center space-x-2 text-sm">
+          <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
+          <span>Overcommit: disks may promise more than the free space (thin files)</span>
+        </label>
+      )}
       <div className="flex justify-end space-x-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg" onClick={onCancel}>
           Cancel
@@ -209,7 +248,18 @@ function Detail({ d }: { d: Datastore }) {
       {!d.builtin && (
         <div className="space-y-1">
           <div>
-            {d.driver === "DATASTORE_DRIVER_LVM" ? (
+            {d.driver === "DATASTORE_DRIVER_HYPERSTOR" ? (
+              <>
+                hyperstor: pool <span className="font-mono text-xs">{d.hyperstor_pool}</span> of{" "}
+                <span className="font-mono text-xs">{(d.hyperstor_api ?? []).join(", ")}</span>
+                {d.hyperstor_identity && (
+                  <div>
+                    As <span className="font-mono text-xs">{d.hyperstor_identity}</span>
+                    {d.hyperstor_identity_expires && <>, certificate until {new Date(d.hyperstor_identity_expires).toLocaleString()}</>}
+                  </div>
+                )}
+              </>
+            ) : d.driver === "DATASTORE_DRIVER_LVM" ? (
               <>
                 LVM-thin: <span className="font-mono text-xs">{d.volume_group}</span> pool{" "}
                 <span className="font-mono text-xs">{d.thin_pool}</span>
@@ -345,7 +395,13 @@ export default function Datastores() {
                       {d.default_for_disks && <span className="ml-2 text-xs text-green-700">default for disks</span>}
                       {!d.overcommit && <span className="ml-2 text-xs text-amber-700">no overcommit</span>}
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs">{d.builtin ? "each node's disk directory" : d.driver === "DATASTORE_DRIVER_LVM" ? `lvm ${d.volume_group}/${d.thin_pool}` : d.path}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{d.builtin
+                        ? "each node's disk directory"
+                        : d.driver === "DATASTORE_DRIVER_HYPERSTOR"
+                          ? `hyperstor pool ${d.hyperstor_pool}`
+                          : d.driver === "DATASTORE_DRIVER_LVM"
+                            ? `lvm ${d.volume_group}/${d.thin_pool}`
+                            : d.path}</td>
                     <td className={`px-4 py-3 ${r.ok < r.all ? "text-amber-700" : ""}`}>
                       {r.all === 0 ? "—" : `${r.ok} of ${r.all}`}
                     </td>

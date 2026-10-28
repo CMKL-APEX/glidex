@@ -608,6 +608,14 @@ fn print_help() {
         "kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]".cyan()
     );
     println!(
+        "  {} - A VM's service account, for its workload identity",
+        "service-account <name|id> [--set <service account> | --none]".cyan()
+    );
+    println!(
+        "  {} - Scale or adjust VM CPU elasticity (min/max vCPUs, weight)",
+        "scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -726,7 +734,7 @@ fn print_help() {
     );
     println!(
         "  {} - Register a directory under /srv/glidex",
-        "datastore create <name> (--path P [--shared] | --lvm VG/POOL) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+        "datastore create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
     println!(
@@ -796,7 +804,7 @@ fn print_help() {
     println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
     println!(
         "  {} - Directories this host serves (operator), and the token signing keys of yours (rotating needs a fresh login)",
-        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] | delete <id> | keys [rotate]".cyan()
+        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate]".cyan()
     );
     println!(
         "  {} - Projects",
@@ -1023,6 +1031,7 @@ const COMMANDS: &[&str] = &[
     "stop",
     "pause",
     "kernel",
+    "service-account",
     "events",
     "watch",
     "connect",
@@ -1137,6 +1146,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "offers",
             "revoke-offer",
             "directories",
+            "staleness",
         ],
     ),
     (
@@ -1226,8 +1236,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     (
         "network",
         &[
-            "list", "show", "create", "rm", "grant", "share", "unshare", "shares", "accept",
-            "leave",
+            "list", "show", "create", "rm", "grant", "host-api", "share", "unshare", "shares",
+            "accept", "leave",
         ],
     ),
 ];
@@ -1451,6 +1461,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "place" => vm::place(client, &parts[1..]).await,
         "pause" => vm::pause(client, &parts[1..]).await,
         "kernel" => vm::kernel(client, &parts[1..]).await,
+        "service-account" => vm::service_account(client, &parts[1..]).await,
+        "scale" => vm::scale(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {

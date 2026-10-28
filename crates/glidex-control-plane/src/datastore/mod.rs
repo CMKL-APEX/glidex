@@ -8,6 +8,7 @@
 //! Like the disk operations that call it, everything here blocks.
 
 pub mod file;
+pub mod hyperstor;
 pub mod lvm;
 pub mod manage;
 pub mod probe;
@@ -36,27 +37,52 @@ pub enum VolumeBinding {
     },
     /// A raw block device, `/dev/<vg>/<lv>` (spec/storage.md §11.1).
     Block { path: String },
+    /// A hyperstor volume (spec/storage.md §11.2): served to the VM over
+    /// vhost-user-blk at `socket` once staged; to the partition code it is
+    /// the path `hyperstor://<map>/<volume>`, read and written through
+    /// `hyperstorctl` (`socket` is empty there).
+    VhostUserBlk {
+        socket: String,
+        volume: String,
+        map: String,
+    },
 }
 
 impl VolumeBinding {
-    pub fn path(&self) -> &Path {
+    /// Where a disk tool opens it: the file or device, or a hyperstor
+    /// volume's `hyperstor://` path.
+    pub fn path(&self) -> std::borrow::Cow<'_, Path> {
         match self {
-            VolumeBinding::File { path, .. } | VolumeBinding::Block { path } => Path::new(path),
+            VolumeBinding::File { path, .. } | VolumeBinding::Block { path } => {
+                std::borrow::Cow::Borrowed(Path::new(path))
+            }
+            VolumeBinding::VhostUserBlk { volume, map, .. } => {
+                std::borrow::Cow::Owned(std::path::PathBuf::from(hyperstor::tool_path(map, volume)))
+            }
+        }
+    }
+
+    /// A vhost-user-blk socket the hypervisor connects to, once staged.
+    pub fn vhost_socket(&self) -> Option<&str> {
+        match self {
+            VolumeBinding::VhostUserBlk { socket, .. } if !socket.is_empty() => Some(socket),
+            _ => None,
         }
     }
 
     pub fn format(&self) -> DiskFormat {
         match self {
             VolumeBinding::File { format, .. } => *format,
-            VolumeBinding::Block { .. } => DiskFormat::Raw,
+            VolumeBinding::Block { .. } | VolumeBinding::VhostUserBlk { .. } => DiskFormat::Raw,
         }
     }
 
     pub fn lock(&self) -> Option<&str> {
         match self {
             VolumeBinding::File { lock, .. } => lock.as_deref(),
-            // On one node the hypervisors' own locks suffice (S19).
-            VolumeBinding::Block { .. } => None,
+            // On one node the hypervisors' own locks suffice (S19); a
+            // hyperstor volume's lease keeps every other node out (S23).
+            VolumeBinding::Block { .. } | VolumeBinding::VhostUserBlk { .. } => None,
         }
     }
 
@@ -156,9 +182,38 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     /// Bytes `disk`'s volume takes where it lives (metering's
     /// `disk.stored`); `None` when it can't be told.
     fn stored_bytes(&self, disk: &Disk) -> Option<u64> {
-        crate::images::qemu_img::info(self.binding(disk).path(), Some(disk.format))
+        crate::images::qemu_img::info(&self.binding(disk).path(), Some(disk.format))
             .ok()
             .map(|i| i.actual_size)
+    }
+
+    /// `disk`'s volume's size in bytes, when the driver can tell it without
+    /// a disk tool; `None`: ask `qemu-img info`.
+    fn volume_size(&self, disk: &Disk) -> Option<u64> {
+        let _ = disk;
+        None
+    }
+
+    /// `disk`'s volume as the disk tools (partition reads and edits) open
+    /// it on this node; the staged binding unless the driver says
+    /// otherwise.
+    fn tool_binding(&self, disk: &Disk) -> Result<VolumeBinding, ImageError> {
+        self.stage(disk)
+    }
+
+    /// `disk`'s volume, staged for a VM about to start here; `preempt`
+    /// when the VM was re-placed from a fenced node (S23), which only a
+    /// driver with leases uses.
+    fn attach_for_vm(&self, disk: &Disk, preempt: bool) -> Result<VolumeBinding, ImageError> {
+        let _ = preempt;
+        self.stage(disk)
+    }
+
+    /// The VM using `disk` here has stopped: let go of what staging holds
+    /// (a hyperstor volume's lease). Nothing for most drivers.
+    fn unstage(&self, disk: &Disk) -> Result<(), ImageError> {
+        let _ = disk;
+        Ok(())
     }
 
     /// `disk`'s volume, ready to be opened on this node.

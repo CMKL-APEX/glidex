@@ -2859,13 +2859,39 @@ async fn numa_e2e(hypervisor: &str) {
 ///   lvm_root_disk_boots -- --ignored --nocapture
 /// ```
 async fn lvm_root_disk_e2e(hypervisor: &str) {
-    use glidex_control_plane::store::{Origin, TableId};
-    let source = env_path("GLIDEX_TEST_LVM_IMAGE", None);
     let vg = std::env::var("GLIDEX_STORD_VG").expect("GLIDEX_STORD_VG");
     let pool = std::env::var("GLIDEX_STORD_POOL").expect("GLIDEX_STORD_POOL");
+    root_disk_e2e(
+        hypervisor,
+        "GLIDEX_TEST_LVM_IMAGE",
+        json!({"name": "boot-thin", "driver": "DATASTORE_DRIVER_LVM",
+                "volume_group": vg, "thin_pool": pool}),
+    )
+    .await;
+}
+
+/// A cloud image booted from a datastore made from `datastore` (named
+/// `boot-thin`): a linked 6 GiB disk of the qcow2 image in `image_env`,
+/// its root partition grown into the volume.
+async fn root_disk_e2e(hypervisor: &str, image_env: &str, datastore: Value) {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let source = env_path(image_env, None);
+    let lvm = datastore["driver"] == "DATASTORE_DRIVER_LVM";
     assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
-    let (app, manager, _tmp) = create_running_app().await;
+    let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
+    if !lvm {
+        // Its key is sealed with the secrets key, which servers hold.
+        let mut cfg = glidex_control_plane::config::Config::default();
+        cfg.auth.secrets_key = Some(tmp.path().join("secrets.kek"));
+        let auth = glidex_control_plane::auth::AuthService::disabled_with(manager.database(), cfg)
+            .unwrap();
+        manager.set_secrets_key(auth);
+    }
     let firmware = pull_firmware_image(&app, hypervisor).await;
 
     // The cloud image as a ready image record.
@@ -2885,10 +2911,7 @@ async fn lvm_root_disk_e2e(hypervisor: &str) {
             .arg(&file),
     ))
     .unwrap();
-    assert_eq!(
-        info["format"], "qcow2",
-        "GLIDEX_TEST_LVM_IMAGE must be qcow2"
-    );
+    assert_eq!(info["format"], "qcow2", "{image_env} must be qcow2");
     let size = info["virtual-size"].as_u64().unwrap();
     let sha = glidex_control_plane::images::download::sha256_path(&file).unwrap();
     let rec = json!({
@@ -2911,17 +2934,37 @@ async fn lvm_root_disk_e2e(hypervisor: &str) {
         .unwrap();
     images.sync_keys(TableId::Images, std::slice::from_ref(&img_id));
 
-    let (s, v) = request(
-        &app,
-        "POST",
-        "/datastores",
-        Some(
-            json!({"name": "boot-thin", "driver": "DATASTORE_DRIVER_LVM",
-                    "volume_group": vg, "thin_pool": pool}),
-        ),
-    )
-    .await;
+    let (s, v) = request(&app, "POST", "/datastores", Some(datastore)).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
+    // A deleted volume keeps its id in hyperstor's trash: plant one under
+    // the image's volume id, as a failed fill leaves it, and the driver
+    // must purge it before making the volume (S25), not loop on "exists".
+    if let (false, Ok(tls)) = (lvm, std::env::var("GLIDEX_TEST_HYPERSTOR_ADMIN_TLS")) {
+        let api = std::env::var("GLIDEX_TEST_HYPERSTOR_API").unwrap();
+        let ctl = std::env::var("GLIDEX_HYPERSTORCTL").unwrap_or_else(|_| "hyperstorctl".into());
+        let hs = |args: &[&str]| {
+            run_ok(
+                Command::new(&ctl)
+                    .args(["--api", &api, "--tls", &tls])
+                    .args(args),
+            )
+        };
+        let vol = glidex_control_plane::datastore::hyperstor::image_volume_id(&img_id);
+        hs(&[
+            "create-volume",
+            "--size",
+            "4M",
+            "--name",
+            "leftover",
+            "--id",
+            &vol,
+        ]);
+        hs(&["delete-volume", "--id", &vol]);
+        assert!(
+            hs(&["trash", "list"]).contains(&vol),
+            "planted in the trash"
+        );
+    }
     let username = "gxtester";
     let password = uuid::Uuid::new_v4().simple().to_string();
     let (s, v) = request(
@@ -2968,6 +3011,9 @@ async fn lvm_root_disk_e2e(hypervisor: &str) {
     let (s, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(s, StatusCode::OK, "{body}");
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    let (_, d) = request(&app, "GET", "/disks/lvm-root", None).await;
+    let disk_id = d["disk"]["id"].as_str().unwrap().replace('-', "");
+    let serial = disk_id[..20].to_string();
     tokio::task::spawn_blocking(move || {
         let mut console = Console::connect(&console_path);
         console.expect(&format!("{hostname} login: "), Duration::from_secs(300));
@@ -2983,11 +3029,16 @@ async fn lvm_root_disk_e2e(hypervisor: &str) {
             "echo GX_$(cat /sys/block/vda/size)_$(df --output=size -BG / | tail -1 | tr -d ' G')\r",
         );
         console.expect("GX_12582912_", Duration::from_secs(30));
+        if !lvm {
+            // A vhost-user-blk disk with the volume's serial.
+            console.send("echo GX_$(cat /sys/block/vda/serial)_\r");
+            console.expect(&format!("GX_{serial}_"), Duration::from_secs(30));
+        }
     })
     .await
     .unwrap();
     assert!(
-        manager
+        !lvm || manager
             .images()
             .stored_bytes(&manager.images().get_disk("lvm-root").unwrap())
             .unwrap()
@@ -3010,6 +3061,40 @@ async fn lvm_root_disk_e2e(hypervisor: &str) {
         assert!(Instant::now() < deadline, "{v}");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+    if !lvm {
+        // The disk's clone, in hyperstor's trash, keeps the image's volume
+        // until it is purged; then the leader's probe removes it (S24).
+        if let Ok(tls) = std::env::var("GLIDEX_TEST_HYPERSTOR_ADMIN_TLS") {
+            let api = std::env::var("GLIDEX_TEST_HYPERSTOR_API").unwrap();
+            let ctl =
+                std::env::var("GLIDEX_HYPERSTORCTL").unwrap_or_else(|_| "hyperstorctl".into());
+            let hs = |args: &[&str]| {
+                run_ok(
+                    Command::new(&ctl)
+                        .args(["--api", &api, "--tls", &tls])
+                        .args(args),
+                )
+            };
+            let image_volume = format!("glidex image {img_id} on");
+            assert!(
+                hs(&["volumes"]).contains(&image_volume),
+                "kept for its clone"
+            );
+            hs(&["trash", "purge", "--id", &disk_id]);
+            let deadline = Instant::now() + Duration::from_secs(150);
+            while hs(&["volumes"]).contains(&image_volume) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the image volume was left behind"
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        let (s, v) = request(&app, "DELETE", "/datastores/boot-thin", None).await;
+        assert!(s.is_success(), "{v}");
+        return;
+    }
+    let vg = std::env::var("GLIDEX_STORD_VG").unwrap();
     let mut c = glidex_stord::client::Client::connect(Path::new(
         &std::env::var("GLIDEX_STORD_SOCKET").unwrap(),
     ))
@@ -3037,4 +3122,47 @@ async fn lvm_root_disk_boots() {
 #[ignore = "boots a real VM from an LVM volume; needs KVM, QEMU, a running glidex-stord and a VG"]
 async fn qemu_lvm_root_disk_boots() {
     lvm_root_disk_e2e("qemu").await;
+}
+
+/// A cloud image booted from a hyperstor volume (spec/storage.md §11.2):
+/// the datastore enrolled with a mgmt token, the image written into an
+/// image volume and snapshotted, the disk a clone of it grown and its root
+/// partition extended through `hyperstorctl`, the VM's disk a
+/// vhost-user-blk socket of the node's `hyperstor-vhost`. Needs KVM, a
+/// qcow2 cloud image, a hyperstor cluster, `hyperstor-vhost serve` for it
+/// (`GLIDEX_HYPERSTOR_VHOST_DIR`, its `--dir`), `hyperstorctl`
+/// (`GLIDEX_HYPERSTORCTL`) and a single-use mgmt token in a file:
+///
+/// ```sh
+/// GLIDEX_TEST_HYPERSTOR_IMAGE=~/images/resolute-server-cloudimg-amd64.img \
+///   GLIDEX_TEST_HYPERSTOR_API=127.0.0.1:8850 GLIDEX_TEST_HYPERSTOR_POOL=1 \
+///   GLIDEX_TEST_HYPERSTOR_TOKEN=/path/to/mgmt.token \
+///   GLIDEX_HYPERSTOR_VHOST_DIR=/run/hyperstor/vhost \
+///   cargo test -p glidex-control-plane --test functional_tests \
+///   hyperstor_root_disk_boots -- --ignored --nocapture
+/// ```
+async fn hyperstor_root_disk_e2e(hypervisor: &str) {
+    let var = |v: &str| std::env::var(v).unwrap_or_else(|_| panic!("{v}"));
+    let token = std::fs::read_to_string(var("GLIDEX_TEST_HYPERSTOR_TOKEN")).unwrap();
+    root_disk_e2e(
+        hypervisor,
+        "GLIDEX_TEST_HYPERSTOR_IMAGE",
+        json!({"name": "boot-thin", "driver": "DATASTORE_DRIVER_HYPERSTOR",
+                "hyperstor_api": [var("GLIDEX_TEST_HYPERSTOR_API")],
+                "hyperstor_pool": var("GLIDEX_TEST_HYPERSTOR_POOL").parse::<u32>().unwrap(),
+                "hyperstor_token": token.trim()}),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM from a hyperstor volume; needs KVM, cloud-hypervisor, a hyperstor cluster, hyperstor-vhost and a mgmt token"]
+async fn hyperstor_root_disk_boots() {
+    hyperstor_root_disk_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM from a hyperstor volume; needs KVM, QEMU, a hyperstor cluster, hyperstor-vhost and a mgmt token"]
+async fn qemu_hyperstor_root_disk_boots() {
+    hyperstor_root_disk_e2e("qemu").await;
 }

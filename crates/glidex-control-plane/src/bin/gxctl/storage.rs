@@ -276,11 +276,12 @@ pub(crate) async fn list_images(client: &ApiClient) -> Result<Vec<Image>, String
         .map_err(rpc_err)
 }
 
-/// `cloudhypervisor` / `qemu`, as gxctl names hypervisors.
+/// `cloudhypervisor` / `qemu` / `pylon`, as gxctl names hypervisors.
 pub(crate) fn hypervisor_name(h: &EnumValue<Hypervisor>) -> &'static str {
     match h.as_known() {
         Some(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR) => "cloudhypervisor",
         Some(Hypervisor::HYPERVISOR_QEMU) => "qemu",
+        Some(Hypervisor::HYPERVISOR_PYLON) => "pylon",
         _ => "",
     }
 }
@@ -291,6 +292,7 @@ fn parse_hypervisor(s: &str) -> Option<Hypervisor> {
             Some(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR)
         }
         "qemu" => Some(Hypervisor::HYPERVISOR_QEMU),
+        "pylon" => Some(Hypervisor::HYPERVISOR_PYLON),
         _ => None,
     }
 }
@@ -332,7 +334,7 @@ fn image_status(img: &Image) -> String {
 
 /// `image …`
 pub async fn image(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--no-kernel] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull <url> --kernel [--sha256 H] [--initrd-url U [--initrd-sha256 H]] [--cmdline S] | pull --kernel-path P [--initrd-path P] [--cmdline S] | pull --firmware <key> [--name N] | extract-kernel <image> [--name N] | retry <name|id> | rm <name|id>";
+    let u = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--no-kernel] [--firmware-for <cloudhypervisor|qemu|pylon> [--vars-url U] [--vars-sha256 H]] | pull <url> --kernel [--sha256 H] [--initrd-url U [--initrd-sha256 H]] [--cmdline S] | pull --kernel-path P [--initrd-path P] [--cmdline S] | pull --firmware <key> [--name N] | extract-kernel <image> [--name N] | retry <name|id> | rm <name|id>";
     let t = match rpc(client).await {
         Ok(t) => t,
         Err(e) => return err(e),
@@ -479,7 +481,7 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
             if let Some(h) = flag_value(args, "--firmware-for") {
                 let Some(h) = parse_hypervisor(h) else {
                     return err(format!(
-                        "unknown hypervisor '{}' (cloudhypervisor or qemu)",
+                        "unknown hypervisor '{}' (cloudhypervisor, qemu or pylon)",
                         h
                     ));
                 };
@@ -903,7 +905,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
 
 // ---- datastores (spec/storage.md §13) -------------------------------------
 
-const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
 
 /// `--node-path NODE=PATH`, repeated.
 fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
@@ -947,10 +949,33 @@ fn print_datastore(d: &Datastore) {
         }
     );
     println!("  id: {}", d.id);
-    if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED) {
+    // A shared filesystem; a hyperstor datastore says what it is below.
+    if d.topology.as_known() == Some(DatastoreTopology::DATASTORE_TOPOLOGY_SHARED)
+        && d.driver.as_known() != Some(DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR)
+    {
         println!("  shared: the same files from every node (one mount)");
     }
-    if d.driver.as_known() == Some(DatastoreDriver::DATASTORE_DRIVER_LVM) {
+    if d.driver.as_known() == Some(DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR) {
+        println!(
+            "  hyperstor: cluster API {}, pool {}, map service {}",
+            d.hyperstor_api.join(", "),
+            d.hyperstor_pool,
+            d.path
+        );
+        if !d.hyperstor_identity.is_empty() {
+            println!(
+                "  identity: {}{}",
+                d.hyperstor_identity,
+                d.hyperstor_identity_expires
+                    .as_option()
+                    .map(|t| format!(
+                        " (certificate until {})",
+                        format_unix_time(t.seconds.max(0) as u64)
+                    ))
+                    .unwrap_or_default()
+            );
+        }
+    } else if d.driver.as_known() == Some(DatastoreDriver::DATASTORE_DRIVER_LVM) {
         println!(
             "  lvm: volume group {}, thin pool {}",
             d.volume_group, d.thin_pool
@@ -1085,9 +1110,36 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             let name = args.get(1).filter(|a| !a.starts_with("--"));
             // `--lvm VG/POOL` instead of `--path` (spec/storage.md §11.1).
             let lvm = flag_value(args, "--lvm").map(|v| v.split_once('/'));
-            let (Some(name), Some(path)) = (name, flag_value(args, "--path").or(lvm.map(|_| "")))
-            else {
+            // `--hyperstor API,… --pool N --token-file F` (§11.2): glidex
+            // enrolls with the token, which is never stored.
+            let hyperstor = flag_value(args, "--hyperstor").map(node_list);
+            let (Some(name), Some(path)) = (
+                name,
+                flag_value(args, "--path")
+                    .or(lvm.map(|_| ""))
+                    .or(hyperstor.as_ref().map(|_| "")),
+            ) else {
                 return usage(u);
+            };
+            let (hyperstor_api, hyperstor_pool, hyperstor_token) = match &hyperstor {
+                None => (Vec::new(), 0, String::new()),
+                Some(api) => {
+                    let Some(pool) = flag_value(args, "--pool").and_then(|p| p.parse::<u32>().ok())
+                    else {
+                        return err(
+                            "--hyperstor: --pool N names the hyperstor pool (hyperstorctl pools)",
+                        );
+                    };
+                    let Some(file) = flag_value(args, "--token-file") else {
+                        return err(
+                            "--hyperstor: --token-file F holds a token from hyperstorctl token create --role mgmt --name NAME",
+                        );
+                    };
+                    match std::fs::read_to_string(file) {
+                        Ok(t) => (api.clone(), pool, t.trim().to_string()),
+                        Err(e) => return err(format!("{file}: {e}")),
+                    }
+                }
             };
             let (volume_group, thin_pool) = match lvm {
                 Some(Some((vg, pool))) => (vg.to_string(), pool.to_string()),
@@ -1100,7 +1152,9 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             };
             let req = CreateDatastoreRequest {
                 name: name.to_string(),
-                driver: if lvm.is_some() {
+                driver: if hyperstor.is_some() {
+                    DatastoreDriver::DATASTORE_DRIVER_HYPERSTOR
+                } else if lvm.is_some() {
                     DatastoreDriver::DATASTORE_DRIVER_LVM
                 } else if has_flag(args, "--shared") {
                     DatastoreDriver::DATASTORE_DRIVER_SHARED_DIR
@@ -1111,6 +1165,9 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
                 path: path.to_string(),
                 volume_group,
                 thin_pool,
+                hyperstor_api,
+                hyperstor_pool,
+                hyperstor_token,
                 node_paths: node_paths.into_iter().collect(),
                 nodes: flag_value(args, "--nodes")
                     .map(node_list)

@@ -883,3 +883,646 @@ async fn a_browser_logs_in_to_the_cluster_at_its_directory() {
     );
     assert_eq!(whoami(session).await.0, StatusCode::UNAUTHORIZED);
 }
+
+/// Erin's browser logs in to north at acme (D69): north's session cookie
+/// (`gx_session=…`) and its secret.
+async fn erin_at_north(
+    north: &Cp,
+    acme: &Cp,
+    erin: &str,
+    d: &glidex_control_plane::trust::TrustedDirectory,
+) -> (String, String) {
+    let u = acme.app.auth.store.user(erin).unwrap().unwrap();
+    let (cookie, _) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+    let at_acme = format!("{}={cookie}", auth::SESSION_COOKIE);
+    let (_, to, set) = browse(
+        &north.router,
+        &format!("/auth/t/{}/start?return_to=/vms", d.id),
+        &[],
+    )
+    .await;
+    let tlogin = set
+        .into_iter()
+        .find(|c| c.starts_with("gx_tlogin="))
+        .unwrap();
+    let (s, back, _) = browse(&acme.router, &path_of(&to), &[at_acme]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(query_of(&back, "code").is_some(), "{back}");
+    let (s, _, set) = browse(&north.router, &ui_path(&back), &[tlogin]).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let session = set
+        .into_iter()
+        .find(|c| c.starts_with(&format!("{}=", auth::SESSION_COOKIE)))
+        .expect("a session at north");
+    let secret = session.split_once('=').unwrap().1.to_string();
+    (session, secret)
+}
+
+/// D72: logging out at the cluster ends the chain at the directory that
+/// signed the session in; a chain of another cluster can't be ended that
+/// way, and an unsigned request is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logging_out_at_the_cluster_ends_the_directorys_chain() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let (cookie, secret) = erin_at_north(&north, &acme, &erin, &d).await;
+    let hash = auth::sha256_hex(secret.as_bytes());
+    let sid = north
+        .app
+        .auth
+        .store
+        .session(&hash)
+        .unwrap()
+        .unwrap()
+        .sid
+        .expect("the session carries its chain");
+    let t = auth::store::now();
+    assert!(acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap());
+
+    // Unsigned: refused, and the chain lives on.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let body = json!({ "cluster_id": north_id, "sid": sid });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/trust/v1/logout",
+        "",
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 403);
+    assert!(acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap());
+
+    // Erin logs out at north.
+    let resp = north
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/auth/logout")
+                .header(header::COOKIE, cookie)
+                .header(header::ORIGIN, ORIGIN)
+                .header(
+                    auth::CSRF_HEADER,
+                    north.app.auth.store.session(&hash).unwrap().unwrap().csrf,
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    glidex_control_plane::api::trust::end_chains(&north.app).await;
+    assert!(
+        !acme.app.auth.refresh_tokens.family_alive(&sid, t).unwrap(),
+        "the chain ended at acme"
+    );
+    let ended = acme
+        .app
+        .auth
+        .refresh_tokens
+        .ended_since("local", &format!("cluster:{north_id}"), 0)
+        .unwrap();
+    assert_eq!(ended, vec![sid.clone()]);
+
+    // Another of her chains, gxctl's, stays: north can end only its own.
+    let grant = glidex_control_plane::directory::op::Grant {
+        user_id: erin.clone(),
+        auth_time: t,
+        amr: vec!["pwd".into()],
+        mfa: false,
+        session: None,
+    };
+    let (_, rt) = acme
+        .app
+        .auth
+        .refresh_tokens
+        .start("local", "gxctl", "openid", &grant, 86_400, t)
+        .unwrap();
+    let other_sid = rt.family;
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::LOGOUT,
+        auth::store::now(),
+    )
+    .unwrap();
+    let body = json!({ "cluster_id": north_id, "sid": other_sid });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/trust/v1/logout",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    assert!(
+        acme.app
+            .auth
+            .refresh_tokens
+            .family_alive(&other_sid, t)
+            .unwrap(),
+        "not north's chain"
+    );
+}
+
+/// D73: when the cluster's web UI address changes, its next report
+/// registers the new callback at the directory, and logins come back
+/// there; a callback that isn't an http(s) URL is ignored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_changed_web_ui_address_is_registered_again() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let callback = |acme: &Cp| {
+        acme.app
+            .auth
+            .trust
+            .clusters("local")
+            .unwrap()
+            .pop()
+            .unwrap()
+            .ui_callback
+    };
+    assert_eq!(
+        callback(&acme).as_deref(),
+        Some(format!("{ORIGIN}/api/auth/t/{}/callback", d.id).as_str())
+    );
+    north
+        .app
+        .manager
+        .set_ui_url(Some("https://north.example:5173".into()));
+    glidex_control_plane::api::trust::push_report(&north.app, &d)
+        .await
+        .unwrap();
+    let moved = format!("https://north.example:5173/api/auth/t/{}/callback", d.id);
+    assert_eq!(callback(&acme).as_deref(), Some(moved.as_str()));
+
+    // A login comes back to the new address.
+    let u = acme.app.auth.store.user(&erin).unwrap().unwrap();
+    let (cookie, _) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+    let (_, to, _) = browse(&north.router, &format!("/auth/t/{}/start", d.id), &[]).await;
+    let (s, back, _) = browse(
+        &acme.router,
+        &path_of(&to),
+        &[format!("{}={cookie}", auth::SESSION_COOKIE)],
+    )
+    .await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert!(back.starts_with(&moved), "{back}");
+
+    // Not a URL: the registered one stays.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let report = glidex_control_plane::api::trust::report_for(&north.app, &d)
+        .await
+        .unwrap();
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::REPORT,
+        auth::store::now(),
+    )
+    .unwrap();
+    let body =
+        json!({ "cluster_id": north_id, "report": report, "ui_callback": "javascript:alert(1)" });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    assert_eq!(callback(&acme).as_deref(), Some(moved.as_str()));
+}
+
+/// D70: with its feed, north reports to acme what it holds of acme's
+/// tenant; acme keeps it on the cluster's record and the tenant's cluster
+/// list shows it; a report naming a tenant not opted in to north keeps
+/// only the opted-in one, and an unsigned one is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cluster_reports_its_tenants_back() {
+    let Admitted {
+        north,
+        acme,
+        issuer,
+        ..
+    } = admitted().await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    glidex_control_plane::api::trust::push_report(&north.app, &d)
+        .await
+        .unwrap();
+    let c = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let r = c.report.clone().expect("a report");
+    assert_eq!(r.tenants.len(), 1);
+    let t = &r.tenants[0];
+    assert_eq!(c.tenants, vec![t.tenant.clone()]);
+    assert_eq!(
+        (t.suspended, t.projects, t.vms, t.disks),
+        (false, 1, 0, 0),
+        "{t:?}"
+    );
+
+    // The tenant's page, at acme.
+    let root = acme
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap();
+    let (cookie, csrf) = acme
+        .app
+        .auth
+        .create_session(&root, auth::Method::Pam)
+        .unwrap();
+    let (s, v) = acme
+        .rest(
+            "GET",
+            "/tenants/acme/clusters",
+            None,
+            &format!("{cookie}|{csrf}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rep = &v["clusters"][0]["report"];
+    assert_eq!(rep["projects"], "1", "{v}");
+    assert_eq!(rep["status"], "ADMISSION_STATUS_ADMITTED", "{v}");
+
+    // Someone else's tenant in north's report: dropped.
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let mut forged = r.clone();
+    let mut other = t.clone();
+    other.tenant = "someone-else".into();
+    other.vms = 99;
+    forged.tenants.push(other);
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::REPORT,
+        glidex_control_plane::auth::store::now(),
+    )
+    .unwrap();
+    let body = json!({ "cluster_id": north_id, "report": forged });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        &a,
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    let c2 = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(c2.report.unwrap().tenants.len(), 1, "only acme's own");
+    // Unsigned: refused.
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        "",
+        &body,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 403);
+}
+
+/// D13: past its `max_staleness` without a feed, a trusted directory's
+/// credentials are refused on the cluster (but `/auth/…`), the cluster's
+/// own people are not affected, responses carry the lag once it is behind,
+/// and the next feed restores them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_out_of_reach_too_long_is_refused() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        issuer,
+        ..
+    } = admitted().await;
+    let op = north.admin();
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let grant = glidex_control_plane::directory::op::Grant {
+        user_id: erin.clone(),
+        auth_time: glidex_control_plane::auth::store::now(),
+        amr: vec!["pwd".into()],
+        mfa: false,
+        session: None,
+    };
+    let (refresh, _) = acme
+        .app
+        .auth
+        .refresh_tokens
+        .start(
+            "local",
+            "gxctl",
+            "openid",
+            &grant,
+            86_400,
+            glidex_control_plane::auth::store::now(),
+        )
+        .unwrap();
+    let resp = acme
+        .router
+        .clone()
+        .oneshot(
+            Request::post("/d/local/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&client_id=gxctl&refresh_token={refresh}&resource=urn:glidex:cluster:{north_id}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let access = v["access_token"].as_str().unwrap().to_string();
+    let call = |path: &'static str| {
+        let north = &north;
+        let access = access.clone();
+        async move {
+            let resp = north
+                .router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let lag = resp
+                .headers()
+                .get("x-glidex-directory-lag")
+                .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                st,
+                lag,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!((s, lag), (StatusCode::OK, None), "fresh: no lag header");
+
+    // Behind: told by how much.
+    north.app.auth.trust.backdate_feed(&d.id, 100).unwrap();
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(lag.is_some_and(|l| (100..200).contains(&l)), "{lag:?}");
+
+    // Past a 1-minute limit: refused, but for /auth/…; the cluster's own
+    // administrator is not affected.
+    let (s, v) = north
+        .rest(
+            "PATCH",
+            &format!("/admissions/directories/{}", d.id),
+            Some(json!({"max_staleness_minutes": 1})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["directory"]["stale"], true, "{v}");
+    let (s, _, v) = call("/projects").await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("directory_stale")),
+        "{v}"
+    );
+    let (s, lag, _) = call("/auth/whoami").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(lag.is_some());
+    let (s, _) = north.rest("GET", "/projects", None, &op).await;
+    assert_eq!(s, StatusCode::OK, "PAM still works");
+    let (s, v) = north
+        .rest("GET", "/admissions/directories", None, &op)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["directories"][0]["effective_max_staleness_minutes"], "1",
+        "{v}"
+    );
+
+    // The next feed (nothing new) makes it fresh again.
+    assert!(
+        !glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+            .await
+            .unwrap()
+    );
+    let (s, lag, _) = call("/projects").await;
+    assert_eq!((s, lag), (StatusCode::OK, None));
+
+    // Back to the default (60 minutes).
+    let (s, v) = north
+        .rest(
+            "PATCH",
+            &format!("/admissions/directories/{}", d.id),
+            Some(json!({})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["directory"]["effective_max_staleness_minutes"], "60",
+        "{v}"
+    );
+}
+
+/// §7.4: an API token is good only on the clusters it lists. Erin's token
+/// listing north reaches north through the feed (its hash, cut); one with
+/// no list stays at acme; `all` works on north too; an unknown cluster is
+/// refused at creation; Bob's (not in acme) is never fed; revoking it at
+/// acme ends it on north with the next feed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_tokens_work_on_the_clusters_they_list() {
+    let Admitted {
+        north,
+        acme,
+        erin,
+        bob,
+        project,
+        issuer,
+    } = admitted().await;
+    let north_id = glidex_control_plane::api::op::cluster_id(&north.app);
+    let session_of = |user: &str| {
+        let u = acme.app.auth.store.user(user).unwrap().unwrap();
+        let (cookie, csrf) = acme.app.auth.create_session(&u, auth::Method::Pam).unwrap();
+        format!("{cookie}|{csrf}")
+    };
+    let erin_s = session_of(&erin);
+    let mint = |s: String, clusters: Value| {
+        let acme = &acme;
+        async move {
+            acme.rest(
+                "POST",
+                "/tokens",
+                Some(json!({"name": "t", "clusters": clusters})),
+                &s,
+            )
+            .await
+        }
+    };
+    let (s, v) = mint(erin_s.clone(), json!([north_id])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let for_north = v["token"].as_str().unwrap().to_string();
+    let for_north_id = v["record"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["record"]["clusters"].as_array().unwrap().len(), 2, "{v}");
+    let (_, v) = mint(erin_s.clone(), json!([])).await;
+    let local_only = v["token"].as_str().unwrap().to_string();
+    let (_, v) = mint(erin_s.clone(), json!(["all"])).await;
+    let everywhere = v["token"].as_str().unwrap().to_string();
+    let (s, v) = mint(erin_s.clone(), json!(["no-such-cluster"])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = mint(session_of(&bob), json!([north_id])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let bobs = v["token"].as_str().unwrap().to_string();
+
+    let get = |cp: &Cp, tok: String| {
+        let router = cp.router.clone();
+        async move {
+            let resp = router
+                .oneshot(
+                    Request::get("/projects")
+                        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let st = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (st, String::from_utf8_lossy(&bytes).to_string())
+        }
+    };
+    // At acme, where they were made, all of them work.
+    for t in [&for_north, &local_only, &everywhere] {
+        assert_eq!(get(&acme, t.clone()).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        get(&north, for_north.clone()).await.0,
+        StatusCode::UNAUTHORIZED,
+        "before a feed"
+    );
+
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    let (s, body) = get(&north, for_north.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert!(body.contains(&project), "her project role holds: {body}");
+    assert_eq!(get(&north, everywhere.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        get(&north, local_only).await.0,
+        StatusCode::UNAUTHORIZED,
+        "not listed"
+    );
+    assert_eq!(
+        get(&north, bobs).await.0,
+        StatusCode::UNAUTHORIZED,
+        "not acme's"
+    );
+    // What north keeps: the hash and lifetime, no use or device.
+    let (_, t) = north
+        .app
+        .auth
+        .store
+        .token_by_id(&for_north_id)
+        .unwrap()
+        .expect("fed");
+    assert!(t.device.is_none() && t.client.is_none());
+
+    // Revoked at acme: gone from north with the next feed.
+    let (s, _) = acme
+        .rest("DELETE", &format!("/tokens/{for_north_id}"), None, &erin_s)
+        .await;
+    assert!(s.is_success());
+    glidex_control_plane::api::trust::pull_feed(&north.app, &d)
+        .await
+        .unwrap();
+    assert_eq!(get(&north, for_north).await.0, StatusCode::UNAUTHORIZED);
+}

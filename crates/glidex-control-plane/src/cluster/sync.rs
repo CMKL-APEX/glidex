@@ -465,6 +465,53 @@ pub fn check_status_write(
                 }
                 _ => return Err(format!("events {key}: not a node's to write")),
             },
+            // A kernel to extract on this node from the root disk of one of
+            // its VMs (spec/kernel-boot.md §10.5): created, never changed;
+            // the leader records how it went.
+            (TableId::Images, op) => {
+                let Op::Put { value, .. } = op else {
+                    return Err(format!("a node may not delete image {key}"));
+                };
+                if get(TableId::Images, key)?.is_some() {
+                    return Err(format!("image {key}: a node may only create one"));
+                }
+                let new: Value = serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                let disk = new.pointer("/source/disk_id").and_then(|d| d.as_str());
+                let vm = new["owner"].as_str();
+                let unset = |f: &str| {
+                    new.get(f)
+                        .is_none_or(|v| v.is_null() || v.as_array().is_some_and(|a| a.is_empty()))
+                };
+                if new["id"] != key
+                    || new["kind"] != "kernel"
+                    || new.pointer("/status/state").and_then(|s| s.as_str()) != Some("extracting")
+                    || new.pointer("/source/kind").and_then(|s| s.as_str()) != Some("extracted")
+                    || new["extract_node"] != node
+                    || !["for_image", "deletion_requested_at", "pinned", "release"]
+                        .iter()
+                        .all(|f| unset(f))
+                {
+                    return Err(format!(
+                        "image {key}: a node creates only a kernel it extracts from a disk"
+                    ));
+                }
+                if !disk
+                    .map(|d| get(TableId::Disks, d))
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|d| disk_is_nodes(&d, node))
+                {
+                    return Err(format!("image {key}: its disk is not bound to this node"));
+                }
+                if !vm
+                    .map(|v| get(TableId::Vms, v))
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|v| placed_on(&v, node))
+                {
+                    return Err(format!("image {key}: its VM is not placed on this node"));
+                }
+            }
             (TableId::ImageCaches, _) => {
                 let whose = key.rsplit_once('/').map(|(_, n)| n).unwrap_or_default();
                 // A shared datastore's copy: any node that reaches it may say
@@ -865,5 +912,83 @@ mod tests {
         };
         assert!(check("new", &row("d1/new")).is_ok());
         assert!(check("new", &row("d1/old")).is_err());
+    }
+
+    /// A node creates the record of a kernel it extracts from one of its
+    /// VMs' disks, and nothing else in the catalog (spec/kernel-boot.md §10.5).
+    #[test]
+    fn a_node_creates_only_kernels_it_extracts_from_its_disks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("db")).unwrap();
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            let mut vms = tx.open_table(TableId::Vms.definition())?;
+            for (id, n) in [("vm1", "n1"), ("vm2", "n2")] {
+                let v = serde_json::json!({ "status": { "placement": { "node": n } } });
+                vms.insert(id, v.to_string().as_bytes())?;
+            }
+            let mut disks = tx.open_table(TableId::Disks.definition())?;
+            for (id, n) in [("d1", "n1"), ("d2", "n2")] {
+                disks.insert(id, serde_json::json!({ "node": n }).to_string().as_bytes())?;
+            }
+            tx.open_table(TableId::Images.definition())?
+                .insert("old", b"{}".as_slice())?;
+            Ok(())
+        })
+        .unwrap();
+        let kernel = |id: &str, vm: &str, disk: &str, node: &str| {
+            serde_json::json!({
+                "id": id, "name": "k", "kind": "kernel", "status": { "state": "extracting" },
+                "source": { "kind": "extracted", "image_id": "", "disk_id": disk },
+                "owner": vm, "extract_node": node, "format": "raw",
+            })
+        };
+        let check = |ws: Vec<Op>| {
+            let ws = WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: Origin::Controller,
+                ops: ws,
+            };
+            db.write(
+                Origin::Controller,
+                |tx| -> Result<Result<(), String>, StoreError> {
+                    Ok(check_status_write(tx, "n1", &ws))
+                },
+            )
+            .unwrap()
+        };
+        let ok = kernel("k1", "vm1", "d1", "n1");
+        assert!(check(vec![put(TableId::Images, "k1", &ok)]).is_ok());
+        let mut ready = ok.clone();
+        ready["status"] = serde_json::json!({ "state": "ready" });
+        let mut pinned = ok.clone();
+        pinned["pinned"] = serde_json::json!(["n2"]);
+        let mut disk_image = ok.clone();
+        disk_image["kind"] = serde_json::json!("disk");
+        for (what, key, v) in [
+            ("ready", "k1", ready),
+            ("pinned", "k1", pinned),
+            ("a disk image", "k1", disk_image),
+            ("another id", "k2", ok.clone()),
+            (
+                "an existing record",
+                "old",
+                kernel("old", "vm1", "d1", "n1"),
+            ),
+            ("another node's disk", "k1", kernel("k1", "vm1", "d2", "n1")),
+            ("another node's VM", "k1", kernel("k1", "vm2", "d1", "n1")),
+            ("for another node", "k1", kernel("k1", "vm1", "d1", "n2")),
+        ] {
+            assert!(
+                check(vec![put(TableId::Images, key, &v)]).is_err(),
+                "{what}"
+            );
+        }
+        assert!(
+            check(vec![Op::Delete {
+                table: TableId::Images,
+                key: b"old".to_vec()
+            }])
+            .is_err()
+        );
     }
 }

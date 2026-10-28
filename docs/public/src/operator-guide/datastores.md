@@ -13,7 +13,11 @@ own disk directory on each node. You can register more:
 - a **shared** datastore (driver `shared-dir`): one filesystem that every
   node mounts, such as NFS or CephFS. A disk on it isn't tied to a node,
   so its VM can run on any node that reaches the datastore, and can be
-  placed on another node when it is stopped or its node is lost.
+  placed on another node when it is stopped or its node is lost;
+- a **hyperstor** datastore (driver `hyperstor`): a pool of a
+  [hyperstor](https://github.com/CMKL-APEX/hyperstor) cluster. A disk on
+  it is a hyperstor volume, shared like a disk on a shared filesystem
+  (see [Hyperstor](#hyperstor)).
 
 Glidex doesn't mount anything or make volume groups. You mount the
 filesystem (or make the volume group) on each node, and Glidex checks
@@ -557,6 +561,100 @@ sudo lvremove vg-glidex/gx-i-<image-id>
 
 The delete goes through once each node has looked again, within a
 minute. The volume group, the pool and anything else in them stay.
+
+## Hyperstor
+
+A hyperstor datastore (driver `hyperstor`) keeps each disk as a volume
+of a hyperstor cluster's pool, replicated across that cluster's nodes.
+It is shared: a disk on it isn't tied to a node, and its VM can run on
+any node that runs `hyperstor-vhost`, hyperstor's vhost-user-blk
+service. The VM's hypervisor opens the volume through that service's
+socket, as a disk with 512-byte sectors.
+
+Glidex manages the volumes (create, clone, grow, delete) through the
+cluster's API, as a management identity of its own. A hyperstor volume
+is held by one node at a time: the node whose VM uses it holds its
+lease, and another node can't attach it meanwhile.
+
+### Prepare the nodes
+
+On each node that should run VMs from hyperstor disks:
+
+- install hyperstor's `hyperstor-vhost` and run it for the cluster's
+  map service, with its default directory (`/run/hyperstor/vhost`),
+  `--allow-uid` naming the `glidex` user (so that Glidex may use its
+  control socket) and `--group` the `glidex` group (so that the
+  hypervisors may open its disks' sockets);
+- install `hyperstorctl`: Glidex writes images into volumes and edits
+  their partitions with it.
+
+<!-- TODO(verify): hyperstor's installer doesn't set up hyperstor-vhost as a service yet; the unit and its --allow-uid for glidex are to be written with it. -->
+
+Servers also need to reach the cluster's API (port 8850 by default):
+they do the volume operations, because only they hold Glidex's
+identity.
+
+### Register a hyperstor datastore
+
+Make a single-use management token on the hyperstor cluster, and give
+it to Glidex in a file:
+
+```bash
+hyperstorctl token create --role mgmt --name glidex > glidex.token
+gxctl datastore create hs1 --hyperstor 10.0.0.5:8850,10.0.0.6:8850 --pool 1 --token-file glidex.token
+```
+
+- `--hyperstor API,...`: the cluster API's addresses, tried in turn.
+- `--pool N`: the hyperstor pool for the disks (`hyperstorctl pools`).
+- `--token-file F`: the token. Glidex enrolls with it once, from the
+  server that takes the request: it makes a key, gets a certificate for
+  the identity the token names, and keeps the key sealed with the
+  cluster's secrets key. The token is used up and isn't kept.
+- `--nodes` and `--default` work as for a directory. `--no-overcommit`
+  is refused: hyperstor doesn't report its free space to Glidex yet.
+
+**Web UI:** **Datastores**, **Add Datastore**, *hyperstor cluster*: the
+**Name**, the **Cluster API** addresses, the **Pool** and the **Token**.
+
+Over the API: `POST /datastores` with `driver`
+`DATASTORE_DRIVER_HYPERSTOR`, `hyperstor_api`, `hyperstor_pool` and
+`hyperstor_token`, and no `path`. `gxctl datastore show` prints the
+identity and when its certificate expires; the leader renews it when a
+third of its life is left.
+
+### Node status
+
+Each node reports whether its `hyperstor-vhost` answers
+(`VhostUnavailable` otherwise), and each server whether the cluster's
+API answers with Glidex's identity (`ApiUnavailable`). Free and total
+space are shown as 0.
+
+### What is different from a directory
+
+- **Disks are raw.** A request for qcow2 is refused; a linked disk is a
+  hyperstor clone of the image's volume, made at once.
+- **Images** are written into one volume per image and datastore, the
+  first time a linked disk needs it, and kept as its snapshot `golden`.
+- **Disks grow, and never shrink.** Growing and the root partition's
+  extension work as for a file; the partition is edited through
+  `hyperstorctl`, not a block device.
+- **Moves** onto or off a hyperstor datastore aren't supported yet.
+- **Placing a lost VM again** (`--fenced`) takes its disks' leases from
+  the forgotten node; nothing else does.
+- **Metering** reports the disks' size, not the space they use.
+
+### Deleting
+
+A deleted disk's volume goes to hyperstor's trash, where hyperstor's
+operators can bring it back until its grace period ends. A volume left
+by a disk or image that failed to be made holds no one's data: Glidex
+deletes it for good (purging it from the trash), so that a retry can
+make it again. A clone there
+still needs its image's volume, so when the image is deleted that
+volume stays until the clone is purged; the leader then removes it,
+within a minute. Deleting the datastore removes Glidex's sealed key; it
+needs no disks on it, and leaves the identity's certificate to expire
+(revoke it with `hyperstorctl cert revoke`).
 
 ## Images on a shared datastore
 

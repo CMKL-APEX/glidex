@@ -401,6 +401,13 @@ administrator; they run, at their directory:
 gxctl tenant opt-in acme --offer gxo_…
 ```
 
+In the web UI the same is on the **Admissions** page (*Offers to other
+organizations' tenants*: the tenant's slug, its directory's issuer and
+how many days, then **Make offer**) and, at the directory, on the
+tenant's page (*Clusters of other organizations*: paste the token and
+**Accept offer**; **Opt out** leaves). An offer needs this cluster's API
+to serve TLS: the directory pins its certificate.
+
 Their directory calls this cluster's API (the address in the token:
 `cluster.api_url`, else the web UI's host on port 8841), pinning its
 certificate; both sides keep the other's keys and certificate from then
@@ -410,6 +417,55 @@ tells its directory; the tenant can opt out from its side too
 (`gxctl tenant opt-out acme --cluster <id>`). An offer works once and
 lasts 7 days (`--days`, at most 30); `gxctl admission offers` and
 `revoke-offer` manage open ones.
+
+Once trust is set up:
+
+- **People and roles.** Every 30 seconds this cluster's leader (or a
+  standalone host) pulls a *feed* from each trusted directory. It holds
+  the admitted tenants, their projects, members and tenant and project
+  roles, and those people's names and whether they are disabled; never
+  emails, sign-ins or secrets. The cluster keeps them as that
+  directory's records, so policies and quotas work for them as for local
+  users, and no one edits them here. Someone removed from the tenant,
+  or disabled at their directory, loses access here with the next feed.
+  A feed never replaces this cluster's own records.
+- **Signing in.** The tenant's people sign in at their own directory.
+  The web UI's sign-in page offers **Sign in with &lt;tenant&gt;**,
+  which goes to the directory and back. On the API, an access token
+  their directory issued for this cluster works too; it is for this
+  cluster only. For that,
+  the directory must know this cluster's web UI address: it learns it
+  when the tenant opts in (the published address, or the first of
+  `auth.allowed_origins`). If the address changes, the cluster sends
+  the new one with its next report, within a minute. Signing out at the
+  directory ends the cluster's sessions made from it with the next feed;
+  logging out on this cluster ends, at the directory, the sign-in it was
+  made from (and not the person's session there, or on other clusters).
+- **Reports.** After each feed, this cluster tells the directory what it
+  holds of each of its tenants: the admission (admitted or suspended,
+  and the cap), and counts of projects, VMs (and running ones), disks
+  (and their GiB) and networks. The tenant's administrators see it on
+  the tenant's page under *Clusters of other organizations*, and in
+  `gxctl tenant clusters acme`, with the time the directory received it.
+
+- **When the directory is out of reach.** VMs keep running, and the
+  tenant's people keep working with the sessions and tokens they have.
+  New sign-ins need the directory. If no feed has come for longer than
+  the directory's limit (60 minutes unless you change it), this cluster
+  stops accepting that directory's sessions and tokens, since it can't
+  know who was removed meanwhile; your own users are not affected. The
+  next feed that gets through lifts it. Responses to a directory's
+  people carry `X-Glidex-Directory-Lag` (seconds) once its feed is more
+  than 90 seconds behind. `gxctl admission directories` (or the Admissions page's
+  *Directories of other organizations*) shows each directory's last feed
+  and limit;
+  `gxctl admission staleness <directory> <minutes>` changes it (`default`
+  goes back to `trust.default_max_staleness_minutes` in
+  `control-plane.json`).
+
+Feed, sign-in and report requests are signed by the sending side's key
+and go to the other side's API with its certificate pinned, on port
+8841 both ways: open it between the two organizations' hosts.
 
 ## The web UI's address
 

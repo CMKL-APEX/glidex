@@ -4,7 +4,7 @@
 //! - at a cluster: `POST /trust/v1/redeem` (a directory redeems an offer)
 //!   and `POST /trust/v1/end` (a trusted directory ends a tenant's trust);
 //! - at a directory: `POST /d/{dir}/trust/v1/end` (a trusted cluster ends
-//!   it).
+//!   it) and `POST /d/{dir}/trust/v1/logout` (a session there ended, D72).
 //!
 //! Every refusal answers the same way; the reason goes to the audit log.
 
@@ -124,6 +124,7 @@ pub async fn redeem(
             jwks: json!({ "keys": [] }),
             tenants: Vec::new(),
             created_at: t,
+            max_staleness_minutes: None,
         });
     d.directory = b.directory.clone();
     d.api = b.api.clone();
@@ -412,6 +413,37 @@ pub fn snapshot_for(
             value: serde_json::to_value(&cut).unwrap_or_default(),
         });
     }
+    // API tokens listing this cluster (§7.4), of the people (as sent) and
+    // projects it gets: their hash, owner, kind, lifetime and list only.
+    let sent: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|r| r.table == "users")
+        .map(|r| r.key.clone())
+        .collect();
+    for (k, v) in parse("api_tokens")? {
+        let Ok(t) = serde_json::from_value::<crate::auth::store::Token>(v) else {
+            continue;
+        };
+        let ours = match &t.kind {
+            crate::auth::store::TokenKind::Personal { owner } => sent.contains(owner),
+            crate::auth::store::TokenKind::ServiceAccount { project } => pids.contains(project),
+        };
+        if !ours || t.clusters.is_empty() || !t.good_on(&c.cluster_id, false) {
+            continue;
+        }
+        let cut = crate::auth::store::Token {
+            last_used_at: None,
+            last_used_from: None,
+            device: None,
+            client: None,
+            ..t
+        };
+        rows.push(trust::Row {
+            table: "api_tokens".into(),
+            key: k,
+            value: serde_json::to_value(&cut).unwrap_or_default(),
+        });
+    }
     for (table, set) in [
         ("tenants", tenants),
         ("projects", projects),
@@ -449,12 +481,22 @@ pub fn snapshot_for(
 /// The rows of `snap` as this cluster keeps them for trusted directory
 /// `d` (D68): only its admitted tenants' records, its users, teams and
 /// tenants named as its; `Err` for anything outside that.
-pub fn localize(d: &TrustedDirectory, snap: &trust::Snapshot) -> Result<trust::Snapshot, String> {
+pub fn localize(
+    d: &TrustedDirectory,
+    snap: &trust::Snapshot,
+    cluster: &str,
+) -> Result<trust::Snapshot, String> {
     let tids: std::collections::HashSet<&str> = d.tenants.iter().map(|t| t.id.as_str()).collect();
     let pids: std::collections::HashSet<String> = snap
         .rows
         .iter()
         .filter(|r| r.table == "projects")
+        .map(|r| r.key.clone())
+        .collect();
+    let users: std::collections::HashSet<String> = snap
+        .rows
+        .iter()
+        .filter(|r| r.table == "users")
         .map(|r| r.key.clone())
         .collect();
     let mut rows = Vec::new();
@@ -471,6 +513,17 @@ pub fn localize(d: &TrustedDirectory, snap: &trust::Snapshot) -> Result<trust::S
             }
             "projects" => v["tenant_id"].as_str().is_some_and(|t| tids.contains(t)),
             "tenant_members" => v["tenant_id"].as_str().is_some_and(|t| tids.contains(t)),
+            // Its people's and projects' tokens, listing this cluster.
+            "api_tokens" => serde_json::from_value::<crate::auth::store::Token>(v.clone())
+                .is_ok_and(|t| {
+                    let whose = match &t.kind {
+                        crate::auth::store::TokenKind::Personal { owner } => users.contains(owner),
+                        crate::auth::store::TokenKind::ServiceAccount { project } => {
+                            pids.contains(project)
+                        }
+                    };
+                    whose && !t.clusters.is_empty() && t.good_on(cluster, false)
+                }),
             // Only a tenant role on one of its tenants, or a project role
             // on one of their projects: nothing of this cluster's own.
             "policy_links" => {
@@ -584,13 +637,19 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
     )
     .await?;
     match status {
-        304 => Ok(false),
+        304 => {
+            app.auth
+                .trust
+                .mark_checked(&d.id, t)
+                .map_err(|e| e.to_string())?;
+            Ok(false)
+        }
         200 => {
             let snap: trust::Snapshot = serde_json::from_value(v).map_err(|e| e.to_string())?;
             if trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids) != snap.revision {
                 return Err("a feed whose revision doesn't match its content".into());
             }
-            let local = localize(d, &snap)?;
+            let local = localize(d, &snap, &cluster)?;
             app.auth
                 .trust
                 .apply_feed(d, &local, t)
@@ -630,12 +689,303 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
     }
 }
 
+// ---- reports (D70) -----------------------------------------------------------------
+
+/// What this cluster holds of trusted directory `d`'s admitted tenants
+/// (D70): each one's admission and the use of its projects here.
+pub async fn report_for(
+    app: &AppState,
+    d: &TrustedDirectory,
+) -> Result<trust::ClusterReport, String> {
+    let projects = app.manager.projects().list().map_err(|e| e.to_string())?;
+    let disks = app.manager.list_disks();
+    let mut tenants = Vec::new();
+    for rt in &d.tenants {
+        let Some(a) = app
+            .auth
+            .tenants
+            .admission(&rt.id)
+            .map_err(|e| e.to_string())?
+            .filter(|a| a.directory_id == d.id)
+        else {
+            continue;
+        };
+        let mut r = trust::TenantReport {
+            tenant: rt.id.clone(),
+            suspended: a.status == crate::tenants::AdmissionStatus::Suspended,
+            cap: a.cap.clone(),
+            projects: 0,
+            vms: 0,
+            running_vms: 0,
+            disks: 0,
+            disk_gib: 0,
+            networks: 0,
+        };
+        for p in projects.iter().filter(|p| p.tenant_id == rt.id) {
+            let u = app.manager.usage(&p.id).await.map_err(|e| e.to_string())?;
+            r.projects += 1;
+            r.vms += u.vms;
+            r.running_vms += u.running_vms;
+            r.disk_gib += u.disk_gib;
+            r.networks += u.networks;
+            r.disks += disks.iter().filter(|x| x.project == p.id).count() as u64;
+        }
+        tenants.push(r);
+    }
+    Ok(trust::ClusterReport { at: now(), tenants })
+}
+
+/// Send trusted directory `d` this cluster's report (D70).
+pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), String> {
+    let cluster = super::op::cluster_id(app);
+    let report = report_for(app, d).await?;
+    let a = peer::assertion(
+        &app.auth.connectors,
+        CLUSTER_OWNER,
+        &cluster,
+        &d.issuer,
+        trust::REPORT,
+        now(),
+    )
+    .map_err(|e| e.to_string())?;
+    let path = format!("/d/{}/feed/v1/report", d.directory);
+    // The callback as it is now, should the web UI's address have changed (D73).
+    let ui_callback = super::trusted_login::callback_url(app, &d.id);
+    let body = json!({ "cluster_id": cluster, "report": report, "ui_callback": ui_callback });
+    match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
+        (204, _) | (200, _) => Ok(()),
+        (s, _) => Err(format!("the directory answered {s}")),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ReportBody {
+    cluster_id: String,
+    report: trust::ClusterReport,
+    #[serde(default)]
+    ui_callback: Option<String>,
+}
+
+/// `POST /d/{dir}/feed/v1/report {cluster_id, report, ui_callback}`, at
+/// the directory (D70): kept on the cluster's record, only for the tenants
+/// opted in to it; a changed callback registered in its place (D73).
+pub async fn report(
+    State(app): State<AppState>,
+    Path(dir): Path<String>,
+    headers: HeaderMap,
+    Json(b): Json<ReportBody>,
+) -> Response {
+    const ACTION: &str = "reportFeed";
+    let Some(assertion) = peer::from_headers(&headers) else {
+        return refused(&app, ACTION, "no assertion");
+    };
+    let Ok(Some(mut c)) = app.auth.trust.cluster(&dir, &b.cluster_id) else {
+        return refused(&app, ACTION, "not a trusted cluster");
+    };
+    let Some(iss) = app
+        .auth
+        .tenants
+        .get_directory(&dir)
+        .ok()
+        .flatten()
+        .and_then(|d| d.issuer)
+    else {
+        return refused(&app, ACTION, "no issuer");
+    };
+    if let Err(e) = peer::verify(
+        &assertion,
+        &c.jwks,
+        &c.cluster_id,
+        &iss,
+        trust::REPORT,
+        &app.auth.peer_replays,
+        now(),
+    ) {
+        return refused(&app, ACTION, &e.to_string());
+    }
+    let mut r = b.report;
+    // Its own clock, not the cluster's.
+    r.at = now();
+    r.tenants.retain(|t| c.tenants.contains(&t.tenant));
+    r.tenants.truncate(c.tenants.len());
+    c.report = Some(r);
+    if let Some(u) = b.ui_callback.filter(|u| valid_callback(u))
+        && c.ui_callback.as_deref() != Some(u.as_str())
+    {
+        app.auth.audit_system(
+            &format!("cluster:{}", c.cluster_id),
+            "",
+            "registerCallback",
+            Some(&format!("cluster:{}", c.cluster_id)),
+            "allowed",
+            None,
+            json!({ "from": c.ui_callback, "to": u }),
+        );
+        c.ui_callback = Some(u);
+    }
+    match app.auth.trust.put_cluster(&c) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
+    }
+}
+
+/// A web UI callback a cluster may register: an `http(s)` URL.
+pub fn valid_callback(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http"))
+}
+
+// ---- logouts (D72) -----------------------------------------------------------------
+
+/// Tell the trusted directories whose cluster sessions ended here to end
+/// those chains (D72), best effort: a chain not ended lapses there unused.
+pub async fn end_chains(app: &AppState) {
+    let ended = app.auth.ended_chains.take();
+    if ended.is_empty() {
+        return;
+    }
+    let cluster = super::op::cluster_id(app);
+    let dirs = app.auth.trust.directories().unwrap_or_default();
+    for (id, sid) in ended {
+        let Some(d) = dirs.iter().find(|d| d.id == id) else {
+            continue;
+        };
+        let sent = async {
+            let a = peer::assertion(
+                &app.auth.connectors,
+                CLUSTER_OWNER,
+                &cluster,
+                &d.issuer,
+                trust::LOGOUT,
+                now(),
+            )
+            .map_err(|e| e.to_string())?;
+            let path = format!("/d/{}/trust/v1/logout", d.directory);
+            let body = json!({ "cluster_id": cluster, "sid": sid });
+            match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
+                (204, _) | (200, _) => Ok(()),
+                (s, _) => Err(format!("the directory answered {s}")),
+            }
+        };
+        if let Err(e) = sent.await {
+            tracing::warn!(directory = %d.issuer, "ending a logged-out session's chain: {}", e);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LogoutBody {
+    cluster_id: String,
+    sid: String,
+}
+
+/// `POST /d/{dir}/trust/v1/logout {cluster_id, sid}`, at the directory
+/// (D72): a trusted cluster's session from chain `sid` ended, so the chain
+/// ends; only that cluster's own chains. `204` whether or not it was alive.
+pub async fn logout_at_directory(
+    State(app): State<AppState>,
+    Path(dir): Path<String>,
+    headers: HeaderMap,
+    Json(b): Json<LogoutBody>,
+) -> Response {
+    const ACTION: &str = "endClusterSession";
+    let Some(assertion) = peer::from_headers(&headers) else {
+        return refused(&app, ACTION, "no assertion");
+    };
+    let Ok(Some(c)) = app.auth.trust.cluster(&dir, &b.cluster_id) else {
+        return refused(&app, ACTION, "not a trusted cluster");
+    };
+    let Some(iss) = app
+        .auth
+        .tenants
+        .get_directory(&dir)
+        .ok()
+        .flatten()
+        .and_then(|d| d.issuer)
+    else {
+        return refused(&app, ACTION, "no issuer");
+    };
+    if let Err(e) = peer::verify(
+        &assertion,
+        &c.jwks,
+        &c.cluster_id,
+        &iss,
+        trust::LOGOUT,
+        &app.auth.peer_replays,
+        now(),
+    ) {
+        return refused(&app, ACTION, &e.to_string());
+    }
+    let client = format!("{}{}", op::CLUSTER_CLIENT, c.cluster_id);
+    match app
+        .auth
+        .refresh_tokens
+        .end_client_family(&dir, &client, &b.sid)
+    {
+        Ok(n) => {
+            if n > 0 {
+                app.auth.audit_system(
+                    &format!("cluster:{}", c.cluster_id),
+                    "",
+                    ACTION,
+                    None,
+                    "allowed",
+                    None,
+                    json!({ "sid": b.sid }),
+                );
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response(),
+    }
+}
+
+// ---- staleness (D13) ---------------------------------------------------------------
+
+/// A trusted directory's replica counts as behind past this: three
+/// missed pulls.
+pub const BEHIND_SECS: u64 = 90;
+
+/// Whether trusted directory `id`'s credentials are still good here
+/// (D13): `Ok(lag)` in seconds, or `Err(lag)` past its `max_staleness`
+/// (`u64::MAX` when it can't be told: refused). `None` for an id that
+/// isn't a trusted directory's.
+pub fn freshness(app: &AppState, id: &str) -> Option<Result<u64, u64>> {
+    if !id.starts_with("trusted-") {
+        return None;
+    }
+    let d = app
+        .auth
+        .trust
+        .directories()
+        .ok()
+        .and_then(|ds| ds.into_iter().find(|d| d.id == id));
+    let Some(d) = d else {
+        return Some(Err(u64::MAX));
+    };
+    let Ok(lag) = app.auth.trust.lag(&d, now()) else {
+        return Some(Err(u64::MAX));
+    };
+    let max = d
+        .max_staleness_minutes
+        .unwrap_or(app.auth.config.trust.default_max_staleness_minutes)
+        * 60;
+    Some(if lag > max { Err(lag) } else { Ok(lag) })
+}
+
 /// How often a cluster pulls its trusted directories' feeds.
 const FEED_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The task that pulls every trusted directory's feed: on a standalone
-/// host, or the cluster's leader (where writes go).
+/// host, or the cluster's leader (where writes go). And, on every server,
+/// the one that tells directories of the sessions that ended (D72).
 pub fn spawn_feeds(app: AppState) {
+    let logouts = app.clone();
+    tokio::spawn(async move {
+        loop {
+            logouts.auth.ended_chains.wait().await;
+            end_chains(&logouts).await;
+        }
+    });
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FEED_EVERY);
         loop {
@@ -646,6 +996,11 @@ pub fn spawn_feeds(app: AppState) {
             for d in app.auth.trust.directories().unwrap_or_default() {
                 if let Err(e) = pull_feed(&app, &d).await {
                     tracing::warn!(directory = %d.issuer, "feed: {}", e);
+                    continue;
+                }
+                // And what it holds of the directory's tenants (D70).
+                if let Err(e) = push_report(&app, &d).await {
+                    tracing::warn!(directory = %d.issuer, "report: {}", e);
                 }
             }
         }

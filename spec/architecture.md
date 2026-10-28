@@ -118,7 +118,10 @@ supervisor, [reconciliation.md §8.3](reconciliation.md#83-shim-process)),
 `crates/glidex-hv-client` (CH HTTP and QMP clients, used by both), and
 `crates/glidex-raftstore` (the replicated ReDB store: write sets, the
 Raft log, state machine, snapshots and transport, and an in-process test
-cluster with fault injection; also used by hyperstor's map service).
+cluster with fault injection; also used by hyperstor's map service) and
+`crates/glidex-auth` (secrets, session and token rules, the Cedar engine
+and OIDC login, which `auth`, `authz` and `directory::oidc` specialize
+for glidex; also used by hyperstor's management service).
 
 ## Data flow: "create and start a VM"
 

@@ -99,9 +99,31 @@ fn crash_delay(restarts: u32) -> u64 {
 /// The spec fields that need a new launch to take effect (§7.3).
 fn launch_relevant(spec: &VmSpec) -> serde_json::Value {
     let c = &spec.config;
+    let is_elastic = c.is_elastic();
+    let is_pylon = c.hypervisor == HypervisorType::Pylon;
+    let vcpu_count_repr = if is_elastic || is_pylon {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(c.vcpu_count)
+    };
+    let (min_vcpus_repr, max_vcpus_repr) = if is_pylon {
+        (serde_json::Value::Null, serde_json::Value::Null)
+    } else {
+        (
+            serde_json::json!(c.min_vcpus),
+            serde_json::json!(c.max_vcpus),
+        )
+    };
     serde_json::json!({
-        "vcpu_count": c.vcpu_count, "mem_size_mib": c.mem_size_mib, "kernel_args": c.kernel_args,
-        "credential": c.credential, "hugepages": c.hugepages, "data_disks": c.data_disks, "networks": c.networks,
+        "vcpu_count": vcpu_count_repr,
+        "min_vcpus": min_vcpus_repr,
+        "max_vcpus": max_vcpus_repr,
+        "mem_size_mib": c.mem_size_mib,
+        "kernel_args": c.kernel_args,
+        "credential": c.credential,
+        "hugepages": c.hugepages,
+        "data_disks": c.data_disks,
+        "networks": c.networks,
     })
 }
 
@@ -509,9 +531,12 @@ impl VmManager {
             if live {
                 return self.stop_round(&vm, st, events).await;
             }
-            // ---- 4. stopped: release the ports ------------------------------
+            // ---- 4. stopped: release the ports and disks -------------------
             if !st.nics.is_empty() {
                 self.detach_ports(&vm.id, &mut st, None).await?;
+            }
+            if !st.staged_disks.is_empty() {
+                st.staged_disks = self.unstage_disks(&vm.id, &st.staged_disks).await;
             }
             st.phase = VmPhase::Stopped;
             st.stop_deadline = None;
@@ -568,6 +593,8 @@ impl VmManager {
             growpart_disk: None,
             growpart_seq: None,
             cpu_affinity: launched.map(|l| l.cpu_affinity).unwrap_or_default(),
+            launched_max_vcpus: Some(c.effective_max_vcpus()),
+            applied_cpu_policy: None,
             device_errors: device_errors_now(&c.vfio_devices),
         }
     }
@@ -793,6 +820,33 @@ impl VmManager {
         )))
     }
 
+    /// Lets go of what staging held for `vm_id`'s disks `ids` (a hyperstor
+    /// volume's lease, spec/storage.md §11.2); returns those that couldn't
+    /// be, to try again.
+    pub(crate) async fn unstage_disks(&self, vm_id: &str, ids: &[String]) -> Vec<String> {
+        let images = self.images.clone();
+        let ids = ids.to_vec();
+        let vm_id = vm_id.to_string();
+        blocking(move || {
+            ids.into_iter()
+                .filter(|id| {
+                    let Ok(d) = images.get_disk(id) else {
+                        return false;
+                    };
+                    match images.driver(&d).and_then(|drv| drv.unstage(&d)) {
+                        Ok(()) => false,
+                        Err(e) => {
+                            tracing::warn!(vm_id = %vm_id, disk = %d.name, "detaching the disk: {}", e);
+                            true
+                        }
+                    }
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// Detach this VM's ports: all of them, or those `keep` rejects.
     pub(crate) async fn detach_ports(
         &self,
@@ -858,7 +912,20 @@ impl VmManager {
         // it first, so the bindings below use what this records.
         let followed: Vm;
         let vm = if vm.config().kernel_from_disk || st.disk_kernel.is_some() {
-            if let Err(e) = self.follow_disk_kernel(vm, &mut st).await {
+            let followed_disk = self.follow_disk_kernel(vm, &mut st).await;
+            if let Ok(false) = followed_disk {
+                // Extracting on this node for the leader (§10.2).
+                set_cond(
+                    &mut st.conditions,
+                    "KernelExtracted",
+                    Tristate::Unknown,
+                    "Extracting",
+                    "extracting the kernel from the root disk",
+                );
+                self.write_status(&vm.id, vm.generation, st, events).await?;
+                return Ok(Some(Duration::from_secs(3)));
+            }
+            if let Err(e) = followed_disk {
                 set_cond(
                     &mut st.conditions,
                     "Ready",
@@ -899,6 +966,19 @@ impl VmManager {
                     "Ready",
                     "",
                 );
+                // What staging attached here, to detach once it stops.
+                let c = vm.config();
+                st.staged_disks = c
+                    .root_disk
+                    .iter()
+                    .chain(c.data_disks.iter())
+                    .filter(|id| {
+                        self.images
+                            .get_disk(id)
+                            .is_ok_and(|d| self.images.is_hyperstor(&d))
+                    })
+                    .cloned()
+                    .collect();
                 b
             }
             Err(e) => {
@@ -1200,7 +1280,8 @@ impl VmManager {
             }
             let pins = held[..n].to_vec();
             match vm.hypervisor() {
-                crate::hypervisor::HypervisorType::CloudHypervisor => {
+                crate::hypervisor::HypervisorType::CloudHypervisor
+                | crate::hypervisor::HypervisorType::Pylon => {
                     config.vcpu_pins = pins;
                     (held, Vec::new())
                 }
@@ -1247,6 +1328,7 @@ impl VmManager {
             meter_poll_secs: settings.meter_poll_secs,
             cpu_affinity: cpu_affinity.clone(),
             vcpu_pins: launch_pins,
+            cpu_weight: config.effective_cpu_weight(),
             job: false,
         };
         launch
@@ -1271,6 +1353,8 @@ impl VmManager {
         let boot = glidex_vm_shim::util::boot_id()
             .map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
         let c = vm.config();
+        // Started with its disks: a takeover is done.
+        st.takeover_disks = false;
         st.instance = Some(InstanceRef {
             instance_id: instance_id.clone(),
             runner: runner.record(&vm.id),
@@ -1291,6 +1375,12 @@ impl VmManager {
             growpart_disk,
             growpart_seq,
             cpu_affinity,
+            launched_max_vcpus: Some(config.effective_max_vcpus()),
+            applied_cpu_policy: Some(crate::models::AppliedCpuPolicy {
+                min_vcpus: config.effective_min_vcpus(),
+                max_vcpus: config.effective_max_vcpus(),
+                weight: config.effective_cpu_weight(),
+            }),
             device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
@@ -1398,6 +1488,7 @@ impl VmManager {
                     port: None,
                     ipv4: None,
                     port_ok: false,
+                    metadata_index: None,
                 });
                 if let Some(stored) = self
                     .write_status(&vm.id, vm.generation, st.clone(), vec![])
@@ -1414,6 +1505,7 @@ impl VmManager {
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
                 n.port = Some(res.port.clone());
                 n.ipv4 = res.ipv4;
+                n.metadata_index = res.metadata_index;
                 n.port_ok = true;
             }
             out.push(NicBinding {
@@ -1654,6 +1746,119 @@ impl VmManager {
             inst.vfio_devices = held;
         }
 
+        // 7b. vCPU resize / live elasticity drift (spec/pylon.md §4.3)
+        // Pylon boots with all max_vcpus in the MADT and arbitrates cores cooperatively
+        // via pylond without ACPI hot-unplug.
+        if vm.hypervisor() == HypervisorType::Pylon {
+            let desired_min = vm.spec.config.effective_min_vcpus();
+            let desired_max = vm.spec.config.effective_max_vcpus();
+            let desired_weight = vm.spec.config.effective_cpu_weight();
+            let launched_max = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.launched_max_vcpus)
+                .unwrap_or(desired_max);
+
+            let applied = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.applied_cpu_policy.as_ref());
+
+            let current_min = applied.map(|a| a.min_vcpus).unwrap_or(desired_min);
+            let current_max = applied.map(|a| a.max_vcpus).unwrap_or(launched_max);
+            let current_weight = applied.map(|a| a.weight).unwrap_or(desired_weight);
+
+            let drift = applied.is_none()
+                || current_min != desired_min
+                || current_max != desired_max
+                || current_weight != desired_weight;
+
+            if drift {
+                if guest != GuestState::Running {
+                    set_cond(
+                        &mut st.conditions,
+                        "VcpuResizePending",
+                        Tristate::True,
+                        "GuestPaused",
+                        "vCPU policy applies once the guest runs",
+                    );
+                } else {
+                    let api = paths.api_socket.clone();
+                    let effective_max = desired_max.min(launched_max);
+                    let effective_min = desired_min.min(effective_max);
+                    match blocking(move || {
+                        d.update_policy(
+                            &api,
+                            Some(effective_min as u32),
+                            Some(effective_max as u32),
+                            Some(desired_weight),
+                        )
+                    })
+                    .await?
+                    {
+                        Ok(()) => {
+                            clear_cond(&mut st.conditions, "VcpuResizePending");
+                            if let Some(inst) = st.instance.as_mut() {
+                                inst.applied_cpu_policy = Some(crate::models::AppliedCpuPolicy {
+                                    min_vcpus: effective_min,
+                                    max_vcpus: effective_max,
+                                    weight: desired_weight,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            set_cond(
+                                &mut st.conditions,
+                                "VcpuResizePending",
+                                Tristate::True,
+                                "ResizeFailed",
+                                e.to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                clear_cond(&mut st.conditions, "VcpuResizePending");
+            }
+        } else if let Some(observed_vcpus) = observed.vcpu_count {
+            let desired_vcpus = vm.spec.config.vcpu_count;
+            let launched_max = st
+                .instance
+                .as_ref()
+                .and_then(|i| i.launched_max_vcpus)
+                .unwrap_or_else(|| vm.spec.config.effective_max_vcpus());
+            let floor = 1;
+            if observed_vcpus != desired_vcpus && (floor..=launched_max).contains(&desired_vcpus) {
+                if guest != GuestState::Running {
+                    set_cond(
+                        &mut st.conditions,
+                        "VcpuResizePending",
+                        Tristate::True,
+                        "GuestPaused",
+                        "vCPU resize applies once the guest runs",
+                    );
+                } else {
+                    let api = paths.api_socket.clone();
+                    match blocking(move || d.resize_vcpus(&api, desired_vcpus)).await? {
+                        Ok(()) => {
+                            clear_cond(&mut st.conditions, "VcpuResizePending");
+                        }
+                        Err(e) => {
+                            set_cond(
+                                &mut st.conditions,
+                                "VcpuResizePending",
+                                Tristate::True,
+                                "ResizeFailed",
+                                e.to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                clear_cond(&mut st.conditions, "VcpuResizePending");
+            }
+        }
+
         st.phase = if guest == GuestState::Paused {
             VmPhase::Paused
         } else {
@@ -1679,9 +1884,16 @@ impl VmManager {
 
         // ---- 8. RestartRequired, Ready ------------------------------------------
         let launched = blocking(move || launched_spec(&paths)).await?;
-        let restart_required = launched
-            .as_ref()
-            .is_some_and(|l| launch_relevant(l) != launch_relevant(&vm.spec));
+        let restart_required = launched.as_ref().is_some_and(|l| {
+            if vm.hypervisor() == HypervisorType::Pylon {
+                let launched_max = l.config.effective_max_vcpus();
+                let desired_max = vm.spec.config.effective_max_vcpus();
+                if desired_max > launched_max {
+                    return true;
+                }
+            }
+            launch_relevant(l) != launch_relevant(&vm.spec)
+        });
         if restart_required {
             set_cond(
                 &mut st.conditions,
@@ -1831,8 +2043,9 @@ impl VmManager {
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             match blocking(move || netd.call::<AttachResult>(Op::AttachVmPort(spec))).await? {
-                Ok(_) => {
+                Ok(r) => {
                     st.nics[i].port_ok = true;
+                    st.nics[i].metadata_index = r.metadata_index;
                     events.push(Event::new(
                         "controller",
                         EventKind::Warning,
@@ -1923,7 +2136,20 @@ impl VmManager {
                 Err(e) => return Err(e.into()),
             }
         }
-        // Disks: claims cleared, the owned root disk deleted (unless kept).
+        // Disks: what staging held let go first (a hyperstor volume can't
+        // be deleted while attached), then claims cleared, the owned root
+        // disk deleted (unless kept).
+        if has(FINALIZER_DISKS) && !vm.status.staged_disks.is_empty() {
+            let left = self.unstage_disks(&vm.id, &vm.status.staged_disks).await;
+            if !left.is_empty() {
+                return Err(ImageError::Busy(format!(
+                    "VM {}'s disks couldn't be detached yet: {}",
+                    vm.name,
+                    left.join(", ")
+                ))
+                .into());
+            }
+        }
         let mut detach = Vec::new();
         let mut owned = None;
         if has(FINALIZER_DISKS) {
@@ -2074,5 +2300,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.revision(), before + 1);
+    }
+
+    #[test]
+    fn launch_relevant_elastic_vs_fixed() {
+        let fixed_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 2,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut fixed_spec_changed = fixed_spec.clone();
+        fixed_spec_changed.config.vcpu_count = 4;
+        assert_ne!(
+            launch_relevant(&fixed_spec),
+            launch_relevant(&fixed_spec_changed),
+            "changing vcpu_count on fixed VM must change launch_relevant"
+        );
+
+        let elastic_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 2,
+                "min_vcpus": 1,
+                "max_vcpus": 8,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut elastic_spec_resized = elastic_spec.clone();
+        elastic_spec_resized.config.vcpu_count = 6;
+        assert_eq!(
+            launch_relevant(&elastic_spec),
+            launch_relevant(&elastic_spec_resized),
+            "changing vcpu_count within elastic range must NOT change launch_relevant"
+        );
+
+        let pylon_spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "hypervisor": "pylon",
+                "vcpu_count": 4,
+                "min_vcpus": 1,
+                "max_vcpus": 4,
+                "cpu_weight": 100,
+                "mem_size_mib": 1024,
+                "rootfs_path": "/r",
+                "kernel_args": "",
+            }
+        }))
+        .unwrap();
+
+        let mut pylon_spec_scaled = pylon_spec.clone();
+        pylon_spec_scaled.config.min_vcpus = Some(2);
+        pylon_spec_scaled.config.cpu_weight = Some(250);
+        assert_eq!(
+            launch_relevant(&pylon_spec),
+            launch_relevant(&pylon_spec_scaled),
+            "changing min_vcpus or cpu_weight on Pylon VM must NOT change launch_relevant"
+        );
     }
 }

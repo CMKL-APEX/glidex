@@ -5,6 +5,7 @@ import type {
   ApiToken,
   AuditEntry,
   AuthMethods,
+  BrowserAccount,
   Binding,
   CatalogItem,
   FirmwareCatalogItem,
@@ -111,7 +112,16 @@ import { CredentialService, DatastoreService, DiskService, ImageService } from "
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
-import { AdmissionService, DirectoryService, TenantService, type SetAdmissionRequestJson, type TenantDevicePoolJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import {
+  AdmissionService,
+  DirectoryService,
+  TenantService,
+  type OfferJson,
+  type SetAdmissionRequestJson,
+  type TenantClusterJson,
+  type TrustedDirectoryJson,
+  type TenantDevicePoolJson,
+} from "./gen/glidex/tenancy/v1/tenancy_pb";
 import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
 import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
@@ -124,7 +134,8 @@ import {
   type GranularityJson,
   type GroupKeyJson,
 } from "./gen/glidex/usage/v1/usage_pb";
-import { archToProto } from "./types";
+import { archToProto, isServiceToken } from "./types";
+import { csrfToken, reauthenticate, sessionEnded, setCsrf, withSession } from "@glidex/ui-kit";
 
 const API_BASE = "/api";
 
@@ -146,22 +157,9 @@ export class ApiRequestError extends Error {
 
 // ---- session plumbing (spec/security.md §5.5, §5.6) -------------------------
 
-/** The session's CSRF value, from `/auth/whoami` or a login response. */
-let csrf: string | null = null;
-
-export function setCsrf(value: string | null | undefined) {
-  csrf = value ?? null;
-}
-
-/** Called when the session is gone (401 unauthenticated). */
-let onUnauthenticated: () => void = () => {};
-/** Asks the user to log in again (401 reauth_required); resolves true when they did. */
-let reauthenticate: () => Promise<boolean> = async () => false;
-
-export function setSessionHandlers(h: { unauthenticated: () => void; reauth: () => Promise<boolean> }) {
-  onUnauthenticated = h.unauthenticated;
-  reauthenticate = h.reauth;
-}
+// The CSRF value and the 401 handlers are the kit's (crates/glidex-ui/kit,
+// csrfToken, setCsrf, sessionEnded, reauthenticate), shared with its
+// SessionProvider.
 
 async function errorOf(resp: Response): Promise<ApiRequestError> {
   const text = await resp.text();
@@ -226,6 +224,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
   const send = (local = false) => {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
+    const csrf = csrfToken();
     if (!read && csrf) headers["X-Glidex-CSRF"] = csrf;
     if (local) headers["X-Glidex-Consistency"] = "local";
     if (opts.node) headers["X-Glidex-Target-Node"] = opts.node;
@@ -274,7 +273,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
       if (resp.status === 401) err = await errorOf(resp);
     }
     if (resp.status === 401) {
-      if (err.code === "unauthenticated" && !opts.quiet401) onUnauthenticated();
+      if (err.code === "unauthenticated" && !opts.quiet401) sessionEnded();
       throw err;
     }
   }
@@ -302,6 +301,7 @@ const TARGET = createContextKey<string | undefined>(undefined);
 
 /** The session's CSRF value on every RPC (all are POSTs, spec/grpc.md §6). */
 const sessionHeaders: Interceptor = (next) => async (req) => {
+  const csrf = csrfToken();
   if (csrf) req.header.set("X-Glidex-CSRF", csrf);
   if (req.contextValues.get(LOCAL)) req.header.set("X-Glidex-Consistency", "local");
   const target = req.contextValues.get(TARGET);
@@ -405,24 +405,10 @@ export async function rpc<M extends DescMethodUnary>(
       }
     }
   };
-  let result: { out: unknown; revision: boolean; stale: boolean };
-  try {
-    result = await attempt();
-  } catch (e) {
-    let err = e instanceof ApiRequestError ? e : rpcError(e);
-    if (err.status === 401) {
-      if (err.code === "reauth_required" && (await reauthenticate())) {
-        try {
-          result = await attempt();
-          return finish(method, read, opts, result);
-        } catch (e2) {
-          err = e2 instanceof ApiRequestError ? e2 : rpcError(e2);
-        }
-      }
-      if (err.code === "unauthenticated" && !opts.quiet401) onUnauthenticated();
-    }
-    throw err;
-  }
+  const result = await withSession(attempt, {
+    quiet401: opts.quiet401,
+    toError: (e) => (e instanceof ApiRequestError ? e : rpcError(e)),
+  });
   return finish(method, read, opts, result);
 }
 
@@ -657,6 +643,52 @@ export function startTrustedLogin(id: string, returnTo: string) {
   window.location.assign(`${API_BASE}/auth/t/${encodeURIComponent(id)}/start?${q}`);
 }
 
+// ---- accounts in one browser (spec/tenancy.md D71) ----------------------------
+
+/** Tells the other tabs the account changed: they reload. */
+export const ACCOUNT_EVENT_KEY = "glidex.account-switched";
+
+function accountChanged() {
+  try {
+    localStorage.setItem(ACCOUNT_EVENT_KEY, String(Date.now()));
+  } catch {
+    // No storage: other tabs find out on their next write.
+  }
+}
+
+export const listAccounts = () =>
+  request<{ accounts: BrowserAccount[]; max: number }>("GET", "/auth/accounts", undefined, { quiet401: true });
+
+export async function switchAccount(directory: string): Promise<void> {
+  const r = await request<{ csrf?: string | null }>("POST", "/auth/accounts/switch", { directory }, { quiet401: true });
+  setCsrf(r.csrf ?? null);
+  accountChanged();
+}
+
+/** Keep the active account in the list, for the login page to add one. */
+export async function addAccount(): Promise<void> {
+  await request("POST", "/auth/accounts/add", {}, { quiet401: true });
+  setCsrf(null);
+  accountChanged();
+}
+
+export async function removeAccount(directory: string): Promise<BrowserAccount[]> {
+  const r = await request<{ accounts: BrowserAccount[] }>("POST", "/auth/accounts/remove", { directory }, { quiet401: true });
+  return r.accounts;
+}
+
+export async function logoutAll(): Promise<void> {
+  await request("POST", "/auth/accounts/logout-all", {}, { quiet401: true });
+  setCsrf(null);
+  accountChanged();
+}
+
+/** Sign in again to a listed directory: its own login. */
+export function signInAgain(a: BrowserAccount, returnTo = "/") {
+  if (a.kind === "trusted") startTrustedLogin(a.directory, returnTo);
+  else window.location.assign(a.directory === "local" ? "/" : `/login/${encodeURIComponent(a.directory)}`);
+}
+
 export async function logout(): Promise<void> {
   await request<void>("POST", "/auth/logout", {}, { quiet401: true });
   setCsrf(null);
@@ -739,6 +771,35 @@ export function setVmKernel(id: string, change: { kernel?: string; follow?: bool
   const vm = { kernel: change.kernel, kernel_from_disk: change.follow };
   return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
 }
+
+/** Adjust elastic CPU scaling policy (min/max vCPUs, weight, vcpu count). */
+export function setVmCpuPolicy(
+  id: string,
+  policy: { vcpu_count?: number; min_vcpus?: number; max_vcpus?: number; cpu_weight?: number },
+) {
+  return vmWrite(
+    rpc(VmService.method.updateVm, {
+      id,
+      change: policy,
+      update_mask: maskOf(policy),
+    }) as Promise<VmWriteResponse>,
+  );
+}
+
+/** Give a VM a service account, or take it away (`null`); it applies to the
+ * VM's next token, no restart (spec/workload-identity.md W5). */
+export const setVmServiceAccount = (id: string, serviceAccount: string | null) =>
+  vmWrite(
+    rpc(VmService.method.updateVm, {
+      id,
+      change: serviceAccount ? { service_account: serviceAccount } : {},
+      update_mask: "serviceAccount",
+    }) as Promise<VmWriteResponse>,
+  );
+
+/** The service accounts the caller can see in `project`. */
+export const listServiceAccounts = (project: string) =>
+  listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
 export const extractVmKernel = (id: string) =>
@@ -943,10 +1004,16 @@ export const imageEvents = (id: string) =>
 export const listDatastores = () =>
   rpc(DatastoreService.method.listDatastores).then((r) => (r.datastores ?? []) as Datastore[]);
 export const getDatastore = (id: string) => rpc(DatastoreService.method.getDatastore, { id }).then((r) => r.datastore as Datastore);
-export const createDatastore = ({ shared, lvm, ...req }: DatastoreInput) =>
+export const createDatastore = ({ shared, lvm, hyperstor, ...req }: DatastoreInput) =>
   rpc(DatastoreService.method.createDatastore, {
     ...req,
-    driver: lvm ? "DATASTORE_DRIVER_LVM" : shared ? "DATASTORE_DRIVER_SHARED_DIR" : "DATASTORE_DRIVER_DIR",
+    driver: hyperstor
+      ? "DATASTORE_DRIVER_HYPERSTOR"
+      : lvm
+        ? "DATASTORE_DRIVER_LVM"
+        : shared
+          ? "DATASTORE_DRIVER_SHARED_DIR"
+          : "DATASTORE_DRIVER_DIR",
   }).then(
     (r) => r.datastore as Datastore,
   );
@@ -1154,6 +1221,9 @@ export interface GpuRequest {
 export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
+  min_vcpus?: number;
+  max_vcpus?: number;
+  cpu_weight?: number;
   mem_size_mib: number;
   hypervisor?: ProtoHypervisor;
   node?: string;
@@ -1317,6 +1387,36 @@ export const startInvitedLogin = (connector: string, invitation: string) =>
 
 /** A tenant's shares of cluster device pools on this cluster (spec/host-topology.md §9.1a). */
 export type TenantDevicePool = TenantDevicePoolJson;
+
+/** Another organization's cluster the tenant uses, with its last report
+ *  (spec/tenancy.md D65, D70). */
+export type TenantCluster = TenantClusterJson;
+export const listTenantClusters = (id: string) =>
+  rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
+/** Opt the tenant in to another organization's cluster with the offer its
+ *  operator sent (D65); needs a recent login. */
+export const optInCluster = (id: string, offer: string) =>
+  rpc(TenantService.method.optInCluster, { id, offer }).then((r) => r.cluster as TenantCluster);
+export const optOutCluster = (id: string, cluster: string) => rpc(TenantService.method.optOutCluster, { id, cluster }).then(none);
+
+// ---- trust: offers and trusted directories (D64–D66, D13) ----------------------
+
+export type Offer = OfferJson;
+export type TrustedDirectory = TrustedDirectoryJson;
+export const listOffers = () => rpc(AdmissionService.method.listOffers).then((r) => (r.offers ?? []) as Offer[]);
+/** An offer for tenant `tenant` of the directory at `directory` (its issuer
+ *  URL); the `gxo_…` token is in the answer only. */
+export const offerAdmission = (tenant: string, directory: string, days?: number) =>
+  rpc(AdmissionService.method.offerAdmission, { tenant, directory, days }).then((r) => ({ offer: r.offer as Offer, token: r.token ?? "" }));
+export const revokeOffer = (id: string) => rpc(AdmissionService.method.revokeOffer, { id }).then(none);
+export const listTrustedDirectories = () =>
+  rpc(AdmissionService.method.listTrustedDirectories).then((r) => (r.directories ?? []) as TrustedDirectory[]);
+/** How long its credentials stay good without a feed; `undefined`: the
+ *  cluster's default. */
+export const setTrustedDirectory = (id: string, minutes?: number) =>
+  rpc(AdmissionService.method.setTrustedDirectory, { id, max_staleness_minutes: minutes === undefined ? undefined : String(minutes) }).then(
+    (r) => r.directory as TrustedDirectory,
+  );
 export const listTenantDevicePools = (id: string) =>
   rpc(TenantService.method.listDevicePools, { id }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
 /** Replaces the tenant's pools; only `name`, `from`, `max` and `projects` are read. */
@@ -1400,9 +1500,11 @@ export interface HostedDirectory {
   name: string;
   issuer: string;
   created_at?: string;
+  /** Its SPIFFE trust domain (workload-identity.md W13). */
+  trust_domain?: string;
 }
 export const listDirectories = () => rpc(DirectoryService.method.listDirectories).then((r) => (r.directories ?? []) as HostedDirectory[]);
 /** A directory and its first administrator's invitation link (shown once). */
-export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string }) =>
+export const createDirectory = (req: { id: string; name: string; owner: string; admin_email: string; trust_domain?: string }) =>
   rpc(DirectoryService.method.createDirectory, req).then((r) => ({ directory: r.directory as HostedDirectory, link: r.invitation_link ?? "" }));
 export const deleteDirectory = (id: string) => rpc(DirectoryService.method.deleteDirectory, { id }).then(none);

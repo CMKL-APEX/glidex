@@ -112,7 +112,7 @@ pub(super) fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Li
                 == Some("https")
         }
         Listener::Tcp => app.auth.config.tls.enabled(),
-        Listener::Api => false,
+        Listener::Api | Listener::Metad => false,
         // A forwarded login: the first server saw how the browser connected.
         Listener::Cluster => {
             headers.get("x-glidex-secure").and_then(|v| v.to_str().ok()) == Some("true")
@@ -164,6 +164,8 @@ pub async fn login(
         Listener::Tcp => {
             app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
         }
+        // metad.sock serves its own router, never logins.
+        Listener::Metad => false,
     };
     if !local {
         return Err(err(

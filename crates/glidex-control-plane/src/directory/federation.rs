@@ -137,6 +137,9 @@ impl Federation {
         if !id_ok {
             return bad("a federation's id is [a-z0-9-], 1-48 characters");
         }
+        if self.id == crate::directory::workload::VM_FEDERATION {
+            return bad("'vm' is the name of VMs' own identity tokens (workload-identity.md §5)");
+        }
         if self.display_name.chars().count() > 128 {
             return bad("display_name is at most 128 characters");
         }

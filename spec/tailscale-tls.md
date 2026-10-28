@@ -140,7 +140,7 @@ rather than an expired one. The certificate's fingerprint and expiry
 are logged when it changes; errors are logged when they change, not on
 every retry.
 
-Implementation: `crates/glidex-ui/src/tailscale.rs`. The UI checks the
+Implementation: `crates/glidex-tls/src/tailscale.rs` (shared with hyperstor's management service; `GLIDEX_UI_TLS_TAILSCALE` stays in `crates/glidex-ui/src/tailscale.rs`). The UI checks the
 SNI of each finished handshake against the held names to mark the
 connection for HSTS (§4.4), so HSTS follows the certificate actually
 chosen, not the `Host` header.

@@ -165,14 +165,85 @@ impl QmpClient {
             .map(|_| ())
     }
 
-    /// The guest's state (`query-status`) and the ids of user-created
-    /// devices (`qom-list /machine/peripheral`).
+    /// The guest's state (`query-status`), devices (`qom-list /machine/peripheral`),
+    /// and current vCPU count (`query-cpus-fast`).
     pub fn observe(&self) -> Result<Observed, HvError> {
         let status = self.execute(&serde_json::json!({ "execute": "query-status" }))?;
         let peripherals = self.execute(&serde_json::json!({
             "execute": "qom-list", "arguments": { "path": "/machine/peripheral" }
         }))?;
-        Ok(parse_observed(&status, &peripherals))
+        let cpus = self
+            .execute(&serde_json::json!({ "execute": "query-cpus-fast" }))
+            .ok();
+        let vcpu_count = cpus
+            .as_ref()
+            .and_then(|c| c.as_array())
+            .map(|a| a.len().min(255) as u8);
+        let mut obs = parse_observed(&status, &peripherals);
+        obs.vcpu_count = vcpu_count;
+        Ok(obs)
+    }
+
+    /// Resize active vCPUs to `desired` using ACPI CPU hotplug via QMP
+    /// (`query-hotpluggable-cpus`, `device_add`, `device_del`).
+    pub fn resize_vcpus(&self, desired: u8) -> Result<(), HvError> {
+        let slots = self.execute(&serde_json::json!({ "execute": "query-hotpluggable-cpus" }))?;
+        let slots_arr = slots.as_array().ok_or_else(|| {
+            HvError::Api("query-hotpluggable-cpus did not return an array".into())
+        })?;
+
+        struct CpuSlot {
+            core_id: u64,
+            populated: bool,
+            driver: String,
+            props: Value,
+            id: String,
+        }
+
+        let mut parsed_slots: Vec<CpuSlot> = Vec::new();
+        for slot in slots_arr {
+            let props = slot.get("props").cloned().unwrap_or(Value::Null);
+            let core_id = props.get("core-id").and_then(|c| c.as_u64()).unwrap_or(0);
+            let populated = slot.get("qom-path").is_some();
+            let driver = slot
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("qemu64-x86_64-cpu")
+                .to_string();
+            let id = format!("vcpu_{}", core_id);
+            parsed_slots.push(CpuSlot {
+                core_id,
+                populated,
+                driver,
+                props,
+                id,
+            });
+        }
+
+        parsed_slots.sort_by_key(|s| s.core_id);
+
+        for slot in &parsed_slots {
+            if (slot.core_id as u8) < desired {
+                if !slot.populated {
+                    let mut args = serde_json::Map::new();
+                    args.insert("driver".into(), Value::String(slot.driver.clone()));
+                    args.insert("id".into(), Value::String(slot.id.clone()));
+                    if let Value::Object(props_map) = &slot.props {
+                        for (k, v) in props_map {
+                            args.insert(k.clone(), v.clone());
+                        }
+                    }
+                    self.execute(&serde_json::json!({
+                        "execute": "device_add",
+                        "arguments": args
+                    }))?;
+                }
+            } else if slot.populated {
+                let _ = self.device_del(&slot.id);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -220,7 +291,11 @@ fn parse_observed(status: &Value, peripherals: &Value) -> Observed {
                 .collect()
         })
         .unwrap_or_default();
-    Observed { guest, device_ids }
+    Observed {
+        guest,
+        device_ids,
+        vcpu_count: None,
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +373,113 @@ mod tests {
             QmpClient::new("/nonexistent/qmp.sock").ping(),
             Err(HvError::Connect(_))
         ));
+    }
+
+    #[test]
+    fn resize_vcpus_hotplug() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("qmp.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            // First connection: query-hotpluggable-cpus
+            let (s1, _) = listener.accept().unwrap();
+            let mut w1 = s1.try_clone().unwrap();
+            let mut r1 = BufReader::new(s1);
+            w1.write_all(b"{\"QMP\": {\"version\": {}}}\r\n").unwrap();
+            let mut line = String::new();
+            r1.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"));
+            w1.write_all(b"{\"return\": {}}\r\n").unwrap();
+
+            line.clear();
+            r1.read_line(&mut line).unwrap();
+            assert!(line.contains("query-hotpluggable-cpus"));
+            w1.write_all(
+                b"{\"return\": [\
+                    {\"type\": \"host-x86_64-cpu\", \"vcpus-count\": 1, \"props\": {\"core-id\": 0, \"socket-id\": 0, \"thread-id\": 0}, \"qom-path\": \"/machine/unattached/device[0]\"},\
+                    {\"type\": \"host-x86_64-cpu\", \"vcpus-count\": 1, \"props\": {\"core-id\": 1, \"socket-id\": 0, \"thread-id\": 0}}\
+                ]}\r\n",
+            )
+            .unwrap();
+            drop(w1);
+            drop(r1);
+
+            // Second connection: device_add for core 1
+            let (s2, _) = listener.accept().unwrap();
+            let mut w2 = s2.try_clone().unwrap();
+            let mut r2 = BufReader::new(s2);
+            w2.write_all(b"{\"QMP\": {\"version\": {}}}\r\n").unwrap();
+            line.clear();
+            r2.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"));
+            w2.write_all(b"{\"return\": {}}\r\n").unwrap();
+
+            line.clear();
+            r2.read_line(&mut line).unwrap();
+            assert!(
+                line.contains("device_add") && line.contains("vcpu_1"),
+                "{line}"
+            );
+            w2.write_all(b"{\"return\": {}}\r\n").unwrap();
+        });
+
+        QmpClient::new(sock.to_str().unwrap())
+            .resize_vcpus(2)
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn resize_vcpus_unplug() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("qmp.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            // First connection: query-hotpluggable-cpus
+            let (s1, _) = listener.accept().unwrap();
+            let mut w1 = s1.try_clone().unwrap();
+            let mut r1 = BufReader::new(s1);
+            w1.write_all(b"{\"QMP\": {\"version\": {}}}\r\n").unwrap();
+            let mut line = String::new();
+            r1.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"));
+            w1.write_all(b"{\"return\": {}}\r\n").unwrap();
+
+            line.clear();
+            r1.read_line(&mut line).unwrap();
+            assert!(line.contains("query-hotpluggable-cpus"));
+            w1.write_all(
+                b"{\"return\": [\
+                    {\"type\": \"host-x86_64-cpu\", \"vcpus-count\": 1, \"props\": {\"core-id\": 0, \"socket-id\": 0, \"thread-id\": 0}, \"qom-path\": \"/machine/unattached/device[0]\"},\
+                    {\"type\": \"host-x86_64-cpu\", \"vcpus-count\": 1, \"props\": {\"core-id\": 1, \"socket-id\": 0, \"thread-id\": 0}, \"qom-path\": \"/machine/peripheral/vcpu_1\"}\
+                ]}\r\n",
+            )
+            .unwrap();
+            drop(w1);
+            drop(r1);
+
+            // Second connection: device_del for core 1
+            let (s2, _) = listener.accept().unwrap();
+            let mut w2 = s2.try_clone().unwrap();
+            let mut r2 = BufReader::new(s2);
+            w2.write_all(b"{\"QMP\": {\"version\": {}}}\r\n").unwrap();
+            line.clear();
+            r2.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"));
+            w2.write_all(b"{\"return\": {}}\r\n").unwrap();
+
+            line.clear();
+            r2.read_line(&mut line).unwrap();
+            assert!(
+                line.contains("device_del") && line.contains("vcpu_1"),
+                "{line}"
+            );
+            w2.write_all(b"{\"return\": {}}\r\n").unwrap();
+        });
+
+        QmpClient::new(sock.to_str().unwrap())
+            .resize_vcpus(1)
+            .unwrap();
+        server.join().unwrap();
     }
 }

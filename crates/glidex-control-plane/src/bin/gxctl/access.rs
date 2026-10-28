@@ -161,7 +161,7 @@ pub async fn whoami(client: &ApiClient) {
 // ---- tokens -------------------------------------------------------------------
 
 pub async fn token(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: token list | create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]... | revoke <id>";
+    let u = "Usage: token list | create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]... [--cluster ID]... [--all-clusters] | revoke <id>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => {
             let svc = svc!(client, TokenServiceClient);
@@ -208,7 +208,7 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
             }
         }
         "create" => {
-            let pos = positional(&args[1..], &["--days", "--project", "--role"]);
+            let pos = positional(&args[1..], &["--days", "--project", "--role", "--cluster"]);
             let Some(name) = pos.first() else {
                 return usage(u);
             };
@@ -245,6 +245,15 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                     Err(e) => return err(e),
                 }
             }
+            // Other organizations' clusters it should work on too
+            // (spec/tenancy.md §7.4).
+            req.clusters = flag_values(args, "--cluster")
+                .into_iter()
+                .map(String::from)
+                .collect();
+            if has_flag(args, "--all-clusters") {
+                req.clusters = vec!["all".into()];
+            }
             let svc = svc!(client, TokenServiceClient);
             match svc.create_token(req).await.map(|r| r.into_owned()) {
                 Ok(r) => {
@@ -256,6 +265,9 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                         rec.id,
                         ts(rec.expires_at.as_option())
                     );
+                    if !rec.clusters.is_empty() {
+                        println!("  Good on: {}", rec.clusters.join(", "));
+                    }
                     println!();
                     println!("    {}", r.token.bold());
                     println!();

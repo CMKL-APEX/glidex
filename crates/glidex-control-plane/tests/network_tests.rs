@@ -1299,3 +1299,75 @@ async fn a_networks_events_stream_as_they_happen() {
         "refused: the stream ends at once with its error"
     );
 }
+
+/// spec/workload-identity.md §15: a node NAT network's guests may be given
+/// this host's API; netd opens its ports for that bridge only, and closes
+/// them again. An isolated network's can't.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nat_network_may_open_the_hosts_api() {
+    let h = harness(true);
+    let (status, net) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{net}");
+    let id = net["network"]["id"].as_str().unwrap().to_string();
+    assert!(
+        net["network"].get("host_api").is_none(),
+        "closed by default"
+    );
+    let last_nft = || {
+        h.exec
+            .calls()
+            .into_iter()
+            .rfind(|c| c.starts_with("nft -f -") && c.contains("table inet glidex {"))
+            .unwrap_or_default()
+    };
+    let open = "iifname \"gxbr-lab\" tcp dport { 8841 } accept";
+    assert!(!last_nft().contains(open));
+
+    let (status, net) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/host_api",
+        Some(json!({"host_api": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["network"]["host_api"], true, "{net}");
+    h.manager.reconcile_network(&id).await.unwrap();
+    assert!(last_nft().contains(open), "{}", last_nft());
+    let (_, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
+    assert!(ev.to_string().contains("HostApi"), "{ev}");
+
+    let (status, _) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/host_api",
+        Some(json!({"host_api": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    h.manager.reconcile_network(&id).await.unwrap();
+    assert!(!last_nft().contains(open), "{}", last_nft());
+
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "iso", "mode": "NETWORK_MODE_ISOLATED", "bridge": "gxbr-iso"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = request(
+        &h.app,
+        "PUT",
+        "/networks/iso/host_api",
+        Some(json!({"host_api": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}

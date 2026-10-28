@@ -143,8 +143,11 @@ organizations that **operate** it, and lets each keep its own identity.
 | D66 | Ending trust | Either side removes its record (`gxctl admission remove` at the cluster, `gxctl tenant opt-out --cluster <id>` at the directory) and tells the other (`POST /trust/v1/end`, signed); the other side drops its record when told, or when the other next refuses it. A cluster with no admitted tenant of a directory left forgets that `TrustedDirectory`. | Each organization can leave without the other's cooperation. |
 | D67 | The feed, as snapshots | A cluster pulls `GET /d/<dir>/feed/v1?revision=<r>` from each directory it trusts every 30 s (and when told to), signed with its key (D63). The answer is the **filtered snapshot** of that directory for that cluster (the tenants opted in to it and admitted there; their projects; the users and teams who are members of them, with id, name and `disabled`; the role links on those tenants and projects; the directory's JWKS; the `sid`s ended in the last 12 h), with a `revision` (its SHA-256), or `304` when the cluster's `revision` is current. Never a connector secret, an identity, a credential or another tenant's record. Incremental write sets may come later behind the same endpoint. | Simple, self-healing (each answer is complete), and small for tenants of up to thousands of users. |
 | D68 | The replica | The cluster keeps the snapshot in its own tables as records of the trusted directory (`directory_id` = its `trusted-<hash>` id, D65): users, teams, memberships, tenants, projects and links, replaced in one write per new revision; nothing writes them but the feed. Authorization then works for those users as for local ones. A user missing from the replica, or `disabled` there, has no session or token on the cluster; an ended `sid` ends the cluster sessions made from it. | One authorization path; a cluster cut off keeps what it last knew (D13, task 7). |
-| D69 | Tokens and sessions from a trusted directory | The cluster accepts access tokens (D55) of a trusted directory, checked against the JWKS of its last feed, `aud` its cluster id, the user in the replica and enabled. The directory's token endpoint gives access tokens for a cluster in its `TrustedCluster` records to members of the tenants opted in to it. For the browser, the cluster is the directory's OIDC client `cluster:<id>`: its login page offers "Sign in with <directory>" for each trusted directory, the code flow (PKCE) goes to the directory with the cluster's callback, and the token request is signed with the cluster key (`private_key_jwt`); the ID token gives a **cluster session** bound to its `sid`. The callback is registered at the handshake (the redeem sends `ui_callback`). | gxctl and browsers reach other organizations' clusters with one login at their own directory (§7.1, §7.2). |
+| D69 | Tokens and sessions from a trusted directory | The cluster accepts access tokens (D55) of a trusted directory, checked against the JWKS of its last feed, `aud` its cluster id, the user in the replica and enabled. The directory's token endpoint gives access tokens for a cluster in its `TrustedCluster` records to members of the tenants opted in to it. For the browser, the cluster is the directory's OIDC client `cluster:<id>`: its login page offers "Sign in with `<directory>`" for each trusted directory, the code flow (PKCE) goes to the directory with the cluster's callback, and the token request is signed with the cluster key (`private_key_jwt`); the ID token gives a **cluster session** bound to its `sid`. The callback is registered at the handshake (the redeem sends `ui_callback`). | gxctl and browsers reach other organizations' clusters with one login at their own directory (§7.1, §7.2). |
 | D70 | Reports back | With each feed pull the cluster posts what it holds for each of the directory's tenants: admission status and cap, and counts of VMs, disks and networks (`POST /d/<dir>/feed/v1/report`, signed). The directory keeps the last report on its `TrustedCluster`, and the tenant's page shows it. | A tenant sees where its resources are without logging in to every cluster. |
+| D71 | Accounts in one browser | A browser may hold sessions in several directories of the host it uses (its hosted directories, and the cluster sessions of its trusted directories, D69): **one account per directory, one active**. The active one is `gx_session`; the others are in **`gx_accounts`** (HttpOnly, SameSite=Strict, Secure over TLS, `Path=/api/auth/accounts`: only the account endpoints see it), with at most 5 entries. A directory whose session ended stays listed, by its id only, to sign in again. The server keeps no record of which accounts a browser holds together, and logs none: `GET /auth/accounts` answers from the cookies its request carries, and only with each directory's name and the account's display name. Switching makes another live account active; adding moves the active account into the list and opens the login page; removing ends that session and forgets the directory; logging out ends the active session and keeps its directory listed; signing out of all ends every session and forgets all. | People with accounts in several organizations switch without signing in again. The list is the browser's own: no one else sees it, and the host doesn't learn which accounts go together beyond the requests that carry them. |
+| D72 | Logging out at a cluster | When a cluster session from a trusted directory's login ends (logout, an account removed, sign out of all), the cluster posts `POST /d/<dir>/trust/v1/logout {cluster_id, sid}`, signed with its key (`purpose: logout`), and the directory ends that chain if it is that cluster's (`cluster:<id>`). The person's session at the directory, and other clusters' chains, stay. Best effort: a chain not ended lapses unused (D55). | Logging out should leave nothing at the directory that could make the cluster session again; but one cluster's logout is not a decision to sign out of the organization. |
+| D73 | A changed web UI address | The cluster sends its current web UI callback with each report (D70); the directory takes it as the `ui_callback` of that `TrustedCluster` when it is an `http(s)` URL and differs, and audits the change (`registerCallback`). | The report is already signed with the cluster key that the handshake pinned, the same trust the redeem gave the first callback; asking the tenant to opt in again for a moved web UI was work for nothing. |
 
 ## 3. Threat model additions
 
@@ -192,7 +195,7 @@ next to the fleet's own directory tables).
 
 | Record | Scope | Contents |
 |---|---|---|
-| `Directory` (new) | directory | `id`, `name`, `issuer` (`https://<host>/d/<id>`), `owner_tenant`, signing key ids, `created_at`. |
+| `Directory` (new) | directory | `id`, `name`, `issuer` (`https://<host>/d/<id>`), `owner_tenant`, signing key ids, `trust_domain` ([workload-identity.md](workload-identity.md) W13), `created_at`. |
 | `Tenant` (new) | directory | `id`, `directory_id`, `slug` (`[a-z0-9-]{1,32}`, unique in the directory), `display_name`, `owns_directory`, `operator`, `suspended`, `self_tags` (D35), `domains` (assigned by the owner), `limits {projects, members, connectors}`, `created_at`. |
 | `TrustedCluster` (new) | directory | per tenant opt-in: `tenant_id`, `cluster_id`, `endpoint`, `ca_fingerprint`, OIDC client registration, `admitted` (as the cluster reports it), `feed_revision`. |
 | `TrustedDirectory` (new) | cluster | `directory_id`, `issuer`, `ca_fingerprint`, JWKS (from the feed), `max_staleness`, `feed_revision`, `last_sync`. |
@@ -423,6 +426,35 @@ the handshake (§12).
    absolute 12 h, bound to the directory and `sid`). Logout or
    revocation at the directory reaches the cluster on the feed and
    ends the session.
+
+A browser can hold accounts in several directories at once (D71):
+
+- **The picker.** The header's account menu and the Account page list
+  the browser's accounts: each directory's name, the account's name,
+  and whether it is signed in. Picking a signed-in account switches to
+  it. Picking a signed-out directory opens that directory's login: its
+  `/login/<directory>` page, or a trusted directory's "Sign in with"
+  flow.
+- **The endpoints** (`/auth/accounts`, public: they work without an
+  active session, and writes need the request's `Origin`):
+
+  | Endpoint | What it does |
+  |---|---|
+  | `GET /auth/accounts` | Lists the active account and the others: `{directory, directory_name, user_name?, signed_in, active}`. |
+  | `POST /auth/accounts/switch {directory}` | Makes that directory's live session active; answers the new CSRF value. |
+  | `POST /auth/accounts/add` | Moves the active session into `gx_accounts` and clears `gx_session`; the browser then logs in as usual. |
+  | `POST /auth/accounts/remove {directory}` | Ends that directory's session (and the directory chains it approved) and drops it from the list. |
+  | `POST /auth/accounts/logout-all` | Ends every session the browser holds and clears both cookies. |
+
+- **One per directory.** A login to a directory already listed replaces
+  that entry, and the session it held is ended. When the list is full,
+  adding is refused until one is removed.
+- **Switching is not a login.** Each session keeps its own idle and
+  absolute limits, step-up time and MFA. The audit log records a switch
+  as `switchAccount` by the account switched to, and names no other
+  account.
+- **Tabs.** A switch changes the account for every tab. A tab whose
+  CSRF value no longer matches reloads.
 
 ### 7.2 gxctl
 
@@ -1122,7 +1154,7 @@ directory_is_elsewhere` (with the directory's URL).
 
 `control-plane.json`: `auth.pam` and `auth.oidc` keep working as
 file-defined connectors of the host's first directory. New:
-`trust.default_max_staleness`, `directory.access_token_ttl`,
+`trust.default_max_staleness_minutes`, `directory.access_token_ttl`,
 `directory.sync_interval_min`, `tenancy.max_tenants`.
 
 ## 15. UI and CLI
@@ -1477,7 +1509,7 @@ useful on one host first):
      `admission offer`, `tenant opt-in|opt-out`, `trust list`; the §17
      offer tests between two control planes in one process (refused for
      the wrong tenant, the wrong directory, twice, after expiry).
-6. **Feeds and cluster sessions** (D67–D70), in three steps:
+6. **Feeds and cluster sessions** (D67–D71), in four steps:
    - **6a** the feed and the replica (D67, D68), and access tokens of a
      trusted directory (D69's first part: the directory's token
      endpoint for trusted clusters, the cluster checking them); gxctl
@@ -1487,7 +1519,11 @@ useful on one host first):
      the cluster as OIDC client with `private_key_jwt`, its login page's
      trusted directories, cluster sessions from ID tokens, ended `sid`s
      and disabled users ending them; UI e2e.
-   - **6c** reports back (D70), the tenant page's clusters, docs.
+   - **6c** accounts in one browser (D71): `gx_accounts`, the
+     `/auth/accounts` endpoints, the header's account picker and the
+     Account page's list; tests and UI e2e on one host with two
+     directories.
+   - **6d** reports back (D70), the tenant page's clusters, docs.
 7. **Partitions**: `max_staleness` per directory, refusing that
    directory's credentials past it, `X-Glidex-Directory-Lag`, API
    tokens' `clusters` (§7.4); the §17 partition tests.
@@ -1570,9 +1606,9 @@ T7 gets its own task list when it starts; per-protocol code under
 
 ## 23. Implementation status
 
-T0–T5 are implemented (T5: kind `jwt`); T6 is in progress (task 2
-below); T2b, T4b, T6b and T7 are not started. What
-follows is per milestone.
+T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
+check with two organizations); T2b, T4b, T6b and T7 are not started.
+What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
 operated and owned by tenant `admin`, with tenant `default` holding the
@@ -1949,7 +1985,50 @@ Task 6b, browser logins at a trusted directory:
 
 | Spec | Code |
 |---|---|
-| D69 (sessions) | The redeem's answer carries the cluster's `ui_callback` (`<web UI>/api/auth/t/<trusted id>/callback`, `api::trusted_login::callback_url`: the published UI address, else the first allowed origin), kept on the `TrustedCluster`. At the directory, `authorize` and `token` take client `cluster:<id>` (`api::op::Client`): only its registered callback; only members of the tenants opted in to it (refused at `authorize` with `access_denied`, at `token` and each refresh with `invalid_grant`); the token request authenticated by a client assertion signed with the cluster key (`peer::verify_client_assertion`, RFC 7523: `iss` = `sub` = the client id, `aud` the issuer, single use); the chain bound to the browser session that approved it (`Grant.session`). At the cluster, `GET /auth/t/{trusted}/start` (PKCE, `state` and a Lax cookie binding the browser, `trust::PendingLogins`, 10 min) and `…/callback` (the code exchanged over the directory's pinned certificate, `peer::post_unsigned`; the ID token checked against the last feed's JWKS, `aud` = the client id, the nonce; its user in the replica and enabled; a session of method `directory` with its `sid`). `/auth/methods` lists `trusted_directories` and the login page offers "Sign in with <tenant>" for each |
+| D69 (sessions) | The redeem's answer carries the cluster's `ui_callback` (`<web UI>/api/auth/t/<trusted id>/callback`, `api::trusted_login::callback_url`: the published UI address, else the first allowed origin), kept on the `TrustedCluster`. At the directory, `authorize` and `token` take client `cluster:<id>` (`api::op::Client`): only its registered callback; only members of the tenants opted in to it (refused at `authorize` with `access_denied`, at `token` and each refresh with `invalid_grant`); the token request authenticated by a client assertion signed with the cluster key (`peer::verify_client_assertion`, RFC 7523: `iss` = `sub` = the client id, `aud` the issuer, single use); the chain bound to the browser session that approved it (`Grant.session`). At the cluster, `GET /auth/t/{trusted}/start` (PKCE, `state` and a Lax cookie binding the browser, `trust::PendingLogins`, 10 min) and `…/callback` (the code exchanged over the directory's pinned certificate, `peer::post_unsigned`; the ID token checked against the last feed's JWKS, `aud` = the client id, the nonce; its user in the replica and enabled; a session of method `directory` with its `sid`). `/auth/methods` lists `trusted_directories` and the login page offers "Sign in with `<tenant>`" for each |
 | D67, D68 (ended `sid`s) | A chain's end is kept 12 h (`ended_sids`, table 62, directory scope: `RefreshTokens::end_where` for revoke, reuse, expiry, disabling and the session's logout, `end_session`); the feed carries this cluster's client's (`Snapshot.ended_sids`, in the revision); the cluster drops the sessions made from them. Users missing from the replica or disabled there have no session already |
 | Tests | `op.rs::a_sessions_chains_end_with_it_and_are_remembered`; `trust_tests.rs::a_browser_logs_in_to_the_cluster_at_its_directory` (the login page's directory, Bob refused at his directory, another callback refused, no client assertion refused, another browser refused, Erin's session at north, ended by her logout at acme with the next feed) |
-| Not yet | logging out at the cluster ending the directory's chain (it lapses unused after 30 days, or ends with the directory session); a changed web UI address registered again (opt in again); the UI e2e with two control planes (task 8's real check) |
+| D72 | `AuthService::end_session_hash` queues a trusted directory's session's `sid` (`trust::EndedChains`, at most 1000); on every server, `api::trust::end_chains` posts each to its directory (`POST /d/{dir}/trust/v1/logout`, `purpose: logout`); at the directory `logout_at_directory` checks the assertion against the `TrustedCluster`'s key and ends only that client's chain (`RefreshTokens::end_client_family`), `204` either way, audited as `endClusterSession` when it ended one |
+| D73 | `push_report` sends `ui_callback` (`trusted_login::callback_url`); `api::trust::report` registers it when it is an `http(s)` URL (`valid_callback`) and differs, audited `registerCallback` |
+| Tests | `trust_tests.rs::logging_out_at_the_cluster_ends_the_directorys_chain`, `a_changed_web_ui_address_is_registered_again` |
+| Not yet | the UI e2e with two control planes (task 8's real check) |
+
+Task 6c, accounts in one browser:
+
+| Spec | Code |
+|---|---|
+| D71 | `api::accounts`. `gx_accounts` holds `d:<directory>` and `s:<directory>:<session>` entries, the active account's directory among them, so that a logout or a lapsed session keeps it listed. It is `HttpOnly`, `SameSite=Strict`, `Path=/api/auth/accounts` and 30 days long. Reading it, `held`: (1) checks each other session without touching it (`AuthService::peek_session`, so each keeps its own idle limit), takes its directory from its user rather than from the cookie, and lists a lapsed one signed out; (2) ends a second session in the active account's directory; (3) keeps at most 5. The endpoints are `GET /auth/accounts`, `POST /auth/accounts/switch`, `add`, `remove` and `logout-all`. They are public; writes need an `Origin`, and the middleware's CSRF check when a session is active. A switch is audited as `switchAccount` by the account switched to. Ending a session (`AuthService::end_session_hash`) also ends the directory chains it approved. In the web UI: the header's `AccountMenu` (the user's name: the active account, Account settings, Switch to, Add another account, Sign out of all), the Account page's and the login page's `AccountList`, and a `storage` event that reloads the other tabs after a switch |
+| Tests | `accounts.rs::the_list_cookie_takes_only_what_it_writes`; `tenancy_tests.rs::a_browser_holds_accounts_in_several_directories` (no Origin, a wrong CSRF value, adding, switching both ways, a directory not held, a lapsed session listed signed out, removing, signing out of all); UI e2e `accounts.spec.ts` (a new directory's first administrator added in the same browser by invitation and passkey, switching from the header both ways, removing on the Account page) |
+
+Task 6d, reports back:
+
+| Spec | Code |
+|---|---|
+| D70 | After each feed pull (`spawn_feeds`), `api::trust::push_report` posts `POST /d/{dir}/feed/v1/report {cluster_id, report}`, signed with the cluster key (`purpose: report`). `report_for` builds one `trust::TenantReport` per admitted tenant of that directory: suspended or not, the cap, and the use of its projects here (projects, VMs and running VMs, disks and their GiB, networks; `VmManager::usage` per project). At the directory, `api::trust::report` checks the assertion against the `TrustedCluster`'s key, keeps only its opted-in tenants, stamps its own time, and stores it as `TrustedCluster.report`. `TenantCluster.report` (`TenantClusterReport`) carries it in `ListTenantClusters`; `gxctl tenant clusters` prints it, and the tenant page shows it in *Clusters of other organizations* (`readTenantClusters`). Docs: the operator guide's clusters page (feeds, sign-in, reports, port 8841 both ways), the user guide's logging-in page (an organization's sign-in, "Sign in with", several accounts) |
+| Tests | `trust_tests.rs::the_cluster_reports_its_tenants_back` (the report at the directory and in the tenant's cluster list; another tenant in it dropped; unsigned refused) |
+
+Task 7a, staleness:
+
+| Spec | Code |
+|---|---|
+| D13 | A feed answer (new content, or `304`) records when the directory last answered (`FeedState.checked_at`, written at most once a minute, `TrustStore::mark_checked`); `TrustStore::lag` is the time since. `TrustedDirectory.max_staleness_minutes` (else `trust.default_max_staleness_minutes`, 60) is the limit; `api::trust::freshness` compares them, refusing an id it can't resolve. The API middleware refuses a principal of a trusted directory past its limit with `401 directory_stale`, but on `/auth/…` (to see who one is and log out), and adds `X-Glidex-Directory-Lag: <seconds>` once the lag passes 90 s (three missed pulls). `AdmissionService.SetTrustedDirectory` (`PATCH /admissions/directories/{id}`, `manageAdmissions`) sets the limit; `ListTrustedDirectories` shows the limit, the last feed, the lag and `stale`; gxctl `admission directories` and `admission staleness <directory> <minutes>` (or `default`) |
+| Tests | `trust_tests.rs::a_directory_out_of_reach_too_long_is_refused` (no header while fresh; the lag once behind; past a 1-minute limit refused but on `/auth/whoami`, the cluster's own administrator unaffected; the next feed restoring it; back to the default) |
+| Not yet | API tokens' `clusters` (§7.4) and their feed: task 7b |
+
+Task 7b, API tokens' clusters:
+
+| Spec | Code |
+|---|---|
+| §7.4 | `Token.clusters` (cluster ids or `all`; empty, as every older token: only where it was made, and never fed); `Token::good_on`. `CreateTokenRequest.clusters` (`service::access::token_clusters`): this cluster, a `TrustedCluster` of the caller's directory, or `all`, the one it is made on always kept; at most 32. The API middleware refuses a token not good on this cluster (`unauthenticated`, "this token isn't for this cluster"); a token fed from a trusted directory counts as made elsewhere. The feed's `api_tokens` rows: tokens listing that cluster (or `all`) of the users the feed sends and of its projects, by hash, without last use, device or client; `localize` takes only those. Their narrowing links come with the project links. gxctl `token create --cluster ID… | --all-clusters`. The web UI's token form is task 8 |
+| Tests | `trust_tests.rs::api_tokens_work_on_the_clusters_they_list` (before a feed refused; after it, the listed token with its project role, `all` too; an unlisted token and another user's refused; an unknown cluster refused at creation; nothing of its use kept at the cluster; revoked at the directory, refused after the next feed) |
+
+Task 8a, the UI and gxctl for another organization's cluster:
+
+| Spec | Code |
+|---|---|
+| UI | The Admissions page's *Directories of other organizations* (`components/Trust.tsx::TrustedDirectoriesCard`: issuer, tenants, last feed, `stale`, the limit and **Limit** to set it) and *Offers to other organizations' tenants* (`OffersCard`: make one, its token shown once, the list, **Revoke**); the tenant page's *Clusters of other organizations* takes an offer (**Accept offer**, `optInCluster`) and has **Opt out** (`manageTenantClusters`); the token form's *Also works on* (each cluster the caller's tenants use, or all) and the token list saying so. The login page's directories came with 6b and 6c |
+| D57, D69 | gxctl `auth login --directory ID --via PROFILE`: the device grant at another organization's directory through `PROFILE`'s servers and trust, for this profile's cluster (`DirectoryLogin.via`); its refreshes and revocation go the same way |
+| Tests | UI e2e `trust.spec.ts` (the Admissions page's cards, an offer refused without TLS, a token that isn't an offer refused on the tenant page); `gxctl config::a_directory_login_reads_with_or_without_via` |
+| Not yet | the real check with two organizations (8b) |
+
+Task 8b, the real check: spec/idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between gpu-dev2's cluster and spark-1 as a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.

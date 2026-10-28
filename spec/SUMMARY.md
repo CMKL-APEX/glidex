@@ -4,6 +4,7 @@
      A new spec needs an entry here and in README.md. -->
 
 [Overview](README.md)
+[Progress](progress.md)
 
 # Core
 
@@ -11,6 +12,7 @@
 - [Data model](data-model.md)
 - [Reconciliation](reconciliation.md)
 - [Hypervisors](hypervisors.md)
+- [Pylon and CPU elasticity](pylon.md)
 - [Direct kernel boot](kernel-boot.md)
 - [Images and disks](images.md)
 - [Datastores](storage.md)

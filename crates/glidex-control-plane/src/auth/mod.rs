@@ -16,7 +16,10 @@ use crate::authz::{
     self, AuthContext, Decision, Engine, Ent, EntitySet, Link, PolicySource, Query, SiteSource,
 };
 use crate::config::Config;
-use sha2::{Digest, Sha256};
+use glidex_auth::secrets::stamp;
+pub use glidex_auth::secrets::{base62, constant_eq, random_bytes, random_token, sha256_hex};
+use glidex_auth::session::{self as rules, NEVER_FRESH, SessionRules};
+use glidex_auth::token::TokenRules;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -28,20 +31,8 @@ pub const SESSION_COOKIE: &str = "gx_session";
 /// Header carrying the session's CSRF value on cookie-authenticated writes.
 pub const CSRF_HEADER: &str = "x-glidex-csrf";
 pub const TOKEN_PREFIX: &str = "gxt_";
-/// Clean a client-claimed `device` / `client` string for storage: one
-/// trimmed line, ≤ 128 characters, no control characters; `None` on
-/// anything else. Display and audit only — never an authorization input
-/// (spec/gxctl-auth.md §7.2).
-fn stamp(s: Option<&str>) -> Option<String> {
-    let s = s
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control) && s.len() <= 128)?;
-    Some(s.to_string())
-}
 /// How long a console ticket stays valid (spec §5.6).
 pub const TICKET_SECS: u64 = 30;
-/// `age_secs` for principals that can never satisfy step-up.
-const NEVER_FRESH: i64 = i64::MAX / 4;
 
 #[derive(Debug, Error)]
 pub enum AuthError {
@@ -232,7 +223,7 @@ impl Principal {
             // purely as its owner it can't reach step-up actions.
             (Method::Token, Some(_)) if as_owner && !self.token_narrowed => NEVER_FRESH,
             (Method::Token, _) => 0,
-            _ => (store::now().saturating_sub(self.authenticated_at)) as i64,
+            _ => rules::age_secs(self.authenticated_at, store::now()),
         };
         AuthContext {
             method: self.method.as_str().into(),
@@ -286,6 +277,8 @@ pub struct AuthService {
     pub peer_replays: crate::directory::peer::Replays,
     /// Browser logins at trusted directories under way (D69).
     pub trusted_logins: crate::trust::PendingLogins,
+    /// Their sessions' chains to end at the directory (D72).
+    pub ended_chains: crate::trust::EndedChains,
     /// Their issuers' keys, cached.
     pub issuers: crate::directory::federation::Issuers,
     /// The tokens exchanges gave (D48).
@@ -337,6 +330,28 @@ impl crate::cluster::runtime::SecretsKey for AuthService {
     fn kek_id(&self) -> String {
         self.connectors.kek_id()
     }
+
+    fn seal_value(&self, owner: &str, field: &str, value: &str) -> Result<(), String> {
+        self.connectors
+            .set_value(owner, field, value)
+            .map_err(|e| e.to_string())
+    }
+
+    fn open_value(
+        &self,
+        owner: &str,
+        field: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.connectors
+            .value(owner, field)
+            .map_err(|e| e.to_string())
+    }
+
+    fn forget_value(&self, owner: &str, field: &str) -> Result<(), String> {
+        self.connectors
+            .remove_value(owner, field)
+            .map_err(|e| e.to_string())
+    }
 }
 
 pub fn connector_err(e: crate::directory::ConnectorError) -> AuthError {
@@ -356,51 +371,6 @@ pub fn tenant_err(e: crate::tenants::TenantError) -> AuthError {
         T::Storage(m) => AuthError::Unavailable(m),
         other => AuthError::Invalid(other.to_string()),
     }
-}
-
-pub fn sha256_hex(data: &[u8]) -> String {
-    let d = Sha256::digest(data);
-    d.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// `n` random bytes.
-pub fn random_bytes(n: usize) -> Vec<u8> {
-    let mut b = vec![0u8; n];
-    getrandom::fill(&mut b).expect("system random source");
-    b
-}
-
-const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-
-/// Base62 of `bytes` (big-endian), for tokens.
-pub fn base62(bytes: &[u8]) -> String {
-    let mut digits: Vec<u8> = Vec::new();
-    let mut num: Vec<u8> = bytes.to_vec();
-    while num.iter().any(|&b| b != 0) {
-        let mut rem: u32 = 0;
-        for b in num.iter_mut() {
-            let acc = (rem << 8) | *b as u32;
-            *b = (acc / 62) as u8;
-            rem = acc % 62;
-        }
-        digits.push(BASE62[rem as usize]);
-    }
-    if digits.is_empty() {
-        digits.push(b'0');
-    }
-    digits.reverse();
-    String::from_utf8(digits).expect("ascii")
-}
-
-/// URL-safe random string (session ids, CSRF values, tickets).
-pub fn random_token(n: usize) -> String {
-    base62(&random_bytes(n))
-}
-
-/// Compare two strings in time independent of where they differ.
-pub fn constant_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 impl AuthService {
@@ -424,6 +394,7 @@ impl AuthService {
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
             trusted_logins: Default::default(),
+            ended_chains: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -472,6 +443,7 @@ impl AuthService {
             trust: crate::trust::TrustStore::new(db.clone()),
             peer_replays: Default::default(),
             trusted_logins: Default::default(),
+            ended_chains: Default::default(),
             issuers: crate::directory::federation::Issuers::new(
                 config.auth.federation.allow_private_issuers,
             ),
@@ -488,6 +460,12 @@ impl AuthService {
 
     pub fn is_disabled(&self) -> bool {
         self.disabled
+    }
+
+    /// The configured session timeouts (spec §5.5).
+    fn session_rules(&self) -> SessionRules {
+        let cfg = &self.config.auth.session;
+        SessionRules::new(cfg.idle_minutes, cfg.absolute_hours)
     }
 
     // ---- policies -------------------------------------------------------
@@ -1128,15 +1106,12 @@ impl AuthService {
         transport: Transport,
         ip: Option<IpAddr>,
     ) -> Result<Option<Principal>, AuthError> {
-        let hash = sha256_hex(cookie.as_bytes());
+        let hash = rules::session_hash(cookie);
         let Some(mut s) = self.store.session(&hash)? else {
             return Ok(None);
         };
         let now = store::now();
-        let cfg = &self.config.auth.session;
-        if now > s.last_seen + cfg.idle_minutes * 60
-            || now > s.created_at + cfg.absolute_hours * 3600
-        {
+        if self.session_rules().expired(s.created_at, s.last_seen, now) {
             self.store.remove_session(&hash)?;
             return Ok(None);
         }
@@ -1146,7 +1121,7 @@ impl AuthService {
         if user.disabled {
             return Ok(None);
         }
-        if now >= s.last_seen + 60 {
+        if rules::touch_due(Some(s.last_seen), now) {
             s.last_seen = now;
             self.store.put_session(&hash, &s)?;
         }
@@ -1185,7 +1160,7 @@ impl AuthService {
         if !secret.starts_with(TOKEN_PREFIX) {
             return Ok(None);
         }
-        let hash = sha256_hex(secret.as_bytes());
+        let hash = glidex_auth::token::token_hash(secret);
         let Some(mut t) = self.store.token_by_hash(&hash)? else {
             return self.federated_principal(&hash, transport, ip);
         };
@@ -1209,7 +1184,7 @@ impl AuthService {
             .links()?
             .iter()
             .any(|l| l.link.principal == Ent::Token(t.id.clone()));
-        if t.last_used_at.is_none_or(|at| now >= at + 60) {
+        if rules::touch_due(t.last_used_at, now) {
             t.last_used_at = Some(now);
             t.last_used_from = ip.map(|i| i.to_string());
             self.store.put_token(&hash, &t)?;
@@ -1252,21 +1227,28 @@ impl AuthService {
         if f.expires_at <= now {
             return Ok(None);
         }
-        let Some((tenant, id)) = f.federation.split_once('/') else {
-            return Ok(None);
-        };
-        let still = self
-            .federations
-            .get(tenant, id)
-            .map_err(|e| AuthError::Invalid(e.to_string()))?
-            .is_some_and(|fed| {
-                fed.enabled
-                    && fed.rules.iter().any(|r| {
-                        r.fingerprint() == f.rule && r.service_account == f.service_account
-                    })
-            });
-        if !still {
-            return Ok(None);
+        // A VM's own token (workload-identity.md W6) answers to no
+        // federation: it lives while its service account does (W8).
+        if !f
+            .federation
+            .starts_with(crate::directory::workload::VM_ORIGIN)
+        {
+            let Some((tenant, id)) = f.federation.split_once('/') else {
+                return Ok(None);
+            };
+            let still = self
+                .federations
+                .get(tenant, id)
+                .map_err(|e| AuthError::Invalid(e.to_string()))?
+                .is_some_and(|fed| {
+                    fed.enabled
+                        && fed.rules.iter().any(|r| {
+                            r.fingerprint() == f.rule && r.service_account == f.service_account
+                        })
+                });
+            if !still {
+                return Ok(None);
+            }
         }
         let Some((_, sa)) = self.store.token_by_id(&f.service_account)? else {
             return Ok(None);
@@ -1400,11 +1382,10 @@ impl AuthService {
         mfa: bool,
         sid: Option<String>,
     ) -> Result<(String, String), AuthError> {
-        let id = random_token(32);
-        let csrf = random_token(24);
+        let rules::NewSession { id, hash, csrf } = rules::new_session();
         let now = store::now();
         self.store.put_session(
-            &sha256_hex(id.as_bytes()),
+            &hash,
             &Session {
                 user_id: user.id.clone(),
                 method: method.as_str().into(),
@@ -1416,23 +1397,51 @@ impl AuthService {
                 sid,
             },
         )?;
-        let cfg = &self.config.auth.session;
-        let _ = self.store.prune_sessions(|s| {
-            now > s.last_seen + cfg.idle_minutes * 60
-                || now > s.created_at + cfg.absolute_hours * 3600
-        });
+        let timeouts = self.session_rules();
+        let _ = self
+            .store
+            .prune_sessions(|s| timeouts.expired(s.created_at, s.last_seen, now));
         Ok((id, csrf))
     }
 
     pub fn end_session(&self, p: &Principal) -> Result<(), AuthError> {
         if let Some(h) = &p.session_hash {
-            self.store.remove_session(h)?;
-            // And the clusters' browser logins it approved (D69).
-            if let Err(e) = self.refresh_tokens.end_session(h) {
-                tracing::warn!("ending the session's chains: {}", e);
-            }
+            self.end_session_hash(h)?;
         }
         Ok(())
+    }
+
+    /// End the session with hash `h`, and the clusters' browser logins it
+    /// approved (D69). A session from a trusted directory's login has its
+    /// chain ended there too (D72).
+    pub fn end_session_hash(&self, h: &str) -> Result<(), AuthError> {
+        if let Some(s) = self.store.session(h)?
+            && let Some(sid) = s.sid
+            && let Some(u) = self.store.user(&s.user_id)?
+            && u.directory_id.starts_with("trusted-")
+        {
+            self.ended_chains.push(u.directory_id, sid);
+        }
+        self.store.remove_session(h)?;
+        if let Err(e) = self.refresh_tokens.end_session(h) {
+            tracing::warn!("ending the session's chains: {}", e);
+        }
+        Ok(())
+    }
+
+    /// The user of session `cookie` while it is good, without counting
+    /// this as its use: another account a browser holds (D71).
+    pub fn peek_session(&self, cookie: &str) -> Result<Option<User>, AuthError> {
+        let Some(s) = self.store.session(&rules::session_hash(cookie))? else {
+            return Ok(None);
+        };
+        if self
+            .session_rules()
+            .expired(s.created_at, s.last_seen, store::now())
+        {
+            return Ok(None);
+        }
+        Ok(self.store.user(&s.user_id)?.filter(|u| !u.disabled))
     }
 
     /// PAM login through glidex-authd (spec §5.3). Returns the user.
@@ -1658,11 +1667,10 @@ impl AuthService {
         let Ok(Some(s)) = self.store.session(hash) else {
             return false;
         };
-        let now = store::now();
-        let cfg = &self.config.auth.session;
         s.user_id == user_id
-            && now <= s.last_seen + cfg.idle_minutes * 60
-            && now <= s.created_at + cfg.absolute_hours * 3600
+            && self
+                .session_rules()
+                .live(s.created_at, s.last_seen, store::now())
             && self
                 .store
                 .user(user_id)
@@ -1866,19 +1874,14 @@ impl AuthService {
         client: Option<&str>,
     ) -> Result<(String, Token), AuthError> {
         let cfg = &self.config.auth.tokens;
-        let days = days.unwrap_or(cfg.default_days);
-        if days == 0 || days > cfg.max_days {
-            return Err(AuthError::Invalid(format!(
-                "token lifetime must be 1-{} days",
-                cfg.max_days
-            )));
-        }
-        if name.is_empty() || name.len() > 64 {
-            return Err(AuthError::Invalid(
-                "token name must be 1-64 characters".into(),
-            ));
-        }
-        let secret = format!("{}{}", TOKEN_PREFIX, random_token(32));
+        let lifetime = TokenRules {
+            default_days: cfg.default_days,
+            max_days: cfg.max_days,
+        };
+        let invalid = |e: glidex_auth::token::TokenError| AuthError::Invalid(e.to_string());
+        let days = lifetime.days(days).map_err(invalid)?;
+        glidex_auth::token::check_name(name).map_err(invalid)?;
+        let minted = glidex_auth::token::mint_token(TOKEN_PREFIX);
         let now = store::now();
         let t = Token {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1891,9 +1894,10 @@ impl AuthService {
             last_used_from: None,
             device: stamp(device),
             client: stamp(client),
+            clusters: Vec::new(),
         };
-        self.store.put_token(&sha256_hex(secret.as_bytes()), &t)?;
-        Ok((secret, t))
+        self.store.put_token(&minted.hash, &t)?;
+        Ok((minted.secret, t))
     }
 
     /// Revoke a token and its links.
@@ -2005,6 +2009,7 @@ impl AuthService {
             mine.push(Ent::Token(t.id.clone()));
         }
         let mut projects = Vec::new();
+        let mut tenants = Vec::new();
         for l in self.store.links()? {
             if !mine.contains(&l.link.principal) {
                 continue;
@@ -2012,9 +2017,17 @@ impl AuthService {
             match l.link.resource {
                 Ent::Cluster => return Ok(LinkedProjects::All),
                 Ent::Project(id) => projects.push(id),
+                // A tenant role reaches its projects (tenant-admin as owner,
+                // tenant-auditor as reader); each one is still checked.
+                Ent::Tenant(id) => tenants.push(id),
                 _ => {}
             }
         }
+        projects.extend(
+            self.tenants
+                .projects_of(&tenants)
+                .map_err(|e| AuthError::Unavailable(e.to_string()))?,
+        );
         if let Some(TokenKind::ServiceAccount { project }) = p.token.as_ref().map(|t| &t.kind) {
             projects.push(project.clone());
         }

@@ -181,6 +181,29 @@ impl TopologySummary {
                 .or_insert_with(|| why.to_string());
         }
     }
+
+    /// Reserve the host cores for pylond (Plane 1 control thread on Core 0 and
+    /// Plane 2 polling engine on Core 1 / first sibling-free core; spec/pylon.md §2 P8 & §8.2).
+    pub fn reserve_pylon_cores(&mut self) {
+        let mut pylon_cpus = Vec::new();
+        let mut cores_reserved = 0;
+        for node in &self.numa_nodes {
+            for core in &node.cores {
+                pylon_cpus.extend(core.iter().copied());
+                cores_reserved += 1;
+                if cores_reserved >= 2 {
+                    break;
+                }
+            }
+            if cores_reserved >= 2 {
+                break;
+            }
+        }
+        if pylon_cpus.is_empty() {
+            pylon_cpus.extend([0, 1]);
+        }
+        self.reserve(pylon_cpus, "pylon");
+    }
 }
 
 /// The CPUs of an OVS CPU mask (`0x6`, `6`, any length).
@@ -1374,5 +1397,25 @@ mod tests {
             "{:?}",
             t.warnings
         );
+    }
+
+    #[test]
+    fn pylon_cores_reservation() {
+        let mut t = TopologySummary {
+            numa_nodes: vec![NumaNode {
+                id: 0,
+                cores: vec![vec![0, 64], vec![1, 65], vec![2, 66]],
+                memory_mib: 16384,
+                hugepages: Default::default(),
+            }],
+            ..Default::default()
+        };
+        t.reserve_pylon_cores();
+        assert_eq!(t.reserved_cpus.get(&0).map(String::as_str), Some("pylon"));
+        assert_eq!(t.reserved_cpus.get(&64).map(String::as_str), Some("pylon"));
+        assert_eq!(t.reserved_cpus.get(&1).map(String::as_str), Some("pylon"));
+        assert_eq!(t.reserved_cpus.get(&65).map(String::as_str), Some("pylon"));
+        assert!(!t.reserved_cpus.contains_key(&2));
+        assert!(!t.reserved_cpus.contains_key(&66));
     }
 }

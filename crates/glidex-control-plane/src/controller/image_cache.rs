@@ -27,6 +27,10 @@ pub struct CacheRow {
     pub verified_at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// A kernel this node extracted for the leader (spec/kernel-boot.md
+    /// §10.2): what the leader records on the image once the row is Ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extracted: Option<crate::images::extract::ExtractedKernel>,
 }
 
 fn cache_key(image: &str, node: &str) -> String {
@@ -131,8 +135,23 @@ impl VmManager {
         Ok(!stale.is_empty() || changed)
     }
 
-    fn put_cache_row(&self, image: &str, row: Option<CacheRow>) -> Result<(), VmManagerError> {
-        let key = cache_key(image, &self.local_node_id());
+    pub(crate) fn put_cache_row(
+        &self,
+        image: &str,
+        row: Option<CacheRow>,
+    ) -> Result<(), VmManagerError> {
+        self.put_cache_row_of(image, &self.local_node_id(), row)
+    }
+
+    /// `node`'s row for `image`: a node writes its own; the leader may
+    /// clear another's (a retried delegated extraction, §10.2).
+    pub(crate) fn put_cache_row_of(
+        &self,
+        image: &str,
+        node: &str,
+        row: Option<CacheRow>,
+    ) -> Result<(), VmManagerError> {
+        let key = cache_key(image, node);
         let db = self.store.database();
         db.write(Origin::Controller, |tx| -> Result<(), VmManagerError> {
             let mut t = tx
@@ -381,6 +400,7 @@ impl VmManager {
                         bytes,
                         verified_at: crate::tenancy::now(),
                         error: String::new(),
+                        extracted: None,
                     }),
                 )?;
             }
@@ -405,6 +425,7 @@ impl VmManager {
                 bytes: 0,
                 verified_at: 0,
                 error: String::new(),
+                extracted: None,
             }),
         )?;
         let mut result: Result<u64, String> = Ok(0);
@@ -468,6 +489,7 @@ impl VmManager {
                         bytes,
                         verified_at: crate::tenancy::now(),
                         error: String::new(),
+                        extracted: None,
                     }),
                 )?;
                 // Disks and VMs waiting for the file.
@@ -489,6 +511,7 @@ impl VmManager {
                         bytes: 0,
                         verified_at: 0,
                         error: e,
+                        extracted: None,
                     }),
                 )?;
                 Ok(Some(Duration::from_secs(30)))

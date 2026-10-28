@@ -11,7 +11,7 @@
 
 use super::image_cache::{CachePhase, CacheRow};
 use crate::datastore::record::{self, Datastore};
-use crate::images::{CloneMode, DiskOrigin, DiskPhase, Image, ImageKind, ImageStatus};
+use crate::images::{CloneMode, DiskOrigin, DiskPhase, Image, ImageError, ImageKind, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
 use crate::store::{Origin, TableId};
 use std::path::{Path, PathBuf};
@@ -114,7 +114,7 @@ impl VmManager {
                 continue;
             }
             if let Ok(Some(ds)) = record::find(&db, &target)
-                && ds.is_shared()
+                && ds.holds_image_files()
             {
                 out.push(ds);
             }
@@ -183,6 +183,7 @@ impl VmManager {
                     bytes: 0,
                     verified_at: 0,
                     error: String::new(),
+                    extracted: None,
                 }),
             )
             .map_err(|e| e.to_string())?;
@@ -207,6 +208,7 @@ impl VmManager {
                         bytes: 0,
                         verified_at: 0,
                         error: e.clone(),
+                        extracted: None,
                     }),
                 );
                 return Err(e);
@@ -222,6 +224,7 @@ impl VmManager {
                 bytes,
                 verified_at: crate::tenancy::now(),
                 error: String::new(),
+                extracted: None,
             }),
         )
         .map_err(|e| e.to_string())
@@ -299,6 +302,29 @@ impl VmManager {
             return;
         };
         for ds in all.iter().filter(|d| d.on_node(&me)) {
+            // A hyperstor datastore's image volume is one for the cluster:
+            // a server removes it (the others find it gone).
+            if ds.driver.is_hyperstor() {
+                let Some(d) = self
+                    .images
+                    .hyperstor_identity(ds)
+                    .and_then(|i| crate::datastore::hyperstor::HyperstorDriver::of(ds, Some(i)))
+                else {
+                    continue;
+                };
+                match d.delete_image_volume(id) {
+                    Ok(()) => {}
+                    // A deleted disk's clone, in hyperstor's trash, still
+                    // needs it: the leader removes it later (S24).
+                    Err(ImageError::Busy(e)) => {
+                        tracing::info!(image = %id, datastore = %ds.name, "keeping the image volume until its clones are purged: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::warn!(image = %id, datastore = %ds.name, "removing the image volume: {}", e);
+                    }
+                }
+                continue;
+            }
             let record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver else {
                 continue;
             };

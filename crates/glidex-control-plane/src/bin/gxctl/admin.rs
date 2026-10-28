@@ -218,7 +218,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
-            "Usage: auth login [--url U]… [--profile P] [--directory [ID] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
+            "Usage: auth login [--url U]… [--profile P] [--directory [ID] [--via PROFILE] | --oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | profiles remove P [--forget-token] | trust list|fetch|remove [--all] | token … | whoami",
         ),
     }
 }
@@ -440,6 +440,18 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                 // certificate (down, refused, timed out): say it plainly.
                 None => return err(e),
                 Some(fp) => {
+                    // The pinned certificate itself, refused for another
+                    // reason: it doesn't name the host dialled.
+                    let pinned = glidex_tls::Trust::normalize_pin(&fp).is_some_and(|f| {
+                        tls.pins
+                            .iter()
+                            .any(|p| glidex_tls::Trust::normalize_pin(p).as_ref() == Some(&f))
+                    });
+                    if pinned {
+                        return err(format!(
+                            "the certificate of {host} is the pinned one (SHA-256 {fp}), but it doesn't name {host}: {e}\n  use a name it was issued for (the host's own name, or one in GLIDEX_UI_HOSTS / the TLS setup), e.g. --url https://<that name>:8841"
+                        ));
+                    }
                     if !tls.pins.is_empty() && !asked {
                         // §5.3: a pinned certificate that changed is a hard
                         // error — never a re-prompt.
@@ -534,15 +546,26 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
     // A directory login (D57) keeps its refresh token in the profile.
     let mut dir_login: Option<config::DirectoryLogin> = None;
-    let resource = format!(
-        "urn:glidex:cluster:{}",
-        claimed.as_deref().unwrap_or("local")
-    );
+    // The `aud` this server's tokens carry: a standalone host has an id of
+    // its own (D57); older servers don't say, and then it is the cluster's.
+    let audience = info["token_audience"]
+        .as_str()
+        .filter(|a| !a.is_empty())
+        .map(String::from)
+        .or_else(|| claimed.clone())
+        .unwrap_or_else(|| "local".into());
+    let resource = format!("urn:glidex:cluster:{audience}");
     let (credential, method_hint) = if has_flag(args, "--directory") {
         let dir = flag_value(args, "--directory")
             .filter(|v| !v.starts_with("--"))
             .unwrap_or("local");
-        match crate::dirlogin::device_login(&cl, dir, &resource).await {
+        // Another organization's directory (D69): through the profile of
+        // its servers, whose certificate is already trusted.
+        let via = flag_value(args, "--via");
+        if via == Some(name.as_str()) {
+            return err("--via names the profile of the directory's servers, not this one");
+        }
+        match crate::dirlogin::device_login(&cl, dir, &resource, via).await {
             Some(l) => {
                 dir_login = Some(l.keep);
                 (l.access, "directory")
@@ -768,7 +791,10 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
-    let want = flag_value(args, "--profile");
+    // The profile asked for, else this session's (`gxctl --profile P auth
+    // logout`), else the file's current one.
+    let session_profile = client.profile_name();
+    let want = flag_value(args, "--profile").or(session_profile.as_deref());
     let name = match config::profile_of(&cfg, want) {
         Some((n, _)) => n.clone(),
         None => {
@@ -786,7 +812,11 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
     let token_id = config::profile_of(&cfg, want)
         .and_then(|(_, p)| p.identity.as_ref())
         .and_then(|i| i.token_id.clone());
-    if has_flag(args, "--revoke") {
+    let directory_login =
+        config::profile_of(&cfg, want).is_some_and(|(_, p)| p.directory.is_some());
+    // A directory login has no API token to revoke: its chain is ended at
+    // the directory below.
+    if has_flag(args, "--revoke") && !directory_login {
         let id = match &token_id {
             Some(id) => id.clone(),
             None => {

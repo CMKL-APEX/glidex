@@ -105,6 +105,7 @@ name (ids when `/projects` isn't readable).
 | `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
+| `service-account <name\|id> [--set <service account> \| --none]` | `GetVm` and `ListTokens`: the VM's service account; `--set` (an id, or a name in the VM's project) / `--none`: `UpdateVm` (`service_account`), for its next token ([workload-identity.md](workload-identity.md) W5) |
 | `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/kernel-boot.md §10.5) |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |
@@ -136,7 +137,7 @@ name (ids when `/projects` isn't readable).
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
 | `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
-| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`); with `--lvm` LVM-thin on each node (`lvm`, §11.1), `--node-path NODE=VG` naming a node's own volume group |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`); with `--lvm` LVM-thin on each node (`lvm`, §11.1), `--node-path NODE=VG` naming a node's own volume group; with `--hyperstor` a hyperstor cluster's pool (`hyperstor`, §11.2), enrolling with the token in F |
 | `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
 | `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
@@ -178,8 +179,9 @@ name (ids when `/projects` isn't readable).
 | `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([tenancy.md](tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
 | `tenant clusters <t>` / `opt-in <t> --offer TOKEN` / `opt-out <t> --cluster ID` | `TenantService` (D65, D66): at the tenant's directory |
 | `directory keys` / `directory keys rotate` | `SigningKeyService` ([tenancy.md](tenancy.md) D52, D53): the issuer URL and the token signing keys |
-| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
+| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N] [--trust-domain NAME]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
+| `network host-api <net> on\|off` | `PUT /networks/{id}/host_api`: a node NAT network's guests reach this host's API, or not ([workload-identity.md](workload-identity.md) §15) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
 | `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |
 | `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |

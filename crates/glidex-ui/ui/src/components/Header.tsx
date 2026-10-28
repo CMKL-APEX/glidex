@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { healthCheck, listTenants } from "../api";
 import { useSession } from "../session";
 import Activity from "./Activity";
+import { AccountMenu } from "./Accounts";
 
 export default function Header() {
   const session = useSession();
@@ -105,16 +106,10 @@ export default function Header() {
                 ))}
               </select>
             </label>
-            <span className="text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>
-              {me.user ? (
-                <NavLink to="/account" className="hover:underline" title="Your account: sign-in methods">
-                  {who}
-                </NavLink>
-              ) : (
-                who
-              )}
+            <div className="flex items-center text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>
+              {me.user ? <AccountMenu who={who} /> : who}
               {me.break_glass && <span className="ml-1 text-xs text-amber-600">(admin)</span>}
-            </span>
+            </div>
             {me.method !== "disabled" && me.method !== "peer" && (
               <button
                 className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"

@@ -20,6 +20,13 @@ Glidex has two sets of documentation, built separately:
   `spec/<file>.md` (hundreds of references); don't move or rename them.
 - When a design in `spec/` ships, write the user-facing part in
   `docs/public/` and link from the spec to it, not the other way round.
+- The **developer guide** (`docs/public/src/developer-guide/`) is public
+  too, but for contributors: it explains the architecture, decisions,
+  algorithms and benchmark figures, and is the one part of the public
+  book that may point into the specs and source, always as full GitHub
+  URLs (`https://github.com/CMKL-APEX/glidex/blob/main/...`), never as
+  relative links. Benchmark figures always name their source, date and
+  hardware.
 
 ## Building
 
