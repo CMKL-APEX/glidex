@@ -86,11 +86,14 @@ test("your account lists your sign-in methods and offers more", async ({ page })
   });
   expect(made.connector?.id, JSON.stringify(made)).toBe("e2e-add-sso");
   try {
-    // The header's name leads there.
+    // The header's account menu leads there (spec/tenancy.md D71); its
+    // items exist only while it is open.
     await page.goto("/");
-    await page.locator('a[href="/account"]').click();
+    await page.getByTitle("Your accounts").click();
+    await page.getByTestId("account-menu").getByRole("menuitem", { name: "Account settings" }).click();
     await expect(page).toHaveURL(/\/account$/);
-    await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
+    // Exact: the page also has "Your accounts in this browser".
+    await expect(page.getByRole("heading", { name: "Your account", exact: true })).toBeVisible();
     const list = page.getByTestId("sign-in-methods-list");
     await expect(list.getByText(/^(Local password|Host socket)$/).first()).toBeVisible();
     await expect(list.getByRole("button", { name: "Remove" })).toHaveCount(0);
