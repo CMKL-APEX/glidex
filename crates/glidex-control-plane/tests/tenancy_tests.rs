@@ -1179,7 +1179,10 @@ async fn a_browser_holds_accounts_in_several_directories() {
     br.call(&h, "POST", "/auth/accounts/add", None, true).await;
     br.login(&h, &alice);
     let bob_session = br.accounts.clone().unwrap();
-    assert!(bob_session.contains("s:"), "the accounts cookie names a session");
+    assert!(
+        bob_session.contains("s:"),
+        "the accounts cookie names a session"
+    );
     let (s, _) = br
         .call(&h, "POST", "/auth/accounts/logout-all", None, true)
         .await;
