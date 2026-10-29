@@ -104,6 +104,8 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
 | `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
 | `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
+| `--with-pylon` | Install the [Pylon](../user-guide/vms.md#elastic-cpu) hypervisor and its `pylond` core arbiter. You build them first from the `CMKL-APEX/pylon` repository, checked out next to this one (`cargo build --release -p cloud-hypervisor -p pylond`): the installer takes `target/release/pylon` (or `cloud-hypervisor`) and `pylond` from there, or from this checkout's `target/release`. Without the option, they are installed when found there. Refused when asked for and not found. See [Pylon](#pylon). |
+| `--no-pylon` | Skip Pylon and `pylond`. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
 | `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
 | `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
@@ -140,6 +142,7 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 | `/usr/local/bin/glidex-authd` | The PAM helper for local passwords (unless `--no-services`). |
 | `/usr/local/bin/glidex-stord` | The storage helper for LVM-thin datastores (unless `--no-services`). |
 | `/usr/local/bin/cloud-hypervisor` | The pinned Cloud Hypervisor. |
+| `/usr/local/bin/pylon`, `/usr/local/bin/pylond` | Pylon and its core arbiter, with `--with-pylon`. |
 | `/usr/local/share/glidex/ui/` | The built web UI. |
 | `/etc/systemd/system/glidex-*.service`, `glidex-authd.socket`, `glidex-vm@.service`, `glidex-vms.slice` | The systemd units (see [Operator guide](README.md#components)). |
 | `/etc/polkit-1/rules.d/50-glidex-vm.rules` | Lets the `glidex` user start and stop its own `glidex-vm@` units. |
@@ -157,6 +160,35 @@ Options for joining or leaving a cluster (`--join`, `--role`,
 
 The installer also puts a copy of the Cloud Hypervisor firmware in your
 own `~/.glidex/`, for a control plane you run by hand.
+
+## Pylon
+
+With `--with-pylon`, the host runs `glidex-pylond.service`. It listens
+on `/run/pylon/pylond.sock` (group `glidex`) and starts before the
+control plane. Pylon VMs register with it, and it parks and wakes their
+vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
+
+- **Which CPUs it manages.** `pylond` arbitrates the host CPUs in
+  `PYLON_CORES`, `2-7` by default. To change it, write
+  `PYLON_CORES=<list>` (such as `PYLON_CORES=4-31`) to
+  `/etc/default/glidex-pylond` and restart `glidex-pylond`.
+- **CPUs it reserves.** While `pylond` runs, the control plane reserves
+  the first two cores of the host for it, with their hyperthreads: no VM
+  is placed on them, and `gxctl node topology` shows them as reserved
+  for `pylon`. See [Host resources](host-resources.md).
+- **The `sched_ext` scheduler.** On a kernel built with `sched_ext`
+  (6.12 or later), `pylond` attaches Pylon's `scx_pylon` kernel
+  scheduler when it starts, and falls back to its own core table if
+  that fails. This needs a `pylond` built from Pylon with
+  [CMKL-APEX/pylon#9](https://github.com/CMKL-APEX/pylon/pull/9); an
+  earlier one never attaches it from this service. `scx_pylon` then
+  schedules every task on the host, not only VMs, until `pylond` stops.
+  Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
+  (`enabled`, `pylon`). The service has no setting to keep it off.
+
+A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
+need `pylond` running to scale. Elastic VMs run on any host with Cloud
+Hypervisor or QEMU.
 
 ## Users and groups
 
@@ -234,7 +266,7 @@ By default it keeps your data and site configuration, and says so:
   policies, certificates);
 - a locally edited `/etc/pam.d/glidex`;
 - Open vSwitch, its DPDK settings and the hugepages they need, and the
-  `cloud-hypervisor` binary.
+  `cloud-hypervisor`, `pylon` and `pylond` binaries.
 
 It never touches `/srv/glidex` and the datastores under it, nor the
 volume groups of LVM-thin datastores and the volumes in them, not even
@@ -247,6 +279,7 @@ with `--purge-user-data`: unmount and remove them yourself.
 | `--remove-ovs` | Also remove Open vSwitch: the `openvswitch-switch` / `openvswitch-switch-dpdk` packages (via `apt-get`), or the source build in `/opt/glidex`. |
 | `--reset-dpdk` | Clear the DPDK settings Glidex put in Open vSwitch. |
 | `--remove-cloud-hypervisor` | Also delete the `cloud-hypervisor` binary. |
+| `--remove-pylon` | Also delete the `pylon` and `pylond` binaries. |
 | `--purge-user-data` | Also delete `~/.glidex`, `/var/lib/glidex-control-plane` (every VM, disk, image and credential) and the site configuration in `/etc/glidex`. This can't be undone. |
 
 Take a host out of its cluster before you uninstall it (see
