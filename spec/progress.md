@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
-| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17, Q11–Q12) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
+| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17, Q12; Q11 answered) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
 
 ## Areas
 

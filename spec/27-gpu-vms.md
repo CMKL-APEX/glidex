@@ -523,6 +523,7 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 | 2026-10-29 | BAR0 resized to 256 MiB (`resource0_resize`, no driver bound), VM at 4 vCPUs and 4 GiB | **pass** for passthrough: the host stayed up over two starts and a stop; the guest sees `[1002:7551]` and loads `amdgpu`, which stops at `early_init of IP block <psp> failed -19`: the cloud image has no `linux-firmware` (G15) |
 | 2026-10-29 | The same VM, installing `linux-firmware` in the guest, `scx_pylon` attached (`switch_all`) | **fail, host froze** during the download: `WARNING: kernel/sched/sched.h:1758` in `set_next_task_scx`, `put_prev_task_scx` and `update_curr_scx` (on an idle CPU and on an unrelated host task), then nothing; power-cycled. Reported as CMKL-APEX/pylon#15 |
 | 2026-10-29 | The same, `glidex-pylond --no-scx` (`scx_pylon` off), kdump and lockup panics on | **pass**: the host stayed up over the download and a guest reboot. `NOHZ tick-stop error: local softirq work is pending` still appeared 4 times, so it isn't `scx_pylon`'s. In the guest, `amdgpu` initialised: `Detected VRAM RAM=32624M, BAR=256M`, `/dev/kfd` and `/dev/dri/renderD128` |
+| 2026-10-29 | Q11: 10 stops and starts of that VM, alternating a hard stop and a graceful one (power button, 60 s), `scx_pylon` off | **pass**: each start, `vfio-pci` reset the GPU (FLR) and the guest's `amdgpu` initialised again with `/dev/kfd`, no `amdgpu` error in the guest, no new warning, AER or `vfio-pci` error on the host; the guest answered in 45–57 s |
 
 ## 13. Open questions
 
@@ -546,9 +547,8 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 8. *Settled:* the guest image (G15).
 9. *Settled:* Pylon with dedicated CPUs (G14).
 10. *Settled:* binding before `amdgpu` (G16).
-11. Is FLR enough to reset an R9700 between VMs, over many stops and
-    starts, with no stuck GPU? Some earlier Radeons needed a
-    vendor-specific reset.
+11. *Answered on gpu-dev2* (§12): FLR is enough to reset an R9700
+    between VMs, over 10 hard and graceful stops and starts.
 12. Does a window below the host's memory (16 GiB on gpu-dev2) start as
     safely as 256 MiB did, or was the freeze about the window's size
     itself rather than its size against the host's memory (G17)?
