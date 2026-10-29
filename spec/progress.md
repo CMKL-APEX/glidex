@@ -21,7 +21,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 |---|---|---|---|
 | Datastores | S26 stale hyperstor holds | `feat/hyperstor-stale-holds` | A disk held by another node's `hyperstor-vhost` when its VM starts is preempted; nodes let go of holds for VMs placed elsewhere. Needs hyperstor's per-volume fencing (D150, D153) |
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
-| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17; Q11 and Q12 answered) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
+| GPU VMs | GV6 AMD on gpu-dev2 | #206 → #207 → #208 (stacked); spec #204 merged | Decisions G11–G17 and the gpu-dev2 checks (27-gpu-vms.md §12). Code: locked memory and `prepare` loading `vfio-pci` with GPU windows capped (#206, which carries #205's commit), QEMU's 64-bit window (#207), `nvlink` without a fabric (#208). Next: the reboot test with `--vfio-devices`, the AMD pool and guest-image docs |
 
 ## Areas
 
