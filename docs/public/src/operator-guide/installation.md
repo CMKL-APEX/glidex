@@ -185,6 +185,12 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   schedules every task on the host, not only VMs, until `pylond` stops.
   Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
   (`enabled`, `pylon`). The service has no setting to keep it off.
+  While a `sched_ext` scheduler is attached, Glidex starts Cloud
+  Hypervisor and Pylon VMs with `core_scheduling=off`: on kernel 7.0,
+  kernel core scheduling together with `sched_ext` can freeze the host
+  ([CMKL-APEX/pylon#15](https://github.com/CMKL-APEX/pylon/issues/15)).
+  Those VMs' vCPUs then don't get the kernel's SMT isolation from other
+  tasks. A VM already running keeps the setting it started with.
 
 A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
 need `pylond` running to scale. Elastic VMs run on any host with Cloud

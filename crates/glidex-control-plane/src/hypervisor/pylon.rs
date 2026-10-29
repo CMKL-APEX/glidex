@@ -120,6 +120,9 @@ impl HypervisorDriver for PylonDriver {
         })?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
+        if cloud_hypervisor::sched_ext_enabled() {
+            cloud_hypervisor::core_scheduling_off(&mut argv);
+        }
         Ok(LaunchArgs {
             argv,
             fallback: None,

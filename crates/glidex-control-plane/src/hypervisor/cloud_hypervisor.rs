@@ -108,6 +108,22 @@ fn net_args(config: &VmConfig) -> Vec<String> {
         .collect()
 }
 
+/// Whether a sched_ext scheduler (such as `scx_pylon`) is attached.
+pub(crate) fn sched_ext_enabled() -> bool {
+    std::fs::read_to_string("/sys/kernel/sched_ext/state").is_ok_and(|s| s.trim() == "enabled")
+}
+
+/// Turn off CH's kernel core scheduling (on by default, `vm`): on kernel
+/// 7.0 it corrupts the run-queue clock under sched_ext and can freeze the
+/// host (CMKL-APEX/pylon#15). `scx_pylon` isolates Pylon's vCPUs itself.
+pub(crate) fn core_scheduling_off(argv: &mut [String]) {
+    if let Some(i) = argv.iter().position(|a| a == "--cpus")
+        && let Some(cpus) = argv.get_mut(i + 1)
+    {
+        cpus.push_str(",core_scheduling=off");
+    }
+}
+
 /// The command line after the binary: everything `vm.create` used to get.
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
@@ -308,6 +324,9 @@ impl HypervisorDriver for CloudHypervisorDriver {
         })?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
+        if sched_ext_enabled() {
+            core_scheduling_off(&mut argv);
+        }
         Ok(LaunchArgs {
             argv,
             fallback: None,
@@ -370,6 +389,17 @@ mod tests {
             .take_while(|a| !a.starts_with("--"))
             .map(String::as_str)
             .collect()
+    }
+
+    #[test]
+    fn core_scheduling_off_extends_cpus() {
+        let mut a = args(&config(serde_json::json!({})), "/s");
+        core_scheduling_off(&mut a);
+        assert_eq!(values(&a, "--cpus"), ["boot=2,max=2,core_scheduling=off"]);
+        // Nothing to change without `--cpus`.
+        let mut none = vec!["--memory".to_string(), "size=1M".to_string()];
+        core_scheduling_off(&mut none);
+        assert_eq!(none, ["--memory", "size=1M"]);
     }
 
     #[test]
