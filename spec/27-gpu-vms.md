@@ -146,6 +146,7 @@ What this host shows that prism1 doesn't, and what it can't:
 | G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
 | G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
 | G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
+| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For a device with a resizable BAR whose current size is at least the host's memory, it sets the largest supported size below the host's memory. The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name the size (`bar_mib`); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 check (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started, and 256 MiB ran. |
 
 ## 3. The request
 
@@ -508,7 +509,20 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 | **GV3** `--vfio-devices` and `--sriov` | the boot unit, install.conf, uninstall | Installer tests with a fake sysfs; prism1 reboot test (the user's OK: prism1 also runs OpenNebula). |
 | **GV4** System VMs | the system project, node-pinned VMs, boot ordering, vsock, `FabricReady` plumbing (no FM yet) | A test system VM that answers `status` over vsock. |
 | **GV5** Fabric Manager | the `glidex-fabric` crate (protocol, client, `FabricBackend`, `FakeFabric`) and `glidex-fabricd` (`libnvfm` loaded at run time) (§8.3); both managers (§8, §8.2) and `--fabric`; the fabric image; partitions in node status and `GET /nodes/{id}/fabric`; NVLink scheduling; activate, deactivate and `set_active` in the VM controller | Scheduler and controller tests against `FakeFabric`. On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
-| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu` only if the reboot test needs it (G16) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
+| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu` only if the reboot test needs it (G16); prepare loads `vfio-pci` and shrinks a GPU's window below the host's memory (G17) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a window of 16 GiB, below the host's 32 GiB (Q12); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
+
+GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
+`fd36a90`), one R9700 (`03:00.0`), VM `ubuntu-26.04` (kernel
+7.0.0-38) on Cloud Hypervisor v53:
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-10-29 | `gxctl node prepare-device` of `03:00.0` | **fail**: reported `OK … on vfio-pci (was amdgpu)`, but `vfio-pci` wasn't loaded, so the device was left with no driver and not ready. `modprobe vfio-pci` and a re-probe bound it. Fixed by G17's load |
+| 2026-10-29 | A 12 GiB VM with the GPU, unit limit as installed | **fail** as G12 says: Cloud Hypervisor exited with `Failed to DMA map VFIO device … Out of memory (os error 12)`, three times |
+| 2026-10-29 | The same with `LimitMEMLOCK=infinity` (a drop-in), BAR0 32 GiB | **fail, host froze**: `vfio-pci` reset the GPU twice and the unit started; then nothing more in the journal, no pstore, no kdump, no BERT record. The host needed a power cycle. The platform keeps PCIe error handling (`_OSC` without AER), so a fatal PCIe error is a likely cause; not proven |
+| 2026-10-29 | BAR0 resized to 256 MiB (`resource0_resize`, no driver bound), VM at 4 vCPUs and 4 GiB | **pass** for passthrough: the host stayed up over two starts and a stop; the guest sees `[1002:7551]` and loads `amdgpu`, which stops at `early_init of IP block <psp> failed -19`: the cloud image has no `linux-firmware` (G15) |
+| 2026-10-29 | The same VM, installing `linux-firmware` in the guest, `scx_pylon` attached (`switch_all`) | **fail, host froze** during the download: `WARNING: kernel/sched/sched.h:1758` in `set_next_task_scx`, `put_prev_task_scx` and `update_curr_scx` (on an idle CPU and on an unrelated host task), then nothing; power-cycled. Reported to Pylon |
+| 2026-10-29 | The same, `glidex-pylond --no-scx` (`scx_pylon` off), kdump and lockup panics on | **pass**: the host stayed up over the download and a guest reboot. `NOHZ tick-stop error: local softirq work is pending` still appeared 4 times, so it isn't `scx_pylon`'s. In the guest, `amdgpu` initialised: `Detected VRAM RAM=32624M, BAR=256M`, `/dev/kfd` and `/dev/dri/renderD128` |
 
 ## 13. Open questions
 
@@ -535,6 +549,9 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 11. Is FLR enough to reset an R9700 between VMs, over many stops and
     starts, with no stuck GPU? Some earlier Radeons needed a
     vendor-specific reset.
+12. Does a window below the host's memory (16 GiB on gpu-dev2) start as
+    safely as 256 MiB did, or was the freeze about the window's size
+    itself rather than its size against the host's memory (G17)?
 
 
 ## 14. Implementation notes
