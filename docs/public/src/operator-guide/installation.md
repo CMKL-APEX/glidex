@@ -266,6 +266,15 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   ExecStart=
   ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES} --no-scx
   ```
+- **Cloud Hypervisor VMs next to `scx_pylon`.** While a `sched_ext`
+  scheduler is attached, Glidex starts plain Cloud Hypervisor VMs with
+  `core_scheduling=off`: on kernels without the `sched_ext`
+  core-scheduling fixes, `pylond` refuses the kernel's core-scheduling
+  cookies (a cookie there can hang the host), and Cloud Hypervisor would
+  otherwise not start. Those VMs then aren't kept off each other's
+  sibling hyperthreads on that host. Pylon VMs are: `scx_pylon` keeps
+  their vCPUs apart itself. Hosts without `scx_pylon` keep Cloud
+  Hypervisor's core scheduling.
 - **The guest agent.** `pylond` sees a guest's demand only through
   `pylon-guest-agent` in the guest. On a host where `scx_pylon` is
   attached, Glidex puts the host's copy
