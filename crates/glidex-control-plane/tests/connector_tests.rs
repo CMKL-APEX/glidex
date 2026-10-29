@@ -504,6 +504,9 @@ mod idp {
     }
 
     pub async fn start() -> Arc<Mock> {
+        // Make the key now: unoptimized, RSA key generation can outlast the
+        // control plane's 10 s fetch of `/jwks`.
+        tokio::task::spawn_blocking(key).await.unwrap();
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
         let mock = Arc::new(Mock {
