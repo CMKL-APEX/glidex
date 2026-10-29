@@ -118,8 +118,8 @@ What this host shows that prism1 doesn't, and what it can't:
 - **It shows** the host-side pieces any passthrough GPU needs, outside
   NVIDIA's: the locked memory a VFIO VM takes (G12), room for 32 GiB
   BARs in the guest (G13), the boot binding against a driver that
-  claims the card first (§10, Q10), and GPUs with Pylon's elastic CPU
-  (Q9).
+  claims the card first (§10, G16), and GPUs with Pylon's elastic CPU
+  (G14).
 - **It can't show** `aligned` across NUMA nodes (GV1: one node, so the
   single-node path runs), system VMs or Fabric Manager (GV4, GV5:
   NVIDIA only). An AMD pool has no fabric, so its `nvlink` is `false`.
@@ -143,6 +143,9 @@ What this host shows that prism1 doesn't, and what it can't:
 | G11 | Vendors | Requests, pools, sizing and placement don't depend on the GPU's vendor: a pool's `match` names the GPU, and `gpus` takes a pool of class `gpu` whatever its vendor. Only the fabric (§7–§9) is NVIDIA's. A pool with no fabric resolves an absent `nvlink` to `false`. | AMD (gpu-dev2) works through the same path; nothing to add per vendor but what the host needs (G12, G13). |
 | G12 | Locked memory | A VM with VFIO devices may lock all its guest memory. `glidex-vm@.service` sets `LimitMEMLOCK=infinity`. The VM's memory is still bounded by its size and by `glidex-vms.slice`. | VFIO's type1 IOMMU pins the guest's RAM, counted against `RLIMIT_MEMLOCK`, which is 8 MiB for system services. The unit runs as `glidex`, and the control plane can't write a per-VM drop-in. |
 | G13 | Room for large BARs | At launch, the hypervisor's 64-bit PCI window is sized from the VM's devices: the sum of their 64-bit BARs (sysfs `resource`), each rounded up to its own alignment, with 1 GiB to spare, as a power of two. QEMU takes it as `-global q35-pcihost.pci-hole64-size=` when it exceeds QEMU's 32 GiB default. Cloud Hypervisor and Pylon place 64-bit BARs above RAM within the host's physical address bits, split between PCI segments (verify v53's split). Glidex checks that each PCI segment's share holds its devices, and refuses the launch naming the device when it doesn't. | Two R9700s need 64 GiB, and a 4-GPU A100 VM 256 GiB. QEMU's default fits neither. |
+| G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
+| G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
+| G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
 
 ## 3. The request
 
@@ -505,7 +508,7 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 | **GV3** `--vfio-devices` and `--sriov` | the boot unit, install.conf, uninstall | Installer tests with a fake sysfs; prism1 reboot test (the user's OK: prism1 also runs OpenNebula). |
 | **GV4** System VMs | the system project, node-pinned VMs, boot ordering, vsock, `FabricReady` plumbing (no FM yet) | A test system VM that answers `status` over vsock. |
 | **GV5** Fabric Manager | the `glidex-fabric` crate (protocol, client, `FabricBackend`, `FakeFabric`) and `glidex-fabricd` (`libnvfm` loaded at run time) (§8.3); both managers (§8, §8.2) and `--fabric`; the fabric image; partitions in node status and `GET /nodes/{id}/fabric`; NVLink scheduling; activate, deactivate and `set_active` in the VM controller | Scheduler and controller tests against `FakeFabric`. On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
-| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); the rule for Pylon with dedicated CPUs (Q9); binding before `amdgpu` if Q10 needs it; docs for an AMD pool and guest image (Q8) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
+| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu` only if the reboot test needs it (G16) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
 
 ## 13. Open questions
 
@@ -526,22 +529,9 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 7. Which FM releases offer the Unix command socket
    (`FM_CMD_UNIX_DOMAIN_SOCKET`), so fabricd on the host needs no TCP
    port (§8.3)?
-8. Which guest image for AMD GPU VMs? It needs the `amdgpu` module and
-   firmware for Navi 48, which Ubuntu's `-virtual` kernel doesn't ship
-   (the generic kernel, or `linux-modules-extra`); ROCm only to run
-   work. Is it an image the operator imports, or one glidex documents
-   how to build (§2.3, GV6)?
-9. On Pylon, a VM with `cpu_policy: dedicated`: should it be refused
-   elastic CPU (`min_vcpus` = `max_vcpus` = `vcpu_count`), since its
-   cores are held whole and parking them frees nothing for others? Or
-   may pylond park dedicated vCPUs? Today nothing checks the
-   combination (§2.3).
-10. Does `--vfio-devices` unbinding `amdgpu` at boot work reliably on
-    the R9700, or does the boot unit need `vfio-pci` to claim the cards
-    before `amdgpu` loads (a `softdep amdgpu pre: vfio-pci`, with the
-    selected addresses' `driver_override` set by a udev rule on `add`)?
-    `options vfio-pci ids=1002:7551` would take every R9700, including
-    any the operator keeps on the host (§10).
+8. *Settled:* the guest image (G15).
+9. *Settled:* Pylon with dedicated CPUs (G14).
+10. *Settled:* binding before `amdgpu` (G16).
 11. Is FLR enough to reset an R9700 between VMs, over many stops and
     starts, with no stuck GPU? Some earlier Radeons needed a
     vendor-specific reset.
