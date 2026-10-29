@@ -440,7 +440,7 @@ Refusals (`400 invalid_config`):
 | `gpus: this project may use no GPU pool` | No `pool` given, and no GPU pool is granted to the project. |
 | `gpus: give vcpu_count and mem_size_mib, or set per_device on pool a100` | The pool has no per-device sizing. |
 | `gpus and devices both ask pool a100` | Ask the pool in one place. |
-| `gpus: NVLink needs a fabric …` | `"nvlink": true` (`4:a100:nvlink` in gxctl). NVLink between passed-through GPUs isn't available yet. |
+| `gpus: NVLink needs a fabric …, and pool … has none` | `"nvlink": true` (`4:a100:nvlink` in gxctl). NVLink between passed-through GPUs isn't available yet; leave `nvlink` out, and it is `false`. |
 
 A pool the project may not use is refused as with `devices`
 (`403 forbidden`), and so are quotas.

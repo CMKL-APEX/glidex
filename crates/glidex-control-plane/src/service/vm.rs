@@ -374,12 +374,6 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
     if g.count == 0 {
         return Err(bad("gpus: count must be at least 1".into()));
     }
-    if g.nvlink == Some(true) {
-        return Err(bad(
-            "gpus: NVLink needs a fabric (Fabric Manager, spec/27-gpu-vms.md §7), which this cluster doesn't have yet"
-                .into(),
-        ));
-    }
     let cluster = call.manager().pci_pools();
     let tenant = call
         .manager()
@@ -444,12 +438,19 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
             }
         }
     };
+    // No pool has a fabric until GV5: an absent `nvlink` is `false`
+    // (spec/27-gpu-vms.md G11), and `true` can't be met.
+    if g.nvlink == Some(true) {
+        return Err(bad(format!(
+            "gpus: NVLink needs a fabric (Fabric Manager, spec/27-gpu-vms.md §7), and pool {name} has none"
+        )));
+    }
     let per = base.per_device.as_ref();
     Ok(GpuExpansion {
         request: m::GpuRequest {
             count: g.count,
             pool: name,
-            nvlink: g.nvlink,
+            nvlink: Some(false),
         },
         vcpus: per.map(|d| d.vcpus * g.count),
         memory_mib: per.map(|d| d.memory_mib * g.count),

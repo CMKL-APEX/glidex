@@ -306,7 +306,9 @@ cores, and about 56 GiB each out of 126 GiB. A VM that asks for more
 than a node can give is refused there, naming the node.
 
 `"nvlink": true` is refused for now: NVLink between passed-through
-GPUs on NVSwitch boards needs a fabric Glidex doesn't run yet.
+GPUs on NVSwitch boards needs a fabric Glidex doesn't run yet. Without
+it, a request's `nvlink` is `false`, and the VM shows it so. The same
+holds for GPUs that have no such fabric, such as AMD Radeon cards.
 
 ### See what pools hold
 

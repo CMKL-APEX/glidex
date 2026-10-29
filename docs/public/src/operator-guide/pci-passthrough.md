@@ -280,6 +280,13 @@ What happens:
 The guest sees the device on its PCI bus; install the guest driver
 there as on bare metal.
 
+GPUs have large memory windows (BARs), up to the size of their memory.
+QEMU's guest has room for 32 GiB of them by default; when a QEMU VM's
+devices need more, Glidex gives the guest a 64-bit PCI window that holds
+them (`-global q35-pcihost.pci-hole64-size=`), sized from the devices it
+has when it starts. A device added to a running QEMU VM must fit what is
+left: if it doesn't, stop and start the VM.
+
 ## In a cluster
 
 Devices are per host. The scheduler places a VM with `vfio_devices`
