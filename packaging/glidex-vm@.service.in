@@ -34,6 +34,10 @@ Slice=glidex-vms.slice
 IOAccounting=yes
 MemoryAccounting=yes
 UMask=0077
+# VFIO pins all guest RAM, counted against RLIMIT_MEMLOCK (8 MiB for
+# services), or a passthrough VM fails its DMA map (spec/27-gpu-vms.md
+# G12). The VM's memory stays bounded by its size and the slice.
+LimitMEMLOCK=infinity
 
 # The hypervisor sandbox (spec/11-security.md §9). No NoNewPrivileges= nor
 # anything implying it for a non-root unit: cloud-hypervisor's cap_net_admin

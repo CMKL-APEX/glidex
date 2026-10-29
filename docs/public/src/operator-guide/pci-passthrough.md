@@ -138,7 +138,12 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=vfio
 ls -l /dev/vfio/
 ```
 
-<!-- TODO(verify): confirm this rule is enough on its own (no memlock limit needed in glidex-vm@.service) for both hypervisors. -->
+The VM's unit also lets the hypervisor lock all of the VM's memory
+(`LimitMEMLOCK=infinity`): VFIO pins the guest's RAM so the device can
+reach it. Without it, Cloud Hypervisor stops at `Failed to DMA map VFIO
+device … Out of memory`. A unit installed by an older Glidex lacks the
+line: run `glidex-install` again. The VM's memory is still bounded by its
+size.
 
 ## Find devices
 

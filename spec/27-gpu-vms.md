@@ -657,3 +657,11 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     unit, the settings and the module file.
   - **Not done:** the reboot test on prism1 (scheduled with its owner).
     NVSwitches for a service VM come with GV5.
+
+- **GV6** (§2.3, §12):
+  - **Locked memory (G12).** `glidex-vm@.service` sets
+    `LimitMEMLOCK=infinity`; the installer's unit test checks it. A host
+    picks it up when `glidex-install` runs again.
+  - **Not done:** `prepare` loading `vfio-pci` and the window sizing
+    (G17); QEMU's 64-bit window (G13); `nvlink` without a fabric (G11);
+    the docs for an AMD pool and guest image (G15); the reboot test.
