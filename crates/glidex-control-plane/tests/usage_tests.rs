@@ -294,9 +294,20 @@ async fn usage_over_rest_connect_and_grpc() {
         .await;
     assert_eq!(st, "0");
     let r = pb::GetVmUsageResponse::decode_from_slice(&b).unwrap();
-    assert_eq!(r.rows.len(), 1);
-    assert_eq!(r.rows[0].vm.as_option().unwrap().id, vm);
-    assert_eq!(r.rows[0].meters["cpu.used"].raw, Some(3_600_000_000));
+    // One row a day: the samples span a UTC midnight when the test runs
+    // just after one, giving two.
+    assert!((1..=2).contains(&r.rows.len()), "{:?}", r.rows);
+    assert!(
+        r.rows
+            .iter()
+            .all(|row| row.vm.as_option().unwrap().id == vm)
+    );
+    let cpu: u64 = r
+        .rows
+        .iter()
+        .filter_map(|row| row.meters.get("cpu.used")?.raw)
+        .sum();
+    assert_eq!(cpu, 3_600_000_000);
     let (st, b) = h
         .grpc(
             &format!("/{USAGE}/GetProjectUsage"),
@@ -552,12 +563,14 @@ async fn rpcs_are_project_scoped() {
     // Without projects: only the caller's own.
     let (s, r) = h.connect(&format!("{USAGE}/GetUsage"), json!({}), &v).await;
     assert_eq!(s, StatusCode::OK, "{r}");
-    let ids: Vec<&str> = r["rows"]
+    // A project has a row a day, two just after a UTC midnight.
+    let mut ids: Vec<&str> = r["rows"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| r["project"]["id"].as_str().unwrap())
         .collect();
+    ids.dedup();
     assert_eq!(ids, vec![pa.as_str()]);
     // Another project: not found, by every route.
     for (m, body) in [
