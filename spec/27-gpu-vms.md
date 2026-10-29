@@ -678,7 +678,13 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     - Unit tests on a gpu-dev2-shaped sysfs: 32 GiB → 16 GiB, a second
       GPU → 8 GiB, the order of the writes, the restore, the refusal, a
       device already on `vfio-pci`, and `modprobe`.
-  - **Not done:** a pool's own size (`bar_mib`); QEMU's 64-bit window
-    (G13); `nvlink` without a fabric (G11); the docs for an AMD pool and
+  - **QEMU's 64-bit window (G13).** `QemuDriver::launch_args` reads
+    the 64-bit BARs (`IORESOURCE_MEM_64`) of the VM's `vfio_devices` from
+    sysfs; their sum and 1 GiB, as a power of two, becomes
+    `-global q35-pcihost.pci-hole64-size=<MiB>M` when it exceeds q35's
+    32 GiB. Unit tests parse an R9700's `resource` and size one and two
+    cards. A device hot-plugged later must fit what is left.
+  - **Not done:** a pool's own size (`bar_mib`); G13's check of each
+    Cloud Hypervisor PCI segment's share; `nvlink` without a fabric (G11); the docs for an AMD pool and
     guest image (G15); the reboot test. 16 GiB plus 8 GiB together hasn't
     been run on gpu-dev2 (2 × 8 GiB has).

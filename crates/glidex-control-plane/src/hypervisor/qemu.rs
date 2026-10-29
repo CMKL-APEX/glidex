@@ -180,6 +180,9 @@ struct LaunchSpec<'a> {
     cpu_host: bool,
     /// Tap NICs use the in-kernel vhost-net datapath.
     vhost_net: bool,
+    /// q35's 64-bit PCI window when the devices' BARs outgrow the default
+    /// (spec/27-gpu-vms.md G13).
+    pci_hole64_mib: Option<u64>,
 }
 
 impl LaunchSpec<'_> {
@@ -218,6 +221,13 @@ impl LaunchSpec<'_> {
             machine.push_str(",smm=on");
         }
         push(&mut args, "-machine", machine);
+        if let Some(mib) = self.pci_hole64_mib {
+            push(
+                &mut args,
+                "-global",
+                format!("q35-pcihost.pci-hole64-size={mib}M"),
+            );
+        }
         if self.cpu_host {
             push(&mut args, "-cpu", "host".into());
         }
@@ -450,6 +460,33 @@ impl LaunchSpec<'_> {
     }
 }
 
+/// q35's 64-bit PCI window when not told otherwise.
+const DEFAULT_PCI_HOLE64_MIB: u64 = 32 * 1024;
+
+/// The sizes in MiB of the 64-bit memory BARs in a sysfs `resource` file:
+/// its first six lines (the ROM follows), flag `IORESOURCE_MEM_64`.
+fn bars64_mib(resource: &str) -> Vec<u64> {
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok();
+    resource
+        .lines()
+        .take(6)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (start, end, flags) = (hex(f.next()?)?, hex(f.next()?)?, hex(f.next()?)?);
+            (start != 0 && end > start && flags & 0x0010_0000 != 0)
+                .then(|| (end - start + 1).div_ceil(1 << 20))
+        })
+        .collect()
+}
+
+/// The `pci-hole64-size` that holds BARs of these sizes: their sum and
+/// 1 GiB to spare, as a power of two. `None` when the default holds them.
+/// Devices hot-plugged later must fit what is left.
+fn pci_hole64_mib(bars: &[u64]) -> Option<u64> {
+    let need = (bars.iter().sum::<u64>() + 1024).next_power_of_two();
+    (need > DEFAULT_PCI_HOLE64_MIB).then_some(need)
+}
+
 /// `pxb-pcie` bus numbers for `aligned` guest NUMA nodes: room for 24
 /// buses (root ports and what is under them) each, above the root bus's;
 /// eight nodes stay under 0xff.
@@ -629,6 +666,18 @@ impl HypervisorDriver for QemuDriver {
             disks,
             cpu_host: true,
             vhost_net: vhost_net_usable(),
+            pci_hole64_mib: pci_hole64_mib(
+                &config
+                    .vfio_devices
+                    .iter()
+                    .flat_map(|d| {
+                        let resource = Path::new("/sys/bus/pci/devices")
+                            .join(vfio_bdf(d))
+                            .join("resource");
+                        bars64_mib(&std::fs::read_to_string(resource).unwrap_or_default())
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         };
         if !spec.vhost_net
             && config
@@ -766,6 +815,7 @@ mod tests {
                 .collect(),
             cpu_host: true,
             vhost_net: true,
+            pci_hole64_mib: None,
         }
     }
 
@@ -1228,6 +1278,33 @@ mod tests {
 
         spec.firmware = Some(Firmware::Bios("/usr/share/qemu/OVMF.fd".into()));
         assert_eq!(values(&spec.args(), "-bios"), ["/usr/share/qemu/OVMF.fd"]);
+    }
+
+    #[test]
+    fn the_64_bit_window_holds_the_devices_bars() {
+        // An R9700's resource file: BAR 0 (32 GiB, 64-bit prefetchable),
+        // BAR 2 (256 MiB, 64-bit), BAR 4 (I/O), BAR 5 (32-bit), the ROM.
+        let r9700 = "0x0000005000000000 0x00000057ffffffff 0x000000000014220c\n\
+                     0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                     0x0000005800000000 0x000000580fffffff 0x000000000014220c\n\
+                     0x0000000000000000 0x0000000000000000 0x0000000000000000\n\
+                     0x0000000000003000 0x00000000000030ff 0x0000000000040101\n\
+                     0x00000000f6300000 0x00000000f637ffff 0x0000000000040200\n\
+                     0x00000000f6380000 0x00000000f639ffff 0x0000000000046200\n";
+        assert_eq!(bars64_mib(r9700), [32768, 256]);
+        // One 16 GiB card fits the default; one at 32 GiB, or two, don't.
+        assert_eq!(pci_hole64_mib(&[16384, 256]), None);
+        assert_eq!(pci_hole64_mib(&[32768, 256]), Some(65536));
+        assert_eq!(pci_hole64_mib(&[16384, 256, 16384, 256]), Some(65536));
+        assert_eq!(pci_hole64_mib(&[]), None);
+        let config = config(serde_json::json!({}));
+        let mut s = spec(&config);
+        s.pci_hole64_mib = Some(65536);
+        assert_eq!(
+            values(&s.args(), "-global"),
+            ["q35-pcihost.pci-hole64-size=65536M"]
+        );
+        assert!(values(&spec(&config).args(), "-global").is_empty());
     }
 
     #[test]
