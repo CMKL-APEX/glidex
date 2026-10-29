@@ -1,6 +1,7 @@
 # GPU VMs
 
-Status: **design; GV1, GV2 and GV3 implemented** (§12 milestones, §14 notes). Builds on
+Status: **design; GV1, GV2 and GV3 implemented; GV6 (AMD on gpu-dev2)
+designed** (§12 milestones, §14 notes). Builds on
 [22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
 (command lines) and [05-installer.md](05-installer.md).
@@ -18,7 +19,7 @@ so half its GPUs are remote. The guest always sees one NUMA node. On an
 NVSwitch board (HGX), multi-GPU VMs also get no NVLink: nothing programs
 the NVSwitches for GPUs that are passed through.
 
-This document makes three changes:
+This document makes four changes:
 1. **One request:** "N GPUs" gives a VM whose vCPUs, memory and GPUs are
    aligned to the host's NUMA nodes, with that layout shown to the guest
    (§3–§6).
@@ -27,6 +28,10 @@ This document makes three changes:
    fabric partition for each GPU VM (§7–§9).
 3. **Across reboots:** the installer keeps the passthrough binding and
    the VF counts (`--vfio-devices`, §10).
+4. **Any vendor's GPU:** what the first three need from the host
+   (locked memory, room for large BARs, binding before the host
+   driver) works for AMD as well as NVIDIA, shown on gpu-dev2's Radeon
+   cards (§2.3, GV6).
 
 ## 1. Scope
 
@@ -38,6 +43,8 @@ In:
 - NVLink through Fabric Manager's shared NVSwitch mode.
 - A general **system VM** mechanism, used first for Fabric Manager.
 - Keeping VFIO bindings and VF counts across reboots.
+- Whole GPUs of any vendor; AMD Radeon on gpu-dev2 is the second
+  reference host (§2.3).
 
 Out:
 - vGPU and MIG (FM's vGPU mode, `FABRIC_MODE=2`).
@@ -90,6 +97,35 @@ A 4-GPU VM on prism1 today takes:
   NVSwitches for none. So NVLink is not available to any passthrough VM
   on prism1 today.
 
+### 2.3 gpu-dev2 (two AMD Radeon AI PRO R9700)
+
+A small host with no fabric, for whole-GPU passthrough of another
+vendor. Read from sysfs on 2026-10-29:
+
+| | |
+|---|---|
+| CPU, memory | EPYC 9124: 16 cores, 32 threads, **one NUMA node**; 30 GiB |
+| GPUs | Navi 48, `1002:7551`, class `0x030000` (VGA, not NVIDIA's `0x0302`), at `03:00.0` and `43:00.0` |
+| Path | Each behind the card's own PCIe switch (`01:00.0`→`02:00.0`, `41:00.0`→`42:00.0`), Gen5 x16 |
+| IOMMU | Each GPU alone in its group; no audio function |
+| Reset | `flr bus` |
+| BARs | 32 GiB (resizable BAR on) and 256 MiB, 64-bit prefetchable |
+| Host driver | `amdgpu`, loaded from the root file system (not in the initramfs); `vfio-pci` not loaded |
+| Console | The BMC's ASPEED (`c6:00.0`, `ast`), so both Radeons can leave the host |
+| Hypervisors | Cloud Hypervisor v53, Pylon (Cloud Hypervisor with `--pylon`, the same device flags), QEMU |
+
+What this host shows that prism1 doesn't, and what it can't:
+- **It shows** the host-side pieces any passthrough GPU needs, outside
+  NVIDIA's: the locked memory a VFIO VM takes (G12), room for 32 GiB
+  BARs in the guest (G13), the boot binding against a driver that
+  claims the card first (§10, G16), and GPUs with Pylon's elastic CPU
+  (G14).
+- **It can't show** `aligned` across NUMA nodes (GV1: one node, so the
+  single-node path runs), system VMs or Fabric Manager (GV4, GV5:
+  NVIDIA only). An AMD pool has no fabric, so its `nvlink` is `false`.
+- **Its memory is small.** Two GPU VMs share 30 GiB with the host, so
+  the pool's `per_device` is about 6 vCPUs and 10 GiB.
+
 ## 2a. Decisions
 
 | # | Topic | Decision | Reason |
@@ -104,6 +140,13 @@ A 4-GPU VM on prism1 today takes:
 | G8 | Talking to FM | A small agent in the service VM (`glidex-fabricd`) drives FM through its API and answers the node over **vsock**. | No network or NVIDIA libraries on the host, and no route from tenants to FM. |
 | G9 | Partition choice | With NVLink, the scheduler picks among FM's supported partitions (fixed GPU sets of 1, 2, 4, 8), not arbitrary GPUs. | FM only routes those sets. |
 | G10 | Persistence | `glidex-install --vfio-devices <pool or addresses>` writes a boot-time binding (driverctl-style override, modprobe options) and the VF counts, and keeps NVSwitches for the service VM. | Today a reboot leaves devices on their host drivers until glidex starts, and VF counts at 0. |
+| G11 | Vendors | Requests, pools, sizing and placement don't depend on the GPU's vendor: a pool's `match` names the GPU, and `gpus` takes a pool of class `gpu` whatever its vendor. Only the fabric (§7–§9) is NVIDIA's. A pool with no fabric resolves an absent `nvlink` to `false`. | AMD (gpu-dev2) works through the same path; nothing to add per vendor but what the host needs (G12, G13). |
+| G12 | Locked memory | A VM with VFIO devices may lock all its guest memory. `glidex-vm@.service` sets `LimitMEMLOCK=infinity`. The VM's memory is still bounded by its size and by `glidex-vms.slice`. | VFIO's type1 IOMMU pins the guest's RAM, counted against `RLIMIT_MEMLOCK`, which is 8 MiB for system services. The unit runs as `glidex`, and the control plane can't write a per-VM drop-in. |
+| G13 | Room for large BARs | At launch, the hypervisor's 64-bit PCI window is sized from the VM's devices: the sum of their 64-bit BARs (sysfs `resource`), each rounded up to its own alignment, with 1 GiB to spare, as a power of two. QEMU takes it as `-global q35-pcihost.pci-hole64-size=` when it exceeds QEMU's 32 GiB default. Cloud Hypervisor and Pylon place 64-bit BARs above RAM within the host's physical address bits, split between PCI segments (verify v53's split). Glidex checks that each PCI segment's share holds its devices, and refuses the launch naming the device when it doesn't. | Two R9700s need 64 GiB, and a 4-GPU A100 VM 256 GiB. QEMU's default fits neither. |
+| G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
+| G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
+| G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
+| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under (16 GiB for one R9700 on gpu-dev2, 8 GiB each for two). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name the size (`bar_mib`); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
 
 ## 3. The request
 
@@ -466,6 +509,26 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 | **GV3** `--vfio-devices` and `--sriov` | the boot unit, install.conf, uninstall | Installer tests with a fake sysfs; prism1 reboot test (the user's OK: prism1 also runs OpenNebula). |
 | **GV4** System VMs | the system project, node-pinned VMs, boot ordering, vsock, `FabricReady` plumbing (no FM yet) | A test system VM that answers `status` over vsock. |
 | **GV5** Fabric Manager | the `glidex-fabric` crate (protocol, client, `FabricBackend`, `FakeFabric`) and `glidex-fabricd` (`libnvfm` loaded at run time) (§8.3); both managers (§8, §8.2) and `--fabric`; the fabric image; partitions in node status and `GET /nodes/{id}/fabric`; NVLink scheduling; activate, deactivate and `set_active` in the VM controller | Scheduler and controller tests against `FakeFabric`. On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
+| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu` only if the reboot test needs it (G16); prepare loads `vfio-pci` and shrinks a GPU's window below the host's memory (G17) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a window of 16 GiB, below the host's 32 GiB (Q12); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
+
+GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
+`fd36a90`), one R9700 (`03:00.0`), VM `ubuntu-26.04` (kernel
+7.0.0-38) on Cloud Hypervisor v53:
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-10-29 | `gxctl node prepare-device` of `03:00.0` | **fail**: reported `OK … on vfio-pci (was amdgpu)`, but `vfio-pci` wasn't loaded, so the device was left with no driver and not ready. `modprobe vfio-pci` and a re-probe bound it. Fixed by G17's load |
+| 2026-10-29 | A 12 GiB VM with the GPU, unit limit as installed | **fail** as G12 says: Cloud Hypervisor exited with `Failed to DMA map VFIO device … Out of memory (os error 12)`, three times |
+| 2026-10-29 | The same with `LimitMEMLOCK=infinity` (a drop-in), BAR0 32 GiB | **fail, host froze**: `vfio-pci` reset the GPU twice and the unit started; then nothing more in the journal, no pstore, no kdump, no BERT record. The host needed a power cycle. The platform keeps PCIe error handling (`_OSC` without AER), so a fatal PCIe error is a likely cause; not proven |
+| 2026-10-29 | BAR0 resized to 256 MiB (`resource0_resize`, no driver bound), VM at 4 vCPUs and 4 GiB | **pass** for passthrough: the host stayed up over two starts and a stop; the guest sees `[1002:7551]` and loads `amdgpu`, which stops at `early_init of IP block <psp> failed -19`: the cloud image has no `linux-firmware` (G15) |
+| 2026-10-29 | The same VM, installing `linux-firmware` in the guest, `scx_pylon` attached (`switch_all`) | **fail, host froze** during the download: `WARNING: kernel/sched/sched.h:1758` in `set_next_task_scx`, `put_prev_task_scx` and `update_curr_scx` (on an idle CPU and on an unrelated host task), then nothing; power-cycled. Reported as CMKL-APEX/pylon#15 |
+| 2026-10-29 | The same, `glidex-pylond --no-scx` (`scx_pylon` off), kdump and lockup panics on | **pass**: the host stayed up over the download and a guest reboot. `NOHZ tick-stop error: local softirq work is pending` still appeared 4 times, so it isn't `scx_pylon`'s. In the guest, `amdgpu` initialised: `Detected VRAM RAM=32624M, BAR=256M`, `/dev/kfd` and `/dev/dri/renderD128` |
+| 2026-10-29 | Q11: 10 stops and starts of that VM, alternating a hard stop and a graceful one (power button, 60 s), `scx_pylon` off | **pass**: each start, `vfio-pci` reset the GPU (FLR) and the guest's `amdgpu` initialised again with `/dev/kfd`, no `amdgpu` error in the guest, no new warning, AER or `vfio-pci` error on the host; the guest answered in 45–57 s |
+| 2026-10-29 | Q12: BAR0 resized to 16 GiB (`resource0_resize` 14, below the host's 32 GiB), the same VM started, then 3 stops and starts (hard, graceful, hard), `scx_pylon` off | **pass**: the host stayed up with no new warning, AER or `vfio-pci` error; each time the guest's `amdgpu` reported `Detected VRAM RAM=32624M, BAR=16384M`, initialised, and `/dev/kfd` was there. So the freeze at 32 GiB came from a window as large as the host's memory, not from a large window as such |
+| 2026-10-29 | The 16 GiB VM with `scx_pylon` from CMKL-APEX/pylon#16 (plus a verifier fix) attached, and the VM at `core_scheduling=off` (a test build of `fix/ch-core-scheduling-scx`); the download load for 10 minutes | **fail, host reset**: 6 minutes in, 4 × `sched.h:1758` on CPU 23 in the VM's `vcpu0`; about 6 minutes later the platform reset the host. BERT: fatal execution-unit watchdog timeout on CPU 23 (MCA bank 5). No kdump dump, since the kernel didn't panic. Reported on pylon#16; `scx_pylon` off again |
+| 2026-10-29 | Control: the same load and build in a VM **without** a GPU (`load-ch`, `core_scheduling=off`), `scx_pylon` attached | **fail, kernel panic**: about a minute after attach, 6 × `sched.h:1758` in the VM's `vcpu0` during a host ext4 write, 3 more on an idle CPU, then `BUG: kernel NULL pointer dereference` in `pick_next_task`; kdump saved a dump and the host rebooted. So these failures are `scx_pylon`'s, not the GPU's: with `scx_pylon` off, the GPU runs above never warned or hung. Reported on pylon#16 |
+| 2026-10-29 | QEMU (`-machine q35`, `vfio-pci,host=0000:03:00.0`): a 1-GPU VM, 4 vCPUs and 4 GiB, BAR0 at 16 GiB, `scx_pylon` off; `linux-firmware` installed in the guest, then a guest reboot | **pass**: the guest's `amdgpu` reported `Detected VRAM RAM=32624M, BAR=16384M` and initialised, with `/dev/kfd` and `/dev/dri/renderD128`; no warning, AER or `vfio-pci` error on the host. QEMU's default 64-bit window (32 GiB) holds one 16 GiB BAR, so G13's sizing wasn't needed here |
+| 2026-10-29 | 2-GPU VM on Cloud Hypervisor: both R9700s (`03:00.0`, `43:00.0`) at 8 GiB each (G17's total cap, 16 GiB of 32), 6 vCPUs and 6 GiB, `scx_pylon` off; `43:00.0` needed `prepare-device` first for its `/dev/vfio/53` owner | **pass**: the guest's `amdgpu` initialised on both (`BAR=8192M`, `card0` and `card1`, `renderD128` and `renderD129`, `/dev/kfd`); no warning, AER or lockup on the host |
 
 ## 13. Open questions
 
@@ -486,6 +549,13 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 7. Which FM releases offer the Unix command socket
    (`FM_CMD_UNIX_DOMAIN_SOCKET`), so fabricd on the host needs no TCP
    port (§8.3)?
+8. *Settled:* the guest image (G15).
+9. *Settled:* Pylon with dedicated CPUs (G14).
+10. *Settled:* binding before `amdgpu` (G16).
+11. *Answered on gpu-dev2* (§12): FLR is enough to reset an R9700
+    between VMs, over 10 hard and graceful stops and starts.
+12. *Answered on gpu-dev2* (§12): a 16 GiB window, below the host's
+    32 GiB, starts and restarts as safely as 256 MiB (G17).
 
 
 ## 14. Implementation notes

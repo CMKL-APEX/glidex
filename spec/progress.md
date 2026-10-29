@@ -21,6 +21,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 |---|---|---|---|
 | Datastores | S26 stale hyperstor holds | `feat/hyperstor-stale-holds` | A disk held by another node's `hyperstor-vhost` when its VM starts is preempted; nodes let go of holds for VMs placed elsewhere. Needs hyperstor's per-volume fencing (D150, D153) |
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
+| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17; Q11 and Q12 answered) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
 
 ## Areas
 
@@ -30,7 +31,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
-| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV6 AMD on gpu-dev2 (designed); GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
@@ -70,7 +71,7 @@ when asked; say here what you left.
 
 | Host | Role | Runs | For |
 |---|---|---|---|
-| gpu-dev2 | **Standalone** server since 2026-10-28, with Pylon (`--with-pylon`; `pylond` on; kernel 7.0 since 2026-10-29, with `scx_pylon` attached (`switch_all`) by a `pylond` with CMKL-APEX/pylon#9, installed by hand on 2026-10-29); OVN installed, off; the Tailscale certificate on. Found empty that day: the earlier cluster's state was gone | #200's branch (2026-10-28), now `main` at fd36a90 | UI e2e, Pylon, GPU passthrough |
+| gpu-dev2 | **Standalone** server since 2026-10-28, with Pylon (`--with-pylon`; `pylond` on; kernel 7.0 since 2026-10-29, with `scx_pylon` attached (`switch_all`) by a `pylond` with CMKL-APEX/pylon#9, installed by hand on 2026-10-29); OVN installed, off; the Tailscale certificate on. Found empty that day: the earlier cluster's state was gone. GV6 check (2026-10-29, by hand): a `glidex-vm@.service.d/50-memlock.conf` drop-in (`LimitMEMLOCK=infinity`); both R9700s on `vfio-pci` with BAR0 at 8 GiB until reboot; test VMs `gpu-ch`, `gpu-qemu`, `load-ch` (stopped) and `gpu2-ch` (running, both GPUs), credential `gpucheck`. A VM with BAR0 at 32 GiB froze the host (power-cycled 08:50), and one with `scx_pylon` attached (09:20). A host reset at 11:48 and a kernel panic at 12:31 (kdump dump in `/var/crash/202610291231/`, root only), both with pylon#16's `scx_pylon` attached; the second in a VM without a GPU (`load-ch`, stopped). For the check: `pylond` from pylon#16 at 50a497a87 and `glidex-control-plane` from `fix/ch-core-scheduling-scx`, installed by hand (old binaries as `*.prev`); `glidex-pylond.service.d/50-no-scx.conf` (`--no-scx`), kdump on (`USE_KDUMP=1`), `/etc/sysctl.d/90-glidex-gv6-debug.conf` (panic on lockups) | #200's branch (2026-10-28), now `main` at fd36a90 | UI e2e, Pylon, GPU passthrough |
 | prism1 | Was an agent of gpu-dev2's cluster, which is gone since gpu-dev2 was found empty (2026-10-28); not touched since. Rejoining takes a reinstall with `--join`; two sockets | #168's build (2026-10-22) | NUMA and passthrough (host topology) |
 | spark-1 | **Standalone** since 2026-10-22: its own directory, tenant `spark-lab` was admitted on gpu-dev2's cluster as another organization (T6 check); that admission went with gpu-dev2's state (2026-10-28), so the check needs it admitted again | #168's build (2026-10-22) | aarch64; the two-organization check. Rejoining the cluster takes a reinstall with `--join`, and the aarch64 images re-imported |
 
