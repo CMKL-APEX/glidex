@@ -31,7 +31,7 @@ pub enum NetworkMode {
     Isolated,
 }
 
-/// Where a network exists (spec/clustering.md D10): on one node (today's OVS
+/// Where a network exists (spec/14-clustering.md D10): on one node (today's OVS
 /// bridges), or across the cluster (OVN, milestone C5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -44,7 +44,7 @@ pub enum NetworkScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
     /// UUID; the key of the record, of Cedar's `Network` entity, of VM
-    /// NICs and of IPAM (spec/tenancy.md D24).
+    /// NICs and of IPAM (spec/19-tenancy.md D24).
     pub id: String,
     /// `[a-z0-9-]`, at most 32; a project network's is unique in its
     /// tenant, a host network's on the cluster (D24).
@@ -81,11 +81,11 @@ pub struct Network {
     pub owns_bridge: bool,
     /// Node NAT networks: its guests may reach this host's API (its
     /// `listen` ports), which netd's `input` chain otherwise closes to them
-    /// (spec/workload-identity.md §15). Set by host network administrators.
+    /// (spec/29-workload-identity.md §15). Set by host network administrators.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host_api: bool,
     pub created_at: u64,
-    /// Project networks (spec/security.md §6.2) belong to a project and
+    /// Project networks (spec/11-security.md §6.2) belong to a project and
     /// are usable by it and the projects in `shares`. Host networks have
     /// no project and are usable by `grants` (or every project).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,7 +95,7 @@ pub struct Network {
     #[serde(default)]
     pub grants: Vec<String>,
     /// Tenants whose every project may use this host network
-    /// (spec/tenancy.md D25).
+    /// (spec/19-tenancy.md D25).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tenant_grants: Vec<String>,
     /// Projects that accepted a share of this project network.
@@ -105,13 +105,13 @@ pub struct Network {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub share_offers: Vec<ShareOffer>,
     /// What the network controller last saw in netd
-    /// (spec/reconciliation.md §10.3).
+    /// (spec/12-reconciliation.md §10.3).
     #[serde(default)]
     pub phase: NetworkPhase,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<crate::models::Condition>,
     /// Deletion requested; the network controller removes netd's records,
-    /// then this one (spec/reconciliation.md §6.3, §10.3).
+    /// then this one (spec/12-reconciliation.md §6.3, §10.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion_requested_at: Option<u64>,
 }

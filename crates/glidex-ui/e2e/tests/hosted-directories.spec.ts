@@ -1,4 +1,4 @@
-// Hosted directories (spec/tenancy.md D59–D61): the operator creates one
+// Hosted directories (spec/19-tenancy.md D59–D61): the operator creates one
 // on the Hosting page; its first administrator opens the invitation in
 // another browser, creates a passkey (Chromium's virtual authenticator)
 // and lands in the new directory, seeing none of the host's own people.

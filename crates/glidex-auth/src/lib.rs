@@ -5,7 +5,7 @@
 //!   comparison, the building blocks of every secret below.
 //! - [`session`]: browser sessions (random ids of which only the SHA-256
 //!   is stored, CSRF values, idle and absolute timeouts) and the age a
-//!   step-up check sees (glidex spec/security.md §5.5).
+//!   step-up check sees (glidex spec/11-security.md §5.5).
 //! - [`token`]: access tokens: minting, their lifetime rules and names
 //!   (§5.5).
 //! - [`cedar`]: a Cedar policy engine: a schema and shipped policies,

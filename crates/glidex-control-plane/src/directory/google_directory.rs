@@ -1,4 +1,4 @@
-//! Google Workspace's Directory API as a pull source (spec/tenancy.md
+//! Google Workspace's Directory API as a pull source (spec/19-tenancy.md
 //! §8.2, D44, D47): a service account with domain-wide delegation, acting
 //! as `sync.admin_email`, reads the members of the connector's groups
 //! (nested ones too) and those users. Its key is the connector's sealed

@@ -1,4 +1,4 @@
-//! Bandwidth, disk I/O, CPU and memory, and live rates (spec/metering.md
+//! Bandwidth, disk I/O, CPU and memory, and live rates (spec/13-metering.md
 //! §9.3–§9.4): the REST twins of `glidex.usage.v1`'s reports
 //! (`UsageService`) and of `MetricsService`, on `service::usage`. The
 //! reports also answer CSV (`format=csv`, REST only, audited).

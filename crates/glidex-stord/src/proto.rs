@@ -1,5 +1,5 @@
 //! Wire protocol between the control plane and glidex-stord, the same
-//! shape as glidex-netd's (spec/networking.md §7.3): newline-delimited
+//! shape as glidex-netd's (spec/09-networking.md §7.3): newline-delimited
 //! JSON over a Unix socket, one request per line and one response per
 //! line, one request in flight per connection, `hello` first.
 
@@ -137,7 +137,7 @@ pub struct ProbeResult {
     pub thin_tools: bool,
 }
 
-/// Why a datastore's pool can't be used here (spec/storage.md §11.1).
+/// Why a datastore's pool can't be used here (spec/24-storage.md §11.1).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PoolStatus {
     pub usable: bool,

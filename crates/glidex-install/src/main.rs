@@ -30,13 +30,13 @@ const BUN_VERSION: &str = "1.4.2";
 
 /// The system user the control plane runs as. Its primary group is the
 /// one allowed to use glidex-netd and glidex-authd: nobody else is in it
-/// (spec/security.md §4).
+/// (spec/11-security.md §4).
 const SERVICE_USER: &str = "glidex";
 const NETD_GROUP: &str = "glidex";
 /// The web UI's own user (and group); not in `glidex`.
 const UI_USER: &str = "glidex-ui";
 /// The metadata endpoint's own user (and group): only it may use the
-/// control plane's metad.sock (spec/workload-identity.md W11).
+/// control plane's metad.sock (spec/29-workload-identity.md W11).
 pub(crate) const METAD_USER: &str = "glidex-metad";
 /// Humans allowed to use gxctl on the control plane's api.sock.
 const USERS_GROUP: &str = "glidex-users";
@@ -52,7 +52,7 @@ const UI_ASSET_DIR: &str = "/usr/local/share/glidex/ui";
 const INSTALL_CONF: &str = "/etc/glidex/install.conf";
 
 const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
-/// Applies `--vfio-devices` / `--sriov` at boot (spec/gpu-vms.md §10).
+/// Applies `--vfio-devices` / `--sriov` at boot (spec/27-gpu-vms.md §10).
 const VFIO_BOOT_UNIT: &str = "/etc/systemd/system/glidex-vfio-boot.service";
 /// Loads vfio-pci at boot for it.
 pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
@@ -66,11 +66,11 @@ const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
 const STORD_UNIT: &str = "/etc/systemd/system/glidex-stord.service";
 const PYLOND_UNIT: &str = "/etc/systemd/system/glidex-pylond.service";
 /// glidex-stord's settings: the volume groups it may use
-/// (spec/storage.md S17). The administrator's; the installer only adds the
+/// (spec/24-storage.md S17). The administrator's; the installer only adds the
 /// `--stord-allow-vg` ones.
 pub(crate) const STORD_CONFIG: &str = "/etc/glidex/stord.json";
 /// One instance per running VM, started by the control plane over D-Bus
-/// (spec/reconciliation.md §13).
+/// (spec/12-reconciliation.md §13).
 pub(crate) const VM_UNIT: &str = "/etc/systemd/system/glidex-vm@.service";
 pub(crate) const VMS_SLICE: &str = "/etc/systemd/system/glidex-vms.slice";
 /// Lets the service user start/stop/kill exactly its glidex-vm@ units.
@@ -91,14 +91,14 @@ const AUTHD_CONFIG_DEFAULT: &str =
 /// The control plane's settings with their defaults, for reference; the
 /// installer never writes control-plane.json itself (defaults apply).
 pub(crate) const CP_CONFIG_EXAMPLE: &str = "/etc/glidex/control-plane.json.example";
-/// Read-only site policy files (spec/security.md §7.6), root:glidex 0750.
+/// Read-only site policy files (spec/11-security.md §7.6), root:glidex 0750.
 pub(crate) const POLICY_DIR: &str = "/etc/glidex/policies";
-/// Where operators mount registered datastores (spec/storage.md S11); the
+/// Where operators mount registered datastores (spec/24-storage.md S11); the
 /// control plane and VM units may write under it.
 pub(crate) const DATASTORE_ROOT: &str = "/srv/glidex";
 /// The control plane's local API socket (RuntimeDirectory=glidex-cp).
 const API_SOCKET: &str = "/run/glidex-cp/api.sock";
-/// Loopback ends of the default listeners (every address, spec/security.md
+/// Loopback ends of the default listeners (every address, spec/11-security.md
 /// §5.1), to see whether something already holds the ports.
 const API_ADDR: &str = "127.0.0.1:8841";
 const UI_ADDR: &str = "127.0.0.1:5173";
@@ -197,7 +197,7 @@ fn main() -> Result<()> {
         if let Some(ts) = ts {
             tailscale_on = ts.on;
             // Not enabled after all: keep what was saved, so this run's
-            // choice isn't recorded as on (spec/tailscale-tls.md §4.6).
+            // choice isn't recorded as on (spec/21-tailscale-tls.md §4.6).
             if ts.refused.is_some() {
                 opts.tailscale_cert = saved_tailscale_cert;
             }
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
 
 /// Register the datastores asked for (`--datastore`), or offer the shared
 /// filesystems mounted under the datastore root that aren't one yet
-/// (spec/storage.md S13): each, and whether it becomes the default for new
+/// (spec/24-storage.md S13): each, and whether it becomes the default for new
 /// disks (suggested: no, `local` stays).
 fn register_datastores(opts: &Options) -> Result<()> {
     use std::io::IsTerminal;
@@ -456,7 +456,7 @@ fn cluster_identity() -> Option<serde_json::Value> {
     serde_json::from_str(&raw).ok()
 }
 
-/// Bring this member's OVN up to the cluster's ovn-northd (spec/installer.md
+/// Bring this member's OVN up to the cluster's ovn-northd (spec/05-installer.md
 /// §5a), from the distribution or else the Ubuntu Cloud Archive, OVN only.
 fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
     use ovn_match::{CLUSTER_DIR, Plan};
@@ -716,7 +716,7 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
         );
     }
     // An agent keeps its web UI: its control plane relays the UI's requests
-    // to a server, which authenticates them (spec/clustering-ui.md §3.6).
+    // to a server, which authenticates them (spec/16-clustering-ui.md §3.6).
     if j.role == "agent" {
         println!(
             "{} the web UI here is served through the cluster's servers (log in with a server's users)",
@@ -800,10 +800,10 @@ struct Options {
     release_hugepages: bool,
     /// Install OVN (`ovn-host`, `ovn-central` unless joining as an agent, and
     /// `conntrack` for gateway metering): cluster networks need it on every
-    /// node (spec/clustering.md §10.1). Its services stay off until the host
+    /// node (spec/14-clustering.md §10.1). Its services stay off until the host
     /// is in a cluster that enables OVN. Default on; `--no-ovn` skips it.
     ovn: bool,
-    /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
+    /// Join a cluster once installed (spec/14-clustering.md §5.2). Never saved:
     /// it holds a one-time token's source.
     join: Option<JoinOptions>,
     /// `--leave`: this host's node was removed; go back to standalone (§5.5).
@@ -817,27 +817,27 @@ struct Options {
     /// while no server can be reached (§5.8.3).
     offline: bool,
     /// Serve the node's Tailscale certificate from the web UI
-    /// (spec/tailscale-tls.md §4.6). Opt-in: `None` (nothing chosen yet)
+    /// (spec/21-tailscale-tls.md §4.6). Opt-in: `None` (nothing chosen yet)
     /// asks on an interactive run, else stays off.
     tailscale_cert: Option<bool>,
     /// `--datastore NAME=PATH` (shared) and `--local-datastore NAME=PATH`:
-    /// register these once the services are up (spec/storage.md S13).
+    /// register these once the services are up (spec/24-storage.md S13).
     /// Never saved: done once.
     datastores: Vec<DatastoreReg>,
     /// `--datastore-default`: the first of them takes new disks. Never saved.
     datastore_default: bool,
     /// `--stord-allow-vg VG`: volume groups glidex-stord may make volumes
-    /// in, added to stord.json (spec/storage.md §11.1). Never saved: the
+    /// in, added to stord.json (spec/24-storage.md §11.1). Never saved: the
     /// file keeps them.
     stord_allow_vgs: Vec<String>,
     /// `--vfio-devices a100,0000:87:00.0`: pools (control-plane.json) or PCI
-    /// addresses bound to vfio-pci at boot (spec/gpu-vms.md §10).
+    /// addresses bound to vfio-pci at boot (spec/27-gpu-vms.md §10).
     vfio_devices: Vec<String>,
     /// `--sriov PF=N`: VF counts set at boot, before the binding.
     sriov: Vec<(String, u32)>,
     /// `--now`: apply the boot devices now as well. Never saved.
     vfio_now: bool,
-    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/pylon.md §9).
+    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/30-pylon.md §9).
     with_pylon: Option<bool>,
 }
 
@@ -864,7 +864,7 @@ fn parse_sriov(v: &str) -> Result<(String, u32)> {
     Ok((pf, n))
 }
 
-/// A datastore to register (spec/storage.md §13).
+/// A datastore to register (spec/24-storage.md §13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DatastoreReg {
     name: String,
@@ -909,7 +909,7 @@ impl Default for Options {
             networking: true,
             services: true,
             // The kernel datapath: no hugepages or dedicated cores, and an
-            // OVN br-int that can carry a gateway (spec/clustering.md §13.2).
+            // OVN br-int that can carry a gateway (spec/14-clustering.md §13.2).
             ovs_profile: OvsProfile::Kernel,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
@@ -1148,7 +1148,7 @@ fn print_help() {
          \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
-         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/pylon.md)\n\
+         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/30-pylon.md)\n\
          \x20     --no-pylon             skip Pylon hypervisor and pylond\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
          \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
@@ -1162,7 +1162,7 @@ fn print_help() {
          \x20     --datastore-default    make the first of them the default for new disks\n\
          \x20     --stord-allow-vg VG    let glidex-stord make LVM-thin volumes in volume group VG\n\
          \x20                            (added to /etc/glidex/stord.json; the VG and its thin\n\
-         \x20                            pool are yours to make: spec/storage.md §11.1)\n\
+         \x20                            pool are yours to make: spec/24-storage.md §11.1)\n\
          \x20     --vfio-devices LIST    bind these to vfio-pci at every boot, before any VM starts:\n\
          \x20                            pools of control-plane.json or PCI addresses, comma-separated\n\
          \x20     --sriov PF=N           give physical function PF N SR-IOV VFs at every boot\n\
@@ -1170,7 +1170,7 @@ fn print_help() {
          \x20     --now                  also apply them now (never touches a device on vfio-pci)\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
-         Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
+         Joining a cluster (spec/14-clustering.md §5.2); the token comes from\n\
          `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
          or standard input, never from the command line:\n\
          \x20     --join SERVER:8842     join the cluster this server belongs to\n\
@@ -1236,7 +1236,7 @@ fn print_plan(opts: &Options) {
     println!();
 }
 
-/// The opt-in question (spec/tailscale-tls.md §4.6), default no.
+/// The opt-in question (spec/21-tailscale-tls.md §4.6), default no.
 fn ask_tailscale_cert(domain: &str) -> bool {
     println!();
     println!(
@@ -1542,7 +1542,7 @@ const fn dep(probe: Probe, packages: [&'static str; 3]) -> Dep {
 
 /// Build tools (unzip for bun's installer, pkg-config and the OpenSSL
 /// headers for `openssl-sys`, clang), the cloud-init seed tools, and the
-/// tools the image and disk module shells out to (spec/images.md §9).
+/// tools the image and disk module shells out to (spec/10-images.md §9).
 const BASE_DEPS: &[Dep] = &[
     dep(Probe::Cmd("curl"), ["curl", "curl", "curl"]),
     dep(Probe::Cmd("unzip"), ["unzip", "unzip", "unzip"]),
@@ -1608,7 +1608,7 @@ const NETWORKING_DEPS: &[Dep] = &[dep(
     ["libcap2-bin", "libcap", "libcap"],
 )];
 
-/// OVN (spec/clustering.md §10.1): every node runs `ovn-host`
+/// OVN (spec/14-clustering.md §10.1): every node runs `ovn-host`
 /// (`ovn-controller`); a server also runs `ovn-central` (the databases and
 /// northd). 26.03 or newer; Ubuntu 26.04 ships it.
 const OVN_HOST_DEPS: &[Dep] = &[dep(
@@ -1620,7 +1620,7 @@ const OVN_CENTRAL_DEPS: &[Dep] = &[dep(
     ["ovn-central", "ovn-central", "ovn"],
 )];
 /// The `conntrack` tool: a gateway node meters external traffic from router
-/// SNAT zones with it (spec/clustering.md §13.3).
+/// SNAT zones with it (spec/14-clustering.md §13.3).
 const CONNTRACK_DEPS: &[Dep] = &[dep(
     Probe::Cmd("conntrack"),
     ["conntrack", "conntrack-tools", "conntrack-tools"],
@@ -2223,7 +2223,7 @@ fn find_pylond_source() -> Option<PathBuf> {
 }
 
 /// Installs Pylon hypervisor and pylond daemon when requested or present
-/// in the local build / release bundle (spec/pylon.md §9).
+/// in the local build / release bundle (spec/30-pylon.md §9).
 fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
     let pylon_src = find_pylon_source();
     let pylond_src = find_pylond_source();
@@ -2596,7 +2596,7 @@ struct UserState<'a> {
     member: Option<Member<'a>>,
 }
 
-/// Root commands that create the identities of spec/security.md §4: the
+/// Root commands that create the identities of spec/11-security.md §4: the
 /// `glidex` service user (only the control plane), its home and data dir,
 /// the `glidex-users` and `glidex-admin` groups with the invoking user in
 /// both, and the `glidex-ui` user (own group, no login, no home). The
@@ -2805,7 +2805,7 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-// --- Boot devices (spec/gpu-vms.md §10) ---
+// --- Boot devices (spec/27-gpu-vms.md §10) ---
 
 /// The boot settings for `--vfio-devices` and `--sriov`: addresses as they
 /// are, pools as their `match` in control-plane.json. `None`: nothing set.
@@ -3089,7 +3089,7 @@ fn reserve_hugepages() -> Result<()> {
 
 /// The kernel profile: turn off the DPDK an earlier dpdk profile left on
 /// in ovs-vswitchd, so `br-int` goes back to the kernel datapath
-/// (spec/networking.md §6.2). That restarts ovs-vswitchd, so with bridges
+/// (spec/09-networking.md §6.2). That restarts ovs-vswitchd, so with bridges
 /// it waits for `--allow-ovs-restart`. Returns whether DPDK is off.
 fn turn_off_dpdk(
     opts: &Options,
@@ -3454,7 +3454,7 @@ fn policy_dir_ok(stat: Option<&str>) -> bool {
     stat.map(str::trim) == Some(&format!("750 root:{}", NETD_GROUP))
 }
 
-/// Configuration for the services (spec/security.md §5.3, §13):
+/// Configuration for the services (spec/11-security.md §5.3, §13):
 /// /etc/pam.d/glidex (unless an administrator took it over), a default
 /// /etc/glidex/authd.json (once), control-plane.json.example (never
 /// control-plane.json itself: defaults apply), and the site policy
@@ -3803,7 +3803,7 @@ fn install_services(
 }
 
 /// The VM unit template, its slice, the polkit rule and the shim's
-/// allowlist (spec/reconciliation.md §13). Returns whether a unit changed.
+/// allowlist (spec/12-reconciliation.md §13). Returns whether a unit changed.
 fn install_vm_units(root: &Path) -> Result<bool> {
     let template = fs::read_to_string(root.join("packaging/glidex-vm@.service.in"))
         .context("packaging/glidex-vm@.service.in")?;
@@ -4010,7 +4010,7 @@ mod tests {
     }
 
     /// `--datastore` and `--local-datastore` are registered once, never
-    /// saved; a malformed one is refused (spec/storage.md S13).
+    /// saved; a malformed one is refused (spec/24-storage.md S13).
     #[test]
     fn datastores_to_register_are_one_time() {
         let o = Options::parse(
@@ -4763,7 +4763,7 @@ mod tests {
         );
         assert!(rule.contains(r#"subject.user == "glidex""#) && !rule.contains("@USER@"));
         assert!(rule.contains(r#"["start", "stop", "kill"]"#));
-        // VM units, and kernel extraction jobs (spec/kernel-boot.md §10.2).
+        // VM units, and kernel extraction jobs (spec/23-kernel-boot.md §10.2).
         assert!(rule.contains(r"/^glidex-vm@(extract-)?[0-9a-f]{8}-"));
         let list: serde_json::Value =
             serde_json::from_str(&shim_allowlist(|p| p == "/usr/local/bin/cloud-hypervisor"))
@@ -4829,7 +4829,7 @@ mod tests {
             !s.contains(&"UMask=0007"),
             "consoles are reached through the API now"
         );
-        // Hypervisors run in the glidex-vm units (spec/reconciliation.md
+        // Hypervisors run in the glidex-vm units (spec/12-reconciliation.md
         // §13.3): this one opens no device but LVM volumes (S18) and serves
         // no vhost-user socket.
         assert_eq!(

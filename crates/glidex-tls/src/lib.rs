@@ -1,4 +1,4 @@
-//! HTTPS for the control plane and glidex-ui (spec/security.md §5.1).
+//! HTTPS for the control plane and glidex-ui (spec/11-security.md §5.1).
 //!
 //! - Listeners: every address by default (`0.0.0.0` and `[::]`, the IPv6
 //!   socket `IPV6_V6ONLY` so both can bind the same port).
@@ -6,7 +6,7 @@
 //!   are missing, unreadable or near expiry, so their fingerprint stays
 //!   stable for clients that trust them.
 //! - Serving certificates that can change while running
-//!   (spec/tailscale-tls.md §4.1): a slot per certificate, chosen per
+//!   (spec/21-tailscale-tls.md §4.1): a slot per certificate, chosen per
 //!   handshake by SNI, and certificate files re-read when they change.
 //! - The local names of this host: certificate SANs, the UI's `Host`
 //!   allowlist and the control plane's default `Origin`s.
@@ -359,7 +359,7 @@ pub fn fingerprint_certified(key: &CertifiedKey) -> String {
         .unwrap_or_default()
 }
 
-// ---- reloadable certificates (spec/tailscale-tls.md §4.1) --------------------
+// ---- reloadable certificates (spec/21-tailscale-tls.md §4.1) --------------------
 
 /// One certificate being served, replaceable while running. A swap is
 /// seen by the next handshake; established connections keep theirs.
@@ -433,7 +433,7 @@ fn stamp(path: &Path) -> Stamp {
 }
 
 /// A slot backed by a certificate and a key file, re-read when either
-/// changes (spec/tailscale-tls.md §4.1).
+/// changes (spec/21-tailscale-tls.md §4.1).
 #[derive(Debug)]
 pub struct FileCert {
     pub slot: Arc<CertSlot>,
@@ -691,7 +691,7 @@ pub fn trustworthy(path: &Path, euid: u32, glidex_uid: Option<u32>) -> bool {
 // ---- client trust -----------------------------------------------------------
 
 /// The certificate trust one gxctl login profile asks for
-/// (spec/gxctl-auth.md §5.1), fed to [`ClientTls::with_trust`].
+/// (spec/17-gxctl-auth.md §5.1), fed to [`ClientTls::with_trust`].
 #[derive(Debug, Clone, Default)]
 pub struct Trust {
     /// PEM files trusted next to the system store. Their access control is
@@ -702,15 +702,15 @@ pub struct Trust {
     /// Leaf-certificate SHA-256 fingerprints the user accepted on first
     /// use, in [`Trust::normalize_pin`] shape. A pin substitutes nothing:
     /// dates, the handshake signature, and (unless `verify_host` is off)
-    /// the name keep being checked (gxctl-auth.md A4).
+    /// the name keep being checked (17-gxctl-auth.md A4).
     pub pins: Vec<String>,
     /// Match the certificate's SANs against the dialed name. Only profiles
     /// with a pin may turn this off, for dialing an address that never
     /// made it into the certificate; regenerating the certificate is the
-    /// better fix (gxctl-auth.md §2.2).
+    /// better fix (17-gxctl-auth.md §2.2).
     pub verify_host: bool,
     /// Verify nothing, for a profile whose owner typed the host name to
-    /// confirm (`i_understand`, gxctl-auth.md A9). rustls still binds the
+    /// confirm (`i_understand`, 17-gxctl-auth.md A9). rustls still binds the
     /// handshake signature to the presented certificate; the caller prints
     /// the loud warning. Audit this field's use before shipping code that
     /// reaches it.
@@ -738,7 +738,7 @@ impl Trust {
 /// A client config that remembers the fingerprint of the last certificate
 /// it accepted and of the last it rejected — for error messages, the
 /// first-use trust prompt, and cross-checking what a server claims about
-/// itself (spec/gxctl-auth.md §5.2).
+/// itself (spec/17-gxctl-auth.md §5.2).
 #[derive(Clone)]
 pub struct ClientTls {
     pub config: Arc<rustls::ClientConfig>,
@@ -766,7 +766,7 @@ impl ClientTls {
         )
     }
 
-    /// gxctl's trust ladder (spec/gxctl-auth.md §5.1), one rung stricter
+    /// gxctl's trust ladder (spec/17-gxctl-auth.md §5.1), one rung stricter
     /// than the last and each entered only where the profile says so:
     ///
     /// 1. WebPKI against the system store, `ca_files` and `ca_pem`.
@@ -861,7 +861,7 @@ impl ClientTls {
     }
 
     /// Fingerprint of the last certificate that was accepted, to compare
-    /// against what `GET /auth/server-info` claims (spec/gxctl-auth.md
+    /// against what `GET /auth/server-info` claims (spec/17-gxctl-auth.md
     /// §7.1): a proxy terminating TLS in front of the cluster shows its
     /// own certificate, and the two fingerprints then disagree.
     pub fn accepted_fingerprint(&self) -> Option<String> {
@@ -936,7 +936,7 @@ impl rustls::client::danger::ServerCertVerifier for Ladder {
         let fp = fingerprint_der(end_entity);
         if self.insecure {
             // "nothing is checked" is the promise `insecure` makes
-            // (gxctl-auth.md A9): the profile got there by its owner
+            // (17-gxctl-auth.md A9): the profile got there by its owner
             // typing the host name, and the caller warns loudly. The
             // handshake signature below still ties the peer to this
             // certificate, so the answer cannot be replayed by a
@@ -1003,7 +1003,7 @@ impl rustls::client::danger::ServerCertVerifier for Ladder {
 
 /// The validity window of a certificate that was accepted by fingerprint
 /// rather than by chain: the one thing WebPKI is skipped for together
-/// with the name, so it is checked directly (gxctl-auth.md A4).
+/// with the name, so it is checked directly (17-gxctl-auth.md A4).
 fn check_validity(der: &CertificateDer<'_>, now: UnixTime) -> Result<(), rustls::Error> {
     let (_, x) = x509_parser::parse_x509_certificate(der)
         .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
@@ -1185,7 +1185,7 @@ mod tests {
 
     /// SNI picks the named slot (any case, trailing dot in the name), and
     /// everything else gets the default. A swap is seen by the next
-    /// handshake only (spec/tailscale-tls.md §4.1).
+    /// handshake only (spec/21-tailscale-tls.md §4.1).
     #[tokio::test]
     async fn resolver_picks_by_sni_and_swaps() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1331,7 +1331,7 @@ mod tests {
     /// A server nobody trusts until once: the fingerprint the owner
     /// confirmed on first use (in pasted shape) lets it through, while
     /// WebPKI alone still refuses it, and a wrong pin stays refused with
-    /// the observed fingerprint on record for the prompt (spec/gxctl-auth.md
+    /// the observed fingerprint on record for the prompt (spec/17-gxctl-auth.md
     /// §5.2).
     #[tokio::test]
     async fn pin_accepts_after_first_use_trust() {
@@ -1416,7 +1416,7 @@ mod tests {
 
     /// The name check runs on pinned certificates too, and only the
     /// profile's `verify_host: false` waives it — together with the pin,
-    /// never alone (gxctl-auth.md A4, §2.2).
+    /// never alone (17-gxctl-auth.md A4, §2.2).
     #[tokio::test]
     async fn pinned_certificates_still_meet_the_name_or_an_explicit_waiver() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

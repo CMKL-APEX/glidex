@@ -1,4 +1,4 @@
-//! The scheduler (spec/clustering.md §9.1): where a VM runs. It decides once;
+//! The scheduler (spec/14-clustering.md §9.1): where a VM runs. It decides once;
 //! after that the VM stays (D6).
 
 use crate::cluster::config::SchedulerConfig;
@@ -14,14 +14,14 @@ pub struct Request {
     pub mem_mib: u64,
     /// `cloudhypervisor` or `qemu`, as nodes report their hypervisors.
     pub hypervisor: String,
-    /// Guest RAM in hugepages, asked for (spec/host-topology.md §8a.3).
+    /// Guest RAM in hugepages, asked for (spec/22-host-topology.md §8a.3).
     pub hugepages: bool,
     /// Their size in KiB; `None`: the node's default size.
     pub hugepage_kib: Option<u64>,
     /// A vhost-user NIC: hugepages without asking, when the node has them
     /// to spare.
     pub vhost_user: bool,
-    /// spec/host-topology.md H5 and H6.
+    /// spec/22-host-topology.md H5 and H6.
     pub numa: NumaPolicy,
     pub cpu: CpuPolicy,
     /// `spec.node`: an id or a name.
@@ -29,7 +29,7 @@ pub struct Request {
     /// The node of each disk the VM uses, `None` for one not bound yet.
     pub disk_nodes: Vec<Option<String>>,
     /// For each unbound disk on a registered datastore, the datastore's
-    /// name and the nodes that reach it (spec/storage.md §5.2).
+    /// name and the nodes that reach it (spec/24-storage.md §5.2).
     pub disk_reach: Vec<(String, Vec<String>)>,
     /// The node of each `scope: node` network it attaches to.
     pub net_nodes: Vec<String>,
@@ -37,7 +37,7 @@ pub struct Request {
     pub vfio: Vec<String>,
     /// The nodes where the project may use them; `None`: any.
     pub device_nodes: Option<Vec<String>>,
-    /// Devices asked for by pool (spec/host-topology.md §9).
+    /// Devices asked for by pool (spec/22-host-topology.md §9).
     pub pools: Vec<PoolRequest>,
     /// Physical networks (provider networks) the VM's NICs sit on.
     pub physnets: Vec<String>,
@@ -47,7 +47,7 @@ pub struct Request {
     /// network: the node's ovn-controller must be that release or newer.
     pub ovn_northd: Option<String>,
     /// The VM's architecture (its image's, else its firmware's); empty:
-    /// none (spec/clustering.md §9.2.1).
+    /// none (spec/14-clustering.md §9.2.1).
     pub arch: String,
 }
 
@@ -58,7 +58,7 @@ pub struct Load {
     /// Guest RAM in ordinary memory.
     pub mem_mib: u64,
     pub vms: u64,
-    /// PCI devices its VMs claim (spec/host-topology.md §8.4): address →
+    /// PCI devices its VMs claim (spec/22-host-topology.md §8.4): address →
     /// the VM's name.
     pub devices: BTreeMap<String, String>,
     /// Guest RAM in hugepages: page size in KiB → MiB.
@@ -68,7 +68,7 @@ pub struct Load {
     /// Host CPUs dedicated VMs hold.
     pub dedicated: BTreeSet<u32>,
     /// Guest RAM bound to each NUMA node: in ordinary memory, and in
-    /// hugepages by page size (spec/host-topology.md §8.1).
+    /// hugepages by page size (spec/22-host-topology.md §8.1).
     pub numa_mem_mib: BTreeMap<u32, u64>,
     pub numa_hugepage_mib: BTreeMap<u32, BTreeMap<u64, u64>>,
 }
@@ -108,7 +108,7 @@ pub fn pci_address(device: &str) -> String {
 /// Why `device` can't be given to another VM on a node whose VMs claim
 /// `claimed` (address → VM name) and whose IOMMU groups are `groups`
 /// (address → group): it is claimed, or it shares its group with a claimed
-/// device (spec/host-topology.md §8.4). `None`: free.
+/// device (spec/22-host-topology.md §8.4). `None`: free.
 pub fn device_taken(
     groups: &BTreeMap<String, String>,
     claimed: &BTreeMap<String, String>,
@@ -139,7 +139,7 @@ fn default_page_kib(n: &Node) -> u64 {
     }
 }
 
-/// The page size guest RAM of `req` gets on `n` (spec/host-topology.md
+/// The page size guest RAM of `req` gets on `n` (spec/22-host-topology.md
 /// §8a.3), or why it can't: asked-for hugepages must fit what is left of
 /// the node's; a vhost-user VM gets 2 MiB pages when they cover its RAM
 /// plus a quarter (at least 256 MiB) to spare, else ordinary memory.
@@ -182,7 +182,7 @@ pub struct PoolRequest {
     pub same_switch: bool,
 }
 
-/// The devices `req`'s pool requests get on `n` (spec/host-topology.md
+/// The devices `req`'s pool requests get on `n` (spec/22-host-topology.md
 /// §8.2 4, §8.3): of each pool's devices there that are ready, not
 /// cordoned, and not claimed (with their IOMMU groups), those on the NUMA
 /// node of the VM's other devices first, then by address; with
@@ -228,7 +228,7 @@ pub fn pick_pool_devices(
             .collect();
         if effective_numa(req) == NumaPolicy::Aligned {
             // As few NUMA nodes as can hold them: the node of devices it
-            // has first, then those with the most free (spec/gpu-vms.md §4).
+            // has first, then those with the most free (spec/27-gpu-vms.md §4).
             let mut per_node: BTreeMap<Option<u32>, usize> = BTreeMap::new();
             for d in &free {
                 *per_node.entry(d.numa_node).or_default() += 1;
@@ -292,7 +292,7 @@ pub fn pick_pool_devices(
     Ok(out)
 }
 
-/// Where on a node a VM goes (spec/host-topology.md §8.2–8.3).
+/// Where on a node a VM goes (spec/22-host-topology.md §8.2–8.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fit {
     /// The page size its RAM is counted in.
@@ -306,7 +306,7 @@ pub struct Fit {
     /// The devices picked for its pool requests.
     pub pool_devices: Vec<crate::models::PoolDevice>,
     /// `aligned` over several NUMA nodes: each node's share, in guest NUMA
-    /// node order (spec/gpu-vms.md §4).
+    /// node order (spec/27-gpu-vms.md §4).
     pub numa: Vec<crate::models::NumaShare>,
 }
 
@@ -480,7 +480,7 @@ fn fit_on_numa(
     Ok((page, cpus, used))
 }
 
-/// `aligned` (spec/gpu-vms.md §4): exactly the NUMA nodes of the VM's
+/// `aligned` (spec/27-gpu-vms.md §4): exactly the NUMA nodes of the VM's
 /// devices, its vCPUs and memory split between them by their device counts
 /// (largest remainder), each share fitting its node. One node: an ordinary
 /// fit there. No devices: as `preferred`.
@@ -582,7 +582,7 @@ fn split_by(total: u64, weights: &[u64]) -> Vec<u64> {
 }
 
 /// Where on `n` a VM of `req` goes under its NUMA and CPU policies
-/// (spec/host-topology.md §8.2): the NUMA node holding its devices and
+/// (spec/22-host-topology.md §8.2): the NUMA node holding its devices and
 /// enough memory and CPUs, the most devices then the least allocated
 /// first; `strict` refuses when none can, `preferred` falls back to the
 /// whole node.
@@ -704,7 +704,7 @@ pub fn numa_fit(
 
 /// Where on `n` a VM of `req` goes once `n` passed the node filters: its
 /// pool devices, then the NUMA fit with them as the VM's devices
-/// (spec/host-topology.md §8.2). Also what a standalone host and a change
+/// (spec/22-host-topology.md §8.2). Also what a standalone host and a change
 /// to a placed VM run.
 pub fn place_on(
     n: &Node,
@@ -748,7 +748,7 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
     if n.status.ready != Tristate::True {
         return Err("not ready".into());
     }
-    // Shared vCPUs go on what dedicated ones leave (spec/host-topology.md
+    // Shared vCPUs go on what dedicated ones leave (spec/22-host-topology.md
     // §8.1).
     let shared_vcpus = load.vcpus.saturating_sub(load.dedicated_vcpus);
     let shared_cap = |held: usize| {
@@ -863,7 +863,7 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
 }
 
 /// One node's answer to a request (`POST /scheduler/preview`,
-/// spec/clustering-ui.md §5.1).
+/// spec/16-clustering-ui.md §5.1).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NodeFit {
     pub id: String,
@@ -884,7 +884,7 @@ pub struct NodeFit {
     pub hugepages_mib_taken: u64,
     pub hugepages_mib_capacity: u64,
     /// The NUMA node, dedicated CPUs and alignment it would get
-    /// (spec/host-topology.md §8.3).
+    /// (spec/22-host-topology.md §8.3).
     pub numa_node: Option<u32>,
     pub cpus: Vec<u32>,
     pub numa_aligned: bool,

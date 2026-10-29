@@ -1,7 +1,7 @@
-//! Workload identity tokens for VMs (spec/workload-identity.md §4.2).
+//! Workload identity tokens for VMs (spec/29-workload-identity.md §4.2).
 //!
 //! A VM's identity token is a JWT signed with its directory's keys
-//! (tenancy.md D53): `sub` is a SPIFFE ID in the directory's trust domain
+//! (19-tenancy.md D53): `sub` is a SPIFFE ID in the directory's trust domain
 //! (W9, W13), `aud` what the guest asked for (W7), glidex's own claims under
 //! `glidex`. It grants nothing in glidex by itself (W4): it is typed `JWT`,
 //! never `at+jwt`, so no API accepts it as a bearer token (`api::op`).
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 /// The JOSE `typ` of an identity token (JWT-SVIDs allow `JWT`).
 pub const TYP: &str = "JWT";
-/// A VM's glidex tokens are federated tokens (tenancy.md D48) whose
+/// A VM's glidex tokens are federated tokens (19-tenancy.md D48) whose
 /// `federation` is `vm:<tenant id>`: federation ids are `[a-z0-9-]`, so no
 /// federation is ever named so (W6).
 pub const VM_ORIGIN: &str = "vm:";

@@ -3,7 +3,7 @@
 The control plane serves HTTPS on every address, `0.0.0.0:8841` and
 `[::]:8841`, by default (`listen` / `GLIDEX_LISTEN` override; a
 self-signed certificate unless one is configured; plain HTTP only on
-loopback — [security.md](security.md) §5.1), and on its Unix sockets.
+loopback — [11-security.md](11-security.md) §5.1), and on its Unix sockets.
 All request and
 response bodies are JSON except the console WebSocket, the console
 log (raw bytes) and `GET /watch` (server-sent events).
@@ -15,7 +15,7 @@ Every endpoint except `/health`, `/auth/methods`, `/auth/login`,
 endpoints (`/auth/oidc/…`, `/auth/c/{id}/…`) needs a principal: a local user on `api.sock` (peer uid),
 a bearer token, or a browser session (cookie + `X-Glidex-CSRF` on
 writes). Each route maps to one Cedar action; see
-[security.md](security.md) §7 and §13 for the actions, the additional
+[11-security.md](11-security.md) §7 and §13 for the actions, the additional
 endpoints (projects, bindings, tokens, users, teams, policies, audit) and
 the error codes `401 unauthenticated`, `401 reauth_required`,
 `403 forbidden`, `403 quota_exceeded`, `409 would_lock_out` and
@@ -23,7 +23,7 @@ the error codes `401 unauthenticated`, `401 reauth_required`,
 
 The storage and VM families (guest credentials, images, disks; VMs,
 their events, console info and tickets, and `/scheduler/preview`) are
-served in the proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8): the
+served in the proto shape ([18-grpc.md](18-grpc.md) §9.1, [10-images.md](10-images.md) §8): the
 `glidex.storage.v1` and `glidex.vm.v1` messages as JSON, wrapped (`{disks}`, `{disk}`,
 `{disk, settled}`, …), with 64-bit numbers as strings, enum names in
 full and RFC 3339 times. A body that is JSON but not the message (an
@@ -39,7 +39,7 @@ group_by, rows, complete_through, metering_started_at}` and so on), with
 `GRANULARITY_DAY`), a meter's `raw` value as a string, and fields that
 are unknown, empty or zero left out (no `null`s). The query parameters are
 unchanged (and also take the enum names). `format=csv` still answers the
-same CSV ([metering.md](metering.md) §9.5).
+same CSV ([13-metering.md](13-metering.md) §9.5).
 
 The access family (projects and their bindings, users, teams, tokens,
 system bindings, site policies, audit, `/authz/check` and
@@ -60,7 +60,7 @@ system bindings, site policies, audit, `/authz/check` and
   `owner` and `project` beside it; its times are RFC 3339.
 - Quotas: an absent limit is unlimited (no `null`); a project's
   `networks`, `routers` and `external_ips`, when left out, take their
-  defaults ([security.md](security.md) §6.3). `usage` (on list and get)
+  defaults ([11-security.md](11-security.md) §6.3). `usage` (on list and get)
   leaves out zero counts.
 - `PATCH /projects/{id}`, `/users/{id}` and `/teams/{id}` change the
   fields present, or those in `update_mask` (`"description,quotas"`).
@@ -76,7 +76,7 @@ the proto shape too: the `glidex.network.v1` messages, wrapped
 enum names in full (`NETWORK_MODE_NAT`, `PORT_TYPE_TAP`,
 `NETWORK_SCOPE_CLUSTER`, `NETWORK_PHASE_READY`, `SHARE_STATUS_OFFERED`)
 and RFC 3339 times.
-Networks have an `id` (tenancy.md D24): every path and body that names
+Networks have an `id` (19-tenancy.md D24): every path and body that names
 a network takes its id or its name (a name several visible networks
 have is `409 ambiguous`), and answers name networks by id: a share's
 `network` is the id, with `network_name`; a VM's `nics[].network` is the
@@ -131,58 +131,58 @@ reported as `404`.
 | `GET` | `/health` | `health_check` | Liveness probe |
 | `GET` | `/vms` | `list` | List VMs |
 | `POST` | `/vms` | `create` | Create a new VM (desired state `stopped` unless `power` says otherwise) |
-| `POST` | `/scheduler/preview` | `vms::preview` | Where a VM would go: `{vcpu_count, mem_size_mib, hypervisor?, node?, networks?, vfio_devices?, data_disks?, project?}` → `{pick, nodes: [{id, name, refused, vcpus_taken, vcpus_capacity, mem_mib_taken, mem_mib_capacity, vms}]}`, the scheduler's preference first; needs `createVm` on the project (spec/clustering-ui.md §5.1) |
+| `POST` | `/scheduler/preview` | `vms::preview` | Where a VM would go: `{vcpu_count, mem_size_mib, hypervisor?, node?, networks?, vfio_devices?, data_disks?, project?}` → `{pick, nodes: [{id, name, refused, vcpus_taken, vcpus_capacity, mem_mib_taken, mem_mib_capacity, vms}]}`, the scheduler's preference first; needs `createVm` on the project (spec/16-clustering-ui.md §5.1) |
 | `GET` | `/vms/{id}[?view=full]` | `get_one` | Get a VM by id; `view=full` returns the stored `{meta, spec, status}` record instead of the flat `VmResponse`; it also needs `readSystemStatus` (`host.read`), since the record carries host paths, PIDs and the boot id |
 | `PATCH` | `/vms/{id}` | `patch_one` | JSON merge patch of the VM's spec (below) |
 | `DELETE` | `/vms/{id}[?keep_disk=true]` | `delete_one` | Request deletion; the controller stops the VM and cleans up (below) |
 | `POST` | `/vms/{id}/start` | `start` | Desired state `running` (from `paused`: resume) |
-| `POST` | `/vms/{id}/place` | `place` | Body `{node?}`: place a stopped VM, or one whose node was forgotten, again on `node` or where there is room; its disks must be on shared datastores (spec/storage.md §9). `placeVm` |
+| `POST` | `/vms/{id}/place` | `place` | Body `{node?}`: place a stopped VM, or one whose node was forgotten, again on `node` or where there is room; its disks must be on shared datastores (spec/24-storage.md §9). `placeVm` |
 | `POST` | `/vms/{id}/stop[?graceful_timeout_secs=N]` | `stop` | Desired state `stopped`; `N` (max 300) is stored as `stop_grace_secs`: press the guest's power button and wait up to `N` s before stopping it hard |
 | `POST` | `/vms/{id}/pause` | `pause` | Desired state `paused` |
 | `GET` | `/vms/{id}/events` | `events` | The VM's last 50 events, oldest first |
 | `GET` | `/vms/{id}/console` | `console_info` | Console availability and WebSocket URL |
-| `POST` | `/vms/{id}/console/ticket` | `console_ticket` | Single-use ticket for a browser's console WebSocket (security.md §5.6) |
+| `POST` | `/vms/{id}/console/ticket` | `console_ticket` | Single-use ticket for a browser's console WebSocket (11-security.md §5.6) |
 | `GET` | `/vms/{id}/console/ws` | `console_ws` | WebSocket upgrade — see below |
 | `GET` | `/vms/{id}/console/log[?tail_bytes=N][&previous=true]` | `console_log` | Last `N` bytes (max and default 1 MiB) of the console log; `previous=true` reads the rotated `console.log.1` (`404` if none) |
 | `POST` | `/vms/{id}/devices` | `attach_device` | Add a VFIO PCI device to the spec (hot-plugged while running) |
 | `DELETE` | `/vms/{id}/devices` | `detach_device` | Remove a VFIO PCI device from the spec (hot-unplugged while running) |
 | `GET` | `/system/reconcile` | `system_reconcile` | Controller status: runner, bus, netd, queue, orphans, unknown VMs |
-| `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices, with NUMA node and readiness (host-topology.md §5.1) |
-| `GET` | `/pci-pools` | `nodes::pci_pools` | Device pools (host-topology.md §9.1, action `listPciPools`); `?project=`: the pools that project may use (`usePciPool`), free counts only, for anyone who can read the project (`readProject`) |
-| `GET` | `/host/topology` | `host_topology` | This host's topology tree (host-topology.md §3.2, action `readHostTopology`) |
+| `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices, with NUMA node and readiness (22-host-topology.md §5.1) |
+| `GET` | `/pci-pools` | `nodes::pci_pools` | Device pools (22-host-topology.md §9.1, action `listPciPools`); `?project=`: the pools that project may use (`usePciPool`), free counts only, for anyone who can read the project (`readProject`) |
+| `GET` | `/host/topology` | `host_topology` | This host's topology tree (22-host-topology.md §3.2, action `readHostTopology`) |
 | `GET` | `/credentials` | `list_credentials` | List stored guest logins (no hashes) |
 | `POST` | `/credentials` | `create_credential` | Create a login; password is hashed on arrival |
 | `GET` | `/credentials/{username}` | `get_credential` | Get one login (no hash) |
 | `PUT` | `/credentials/{username}` | `update_credential` | Change password and/or replace SSH keys |
 | `DELETE` | `/credentials/{username}` | `delete_credential` | Delete; `409` while a VM uses it |
 | `GET` | `/images/catalog` | `image_catalog` | Built-in cloud images for this host's arch |
-| `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`). In a cluster `POST` also takes `arch` (default: that of `nodes`, else the answering server's), `nodes` (copies placed once downloaded) and `keep_server_copy` (default `true`) (clustering.md §9.2.1–2) |
-| `POST` / `DELETE` | `/images/{id}/copies[/{node}]` | `add_image_copy` / `remove_image_copy` | Keep a copy on a node ahead of need (`{node}`; `409` for another architecture), or let one go (`409` while the node needs it or it is the last ready copy); `pullImage` (clustering.md §9.2.2) |
-| `POST` | `/nodes/{id}/spare-image-files/delete` | `delete_spare_image_files` | The node deletes the unrecorded image files it has reported (`pullImage`; clustering.md §9.2.3) |
+| `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`). In a cluster `POST` also takes `arch` (default: that of `nodes`, else the answering server's), `nodes` (copies placed once downloaded) and `keep_server_copy` (default `true`) (14-clustering.md §9.2.1–2) |
+| `POST` / `DELETE` | `/images/{id}/copies[/{node}]` | `add_image_copy` / `remove_image_copy` | Keep a copy on a node ahead of need (`{node}`; `409` for another architecture), or let one go (`409` while the node needs it or it is the last ready copy); `pullImage` (14-clustering.md §9.2.2) |
+| `POST` | `/nodes/{id}/spare-image-files/delete` | `delete_spare_image_files` | The node deletes the unrecorded image files it has reported (`pullImage`; 14-clustering.md §9.2.3) |
 | `GET` / `DELETE` | `/images/{id}[?wait=N]` | `get_image` / `delete_image` | Details + progress; delete or cancel (`204`, or `202` while the image controller finishes; `409` while a disk uses it; below) |
 | `POST` | `/images/{id}/retry` | `retry_image` | Download a failed image again (`202`; needs `pullImage`) |
 | `GET` | `/images/{id}/events` | `image_events` | The image's last 50 events (`readImage`) |
 | `GET` / `POST` | `/disks[?wait=N]` | `list_disks` / `create_disk` | List; create blank or from an image (`201`, made by the disk controller; below) |
 | `GET` / `DELETE` | `/disks/{id}` | `get_disk` / `delete_disk` | Details + partition table; delete (`204`, or `202` while an operation on it finishes; `409` while attached) |
 | `POST` | `/disks/{id}/resize[?wait=N]` | `resize_disk` | Grow (extends root) or shrink (never into a partition); `202`, applied by the disk controller |
-| `POST` | `/disks/{id}/move` | `move_disk` | Body `{datastore, node?, flatten?, wait_secs?}`: copy a disk that no running VM uses to another datastore, by the node that has it; a linked disk is rebased or flattened. Answers `{disk, settled}`; while moving, the disk shows `moving_to` (spec/storage.md §8.3). `moveDisk`, plus `useDatastore` on the destination |
+| `POST` | `/disks/{id}/move` | `move_disk` | Body `{datastore, node?, flatten?, wait_secs?}`: copy a disk that no running VM uses to another datastore, by the node that has it; a linked disk is rebased or flattened. Answers `{disk, settled}`; while moving, the disk shows `moving_to` (spec/24-storage.md §8.3). `moveDisk`, plus `useDatastore` on the destination |
 | `POST` | `/disks/{id}/extend-root[?wait=N]` | `extend_root` | Grow the root partition, `offline` or `on-boot`; `202`, applied by the disk controller |
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
 | `GET` | `/networks/{id}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
 | `DELETE` | `/networks/{id}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
-| `GET` / `POST` | `/projects/{id}/routers` | `list_routers` / `create_router` | VPC routers of a project; create one (`201`; `409 external_pool_exhausted`; quotas `routers`, `external_ips`; [clustering.md §11.2a](clustering.md#112a-vpc-routers)) |
+| `GET` / `POST` | `/projects/{id}/routers` | `list_routers` / `create_router` | VPC routers of a project; create one (`201`; `409 external_pool_exhausted`; quotas `routers`, `external_ips`; [14-clustering.md §11.2a](14-clustering.md#112a-vpc-routers)) |
 | `GET` / `DELETE` | `/projects/{id}/routers/{router}` | `get_router` / `delete_router` | Details; delete (`204`; `409` while a network is attached) |
-| `PUT` | `/projects/{id}/networks/{network}/router` | `set_network_router` | Put an existing NAT or isolated cluster network of the project on one of its routers, `{"router": "<name>"}`, or back on the shared edge (an isolated one: not routed), `{"router": null}` (`createRouter`; `400` for another kind of network or an unknown router, `404` for a network that isn't the project's; [clustering-ui.md §8d](clustering-ui.md#8d-a-projects-own-routers)) |
+| `PUT` | `/projects/{id}/networks/{network}/router` | `set_network_router` | Put an existing NAT or isolated cluster network of the project on one of its routers, `{"router": "<name>"}`, or back on the shared edge (an isolated one: not routed), `{"router": null}` (`createRouter`; `400` for another kind of network or an unknown router, `404` for a network that isn't the project's; [16-clustering-ui.md §8d](16-clustering-ui.md#8d-a-projects-own-routers)) |
 | `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
-| `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
+| `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([14-clustering.md §5](14-clustering.md#5-cluster-lifecycle), [runbook](15-cluster-runbook.md)) |
 | `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
-| `GET` / `PUT` | `/cluster/settings/ovn` | `cluster::{get,put}_ovn_settings` | OVN as a cluster setting (spec/clustering-ui.md §8a). `GET`: `{enabled, edge, vpc_pool}` for anyone signed in (whether the shared edge is set, and has a pool for VPC routers); with `readCluster` also `source` (`cluster`, `file`, `none`), `settings`, each node's OVN readiness (`missing`) and the cluster networks. `PUT` (`configureOvn`, recent login, audited): `{enabled, edge?, dns_servers?, nat_supernet?, underlay_mtu?, snat_ct_zones?}`; `400` for options that don't fit together, `409 ovn_not_installed` naming nodes without OVN, `409 cluster_networks_exist` when turning it off with cluster networks left. Every node follows without a restart |
-| `GET` | `/cluster/settings/ovn/edge-defaults` | `cluster::edge_defaults` | A suggested shared edge for this cluster (`readCluster`): `{edge, complete, notes}`, the edge with a pool for VPC routers when the LAN has room (spec/clustering-ui.md §8a) |
-| `GET` | `/cluster/ovn/tunnels` | `net::cluster_ovn_tunnels` | Each node's Geneve tunnels from its own Open vSwitch (`readCluster`): per node `answered`, `tunnels` (`peer`, `remote_ip`, `state`: `present` / `error` / `bfd_down`, OVS `error`, BFD state and diagnostic, rx/tx packets and bytes) and `missing` peers (spec/clustering-ui.md §8b) |
-| `GET` | `/cluster/ovn` | `net::cluster_ovn` | OVN as it is now (`readCluster`): NB and SB members (reachable, leader), chassis (node, tunnel endpoints), each router's HA gateway (active chassis, candidates by priority); `{"enabled": false}` without OVN (spec/clustering-ui.md §8) |
+| `GET` / `PUT` | `/cluster/settings/ovn` | `cluster::{get,put}_ovn_settings` | OVN as a cluster setting (spec/16-clustering-ui.md §8a). `GET`: `{enabled, edge, vpc_pool}` for anyone signed in (whether the shared edge is set, and has a pool for VPC routers); with `readCluster` also `source` (`cluster`, `file`, `none`), `settings`, each node's OVN readiness (`missing`) and the cluster networks. `PUT` (`configureOvn`, recent login, audited): `{enabled, edge?, dns_servers?, nat_supernet?, underlay_mtu?, snat_ct_zones?}`; `400` for options that don't fit together, `409 ovn_not_installed` naming nodes without OVN, `409 cluster_networks_exist` when turning it off with cluster networks left. Every node follows without a restart |
+| `GET` | `/cluster/settings/ovn/edge-defaults` | `cluster::edge_defaults` | A suggested shared edge for this cluster (`readCluster`): `{edge, complete, notes}`, the edge with a pool for VPC routers when the LAN has room (spec/16-clustering-ui.md §8a) |
+| `GET` | `/cluster/ovn/tunnels` | `net::cluster_ovn_tunnels` | Each node's Geneve tunnels from its own Open vSwitch (`readCluster`): per node `answered`, `tunnels` (`peer`, `remote_ip`, `state`: `present` / `error` / `bfd_down`, OVS `error`, BFD state and diagnostic, rx/tx packets and bytes) and `missing` peers (spec/16-clustering-ui.md §8b) |
+| `GET` | `/cluster/ovn` | `net::cluster_ovn` | OVN as it is now (`readCluster`): NB and SB members (reachable, leader), chassis (node, tunnel endpoints), each router's HA gateway (active chassis, candidates by priority); `{"enabled": false}` without OVN (spec/16-clustering-ui.md §8) |
 | `GET` | `/networks/{id}/ovn` | `net::network_ovn` | A cluster network on OVN (`readNetwork`, the network's visibility): its switch, ports (VM, addresses, the chassis each is bound to) and router (NAT rules, active gateway) |
-| `POST` | `/ovs/bridges/{b}/uplinks/{u}/reapply` | `net::reapply_uplink` | Set up again an uplink netd rolled back at start (`confirmUplink`, recent login): `202` pending commit, as when added (networking.md §8.5). `POST /ovs/bridges/{b}/uplinks` takes `accept_dhcp` |
-| `PUT` | `/nodes/{id}/ovn` | `nodes::put_node_ovn` | A node's `br-int` datapath, `{br_int_datapath: auto\|system\|netdev}`, and/or its physical networks `{bridge_mappings: {physnet: bridge}}` (replaces the node's own; the file's still count, the setting wins; no restart) (`configureNode` on its `Host`, recent login, audited); `409 dpdk_not_running`, `409 gateway_node`, `409 vhost_user_vms` (clustering.md §11.6) |
+| `POST` | `/ovs/bridges/{b}/uplinks/{u}/reapply` | `net::reapply_uplink` | Set up again an uplink netd rolled back at start (`confirmUplink`, recent login): `202` pending commit, as when added (09-networking.md §8.5). `POST /ovs/bridges/{b}/uplinks` takes `accept_dhcp` |
+| `PUT` | `/nodes/{id}/ovn` | `nodes::put_node_ovn` | A node's `br-int` datapath, `{br_int_datapath: auto\|system\|netdev}`, and/or its physical networks `{bridge_mappings: {physnet: bridge}}` (replaces the node's own; the file's still count, the setting wins; no restart) (`configureNode` on its `Host`, recent login, audited); `409 dpdk_not_running`, `409 gateway_node`, `409 vhost_user_vms` (14-clustering.md §11.6) |
 | `GET` | `/departures` | `nodes::list_departures` | Detaches with their state (`frozen`, `committed`, `aborted`), node, mapped networks (ids, since D24) with `network_names` (id → name as they were when the detach started) and whether the node acknowledged (`readCluster`) |
 | `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | `{id}` here and in the node routes below is the node's id or name (a live node's before a departed one's). Nodes and their phase, capacity and features (image responses carry `copies: [{node, node_name, state, bytes, error?}]` in a cluster: each node's copy of the file) |
 | `POST` | `/nodes/{id}/{drain,undrain,remove,forget,purge,rejoin-token,detach}` | `nodes::*` | Node lifecycle (`409` with the reason when refused; `detach` takes `map_networks`, `with_access`, `abort`, `departed`, and answers `mapped` and `dropped_networks` by id with their `network_names`) |
@@ -190,19 +190,19 @@ reported as `404`.
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
-| `GET` | `/usage[?project=&from=&to=&month=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | `GetUsageResponse`: usage records ([metering.md §9.1](metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
+| `GET` | `/usage[?project=&from=&to=&month=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | `GetUsageResponse`: usage records ([13-metering.md §9.1](13-metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
 | `GET` | `/projects/{id}/usage`, `/vms/{id}/usage[?include=disks]`, `/disks/{id}/usage` | `usage::*_usage` | The same, for one project, VM (and its NICs) or disk |
-| `GET` | `/usage/bandwidth`, `/usage/disk-io`, `/usage/compute` `[?project=&month=YYYY-MM&group_by=&tz=&format=csv]` | `rates::bandwidth` / `disk_io` / `compute` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write; CPU and memory: cores, MiB and utilization) ([metering.md §9.3](metering.md#93-bandwidth)) |
+| `GET` | `/usage/bandwidth`, `/usage/disk-io`, `/usage/compute` `[?project=&month=YYYY-MM&group_by=&tz=&format=csv]` | `rates::bandwidth` / `disk_io` / `compute` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write; CPU and memory: cores, MiB and utilization) ([13-metering.md §9.3](13-metering.md#93-bandwidth)) |
 | `GET` | `/vms/{id}/bandwidth`, `/networks/{id}/bandwidth`, `/vms/{id}/io`, `/vms/{id}/compute`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs, `{from, to, points, p95?}` (`/vms/{id}/io` adds `disks`; default: the last 24 h; at most 31 days) |
 | `GET` | `/vms/{id}/stats`, `/networks/{id}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s), `{sampled_at?, resolution_secs, vm?, nics?, disks?}` / `{sampled_at?, resolution_secs, values?}`; not stored |
 
 Image and disk payloads, semantics and invariants are in
-[images.md](images.md#8-rest-api).
+[10-images.md](10-images.md#8-rest-api).
 
-Tenants and admissions ([tenancy.md](tenancy.md) §14) are REST twins of
+Tenants and admissions ([19-tenancy.md](19-tenancy.md) §14) are REST twins of
 `glidex.tenancy.v1`: their bodies are the proto messages as JSON
 (`snake_case` names, enum values by proto name, timestamps RFC 3339), and
-the same operations are served as RPCs ([grpc.md](grpc.md)):
+the same operations are served as RPCs ([18-grpc.md](18-grpc.md)):
 
 | Method | Path | RPC | Purpose |
 |---|---|---|---|
@@ -214,29 +214,29 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/tenants/{id}/members/{user:<id>\|team:<id>}` | `RemoveMember` | |
 | `GET` / `POST` | `/tenants/{id}/bindings` | `ListBindings` / `AddBinding` | Tenant roles: `role.tenant-admin`, `role.tenant-auditor` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
-| `GET` / `PUT` | `/tenants/{id}/device-pools` | `ListDevicePools` / `SetDevicePools` | Tenant pools on this cluster ([host-topology.md](host-topology.md) §9.1a): `{pools: [{name, from, max, projects}]}` replaces them all; answered with `used`, the cluster pool's `free` and `ungranted`. Actions `readTenantDevicePools` (tenant-auditor) and `manageTenantDevicePools` (tenant-admin) |
-| `GET` / `POST` | `/tenants/{id}/invitations` | `InvitationService.ListInvitations` / `CreateInvitation` | Invitations ([tenancy.md](tenancy.md) §6.1): `{email, role, connector, days?}` (`role`: `member` or a tenant role; `connector`: an `oidc` or `google` one; 1-30 days, default 7) → `201 {invitation, link}`, the link (`…/invite/<id>#<secret>`) answered once; listed without secrets, open ones and taken or expired ones for 30 days |
+| `GET` / `PUT` | `/tenants/{id}/device-pools` | `ListDevicePools` / `SetDevicePools` | Tenant pools on this cluster ([22-host-topology.md](22-host-topology.md) §9.1a): `{pools: [{name, from, max, projects}]}` replaces them all; answered with `used`, the cluster pool's `free` and `ungranted`. Actions `readTenantDevicePools` (tenant-auditor) and `manageTenantDevicePools` (tenant-admin) |
+| `GET` / `POST` | `/tenants/{id}/invitations` | `InvitationService.ListInvitations` / `CreateInvitation` | Invitations ([19-tenancy.md](19-tenancy.md) §6.1): `{email, role, connector, days?}` (`role`: `member` or a tenant role; `connector`: an `oidc` or `google` one; 1-30 days, default 7) → `201 {invitation, link}`, the link (`…/invite/<id>#<secret>`) answered once; listed without secrets, open ones and taken or expired ones for 30 days |
 | `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
-| `GET` / `POST` | `/tenants/{id}/federations` | `FederationService.ListFederations` / `CreateFederation` | Workload federations ([tenancy.md](tenancy.md) §9, D49–D51): `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}`; `readTenantFederations` / `manageTenantFederations` (step-up). The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub`, exact values only, and name service accounts of the tenant's projects (`422 invalid_federation`) |
+| `GET` / `POST` | `/tenants/{id}/federations` | `FederationService.ListFederations` / `CreateFederation` | Workload federations ([19-tenancy.md](19-tenancy.md) §9, D49–D51): `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}`; `readTenantFederations` / `manageTenantFederations` (step-up). The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub`, exact values only, and name service accounts of the tenant's projects (`422 invalid_federation`) |
 | `GET` / `PATCH` / `DELETE` | `/tenants/{id}/federations/{federation}` | `GetFederation` / `UpdateFederation` / `DeleteFederation` | PATCH `{changes: {…}, update_mask?}`: without a mask, the fields present are the ones changed |
-| `GET` | `/directory/keys` | `SigningKeyService.ListSigningKeys` | The directory's issuer URL and signing keys ([tenancy.md](tenancy.md) D52, D53): `{keys: [{kid, alg, created_at, retired_at, published_until, active}], issuer, issuer_fixed}`; `readSigningKeys` |
+| `GET` | `/directory/keys` | `SigningKeyService.ListSigningKeys` | The directory's issuer URL and signing keys ([19-tenancy.md](19-tenancy.md) D52, D53): `{keys: [{kid, alg, created_at, retired_at, published_until, active}], issuer, issuer_fixed}`; `readSigningKeys` |
 | `POST` | `/directory/keys/rotate` | `RotateSigningKey` | `{key}`; `rotateSigningKey` (step-up) |
 | `GET` | `/d/{dir}/.well-known/openid-configuration`, `/d/{dir}/jwks.json` | — | Public, HTTP only: discovery and JWKS (D53); `404` for a directory this host doesn't serve, `503 no_issuer` when it has no public address |
 | `GET` | `/d/{dir}/authorize` | — | Public, HTTP only: the code flow with PKCE for `gxctl` (D54); `303` to the loopback `redirect_uri` with `code` and `state`, or to `/?next=…` without a session |
 | `POST` | `/d/{dir}/device_authorization`, `/d/{dir}/token`, `/d/{dir}/revoke` | — | Public, HTTP only, form-encoded, OAuth errors (D55, D57) |
 | `POST` | `/d/{dir}/device/inspect`, `/d/{dir}/device/answer` | — | Signed in (a browser session; a token is refused): what a user code is for, and approving or denying it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
-| `POST` / `GET` | `/admissions/offers` | `AdmissionService.OfferAdmission` / `ListOffers` | [tenancy.md](tenancy.md) D64: `{tenant, directory, cap?, days?}` → `201 {offer: {id, tenant, directory, cap, by, created_at, expires_at, redeemed_at?}, token}`; `manageAdmissions` (step-up) / `listAdmissions` |
+| `POST` / `GET` | `/admissions/offers` | `AdmissionService.OfferAdmission` / `ListOffers` | [19-tenancy.md](19-tenancy.md) D64: `{tenant, directory, cap?, days?}` → `201 {offer: {id, tenant, directory, cap, by, created_at, expires_at, redeemed_at?}, token}`; `manageAdmissions` (step-up) / `listAdmissions` |
 | `DELETE` | `/admissions/offers/{id}` | `RevokeOffer` | `manageAdmissions` (step-up) |
 | `GET` | `/admissions/directories` | `ListTrustedDirectories` | The cluster's `TrustedDirectory` records (D65): `{directories: [{id, issuer, tenants: [{id, slug, display_name}], created_at}]}`; `listAdmissions` |
 | `GET` / `POST` | `/tenants/{id}/clusters` | `TenantService.ListTenantClusters` / `OptInCluster` | The directory's `TrustedCluster` records for the tenant; opt in with `{offer}` → `201 {cluster: {cluster_id, name, api, created_at}}` (`400 offer_refused`, `502 cluster_unreachable`); `readTenantClusters` / `manageTenantClusters` (step-up) |
 | `DELETE` | `/tenants/{id}/clusters/{cluster}` | `OptOutCluster` | D66: forgotten here, the cluster told |
 | `POST` | `/trust/v1/redeem`, `/trust/v1/end`, `/d/{dir}/trust/v1/end` | — | Public, peer-signed (`Authorization: GlidexPeer <JWT>`, D63): a directory redeeming an offer or ending trust at a cluster, a cluster ending it at a directory; one `403 trust_refused` for every refusal |
-| `GET` / `POST` | `/directories` | `DirectoryService.ListDirectories` / `CreateDirectory` | The directories this host serves ([tenancy.md](tenancy.md) D59): `listDirectories` / `manageDirectories` (step-up, `cluster.directories` of `role.system-admin`); create `{id, name, owner, admin_email, days?}` → `201 {directory: {id, name, issuer, created_at}, invitation_link}` |
+| `GET` / `POST` | `/directories` | `DirectoryService.ListDirectories` / `CreateDirectory` | The directories this host serves ([19-tenancy.md](19-tenancy.md) D59): `listDirectories` / `manageDirectories` (step-up, `cluster.directories` of `role.system-admin`); create `{id, name, owner, admin_email, days?}` → `201 {directory: {id, name, issuer, created_at}, invitation_link}` |
 | `DELETE` | `/directories/{id}` | `DeleteDirectory` | Only while it has no user, connector or project (`409 directory_not_empty`); never `local` |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
 
-Login connectors ([tenancy.md](tenancy.md) §13–§14) are REST twins of
+Login connectors ([19-tenancy.md](19-tenancy.md) §13–§14) are REST twins of
 `glidex.directory.v1.ConnectorService` in the same way. Managing them
 needs `role.directory-admin` and membership of the directory's owner
 tenant (D7); every write needs a recent login. Secrets go in through
@@ -246,14 +246,14 @@ tenant (D7); every write needs a recent login. Secrets go in through
 | Method | Path | RPC | Purpose |
 |---|---|---|---|
 | `GET` | `/connectors` | `ConnectorService.ListConnectors` | The directory's connectors, file-defined ones (`file-pam`, `file-oidc`, `source: file`) included |
-| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?} \| google: {accounts?, client_id, domains?, allowed_emails?, device_client_id?, trust_2sv?, redirect_uri?} \| jumpcloud: {client_id, groups_claim?, allowed_emails?, redirect_uri?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC or `google` connector has `require_mfa` on unless set, and a `google` one there needs `GOOGLE_ACCOUNTS_WORKSPACE` with `trust_2sv`. `google`: Workspace needs `domains`, never a public mail domain; `GOOGLE_ACCOUNTS_ANY` with `jit` needs `allowed_emails`; tenancy.md D39, §5.1) |
-| `GET` / `PATCH` / `DELETE` | `/connectors/{id}` | `GetConnector` / `UpdateConnector` / `DeleteConnector` | PATCH `{connector: {…}, update_mask?}`: without a mask, the fields present are the ones changed. File-defined connectors are read-only (`409`). `provisioning` (`none`, `scim` for `oidc` and `jumpcloud`, which needs `jit` off) and `group_mode` (`mapped`, `auto` for a provisioned one) are fields like the others (tenancy.md §8.1). `DELETE ?users=disable|detach` (default `disable`) says what becomes of the users and teams it provisions, and answers `{users, teams}`: how many (§8.3) |
+| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?} \| google: {accounts?, client_id, domains?, allowed_emails?, device_client_id?, trust_2sv?, redirect_uri?} \| jumpcloud: {client_id, groups_claim?, allowed_emails?, redirect_uri?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC or `google` connector has `require_mfa` on unless set, and a `google` one there needs `GOOGLE_ACCOUNTS_WORKSPACE` with `trust_2sv`. `google`: Workspace needs `domains`, never a public mail domain; `GOOGLE_ACCOUNTS_ANY` with `jit` needs `allowed_emails`; 19-tenancy.md D39, §5.1) |
+| `GET` / `PATCH` / `DELETE` | `/connectors/{id}` | `GetConnector` / `UpdateConnector` / `DeleteConnector` | PATCH `{connector: {…}, update_mask?}`: without a mask, the fields present are the ones changed. File-defined connectors are read-only (`409`). `provisioning` (`none`, `scim` for `oidc` and `jumpcloud`, which needs `jit` off) and `group_mode` (`mapped`, `auto` for a provisioned one) are fields like the others (19-tenancy.md §8.1). `DELETE ?users=disable|detach` (default `disable`) says what becomes of the users and teams it provisions, and answers `{users, teams}`: how many (§8.3) |
 | `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`, `jumpcloud`: `client_secret`; `google`: `client_secret`, `device_client_secret` for its device client); sealed with the directory's data key |
 | `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC and `google` check the secrets, discovery and the device grant (`google`: whether it has a device client) |
-| `POST` | `/connectors/{id}/sync` | `SyncConnector` | `{confirm?}`. A pulled connector's run now (`syncConnector`; `409 not_pulled` otherwise, `409 sync_running` while one runs); answers `{status: {state, started_at, finished_at, changes: {created, adopted, updated, disabled, enabled}, error?, would_disable, last_applied_at}}`. `confirm: true` runs once without the safety stop, and takes `confirmConnectorSync` (step-up) too (tenancy.md §8.2, D46). `GET /connectors/{id}` carries the last `sync_status` |
-| `GET` | `/connectors/{id}/scim-tokens` | `ListScimTokens` | `{tokens: [{id, name, created_by, created_at, expires_at}], path}`, never the tokens; `path` is `/scim/v2/c/{id}` on this server (and under the web UI's `/api`), tenancy.md §8.1 |
+| `POST` | `/connectors/{id}/sync` | `SyncConnector` | `{confirm?}`. A pulled connector's run now (`syncConnector`; `409 not_pulled` otherwise, `409 sync_running` while one runs); answers `{status: {state, started_at, finished_at, changes: {created, adopted, updated, disabled, enabled}, error?, would_disable, last_applied_at}}`. `confirm: true` runs once without the safety stop, and takes `confirmConnectorSync` (step-up) too (19-tenancy.md §8.2, D46). `GET /connectors/{id}` carries the last `sync_status` |
+| `GET` | `/connectors/{id}/scim-tokens` | `ListScimTokens` | `{tokens: [{id, name, created_by, created_at, expires_at}], path}`, never the tokens; `path` is `/scim/v2/c/{id}` on this server (and under the web UI's `/api`), 19-tenancy.md §8.1 |
 | `POST` / `DELETE` | `/connectors/{id}/scim-tokens`, `…/{token}` | `CreateScimToken` / `RevokeScimToken` | `manageScimTokens`, step-up. POST `{name?, days?}` (1–365, default 180) answers `201 {token, secret, path}`: the `gxs_` secret once, only its SHA-256 kept; `409 not_provisioned` unless `provisioning: scim`; at most five live per connector. A deleted connector's tokens go with it |
-| any | `/scim/v2/c/{id}/…` | — (SCIM 2.0, RFC 7644; HTTP only, D29) | The connector's IdP, with its `gxs_` token (not a principal: the global layer leaves it to the handlers). `/Users`, `/Groups` (GET with `eq` filters and pages ≤ 200, POST, and by id GET, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`; `application/scim+json`, SCIM error bodies; `401` for any wrong token, `403` unless `provisioning: scim`, `429` past 20 requests/s, `413` past 1 MiB (tenancy.md §8.1) |
+| any | `/scim/v2/c/{id}/…` | — (SCIM 2.0, RFC 7644; HTTP only, D29) | The connector's IdP, with its `gxs_` token (not a principal: the global layer leaves it to the handlers). `/Users`, `/Groups` (GET with `eq` filters and pages ≤ 200, POST, and by id GET, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`; `application/scim+json`, SCIM error bodies; `401` for any wrong token, `403` unless `provisioning: scim`, `429` past 20 requests/s, `413` past 1 MiB (19-tenancy.md §8.1) |
 
 Logging in through a connector, all public: `GET /auth/methods` lists the
 enabled ones (`connectors: [{id, kind, display_name}]`); `POST
@@ -262,12 +262,12 @@ enabled ones (`connectors: [{id, kind, display_name}]`); `POST
 /auth/c/{id}/device`, `/auth/c/{id}/device/poll` (gxctl). `POST
 /auth/c/{id}/start {return_to?, invitation?}` answers `{redirect}`
 instead of redirecting, for a page that brings an invitation's secret
-(tenancy.md §6.1; `404` for an invitation that isn't open or is for
+(19-tenancy.md §6.1; `404` for an invitation that isn't open or is for
 another connector), and `POST /auth/invitation {invitation}` says what
 an invitation is for (`LoginService.InspectInvitation`). `POST
 /auth/link/c/{id}/start {return_to?}` adds a sign-in through connector
 `id` to the signed-in caller (`manageOwnSignIns`, a recent login;
-tenancy.md §6.2), answering `{redirect}`; its callback returns to
+19-tenancy.md §6.2), answering `{redirect}`; its callback returns to
 `return_to` with `?linked=<id>` or `?link_error=<code>`. `DELETE
 /users/{id}/identities/{key}[?end_sessions=true]` removes one of a
 user's sign-in methods (one's own, or with `manageUsers`), never the
@@ -305,7 +305,7 @@ router, and starting a VM, also need the project's tenant admitted here:
 tenant_quota_exceeded`. Granting a host role through `/system/bindings`
 needs the principal to be a member of the operator tenant: `422
 not_operator_member` otherwise. With `node` (id or name), the role is
-linked to that node's `Host` instead of the `Cluster` (spec/clustering.md
+linked to that node's `Host` instead of the `Cluster` (spec/14-clustering.md
 §12.2): only `role.auditor`, `role.net-admin` and `grant.host-paths`
 (`400` for the others), `404` for an unknown node, `409 node_departed`
 for one that has left. `GET /system/bindings?node=` lists one host's.
@@ -317,7 +317,7 @@ Handlers live in `crates/glidex-control-plane/src/api/` (VM routes in
 ## Desired state and `?wait`
 
 VM writes record **what the user wants** and return; the VM controller
-makes it so ([reconciliation.md §12](reconciliation.md#12-api)).
+makes it so ([12-reconciliation.md §12](12-reconciliation.md#12-api)).
 Admission — validation, authorization, quotas, disk/device claims,
 name uniqueness — is still checked when the spec is written and still
 fails the request (D5). Host actions (launching, stopping, hot-plug,
@@ -366,7 +366,7 @@ with `409 conflict`.
 
 Disk writes are admitted synchronously (name, size, shrink minimum,
 quota, claims: the same `400`/`403`/`409` as before) and carried out by
-the disk controller ([images.md §6](images.md#6-disk-operations)).
+the disk controller ([10-images.md §6](10-images.md#6-disk-operations)).
 `POST /disks`, `/disks/{id}/resize` and `/disks/{id}/extend-root` accept
 `?wait=<secs>` (capped at 300):
 
@@ -418,7 +418,7 @@ controller finishes the deletion. Both accept `?wait=<secs>`:
 While deleting, an image can't be the source of a new disk or be
 retried, and a network can't be attached to; recreating either under
 the same name is `409 conflict` until it is gone. Details:
-[images.md §8](images.md#8-rest-api), [networking.md](networking.md).
+[10-images.md §8](10-images.md#8-rest-api), [09-networking.md](09-networking.md).
 
 Image, disk and network events (`GET /{images,disks}/{id}/events`,
 `GET /networks/{id}/events`) have the shape of the VM's below.
@@ -427,7 +427,7 @@ Image, disk and network events (`GET /{images,disks}/{id}/events`,
 
 `GET /watch[?kinds=vms,disks,images,networks,nodes,imports,cluster,policy][&project=<id>]` answers
 `text/event-stream` (server-sent events); `glidex.watch.v1.WatchService.Watch`
-is the same stream over RPC (grpc.md §9.1). Any authenticated caller may
+is the same stream over RPC (18-grpc.md §9.1). Any authenticated caller may
 open it; each kind is filtered exactly like its list endpoint (VMs by
 `readVm`, disks by `readDisk`, both in visible projects and narrowed by
 `project`; images need `readImage` and networks `readNetwork` on
@@ -435,7 +435,7 @@ open it; each kind is filtered exactly like its list endpoint (VMs by
 plural names (default: the four above); an unknown kind is `400 invalid`.
 VM and disk objects (here and in their endpoints) carry `node` and
 `node_name`, the name of the node they are on, for callers who can't list
-nodes. Asked for by name only (spec/clustering-ui.md §3.7):
+nodes. Asked for by name only (spec/16-clustering-ui.md §3.7):
 
 | Kind | Sent to | `id`, `object` |
 |---|---|---|
@@ -488,14 +488,14 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   `console=` picks the console device: `hvc0` is the virtio console,
   anything else the serial port.
 - `firmware` boots the disk through UEFI firmware instead of a kernel:
-  a firmware image (id or name, [images.md](images.md#7-vm-integration))
+  a firmware image (id or name, [10-images.md](10-images.md#7-vm-integration))
   built for the VM's `hypervisor`, e.g.
   `{"hypervisor": "cloudhypervisor", "firmware": "cloudhv-edk2",
   "image": "ubuntu-26.04", ...}`. With `image` or `root_disk` and no
   kernel, the newest ready firmware image for the hypervisor is used
   (`400 invalid_config` if there is none). QEMU keeps a private copy of
   the image's variable store per VM (see
-  [hypervisors.md](hypervisors.md#firmware-boot-1)). `firmware_path`
+  [04-hypervisors.md](04-hypervisors.md#firmware-boot-1)). `firmware_path`
   instead names a host file (needs `useHostPath`; not with `firmware`);
   relative paths resolve against the control plane's working directory,
   so prefer absolute or `~` paths. `kernel_image_path` must then be
@@ -510,7 +510,7 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   and a locked password: without `credential` the VM has no login.
   A credential's password hash is applied via `chpasswd`, so it also
   works on a rootfs that was provisioned before.
-- `~` is expanded server-side (see [data-model.md](data-model.md)).
+- `~` is expanded server-side (see [03-data-model.md](03-data-model.md)).
 - `power` (`POWER_STATE_STOPPED` by default, `POWER_STATE_RUNNING`,
   `POWER_STATE_PAUSED`) is the desired state; with running one call
   creates and starts the VM. `restart_policy`
@@ -526,9 +526,9 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 
 - `credential` (firmware boot only, no custom `cloud_init_path`) names a
   stored credential that the generated seed provisions as the guest login.
-  Unknown names are `400 invalid_config`. See [credentials.md](credentials.md).
+  Unknown names are `400 invalid_config`. See [08-credentials.md](08-credentials.md).
 
-- Managed disks ([images.md](images.md#7-vm-integration)): instead of
+- Managed disks ([10-images.md](10-images.md#7-vm-integration)): instead of
   `rootfs_path`, give `image` (+ optional `root_disk_size_gib`) to have a
   root disk created for the VM, or `root_disk` to boot an existing disk.
   Exactly one of the three is required. `data_disks` lists extra disks.
@@ -540,7 +540,7 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 
 ### `Vm`
 
-The `glidex.vm.v1.Vm` message ([grpc.md](grpc.md) §9.1): lists are
+The `glidex.vm.v1.Vm` message ([18-grpc.md](18-grpc.md) §9.1): lists are
 `{vms}`, one VM `{vm}`, writes `{vm, settled}`.
 
 ```json
@@ -555,10 +555,10 @@ The `glidex.vm.v1.Vm` message ([grpc.md](grpc.md) §9.1): lists are
 
 `state` is `VM_STATE_` and one of `CREATED`, `STARTING`, `RUNNING`,
 `PAUSED`, `STOPPING`, `STOPPED`, `FAILED`, `UNKNOWN`
-([data-model.md](data-model.md#powerstate-vmphase-and-the-derived-vmstate));
+([03-data-model.md](03-data-model.md#powerstate-vmphase-and-the-derived-vmstate));
 `desired_state` a `POWER_STATE_`. `conditions` and their reasons are
 the closed catalogue of
-[reconciliation.md §7.5](reconciliation.md#75-exit-handling);
+[12-reconciliation.md §7.5](12-reconciliation.md#75-exit-handling);
 `last_exit.cause` an `EXIT_CAUSE_` (`REQUESTED`, `TERMINATED`,
 `CLEAN_EXIT`, `CRASHED`, `LAUNCH_FAILED`, `HOST_REBOOT`, `LOST`).
 `generation`, `observed_generation` and `resource_version` are 64-bit,
@@ -581,16 +581,16 @@ The fields: `power`, `restart_policy`, `on_host_boot`,
 `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`,
 `credential` (in the mask but absent: removed), `hugepages`,
 `hugepage_size` (`2M`, `1G`, or empty for the node's default),
-`numa_policy`, `cpu_policy` (host-topology.md §6),
+`numa_policy`, `cpu_policy` (22-host-topology.md §6),
 `vfio_devices`, `data_disks` (ids or names; replaces the list),
 `networks`. Without `update_mask` the fields present in `change` are
 the ones changed. Another path is `400 invalid_config`.
 `expected_resource_version` (or `If-Match`) and `?wait` as above.
 
 When each change takes effect is in
-[data-model.md](data-model.md) (mutability); changes that need a new
+[03-data-model.md](03-data-model.md) (mutability); changes that need a new
 launch set `restart_required` while the VM runs. Each changed field is
-authorized separately (security.md §7.4). vCPU and memory increases are
+authorized separately (11-security.md §7.4). vCPU and memory increases are
 checked against the project quota like a create.
 
 ### `GET /vms/{id}/events`
@@ -616,7 +616,7 @@ checked against the project quota like a create.
 
 `bus` is `n/a` under the detached runner; `netd` is `connected`,
 `status_only` or `unavailable`. Orphans are found at startup and never
-touched (reconciliation.md §9.4). Needs `readSystemStatus` on
+touched (12-reconciliation.md §9.4). Needs `readSystemStatus` on
 `Host::"local"`.
 
 ### `POST /credentials`, `PUT /credentials/{username}`
@@ -664,7 +664,7 @@ output of a crashed guest stays reachable. gxctl checks it before
 opening the WebSocket. `POST /vms/{id}/console/ticket` answers
 `{ticket, expires_in}`; `GET /vms/{id}/console/log` stays raw bytes
 (`application/octet-stream`; the RPC `GetConsoleLog` answers `{data}`).
-The WebSocket itself stays one until G4 ([grpc.md](grpc.md) §9).
+The WebSocket itself stays one until G4 ([18-grpc.md](18-grpc.md) §9).
 
 ## Error model
 
@@ -699,14 +699,14 @@ built — happen in the controller and reach the caller only through
 | `Deleting` (write to a VM being deleted) | `409` | `conflict` |
 | `PreconditionFailed` (`If-Match`) | `412` | `precondition_failed` |
 | `QuotaExceeded` | `403` | `quota_exceeded` |
-| `Image(…)` | `400` / `404` / `409` / `500` / `503` | `invalid_image`, `invalid_disk`, `not_found`, `conflict`, `image_error`, `tool_unavailable`; see [images.md](images.md#8-rest-api) |
+| `Image(…)` | `400` / `404` / `409` / `500` / `503` | `invalid_image`, `invalid_disk`, `not_found`, `conflict`, `image_error`, `tool_unavailable`; see [10-images.md](10-images.md#8-rest-api) |
 
 ## Console WebSocket
 
 ### Protocol
 
 (`glidex.vm.v1.VmService.Console` is the same console as a bidi RPC
-stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
+stream over HTTP/2, for API clients and gxctl; 18-grpc.md §9.1.)
 
 `GET /vms/{id}/console/ws[?ticket=…]` upgrades to a WebSocket
 (`api/vms.rs::console_ws`, then `bridge_stream`):
@@ -714,7 +714,7 @@ stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
 1. Checks access (`openConsole`): an unknown or unreadable VM is `404`.
    A browser session (PAM or OIDC login) needs `?ticket=` with a fresh
    single-use ticket for this VM from `POST /vms/{id}/console/ticket`
-   (valid 30 s, security.md §5.6), else `403 ticket_required`; tokens
+   (valid 30 s, 11-security.md §5.6), else `403 ticket_required`; tokens
    and the API socket need none.
 2. Connects to the console: the VM's console socket in its private
    runtime directory (never exposed to clients), or, for a VM on another
@@ -739,7 +739,7 @@ stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
   directions. The *only* transport semantics are WebSocket
   boundaries, which are irrelevant to the consumer.
 - No control messages: there is no resize (the terminal size is not
-  carried, console.md "Known gaps").
+  carried, 02-console.md "Known gaps").
 - A ticket is used up by the connect: each new connection, a reconnect
   included, needs a new one.
 
@@ -751,4 +751,4 @@ spans earlier instances of the VM, separated by `--- glidex: instance …
 started … ---` lines) to every newly-accepted client before starting
 live broadcast. So opening a WebSocket on a VM that has already
 booted will immediately flush the boot-time output into your terminal.
-See [console.md](console.md).
+See [02-console.md](02-console.md).

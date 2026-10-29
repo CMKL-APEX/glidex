@@ -1,4 +1,4 @@
-//! `connector` (spec/tenancy.md §14): the directory's login connectors on
+//! `connector` (spec/19-tenancy.md §14): the directory's login connectors on
 //! `glidex.directory.v1.ConnectorService`, over the Connect protocol.
 //! Secrets are read from a hidden prompt, stdin or a file, never from the
 //! command line, and are never shown.
@@ -230,7 +230,7 @@ fn common(args: &[&str], c: &mut Connector) -> Result<Vec<&'static str>, String>
         c.group_mode = Some(m.into());
         paths.push("group_mode");
     }
-    // A pull's settings (spec/tenancy.md §8.2): any of them sets them all.
+    // A pull's settings (spec/19-tenancy.md §8.2): any of them sets them all.
     let sync_flags = [
         "--sync-admin",
         "--sync-group",
@@ -366,7 +366,7 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
                     ..Default::default()
                 }))),
                 // Workspace by `hd`, or consumer accounts for invited and
-                // listed people (spec/tenancy.md D39).
+                // listed people (spec/19-tenancy.md D39).
                 "google" => {
                     let Some(client_id) = flag_value(args, "--client-id") else {
                         return usage(USAGE);
@@ -646,7 +646,7 @@ const INVITE_USAGE: &str = "Usage: invite list <tenant> \
     | create <tenant> <email> --connector C [--role member|role.tenant-admin|role.tenant-auditor] [--days N] \
     | revoke <id>";
 
-/// `invite list|create|revoke` (spec/tenancy.md §6.1): an invitation is a
+/// `invite list|create|revoke` (spec/19-tenancy.md §6.1): an invitation is a
 /// link, shown once, that lets one email address in through one connector.
 pub async fn invite(client: &ApiClient, args: &[&str]) {
     let Some(t) = transport(client).await else {
@@ -732,7 +732,7 @@ pub async fn invite(client: &ApiClient, args: &[&str]) {
     }
 }
 
-// ---- workload federations (spec/tenancy.md §9) ----------------------------
+// ---- workload federations (spec/19-tenancy.md §9) ----------------------------
 
 const FEDERATION_USAGE: &str = "Usage: federation list <tenant> | show <tenant> <id> \
     | add <tenant> <id> --issuer URL --audience AUD [--name TEXT] \
@@ -988,7 +988,7 @@ fn print_key(k: &SigningKey) {
     );
 }
 
-/// `directory keys [rotate]` (spec/tenancy.md D52, D53): the directory's
+/// `directory keys [rotate]` (spec/19-tenancy.md D52, D53): the directory's
 /// issuer URL and token signing keys, on `SigningKeyService`.
 pub async fn directory(client: &ApiClient, args: &[&str]) {
     let Some(t) = transport(client).await else {

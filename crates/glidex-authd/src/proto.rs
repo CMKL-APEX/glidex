@@ -1,5 +1,5 @@
 //! Wire protocol between the control plane and glidex-authd
-//! (spec/security.md §5.3).
+//! (spec/11-security.md §5.3).
 //!
 //! Newline-delimited JSON over a Unix socket, one request per line, one
 //! response per line, one request in flight per connection. There is a

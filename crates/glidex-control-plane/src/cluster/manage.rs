@@ -1,4 +1,4 @@
-//! Cluster lifecycle (spec/clustering.md §5): init, join, status, promote,
+//! Cluster lifecycle (spec/14-clustering.md §5): init, join, status, promote,
 //! snapshots and recovery.
 
 use super::config::ClusterConfig;
@@ -697,7 +697,7 @@ fn ca_not_after(c: &Cluster) -> Option<i64> {
 }
 
 /// The summary as the node `viewer` sees it: a request a node's UI socket
-/// relayed (spec/clustering-ui.md §3.6) is about that node, so "this node"
+/// relayed (spec/16-clustering-ui.md §3.6) is about that node, so "this node"
 /// (`node_id`, `name`, `role`, `advertise`) is the relaying one; `served_by`
 /// names the server that answered. Without a viewer, or for this server
 /// itself, it is [`status_of`].

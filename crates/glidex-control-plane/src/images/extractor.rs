@@ -1,4 +1,4 @@
-//! Kernel extraction (spec/kernel-boot.md §10): the extractor appliance,
+//! Kernel extraction (spec/23-kernel-boot.md §10): the extractor appliance,
 //! the stream it writes, and the choice of kernel and command line.
 //!
 //! A disk image's filesystems are only ever read inside a VM (K9): a

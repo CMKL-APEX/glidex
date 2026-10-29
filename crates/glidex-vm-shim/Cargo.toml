@@ -3,7 +3,7 @@ name = "glidex-vm-shim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Per-VM supervisor: parent of the hypervisor, owner of its console (spec/reconciliation.md §8)"
+description = "Per-VM supervisor: parent of the hypervisor, owner of its console (spec/12-reconciliation.md §8)"
 
 [lib]
 path = "src/lib.rs"

@@ -1,4 +1,4 @@
-//! Mapping of manager errors to REST responses (spec/rest-api.md).
+//! Mapping of manager errors to REST responses (spec/06-rest-api.md).
 
 use crate::credentials::CredentialError;
 use crate::hypervisor::HypervisorError;
@@ -96,7 +96,7 @@ fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
 }
 
 /// The error envelope a failed reconcile maps to under `?wait`
-/// (spec/reconciliation.md §12.3, D20): the one today's synchronous call
+/// (spec/12-reconciliation.md §12.3, D20): the one today's synchronous call
 /// would have returned, chosen from the `Ready` reason, with the VM in
 /// `details.vm`.
 pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<ApiError>) {
@@ -114,7 +114,7 @@ pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<Ap
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "hypervisor_error"),
     };
-    // The VM in the proto shape, as the VM routes answer (spec/grpc.md §9.1).
+    // The VM in the proto shape, as the VM routes answer (spec/18-grpc.md §9.1).
     let details = serde_json::json!({
         "reason": reason,
         "vm": serde_json::to_value(crate::service::vm::vm_pb_plain(vm)).unwrap_or_default(),

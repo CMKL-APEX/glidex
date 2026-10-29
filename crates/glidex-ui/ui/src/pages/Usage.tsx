@@ -24,7 +24,7 @@ const GROUPS: Record<Tab, GroupKey[]> = {
 
 /** The meters shown on the Usage tab, in billing order. Traffic is per
  * VM NIC, or, grouped by network, what crossed each network's bridge
- * (the two views differ, spec/metering.md §2). */
+ * (the two views differ, spec/13-metering.md §2). */
 const USAGE_METERS: [string, string][] = [
   ["cpu.used", "CPU used"],
   ["cpu.alloc", "vCPUs allocated"],
@@ -34,7 +34,7 @@ const USAGE_METERS: [string, string][] = [
   ["image.stored", "Images stored"],
   ["net.bytes", "Network"],
   ["net.ext_bytes", "of which internet"],
-  // Host-side, after the page cache (capacity; spec/metering.md D4).
+  // Host-side, after the page cache (capacity; spec/13-metering.md D4).
   ["vmio.read_bytes", "Host disk I/O read"],
   ["vmio.write_bytes", "Host disk I/O write"],
 ];
@@ -181,7 +181,7 @@ function DiskIoTable({ data, group }: { data: RateResponse; group: GroupKey }) {
   );
 }
 
-/** CPU and memory (spec/metering.md §8.7): cores and MiB used, and
+/** CPU and memory (spec/13-metering.md §8.7): cores and MiB used, and
  * utilization against what was allocated. */
 function ComputeTable({ data, group }: { data: RateResponse; group: GroupKey }) {
   return (
@@ -226,7 +226,7 @@ function ComputeTable({ data, group }: { data: RateResponse; group: GroupKey }) 
   );
 }
 
-/** Usage for a billing month (spec/metering.md §12): totals, bandwidth
+/** Usage for a billing month (spec/13-metering.md §12): totals, bandwidth
  * and disk I/O, grouped, with a CSV download of the same view. */
 export default function Usage() {
   const { host, projects, project: selected, projectName } = useSession();
@@ -238,7 +238,7 @@ export default function Usage() {
   const [rates, setRates] = useState<RateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // In a cluster, any view can also be split by node (spec/clustering-ui.md §5.4).
+  // In a cluster, any view can also be split by node (spec/16-clustering-ui.md §5.4).
   const { clustered } = useNodes();
   const groups: GroupKey[] = clustered ? [...GROUPS[tab], "node"] : GROUPS[tab];
   const g = groups.includes(group) ? group : "project";

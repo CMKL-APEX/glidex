@@ -49,7 +49,7 @@ function activityOf(
 }
 
 /** What the controllers are still doing in the selected project (spec/
- * reconciliation.md: writes are carried out asynchronously). From the live
+ * 12-reconciliation.md: writes are carried out asynchronously). From the live
  * stream when it is open, else by polling. `null` until the first look. */
 export function useActivity(): Item[] | null {
   const { project } = useSession();

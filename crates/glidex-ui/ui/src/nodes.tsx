@@ -1,4 +1,4 @@
-// Cluster nodes for every page (spec/clustering-ui.md §3.2, §3.5): the node
+// Cluster nodes for every page (spec/16-clustering-ui.md §3.2, §3.5): the node
 // directory from the live stream, and per-resource capability queries.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./api";

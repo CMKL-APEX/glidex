@@ -1,4 +1,4 @@
-// Accounts in one browser (spec/tenancy.md D71): the host's administrator
+// Accounts in one browser (spec/19-tenancy.md D71): the host's administrator
 // adds a second account, the first administrator of a new directory
 // (an invitation and a passkey), then switches between the two from the
 // header's account menu and removes the new one on the Account page.

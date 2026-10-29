@@ -1,4 +1,4 @@
-//! The node role over the network (spec/clustering.md §8.2): a cache of the
+//! The node role over the network (spec/14-clustering.md §8.2): a cache of the
 //! cluster store fed by a list and a watch, status writes sent to the leader,
 //! heartbeats, and a queue of writes made while the leader is out of reach.
 
@@ -79,7 +79,7 @@ impl NodeLink {
     }
 
     /// Wait until the cache can be trusted to show this node's VMs, so that
-    /// startup never mistakes "not listed yet" for "no VMs" (networking.md §7.7).
+    /// startup never mistakes "not listed yet" for "no VMs" (09-networking.md §7.7).
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
         let mut rx = self.ready.subscribe();
 

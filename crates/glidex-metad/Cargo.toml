@@ -3,7 +3,7 @@ name = "glidex-metad"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "glidex's metadata endpoint for guests (spec/workload-identity.md W11)"
+description = "glidex's metadata endpoint for guests (spec/29-workload-identity.md W11)"
 
 [lib]
 path = "src/lib.rs"

@@ -1,6 +1,6 @@
 //! A control plane that must come back in another mode asks to be
 //! restarted: a host that just became a cluster agent has no API of its own
-//! (its UI is relayed to a server, spec/clustering-ui.md §3.6), but the
+//! (its UI is relayed to a server, spec/16-clustering-ui.md §3.6), but the
 //! standalone listeners it started with would otherwise stay up. It shuts
 //! down as on SIGTERM and exits with [`EXIT_CODE`]; under systemd,
 //! `Restart=on-failure` starts it again.

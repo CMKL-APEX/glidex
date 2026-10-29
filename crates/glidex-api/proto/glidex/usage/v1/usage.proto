@@ -1,7 +1,7 @@
-// Metering (spec/metering.md §9): usage records, billing-month rate
+// Metering (spec/13-metering.md §9): usage records, billing-month rate
 // reports (bandwidth, disk I/O, CPU and memory), 5-minute series for
 // graphs and live rates. Every operation is a read; the REST twins answer
-// with these messages as JSON (spec/grpc.md §9.1), and the usage and
+// with these messages as JSON (spec/18-grpc.md §9.1), and the usage and
 // report routes also answer CSV (`format=csv`, REST only).
 syntax = "proto3";
 
@@ -134,7 +134,7 @@ enum GroupKey {
   GROUP_KEY_DISK = 3;
   GROUP_KEY_NIC = 4;
   GROUP_KEY_NETWORK = 5;
-  // The node a subject was on (spec/clustering-ui.md §5.4).
+  // The node a subject was on (spec/16-clustering-ui.md §5.4).
   GROUP_KEY_NODE = 6;
 }
 

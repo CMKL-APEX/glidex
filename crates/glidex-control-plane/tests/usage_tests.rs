@@ -1,5 +1,5 @@
-//! The usage family on its RPCs and REST twins (spec/grpc.md §9.1, G2;
-//! spec/metering.md §9): the same answers over REST, Connect and gRPC,
+//! The usage family on its RPCs and REST twins (spec/18-grpc.md §9.1, G2;
+//! spec/13-metering.md §9): the same answers over REST, Connect and gRPC,
 //! project scoping, and the CSV exports REST keeps.
 
 mod common;

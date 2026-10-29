@@ -1,4 +1,4 @@
-//! LVM-thin operations (spec/storage.md §11.1), run through [`Exec`] so
+//! LVM-thin operations (spec/24-storage.md §11.1), run through [`Exec`] so
 //! tests can stand in for the host. Names are checked by the caller
 //! ([`crate::names`]); this module only builds argv (never a shell string).
 

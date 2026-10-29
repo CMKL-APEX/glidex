@@ -1,4 +1,4 @@
-//! `glidex.usage.v1` (spec/metering.md §9, §10): usage records, billing-month
+//! `glidex.usage.v1` (spec/13-metering.md §9, §10): usage records, billing-month
 //! rate reports (bandwidth, disk I/O, CPU and memory), the 5-minute series
 //! for graphs and live rates. The REST twins in `api/usage.rs` and
 //! `api/rates.rs` (which also write the CSV exports) and the RPC adapter in

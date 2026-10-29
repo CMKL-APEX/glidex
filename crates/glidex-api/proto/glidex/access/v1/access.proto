@@ -1,7 +1,7 @@
-// Who may do what (spec/security.md §6, §7, §10, §13): projects and their
+// Who may do what (spec/11-security.md §6, §7, §10, §13): projects and their
 // role bindings, users and their identities, teams, API tokens, host role
 // bindings, site policies, the audit log, and capability checks. The REST
-// twins answer with these messages as JSON (spec/grpc.md §9.1). Logging in
+// twins answer with these messages as JSON (spec/18-grpc.md §9.1). Logging in
 // and out (cookies) stays HTTP-only; `GET /auth/whoami` is
 // `glidex.system.v1.SystemService.WhoAmI`.
 syntax = "proto3";
@@ -211,7 +211,7 @@ service UserService {
       rest: "PATCH /users/{id}"
     };
   }
-  // Deletes the user and what is its alone (spec/tenancy.md §6.3): its
+  // Deletes the user and what is its alone (spec/19-tenancy.md §6.3): its
   // identities, sessions, personal tokens, team memberships, role links
   // and tenant memberships. Never oneself, nor the last holder of
   // system-admin or directory-admin.
@@ -229,7 +229,7 @@ service UserService {
       rest: "POST /users/{id}/identities"
     };
   }
-  // A user's passkeys (spec/passkeys.md): one's own with
+  // A user's passkeys (spec/25-passkeys.md): one's own with
   // `manageOwnSignIns`, anyone's with `listUsers`. Never their keys.
   rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse) {
     option (glidex.api.v1.op) = {
@@ -302,7 +302,7 @@ message User {
   // Lists only.
   repeated Identity identities = 6;
   // The connector that provisions it: its display name, email, external
-  // id and disabled state are the connector's (spec/tenancy.md §8.3).
+  // id and disabled state are the connector's (spec/19-tenancy.md §8.3).
   // Output only.
   optional string managed_by = 7 [json_name = "managed_by"];
   // The IdP's id for it (SCIM `externalId`). Output only.
@@ -366,7 +366,7 @@ message DeleteUserResponse {
   uint32 tenants = 6;
 }
 
-// A passkey (spec/passkeys.md P1); never its key.
+// A passkey (spec/25-passkeys.md P1); never its key.
 message Passkey {
   // The credential id, base64url.
   string id = 1;
@@ -601,7 +601,7 @@ message Token {
   optional string client = 12;
   // Its own role links.
   repeated Binding roles = 13;
-  // The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+  // The clusters it is good on (spec/19-tenancy.md §7.4): cluster ids, or
   // "all" (every cluster its tenant uses); empty: only the one it was
   // made on.
   repeated string clusters = 14;
@@ -629,7 +629,7 @@ message CreateTokenRequest {
   repeated RoleRef roles = 5;
   optional string device = 6;
   optional string client = 7;
-  // The clusters it is good on (spec/tenancy.md §7.4): this cluster's id
+  // The clusters it is good on (spec/19-tenancy.md §7.4): this cluster's id
   // and those of other organizations its tenants use, or "all". Default:
   // only this one. A token on several can be replayed among them by a
   // compromised one.
@@ -656,7 +656,7 @@ service SystemBindingService {
       rest: "GET /system/bindings"
     };
   }
-  // Host roles go to members of the operator tenant only (spec/tenancy.md
+  // Host roles go to members of the operator tenant only (spec/19-tenancy.md
   // D4): `422 not_operator_member` otherwise. With `node`, the role covers
   // that host only.
   rpc AddSystemBinding(AddSystemBindingRequest) returns (AddSystemBindingResponse) {
@@ -690,7 +690,7 @@ message AddSystemBindingRequest {
   glidex.api.v1.EntityRef principal = 2;
   // Grant it on this node's host only (id or name), not cluster-wide.
   // `role.auditor`, `role.net-admin` and `grant.host-paths` can be; the
-  // others are cluster-wide (spec/clustering.md §12.2).
+  // others are cluster-wide (spec/14-clustering.md §12.2).
   optional string node = 3;
 }
 message AddSystemBindingResponse {
@@ -940,7 +940,7 @@ message ReadAuditRequest {
   optional string user = 3;
   // Default 500, at most 5000.
   optional uint32 limit = 4;
-  // A hosted directory's own audit (spec/tenancy.md D74), for its
+  // A hosted directory's own audit (spec/19-tenancy.md D74), for its
   // directory auditors and administrators. Left out by someone of a
   // hosted directory (without a project), theirs.
   optional string directory = 5;
@@ -952,7 +952,7 @@ message ReadAuditResponse {
 // ---- capability checks ------------------------------------------------------
 
 service AuthzService {
-  // One answer per check (spec/security.md §7.7).
+  // One answer per check (spec/11-security.md §7.7).
   rpc Check(CheckRequest) returns (CheckResponse) {
     option (glidex.api.v1.op) = {
       action: "authenticated"
@@ -960,7 +960,7 @@ service AuthzService {
       rest: "POST /authz/check"
     };
   }
-  // The actions allowed on each resource (spec/clustering-ui.md §3.5).
+  // The actions allowed on each resource (spec/16-clustering-ui.md §3.5).
   rpc Allowed(AllowedRequest) returns (AllowedResponse) {
     option (glidex.api.v1.op) = {
       action: "authenticated"

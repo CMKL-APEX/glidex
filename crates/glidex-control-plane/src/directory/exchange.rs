@@ -1,4 +1,4 @@
-//! The token exchange (spec/tenancy.md §9, D48–D50): a workload's JWT, from
+//! The token exchange (spec/19-tenancy.md §9, D48–D50): a workload's JWT, from
 //! an issuer one of a tenant's federations trusts, for a short-lived token
 //! acting as the service account its first matching rule names. Every
 //! refusal is the same `invalid_grant`; why goes to the audit log.
@@ -101,7 +101,7 @@ fn take(key: &str) -> bool {
 }
 
 /// `jwt`, a running VM of `tenant`'s identity token for this cluster, for
-/// a glidex token of the VM's service account (workload-identity.md §5),
+/// a glidex token of the VM's service account (29-workload-identity.md §5),
 /// once per token.
 async fn exchange_vm(
     app: &crate::api::App,
@@ -211,7 +211,7 @@ pub async fn exchange(app: &crate::api::App, req: &Request, request_id: &str) ->
         Ok(t) => t,
         Err(_) => return refuse("no such tenant".into(), Value::Null),
     };
-    // A VM's own identity token (workload-identity.md §5).
+    // A VM's own identity token (29-workload-identity.md §5).
     if id == crate::directory::workload::VM_FEDERATION {
         return exchange_vm(app, &tenant, &req.subject_token, &refuse).await;
     }

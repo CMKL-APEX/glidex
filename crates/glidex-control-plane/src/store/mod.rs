@@ -1,5 +1,5 @@
 //! The VM table as `{meta, spec, status}` envelopes, the schema version and
-//! its migration, and the per-object event rings (spec/reconciliation.md
+//! its migration, and the per-object event rings (spec/12-reconciliation.md
 //! §6). Disks, images and networks keep their own tables (`images`,
 //! `network`); this module owns `vms` and `events`.
 
@@ -27,8 +27,8 @@ const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// `meta.schema_version`: absent = 1 (flat VM records), 2 = envelopes,
 /// 3 = nodes: placement, disk and network nodes, `Cluster` entities
-/// (spec/clustering.md §17 C1), 4 = networks keyed by id
-/// (spec/tenancy.md D24).
+/// (spec/14-clustering.md §17 C1), 4 = networks keyed by id
+/// (spec/19-tenancy.md D24).
 pub const SCHEMA_VERSION: u32 = 4;
 const SCHEMA_ENVELOPES: u32 = 2;
 const SCHEMA_NODES: u32 = 3;
@@ -179,7 +179,7 @@ pub fn event_key(kind: &str, id: &str) -> String {
 }
 
 /// One atomic write across the `vms`, `disks` and `events` tables, so a
-/// VM and the disks it claims never disagree (spec images.md §3).
+/// VM and the disks it claims never disagree (spec 10-images.md §3).
 #[derive(Default)]
 pub struct Commit<'a> {
     pub put_vm: Option<&'a Vm>,
@@ -188,7 +188,7 @@ pub struct Commit<'a> {
     pub delete_disks: Vec<&'a str>,
     pub events: Vec<(String, Event)>,
     /// Addresses to reserve on cluster networks, in the same write:
-    /// `(network, mac, vm id, nic)` (spec/clustering.md §11.4).
+    /// `(network, mac, vm id, nic)` (spec/14-clustering.md §11.4).
     pub reserve_ips: Vec<(String, String, String, u8)>,
 }
 
@@ -295,7 +295,7 @@ impl VmStore {
         Ok(count)
     }
 
-    /// Schema 2 → 3, in one write (spec/clustering.md §6.6): every VM, disk
+    /// Schema 2 → 3, in one write (spec/14-clustering.md §6.6): every VM, disk
     /// and network belongs to the implicit node `local`; role links on the
     /// host move to the cluster; the `nodes` table gets its first row.
     fn migrate_to_nodes(&self) -> Result<(), PersistenceError> {
@@ -398,7 +398,7 @@ impl VmStore {
         Ok(())
     }
 
-    /// Schema 3 → 4, in one write (spec/tenancy.md D24): networks get an id
+    /// Schema 3 → 4, in one write (spec/19-tenancy.md D24): networks get an id
     /// (derived from the name, so every server picks the same one) and are
     /// keyed by it, and so are the VM NICs and IPAM rows that named them.
     /// Their OVN objects keep the name (`ovn_key`), so nothing on the wire
@@ -595,11 +595,11 @@ impl VmStore {
     }
 }
 
-/// The `audit` table (spec/security.md §10), shared with `auth::store`.
+/// The `audit` table (spec/11-security.md §10), shared with `auth::store`.
 const AUDIT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
 
 /// An audit line for a write the control plane made on its own (the VM
-/// controller's `spec.power = Stopped`, spec/reconciliation.md §6.2).
+/// controller's `spec.power = Stopped`, spec/12-reconciliation.md §6.2).
 pub fn audit_system(
     db: &Db,
     actor: &str,

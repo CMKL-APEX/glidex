@@ -1,4 +1,4 @@
-//! `VmManager`: admission over the store (spec/reconciliation.md D5).
+//! `VmManager`: admission over the store (spec/12-reconciliation.md D5).
 //!
 //! The API writes desired state here: validation, authorization-adjacent
 //! checks, quotas and exclusivity claims happen synchronously and still
@@ -66,7 +66,7 @@ pub enum VmManagerError {
     /// The request would go over these project quotas.
     QuotaExceeded(Vec<QuotaOverrun>),
     /// The request would go over the tenant's cap on this cluster
-    /// (spec/tenancy.md D19).
+    /// (spec/19-tenancy.md D19).
     TenantQuotaExceeded(Vec<QuotaOverrun>),
     Tenancy(TenancyError),
     /// The VM is being deleted: its spec no longer changes (§6.3).
@@ -287,7 +287,7 @@ pub struct ConfigPatch {
     pub data_disks: Option<Vec<String>>,
     #[serde(default)]
     pub networks: Option<Vec<NetworkAttachment>>,
-    /// Kernel image id or name (spec/kernel-boot.md K6); next launch.
+    /// Kernel image id or name (spec/23-kernel-boot.md K6); next launch.
     #[serde(default)]
     pub kernel: Option<String>,
     /// Follow the guest's kernels (K11); next launch. A `kernel` change
@@ -369,12 +369,12 @@ pub struct VmManager {
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
     /// This host's web UI address, as a server publishes it
-    /// (spec/host-page.md W3).
+    /// (spec/28-host-page.md W3).
     ui_url: ArcSwap<Option<String>>,
-    /// `pci.pools` of the control-plane config (spec/host-topology.md §9).
+    /// `pci.pools` of the control-plane config (spec/22-host-topology.md §9).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
     /// What this host runs OVN with: the cluster setting (if written) over
-    /// the file's per-host part (spec/clustering-ui.md §8a).
+    /// the file's per-host part (spec/16-clustering-ui.md §8a).
     pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
     /// `cluster.ovn` as this host's file has it.
     ovn_file: ArcSwap<crate::cluster::config::OvnConfig>,
@@ -383,7 +383,7 @@ pub struct VmManager {
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
-    /// This host's cluster membership, once it has one (spec/clustering.md).
+    /// This host's cluster membership, once it has one (spec/14-clustering.md).
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
@@ -392,7 +392,7 @@ pub struct VmManager {
     node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
-    /// Resource usage metering (spec/metering.md), once started.
+    /// Resource usage metering (spec/13-metering.md), once started.
     pub(crate) meter: arc_swap::ArcSwapOption<crate::metering::Meter>,
     pub(crate) meter_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub(crate) metering_cfg: std::sync::Mutex<Option<crate::config::MeteringConfig>>,
@@ -420,7 +420,7 @@ fn root_disk_name(vm_name: &str) -> String {
     name
 }
 
-/// `kernel_from_disk` (spec/kernel-boot.md K11) needs a kernel image to
+/// `kernel_from_disk` (spec/23-kernel-boot.md K11) needs a kernel image to
 /// start from and fall back to, and a managed root disk to extract from.
 fn check_kernel_from_disk(c: &VmConfig) -> Result<(), VmManagerError> {
     if c.kernel_image.is_none() || c.root_disk.is_none() {
@@ -460,7 +460,7 @@ impl VmManager {
     /// As [`with_db_path_and_netd`](Self::with_db_path_and_netd), for a host
     /// that may be in a cluster: if it has a cluster identity, its Raft
     /// member is started before anything touches the store, so no write ever
-    /// bypasses the log (spec/clustering.md §6.1).
+    /// bypasses the log (spec/14-clustering.md §6.1).
     pub async fn open(
         db_path: PathBuf,
         netd: Netd,
@@ -624,7 +624,7 @@ impl VmManager {
                         .swap(true, std::sync::atomic::Ordering::AcqRel)
                 {
                     tracing::warn!(
-                        "control-plane.json's cluster.ovn options are ignored: the cluster's OVN setting decides (spec/clustering-ui.md §8a); only bridge_mappings is read from the file"
+                        "control-plane.json's cluster.ovn options are ignored: the cluster's OVN setting decides (spec/16-clustering-ui.md §8a); only bridge_mappings is read from the file"
                     );
                 }
                 s.effective(&file)
@@ -716,7 +716,7 @@ impl VmManager {
             .or(Some(2048))
     }
 
-    /// The configured device pools (spec/host-topology.md §9).
+    /// The configured device pools (spec/22-host-topology.md §9).
     pub fn pci_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
         self.pci_pools.load_full()
     }
@@ -729,7 +729,7 @@ impl VmManager {
 
     /// The CPUs shared VMs on this node run on: all but the reserved and
     /// those the dedicated VMs placed here hold; empty while none are
-    /// (spec/host-topology.md §8.1).
+    /// (spec/22-host-topology.md §8.1).
     pub(crate) async fn local_shared_pool(&self) -> Vec<u32> {
         let local = self.local_node_id();
         let Ok(Some(n)) = self.nodes.get(&local) else {
@@ -747,7 +747,7 @@ impl VmManager {
         crate::scheduler::shared_pool(&n, &held)
     }
 
-    /// Where on this standalone host a VM goes (spec/host-topology.md H8):
+    /// Where on this standalone host a VM goes (spec/22-host-topology.md H8):
     /// asked-for hugepages in their size and, under a NUMA or CPU policy,
     /// the NUMA node and CPUs the scheduler's fit picks against what the
     /// other VMs here hold. A `strict` VM that fits no NUMA node is refused.
@@ -830,7 +830,7 @@ impl VmManager {
     }
 
     /// Fit `vm` again on its node after a change to its memory, hugepages,
-    /// CPUs, policies, devices or networks (spec/host-topology.md §6,
+    /// CPUs, policies, devices or networks (spec/22-host-topology.md §6,
     /// §8a.3): its pages, NUMA node and dedicated CPUs. What no longer fits
     /// there is refused with 409. A running VM keeps its old binding until
     /// its next start.
@@ -911,7 +911,7 @@ impl VmManager {
     }
 
     /// Where a VM of `config` (pinned to `pin`, using `data_disks`) could go,
-    /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
+    /// node by node, the scheduler's choice first (spec/16-clustering-ui.md §5.1).
     pub async fn preview_placement(
         &self,
         project: &str,
@@ -1027,7 +1027,7 @@ impl VmManager {
     }
 
     /// For each unbound disk on a registered datastore, the nodes that can
-    /// make it: on the datastore's nodes and reaching it now (spec/storage.md
+    /// make it: on the datastore's nodes and reaching it now (spec/24-storage.md
     /// §5.2).
     fn disk_reach(&self, disks: &[Disk]) -> Vec<(String, Vec<String>)> {
         use crate::datastore::record;
@@ -1050,7 +1050,7 @@ impl VmManager {
             .collect()
     }
 
-    /// A VM's architecture (spec/clustering.md §9.2.1): that of the image a
+    /// A VM's architecture (spec/14-clustering.md §9.2.1): that of the image a
     /// disk of it comes from, else of its firmware or kernel image; `None`
     /// for one with neither (host-path kernel boot).
     pub(crate) fn vm_arch(
@@ -1115,7 +1115,7 @@ impl VmManager {
     }
 
     /// Whether datastores may be written: on a standalone host, or once
-    /// every server of the cluster supports them (spec/clustering.md §6.6).
+    /// every server of the cluster supports them (spec/14-clustering.md §6.6).
     pub fn datastores_supported(&self) -> bool {
         match self.cluster() {
             None => true,
@@ -1167,7 +1167,7 @@ impl VmManager {
     }
 
     /// Look at every datastore this node is on and say what it finds
-    /// (`datastore_nodes`, spec/storage.md §4.1); drop its rows about the
+    /// (`datastore_nodes`, spec/24-storage.md §4.1); drop its rows about the
     /// ones it is no longer on. Writes only what changed. Blocks.
     pub fn probe_datastores(&self) {
         use crate::datastore::{probe, record};
@@ -1254,7 +1254,7 @@ impl VmManager {
         }
     }
 
-    /// Set this host's web UI address (spec/host-page.md W3); `true` when
+    /// Set this host's web UI address (spec/28-host-page.md W3); `true` when
     /// it changed, and the node record should be refreshed.
     pub fn set_ui_url(&self, url: Option<String>) -> bool {
         if **self.ui_url.load() == url {
@@ -1290,7 +1290,7 @@ impl VmManager {
         if !self.is_agent() {
             probe.ui_url = (**self.ui_url.load()).clone();
         }
-        // Unrecorded image files (spec/clustering.md §9.2.3): deleted when
+        // Unrecorded image files (spec/14-clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
         if let Some(before) = self
             .nodes
@@ -1310,7 +1310,7 @@ impl VmManager {
                 .get("dpdk_initialized")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            // OVS-DPDK's hugepages are not the VMs' (spec/host-topology.md
+            // OVS-DPDK's hugepages are not the VMs' (spec/22-host-topology.md
             // §8a.2): DPDK takes them in the default page size.
             if let (true, Some(mem)) = (
                 probe.features.dpdk,
@@ -1350,7 +1350,7 @@ impl VmManager {
             t.reserve_pylon_cores();
         }
         // The devices a VM could be given, with their readiness, for pools
-        // (spec/host-topology.md §9).
+        // (spec/22-host-topology.md §9).
         if let Some(t) = probe.topology.as_mut() {
             t.devices = crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs(), |g| {
                 self.held_groups(g)
@@ -1485,7 +1485,7 @@ impl VmManager {
     }
 
     /// Record the API's app, so a cluster's leader can answer the metadata
-    /// questions of its nodes (spec/workload-identity.md §15).
+    /// questions of its nodes (spec/29-workload-identity.md §15).
     pub fn set_api_app(&self, app: Arc<crate::api::App>) {
         if let Some(c) = self.cluster() {
             c.set_app(app.clone());
@@ -1494,7 +1494,7 @@ impl VmManager {
     }
 
     /// Record the secrets key's holder, for a cluster to send to and
-    /// receive from other servers (spec/tenancy.md §13).
+    /// receive from other servers (spec/19-tenancy.md §13).
     /// The holder of the secrets key, once the API's auth service exists.
     pub(crate) fn secrets_key(&self) -> Option<Arc<dyn crate::cluster::runtime::SecretsKey>> {
         self.secrets_key.get().cloned()
@@ -1615,7 +1615,7 @@ impl VmManager {
                         }
                     }
                     // This node's own record changed (a request to delete its
-                    // unrecorded image files, spec/clustering.md §9.2.3):
+                    // unrecorded image files, spec/14-clustering.md §9.2.3):
                     // report now rather than at the next interval.
                     let me = self.local_node_id();
                     if a.keys.iter().any(|(t, k)| {
@@ -1997,7 +1997,7 @@ impl VmManager {
         Ok(())
     }
 
-    /// Check CPU sizing, elasticity bounds (spec/pylon.md §3.2) and weights.
+    /// Check CPU sizing, elasticity bounds (spec/30-pylon.md §3.2) and weights.
     fn check_elasticity(config: &VmConfig) -> Result<(), VmManagerError> {
         if config.vcpu_count == 0 {
             return Err(invalid("vcpu_count must be greater than 0"));
@@ -2122,7 +2122,7 @@ impl VmManager {
         Ok(())
     }
 
-    /// Create a VM in `project`, resolving managed disks (spec images.md
+    /// Create a VM in `project`, resolving managed disks (spec 10-images.md
     /// §7). Returns the VM, any warnings, and the quota limits it went
     /// over (only with [`QuotaMode::MayExceed`]; to be audited).
     #[allow(clippy::too_many_arguments)]
@@ -2158,7 +2158,7 @@ impl VmManager {
                 "give firmware (an image) or firmware_path, not both",
             ));
         }
-        // One boot mode (spec/kernel-boot.md K2): firmware no longer
+        // One boot mode (spec/23-kernel-boot.md K2): firmware no longer
         // silently wins over a kernel.
         if (sel.firmware.is_some() || config.firmware_path.is_some())
             && !config.kernel_image_path.is_empty()
@@ -2198,7 +2198,7 @@ impl VmManager {
             },
             _ => None,
         };
-        // A kernel image (spec/kernel-boot.md §6): of the root image's
+        // A kernel image (spec/23-kernel-boot.md §6): of the root image's
         // architecture, its command line the default `kernel_args`.
         let kernel = sel
             .kernel
@@ -2322,7 +2322,7 @@ impl VmManager {
                 "kernel_from_disk needs a kernel image (kernel) and a managed root disk (image or root_disk)",
             ));
         }
-        // Who generates the seed is fixed now (spec/kernel-boot.md K4):
+        // Who generates the seed is fixed now (spec/23-kernel-boot.md K4):
         // firmware boot, and kernel boot of a managed kernel or root disk.
         config.generate_seed = Some(config.generate_seed.unwrap_or(
             config.cloud_init_path.is_none()
@@ -2368,7 +2368,7 @@ impl VmManager {
         }
         // A kernel from a host path that names no arguments: the default
         // for the architecture it runs on, its pinned node's (else this
-        // host's), whose serial port differs (spec/kernel-boot.md K5).
+        // host's), whose serial port differs (spec/23-kernel-boot.md K5).
         if vm.spec.config.kernel_args.is_empty() {
             let arch = vm
                 .spec
@@ -2380,7 +2380,7 @@ impl VmManager {
                 .unwrap_or(crate::images::catalog::Arch::X86_64);
             vm.spec.config.kernel_args = vm.spec.config.hypervisor.default_kernel_args(arch);
         }
-        // A device another VM on the node claims (spec/host-topology.md
+        // A device another VM on the node claims (spec/22-host-topology.md
         // §8.4). Unpinned in a cluster, the node isn't known yet: the
         // scheduler skips nodes where it is taken.
         let claims_node = if self.cluster().is_none() {
@@ -2697,7 +2697,7 @@ impl VmManager {
     }
 
     /// Refuse `devices` that a VM other than `except` claims on `node`,
-    /// directly or through a shared IOMMU group (spec/host-topology.md
+    /// directly or through a shared IOMMU group (spec/22-host-topology.md
     /// §8.4). On a standalone host every VM is the node's.
     fn refuse_claimed_devices(
         &self,
@@ -2726,7 +2726,7 @@ impl VmManager {
             .map(|n| n.spec.cordoned_devices.clone())
             .unwrap_or_default();
         let groups = rec.map(|n| n.status.pci_groups).unwrap_or_default();
-        // A cordoned device stays with the VM that has it (spec/host-topology.md §5.4).
+        // A cordoned device stays with the VM that has it (spec/22-host-topology.md §5.4).
         let had: Vec<String> = except
             .and_then(|id| vms.get(id))
             .map(|v| {
@@ -2832,7 +2832,7 @@ impl VmManager {
 
     /// This node's copy of a VM's firmware image, checked to exist: the
     /// stored `firmware_path` is the creating server's, which another node
-    /// need not share (spec/storage.md §15). `None` without a firmware image.
+    /// need not share (spec/24-storage.md §15). `None` without a firmware image.
     pub(crate) fn firmware_binding(&self, vm: &Vm) -> Result<Option<String>, VmManagerError> {
         let Some(id) = vm.config().firmware_image.as_deref() else {
             return Ok(None);
@@ -3286,7 +3286,7 @@ impl VmManager {
     }
 
     /// Add a VFIO device; `device_nodes` is where the project may use all
-    /// of the VM's devices then (spec/host-topology.md §8.5).
+    /// of the VM's devices then (spec/22-host-topology.md §8.5).
     pub async fn attach_device(
         &self,
         vm_id: &str,
@@ -3620,7 +3620,7 @@ impl VmManager {
         self.orphans.lock().unwrap().clone()
     }
 
-    // ---- images and disks (spec/images.md) -----------------------------
+    // ---- images and disks (spec/10-images.md) -----------------------------
 
     pub fn image_catalog(&self, arch: Option<crate::images::catalog::Arch>) -> Vec<CatalogItem> {
         self.images.catalog(arch)
@@ -3714,7 +3714,7 @@ impl VmManager {
         out
     }
 
-    /// The copies of image `id` in shared datastores (spec/storage.md S9).
+    /// The copies of image `id` in shared datastores (spec/24-storage.md S9).
     fn datastore_copies(&self, id: &str) -> Vec<images::ImageCopy> {
         let db = self.store.database();
         self.store_copies(id)
@@ -3810,7 +3810,7 @@ impl VmManager {
             }
             req.nodes = nodes.into_iter().map(|n| n.meta.id).collect();
         }
-        // A catalog pull brings the image's kernel (spec/kernel-boot.md K10).
+        // A catalog pull brings the image's kernel (spec/23-kernel-boot.md K10).
         let with_kernel = req.with_kernel.unwrap_or(req.catalog.is_some());
         let (name, nodes) = (req.name.clone(), req.nodes.clone());
         // Extracted on this host, or another node of the image's (§10.2).
@@ -3898,7 +3898,7 @@ impl VmManager {
     }
 
     /// Which projects share `project`'s tenant: the scope disk names are
-    /// unique and resolved in (spec/tenancy.md D24).
+    /// unique and resolved in (spec/19-tenancy.md D24).
     pub fn tenant_scope(&self, project: &str) -> impl Fn(&str) -> bool + use<> {
         let all = self.projects.list().unwrap_or_default();
         let tenant = all
@@ -3950,7 +3950,7 @@ impl VmManager {
 
     /// Create a disk in `project`, checking its `disk_gib` quota. The disk
     /// is recorded pending; the disk controller makes its file
-    /// (spec/reconciliation.md §10.1).
+    /// (spec/12-reconciliation.md §10.1).
     pub async fn create_disk_in(
         &self,
         project: &str,
@@ -3963,7 +3963,7 @@ impl VmManager {
             .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         req.project = Some(project.to_string());
         // Bound to a node by id or name, like a VM's pin; stored as the id,
-        // which is what `is_local_disk` compares (spec/storage.md §15).
+        // which is what `is_local_disk` compares (spec/24-storage.md §15).
         if let Some(want) = &req.node {
             req.node = Some(self.resolve_node(want)?);
         }
@@ -4097,7 +4097,7 @@ impl VmManager {
             )?;
         }
         // Answered early only where the file is: elsewhere the disk's node
-        // checks it and reports `ResizeInvalid` (spec/storage.md §8.2).
+        // checks it and reports `ResizeInvalid` (spec/24-storage.md §8.2).
         if size < current.size_bytes && self.is_local_disk(&current) {
             let (mgr, d) = (self.images.clone(), current.clone());
             let (min, _) = blocking(move || mgr.shrink_minimum(&d)).await?;
@@ -4155,7 +4155,7 @@ impl VmManager {
             .into());
         }
         // As for a shrink: elsewhere the disk's node checks it and reports
-        // `ExtendRootFailed` (spec/storage.md §8.2).
+        // `ExtendRootFailed` (spec/24-storage.md §8.2).
         if self.is_local_disk(&current) {
             let (mgr, d) = (self.images.clone(), current.clone());
             blocking(move || {
@@ -4238,7 +4238,7 @@ impl VmManager {
             .collect()
     }
 
-    /// This host's full topology (spec/host-topology.md §3.2): its node
+    /// This host's full topology (spec/22-host-topology.md §3.2): its node
     /// record's summary (OVS-DPDK's share and the reserved CPUs applied)
     /// and the PCIe tree read now.
     pub fn local_topology(&self) -> crate::topology::TopologyTree {
@@ -4254,7 +4254,7 @@ impl VmManager {
     }
 
     /// IOMMU groups among `groups` that a process other than this host's
-    /// glidex VMs has open, and by whom (spec/host-topology.md §5.1). netd
+    /// glidex VMs has open, and by whom (spec/22-host-topology.md §5.1). netd
     /// reads every process; VMs of glidex run as this user. Without netd:
     /// none known.
     pub(crate) fn held_groups(&self, groups: &[String]) -> BTreeMap<String, String> {
@@ -4279,7 +4279,7 @@ impl VmManager {
     }
 
     /// Bind this node's devices of `prepare: true` pools that aren't
-    /// ready to `vfio-pci` (spec/host-topology.md §5.3, §9.1), then
+    /// ready to `vfio-pci` (spec/22-host-topology.md §5.3, §9.1), then
     /// report. A device netd refuses stays not ready; the pool is short of
     /// it and the warning says why.
     pub fn prepare_pools(&self) {
@@ -4319,7 +4319,7 @@ impl VmManager {
     }
 
     /// `prepare` or `release` this host's PCI device `address` through
-    /// netd (spec/host-topology.md §5.3).
+    /// netd (spec/22-host-topology.md §5.3).
     pub fn local_device_op(
         &self,
         address: &str,
@@ -4480,7 +4480,7 @@ impl VmManager {
             .ok_or_else(|| NetError::NotFound(id.to_string()))?)
     }
 
-    /// Network `key` as `project` sees it (spec/tenancy.md D24): its id,
+    /// Network `key` as `project` sees it (spec/19-tenancy.md D24): its id,
     /// or a name: of a host network, or of a project network in the
     /// project's tenant.
     pub fn find_network(&self, project: &str, key: &str) -> Result<Network, VmManagerError> {
@@ -4835,7 +4835,7 @@ impl VmManager {
         Ok(net)
     }
 
-    /// Create a network private to `project` (spec/security.md §6.2):
+    /// Create a network private to `project` (spec/11-security.md §6.2):
     /// NAT or isolated (no uplink), either port type, generated bridge
     /// name, counted against the `networks` quota.
     pub async fn create_project_network(
@@ -4895,7 +4895,7 @@ impl VmManager {
         Ok((net, bypassed))
     }
 
-    // ---- VPC routers (spec/clustering.md §11.2a) -------------------------
+    // ---- VPC routers (spec/14-clustering.md §11.2a) -------------------------
 
     pub fn list_routers(
         &self,
@@ -5050,7 +5050,7 @@ impl VmManager {
     /// Set which projects may use a host network.
     /// The host's ports netd opens to `net`'s guests: the API's, on a node
     /// NAT network with `host_api` or on a host with `nat_host_api`
-    /// (spec/workload-identity.md §15).
+    /// (spec/29-workload-identity.md §15).
     pub(crate) fn host_api_ports(&self, net: &Network) -> Vec<u16> {
         let s = self.settings();
         if net.mode == NetworkMode::Nat && (net.host_api || s.nat_host_api) {
@@ -5314,7 +5314,7 @@ impl VmManager {
             .await
     }
 
-    // ---- projects and quotas (spec/security.md §6) ---------------------
+    // ---- projects and quotas (spec/11-security.md §6) ---------------------
 
     pub fn projects(&self) -> &ProjectStore {
         &self.projects
@@ -5426,7 +5426,7 @@ impl VmManager {
     }
 
     /// The project's quotas, then its tenant's cap on this cluster: the
-    /// tenant's use is the sum over its projects here (spec/tenancy.md D19).
+    /// tenant's use is the sum over its projects here (spec/19-tenancy.md D19).
     #[allow(clippy::too_many_arguments)]
     fn apply_quotas(
         &self,
@@ -5469,7 +5469,7 @@ impl VmManager {
     }
 
     /// The `max` of each tenant pool `delta` asks of, over the VMs of all
-    /// the tenant's projects (spec/host-topology.md §9.1a).
+    /// the tenant's projects (spec/22-host-topology.md §9.1a).
     fn apply_tenant_pools(
         &self,
         p: &tenancy::Project,
@@ -5712,7 +5712,7 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
 }
 
 /// `prepare` or `release` PCI device `address` through `netd`
-/// (spec/host-topology.md §5.3), or `sriov-<N>`: give the PF N VFs
+/// (spec/22-host-topology.md §5.3), or `sriov-<N>`: give the PF N VFs
 /// (§10.1).
 fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
     let address = address.to_string();

@@ -1,4 +1,4 @@
-//! Cedar authorization (spec/security.md §7).
+//! Cedar authorization (spec/11-security.md §7).
 //!
 //! The policy set is: base policies and role templates shipped in
 //! `policies/`, role links (template-linked policies, one per role
@@ -33,7 +33,7 @@ pub const ROLES_SRC: &str = include_str!("../policies/roles.cedar");
 /// Ids of this process's host (node) and cluster entities. A standalone
 /// host is a cluster of one: `Host::"local"` in `Cluster::"local"`. After
 /// `gxctl cluster init` they are the node and cluster UUIDs
-/// (spec/clustering.md §12.2).
+/// (spec/14-clustering.md §12.2).
 pub const LOCAL_ID: &str = "local";
 
 fn identity_cell() -> &'static std::sync::RwLock<(String, String)> {
@@ -100,12 +100,12 @@ pub enum Ent {
     Disk(String),
     Credential(String),
     Image(String),
-    /// A datastore (spec/storage.md §13), in the cluster.
+    /// A datastore (spec/24-storage.md §13), in the cluster.
     Datastore(String),
     Network(String),
     PciDevice(String),
     PciPool(String),
-    /// spec/tenancy.md §10.1.
+    /// spec/19-tenancy.md §10.1.
     Tenant(String),
     Directory(String),
 }
@@ -256,7 +256,7 @@ impl EntitySet {
     }
 
     /// A tenant; `here` is whether it may allocate on this cluster (its
-    /// `clusters` opt-ins, spec/tenancy.md D9).
+    /// `clusters` opt-ins, spec/19-tenancy.md D9).
     pub fn tenant(
         &mut self,
         id: &str,
@@ -515,7 +515,7 @@ impl EntitySet {
 
     /// PCI device `bdf` of node `node`: `PciDevice::"<node>/<bdf>"` in that
     /// node's `Host`, so a role on the host covers its devices
-    /// (spec/host-topology.md §8.5).
+    /// (spec/22-host-topology.md §8.5).
     pub fn pci_device(
         &mut self,
         node: &str,
@@ -600,7 +600,7 @@ pub type Link = cedar::Link<Ent>;
 
 /// Role templates and the resource kind each may be linked to.
 pub const PROJECT_ROLES: [&str; 4] = ["role.viewer", "role.operator", "role.editor", "role.owner"];
-/// Roles linked on a `Tenant` and on a `Directory` (spec/tenancy.md §10.5).
+/// Roles linked on a `Tenant` and on a `Directory` (spec/19-tenancy.md §10.5).
 pub const TENANT_ROLES: [&str; 2] = ["role.tenant-admin", "role.tenant-auditor"];
 pub const DIRECTORY_ROLES: [&str; 2] = ["role.directory-admin", "role.directory-auditor"];
 /// Marker groups; every concrete action is in exactly one.
@@ -612,12 +612,12 @@ pub const HOST_ROLES: [&str; 5] = [
     "role.system-admin",
     "grant.host-paths",
 ];
-/// Host roles that may also be linked on one node's `Host` (spec/clustering.md
+/// Host roles that may also be linked on one node's `Host` (spec/14-clustering.md
 /// §12.2). The others are about cluster-wide things (images, the cluster
 /// itself), which a host link wouldn't cover.
 pub const PER_HOST_ROLES: [&str; 3] = ["role.auditor", "role.net-admin", "grant.host-paths"];
 
-/// A set of tenant references (grants by tenant, spec/tenancy.md D25).
+/// A set of tenant references (grants by tenant, spec/19-tenancy.md D25).
 fn tenant_set(ids: &[String]) -> Value {
     Value::Array(
         ids.iter()
@@ -684,7 +684,7 @@ mod tests {
         es
     }
 
-    /// spec/tenancy.md §10.1: every concrete action is in exactly one
+    /// spec/19-tenancy.md §10.1: every concrete action is in exactly one
     /// marker group, so base.cedar bounds every request by one of the
     /// tenant, operator or directory rules (or none, for `shared`).
     #[test]
@@ -712,7 +712,7 @@ mod tests {
         assert!(checked > 130, "{checked}");
     }
 
-    /// The tenancy boundaries themselves, on the engine (spec/tenancy.md §17).
+    /// The tenancy boundaries themselves, on the engine (spec/19-tenancy.md §17).
     #[test]
     fn tenancy_boundaries() {
         let e = engine_with(&[
@@ -919,7 +919,7 @@ mod tests {
             e.check(&q("clusteradm", "installOvs", Ent::Node("n2".into())))
                 .allowed
         );
-        // A host's devices are the host's (spec/host-topology.md §8.5): the
+        // A host's devices are the host's (spec/22-host-topology.md §8.5): the
         // same address on another node is another device.
         let mut dev_es = es.clone();
         dev_es

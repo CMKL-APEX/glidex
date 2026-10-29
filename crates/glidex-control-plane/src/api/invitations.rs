@@ -1,5 +1,5 @@
 //! REST twins of `glidex.directory.v1.InvitationService` and
-//! `LoginService.InspectInvitation` (spec/tenancy.md §6.1, §14): the proto
+//! `LoginService.InspectInvitation` (spec/19-tenancy.md §6.1, §14): the proto
 //! messages as JSON, on the same `service::invitations` functions.
 
 use super::{ApiErr, AppState, Caller, proto_body};

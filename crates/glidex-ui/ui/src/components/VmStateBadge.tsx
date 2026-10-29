@@ -3,7 +3,7 @@ import { desiredState, stateColor, stateLabel, vmActivity, vmState } from "../ty
 import { Spinner } from "./Activity";
 
 /** The VM's observed state, and what the controller is still doing to
- * reach the desired one (spec/reconciliation.md §7.4). */
+ * reach the desired one (spec/12-reconciliation.md §7.4). */
 export default function VmStateBadge({ vm, large = false }: { vm: VmResponse; large?: boolean }) {
   const activity = vmActivity(vm);
   const state = vmState(vm);

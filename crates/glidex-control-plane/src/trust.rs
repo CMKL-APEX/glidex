@@ -1,5 +1,5 @@
 //! Trust between a cluster and the directories of other organizations
-//! (spec/tenancy.md §12.1, D63–D66): the offer token a cluster's operator
+//! (spec/19-tenancy.md §12.1, D63–D66): the offer token a cluster's operator
 //! sends, and (task 5b) redeeming it and ending trust.
 
 use base64::Engine as _;

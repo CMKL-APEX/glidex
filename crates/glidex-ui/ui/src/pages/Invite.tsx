@@ -17,7 +17,7 @@ function takeToken(): string | null {
 const roleLabel = (r?: string) =>
   r === "role.tenant-admin" ? "tenant administrator" : r === "role.tenant-auditor" ? "tenant auditor" : "member";
 
-/** An invitation link (spec/tenancy.md §6.1): what it is for, and a login
+/** An invitation link (spec/19-tenancy.md §6.1): what it is for, and a login
  *  through its connector that takes it. Works signed out. */
 export default function Invite() {
   const [token] = useState(takeToken);
@@ -42,7 +42,7 @@ export default function Invite() {
     setBusy(true);
     setError(null);
     try {
-      // A passkey invitation (spec/tenancy.md D60): the first passkey signs in.
+      // A passkey invitation (spec/19-tenancy.md D60): the first passkey signs in.
       if (passkey) {
         await api.acceptPasskeyInvitation(token);
         window.location.assign("/");

@@ -98,7 +98,7 @@ fn num(v: &Value) -> u64 {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
-/// proto3 JSON shape (spec/grpc.md §9.1).
+/// proto3 JSON shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -370,7 +370,7 @@ async fn firmware_config_survives_restart() {
         vm.spec.config.firmware_path.as_deref(),
         Some("/path/to/CLOUDHV.fd")
     );
-    // Per-VM private runtime directory (spec/security.md §9).
+    // Per-VM private runtime directory (spec/11-security.md §9).
     assert_eq!(
         vm.default_cloud_init_path(),
         glidex_control_plane::paths::vm_dir(&id)
@@ -468,7 +468,7 @@ fn seed_image_error_leaves_no_partial_files() {
 
 /// Stops every VM the manager knows about when dropped, so a failing test
 /// never leaves a cloud-hypervisor process behind: VMs outlive the control
-/// plane now, so nothing else would (spec/reconciliation.md §19).
+/// plane now, so nothing else would (spec/12-reconciliation.md §19).
 struct ShutdownGuard(Option<Arc<VmManager>>);
 
 impl ShutdownGuard {
@@ -1026,7 +1026,7 @@ async fn settled_image(app: &Router, id: &str, timeout: Duration) -> Value {
     }
 }
 
-/// spec/kernel-boot.md K3: pulling `GLIDEX_TEST_CATALOG` (default
+/// spec/23-kernel-boot.md K3: pulling `GLIDEX_TEST_CATALOG` (default
 /// `ubuntu-26.04`) also extracts its kernel, through the pinned Debian
 /// extractor run as a one-shot VM job; a VM boots that kernel image with a
 /// generated seed and a credential, and `uname -r` is its release.
@@ -1157,7 +1157,7 @@ async fn qemu_kernel_image_boot_with_generated_cloud_init() {
     kernel_image_e2e("qemu").await;
 }
 
-/// A kernel image (spec/kernel-boot.md K1, K2) copied from the host files
+/// A kernel image (spec/23-kernel-boot.md K1, K2) copied from the host files
 /// `GLIDEX_TEST_KERNEL` and `GLIDEX_TEST_INITRD` boots the cloud image
 /// `GLIDEX_TEST_IMAGE` with its own command line, a generated seed and a
 /// stored credential: log in, check the running kernel is the image's,
@@ -1285,7 +1285,7 @@ async fn qemu_kernel_boot_with_initrd() {
     kernel_boot_e2e("qemu").await;
 }
 
-/// Direct kernel boot from host paths (spec/kernel-boot.md K0): a distro
+/// Direct kernel boot from host paths (spec/23-kernel-boot.md K0): a distro
 /// kernel and its initramfs mount the cloud image's root partition, on the
 /// serial port by default and on the virtio console with `console=hvc0`.
 /// `GLIDEX_TEST_KERNEL` / `GLIDEX_TEST_INITRD` are the image build's own
@@ -1425,7 +1425,7 @@ async fn wait_vm(
     }
 }
 
-/// spec/reconciliation.md §19: survival, adoption, crash restart and a
+/// spec/12-reconciliation.md §19: survival, adoption, crash restart and a
 /// guest power-off.
 async fn restart_e2e(hypervisor: &str) {
     use glidex_vm_shim::util::same_process;
@@ -2390,7 +2390,7 @@ async fn vhost_user_net_e2e(hypervisor: &str) {
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
 }
 
-/// spec/images.md §12: pull a catalog image, boot a VM created from it with
+/// spec/10-images.md §12: pull a catalog image, boot a VM created from it with
 /// a 12 GiB root disk, check the guest's `/` filled it; stop, grow to
 /// 16 GiB, boot again and check again. Downloads the image (~700 MB) from
 /// the vendor; `GLIDEX_TEST_CATALOG` picks the entry (default ubuntu-26.04).
@@ -2413,7 +2413,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
     let (app, manager, _tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
 
-    // The firmware the VM boots through by default (spec/images.md §7):
+    // The firmware the VM boots through by default (spec/10-images.md §7):
     // copied from the installer's pinned file or the host's OVMF, or
     // downloaded.
     let fw_key = if hypervisor == "qemu" {
@@ -2625,7 +2625,7 @@ fn pages_per_node(pid: u32) -> std::collections::BTreeMap<u32, u64> {
     out
 }
 
-/// spec/host-topology.md HT2 acceptance: a `strict`, dedicated VM with a
+/// spec/22-host-topology.md HT2 acceptance: a `strict`, dedicated VM with a
 /// GPU runs on the GPU's NUMA node, each vCPU on its own CPU and every
 /// thread on the CPUs it holds, its memory on that node; a shared VM with
 /// the second GPU keeps off those CPUs; a control-plane restart changes
@@ -2845,7 +2845,7 @@ async fn numa_e2e(hypervisor: &str) {
     }
 }
 
-/// A cloud image booted from an LVM-thin volume (spec/storage.md §11.1):
+/// A cloud image booted from an LVM-thin volume (spec/24-storage.md §11.1):
 /// a linked disk, a thin snapshot of the node's image volume, its root
 /// partition grown, opened by the hypervisor as a raw block device. Needs,
 /// besides KVM and a qcow2 cloud image (`GLIDEX_TEST_LVM_IMAGE`), a running
@@ -3124,7 +3124,7 @@ async fn qemu_lvm_root_disk_boots() {
     lvm_root_disk_e2e("qemu").await;
 }
 
-/// A cloud image booted from a hyperstor volume (spec/storage.md §11.2):
+/// A cloud image booted from a hyperstor volume (spec/24-storage.md §11.2):
 /// the datastore enrolled with a mgmt token, the image written into an
 /// image volume and snapshotted, the disk a clone of it grown and its root
 /// partition extended through `hyperstorctl`, the VM's disk a

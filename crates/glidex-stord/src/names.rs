@@ -1,4 +1,4 @@
-//! What stord accepts as names (spec/storage.md S17): it refuses anything
+//! What stord accepts as names (spec/24-storage.md S17): it refuses anything
 //! else before running a command, so a caller can only reach glidex's own
 //! volumes, in the volume groups the operator allowed.
 

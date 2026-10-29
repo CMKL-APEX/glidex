@@ -1,8 +1,8 @@
 // Host networking through glidex-netd and the host's PCI devices
-// (spec/networking.md §8–§11, spec/security.md §8): operations on the host
+// (spec/09-networking.md §8–§11, spec/11-security.md §8): operations on the host
 // that answers them, never forwarded; from an agent's UI they run on the
-// agent, authorized by a server (spec/grpc.md §8, clustering-ui.md §3.6).
-// The REST twins answer with these messages as JSON (spec/grpc.md §9.1).
+// agent, authorized by a server (spec/18-grpc.md §8, 16-clustering-ui.md §3.6).
+// The REST twins answer with these messages as JSON (spec/18-grpc.md §9.1).
 syntax = "proto3";
 
 package glidex.host.v1;
@@ -109,7 +109,7 @@ service PciService {
   }
 }
 
-// A host's NUMA and PCIe topology (spec/host-topology.md §3–§5).
+// A host's NUMA and PCIe topology (spec/22-host-topology.md §3–§5).
 service TopologyService {
   // The answering host's.
   rpc GetHostTopology(GetHostTopologyRequest) returns (GetHostTopologyResponse) {
@@ -439,7 +439,7 @@ message Topology {
   repeated TopologyWarning warnings = 3;
 }
 
-// What a node reports in its status (spec/host-topology.md §3.1).
+// What a node reports in its status (spec/22-host-topology.md §3.1).
 message TopologySummary {
   repeated NumaNode numa_nodes = 1 [json_name = "numa_nodes"];
   // CPUs kept free of other tasks (isolcpus, nohz_full).
@@ -511,10 +511,10 @@ message PciFunction {
   bool assignable = 15;
   bool ready = 16;
   repeated string not_ready = 17 [json_name = "not_ready"];
-  // AER error counts since boot (spec/host-topology.md §5.4).
+  // AER error counts since boot (spec/22-host-topology.md §5.4).
   AerCounts aer = 18;
   // Part of the host's NVLink fabric (an NVSwitch): never a tenant VM's;
-  // Fabric Manager owns it (spec/gpu-vms.md §7).
+  // Fabric Manager owns it (spec/27-gpu-vms.md §7).
   bool fabric = 19;
 }
 

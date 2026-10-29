@@ -185,7 +185,7 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
   );
 }
 
-/** A project's VPC routers (spec/clustering.md §11.2a): its own way out,
+/** A project's VPC routers (spec/14-clustering.md §11.2a): its own way out,
  * instead of the shared edge, for the NAT networks attached to it. */
 export default function RoutersCard({ project, networks, manage, onChanged }: { project: string; networks: Network[]; manage: boolean; onChanged?: () => void }) {
   const { host } = useSession();

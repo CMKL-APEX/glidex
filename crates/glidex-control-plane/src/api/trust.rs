@@ -1,4 +1,4 @@
-//! The handshake's HTTP side (spec/tenancy.md D63–D66), public and
+//! The handshake's HTTP side (spec/19-tenancy.md D63–D66), public and
 //! authenticated by peer assertions instead of a user:
 //!
 //! - at a cluster: `POST /trust/v1/redeem` (a directory redeems an offer)

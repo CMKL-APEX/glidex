@@ -1,4 +1,4 @@
-//! A directory as an OpenID provider (spec/tenancy.md D54–D57): what its
+//! A directory as an OpenID provider (spec/19-tenancy.md D54–D57): what its
 //! endpoints keep between requests. The endpoints are `api::op`.
 //!
 //! - **Authorization codes** (code flow with PKCE, RFC 7636) and **device

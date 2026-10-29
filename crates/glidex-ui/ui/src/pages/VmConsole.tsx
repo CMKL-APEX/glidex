@@ -11,7 +11,7 @@ import {
   savedTerminalKind,
 } from "./consoleTerminal";
 
-/** When the console fails: its node may be the reason (spec/clustering-ui.md §4). */
+/** When the console fails: its node may be the reason (spec/16-clustering-ui.md §4). */
 async function whyFailed(id: string, fallback: string): Promise<string> {
   const vm = await api.getVm(id).catch(() => null);
   if (vm && nodeUnreachable(vm)) {
@@ -76,7 +76,7 @@ export default function VmConsole() {
           }
         });
         // Browsers open the console with a fresh single-use ticket
-        // (spec/security.md §5.6): POST for it, then connect at once.
+        // (spec/11-security.md §5.6): POST for it, then connect at once.
         return api.consoleTicket(id).then(({ ticket }) => {
           if (disposed) return;
           const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";

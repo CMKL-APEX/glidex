@@ -5,7 +5,7 @@ Source: `crates/glidex-control-plane/src/hypervisor/`.
 ## The driver
 
 Since the move to detached instances
-([reconciliation.md §16](reconciliation.md#16-hypervisor-abstraction))
+([12-reconciliation.md §16](12-reconciliation.md#16-hypervisor-abstraction))
 the control plane has no hypervisor process handles. A backend is a
 **stateless driver** (`hypervisor/mod.rs`):
 
@@ -40,7 +40,7 @@ one that launched it.
   resolves the binary to an absolute path, which the shim checks against
   its allowlist.
 - **Process lifetime belongs to `glidex-vm-shim`**
-  ([reconciliation.md §8.3](reconciliation.md#83-shim-process)): spawn,
+  ([12-reconciliation.md §8.3](12-reconciliation.md#83-shim-process)): spawn,
   launch health check, QEMU's CPU fallback, power button, kill, exit
   status. The driver never starts or signals a process.
 - `observe` maps the hypervisor's view to `GuestState` (`NotCreated`,
@@ -59,15 +59,15 @@ one that launched it.
 
 A guest that powers off makes its hypervisor exit with status 0 under
 both backends; so does SIGTERM to the hypervisor
-([reconciliation.md §4](reconciliation.md#4-verified-host-facts), F3/F4).
+([12-reconciliation.md §4](12-reconciliation.md#4-verified-host-facts), F3/F4).
 The shim records that as `clean_exit` and the controller sets the
 desired state to stopped
-([reconciliation.md §7.5](reconciliation.md#75-exit-handling)). A guest
+([12-reconciliation.md §7.5](12-reconciliation.md#75-exit-handling)). A guest
 *reboot* resets in place and never exits the hypervisor.
 
 ### Backend selection
 
-Firecracker support was removed; see [data-model.md](data-model.md)
+Firecracker support was removed; see [03-data-model.md](03-data-model.md)
 for how old Firecracker records are handled. Drivers whose binary is
 missing are still selectable: `main` warns at startup, and the error
 surfaces at launch (`ProvisioningFailed`, "… is not installed").
@@ -81,14 +81,14 @@ a Unix socket. Message framing is hand-rolled to match the upstream
 
 `launch_args` builds the command line that replaced the `vm.create`
 payload, option for option, in this order
-([reconciliation.md §8.2](reconciliation.md#82-cloud-hypervisor-argv-d9)):
+([12-reconciliation.md §8.2](12-reconciliation.md#82-cloud-hypervisor-argv-d9)):
 `--api-socket path=…`, `--cpus boot=,max=`, `--memory
 size=…M[,shared=on][,hugepages=on]`, `--firmware` or `--kernel` +
 [`--initramfs`] + `--cmdline` (the cmdline is one argv element, never
 split), one `--disk` value per disk, one `--net` value per NIC, one
 `--device` per VFIO device, then `--console` / `--serial`. The console
 device is `ConsoleDevice::of(config)` (`hypervisor/mod.rs`,
-[kernel-boot.md §5.2](kernel-boot.md#52-console-k5)): the serial port on
+[23-kernel-boot.md §5.2](23-kernel-boot.md#52-console-k5)): the serial port on
 a firmware boot; on a kernel boot, the device the last `console=` of
 `kernel_args` names (`hvc…` → virtio console, anything else or none →
 serial port):
@@ -100,7 +100,7 @@ serial port):
 | Firmware (`firmware_path` set) | `--firmware` | serial | `off` | `tty` | `ttyS0` |
 
 `tty` makes the device CH's stdio, i.e. the shim's PTY; see
-[console.md](console.md#why-the-shim-owns-the-master).
+[02-console.md](02-console.md#why-the-shim-owns-the-master).
 
 Command-line rules, verified against the pinned v53.0 (F1, F2) and
 pinned by unit tests in `cloud_hypervisor.rs`:
@@ -119,12 +119,12 @@ pinned by unit tests in `cloud_hypervisor.rs`:
 
 The firmware is Cloud-Hypervisor's EDK2 build (`CLOUDHV.fd` release
 asset of <https://github.com/cloud-hypervisor/edk2>), the `cloudhv-edk2`
-firmware image ([images.md](images.md#41-firmware-catalog)): pinned, and
+firmware image ([10-images.md](10-images.md#41-firmware-catalog)): pinned, and
 copied from the installer's `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on
-aarch64, [installer.md](installer.md#uefi-firmware)) when that matches. It boots the bootloader on
+aarch64, [05-installer.md](05-installer.md#uefi-firmware)) when that matches. It boots the bootloader on
 the rootfs disk, so `rootfs_path` must be a full, partitioned,
 UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`, raw or
-qcow2, or a managed disk from [images.md](images.md)), not a bare ext4
+qcow2, or a managed disk from [10-images.md](10-images.md)), not a bare ext4
 rootfs. There is no
 kernel command line: the guest's own GRUB config applies.
 
@@ -134,7 +134,7 @@ appears on the emulated 16550 UART.
 
 Disks are `[rootfs, data disks…, seed]` (`vm_disks`). A managed disk
 sends its recorded `image_type`, and `backing_files=on` if it is a
-linked overlay ([images.md](images.md#10-changes-to-existing-components)).
+linked overlay ([10-images.md](10-images.md#10-changes-to-existing-components)).
 A user-supplied `rootfs_path` is probed by magic bytes. The seed is
 `config.cloud_init_path`, or — if unset on a firmware boot — the image
 the VM controller regenerates at `Vm::default_cloud_init_path()`
@@ -147,11 +147,11 @@ attached `readonly=on`. Contents (`cloud_init.rs`):
 - `network-config`: v2, DHCP on `en*`.
 - `user-data`: `resize_rootfs: true` (plus a `growpart` block when the
   root disk has `pending_growpart`), and a sudo user. If the VM names a stored credential
-  ([credentials.md](credentials.md)), that username, password hash and
+  ([08-credentials.md](08-credentials.md)), that username, password hash and
   SSH keys are used and nothing else. Otherwise the user is `cloud` with no SSH keys and a locked password:
   there is no way to log in. There are no host-wide defaults (the
   control-plane user's keys or a site password would open VMs in every
-  project, spec/security.md §6.2). Credentials are never baked into
+  project, spec/11-security.md §6.2). Credentials are never baked into
   the source. The seed image is created `0600`.
 
 Why the hash is written twice (`users[].passwd` and `chpasswd.users`):
@@ -204,7 +204,7 @@ qemu-system-x86_64
   -drive if=pflash,format=raw,unit=1,file=<this VM's vars>
   # per disk i, in the order [root, data disks…, seed]:
   -blockdev <JSON> -device virtio-blk-pci,drive=disk<i>,id=vd<i>[,bootindex=1]
-  # per NIC, see networking.md §3a:
+  # per NIC, see 09-networking.md §3a:
   [-netdev … -device virtio-net-pci,…]
   [-device vfio-pci,host=<bdf>,id=<vfio_xxx> …]
   -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0
@@ -228,7 +228,7 @@ Notes captured in code comments:
   also returns a `fallback` argv without `-cpu` (QEMU's default model)
   with the markers `cpu` and `msr`; if QEMU exits before QMP answers
   and its output contains one of them (case-insensitive), the shim runs
-  the fallback once (`launch.json`, reconciliation.md §8.1).
+  the fallback once (`launch.json`, 12-reconciliation.md §8.1).
 - Disks use `-blockdev` JSON, so a path never needs escaping. The
   format is always explicit: the recorded format for managed disks,
   glidex's own magic-byte probe for a user-supplied `rootfs_path`,
@@ -298,7 +298,7 @@ talk to it).
 ### Launch health check
 
 Done by the shim for both backends
-([reconciliation.md §8.3](reconciliation.md#83-shim-process) step 3):
+([12-reconciliation.md §8.3](12-reconciliation.md#83-shim-process) step 3):
 it waits up to `ready_timeout_secs` (30) for the API socket to answer
 (CH `GET /vmm.ping`, QEMU's QMP greeting), watching for early exit. If
 the hypervisor exits first (after the QEMU fallback, if any), the shim
@@ -340,6 +340,6 @@ device from the sysfs path. Given
   detach can refer to the same device that was attached.
 - Compared with the device ids `observe` reports, so the controller can
   tell which spec devices the running guest has (VFIO drift,
-  reconciliation.md §9.1 step 7).
+  12-reconciliation.md §9.1 step 7).
 - Not persisted. `Vm.config.vfio_devices` stores the sysfs path —
   the id is rederived when needed.

@@ -1,5 +1,5 @@
 //! `glidex.directory.v1.ConnectorService`: the directory's connectors
-//! (spec/tenancy.md §5, T1). REST (`api/connectors.rs`) and RPC
+//! (spec/19-tenancy.md §5, T1). REST (`api/connectors.rs`) and RPC
 //! (`api/rpc/directory.rs`) both call these functions and nothing else.
 
 use super::{Call, ServiceError, ServiceResult};
@@ -207,7 +207,7 @@ fn settings_json(s: &Settings) -> (Kind, serde_json::Value) {
 }
 
 /// Whether new users of `c` join the directory's owner or an operator
-/// tenant (spec/tenancy.md D22). The default tenant may be named by id or
+/// tenant (spec/19-tenancy.md D22). The default tenant may be named by id or
 /// slug; it is stored by id.
 fn guarded(call: &Call, c: &mut Connector) -> ServiceResult<bool> {
     let Some(t) = &c.default_tenant else {
@@ -665,7 +665,7 @@ pub fn delete_connector(
 pub fn set_secret(call: &Call, req: pb::SetSecretRequest) -> ServiceResult<pb::SetSecretResponse> {
     call.require(call.directory_ent(), EntitySet::new())?;
     let c = get_visible(call, &req.id)?;
-    // The field name is audited, never the value (spec/tenancy.md §13).
+    // The field name is audited, never the value (spec/19-tenancy.md §13).
     call.detail("field", serde_json::json!(req.field));
     call.auth()
         .connectors

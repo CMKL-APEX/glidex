@@ -189,11 +189,11 @@ interface TableProps {
   kind: "disk" | "firmware" | "kernel";
   onRetry: (img: ImageInfo) => void;
   onRemove: (img: ImageInfo) => void;
-  /** In a cluster: copies on chosen nodes (spec/clustering.md §9.2.2). */
+  /** In a cluster: copies on chosen nodes (spec/14-clustering.md §9.2.2). */
   clustered?: boolean;
   onCopy?: (img: ImageInfo) => void;
   onRemoveCopy?: (img: ImageInfo, node: string) => void;
-  /** Disk images: take the kernel out of one (spec/kernel-boot.md §10),
+  /** Disk images: take the kernel out of one (spec/23-kernel-boot.md §10),
    * offered when no kernel image comes from it yet. */
   onExtractKernel?: (img: ImageInfo) => void;
   hasKernel?: (img: ImageInfo) => boolean;
@@ -367,7 +367,7 @@ function nodesFor(nodes: Map<string, NodeRecord>, arch: string): NodeRecord[] {
     .sort((a, b) => a.spec.name.localeCompare(b.spec.name));
 }
 
-/** A pull in a cluster (spec/clustering.md §9.2.1–2): which nodes get a
+/** A pull in a cluster (spec/14-clustering.md §9.2.1–2): which nodes get a
  * copy once it is downloaded, and whether the server keeps its own. */
 function PullDialog({
   what,
@@ -486,7 +486,7 @@ export default function Images() {
   const [images, setImages] = useState<ImageInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pullingUrl, setPullingUrl] = useState(false);
-  // In a cluster (spec/clustering.md §9.2.1): the nodes' architectures, and
+  // In a cluster (spec/14-clustering.md §9.2.1): the nodes' architectures, and
   // which one the catalogs are for (default: the server's).
   const dir = useNodes();
   const archs = [...new Set([...dir.nodes.values()].filter((n) => !isTombstone(n.status.phase)).map((n) => n.status.features?.arch).filter((a): a is string => !!a))].sort();

@@ -1,4 +1,4 @@
-//! Where `glidex-vm-shim` runs (spec/reconciliation.md §8.8).
+//! Where `glidex-vm-shim` runs (spec/12-reconciliation.md §8.8).
 //!
 //! - **systemd**: one `glidex-vm@<id>.service` per instance, started over
 //!   the system bus (`zbus`) and authorized by the polkit rule the
@@ -103,7 +103,7 @@ pub enum Runner {
 
 impl Runner {
     /// `auto` is systemd when this process is the control-plane service
-    /// (spec/reconciliation.md §8.8).
+    /// (spec/12-reconciliation.md §8.8).
     pub fn new(kind: VmRunnerKind) -> Self {
         let systemd = match kind {
             VmRunnerKind::Systemd => true,

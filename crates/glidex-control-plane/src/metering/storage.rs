@@ -1,4 +1,4 @@
-//! Stored size (spec/metering.md §5.3): what a disk's file takes on the
+//! Stored size (spec/13-metering.md §5.3): what a disk's file takes on the
 //! host (`qemu-img info` `actual-size`), and each image's file, which is
 //! shared by every project and metered at host level.
 

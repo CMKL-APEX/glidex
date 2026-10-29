@@ -1,5 +1,5 @@
 //! Compiles the protos with protox (no protoc or buf needed), checks the
-//! rules of spec/grpc.md §4, writes the operation table, and generates
+//! rules of spec/18-grpc.md §4, writes the operation table, and generates
 //! messages, services and clients with connectrpc-build.
 
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, Value};
@@ -90,7 +90,7 @@ fn check_json_names(pool: &DescriptorPool, errors: &mut Vec<String>) {
         for f in m.fields() {
             if f.json_name() != f.name() {
                 errors.push(format!(
-                    "{}.{}: JSON name is {:?}; declare [json_name = \"{}\"] (spec/grpc.md G-D11)",
+                    "{}.{}: JSON name is {:?}; declare [json_name = \"{}\"] (spec/18-grpc.md G-D11)",
                     m.full_name(),
                     f.name(),
                     f.json_name(),
@@ -137,7 +137,7 @@ fn json_fields(pool: &DescriptorPool) -> String {
     src
 }
 
-/// The operation table (spec/grpc.md §5) as Rust source.
+/// The operation table (spec/18-grpc.md §5) as Rust source.
 fn operations(pool: &DescriptorPool, errors: &mut Vec<String>) -> String {
     let Some(ext) = pool.get_extension_by_name("glidex.api.v1.op") else {
         errors.push("glidex.api.v1.op is not defined".into());
@@ -210,7 +210,7 @@ fn string(m: &DynamicMessage, field: &str) -> String {
 }
 
 /// Secret fields are write-only: no RPC response may contain one, at
-/// any depth (spec/grpc.md §4).
+/// any depth (spec/18-grpc.md §4).
 fn check_secrets(pool: &DescriptorPool, errors: &mut Vec<String>) {
     let Some(ext) = pool.get_extension_by_name("glidex.api.v1.secret") else {
         errors.push("glidex.api.v1.secret is not defined".into());

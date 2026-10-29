@@ -25,12 +25,12 @@ jobs:
     - uses: actions/checkout@v7
     - name: Install cloud-init seed and disk tools
       run: sudo apt-get update && sudo apt-get install -y dosfstools mtools qemu-utils gdisk cloud-guest-utils
-    - name: Lint store writes (spec/clustering.md C0)
+    - name: Lint store writes (spec/14-clustering.md C0)
       run: scripts/lint-store-writes.sh
     - name: Build
       run: cargo build --verbose
     # With every database a test opens replayed from its write sets and
-    # compared (spec/clustering.md section 6.1). The check only adds to the
+    # compared (spec/14-clustering.md section 6.1). The check only adds to the
     # tests, so one run covers both.
     - name: Run tests, replaying write sets
       run: GLIDEX_CHECK_WRITE_SETS=1 cargo test --verbose
@@ -46,7 +46,7 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all --check
 
-  # The RPC API's protos (spec/grpc.md G-D9). Building them needs only
+  # The RPC API's protos (spec/18-grpc.md G-D9). Building them needs only
   # cargo (protox in glidex-api's build.rs); buf checks style and
   # compatibility.
   proto:

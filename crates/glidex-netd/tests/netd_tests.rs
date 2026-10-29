@@ -283,7 +283,7 @@ fn attach_reserves_address_and_detach_keeps_it() {
     assert!(nats[0].state.reservations.is_empty());
 }
 
-/// Metering counters (spec/metering.md D14): attaching adds the VM's
+/// Metering counters (spec/13-metering.md D14): attaching adds the VM's
 /// counters; releasing deletes only that VM's, never the table, and the
 /// NAT table rebuilds never touch `inet glidex_meter`.
 #[test]
@@ -710,7 +710,7 @@ fn status_socket_serves_only_status() {
     let mut client = Client::connect(&path).unwrap();
     let caps: HostCapabilities = client.call(Op::Probe, Duration::from_secs(5)).unwrap();
     assert!(caps.ovs_installed);
-    // Traffic counters are tenant data (spec/metering.md §5.4).
+    // Traffic counters are tenant data (spec/13-metering.md §5.4).
     for op in [
         Op::ListBridges,
         Op::ListVmPorts,
@@ -1620,7 +1620,7 @@ fn a_port_moves_between_bridges_without_recreating_its_tap() {
     );
 }
 
-/// spec/host-topology.md §5.3: a device's IOMMU group is bound to
+/// spec/22-host-topology.md §5.3: a device's IOMMU group is bound to
 /// vfio-pci, recorded, listed and put back; a device netd didn't prepare
 /// can't be released.
 #[test]
@@ -1674,7 +1674,7 @@ fn devices_are_prepared_for_passthrough_and_released() {
     assert!(e.to_string().contains("was not prepared"), "{e}");
 }
 
-/// spec/host-topology.md §10.1: a PF's VFs are set through `sriov_numvfs`,
+/// spec/22-host-topology.md §10.1: a PF's VFs are set through `sriov_numvfs`,
 /// and a prepared VF is forgotten once the change removes it.
 #[test]
 fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
@@ -1732,7 +1732,7 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
     assert!(e.to_string().contains("at most 8"), "{e}");
 }
 
-/// spec/host-topology.md §5.1: a device whose IOMMU group a process has
+/// spec/22-host-topology.md §5.1: a device whose IOMMU group a process has
 /// open (a VM, glidex's or libvirt's) isn't released, and its PF's VF count
 /// isn't changed; device_holders says who holds it.
 #[test]
@@ -1813,7 +1813,7 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     assert!(h.get("236").is_none(), "{h}");
 }
 
-/// spec/gpu-vms.md §10: boot settings bind the selected devices that aren't
+/// spec/27-gpu-vms.md §10: boot settings bind the selected devices that aren't
 /// on vfio-pci, never touch one that is, and (outside boot) leave a VF
 /// count alone while one of its VFs is on vfio-pci.
 #[test]
@@ -1895,7 +1895,7 @@ fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
     assert_eq!(r.sriov, [("0000:61:00.0".to_string(), 8)], "{r:?}");
 }
 
-/// spec/workload-identity.md §7.1: a VM port on a NAT network gets a
+/// spec/29-workload-identity.md §7.1: a VM port on a NAT network gets a
 /// metadata index; its OpenFlow rule marks its requests and `inet glidex`
 /// maps the mark to its peer address; it keeps the index when attached
 /// again, and the rule and the map entry go with the port.

@@ -45,7 +45,7 @@ async fn request(
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
-/// (spec/grpc.md §9.1).
+/// (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     v["vm"].clone()

@@ -1,4 +1,4 @@
-// A browser session for the specs (spec/security.md §5.5). The scratch
+// A browser session for the specs (spec/11-security.md §5.5). The scratch
 // control plane has no PAM here, so the user running the tests gets one
 // the way `gxctl ui` does: over the local socket (peer uid), as its
 // break-glass administrator, it

@@ -1,4 +1,4 @@
-//! The controllers' work queue (spec/reconciliation.md §9.3): one queue
+//! The controllers' work queue (spec/12-reconciliation.md §9.3): one queue
 //! for every kind, keyed by `(kind, id)`, deduplicating. A key is queued at
 //! most once and processed by at most one worker at a time; a key added
 //! while it is being processed is processed again afterwards. Failures

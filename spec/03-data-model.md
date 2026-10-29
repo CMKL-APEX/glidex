@@ -9,7 +9,7 @@ All persisted and API-exposed types live in
 
 A VM has a **desired** power state, written by the API, and an
 **observed** phase, written by the VM controller
-([reconciliation.md §7](reconciliation.md#7-vm-resource)):
+([12-reconciliation.md §7](12-reconciliation.md#7-vm-resource)):
 
 ```rust
 pub enum PowerState { Running, Paused, Stopped }            // spec.power; new VMs: Stopped
@@ -52,13 +52,13 @@ The guest configuration the hypervisor needs to boot:
   (`--initramfs` / `-initrd`); only with `kernel_image_path`. A host
   path (`useHostPath`). Absent in older records.
 - `firmware_path: Option<String>` — UEFI firmware: normally the file of
-  a firmware image (`<image dir>/<id>.fd`, [images.md](images.md#7-vm-integration)),
+  a firmware image (`<image dir>/<id>.fd`, [10-images.md](10-images.md#7-vm-integration)),
   else a host path given by an admin; when set, the guest boots its
   disk's bootloader and the kernel fields are ignored.
 - `firmware_image: Option<String>` — the firmware image (id) behind
   `firmware_path`; while set, the image can't be deleted.
 - `kernel_image: Option<String>` — the kernel image (id) behind
-  `kernel_image_path` and `initrd_path` ([kernel-boot.md](kernel-boot.md)
+  `kernel_image_path` and `initrd_path` ([23-kernel-boot.md](23-kernel-boot.md)
   §6); while set, the image can't be deleted. Changeable (next launch).
 - `generate_seed: Option<bool>` — whether the VM controller generates the
   cloud-init seed, fixed at create (firmware boot, and kernel boot of a
@@ -67,7 +67,7 @@ The guest configuration the hypervisor needs to boot:
   `VmConfig::generates_seed()` is the rule.
 - `kernel_from_disk: bool` — boot the kernel the guest installed:
   extracted from the root disk before a launch when that changed
-  ([kernel-boot.md](kernel-boot.md) §10.5). What it boots is
+  ([23-kernel-boot.md](23-kernel-boot.md) §10.5). What it boots is
   `VmStatus.disk_kernel` (`{image, previous, disk_stamp}`), never the
   spec. Changeable (next launch).
 - `cloud_init_path: Option<String>` — NoCloud seed disk. `None` when
@@ -76,7 +76,7 @@ The guest configuration the hypervisor needs to boot:
   launch and puts it on the command line; the persisted config is left
   untouched. The file goes with the VM's runtime directory on delete.
 - `credential: Option<String>` — username of a stored credential the
-  generated seed provisions; see [credentials.md](credentials.md). Also
+  generated seed provisions; see [08-credentials.md](08-credentials.md). Also
   surfaced on `VmResponse`.
 - `rootfs_path: String`
 - `kernel_args: String`
@@ -86,7 +86,7 @@ The guest configuration the hypervisor needs to boot:
   (e.g. `/sys/bus/pci/devices/0000:41:00.0`), may be empty
 - `root_disk: Option<String>`, `data_disks: Vec<String>`,
   `owns_root_disk: bool` — managed disks by id
-  ([images.md](images.md#7-vm-integration)). For a managed root disk,
+  ([10-images.md](10-images.md#7-vm-integration)). For a managed root disk,
   `rootfs_path` holds that disk's file path. The non-persisted
   `root_disk_binding` / `data_disk_bindings` (and `nic_bindings`,
   `firmware_vars_path`) are filled in by the controller for
@@ -104,7 +104,7 @@ option values are quoted, not escaped. Under the systemd runner, paths
 under `/tmp` and `/var/tmp` are refused too, because the VM unit has its
 own `PrivateTmp=`.
 
-**Mutability** ([reconciliation.md §7.3](reconciliation.md#73-mutability-d18)).
+**Mutability** ([12-reconciliation.md §7.3](12-reconciliation.md#73-mutability-d18)).
 Spec edits are accepted in any state; what varies is when they take
 effect. `power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`:
 at once. `vfio_devices`: hot-plugged while the guest runs (pending,
@@ -149,13 +149,13 @@ pub struct VmSpec {
 
 `VmStatus` holds `placement` (`{node, at}`: the node the VM runs on,
 set once and kept for its life; `local` on a standalone host,
-[clustering.md §9.1](clustering.md#91-scheduler)), `observed_generation`, `conditions`, `phase`,
+[14-clustering.md §9.1](14-clustering.md#91-scheduler)), `observed_generation`, `conditions`, `phase`,
 `instance` (an `InstanceRef`: instance id, runner, boot id,
 `launched_generation`, claimed disks and devices, shim and hypervisor
 pid + start time), `last_exit`, crash/launch backoff counters,
 `stop_deadline`, `nics` (the ports this VM owns in netd) and
 `never_started`; field by field in
-[reconciliation.md §7.2](reconciliation.md#72-status).
+[12-reconciliation.md §7.2](12-reconciliation.md#72-status).
 
 `Vm` (de)serializes through `store::VmRecord`, the on-disk envelope
 `{meta, spec, status}`. Runtime paths are not stored: they are derived
@@ -201,7 +201,7 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
   that an `image` / `root_disk` VM without a kernel gets the newest
   firmware image for its hypervisor. `create_vm` rejects a request that
   ends up with neither a kernel nor firmware, or with both
-  ([kernel-boot.md](kernel-boot.md) K2).
+  ([23-kernel-boot.md](23-kernel-boot.md) K2).
 - `initrd_path` — only with `kernel_image_path`.
 - `vfio_devices` — omitted → empty list.
 - `power` — omitted → `stopped` (create, then start); `"running"`
@@ -210,7 +210,7 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 
 `VmResponse` is the API projection (`From<&Vm>`), which
 `service::vm` turns into the `glidex.vm.v1.Vm` message the API answers
-with ([rest-api.md](rest-api.md#vm)):
+with ([06-rest-api.md](06-rest-api.md#vm)):
 
 - `id, name, project, state, vcpu_count, mem_size_mib, hypervisor,
   vfio_devices, credential, nics, root_disk, data_disks`;
@@ -218,7 +218,7 @@ with ([rest-api.md](rest-api.md#vm)):
   `generation`, `observed_generation`, `restart_required`, `conditions`,
   `last_exit`, `restart_policy`, `on_host_boot`, `stop_grace_secs`, and
   `deleting` while a deletion is in progress.
-- Hides the runtime paths (spec/security.md §9), `status.instance` and
+- Hides the runtime paths (spec/11-security.md §9), `status.instance` and
   most of `config` (e.g. `kernel_args`), because clients don't need it.
 
 `PATCH /vms/{id}` takes `VmPatch` (`state.rs`): a JSON merge patch of
@@ -245,7 +245,7 @@ hypervisor_unavailable | credential_error | invalid_image | invalid_disk |
 image_error | tool_unavailable | precondition_failed` (plus the
 networking and authorization codes). `details`
 carries extra data, e.g. `min_size_bytes` for a refused shrink.
-See [rest-api.md](rest-api.md) for the HTTP status code mapping.
+See [06-rest-api.md](06-rest-api.md) for the HTTP status code mapping.
 
 ## Persistence schema
 
@@ -264,14 +264,14 @@ All values are serde-JSON.
 |---|---|---|
 | `vms` | VM id | `VmRecord` = `{meta, spec, status}` |
 | `events` | `vm/<id>` | ring of the last 50 `Event {at, actor, kind, reason, message}` |
-| `nodes` | node id | `Node` = `{meta, spec, status}`: a standalone host has one, `local` ([clustering.md §7](clustering.md#7-nodes)) |
+| `nodes` | node id | `Node` = `{meta, spec, status}`: a standalone host has one, `local` ([14-clustering.md §7](14-clustering.md#7-nodes)) |
 | `meta` | `schema_version` | `3` (`2` = envelopes, no nodes; absent = schema 1, flat `Vm` records) |
 
 The same file also holds `credentials`, `networks`, `images`, `disks`
-([images.md](images.md#3-data-model)) and the tenancy and auth tables.
+([10-images.md](10-images.md#3-data-model)) and the tenancy and auth tables.
 Disks, images and networks are not envelopes yet (M3).
 Metering adds `meter_cursors`, `meter_open`, `usage_hourly`,
-`meter_meta`, `rate_5m`, `usage_daily` and `usage_monthly_rates` ([metering.md §7.1](metering.md#71-tables), written only by
+`meter_meta`, `rate_5m`, `usage_daily` and `usage_monthly_rates` ([13-metering.md §7.1](13-metering.md#71-tables), written only by
 the meter, one transaction per sampling round). These are new tables, so
 `schema_version` stays 2 and older builds ignore them.
 `VmStore::commit` writes a VM, the disks whose claims it changes and its
@@ -287,12 +287,12 @@ a single host actually runs.
 **Migration (schema 2 → 3,** `VmStore::migrate`, one transaction). Every VM
 gets `status.placement.node = local`, every disk `node = local`, every
 network `scope: node` with `node = local`; role links whose resource was
-the `Host` now name the `Cluster` (clustering.md §12.2); the `nodes` table
+the `Host` now name the `Cluster` (14-clustering.md §12.2); the `nodes` table
 gets the `local` row. A second run changes nothing.
 
 Every table write goes through `store::Db` (`Db::begin`/`Db::write`),
 which records each `put` and `delete` as a write set
-([clustering.md §6.1](clustering.md#61-store-api-milestone-c0)); CI
+([14-clustering.md §6.1](14-clustering.md#61-store-api-milestone-c0)); CI
 forbids `begin_write` outside `store/`.
 
 **Migration (schema 1 → 2,** `VmStore::migrate`, at startup, one
@@ -306,7 +306,7 @@ glidex"), so a downgrade fails cleanly instead of misreading envelopes.
 
 ### Who writes what
 
-The write rules are [reconciliation.md §6.2](reconciliation.md#62-who-writes-what):
+The write rules are [12-reconciliation.md §6.2](12-reconciliation.md#62-who-writes-what):
 
 - API handlers (admission in `state.rs`) write `meta` and `spec` in one
   store commit together with every check that needs atomicity (claims,
@@ -328,7 +328,7 @@ The write rules are [reconciliation.md §6.2](reconciliation.md#62-who-writes-wh
 
 `VmManager::initialize()` migrates, loads every VM into the cache and
 **adopts** live instances; it never marks a VM stopped because the
-control plane restarted ([reconciliation.md §9.4](reconciliation.md#94-startup-order)).
+control plane restarted ([12-reconciliation.md §9.4](12-reconciliation.md#94-startup-order)).
 A VM whose recorded instance is gone is handled by its first reconcile
 like any other exit (`HostReboot` after a reboot, `Lost` for an intent
 that never ran). **Stale status never survives a reconcile; the user's

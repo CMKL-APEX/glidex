@@ -1,5 +1,5 @@
 //! Random values, hashes and comparisons for secrets (glidex
-//! spec/security.md §5.5): session ids, CSRF values, tokens and tickets
+//! spec/11-security.md §5.5): session ids, CSRF values, tokens and tickets
 //! are base62 of random bytes, and only their SHA-256 is stored.
 
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ pub fn constant_eq(a: &str, b: &str) -> bool {
 /// Clean a client-claimed `device` / `client` string for storage: one
 /// trimmed line, ≤ 128 characters, no control characters; `None` on
 /// anything else. Display and audit only — never an authorization input
-/// (glidex spec/gxctl-auth.md §7.2).
+/// (glidex spec/17-gxctl-auth.md §7.2).
 pub fn stamp(s: Option<&str>) -> Option<String> {
     let s = s
         .map(str::trim)

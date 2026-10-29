@@ -1,4 +1,4 @@
-//! The node API on :8842 (spec/clustering.md §4): Raft, joins, read index and
+//! The node API on :8842 (spec/14-clustering.md §4): Raft, joins, read index and
 //! forwarded requests. Every route but the CA download and the join request
 //! needs a certificate the cluster issued; Raft, forwarding and the CA key
 //! need a *server's* (§12.3).
@@ -156,7 +156,7 @@ async fn ca_settle(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 #[derive(Deserialize)]
 struct CaKey {
     key_pem: String,
-    /// The secrets key, base64 (spec/tenancy.md §13); servers only.
+    /// The secrets key, base64 (spec/19-tenancy.md §13); servers only.
     #[serde(default)]
     secrets_kek: Option<String>,
     /// The one before it, while a rotation re-wraps the data keys.
@@ -485,7 +485,7 @@ struct SecretsKeyBody {
     previous: Option<String>,
 }
 
-/// The leader rotates the secrets key (spec/tenancy.md §13): each server
+/// The leader rotates the secrets key (spec/19-tenancy.md §13): each server
 /// takes the new key and keeps the previous one until the data keys are
 /// re-wrapped. Never through the Raft log.
 async fn put_secrets_key(
@@ -1024,7 +1024,7 @@ async fn forwarded(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Reque
 }
 
 /// `GET /cluster/v1/ovn-status`: this node's OVN chassis and tunnels as its
-/// Open vSwitch sees them (spec/clustering-ui.md §8b). Servers only.
+/// Open vSwitch sees them (spec/16-clustering-ui.md §8b). Servers only.
 async fn ovn_status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
@@ -1039,7 +1039,7 @@ async fn ovn_status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 }
 
 /// `GET /cluster/v1/topology`: this node's NUMA and PCIe topology
-/// (spec/host-topology.md §3.2), for a server answering
+/// (spec/22-host-topology.md §3.2), for a server answering
 /// `GET /nodes/{id}/topology`. Servers only.
 async fn topology(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
     if let Err(r) = peer(&c, p, true) {
@@ -1065,7 +1065,7 @@ async fn topology(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 
 /// `POST /cluster/v1/devices/{address}/{prepare|release}`: prepare or
 /// release this node's PCI device, for a server that authorized the
-/// caller (spec/host-topology.md §5.3). Servers only.
+/// caller (spec/22-host-topology.md §5.3). Servers only.
 async fn device_op(
     State(c): Ctx,
     p: Option<Extension<PeerCert>>,
@@ -1094,7 +1094,7 @@ async fn device_op(
 }
 
 /// `/cluster/v1/ui/<path>`: a browser request a node's UI socket relayed
-/// (spec/clustering-ui.md §3.6). Any node may relay; this server
+/// (spec/16-clustering-ui.md §3.6). Any node may relay; this server
 /// authenticates the request itself, as if the browser had come here.
 async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let peer = match peer(&c, p, false) {
@@ -1156,7 +1156,7 @@ async fn serve_marked(c: &Cluster, req: Request) -> Response {
 }
 
 /// `/cluster/v1/host/<path>`: a host-local request a server authorized for
-/// this node's host (spec/clustering-ui.md §3.6). Servers only.
+/// this node's host (spec/16-clustering-ui.md §3.6). Servers only.
 async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
@@ -1388,7 +1388,7 @@ async fn heartbeat(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 
 /// `POST /cluster/v1/status-write` (§8.3): a node's write set, checked.
 /// A node's metadata question about a VM of its own
-/// (spec/workload-identity.md §15): the leader signs and records, for a VM
+/// (spec/29-workload-identity.md §15): the leader signs and records, for a VM
 /// placed on the asking node only.
 async fn metadata(
     State(c): Ctx,

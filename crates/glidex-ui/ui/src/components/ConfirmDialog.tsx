@@ -3,7 +3,7 @@ import Modal from "./Modal";
 import { ErrorBanner, errorMessage, inputClass, secondaryButton } from "./ui";
 
 /** A confirmation for an operation `gxctl` guards with `--force` or a typed
- * confirmation (spec/clustering-ui.md §3.4): the consequence, then the
+ * confirmation (spec/16-clustering-ui.md §3.4): the consequence, then the
  * name typed back before the destructive button works. A refusal stays in
  * the dialog with the server's message; a step-up login is asked for by the
  * API client and the request retried. */

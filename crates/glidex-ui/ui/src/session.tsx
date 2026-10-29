@@ -1,4 +1,4 @@
-// The browser session (spec/security.md §5.5, §5.6): who is logged in,
+// The browser session (spec/11-security.md §5.5, §5.6): who is logged in,
 // the selected project, and what the caller may do on the host. Pages
 // read it through useSession(); the server still checks every request.
 // The login, step-up and whoami plumbing is the kit's SessionProvider
@@ -15,7 +15,7 @@ import { Loading } from "./components/Loading";
  * resource type it is checked on, as `appliesTo` in
  * policies/glidex.cedarschema has it: cluster-wide actions take `Cluster`,
  * the host's own networking `Host`, users and teams the host's
- * `Directory`, project creation a `Tenant` (spec/tenancy.md). A check on a
+ * `Directory`, project creation a `Tenant` (spec/19-tenancy.md). A check on a
  * type the schema doesn't
  * list is never allowed, so a wrong entry hides the page from everyone
  * (tests/ui_capabilities.rs in glidex-control-plane compares the two). */
@@ -40,16 +40,16 @@ const HOST_ACTION_RESOURCE = {
   readPolicy: "Cluster",
   writePolicy: "Cluster",
   readAudit: "Cluster",
-  // A hosted directory's own audit (spec/tenancy.md D74).
+  // A hosted directory's own audit (spec/19-tenancy.md D74).
   readDirectoryAudit: "Directory",
   readUsage: "Cluster",
   manageAnyTokens: "Directory",
   createNetwork: "Host",
   readCluster: "Cluster",
-  // Datastores (spec/storage.md §13).
+  // Datastores (spec/24-storage.md §13).
   readDatastore: "Cluster",
   manageDatastore: "Cluster",
-  // Cluster operations (spec/clustering-ui.md §3.1).
+  // Cluster operations (spec/16-clustering-ui.md §3.1).
   listNodes: "Cluster",
   removeNode: "Cluster",
   forgetNode: "Cluster",
@@ -66,11 +66,11 @@ const HOST_ACTION_RESOURCE = {
   snapshotCluster: "Cluster",
   initCluster: "Host",
   leaveCluster: "Host",
-  // Directories this host serves (spec/tenancy.md D59).
+  // Directories this host serves (spec/19-tenancy.md D59).
   listDirectories: "Cluster",
   manageDirectories: "Cluster",
   configureOvn: "Cluster",
-  // Tenants, admissions and login connectors (spec/tenancy.md §14); the
+  // Tenants, admissions and login connectors (spec/19-tenancy.md §14); the
   // per-tenant actions are checked on each tenant by its page.
   listTenants: "Directory",
   createTenant: "Directory",
@@ -89,7 +89,7 @@ const HOST_ACTION_RESOURCE = {
 } as const satisfies Record<string, HostResourceType>;
 
 /** A directory this host keeps for another organization: not its own
- * `local`, nor a trusted directory's replica (spec/tenancy.md D74). */
+ * `local`, nor a trusted directory's replica (spec/19-tenancy.md D74). */
 export function isHostedDirectory(id: string | undefined | null): boolean {
   return !!id && id !== "local" && !id.startsWith("trusted-");
 }
@@ -191,7 +191,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return { projects, host };
   }, []);
 
-  // Another tab switched accounts (spec/tenancy.md D71): start over as
+  // Another tab switched accounts (spec/19-tenancy.md D71): start over as
   // the new one.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -254,7 +254,7 @@ function GlidexSession({ project, setProject, children }: { project: string | nu
   );
 
   // A directory's authorize request sent the browser here to log in first
-  // (spec/tenancy.md D54): signed in, it goes back there.
+  // (spec/19-tenancy.md D54): signed in, it goes back there.
   useEffect(() => {
     const next = new URLSearchParams(window.location.search).get("next");
     if (next && next.startsWith("/d/") && !next.startsWith("//")) window.location.replace(next);

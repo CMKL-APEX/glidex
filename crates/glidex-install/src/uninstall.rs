@@ -48,14 +48,14 @@ pub const BINARIES: &[&str] = &[
     "glidex-vm-shim",
     "glidex-metad",
 ];
-/// The VM unit template and its slice (spec/reconciliation.md §13).
+/// The VM unit template and its slice (spec/12-reconciliation.md §13).
 pub const VM_UNIT_FILES: &[&str] = &["glidex-vm@.service", "glidex-vms.slice"];
 pub const GROUP: &str = "glidex";
 /// The web UI's user; its own group of the same name.
 pub const UI_USER: &str = crate::UI_USER;
 /// The metadata endpoint's user; its own group of the same name.
 pub const METAD_USER: &str = crate::METAD_USER;
-/// Groups of people (spec/security.md §4), removed with glidex.
+/// Groups of people (spec/11-security.md §4), removed with glidex.
 pub const PEOPLE_GROUPS: &[&str] = &[crate::USERS_GROUP, crate::ADMIN_GROUP];
 pub const CONFIG_DIR: &str = "/etc/glidex";
 /// What the installer itself puts in `CONFIG_DIR`. The rest (control-plane.json,
@@ -66,7 +66,7 @@ pub const INSTALLER_CONFIG: &[&str] = &[
     "authd.json",
     "control-plane.json.example",
     "vm-shim.json",
-    // --vfio-devices / --sriov (spec/gpu-vms.md §10).
+    // --vfio-devices / --sriov (spec/27-gpu-vms.md §10).
     "vfio-devices.json",
 ];
 /// The system user the control plane and UI run as, and its home (the
@@ -295,7 +295,7 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
         }
     }
 
-    // Drop-ins of the Tailscale certificate (spec/tailscale-tls.md §4.6):
+    // Drop-ins of the Tailscale certificate (spec/21-tailscale-tls.md §4.6):
     // the UI's, and tailscaled's grant while it is ours (marked); a grant
     // set by hand stays. tailscaled restarts without it below.
     let mut restart_tailscaled = false;
@@ -721,7 +721,7 @@ fn execute(step: &Step) -> Result<()> {
                 .context("nft")?;
             use std::io::Write as _;
             // The metering table goes too: the only place it is deleted
-            // (spec/metering.md D14).
+            // (spec/13-metering.md D14).
             let script =
                 glidex_ovs::nat::nft_script(&[], &[], &[]) + &glidex_ovs::nat_meter::drop_script();
             child
@@ -1025,7 +1025,7 @@ mod tests {
         }
     }
 
-    /// The Tailscale certificate's drop-ins (spec/tailscale-tls.md §4.6):
+    /// The Tailscale certificate's drop-ins (spec/21-tailscale-tls.md §4.6):
     /// ours go (their directory too when they were alone), tailscaled
     /// restarts after the reload; a grant set by hand and an administrator's
     /// own drop-ins stay.

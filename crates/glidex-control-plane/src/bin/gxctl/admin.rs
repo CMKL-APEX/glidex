@@ -1,5 +1,5 @@
-//! Logging in and out, login profiles (spec/security.md §5,
-//! spec/gxctl-auth.md §6). The access commands (`project`, `token`,
+//! Logging in and out, login profiles (spec/11-security.md §5,
+//! spec/17-gxctl-auth.md §6). The access commands (`project`, `token`,
 //! `policy`, …) are in `access.rs`, the network ones in `network.rs`, the
 //! cluster ones in `cluster.rs`.
 
@@ -201,10 +201,10 @@ async fn device_login_named(
     None
 }
 
-// ---- auth: login profiles (spec/gxctl-auth.md §6) ---------------------------
+// ---- auth: login profiles (spec/17-gxctl-auth.md §6) ---------------------------
 
 /// `auth login|logout|status|use|profiles|token|trust|whoami` — the
-/// profile generator and manager of gxctl-auth.md §6. The legacy
+/// profile generator and manager of 17-gxctl-auth.md §6. The legacy
 /// `login`/`logout`/`whoami`/`token` commands above stay as aliases for
 /// what they were; this family adds the file of named profiles.
 pub async fn auth(client: &ApiClient, args: &[&str]) {

@@ -1,4 +1,4 @@
-//! Access tokens (glidex spec/security.md §5.5): `<prefix>` and base62 of
+//! Access tokens (glidex spec/11-security.md §5.5): `<prefix>` and base62 of
 //! 32 random bytes, of which only the SHA-256 is stored; a required
 //! lifetime with a default and a maximum, and a short name. Each
 //! application picks its prefix (glidex: `gxt_`) and stores the record.

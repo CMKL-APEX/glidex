@@ -1,4 +1,4 @@
-//! SCIM 2.0, the protocol (spec/tenancy.md §8.1; RFC 7643, RFC 7644):
+//! SCIM 2.0, the protocol (spec/19-tenancy.md §8.1; RFC 7643, RFC 7644):
 //! errors, filters, the user and group attributes glidex keeps, PATCH as
 //! Entra, Okta and JumpCloud send it, and the resources' JSON. Pure: the
 //! HTTP side and the store's one write per request are in `api/scim.rs`.
@@ -663,7 +663,7 @@ pub fn page(items: Vec<Value>, start: Option<usize>, count: Option<usize>) -> Va
 pub fn service_provider_config(base: &str) -> Value {
     json!({
         "schemas": [SPC_SCHEMA],
-        "documentationUri": "https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md",
+        "documentationUri": "https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md",
         "patch": { "supported": true },
         "bulk": { "supported": false, "maxOperations": 0, "maxPayloadSize": 0 },
         "filter": { "supported": true, "maxResults": MAX_PAGE },

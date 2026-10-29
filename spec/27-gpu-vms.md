@@ -1,9 +1,9 @@
 # GPU VMs
 
 Status: **design; GV1, GV2 and GV3 implemented** (§12 milestones, §14 notes). Builds on
-[host-topology.md](host-topology.md) (HT0–HT5: topology, readiness,
-NUMA policy, device pools, SR-IOV), [hypervisors.md](hypervisors.md)
-(command lines) and [installer.md](installer.md).
+[22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
+NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
+(command lines) and [05-installer.md](05-installer.md).
 
 A GPU VM can be made today, but it takes knowing the host. The user has
 to:
@@ -43,7 +43,7 @@ Out:
 - vGPU and MIG (FM's vGPU mode, `FABRIC_MODE=2`).
 - NVLink across hosts (NVL72, IMEX).
 - Live migration of GPU VMs.
-- GPU utilization metering (host-topology.md §9.4).
+- GPU utilization metering (22-host-topology.md §9.4).
 - Programming DPUs.
 
 ## 2. Today, and the reference host
@@ -60,7 +60,7 @@ A 4-GPU VM on prism1 today takes:
 
 - The user picks 56 vCPUs and 224 GiB by hand.
 - The scheduler picks four free A100s, near each other where it can
-  (host-topology.md §9).
+  (22-host-topology.md §9).
 - Two GPUs per NUMA node means the four land on two nodes. `numa_fit`
   (scheduler.rs) puts all memory and CPUs on the node holding the most
   of them, so two GPUs are remote.
@@ -135,7 +135,7 @@ A 4-GPU VM on prism1 today takes:
 
 ## 4. Placement: `aligned`
 
-1. **Pick the devices.** As host-topology.md §9 does, except:
+1. **Pick the devices.** As 22-host-topology.md §9 does, except:
    - With NVLink, the candidates are FM's free partitions of the
      requested size on the node (§9).
    - Otherwise, prefer the fewest NUMA nodes (2 GPUs → one node on
@@ -147,7 +147,7 @@ A 4-GPU VM on prism1 today takes:
    totals hold.
 4. **Fit per node:** each share must fit node *k*'s free CPUs (dedicated:
    whole cores, minus `reserved_cpus`), memory and hugepages
-   (host-topology.md §8, §8a). If one doesn't, the next candidate set is
+   (22-host-topology.md §8, §8a). If one doesn't, the next candidate set is
    tried. With none left, the refusal names the node short of what.
 5. **Record it.** `placement` gains `numa: [{node, cpus, memory_mib,
    devices}]`, which replaces the single `numa_node` for `aligned`.

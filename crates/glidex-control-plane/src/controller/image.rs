@@ -1,4 +1,4 @@
-//! The image controller (spec/reconciliation.md §10.2): supervises
+//! The image controller (spec/12-reconciliation.md §10.2): supervises
 //! downloads (resuming one whose task is gone), downloads a failed image
 //! again once asked to (`retry_seq`), and notices a missing file. A ready
 //! image whose file disappears is never downloaded again: catalog URLs
@@ -40,7 +40,7 @@ impl VmManager {
             self.prune_departed_copies(&mut img)?;
         }
         if img.deletion_requested_at.is_some() {
-            // Copies in shared datastores go too (storage.md S9), and this
+            // Copies in shared datastores go too (24-storage.md S9), and this
             // node's image volumes in lvm datastores (§11.1): no linked disk
             // uses them any more.
             self.drop_store_copies(&img)?;
@@ -83,7 +83,7 @@ impl VmManager {
         }
         let extracted = matches!(img.source, crate::images::ImageSource::Extracted { .. });
         // A kernel extracted from a VM's disk goes once no VM boots it or
-        // keeps it to go back to (spec/kernel-boot.md K12); not while young,
+        // keeps it to go back to (spec/23-kernel-boot.md K12); not while young,
         // so a new one isn't lost before its VM records it.
         if img.owner.is_some()
             && !matches!(img.status, ImageStatus::Extracting)
@@ -105,7 +105,7 @@ impl VmManager {
             return Ok(Some(Duration::from_secs(1)));
         }
         match img.status.clone() {
-            // A kernel extraction (spec/kernel-boot.md §10), resumed if its
+            // A kernel extraction (spec/23-kernel-boot.md §10), resumed if its
             // task is gone (a restart).
             ImageStatus::Extracting => self.lead_extraction(&mut img),
             ImageStatus::Downloading { .. } | ImageStatus::Verifying => {

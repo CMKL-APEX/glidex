@@ -1,8 +1,8 @@
-// Virtual machines (spec/reconciliation.md §7, §12): the desired state the
+// Virtual machines (spec/12-reconciliation.md §7, §12): the desired state the
 // API writes and what the VM controller last saw. Writes change the
 // desired state and answer at once, or with `wait_secs` once the
 // controller acted (§12.3). The REST twins answer with these messages as
-// JSON (spec/grpc.md §9.1).
+// JSON (spec/18-grpc.md §9.1).
 syntax = "proto3";
 
 package glidex.vm.v1;
@@ -28,7 +28,7 @@ service VmService {
     };
   }
   // Where a VM would go, node by node, the scheduler's choice first
-  // (spec/clustering-ui.md §5.1).
+  // (spec/16-clustering-ui.md §5.1).
   // Authenticated; it then needs `createVm` on the project.
   rpc PreviewPlacement(PreviewPlacementRequest) returns (PreviewPlacementResponse) {
     option (glidex.api.v1.op) = {
@@ -71,7 +71,7 @@ service VmService {
   }
   // Place a stopped VM again, or one whose node was forgotten, on `node`
   // or where the scheduler finds room: its disks must be on shared
-  // datastores (spec/storage.md S10). Nothing moves by itself.
+  // datastores (spec/24-storage.md S10). Nothing moves by itself.
   rpc PlaceVm(PlaceVmRequest) returns (PlaceVmResponse) {
     option (glidex.api.v1.op) = {
       action: "placeVm"
@@ -108,7 +108,7 @@ service VmService {
       rest: "GET /vms/{id}/console"
     };
   }
-  // A single-use ticket for a browser's console (spec/security.md §5.6):
+  // A single-use ticket for a browser's console (spec/11-security.md §5.6):
   // the WebSocket's `?ticket=`, or `Console`'s `open.ticket`.
   rpc CreateConsoleTicket(CreateConsoleTicketRequest) returns (CreateConsoleTicketResponse) {
     option (glidex.api.v1.op) = {
@@ -198,7 +198,7 @@ enum RestartPolicy {
 }
 
 // Keep a VM's memory, CPUs and devices on one host NUMA node
-// (spec/host-topology.md H5).
+// (spec/22-host-topology.md H5).
 enum NumaPolicy {
   NUMA_POLICY_UNSPECIFIED = 0;
   NUMA_POLICY_NONE = 1;
@@ -208,12 +208,12 @@ enum NumaPolicy {
   NUMA_POLICY_STRICT = 3;
   // Exactly the NUMA nodes of its devices, its vCPUs and memory split
   // between them by device count, the same layout in the guest
-  // (spec/gpu-vms.md §4).
+  // (spec/27-gpu-vms.md §4).
   NUMA_POLICY_ALIGNED = 4;
 }
 
 // One host NUMA node's share of an aligned VM: guest NUMA node i is
-// numa[i] (spec/gpu-vms.md §4).
+// numa[i] (spec/27-gpu-vms.md §4).
 message NumaShare {
   uint32 node = 1;
   uint32 vcpus = 2;
@@ -222,7 +222,7 @@ message NumaShare {
   repeated string devices = 4;
 }
 
-// How a VM's vCPUs use host CPUs (spec/host-topology.md H6).
+// How a VM's vCPUs use host CPUs (spec/22-host-topology.md H6).
 enum CpuPolicy {
   CPU_POLICY_UNSPECIFIED = 0;
   // Floating over the host's shareable CPUs, overcommitted.
@@ -275,7 +275,7 @@ message NetworkAttachment {
 
 // A NIC as last seen.
 message Nic {
-  // The network's id (spec/tenancy.md D24).
+  // The network's id (spec/19-tenancy.md D24).
   string network = 1;
   string mac = 2;
   optional string port = 3;
@@ -302,7 +302,7 @@ message Vm {
   // Power-button wait when glidex stops the VM; 0: stop hard.
   uint32 stop_grace_secs = 14 [json_name = "stop_grace_secs"];
   optional bool deleting = 15;
-  // The node it is placed on (spec/clustering.md §9.1), and its name.
+  // The node it is placed on (spec/14-clustering.md §9.1), and its name.
   optional string node = 16;
   optional string node_name = 17 [json_name = "node_name"];
   uint32 vcpu_count = 18 [json_name = "vcpu_count"];
@@ -311,7 +311,7 @@ message Vm {
   repeated string vfio_devices = 21 [json_name = "vfio_devices"];
   optional string credential = 22;
   // The service account whose glidex tokens the VM gets from its metadata
-  // endpoint (spec/workload-identity.md W5, W6): a token id.
+  // endpoint (spec/29-workload-identity.md W5, W6): a token id.
   optional string service_account = 44 [json_name = "service_account"];
   repeated Nic nics = 23;
   // Firmware image id.
@@ -324,7 +324,7 @@ message Vm {
   optional bool hugepages = 28;
   optional string hugepage_size = 29 [json_name = "hugepage_size"];
   // The page size in KiB the scheduler counted guest RAM in: 4 for
-  // ordinary memory, else a hugepage size (spec/host-topology.md §8a.3).
+  // ordinary memory, else a hugepage size (spec/22-host-topology.md §8a.3).
   optional uint64 page_kib = 30 [json_name = "page_kib"];
   NumaPolicy numa_policy = 31 [json_name = "numa_policy"];
   CpuPolicy cpu_policy = 32 [json_name = "cpu_policy"];
@@ -333,10 +333,10 @@ message Vm {
   optional uint32 numa_node = 33 [json_name = "numa_node"];
   repeated uint32 cpus = 34;
   // Devices asked for by pool, and those the scheduler picked
-  // (spec/host-topology.md §9).
+  // (spec/22-host-topology.md §9).
   repeated DeviceRequest devices = 35;
   repeated PoolDevice pool_devices = 36 [json_name = "pool_devices"];
-  // Kernel image id (spec/kernel-boot.md §6).
+  // Kernel image id (spec/23-kernel-boot.md §6).
   optional string kernel = 37;
   BootMode boot = 38;
   // Following the guest's kernels (K11), and the kernel image extracted
@@ -354,7 +354,7 @@ message Vm {
   optional uint32 cpu_weight = 47 [json_name = "cpu_weight"];
 }
 
-// How a VM boots (spec/kernel-boot.md).
+// How a VM boots (spec/23-kernel-boot.md).
 enum BootMode {
   BOOT_MODE_UNSPECIFIED = 0;
   // UEFI firmware runs the bootloader on the root disk.
@@ -364,23 +364,23 @@ enum BootMode {
 }
 
 // `count` devices of pool `pool`, all under one PCIe switch with
-// `same_switch` (spec/host-topology.md §6).
+// `same_switch` (spec/22-host-topology.md §6).
 message DeviceRequest {
   string pool = 1;
   // Default 1.
   uint32 count = 2;
   bool same_switch = 3 [json_name = "same_switch"];
   // Set by the server when `pool` named a tenant pool: that tenant pool,
-  // with `pool` its cluster pool (spec/host-topology.md §9.1a).
+  // with `pool` its cluster pool (spec/22-host-topology.md §9.1a).
   optional string tenant_pool = 4 [json_name = "tenant_pool"];
 }
 
-// N GPUs from a pool (spec/gpu-vms.md §3).
+// N GPUs from a pool (spec/27-gpu-vms.md §3).
 message GpuRequest {
   uint32 count = 1;
   // Default: the project's only GPU pool (class "gpu").
   optional string pool = 2;
-  // One NVLink fabric partition (spec/gpu-vms.md §7); refused until the
+  // One NVLink fabric partition (spec/27-gpu-vms.md §7); refused until the
   // cluster has a fabric.
   optional bool nvlink = 3;
 }
@@ -415,7 +415,7 @@ message CreateVmRequest {
   // A stored guest credential's username.
   optional string credential = 9;
   // A service account (token id) of a project of the VM's tenant, for its
-  // workload identity (spec/workload-identity.md W5): needs
+  // workload identity (spec/29-workload-identity.md W5): needs
   // `useServiceAccount` on that project.
   optional string service_account = 35 [json_name = "service_account"];
   string rootfs_path = 10 [json_name = "rootfs_path"];
@@ -453,11 +453,11 @@ message CreateVmRequest {
   // of a managed kernel or root disk). Not with `cloud_init_path`.
   optional bool generate_seed = 32 [json_name = "generate_seed"];
   // Boot the kernel the guest installed: extract it from the root disk
-  // when that changed (spec/kernel-boot.md K11). Needs `kernel` and a
+  // when that changed (spec/23-kernel-boot.md K11). Needs `kernel` and a
   // managed root disk.
   optional bool kernel_from_disk = 33 [json_name = "kernel_from_disk"];
   // N GPUs: expands to a pool request, NUMA_POLICY_ALIGNED and the pool's
-  // per-device sizing; fields given here win (spec/gpu-vms.md §3).
+  // per-device sizing; fields given here win (spec/27-gpu-vms.md §3).
   GpuRequest gpus = 34;
   optional uint32 min_vcpus = 36 [json_name = "min_vcpus"];
   optional uint32 max_vcpus = 37 [json_name = "max_vcpus"];
@@ -546,7 +546,7 @@ message VmChange {
   // Absent with `credential` in the mask: the VM loses its credential.
   optional string credential = 8;
   // Absent with `service_account` in the mask: the VM loses it. Applies to
-  // the next token, no restart (spec/workload-identity.md W5).
+  // the next token, no restart (spec/29-workload-identity.md W5).
   optional string service_account = 19 [json_name = "service_account"];
   bool hugepages = 9;
   repeated string vfio_devices = 10 [json_name = "vfio_devices"];

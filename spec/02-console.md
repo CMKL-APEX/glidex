@@ -6,10 +6,10 @@
 > `VmService.Console` (gxctl and other API clients) and
 > `/vms/{id}/console/log` (`GetConsoleLog`), all `openConsole`
 > (`vm.console`). Browser sessions also need a single-use console ticket
-> ([security.md §5.6](security.md)).
+> ([11-security.md §5.6](11-security.md)).
 
 Each running VM's serial console is owned by its `glidex-vm-shim`
-([reconciliation.md §8](reconciliation.md#8-instances)), not by the
+([12-reconciliation.md §8](12-reconciliation.md#8-instances)), not by the
 control plane, so it keeps being captured while the control plane is
 down or restarting. It is:
 
@@ -44,8 +44,8 @@ and keeps the master. The guest device on the other end:
 The device is `ConsoleDevice::of(config)` (`hypervisor/mod.rs`): the
 serial port for firmware boots and, by default, for kernel boots; the
 virtio console for a kernel boot whose last `console=` in
-`kernel_args` is `hvc…` ([kernel-boot.md §5.2](kernel-boot.md#52-console-k5);
-why serial for firmware, in [hypervisors.md](hypervisors.md#firmware-boot)).
+`kernel_args` is `hvc…` ([23-kernel-boot.md §5.2](23-kernel-boot.md#52-console-k5);
+why serial for firmware, in [04-hypervisors.md](04-hypervisors.md#firmware-boot)).
 There is never a second console device: the kernel arguments pick the
 one there is.
 
@@ -124,7 +124,7 @@ what the kernel printed before dying.
 ### Shutdown on `release`
 
 The VM controller sends `release` over `shim.sock` once it has recorded
-the exit ([reconciliation.md §9.1](reconciliation.md#91-reconcile) step
+the exit ([12-reconciliation.md §9.1](12-reconciliation.md#91-reconcile) step
 3); a SIGTERM to the shim (unit stop) releases by itself once the
 hypervisor is gone. `release` stops the proxy — which first drains what
 is still buffered on the master into the log, so the last output before
@@ -136,7 +136,7 @@ code that reads it as text (launch errors, tests) decodes it lossily.
 
 ## Log files
 
-[reconciliation.md §8.6](reconciliation.md#86-console-log-d14) has the
+[12-reconciliation.md §8.6](12-reconciliation.md#86-console-log-d14) has the
 rules; in short:
 
 - Path: `<run dir>/vms/<id>/console.log`, previous generation
@@ -196,18 +196,18 @@ Only the control plane connects to the console Unix socket, from
   one; for a remote one an upgraded connection to
   `/cluster/v1/vms/{id}/console` on the VM's node, whose
   `cluster/server.rs::relay_console` connects to its own console socket
-  and copies bytes both ways ([clustering.md](clustering.md)).
+  and copies bytes both ways ([14-clustering.md](14-clustering.md)).
 
 Over that byte stream:
 
 - **Browsers**: the WebSocket bridge, `api/vms.rs::console_ws` and
   `bridge_stream` (below).
 - **gxctl and other API clients**: the bidi RPC `VmService.Console`
-  (`api/rpc/vm.rs`; [grpc.md](grpc.md)). The first request must be
+  (`api/rpc/vm.rs`; [18-grpc.md](18-grpc.md)). The first request must be
   `{open: {id, ticket?}}` within 30 s; later `input` messages are
   written to the console and output comes back as `output` messages.
   `gxctl connect` uses it (stdin in raw mode, `Ctrl+]` to detach;
-  [cli.md](cli.md)). gRPC-Web can't stream both ways, so browsers stay
+  [01-cli.md](01-cli.md)). gRPC-Web can't stream both ways, so browsers stay
   on the WebSocket.
 - **The log**: `GET /vms/{id}/console/log` (`GetConsoleLog`) reads
   `console.log` (or `console.log.1` with `previous`) itself, not the
@@ -233,7 +233,7 @@ Over that byte stream:
 glidex-ui doesn't look inside the WebSocket: `/api/*` upgrades are
 passed to the control plane over `ui.sock` (or TCP) and the two
 upgraded connections are spliced with `copy_bidirectional`
-([web-ui.md](web-ui.md)).
+([07-web-ui.md](07-web-ui.md)).
 
 On the UI side, `crates/glidex-ui/ui/src/pages/VmConsole.tsx` with
 `consoleTerminal.ts`:

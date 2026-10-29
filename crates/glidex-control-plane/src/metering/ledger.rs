@@ -1,4 +1,4 @@
-//! The usage ledger (spec/metering.md §6, §7): cursors, open-hour
+//! The usage ledger (spec/13-metering.md §6, §7): cursors, open-hour
 //! accumulators and immutable hourly rows.
 //!
 //! A sampling round collects observations into a [`Round`] in memory and
@@ -159,7 +159,7 @@ pub struct Subject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
     /// The node it was on (a VM's placement, a disk's or a node network's
-    /// node), for usage by node (spec/clustering-ui.md §5.4). Not part of
+    /// node), for usage by node (spec/16-clustering-ui.md §5.4). Not part of
     /// its key: a subject doesn't move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
@@ -207,7 +207,7 @@ pub enum Flag {
     SourceProc,
     /// The conntrack collector of a router's gateway was down while
     /// connections could open and close: external traffic may be short
-    /// (spec/clustering.md §13.3).
+    /// (spec/14-clustering.md §13.3).
     ExtGap,
     /// A provider network has per-VM meters but no network total: its
     /// `localnet` port is shared by every network on the physnet (§13.2).
@@ -1455,7 +1455,7 @@ impl Ledger {
     }
 }
 
-/// What a node ships to the leader (spec/clustering.md §13.1): its closed
+/// What a node ships to the leader (spec/14-clustering.md §13.1): its closed
 /// hourly rows, its 5-minute slot rows, and how far it has closed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Export {

@@ -1,5 +1,5 @@
 //! `glidex.system.v1.SystemService`: what a client asks before and right
-//! after logging in (spec/grpc.md G0).
+//! after logging in (spec/18-grpc.md G0).
 
 use super::{Call, ServiceResult};
 use crate::api::{App, auth_error};
@@ -20,7 +20,7 @@ pub fn api_fingerprint(app: &App) -> Option<String> {
     }
 }
 
-/// `GetServerInfo` / `GET /auth/server-info` (spec/gxctl-auth.md §7.1):
+/// `GetServerInfo` / `GET /auth/server-info` (spec/17-gxctl-auth.md §7.1):
 /// what client login profiles bind to. Public.
 pub fn server_info(app: &App) -> GetServerInfoResponse {
     let fingerprint = api_fingerprint(app);

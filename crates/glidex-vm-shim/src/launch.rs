@@ -1,5 +1,5 @@
 //! `launch.json`: everything the shim needs, written by the control plane
-//! before it starts the shim (spec/reconciliation.md §8.1), and the
+//! before it starts the shim (spec/12-reconciliation.md §8.1), and the
 //! hypervisor allowlist (§8.3).
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub enum HypervisorKind {
     Qemu,
 }
 
-/// QEMU's "retry once without `-cpu host`" (hypervisors.md): run `argv`
+/// QEMU's "retry once without `-cpu host`" (04-hypervisors.md): run `argv`
 /// instead if the first attempt exits before its socket answers and its
 /// output contains one of `when_output_matches` (case-insensitive).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +47,7 @@ pub struct LaunchFile {
     #[serde(default)]
     pub spec: serde_json::Value,
     /// Poll the hypervisor's block counters this often for the exit
-    /// snapshot (spec/metering.md D12); 0 = never.
+    /// snapshot (spec/13-metering.md D12); 0 = never.
     #[serde(default)]
     pub meter_poll_secs: u64,
     /// Host CPUs the hypervisor and all its threads may run on (NUMA
@@ -61,7 +61,7 @@ pub struct LaunchFile {
     /// Cloud Hypervisor takes `--cpus affinity=` instead. Empty: none.
     #[serde(default)]
     pub vcpu_pins: Vec<u32>,
-    /// A one-shot run, not a VM (spec/kernel-boot.md §10.2): `Running` as
+    /// A one-shot run, not a VM (spec/23-kernel-boot.md §10.2): `Running` as
     /// soon as the hypervisor starts, without waiting for its API socket,
     /// so an exit is recorded as usual (status 0: `clean_exit`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -69,10 +69,10 @@ pub struct LaunchFile {
     /// Lock files of the VM's disks on shared datastores: the shim holds a
     /// write lock on each for as long as it runs, taken before the
     /// hypervisor starts, so no other node's hypervisor opens those disks
-    /// meanwhile (spec/storage.md S16). Empty: none.
+    /// meanwhile (spec/24-storage.md S16). Empty: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_locks: Vec<String>,
-    /// Cgroup v2 `cpu.weight` (1..=10000, default 100); spec/pylon.md §5.
+    /// Cgroup v2 `cpu.weight` (1..=10000, default 100); spec/30-pylon.md §5.
     #[serde(default = "default_cpu_weight")]
     pub cpu_weight: u32,
 }

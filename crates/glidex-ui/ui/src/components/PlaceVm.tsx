@@ -5,10 +5,10 @@ import { useCan } from "../session";
 import { useNodes } from "../nodes";
 import Modal from "./Modal";
 
-/** Whether the VM's node was forgotten (spec/clustering.md §5.6). */
+/** Whether the VM's node was forgotten (spec/14-clustering.md §5.6). */
 const isLost = (vm: VmResponse) => (vm.conditions ?? []).some((c) => c.kind === "Ready" && c.reason === "Lost");
 
-/** "Place on another node" (spec/storage.md S10): a stopped VM, or a lost
+/** "Place on another node" (spec/24-storage.md S10): a stopped VM, or a lost
  * one, goes to a chosen node or where the scheduler finds room. Shown to
  * cluster operators (`placeVm`). */
 export default function PlaceVm({ vm, stopped, onDone }: { vm: VmResponse; stopped: boolean; onDone: () => void }) {

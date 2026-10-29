@@ -238,7 +238,7 @@ pull request first. In specs:
   milestones named (`S5`, `T6`), so code and commits can cite them.
 
 Code cites the spec it implements: a module's `//!` header names the
-spec section (`//! The scheduler (spec/clustering.md §9.1)`), and a
+spec section (`//! The scheduler (spec/14-clustering.md §9.1)`), and a
 comment that depends on a decision names it. Specs are never moved or
 renamed, because code cites them by path.
 
@@ -283,7 +283,7 @@ renamed, because code cites them by path.
   ```
 
 The full rules are in
-[`spec/grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md)
+[`spec/18-grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md)
 §4.
 
 ### Docs voice
@@ -310,7 +310,7 @@ same places.
 Describe the operation in the spec that owns its area: what it does,
 who may call it, what state it writes and which controller acts on it.
 `MoveDisk` is in
-[`spec/storage.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md)
+[`spec/24-storage.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md)
 §8.3.
 
 ### 2. Proto
@@ -319,7 +319,7 @@ Add the RPC and its messages to the area's proto, here
 `crates/glidex-api/proto/glidex/storage/v1/storage.proto`:
 
 ```protobuf
-// Move the disk to another datastore, offline (spec/storage.md §8.3):
+// Move the disk to another datastore, offline (spec/24-storage.md §8.3):
 // the node that has it copies it there, then removes the old file.
 rpc MoveDisk(MoveDiskRequest) returns (MoveDiskResponse) {
   option (glidex.api.v1.op) = {
@@ -543,7 +543,7 @@ mdbook build docs/internal        # the specs -> target/docs/internal
    `feat/…`, `fix/…`, `spec/…`, `docs/…`, `refactor/…`.
 2. Keep each commit one change, with a short summary line and a body
    that says what changed and why. Reference spec sections and
-   decisions (`spec/storage.md §8.3`, `D71`).
+   decisions (`spec/24-storage.md §8.3`, `D71`).
 3. A design change goes in a `spec/…` pull request, reviewed before or
    with the code that implements it. Say so when a pull request is
    stacked on another.

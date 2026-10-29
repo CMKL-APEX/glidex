@@ -268,7 +268,7 @@ fn binaries_off_the_allowlist_never_run() {
 }
 
 /// A disk another holder has locked keeps the hypervisor from starting at
-/// all (spec/storage.md S16); a free one is held for the shim's life.
+/// all (spec/24-storage.md S16); a free one is held for the shim's life.
 #[test]
 fn a_locked_disk_stops_the_launch() {
     let Some(ch) = cloud_hypervisor() else { return };
@@ -542,7 +542,7 @@ fn an_unbindable_affinity_fails_the_spawn() {
     assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
-/// A one-shot job (spec/kernel-boot.md §10.2): no API socket to wait for;
+/// A one-shot job (spec/23-kernel-boot.md §10.2): no API socket to wait for;
 /// its exit is recorded as a VM's would be, and its output is in the log.
 #[test]
 fn a_job_records_its_exit() {

@@ -1,4 +1,4 @@
-//! Cluster IPAM (spec/clustering.md §11.4, D12): subnets and per-NIC address
+//! Cluster IPAM (spec/14-clustering.md §11.4, D12): subnets and per-NIC address
 //! reservations for OVN networks, in the cluster store. OVN's own dynamic
 //! addressing isn't used: the control plane is the one source of truth, so
 //! an address survives restarts and, later, live migration, and port

@@ -1,4 +1,4 @@
-//! Devices given to VMs from boot (spec/gpu-vms.md §10): SR-IOV VF counts
+//! Devices given to VMs from boot (spec/27-gpu-vms.md §10): SR-IOV VF counts
 //! and devices bound to `vfio-pci` before glidex-netd, the control plane
 //! and other hypervisors start. The installer writes the settings
 //! (`--vfio-devices`, `--sriov`); `glidex-netd --boot-devices` applies them.

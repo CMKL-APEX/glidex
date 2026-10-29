@@ -77,7 +77,7 @@ function Shell() {
             <Route path="/account" element={<Account />} />
             <Route path="/device" element={<Device />} />
             <Route path="/directories" element={<Directories />} />
-            {/* A directory's login page, once signed in (spec/tenancy.md D61). */}
+            {/* A directory's login page, once signed in (spec/19-tenancy.md D61). */}
             <Route path="/login/:directory" element={<Navigate to="/" replace />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

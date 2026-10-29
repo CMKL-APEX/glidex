@@ -1,9 +1,9 @@
-//! Networks, their grants and shares (spec/networking.md §11,
-//! spec/security.md §6.2) on the generated `glidex.network.v1` clients,
-//! over the Connect protocol (spec/grpc.md §9.1): `networks`,
+//! Networks, their grants and shares (spec/09-networking.md §11,
+//! spec/11-security.md §6.2) on the generated `glidex.network.v1` clients,
+//! over the Connect protocol (spec/18-grpc.md §9.1): `networks`,
 //! `network-add`, `network-rm` and `network …`. Networks are keyed by id;
 //! every argument naming one takes an id or a name, which the server
-//! resolves (spec/tenancy.md D24). Host networking (`ovs`, `bridges`,
+//! resolves (spec/19-tenancy.md D24). Host networking (`ovs`, `bridges`,
 //! uplinks, PCI devices) is in `host.rs`.
 
 use crate::admin::positional;
@@ -448,7 +448,7 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             }
         }
         // A node NAT network's guests and this host's API
-        // (spec/workload-identity.md §15).
+        // (spec/29-workload-identity.md §15).
         "host-api" => {
             let (Some(net), Some(onoff)) = (args.get(1), args.get(2)) else {
                 return usage(u);

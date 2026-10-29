@@ -26,23 +26,23 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Spec | Built | Next | Status in the spec |
 |---|---|---|---|---|
-| Tenancy and directories | [tenancy.md](tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
-| Workload identity | [workload-identity.md](workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
-| Managed applications | [apps.md](apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
-| Datastores | [storage.md](storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
-| GPU VMs | [gpu-vms.md](gpu-vms.md) | GV1–GV3 | GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
-| Host topology | [host-topology.md](host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
-| Clustering | [clustering.md](clustering.md), [clustering-ui.md](clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
-| Networking | [networking.md](networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
-| Metering | [metering.md](metering.md) | M0–M4 (M4 not yet run on a host) | M4 host acceptance; §15.8 "After M4" | §15 Milestones |
-| Reconciliation | [reconciliation.md](reconciliation.md) | M1–M4 | M4 on an installed KVM host | §18 Milestones |
-| Kernel boot | [kernel-boot.md](kernel-boot.md) | K0–K4; extraction on a node of the kernel's architecture (#153) | §13 changes to other specs | §12 Milestones |
-| Security | [security.md](security.md) | S0–S6 | On a real host: nftables rules, systemd sandboxing with VFIO, hugepages and taps, a real PAM stack, OIDC against the production IdP | §17 Implementation status |
-| RPC API | [grpc.md](grpc.md) | G0–G5 | — | §15 Implementation status |
-| gxctl auth | [gxctl-auth.md](gxctl-auth.md) | G1–G5 | — | §12 Implementation plan |
-| Passkeys | [passkeys.md](passkeys.md) | All | A real-device check | §7 Implementation status |
-| Host page | [host-page.md](host-page.md) | W1–W6 (#127–#129) | — | §7 Tasks |
-| Tailscale certificates | [tailscale-tls.md](tailscale-tls.md) | TS0–TS2; certificates shared by the node (#171) | TS3 waits on tailscale-rs | §10 Milestones |
+| Tenancy and directories | [19-tenancy.md](19-tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
+| Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
+| Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
+| Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
+| Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
+| Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
+| Networking | [09-networking.md](09-networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
+| Metering | [13-metering.md](13-metering.md) | M0–M4 (M4 not yet run on a host) | M4 host acceptance; §15.8 "After M4" | §15 Milestones |
+| Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4 | M4 on an installed KVM host | §18 Milestones |
+| Kernel boot | [23-kernel-boot.md](23-kernel-boot.md) | K0–K4; extraction on a node of the kernel's architecture (#153) | §13 changes to other specs | §12 Milestones |
+| Security | [11-security.md](11-security.md) | S0–S6 | On a real host: nftables rules, systemd sandboxing with VFIO, hugepages and taps, a real PAM stack, OIDC against the production IdP | §17 Implementation status |
+| RPC API | [18-grpc.md](18-grpc.md) | G0–G5 | — | §15 Implementation status |
+| gxctl auth | [17-gxctl-auth.md](17-gxctl-auth.md) | G1–G5 | — | §12 Implementation plan |
+| Passkeys | [25-passkeys.md](25-passkeys.md) | All | A real-device check | §7 Implementation status |
+| Host page | [28-host-page.md](28-host-page.md) | W1–W6 (#127–#129) | — | §7 Tasks |
+| Tailscale certificates | [21-tailscale-tls.md](21-tailscale-tls.md) | TS0–TS2; certificates shared by the node (#171) | TS3 waits on tailscale-rs | §10 Milestones |
 
 Shared code split out recently: `glidex-auth` (#163) and
 `@glidex/ui-kit` (#164), which hyperstor's services reuse, and
@@ -51,7 +51,7 @@ Shared code split out recently: `glidex-auth` (#163) and
 ## Checks waiting on a person
 
 Things only a real account, device or host can show, not run yet (see
-[idp-checks.md](idp-checks.md)):
+[20-idp-checks.md](20-idp-checks.md)):
 
 - Google Workspace directory sync (T4): deferred by the operator.
 - GitHub Actions workload federation (T5): needs a test repository and a

@@ -1,4 +1,4 @@
-//! Trust between organizations (spec/tenancy.md §12.1, D63–D66): two
+//! Trust between organizations (spec/19-tenancy.md §12.1, D63–D66): two
 //! control planes in one process, each serving its API over HTTPS on a
 //! port of its own — one the cluster, the other the tenant's directory —
 //! redeeming an offer, refusing what they should, and ending trust.

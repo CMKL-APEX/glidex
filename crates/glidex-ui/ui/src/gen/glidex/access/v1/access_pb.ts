@@ -1,7 +1,7 @@
-// Who may do what (spec/security.md §6, §7, §10, §13): projects and their
+// Who may do what (spec/11-security.md §6, §7, §10, §13): projects and their
 // role bindings, users and their identities, teams, API tokens, host role
 // bindings, site policies, the audit log, and capability checks. The REST
-// twins answer with these messages as JSON (spec/grpc.md §9.1). Logging in
+// twins answer with these messages as JSON (spec/18-grpc.md §9.1). Logging in
 // and out (cookies) stays HTTP-only; `GET /auth/whoami` is
 // `glidex.system.v1.SystemService.WhoAmI`.
 
@@ -990,7 +990,7 @@ export type User = Message<"glidex.access.v1.User"> & {
 
   /**
    * The connector that provisions it: its display name, email, external
-   * id and disabled state are the connector's (spec/tenancy.md §8.3).
+   * id and disabled state are the connector's (spec/19-tenancy.md §8.3).
    * Output only.
    *
    * @generated from field: optional string managed_by = 7 [json_name = "managed_by"];
@@ -1059,7 +1059,7 @@ export type UserJson = {
 
   /**
    * The connector that provisions it: its display name, email, external
-   * id and disabled state are the connector's (spec/tenancy.md §8.3).
+   * id and disabled state are the connector's (spec/19-tenancy.md §8.3).
    * Output only.
    *
    * @generated from field: optional string managed_by = 7 [json_name = "managed_by"];
@@ -1527,7 +1527,7 @@ export const DeleteUserResponseSchema: GenMessage<DeleteUserResponse, {jsonType:
   messageDesc(file_glidex_access_v1_access, 31);
 
 /**
- * A passkey (spec/passkeys.md P1); never its key.
+ * A passkey (spec/25-passkeys.md P1); never its key.
  *
  * @generated from message glidex.access.v1.Passkey
  */
@@ -1570,7 +1570,7 @@ export type Passkey = Message<"glidex.access.v1.Passkey"> & {
 };
 
 /**
- * A passkey (spec/passkeys.md P1); never its key.
+ * A passkey (spec/25-passkeys.md P1); never its key.
  *
  * @generated from message glidex.access.v1.Passkey
  */
@@ -2611,7 +2611,7 @@ export type Token = Message<"glidex.access.v1.Token"> & {
   roles: Binding[];
 
   /**
-   * The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+   * The clusters it is good on (spec/19-tenancy.md §7.4): cluster ids, or
    * "all" (every cluster its tenant uses); empty: only the one it was
    * made on.
    *
@@ -2700,7 +2700,7 @@ export type TokenJson = {
   roles?: BindingJson[];
 
   /**
-   * The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+   * The clusters it is good on (spec/19-tenancy.md §7.4): cluster ids, or
    * "all" (every cluster its tenant uses); empty: only the one it was
    * made on.
    *
@@ -2849,7 +2849,7 @@ export type CreateTokenRequest = Message<"glidex.access.v1.CreateTokenRequest"> 
   client?: string | undefined;
 
   /**
-   * The clusters it is good on (spec/tenancy.md §7.4): this cluster's id
+   * The clusters it is good on (spec/19-tenancy.md §7.4): this cluster's id
    * and those of other organizations its tenants use, or "all". Default:
    * only this one. A token on several can be replayed among them by a
    * compromised one.
@@ -2905,7 +2905,7 @@ export type CreateTokenRequestJson = {
   client?: string;
 
   /**
-   * The clusters it is good on (spec/tenancy.md §7.4): this cluster's id
+   * The clusters it is good on (spec/19-tenancy.md §7.4): this cluster's id
    * and those of other organizations its tenants use, or "all". Default:
    * only this one. A token on several can be replayed among them by a
    * compromised one.
@@ -3088,7 +3088,7 @@ export type AddSystemBindingRequest = Message<"glidex.access.v1.AddSystemBinding
   /**
    * Grant it on this node's host only (id or name), not cluster-wide.
    * `role.auditor`, `role.net-admin` and `grant.host-paths` can be; the
-   * others are cluster-wide (spec/clustering.md §12.2).
+   * others are cluster-wide (spec/14-clustering.md §12.2).
    *
    * @generated from field: optional string node = 3;
    */
@@ -3114,7 +3114,7 @@ export type AddSystemBindingRequestJson = {
   /**
    * Grant it on this node's host only (id or name), not cluster-wide.
    * `role.auditor`, `role.net-admin` and `grant.host-paths` can be; the
-   * others are cluster-wide (spec/clustering.md §12.2).
+   * others are cluster-wide (spec/14-clustering.md §12.2).
    *
    * @generated from field: optional string node = 3;
    */
@@ -4375,7 +4375,7 @@ export type ReadAuditRequest = Message<"glidex.access.v1.ReadAuditRequest"> & {
   limit?: number | undefined;
 
   /**
-   * A hosted directory's own audit (spec/tenancy.md D74), for its
+   * A hosted directory's own audit (spec/19-tenancy.md D74), for its
    * directory auditors and administrators. Left out by someone of a
    * hosted directory (without a project), theirs.
    *
@@ -4415,7 +4415,7 @@ export type ReadAuditRequestJson = {
   limit?: number;
 
   /**
-   * A hosted directory's own audit (spec/tenancy.md D74), for its
+   * A hosted directory's own audit (spec/19-tenancy.md D74), for its
    * directory auditors and administrators. Left out by someone of a
    * hosted directory (without a project), theirs.
    *
@@ -4919,7 +4919,7 @@ export const UserService: GenService<{
     output: typeof UpdateUserResponseSchema;
   },
   /**
-   * Deletes the user and what is its alone (spec/tenancy.md §6.3): its
+   * Deletes the user and what is its alone (spec/19-tenancy.md §6.3): its
    * identities, sessions, personal tokens, team memberships, role links
    * and tenant memberships. Never oneself, nor the last holder of
    * system-admin or directory-admin.
@@ -4940,7 +4940,7 @@ export const UserService: GenService<{
     output: typeof LinkIdentityResponseSchema;
   },
   /**
-   * A user's passkeys (spec/passkeys.md): one's own with
+   * A user's passkeys (spec/25-passkeys.md): one's own with
    * `manageOwnSignIns`, anyone's with `listUsers`. Never their keys.
    *
    * @generated from rpc glidex.access.v1.UserService.ListPasskeys
@@ -5110,7 +5110,7 @@ export const SystemBindingService: GenService<{
     output: typeof ListSystemBindingsResponseSchema;
   },
   /**
-   * Host roles go to members of the operator tenant only (spec/tenancy.md
+   * Host roles go to members of the operator tenant only (spec/19-tenancy.md
    * D4): `422 not_operator_member` otherwise. With `node`, the role covers
    * that host only.
    *
@@ -5232,7 +5232,7 @@ export const AuditService: GenService<{
  */
 export const AuthzService: GenService<{
   /**
-   * One answer per check (spec/security.md §7.7).
+   * One answer per check (spec/11-security.md §7.7).
    *
    * @generated from rpc glidex.access.v1.AuthzService.Check
    */
@@ -5242,7 +5242,7 @@ export const AuthzService: GenService<{
     output: typeof CheckResponseSchema;
   },
   /**
-   * The actions allowed on each resource (spec/clustering-ui.md §3.5).
+   * The actions allowed on each resource (spec/16-clustering-ui.md §3.5).
    *
    * @generated from rpc glidex.access.v1.AuthzService.Allowed
    */

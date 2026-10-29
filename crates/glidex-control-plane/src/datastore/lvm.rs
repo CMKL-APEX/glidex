@@ -1,4 +1,4 @@
-//! The `lvm` driver (spec/storage.md §11.1, S19): each disk is a raw
+//! The `lvm` driver (spec/24-storage.md §11.1, S19): each disk is a raw
 //! LVM-thin volume, `gx-d-<disk-id>`, made, activated and removed by
 //! glidex-stord. A linked disk is a thin snapshot of the node's image
 //! volume `gx-i-<image-id>`, made once from the node's verified image file.
@@ -365,7 +365,7 @@ pub fn probe(vg: &str, pool: &str, socket: &Path, now: u64) -> super::record::No
     row
 }
 
-/// Let VM `vm_id`'s unit open exactly `devices` (spec/storage.md S18).
+/// Let VM `vm_id`'s unit open exactly `devices` (spec/24-storage.md S18).
 /// Without block volumes on a host with no glidex-stord there is nothing
 /// to undo, so nothing is asked. Blocks.
 pub fn allow_devices(vm_id: &str, devices: Vec<String>) -> Result<(), ImageError> {

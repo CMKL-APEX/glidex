@@ -19,14 +19,14 @@ use std::time::{Duration, Instant};
 pub enum Program {
     OvsVsctl,
     OvsAppctl,
-    /// OpenFlow rules for the metadata endpoint (spec/workload-identity.md §7.1).
+    /// OpenFlow rules for the metadata endpoint (spec/29-workload-identity.md §7.1).
     OvsOfctl,
     OvsVswitchd,
     OvnNbctl,
     OvnSbctl,
     Ip,
     Nft,
-    /// Conntrack accounting of router SNAT zones (spec/clustering.md §13.3).
+    /// Conntrack accounting of router SNAT zones (spec/14-clustering.md §13.3).
     Conntrack,
     Iptables,
     Sysctl,
@@ -191,7 +191,7 @@ pub trait Exec: Send + Sync {
         None
     }
     /// Give a file to group `group` with `mode` (a VFIO group device to the
-    /// VMs' group, spec/host-topology.md §5.3).
+    /// VMs' group, spec/22-host-topology.md §5.3).
     fn set_group_mode(&self, _path: &Path, _group: &str, _mode: u32) -> Result<(), OvsError> {
         Ok(())
     }

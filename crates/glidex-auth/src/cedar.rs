@@ -1,4 +1,4 @@
-//! A Cedar policy engine (glidex spec/security.md §7).
+//! A Cedar policy engine (glidex spec/11-security.md §7).
 //!
 //! The policy set is: the application's shipped policies and role
 //! templates, role links (template-linked policies, one per role
@@ -70,7 +70,7 @@ pub struct AuthContext {
     pub method: String,
     pub transport: String,
     pub age_secs: i64,
-    /// A multi-factor login (glidex spec/tenancy.md §6), for site policies.
+    /// A multi-factor login (glidex spec/19-tenancy.md §6), for site policies.
     pub mfa: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<std::net::IpAddr>,

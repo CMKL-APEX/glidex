@@ -3,12 +3,12 @@
 > Status: **implemented through M3** (2026-10-03); §18 notes where the
 > build differs from this design. Host facts the design depends on were
 > verified on the pinned versions (§4). It changes the
-> contracts in [architecture.md](architecture.md),
-> [data-model.md](data-model.md), [hypervisors.md](hypervisors.md),
-> [console.md](console.md), [rest-api.md](rest-api.md),
-> [images.md](images.md), [networking.md](networking.md) §7.7 and §11,
-> [installer.md](installer.md), [security.md](security.md) §7 and §9,
-> [cli.md](cli.md) and [web-ui.md](web-ui.md). §17 lists the edit each
+> contracts in [00-architecture.md](00-architecture.md),
+> [03-data-model.md](03-data-model.md), [04-hypervisors.md](04-hypervisors.md),
+> [02-console.md](02-console.md), [06-rest-api.md](06-rest-api.md),
+> [10-images.md](10-images.md), [09-networking.md](09-networking.md) §7.7 and §11,
+> [05-installer.md](05-installer.md), [11-security.md](11-security.md) §7 and §9,
+> [01-cli.md](01-cli.md) and [07-web-ui.md](07-web-ui.md). §17 lists the edit each
 > needs; they are made in the same PR as the milestone that changes the
 > behaviour (§18), not ahead of it.
 
@@ -63,7 +63,7 @@ Non-goals:
   control plane (ReDB's exclusive open already enforces this).
 - Live migration, multi-host scheduling (spec/README.md non-goals).
 - Making netd a client of this loop. netd stays a separate root daemon
-  that reconciles host networking (networking.md §7.7); the control
+  that reconciles host networking (09-networking.md §7.7); the control
   plane reconciles *netd's records*.
 - Live attach of disks and NICs to a running guest (future work; today's
   "stopped VM only" rule becomes "next launch", §7.3).
@@ -75,7 +75,7 @@ Non-goals:
 | # | Decision | Why |
 |---|---|---|
 | D1 | Each running VM is supervised by its own **`glidex-vm-shim`**, which is the hypervisor's parent, owns the PTY master, the console socket and log, and records the hypervisor's exit. | Whatever holds the PTY master and reaps the hypervisor must not be the control plane, or the guest dies (or loses console output) with it. Same split as containerd-shim / conmon. |
-| D2 | Under systemd the shim runs as an instance of a template unit **`glidex-vm@<vm-id>.service`**, started by the control plane over systemd's D-Bus API (`zbus`) and authorized by a **polkit** rule. Without systemd (dev runs, tests) the control plane double-forks the shim into its own session. | Only a separate unit escapes the control plane's cgroup. `KillMode=process` on the control plane would leave VMs in a cgroup systemd believes is stopped, without accounting. A unit per VM gives per-VM accounting, journal and shutdown ordering. Polkit, not netd, so netd stays networking-only (security.md §8). D-Bus, not `systemctl`, for typed errors and unit signals. |
+| D2 | Under systemd the shim runs as an instance of a template unit **`glidex-vm@<vm-id>.service`**, started by the control plane over systemd's D-Bus API (`zbus`) and authorized by a **polkit** rule. Without systemd (dev runs, tests) the control plane double-forks the shim into its own session. | Only a separate unit escapes the control plane's cgroup. `KillMode=process` on the control plane would leave VMs in a cgroup systemd believes is stopped, without accounting. A unit per VM gives per-VM accounting, journal and shutdown ordering. Polkit, not netd, so netd stays networking-only (11-security.md §8). D-Bus, not `systemctl`, for typed errors and unit signals. |
 | D3 | Every persisted resource is `{meta, spec, status}`. The API writes `spec` (and `meta`); only controllers write `status`. | "The user wants it running" survives "it isn't running right now". |
 | D4 | Controllers are level-triggered: a per-object work queue fed by API writes, host events and a periodic full resync. One reconcile per object at a time; different objects in parallel. | Replaces the global write lock held across hypervisor I/O; missed events are harmless. |
 | D5 | **Admission stays synchronous; actuation becomes asynchronous.** Validation, authorization, quotas and exclusivity claims are checked when the spec is written and still fail the request. Host actions happen in controllers; their failures appear in `status`. | Data-protecting invariants (exclusive disk use, quotas) must hold at commit time, not eventually. Host actions can be retried. |
@@ -90,7 +90,7 @@ Non-goals:
 | D14 | Console logs are **appended** across instances with separator lines and **rotated** once (`console.log.1`) at 16 MiB. | The output before a crash survives the crash-restart. |
 | D15 | The shim owns the whole stop (resume if paused, power button, grace, kill). Host shutdown uses its own grace (default 60 s); the VM's `stop_grace_secs` (default 0, today's hard stop) applies to stops glidex asks for. | Host shutdown must work with the control plane down, and must not hard-kill guests by default. |
 | D16 | NIC ports survive crash-restarts; netd's `sync_vms` gets the VMs that **own ports**, not the ones running. | A VM keeps its tap and NAT address across restarts, and an adopting or restarting VM is never cut off. |
-| D17 | Instances and units with no matching record are adopted (if a VM record exists) or reported as orphans (if not), never stopped. | Same rule as orphan image/disk files (images.md §2). |
+| D17 | Instances and units with no matching record are adopted (if a VM record exists) or reported as orphans (if not), never stopped. | Same rule as orphan image/disk files (10-images.md §2). |
 | D18 | Spec edits are accepted in any VM state; what varies is when they take effect (§7.3). Hypervisor and boot source stay immutable. | Declarative edits with explicit `RestartRequired`, no surprise reboots. |
 | D19 | One-shot actions (extend-root, image retry) are spec counters (`seq`) the controller compares with the last applied value in status. | Actions stay level-triggered and idempotent. |
 | D20 | `?wait` returns the same error envelopes as today's synchronous calls when the reconcile fails. | gxctl and the UI keep their error behaviour. |
@@ -216,7 +216,7 @@ pub struct Condition {
   the cases marked in §7.5, in a transaction that aborts if
   `generation` differs from the one the exit was observed under. Each
   such write produces an event (§6.4) and an audit line with principal
-  `system:vm-controller` and action `stopVm` (security.md §10).
+  `system:vm-controller` and action `stopVm` (11-security.md §10).
 - Controllers never write another resource's status: cross-resource
   effects go through a field in the writer's own status that the other
   controller reads (e.g. `seed_growpart_seq`, §10.1).
@@ -233,7 +233,7 @@ object rejects spec writes with `409 conflict`.
 | Resource | Finalizers |
 |---|---|
 | VM | `vm.instance` (no live instance), `vm.ports` (netd `release_vm`), `vm.disks` (clear claims), `vm.owned-disk` (delete the owned root disk; left out with `?keep_disk=true`), `vm.runtime` (remove the runtime directory and firmware vars) |
-| Disk | `disk.file` (remove the file; a failure is logged and the file left as an orphan, images.md §6.5) |
+| Disk | `disk.file` (remove the file; a failure is logged and the file left as an orphan, 10-images.md §6.5) |
 | Image | `image.download` (abort a running download), `image.file` (remove the file and `.part`; one that can't be removed is logged and left as an orphan) |
 | Network | `network.netd` (`delete_nat`, then `delete_bridge` if netd still has it, for networks glidex created; a bridged network only drops its record) |
 
@@ -356,7 +356,7 @@ the middle of a stop still knows the grace.
 pub struct VmStatus {
     pub common: StatusCommon,
     pub phase: VmPhase,
-    pub phase_since: Option<u64>,          // when `phase` last changed (unix s; metering.md §5.6)
+    pub phase_since: Option<u64>,          // when `phase` last changed (unix s; 13-metering.md §5.6)
     pub instance: Option<InstanceRef>,     // from the intent record until the instance is gone
     pub last_exit: Option<ExitRecord>,
     pub restart_count: u32,                // consecutive crash restarts
@@ -410,7 +410,7 @@ Phases:
 |---|---|
 | `power`, `stop_grace_secs`, `restart_policy`, `on_host_boot` | at once |
 | `config.vfio_devices` | hot-plugged/unplugged while the guest is observed `Running`; while `Paused`, pending (`DevicesPending`) |
-| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `kernel` (a kernel image, kernel-boot.md K6), `kernel_from_disk` (K11), `hugepages` | next launch; `RestartRequired=True` meanwhile |
+| `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `kernel` (a kernel image, 23-kernel-boot.md K6), `kernel_from_disk` (K11), `hugepages` | next launch; `RestartRequired=True` meanwhile |
 | `hypervisor`, `kernel_image_path`, `initrd_path`, `generate_seed`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
 
 `RestartRequired` compares the spec at `generation` with the spec at
@@ -428,7 +428,7 @@ same holds for VFIO devices (`attach_device` / create on another VM).
 
 `VmResponse` keeps every current field; `state` is derived. (Since the
 gRPC port the API shows it as the `glidex.vm.v1.Vm` message, with the
-values below as `VM_STATE_*` names; [rest-api.md](rest-api.md#vm).)
+values below as `VM_STATE_*` names; [06-rest-api.md](06-rest-api.md#vm).)
 
 | `phase` | `state` |
 |---|---|
@@ -487,7 +487,7 @@ text):
 The VM controller never creates disks or networks. `POST /vms` with
 `image` writes the VM and a new Disk object (spec: linked clone of the
 image, size, `extend_root = {mode: offline, seq: 1}`, `owner = vm/<id>`)
-and the claim in one transaction (images.md §7 invariant). The VM waits
+and the claim in one transaction (10-images.md §7 invariant). The VM waits
 with `DisksReady=False/DiskNotReady` until every referenced disk is
 `Ready`; a VM can therefore be created with `power: running` from an
 image that is still downloading. `NetworkReady` requires every
@@ -520,12 +520,12 @@ the intent record:
 ```
 
 - `fallback` (QEMU only): `{ "argv": [...], "when_output_matches": ["cpu", "msr"] }`,
-  today's "retry once without `-cpu host`" rule (hypervisors.md), now
+  today's "retry once without `-cpu host`" rule (04-hypervisors.md), now
   run by the shim: if the hypervisor exits before its socket answers and
   its captured output contains one of the strings (case-insensitive),
   the shim runs `fallback.argv` once.
 - `job` (default `false`): a one-shot run, not a VM
-  ([kernel-boot.md §10.2](kernel-boot.md#102-run), the kernel
+  ([23-kernel-boot.md §10.2](23-kernel-boot.md#102-run), the kernel
   extractor). The shim reports `Running` as soon as the hypervisor
   starts, without waiting for `api_socket`, and records its exit as for
   a VM (`clean_exit` on status 0). Such instances are named `extract-…`
@@ -550,7 +550,7 @@ Built by `cloud_hypervisor.rs` from the same inputs as today's
 | `disks[]` (`[root, data…, seed]`) | one `--disk path=<q>[,readonly=on][,image_type=<t>][,backing_files=on]` each |
 | `net[]` | one `--net id=net<i>,mac=<mac>,num_queues=<2·qp>[,mtu=<m>]` plus `tap=<if>` or `vhost_user=on,socket=<q>,vhost_mode=server` |
 | `devices[]` (VFIO) | one `--device path=<q>,id=vfio_…` each |
-| `console`, `serial` (boot-mode table, hypervisors.md) | `--console off --serial tty` (serial port: firmware boot, and kernel boot by default) or `--console tty --serial off` (kernel boot whose last `console=` is `hvc…`) |
+| `console`, `serial` (boot-mode table, 04-hypervisors.md) | `--console off --serial tty` (serial port: firmware boot, and kernel boot by default) or `--console tty --serial off` (kernel boot whose last `console=` is `hvc…`) |
 
 `<q>` is a path written as `"<path>"` when it contains `,` (F2).
 **Admission rule (new):** every path that reaches a hypervisor command
@@ -623,7 +623,7 @@ Lifecycle:
    console and log stay inspectable either way.
 5. Serve `shim.sock` and reap. On hypervisor exit, classify (§7.5),
    append the exit line to the log, write the exit, `phase: exited`, and
-   keep serving the console listener (console.md "listener outlives the
+   keep serving the console listener (02-console.md "listener outlives the
    PTY") until `release`.
 6. `release`: stop the proxy (drain the master into the log), unlink
    `console.sock`, `api.sock`, `shim.sock`, exit 0. `instance.json` and
@@ -664,7 +664,7 @@ Written by the shim, atomic tmp + rename, on every phase change:
 }
 ```
 
-`exit.usage` is the metering exit snapshot ([metering.md D12](metering.md#3-decisions)):
+`exit.usage` is the metering exit snapshot ([13-metering.md D12](13-metering.md#3-decisions)):
 - **CPU and memory:** the unit cgroup's `cpu.stat usage_usec` and
   `memory.peak`, read after the hypervisor was reaped. Only under the
   systemd runner, whose cgroup is the VM's own.
@@ -906,7 +906,7 @@ Creating | Ready | Resizing | Missing | Failed`), `actual_size_bytes`,
 
 - **Create.** `Pending` until the source image is `Ready`, then today's
   temp-file + rename. A crash mid-create leaves `Creating` and the
-  disk's own dot-file temporary (named by disk id, images.md §2): the
+  disk's own dot-file temporary (named by disk id, 10-images.md §2): the
   next round deletes that temporary and starts over. Other orphans are
   never deleted.
 - **Resize** is a spec change (`POST /disks/{id}/resize` writes
@@ -927,12 +927,12 @@ Creating | Ready | Resizing | Missing | Failed`), `actual_size_bytes`,
   controller treats a busy disk as `DisksReady=False/DiskBusy` and
   requeues.
 - **File gone** → `Missing`, never recreated.
-- **Where it runs** (storage.md §8.1). A disk on a node-local datastore
+- **Where it runs** (24-storage.md §8.1). A disk on a node-local datastore
   is reconciled on its `node`; one on a shared datastore on its
   `worker`, which the leader moves to the node of the disk's VM when it
   is placed. Both nodes' QEMU and glidex volume locks keep two
-  hypervisors off one file (storage.md §10).
-- **Move** (storage.md §8.3). `POST /disks/{id}/move` writes
+  hypervisors off one file (24-storage.md §10).
+- **Move** (24-storage.md §8.3). `POST /disks/{id}/move` writes
   `moving = {datastore, node, mover, flatten}`; the phase stays `Ready`
   (no `Moving` phase). The mover copies under the busy guard and both
   volume locks, then one write switches `datastore`, `node` and
@@ -945,7 +945,7 @@ Creating | Ready | Resizing | Missing | Failed`), `actual_size_bytes`,
 
 Spec: `{source, expected_sha256, retry_seq}`; `source` and
 `expected_sha256` immutable. Status: today's `ImageStatus` plus
-`applied_retry_seq`. The download task (images.md §5, resume rules
+`applied_retry_seq`. The download task (10-images.md §5, resume rules
 unchanged) is the controller's action for `Downloading`/`Verifying`;
 at most `GLIDEX_MAX_DOWNLOADS` run, the rest stay queued in the work
 queue with "requeue after". `Failed` is not retried until
@@ -981,7 +981,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 
 ### 12.1 Endpoints
 
-| Endpoint | Becomes | Cedar (security.md §7) |
+| Endpoint | Becomes | Cedar (11-security.md §7) |
 |---|---|---|
 | `POST /vms` | create, `power` default `Stopped` | unchanged (`createVm` + §7.4 compound) |
 | `POST /vms/{id}/start` | `spec.power = Running` (from `Paused`: resume) | `startVm` |
@@ -999,7 +999,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
 
 `updateVm` joins the permission group of `startVm`/`stopVm`
-(security.md §7.2) and the schema in `policies/glidex.cedarschema`.
+(11-security.md §7.2) and the schema in `policies/glidex.cedarschema`.
 `PATCH` refuses immutable fields with `400 invalid_config` before
 authorization of the remaining fields.
 
@@ -1016,7 +1016,7 @@ observed `Running`/`Paused`), so crash loops and host reboots can never
 exceed it and a VM blocked on a downloading image still counts. Checked
 when a write moves `power` away from `Stopped`. `vcpus` and `memory_mib`
 deltas of a `PATCH` are checked like today's create. `QuotaMode` and
-break-glass (`quota_exceeded`, security.md §6.3) are unchanged.
+break-glass (`quota_exceeded`, 11-security.md §6.3) are unchanged.
 
 ### 12.3 `?wait=<secs>` (D20)
 
@@ -1103,7 +1103,7 @@ data: {"kind":"vm","id":"<uuid>","object":{"name":"web-1","state":"starting","de
   host-wide; more → `503 too_many_watchers` (poll instead).
 - **Clients.** The UI keeps one stream for the selected project and
   refreshes pages from it, polling only while it is not connected
-  (web-ui.md). `gxctl watch` prints changes (cli.md).
+  (07-web-ui.md). `gxctl watch` prints changes (01-cli.md).
 
 ## 13. systemd, polkit, installer
 
@@ -1111,7 +1111,7 @@ data: {"kind":"vm","id":"<uuid>","object":{"name":"web-1","state":"starting","de
 
 ```ini
 # Rendered by glidex-install. One instance per running VM, started only
-# by the control plane (spec/reconciliation.md). Never enabled.
+# by the control plane (spec/12-reconciliation.md). Never enabled.
 [Unit]
 Description=glidex VM %i
 # Ordering only, so that at host shutdown VMs stop before netd and Open
@@ -1137,7 +1137,7 @@ Restart=no
 Slice=glidex-vms.slice
 UMask=0077
 # The hypervisor sandbox, moved here from glidex-control-plane.service
-# (security.md §9). No NoNewPrivileges= nor anything implying it:
+# (11-security.md §9). No NoNewPrivileges= nor anything implying it:
 # cloud-hypervisor's cap_net_admin file capability would be ignored.
 PrivateTmp=yes
 ProtectSystem=strict
@@ -1152,7 +1152,7 @@ DeviceAllow=/dev/vhost-net rw
 ```
 
 The unit also sets `IOAccounting=yes` and `MemoryAccounting=yes` for
-per-VM metering ([metering.md §5.1](metering.md#51-cpu-and-memory-the-vm-cgroup)).
+per-VM metering ([13-metering.md §5.1](13-metering.md#51-cpu-and-memory-the-vm-cgroup)).
 They go on the unit, not the slice: on a slice they only enable the
 controllers in its parent.
 
@@ -1168,8 +1168,8 @@ the service user):
 ```js
 // glidex: the control plane may start, stop and kill its own VM units
 // (glidex-vm@<uuid>.service) and kernel extraction jobs
-// (glidex-vm@extract-<image uuid>.service, spec/kernel-boot.md §10.2),
-// and nothing else (spec/reconciliation.md §13.2).
+// (glidex-vm@extract-<image uuid>.service, spec/23-kernel-boot.md §10.2),
+// and nothing else (spec/12-reconciliation.md §13.2).
 polkit.addRule(function (action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
       subject.user == "@USER@" &&
@@ -1286,16 +1286,16 @@ a connect that fails with `EAGAIN`/`ECONNREFUSED` for up to 2 s.
 | Document | Change | Milestone |
 |---|---|---|
 | spec/README.md | Goal 2: "durable desired state; VMs survive control-plane restarts"; add this document | M1 |
-| architecture.md | Process diagram (§5.1); layers → store + controllers; "Shutdown and reconciliation", "Threading model" → §9.4, §15 | M1/M2 |
-| data-model.md | `VmState` → `PowerState` + `VmPhase`; envelope; write ordering → §6.2; startup reconciliation → §9.4; mutability → §7.3; schema 2 | M2 |
-| hypervisors.md | Trait → §16; CH configured by argv (§8.2), QEMU without `-S` ("Deferred launch" removed); launch health check and CPU fallback move to the shim; `reap_exited_vms` removed | M1 |
-| console.md | Proxy in the shim; shutdown on `release`; "Log files" → §8.6 | M1 |
-| rest-api.md | `202`/`?wait`, `PATCH`, `/events`, `/images/{id}/retry`, `/system/reconcile`, `412`, response fields, attach-disk on running VMs | M2–M4 |
-| images.md | Envelopes; §5 restart and §6 operations under the controllers (§10.1–10.2); extend-root seq | M3 |
-| networking.md | §7.7 step 3 and §11.4: `sync_vms` set (D16), ports across restarts, drift (§10.3) | M1 |
-| installer.md | Shim, VM unit, slice, polkit rule, `vm-shim.json`; boot sequence; uninstall; control plane no longer stops VMs | M1 |
-| security.md | §7: `updateVm`, `readSystemStatus`, `PATCH` compound row; §9 sandbox split; threat model: polkit rule and shim allowlist; §10 controller audit principal | M1/M4 |
-| cli.md, web-ui.md | `state` plus `→ desired_state` when different; conditions; start/stop/pause wait by default, `--no-wait`; `events` command and tab; `image retry`; attach-disk on running VMs shows "after restart" | M2–M4 |
+| 00-architecture.md | Process diagram (§5.1); layers → store + controllers; "Shutdown and reconciliation", "Threading model" → §9.4, §15 | M1/M2 |
+| 03-data-model.md | `VmState` → `PowerState` + `VmPhase`; envelope; write ordering → §6.2; startup reconciliation → §9.4; mutability → §7.3; schema 2 | M2 |
+| 04-hypervisors.md | Trait → §16; CH configured by argv (§8.2), QEMU without `-S` ("Deferred launch" removed); launch health check and CPU fallback move to the shim; `reap_exited_vms` removed | M1 |
+| 02-console.md | Proxy in the shim; shutdown on `release`; "Log files" → §8.6 | M1 |
+| 06-rest-api.md | `202`/`?wait`, `PATCH`, `/events`, `/images/{id}/retry`, `/system/reconcile`, `412`, response fields, attach-disk on running VMs | M2–M4 |
+| 10-images.md | Envelopes; §5 restart and §6 operations under the controllers (§10.1–10.2); extend-root seq | M3 |
+| 09-networking.md | §7.7 step 3 and §11.4: `sync_vms` set (D16), ports across restarts, drift (§10.3) | M1 |
+| 05-installer.md | Shim, VM unit, slice, polkit rule, `vm-shim.json`; boot sequence; uninstall; control plane no longer stops VMs | M1 |
+| 11-security.md | §7: `updateVm`, `readSystemStatus`, `PATCH` compound row; §9 sandbox split; threat model: polkit rule and shim allowlist; §10 controller audit principal | M1/M4 |
+| 01-cli.md, 07-web-ui.md | `state` plus `→ desired_state` when different; conditions; start/stop/pause wait by default, `--no-wait`; `events` command and tab; `image retry`; attach-disk on running VMs shows "after restart" | M2–M4 |
 
 ## 18. Milestones
 

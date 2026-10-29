@@ -1,6 +1,6 @@
-//! The cluster family (spec/grpc.md §9, G3), the cluster itself: forming,
-//! joining and inspecting it (spec/clustering.md §5), and OVN as a cluster
-//! setting (clustering-ui.md §8). `init`, `join`, `leave` and `snapshot` act
+//! The cluster family (spec/18-grpc.md §9, G3), the cluster itself: forming,
+//! joining and inspecting it (spec/14-clustering.md §5), and OVN as a cluster
+//! setting (16-clustering-ui.md §8). `init`, `join`, `leave` and `snapshot` act
 //! on the host that receives them. The operations build JSON as the cluster
 //! code reports it; `proto_of` turns it into the `glidex.cluster.v1`
 //! message (enum names in full, RFC 3339 times).
@@ -265,7 +265,7 @@ pub async fn join(
 }
 
 /// A host that just became an agent comes back in agent mode: an agent has
-/// no API of its own (spec/clustering-ui.md §3.6), and this process still
+/// no API of its own (spec/16-clustering-ui.md §3.6), and this process still
 /// serves the standalone one, whose logins the cluster refuses. Under
 /// systemd it restarts itself once this answer is out; by hand, it says so.
 fn restart_as_agent(m: &std::sync::Arc<crate::state::VmManager>) -> Option<&'static str> {
@@ -516,7 +516,7 @@ pub async fn rotate_ca(call: &Call, b: pb::RotateCaRequest) -> ServiceResult<pb:
 }
 
 /// Rotate the secrets key that wraps the directories' data keys (spec/
-/// tenancy.md §13). A cluster's leader hands the new key to every server
+/// 19-tenancy.md §13). A cluster's leader hands the new key to every server
 /// first; a standalone host rotates its own.
 pub async fn rotate_secrets_key(
     call: &Call,
@@ -545,7 +545,7 @@ pub async fn rotate_secrets_key(
     )
 }
 
-// ---- OVN as a cluster setting (spec/clustering-ui.md §8a) -----------------
+// ---- OVN as a cluster setting (spec/16-clustering-ui.md §8a) -----------------
 
 /// Why a node can't take part in OVN yet, if it can't.
 fn ovn_missing(n: &crate::node::Node) -> Option<String> {
@@ -579,7 +579,7 @@ fn ovn_view(c: &Caller) -> Value {
         .filter(|n| !n.status.phase.is_tombstone())
         .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n), "outdated": crate::node::ovn_outdated(&n, northd.as_deref()) }))
         .collect();
-    // By id and name: names repeat across tenants (spec/tenancy.md D24).
+    // By id and name: names repeat across tenants (spec/19-tenancy.md D24).
     let cluster_networks: Vec<Value> = m
         .networks_list()
         .into_iter()
@@ -746,7 +746,7 @@ pub async fn put_ovn_settings(
     proto_of(ovn_view(c), OVN_VIEW)
 }
 
-/// `GET /cluster/settings/ovn/edge-defaults` (spec/clustering-ui.md §8a): a
+/// `GET /cluster/settings/ovn/edge-defaults` (spec/16-clustering-ui.md §8a): a
 /// shared edge that should work for this cluster, from what the nodes
 /// report, and notes on what couldn't be worked out. Nothing is written.
 pub fn edge_defaults(
@@ -766,7 +766,7 @@ pub fn edge_defaults(
     proto_of(suggest_edge(&nodes), &[])
 }
 
-// ---- OVN views (spec/clustering-ui.md §8, §8b) ----------------------------
+// ---- OVN views (spec/16-clustering-ui.md §8, §8b) ----------------------------
 
 /// `GET /cluster/ovn`: the OVN databases, chassis and gateways.
 pub async fn ovn_overview(

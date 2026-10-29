@@ -7,12 +7,12 @@ After=network-online.target glidex-control-plane.service
 [Service]
 Type=simple
 # Its own user: it may use the control plane's ui.sock (sessions and tokens
-# only, spec/security.md §5.6) and nothing else.
+# only, spec/11-security.md §5.6) and nothing else.
 User=glidex-ui
 Group=glidex-ui
 Environment=GLIDEX_UI_DIR=/usr/local/share/glidex/ui
 Environment=GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock
-# HTTPS on every address, port 5173 (spec/security.md §5.1). Without a
+# HTTPS on every address, port 5173 (spec/11-security.md §5.1). Without a
 # configured certificate it generates a self-signed one in its state
 # directory and logs the fingerprint. Users still log in; the UI holds no
 # rights of its own. To use a real certificate, in a drop-in set

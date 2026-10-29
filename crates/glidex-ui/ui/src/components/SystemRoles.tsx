@@ -18,7 +18,7 @@ function hostIdOf(b: Binding): string | null {
 }
 
 /** System roles (`/system/bindings`): every binding with where it applies,
- * or with `node` those on that node's host only (spec/clustering.md §12.2). */
+ * or with `node` those on that node's host only (spec/14-clustering.md §12.2). */
 export default function SystemRoles({ dir, node }: { dir: Directory | null; node?: string }) {
   const { host } = useSession();
   const nodes = useNodes();

@@ -1,12 +1,12 @@
 # Credential Store
 
 > Credentials belong to a project and are keyed by `(project, username)`;
-> a VM only uses credentials of its own project (spec/security.md §6.2).
+> a VM only uses credentials of its own project (spec/11-security.md §6.2).
 > Records from before projects moved to the default project on upgrade.
 
 Source: `crates/glidex-control-plane/src/credentials.rs`. Stored guest
 logins that the generated cloud-init seed provisions on a firmware-booted
-VM's first boot (see [hypervisors.md](hypervisors.md#firmware-boot)).
+VM's first boot (see [04-hypervisors.md](04-hypervisors.md#firmware-boot)).
 
 ## Model
 
@@ -44,10 +44,10 @@ key, or both. `create` and `update` both enforce it.
   or passwords.
 - **Prefilling keys.** The web UI fills a new credential with the
   user's own `~/.ssh/*.pub` (`GET /users/me/ssh-keys`, read by
-  glidex-authd, spec/security.md §5.3); gxctl reads them locally and
+  glidex-authd, spec/11-security.md §5.3); gxctl reads them locally and
   offers them as the default.
 - **Transport.** The API is authenticated and served over HTTPS by
-  default (plain HTTP only on loopback, spec/security.md §5.1); the
+  default (plain HTTP only on loopback, spec/11-security.md §5.1); the
   password crosses it once, at create/update time. Run the control plane on a trusted host/network.
 
 ### Why a custom salt
@@ -78,7 +78,7 @@ Violations → `CredentialError::Invalid` → `400 invalid_credential`.
 
 - `create_vm` requires the generated seed (`VmConfig::generates_seed`:
   firmware boot, or kernel boot of a kernel image or a managed root disk,
-  without a custom `cloud_init_path`; [kernel-boot.md](kernel-boot.md)
+  without a custom `cloud_init_path`; [23-kernel-boot.md](23-kernel-boot.md)
   K4), since the credential only reaches the guest through it, and that
   the credential exists; otherwise `400 invalid_config`. The check
   runs under the VM-map write lock.

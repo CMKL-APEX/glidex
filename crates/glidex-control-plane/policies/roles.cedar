@@ -1,4 +1,4 @@
-// Role templates (spec/security.md §7.3). A role assignment is a link of
+// Role templates (spec/11-security.md §7.3). A role assignment is a link of
 // one of these: ?principal is a User, Team or Token; ?resource is a
 // Project (project roles), Cluster (system roles) or a Host (host-specific
 // roles and grants).
@@ -31,7 +31,7 @@ permit (principal in ?principal, action in Glidex::Action::"role.system-admin", 
 permit (principal in ?principal, action in Glidex::Action::"host.paths", resource in ?resource);
 
 // Tenant roles link to a Tenant, directory roles to a Directory
-// (spec/tenancy.md §10.5).
+// (spec/19-tenancy.md §10.5).
 @id("role.tenant-admin")
 permit (principal in ?principal, action in Glidex::Action::"role.tenant-admin", resource in ?resource);
 

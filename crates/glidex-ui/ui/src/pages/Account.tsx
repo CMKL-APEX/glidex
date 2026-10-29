@@ -15,7 +15,7 @@ const LINK_ERRORS: Record<string, string> = {
   not_signed_in: "You were signed out before the sign-in finished. Sign in and try again.",
 };
 
-/** Your account (spec/tenancy.md §6.2): the ways you sign in. You may
+/** Your account (spec/19-tenancy.md §6.2): the ways you sign in. You may
  *  have several; add one through any connector, remove any but the last. */
 export default function Account() {
   const { me, methods, refresh } = useSession();

@@ -14,23 +14,23 @@ Two crates cooperate to deliver the UI:
 
 The installer builds the UI, copies `dist` to
 `/usr/local/share/glidex/ui` and runs `glidex-ui.service` as the
-`glidex-ui` user (see [installer.md](installer.md)).
+`glidex-ui` user (see [05-installer.md](05-installer.md)).
 
 ## Server
 
-`glidex-ui` environment (spec/security.md §5.6):
+`glidex-ui` environment (spec/11-security.md §5.6):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `GLIDEX_UI_DIR` | `crates/glidex-ui/ui/dist` | The built UI. |
 | `GLIDEX_UI_LISTEN` | `0.0.0.0:5173,[::]:5173` | Listen addresses, comma-separated. `[::]` is IPv6-only and skipped when the host has no IPv6. |
 | `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port; an address that appears after startup counts too) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
-| `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
+| `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (11-security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
 | `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
-| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [tailscale-tls.md](tailscale-tls.md). |
+| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [21-tailscale-tls.md](21-tailscale-tls.md). |
 | `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |
-| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
+| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, 11-security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
 
 Invariant: the upstream and its trusted certificates are chosen **per
 request**, not at startup. Why: under systemd the UI starts in the same
@@ -55,7 +55,7 @@ console's ghostty-web terminal is WebAssembly; inline styles: React and
 the terminals set `style` attributes),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, and with a configured certificate (not a
-self-signed one, security.md §5.1.1) `Strict-Transport-Security:
+self-signed one, 11-security.md §5.1.1) `Strict-Transport-Security:
 max-age=31536000`; on connections served the Tailscale certificate,
 `max-age=86400`. A plain-HTTP request on the HTTPS port gets `308` to
 the `https://` URL.
@@ -69,7 +69,7 @@ the `https://` URL.
    **Sign in with SSO** (`location = /api/auth/oidc/start?return_to=<path>`;
    the control plane redirects back with the session cookie). A page
    opened as `/?next=/d/…` (a directory's authorize request that needed
-   a login, spec/tenancy.md D54) goes back to `next` once signed in.
+   a login, spec/19-tenancy.md D54) goes back to `next` once signed in.
 3. The `gx_session` cookie is `HttpOnly; SameSite=Strict`; the page never
    sees it. The client keeps the session's `csrf` value (from `whoami` or
    the login response) and sends it as `X-Glidex-CSRF` on every non-GET.
@@ -78,7 +78,7 @@ the `https://` URL.
    re-login dialog (PAM, or SSO with `reauth=1`) and retries the request
    once. `403` messages are shown where the action was attempted.
 5. **Log out** in the header: `POST /auth/logout`.
-5a. **Accounts** (spec/tenancy.md D71). The header's name opens a menu
+5a. **Accounts** (spec/19-tenancy.md D71). The header's name opens a menu
    with the browser's accounts from `GET /auth/accounts`. It offers:
    - switching to a signed-in account (`POST /auth/accounts/switch`,
      then a reload);
@@ -170,7 +170,7 @@ ui/src/
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
-    ├── Networking.tsx      # OVS status, bridges and uplinks, networks (networking.md §12)
+    ├── Networking.tsx      # OVS status, bridges and uplinks, networks (09-networking.md §12)
     ├── Login.tsx           # PAM form and/or Sign in with SSO
     ├── Projects.tsx        # Projects with usage / quotas; create (system-admin)
     ├── ProjectDetail.tsx   # Members, quotas, project networks, shares
@@ -199,18 +199,18 @@ ui/src/
 | `/policies` | `Policies` (shown with `readPolicy`) |
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
 | `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
-| `/tenants` | `Tenants` (shown with `listTenants` or `createTenant`, or to members of a tenant; spec/tenancy.md §14) |
+| `/tenants` | `Tenants` (shown with `listTenants` or `createTenant`, or to members of a tenant; spec/19-tenancy.md §14) |
 | `/tenants/:id` | `TenantDetail`: rename, suspend, delete, members, tenant roles |
 | `/admissions` | `Admissions` (shown with `listAdmissions`): tenants admitted here and their caps |
 | `/connectors` | `Connectors` (shown with `listConnectors`): login connectors, write-only secrets, `test` |
-| `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
-| `/hosts` | `Hosts` (shown with `listNodes`): a standalone host's page, else the Cluster page's node list (spec/host-page.md W1) |
-| `/hosts/:id` | `HostDetail` (spec/host-page.md W1, clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
+| `/cluster` | `Cluster` (shown with `readCluster`; spec/16-clustering-ui.md §6) |
+| `/hosts` | `Hosts` (shown with `listNodes`): a standalone host's page, else the Cluster page's node list (spec/28-host-page.md W1) |
+| `/hosts/:id` | `HostDetail` (spec/28-host-page.md W1, 16-clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (22-host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
 | `/cluster/nodes/:id` | Redirects to `/hosts/:id` |
-| `/device` | `Device`: approve or deny a directory's device login (`?directory=…&code=…`, spec/tenancy.md D54) |
-| `/directories` | `Directories` (shown with `listDirectories`, menu **Hosting**): the directories this host serves; **New directory** shows the first administrator's invitation link once; delete an unused one (spec/tenancy.md D59) |
+| `/device` | `Device`: approve or deny a directory's device login (`?directory=…&code=…`, spec/19-tenancy.md D54) |
+| `/directories` | `Directories` (shown with `listDirectories`, menu **Hosting**): the directories this host serves; **New directory** shows the first administrator's invitation link once; delete an unused one (spec/19-tenancy.md D59) |
 | `/login/:directory` | That directory's login page while signed out (`/auth/methods?directory=…`); signed in, `/` (D61) |
-| `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
+| `/cluster/imports/:plan` | `ImportPlan` (spec/16-clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 
 Without a session every path shows the login page, with a sign-in
@@ -218,7 +218,7 @@ button per OIDC connector (`/api/auth/c/{id}/start`).
 
 ## API client
 
-Cluster behaviour (spec/clustering-ui.md §3.3): an idempotent request
+Cluster behaviour (spec/16-clustering-ui.md §3.3): an idempotent request
 answered `503 leader_changed` is sent again after 250 ms, 500 ms and
 1 s. `503 cluster_unavailable` raises the *no leader* banner
 (`ClusterBanner`, from the `glidex:cluster` window event); a read is
@@ -238,7 +238,7 @@ hard-coded `/api` — the Vite proxy or glidex-ui forwards it.
 ## VM state display
 
 VMs have a desired state and an observed one
-([reconciliation.md §7.4](reconciliation.md#74-defaults-and-api-projection)).
+([12-reconciliation.md §7.4](12-reconciliation.md#74-defaults-and-api-projection)).
 `types.ts` mirrors that: `VmState` is `created | starting | running |
 paused | stopping | stopped | failed | unknown`, `PowerState` is
 `running | paused | stopped`, and `VmResponse` carries `desired_state`,
@@ -278,7 +278,7 @@ and `last_exit`.
 ## Create VM form
 
 Besides the config, `CreateVmForm` sets the VM's policies
-([reconciliation.md §7.4](reconciliation.md#74-defaults-and-api-projection)):
+([12-reconciliation.md §7.4](12-reconciliation.md#74-defaults-and-api-projection)):
 **If It Crashes** (`restart_policy`: restart with backoff, the default,
 or leave it stopped), **After a Host Reboot** (`on_host_boot`: start it
 again if it was running, the default, or leave it stopped), and **Start
@@ -290,16 +290,16 @@ For **Direct kernel boot** the form shares the boot disk block with
 firmware boot and replaces the firmware picker with a kernel choice
 (kernel image or host files) and *Follow the guest's kernel*; the VM
 detail page's `VmKernel` shows and changes the kernel
-([kernel-boot.md §7](kernel-boot.md#7-clients)).
+([23-kernel-boot.md §7](23-kernel-boot.md#7-clients)).
 
 ## Live stream
 
 `LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one
 `EventSource` on `/api/watch?kinds=…&project=<selected project>`
-([rest-api.md](rest-api.md#live-stream-get-watch)) for the whole app and
+([06-rest-api.md](06-rest-api.md#live-stream-get-watch)) for the whole app and
 keeps the latest copy of every VM, disk, image and network the user can
 see (`useLive()`), and the cluster kinds: nodes, import plans, the
-cluster summary and the policy marker (spec/clustering-ui.md §3.7). A
+cluster summary and the policy marker (spec/16-clustering-ui.md §3.7). A
 change of the policy marker re-runs the session's capability checks
 (`refreshCapabilities`) and every `useAllowed` query. It is live once
 the snapshot has arrived (`synced`).
@@ -315,7 +315,7 @@ plane, a buffering proxy, `503 too_many_watchers`).
 ## Reconciliation activity
 
 Writes are carried out by the controllers after the API answers
-([reconciliation.md](reconciliation.md) D5), so the header's
+([12-reconciliation.md](12-reconciliation.md) D5), so the header's
 `Activity` shows whether any are still at work in the selected project:
 "Up to date", or a spinner with "N in progress" that opens a list (kind,
 name, what, linked to the object's page). It is built with `vmActivity`,
@@ -352,7 +352,7 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   `grant.host-paths`). In a cluster the table has a Scope column (the
   whole cluster, or a host linking to its node page) and the form a Scope
   select; on a host only auditor, net-admin and host paths are offered
-  (clustering.md §12.2). A node's page has a **Roles on this host** card
+  (14-clustering.md §12.2). A node's page has a **Roles on this host** card
   with the bindings on that host alone (`?node=`), to add and remove.
 - **Tokens** — the caller's tokens and the service accounts it may
   manage. Create (name, expiry, optional narrowing roles; service accounts
@@ -368,7 +368,7 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   version: `409 conflict`, `409 would_lock_out` and `422` validator
   messages are shown), **Delete** (`?version=`), and **History**
   (`/versions`, loadable into the editor).
-- **Usage** ([metering.md §12](metering.md#12-cli-and-ui)) —
+- **Usage** ([13-metering.md §12](13-metering.md#12-cli-and-ui)) —
   Usage, Bandwidth and Disk I/O tabs over one billing month (`month=`).
   The filters sit in one row: month, project (all projects for host
   readers), and group by. Each tab is a table (totals in presentation
@@ -402,7 +402,7 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 
 `pages/Images.tsx` shows two catalogs, each entry with a Pull button:
 cloud images (`GET /images/catalog`) and UEFI firmware
-(`GET /images/firmware-catalog`, [images.md](images.md#41-firmware-catalog);
+(`GET /images/firmware-catalog`, [10-images.md](10-images.md#41-firmware-catalog);
 an entry copied from a host package says Import (Imported once done), a
 Debian package entry says it is downloaded,
 and is disabled with the package to install when it isn't). Below, downloaded images in two
@@ -452,7 +452,7 @@ names the catalog entry to pull and the form won't submit. It sends
 `firmware` (the image id), never a host `firmware_path`. `VmDetail`
 shows the VM's firmware image by name (`GET /images/{id}`), and the
 Disks page's create form never offers a firmware image as contents.
-`pages/Datastores.tsx` (spec/storage.md §13) lists the datastores:
+`pages/Datastores.tsx` (spec/24-storage.md §13) lists the datastores:
 - `local` is marked built in; the default for disks is marked as such;
 - for each, how many nodes reach it, the most free space on one, and
   its disks;
@@ -472,7 +472,7 @@ With `manageDatastore` the page also offers:
 It follows the `datastore` watch kind. On the VM page,
 `components/PlaceVm.tsx` offers "Place on another node" for a stopped VM
 ("Place on a live node" for a Lost one) in a cluster to those with
-`placeVm`: a ready node, or "where there is room" (spec/storage.md §9). Once there is more than `local`,
+`placeVm`: a ready node, or "where there is room" (spec/24-storage.md §9). Once there is more than `local`,
 the Disks page shows a Datastore column, and its create form a Datastore
 select with the default chosen. Each disk then has a **Move** form (another
 datastore; for a linked disk, a Flatten box), disabled with Resize while
@@ -516,7 +516,7 @@ The console page is the non-obvious component. It:
    a **Reconnect** button runs steps 2-3 again with a new ticket. When
    the VM's node stopped reporting, the error says so.
 5. Fits the terminal on window resize. The size stays in the browser:
-   it isn't sent to the server ([console.md](console.md) "Known gaps").
+   it isn't sent to the server ([02-console.md](02-console.md) "Known gaps").
 6. Exposes the terminal's text as `screenText()` on the container, for
    the e2e suite (ghostty-web draws on a canvas).
 7. On unmount, disposes the input handler, detaches the socket's
@@ -526,7 +526,7 @@ The console page is the non-obvious component. It:
    that timer runs (React StrictMode mounts twice in dev) throws
    "reading 'dimensions'". `e2e/tests/console.spec.ts` covers this.
 
-See [console.md](console.md) for how the server side of that
+See [02-console.md](02-console.md) for how the server side of that
 WebSocket is implemented.
 
 ## End-to-end tests

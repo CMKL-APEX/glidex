@@ -23,7 +23,7 @@ pub(crate) fn expand_tilde(path: String) -> String {
 }
 
 /// A VM's state as the API shows it, derived from the observed
-/// [`VmPhase`] (spec/reconciliation.md §7.4).
+/// [`VmPhase`] (spec/12-reconciliation.md §7.4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum VmState {
@@ -119,10 +119,10 @@ pub struct VmConfig {
     /// server's path, and replaced at launch with the placed node's copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_path: Option<String>,
-    /// Firmware image (id) the VM boots through; see spec/images.md §7.
+    /// Firmware image (id) the VM boots through; see spec/10-images.md §7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_image: Option<String>,
-    /// Kernel image (id) the VM boots directly (spec/kernel-boot.md §6).
+    /// Kernel image (id) the VM boots directly (spec/23-kernel-boot.md §6).
     /// Its files fill `kernel_image_path` and `initrd_path`, as a firmware
     /// image fills `firmware_path`: replaced at launch with the placed
     /// node's copies.
@@ -133,12 +133,12 @@ pub struct VmConfig {
     /// when [`Self::generates_seed`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init_path: Option<String>,
-    /// Whether the VM controller generates the seed (spec/kernel-boot.md
+    /// Whether the VM controller generates the seed (spec/23-kernel-boot.md
     /// K4), fixed at create. Absent in older records: firmware boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generate_seed: Option<bool>,
     /// Boot the kernel the guest installed: extract it from the root disk
-    /// before a launch when the disk changed (spec/kernel-boot.md K11,
+    /// before a launch when the disk changed (spec/23-kernel-boot.md K11,
     /// §10.5). `kernel_image` is the kernel until the first extraction,
     /// and the fallback.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -149,7 +149,7 @@ pub struct VmConfig {
     pub credential: Option<String>,
     /// The service account (a `SERVICE_ACCOUNT` token's id, of a project of
     /// the VM's tenant) whose glidex tokens the VM gets from its metadata
-    /// endpoint (spec/workload-identity.md W5, W6). Changing it needs no
+    /// endpoint (spec/29-workload-identity.md W5, W6). Changing it needs no
     /// restart: it applies to the next token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account: Option<String>,
@@ -159,7 +159,7 @@ pub struct VmConfig {
     pub kernel_args: String,
     #[serde(default)]
     pub hypervisor: HypervisorType,
-    /// Managed disk (id) the VM boots from; see spec/images.md §7.
+    /// Managed disk (id) the VM boots from; see spec/10-images.md §7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_disk: Option<String>,
     /// Managed data disks (ids), attached in order after the root disk.
@@ -177,23 +177,23 @@ pub struct VmConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hugepages: bool,
     /// `2M` or `1G`: the hugepage size for `hugepages`; absent: the node's
-    /// default size (spec/host-topology.md §8a.3). At launch, the size the
+    /// default size (spec/22-host-topology.md §8a.3). At launch, the size the
     /// scheduler counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hugepage_size: Option<String>,
     /// Keep the VM's memory, CPUs and devices on one host NUMA node
-    /// (spec/host-topology.md H5).
+    /// (spec/22-host-topology.md H5).
     #[serde(default, skip_serializing_if = "NumaPolicy::is_none")]
     pub numa_policy: NumaPolicy,
     /// Dedicated: each vCPU on a host CPU of its own (H6).
     #[serde(default, skip_serializing_if = "CpuPolicy::is_shared")]
     pub cpu_policy: CpuPolicy,
-    /// Devices asked for by pool (spec/host-topology.md §6, §9); the
+    /// Devices asked for by pool (spec/22-host-topology.md §6, §9); the
     /// scheduler picks them, `vfio_devices` names them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<DeviceRequest>,
     /// `gpus`, as asked: already expanded into `devices`, the policies and
-    /// the sizing; kept to show and to expand again (spec/gpu-vms.md §3).
+    /// the sizing; kept to show and to expand again (spec/27-gpu-vms.md §3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<GpuRequest>,
     /// At launch: the host NUMA node guest RAM is bound to, and the host
@@ -256,7 +256,7 @@ impl VmConfig {
     }
 }
 
-/// What a hypervisor needs to open one managed disk (spec/storage.md §7).
+/// What a hypervisor needs to open one managed disk (spec/24-storage.md §7).
 pub use crate::datastore::VolumeBinding;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,7 +279,7 @@ pub struct NicBinding {
     pub mtu: Option<u16>,
 }
 
-/// The VM resource (spec/reconciliation.md §6.1, §7): what the user asked
+/// The VM resource (spec/12-reconciliation.md §6.1, §7): what the user asked
 /// for (`spec`) and what the VM controller last saw (`status`). Stored as
 /// the `{meta, spec, status}` envelope (`store::VmRecord`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -287,7 +287,7 @@ pub struct NicBinding {
 pub struct Vm {
     pub id: String,
     pub name: String,
-    /// Owning project id (spec/security.md §6).
+    /// Owning project id (spec/11-security.md §6).
     pub project: String,
     pub created_at: u64,
     pub generation: u64,
@@ -311,33 +311,33 @@ pub struct VmSpec {
     /// Power-button wait when glidex stops the VM; 0 = stop hard.
     #[serde(default)]
     pub stop_grace_secs: u32,
-    /// Pin the VM to this node (id), spec/clustering.md §9.1. Immutable.
+    /// Pin the VM to this node (id), spec/14-clustering.md §9.1. Immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
     /// The nodes where the project may use every one of its VFIO devices,
-    /// worked out when they were last set (spec/host-topology.md §8.5);
+    /// worked out when they were last set (spec/22-host-topology.md §8.5);
     /// the scheduler places it on one of them. `None`: no constraint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_nodes: Option<Vec<String>>,
 }
 
-/// Where a VM runs (spec/clustering.md §9.1): set once, by the scheduler,
+/// Where a VM runs (spec/14-clustering.md §9.1): set once, by the scheduler,
 /// and kept for the VM's life (D6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
     pub node: String,
     pub at: u64,
     /// The page size in KiB the scheduler counted guest RAM in: 4 for
-    /// ordinary memory, else a hugepage size (spec/host-topology.md §8a.3).
+    /// ordinary memory, else a hugepage size (spec/22-host-topology.md §8a.3).
     /// Absent: placed before it was counted; the node decides at start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_kib: Option<u64>,
-    /// The host NUMA node guest RAM is bound to (spec/host-topology.md
+    /// The host NUMA node guest RAM is bound to (spec/22-host-topology.md
     /// §6), under a NUMA policy that fitted one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numa_node: Option<u32>,
     /// `aligned` over several NUMA nodes: each node's share, in guest NUMA
-    /// node order (spec/gpu-vms.md §4).
+    /// node order (spec/27-gpu-vms.md §4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub numa: Vec<NumaShare>,
     /// Dedicated: the host CPUs the VM holds, vCPU `i` on `cpus[i]`; with
@@ -352,7 +352,7 @@ pub struct Placement {
 /// KiB of ordinary memory pages.
 pub const SMALL_PAGE_KIB: u64 = 4;
 
-/// `count` devices of pool `pool` (spec/host-topology.md §6).
+/// `count` devices of pool `pool` (spec/22-host-topology.md §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceRequest {
     pub pool: String,
@@ -362,7 +362,7 @@ pub struct DeviceRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub same_switch: bool,
     /// The tenant pool asked for, `pool` being its cluster pool
-    /// (spec/host-topology.md §9.1a).
+    /// (spec/22-host-topology.md §9.1a).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_pool: Option<String>,
 }
@@ -378,7 +378,7 @@ pub struct PoolDevice {
     pub address: String,
 }
 
-/// N GPUs from a pool (spec/gpu-vms.md §3).
+/// N GPUs from a pool (spec/27-gpu-vms.md §3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuRequest {
     pub count: u32,
@@ -389,7 +389,7 @@ pub struct GpuRequest {
 }
 
 /// One host NUMA node's share of an `aligned` VM: guest NUMA node `i` of
-/// the VM is `numa[i]` (spec/gpu-vms.md §4).
+/// the VM is `numa[i]` (spec/27-gpu-vms.md §4).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NumaShare {
     /// The host NUMA node.
@@ -401,7 +401,7 @@ pub struct NumaShare {
     pub devices: Vec<String>,
 }
 
-/// spec/host-topology.md H5: `preferred` keeps memory (and CPUs and
+/// spec/22-host-topology.md H5: `preferred` keeps memory (and CPUs and
 /// devices) on one host NUMA node when one fits, `strict` refuses a node
 /// where they can't be.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,7 +413,7 @@ pub enum NumaPolicy {
     Strict,
     /// Exactly the NUMA nodes of the VM's devices, with its vCPUs and
     /// memory split between them by their device counts, and the same
-    /// layout in the guest (spec/gpu-vms.md §4–§5).
+    /// layout in the guest (spec/27-gpu-vms.md §4–§5).
     Aligned,
 }
 
@@ -423,7 +423,7 @@ impl NumaPolicy {
     }
 }
 
-/// spec/host-topology.md H6.
+/// spec/22-host-topology.md H6.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CpuPolicy {
@@ -465,11 +465,11 @@ pub struct VmStatus {
     pub placement: Option<Placement>,
     /// Re-placed from a node forgotten as fenced: its next start takes its
     /// hyperstor disks' leases even from a holder that still renews
-    /// (spec/storage.md S23); cleared once it has started.
+    /// (spec/24-storage.md S23); cleared once it has started.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takeover_disks: bool,
     /// Its hyperstor disks, attached on its node for it: detached once it
-    /// has stopped (spec/storage.md §11.2).
+    /// has stopped (spec/24-storage.md §11.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub staged_disks: Vec<String>,
     #[serde(default)]
@@ -481,7 +481,7 @@ pub struct VmStatus {
     #[serde(default)]
     pub phase: VmPhase,
     /// When `phase` last changed (unix s), for metering transitions
-    /// exactly (spec/metering.md §5.6). Absent in records from before it.
+    /// exactly (spec/13-metering.md §5.6). Absent in records from before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_since: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -507,7 +507,7 @@ pub struct VmStatus {
     #[serde(default)]
     pub never_started: bool,
     /// The kernel extracted from the root disk that the VM boots, with
-    /// `kernel_from_disk` (spec/kernel-boot.md §10.5).
+    /// `kernel_from_disk` (spec/23-kernel-boot.md §10.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_kernel: Option<DiskKernel>,
 }
@@ -580,7 +580,7 @@ pub struct InstanceRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub growpart_seq: Option<u64>,
     /// The host CPUs its threads are bound to; empty: unbound
-    /// (spec/host-topology.md §7.1).
+    /// (spec/22-host-topology.md §7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpu_affinity: Vec<u32>,
     /// Maximum active vCPUs configured at launch (ACPI slots or Pylon max cores).
@@ -590,7 +590,7 @@ pub struct InstanceRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_cpu_policy: Option<AppliedCpuPolicy>,
     /// Uncorrectable AER errors each of its VFIO devices had at launch
-    /// (address → count, spec/host-topology.md §5.4).
+    /// (address → count, spec/22-host-topology.md §5.4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub device_errors: std::collections::BTreeMap<String, u64>,
 }
@@ -616,7 +616,7 @@ pub struct ExitRecord {
     pub signal: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// The shim's final counters (spec/metering.md D12), consumed once by
+    /// The shim's final counters (spec/13-metering.md D12), consumed once by
     /// the meter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<glidex_vm_shim::state::ExitUsage>,
@@ -639,7 +639,7 @@ pub struct NicStatus {
     pub ipv4: Option<Ipv4Addr>,
     #[serde(default)]
     pub port_ok: bool,
-    /// The port's metadata index on a NAT network (spec/workload-identity.md
+    /// The port's metadata index on a NAT network (spec/29-workload-identity.md
     /// §7.1): how glidex-metad knows this NIC's requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_index: Option<u16>,
@@ -673,7 +673,7 @@ impl Vm {
     }
 
     /// The kernel image the VM boots: the one extracted from its disk
-    /// with `kernel_from_disk` (spec/kernel-boot.md §10.5), else `kernel`.
+    /// with `kernel_from_disk` (spec/23-kernel-boot.md §10.5), else `kernel`.
     pub fn boot_kernel(&self) -> Option<&str> {
         match &self.status.disk_kernel {
             Some(k) if self.spec.config.kernel_from_disk => Some(k.image.as_str()),
@@ -744,7 +744,7 @@ impl Vm {
 pub struct DiskSelection {
     /// Firmware image id/name.
     pub firmware: Option<String>,
-    /// Kernel image id/name (spec/kernel-boot.md §6).
+    /// Kernel image id/name (spec/23-kernel-boot.md §6).
     pub kernel: Option<String>,
     pub image: Option<String>,
     pub root_disk_size_gib: Option<u64>,

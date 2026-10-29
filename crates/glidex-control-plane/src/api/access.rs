@@ -1,5 +1,5 @@
 //! Logging in and out, and the REST twins of `glidex.access.v1`
-//! (spec/security.md §5, §6, §7, §10, §13): projects, role links, users,
+//! (spec/11-security.md §5, §6, §7, §10, §13): projects, role links, users,
 //! teams, tokens, site policies, audit and capability checks. Logins set
 //! cookies and stay HTTP-only; the rest is in `service::access`.
 
@@ -68,7 +68,7 @@ pub async fn methods(
         // Host accounts are the host's own directory's (D23).
         "pam": own && app.auth.pam_connector(None).is_ok(),
         "oidc": app.auth.oidc_enabled(),
-        // spec/passkeys.md: whether they are on, and their domain when set.
+        // spec/25-passkeys.md: whether they are on, and their domain when set.
         "passkeys": app.auth.config.auth.passkeys.enabled,
         "passkeys_rp_id": app.auth.config.auth.passkeys.rp_id,
         "disabled": app.auth.is_disabled(),
@@ -78,7 +78,7 @@ pub async fn methods(
     }))
 }
 
-/// `POST /auth/discover` (spec/tenancy.md §6.1), the REST twin of
+/// `POST /auth/discover` (spec/19-tenancy.md §6.1), the REST twin of
 /// `LoginService.Discover`.
 pub async fn discover(
     State(app): State<AppState>,
@@ -136,7 +136,7 @@ pub(super) fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) ->
 }
 
 /// Who the caller is, for `/auth/whoami` and login responses: the
-/// `SystemService.WhoAmI` message (spec/grpc.md §9.1).
+/// `SystemService.WhoAmI` message (spec/18-grpc.md §9.1).
 fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiErr> {
     let w = crate::service::system::whoami_of(app, p)?;
     Ok(serde_json::to_value(w).unwrap_or_default())
@@ -240,9 +240,9 @@ pub async fn peer_session(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     ))
 }
 
-/// The host's identity for client profiles (spec/gxctl-auth.md §7.1):
+/// The host's identity for client profiles (spec/17-gxctl-auth.md §7.1):
 /// static after start. The fingerprint is public information — the server
-/// logs it at every start (security.md §5.1.1) — and lets gxctl tell a
+/// logs it at every start (11-security.md §5.1.1) — and lets gxctl tell a
 /// genuine untrusted self-signed certificate from a proxy that terminated
 /// TLS in front of it.
 ///
@@ -319,7 +319,7 @@ const OIDC_COOKIE: &str = "gx_oidc";
 pub struct OidcStartQuery {
     #[serde(default)]
     return_to: Option<String>,
-    /// `reauth=1` (the web UI's step-up, spec/web-ui.md), or `true`.
+    /// `reauth=1` (the web UI's step-up, spec/07-web-ui.md), or `true`.
     #[serde(default, deserialize_with = "query_flag")]
     reauth: bool,
 }
@@ -404,7 +404,7 @@ async fn start_oidc(
 pub struct StartBody {
     #[serde(default)]
     return_to: Option<String>,
-    /// `<id>.<secret>` from an invitation link (spec/tenancy.md §6.1).
+    /// `<id>.<secret>` from an invitation link (spec/19-tenancy.md §6.1).
     #[serde(default)]
     invitation: Option<String>,
 }
@@ -450,7 +450,7 @@ pub async fn connector_start_post(
     Ok(resp)
 }
 
-/// `POST /auth/link/c/{id}/start` (spec/tenancy.md §6.2): add a sign-in
+/// `POST /auth/link/c/{id}/start` (spec/19-tenancy.md §6.2): add a sign-in
 /// through connector `id` to the caller, who is signed in, beside the ones
 /// it has. `manageOwnSignIns` (a recent login). Answers `{redirect}`; the
 /// callback goes back to `return_to` with `?linked=<id>` or
@@ -515,7 +515,7 @@ pub async fn oidc_start(
     start_oidc(app, None, listener, headers, q).await
 }
 
-/// `GET /auth/c/{id}/start` (spec/tenancy.md §6).
+/// `GET /auth/c/{id}/start` (spec/19-tenancy.md §6).
 pub async fn connector_start(
     State(app): State<AppState>,
     Path(id): Path<String>,
@@ -751,7 +751,7 @@ pub async fn connector_device_poll(
     poll_device(app, Some(id), rid, v).await
 }
 
-// ---- REST twins of glidex.access.v1 (spec/grpc.md §9.1) -----------------
+// ---- REST twins of glidex.access.v1 (spec/18-grpc.md §9.1) -----------------
 //
 // The proto messages as JSON, path and query parameters merged in, on the
 // same `service::access` functions as the RPCs. Status codes are as before
@@ -799,7 +799,7 @@ pub async fn authz_check(
     Ok(Proto(StatusCode::OK, acc::check(&c, req).await?))
 }
 
-/// `POST /authz/allowed` (spec/clustering-ui.md §3.5): `{allowed:
+/// `POST /authz/allowed` (spec/16-clustering-ui.md §3.5): `{allowed:
 /// [{actions}], reauth: [{actions}]}`, one entry per resource.
 pub async fn authz_allowed(
     c: Caller,
@@ -1209,7 +1209,7 @@ pub struct AuditQuery {
     user: Option<String>,
     #[serde(default)]
     limit: Option<u32>,
-    /// A hosted directory's own audit (spec/tenancy.md D74).
+    /// A hosted directory's own audit (spec/19-tenancy.md D74).
     #[serde(default)]
     directory: Option<String>,
 }

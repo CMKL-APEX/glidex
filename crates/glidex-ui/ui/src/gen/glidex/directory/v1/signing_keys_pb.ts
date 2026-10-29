@@ -1,4 +1,4 @@
-// A directory's token signing keys (spec/tenancy.md D52, D53): ES256,
+// A directory's token signing keys (spec/19-tenancy.md D52, D53): ES256,
 // rotated every 30 days, a retired key published until the tokens it
 // signed have expired. Only public facts are shown; the private halves
 // never leave the directory.

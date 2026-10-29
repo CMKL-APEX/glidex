@@ -1,4 +1,4 @@
-//! Images and disks (spec/images.md).
+//! Images and disks (spec/10-images.md).
 //!
 //! *Images* are read-only base cloud images downloaded from the catalog
 //! (`catalog.rs`) or a URL and verified (`download.rs`). *Disks* are
@@ -11,7 +11,7 @@
 //! through, pulled from the firmware catalog or a URL; they are images of
 //! kind `firmware` and never the source of a disk.
 //!
-//! *Kernel* images (`kernel.rs`, spec/kernel-boot.md §4) are a kernel, an
+//! *Kernel* images (`kernel.rs`, spec/23-kernel-boot.md §4) are a kernel, an
 //! optional initramfs and a default command line VMs boot directly,
 //! pulled from a URL or copied from the host; they are images of kind
 //! `kernel` and never the source of a disk either.
@@ -83,7 +83,7 @@ pub enum ImageError {
     Download(String),
     #[error("image storage error: {0}")]
     Storage(String),
-    /// A datastore that doesn't overcommit has no room (spec/storage.md §5.2).
+    /// A datastore that doesn't overcommit has no room (spec/24-storage.md §5.2).
     #[error("{message}")]
     InsufficientStorage {
         message: String,
@@ -160,7 +160,7 @@ pub enum ImageSource {
     },
     /// Copied from a host file by an admin (a kernel image's `kernel_path`).
     Host { path: String },
-    /// Extracted from a disk image's `/boot` (spec/kernel-boot.md §10):
+    /// Extracted from a disk image's `/boot` (spec/23-kernel-boot.md §10):
     /// the image, the digest of the copy read, the kernel's place in it
     /// (`vda13:/vmlinuz-…`; empty until extracted), and whether that image
     /// was verified.
@@ -190,7 +190,7 @@ pub enum ImageKind {
     /// UEFI firmware a VM boots through (raw `.fd`).
     Firmware,
     /// A kernel, its initramfs and command line a VM boots directly
-    /// (spec/kernel-boot.md §4).
+    /// (spec/23-kernel-boot.md §4).
     Kernel,
 }
 
@@ -273,11 +273,11 @@ pub struct Image {
     #[serde(default)]
     pub applied_retry_seq: u64,
     /// Deletion requested; the image controller aborts the download,
-    /// removes the files, then the record (spec/reconciliation.md §6.3).
+    /// removes the files, then the record (spec/12-reconciliation.md §6.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion_requested_at: Option<u64>,
     /// Nodes that keep a copy whether or not they need it
-    /// (spec/clustering.md §9.2.2).
+    /// (spec/14-clustering.md §9.2.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned: Vec<String>,
     /// Nodes asked to drop their copy; the leader clears a node once its
@@ -291,7 +291,7 @@ pub struct Image {
     /// A kernel image's initramfs (`<id>.initrd`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initrd: Option<FileMeta>,
-    /// A kernel image's default `kernel_args` (spec/kernel-boot.md K7).
+    /// A kernel image's default `kernel_args` (spec/23-kernel-boot.md K7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmdline: Option<String>,
     /// A kernel image's release, from its header when it has one.
@@ -305,7 +305,7 @@ pub struct Image {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
     /// The node extracting this kernel image, when not the leader
-    /// (spec/kernel-boot.md §10.2): one of the image's architecture with a
+    /// (spec/23-kernel-boot.md §10.2): one of the image's architecture with a
     /// copy of the disk image. It reports the result in its cache row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extract_node: Option<String>,
@@ -400,7 +400,7 @@ pub enum DiskOrigin {
     Image { image_id: String, mode: CloneMode },
 }
 
-/// Where a disk is in its life (spec/reconciliation.md §10.1).
+/// Where a disk is in its life (spec/12-reconciliation.md §10.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DiskPhase {
@@ -452,7 +452,7 @@ pub struct ResizeSpec {
 pub struct Disk {
     pub id: String,
     pub name: String,
-    /// Owning project id (spec/security.md §6); empty in old records
+    /// Owning project id (spec/11-security.md §6); empty in old records
     /// until `VmManager::initialize` assigns the default project.
     #[serde(default)]
     pub project: String,
@@ -484,11 +484,11 @@ pub struct Disk {
     pub deletion_requested_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<crate::models::Condition>,
-    /// The node holding the disk's file (spec/clustering.md §9.2). `None`
+    /// The node holding the disk's file (spec/14-clustering.md §9.2). `None`
     /// until the disk is bound, at creation or at its first VM (D6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// The datastore holding the disk (spec/storage.md §4.2). Records
+    /// The datastore holding the disk (spec/24-storage.md §4.2). Records
     /// without one, and every record written today, are `local`, which is
     /// left out so they stay as older releases wrote them.
     #[serde(
@@ -497,16 +497,16 @@ pub struct Disk {
     )]
     pub datastore: String,
     /// On a shared datastore, where `node` stays `None`: the node that acts
-    /// on the disk's file now, its VM's when placed (spec/storage.md S6).
+    /// on the disk's file now, its VM's when placed (spec/24-storage.md S6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
     /// A move to another datastore asked for and not done yet
-    /// (spec/storage.md §8.3); its `mover` makes the copy.
+    /// (spec/24-storage.md §8.3); its `mover` makes the copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moving: Option<MoveSpec>,
 }
 
-/// `POST /disks/{id}/move` (spec/storage.md §8.3).
+/// `POST /disks/{id}/move` (spec/24-storage.md §8.3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MoveSpec {
     pub datastore: String,
@@ -521,7 +521,7 @@ pub struct MoveSpec {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flatten: bool,
     /// The copy is raw: the destination keeps block volumes (spec/
-    /// storage.md §11.1). Moves to or from one are always flattened.
+    /// 24-storage.md §11.1). Moves to or from one are always flattened.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub raw: bool,
 }
@@ -621,7 +621,7 @@ pub struct PullImageRequest {
     #[serde(default)]
     pub vars_sha256: Option<String>,
     /// `x86_64` or `aarch64`; default: the host's, or in a cluster that of
-    /// `nodes` (spec/clustering.md §9.2.1).
+    /// `nodes` (spec/14-clustering.md §9.2.1).
     #[serde(default)]
     pub arch: Option<String>,
     /// In a cluster: nodes (ids or names) that get a copy once downloaded
@@ -631,7 +631,7 @@ pub struct PullImageRequest {
     /// `false`: the server's copy goes once one of `nodes` has one.
     #[serde(default)]
     pub keep_server_copy: Option<bool>,
-    /// With a kernel `url`: its initramfs (spec/kernel-boot.md §4.2).
+    /// With a kernel `url`: its initramfs (spec/23-kernel-boot.md §4.2).
     #[serde(default)]
     pub initrd_url: Option<String>,
     #[serde(default)]
@@ -676,11 +676,11 @@ pub struct CreateDiskRequest {
     #[serde(default)]
     pub extend_root: Option<bool>,
     /// Bind the disk to a node now (id or name); otherwise it binds to the
-    /// node of the first VM that uses it (spec/clustering.md §9.2).
+    /// node of the first VM that uses it (spec/14-clustering.md §9.2).
     #[serde(default)]
     pub node: Option<String>,
     /// Datastore id or name; default: the one that is default for disks,
-    /// else `local` (spec/storage.md S13).
+    /// else `local` (spec/24-storage.md S13).
     #[serde(default)]
     pub datastore: Option<String>,
 }
@@ -726,7 +726,7 @@ pub struct ImageCopy {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
     /// `downloading`, `ready` or `failed`; `wanted` (pinned, not started)
-    /// or `releasing` (asked to go, spec/clustering.md §9.2.2).
+    /// or `releasing` (asked to go, spec/14-clustering.md §9.2.2).
     pub state: String,
     /// Bytes copied so far (all of them once ready).
     pub bytes: u64,
@@ -735,7 +735,7 @@ pub struct ImageCopy {
     /// Kept whether or not the node needs it (§9.2.2).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
-    /// A shared datastore's copy (`node` empty), spec/storage.md S9.
+    /// A shared datastore's copy (`node` empty), spec/24-storage.md S9.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub datastore: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -778,8 +778,8 @@ pub struct ImageResponse {
     /// The VM a kernel extracted from its disk belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
-    /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
+    /// In a cluster, each node's copy of the file (spec/14-clustering.md §9.2,
+    /// spec/16-clustering-ui.md §5.3; filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub copies: Vec<ImageCopy>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -808,10 +808,10 @@ pub struct DiskResponse {
     pub size_bytes: u64,
     pub origin: DiskOrigin,
     pub attached_to: Option<String>,
-    /// The node holding the file (spec/clustering.md §9.2); absent until bound.
+    /// The node holding the file (spec/14-clustering.md §9.2); absent until bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// That node's name (spec/clustering-ui.md §9).
+    /// That node's name (spec/16-clustering-ui.md §9).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
     pub pending_growpart: bool,
@@ -903,7 +903,7 @@ pub struct ImageSettings {
     pub default_root_bytes: u64,
     pub max_downloads: usize,
     pub allow_private_urls: bool,
-    /// A kernel image's kernel and initramfs limits (spec/kernel-boot.md §4.3).
+    /// A kernel image's kernel and initramfs limits (spec/23-kernel-boot.md §4.3).
     pub max_kernel_size: u64,
     pub max_initrd_size: u64,
     /// Extractions at once on this node (`GLIDEX_MAX_EXTRACTIONS`, §10.2).
@@ -1039,7 +1039,7 @@ pub struct ImageManager {
     /// This node's id: which of a datastore's paths is this node's (S14).
     node_id: arc_swap::ArcSwap<String>,
     /// The holder of the secrets key, once the API's auth service exists:
-    /// opens a hyperstor datastore's key on servers (spec/storage.md S20).
+    /// opens a hyperstor datastore's key on servers (spec/24-storage.md S20).
     secrets: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
 }
 
@@ -1148,7 +1148,7 @@ impl ImageManager {
     }
 
     /// Bring the in-memory records in step with the table after entries were
-    /// applied from the replicated log (spec/clustering.md §6.5): `keys` are
+    /// applied from the replicated log (spec/14-clustering.md §6.5): `keys` are
     /// the ids that changed in `table`.
     pub fn sync_keys(&self, table: crate::store::TableId, keys: &[String]) {
         use crate::store::TableId;
@@ -1203,7 +1203,7 @@ impl ImageManager {
     /// Reconcile records with files and resume interrupted downloads.
     /// Never deletes anything: orphans are only logged, and records whose
     /// file is gone are marked missing (spec §2), unless `held_elsewhere`
-    /// says another node has a ready copy (clustering.md §9.2.2).
+    /// says another node has a ready copy (14-clustering.md §9.2.2).
     pub fn initialize(self: &Arc<Self>, held_elsewhere: impl Fn(&Image) -> bool) {
         let mut resume = Vec::new();
         let mut known = std::collections::HashSet::new();
@@ -1317,7 +1317,7 @@ impl ImageManager {
     }
 
     /// Every file an image is made of, by the part name nodes copy it under
-    /// (spec/clustering.md §9.2): `main` first, then a firmware's `vars`
+    /// (spec/14-clustering.md §9.2): `main` first, then a firmware's `vars`
     /// template or a kernel's `initrd`, which an image may lack.
     pub fn image_files(&self, img: &Image) -> Vec<(&'static str, PathBuf)> {
         let mut files = vec![("main", self.image_file(img))];
@@ -1353,7 +1353,7 @@ impl ImageManager {
     }
 
     /// The driver of `d`'s datastore on this node: `local`, or a registered
-    /// `dir` datastore at this node's path to it (spec/storage.md S14). A
+    /// `dir` datastore at this node's path to it (spec/24-storage.md S14). A
     /// datastore this node isn't on is refused rather than looked for
     /// somewhere else.
     pub fn driver(&self, d: &Disk) -> Result<Arc<dyn crate::datastore::StorageDriver>, ImageError> {
@@ -1410,7 +1410,7 @@ impl ImageManager {
         self.node_id.store(Arc::new(id.to_string()));
     }
 
-    /// Whether `d` is on a hyperstor datastore (spec/storage.md §11.2).
+    /// Whether `d` is on a hyperstor datastore (spec/24-storage.md §11.2).
     pub fn is_hyperstor(&self, d: &Disk) -> bool {
         d.datastore != crate::datastore::LOCAL
             && crate::datastore::record::find(&self.db, &d.datastore)
@@ -1581,7 +1581,7 @@ impl ImageManager {
     }
 
     /// Disk `key`: an id, or a name that only one disk has. Names are
-    /// unique per tenant (spec/tenancy.md D24): where a tenant is known,
+    /// unique per tenant (spec/19-tenancy.md D24): where a tenant is known,
     /// [`get_disk_in`](Self::get_disk_in) resolves them.
     pub fn get_disk(&self, key: &str) -> Result<Disk, ImageError> {
         self.get_disk_in(key, |_| true)
@@ -1723,7 +1723,7 @@ impl ImageManager {
             _ => "ready",
         };
         // A hyperstor volume's path names it for the disk tools; it is no
-        // file to look for, nor one `qemu-img info` opens (storage.md §11.2).
+        // file to look for, nor one `qemu-img info` opens (24-storage.md §11.2).
         let volume = crate::datastore::hyperstor::parse_tool_path(&path).is_some();
         let (info, table) = if !with_detail || status != "ready" {
             (None, None)
@@ -1877,7 +1877,7 @@ impl ImageManager {
 
     /// The firmware image a VM of `hypervisor` boots through when none is
     /// named: the newest usable one built for it, for `arch` when the VM
-    /// has one (spec/clustering.md §9.2.1).
+    /// has one (spec/14-clustering.md §9.2.1).
     pub fn default_firmware(
         &self,
         hypervisor: crate::hypervisor::HypervisorType,
@@ -1957,7 +1957,7 @@ impl ImageManager {
 
     /// The image controller's half of a deletion: stop the download, then
     /// remove the record, then the files. A file that can't be removed is
-    /// left as an orphan (spec/images.md §2) and logged.
+    /// left as an orphan (spec/10-images.md §2) and logged.
     /// Remove the record and the files of an image being deleted. `false`
     /// when another round already did (a request's own round and the
     /// controller's can race to it).
@@ -2239,7 +2239,7 @@ mod tests {
     }
 
     /// Records written before datastores are `local`, and a `local` record
-    /// is written as they were (spec/storage.md S3).
+    /// is written as they were (spec/24-storage.md S3).
     #[test]
     fn disks_without_a_datastore_are_local_and_stay_so_written() {
         let old = serde_json::json!({ "id": "d", "name": "d", "project": "", "format": "qcow2", "size_bytes": 1048576,

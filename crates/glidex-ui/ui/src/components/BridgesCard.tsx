@@ -8,9 +8,9 @@ import Modal from "./Modal";
 import { Badge, ErrorBanner, errorMessage, inputClass, primaryButton, secondaryButton, selectClass } from "./ui";
 
 /** Commit a moved address once the API still answers through the new path
- * (networking.md §8.5): netd rolls it back by itself otherwise. On another
+ * (09-networking.md §8.5): netd rolls it back by itself otherwise. On another
  * node, the commit itself crosses the node link to its moved address
- * (spec/host-page.md §5). */
+ * (spec/28-host-page.md §5). */
 async function commitWhenReachable(r: UplinkResult, node?: string): Promise<string> {
   if (r.phase !== "UPLINK_PHASE_PENDING_COMMIT" || !r.record.pending) return "Added.";
   // Fresh request through the API: if it answers, the host is reachable.
@@ -192,8 +192,8 @@ function AddUplinkDialog({ bridge, node, onClose, onDone }: { bridge: string; no
   );
 }
 
-/** A host's glidex bridges and their uplinks (networking.md §8): `node`'s
- * (spec/host-page.md W2), else the host serving the UI. `host` is what
+/** A host's glidex bridges and their uplinks (09-networking.md §8): `node`'s
+ * (spec/28-host-page.md W2), else the host serving the UI. `host` is what
  * the actions are checked on (`hostOf`). */
 export default function BridgesCard({
   bridges,

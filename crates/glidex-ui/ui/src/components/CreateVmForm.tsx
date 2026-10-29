@@ -9,7 +9,7 @@ import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
 
 type BootMode = "firmware" | "kernel";
-/** Where a kernel-boot VM's kernel comes from (spec/kernel-boot.md §6). */
+/** Where a kernel-boot VM's kernel comes from (spec/23-kernel-boot.md §6). */
 type KernelSource = "image" | "path";
 
 /** The firmware catalog entry to pull for each hypervisor (Images page). */
@@ -21,7 +21,7 @@ const FIRMWARE_KEY: Record<HypervisorType, string> = {
 /** Where the last credential a user gave a VM in a project is kept (this browser). */
 const lastCredentialKey = (user: string | undefined, project: string | null | undefined) =>
   `glidex.credential.${user ?? ""}.${project ?? ""}`;
-/** Where a VM's root disk comes from (spec/images.md §7). */
+/** Where a VM's root disk comes from (spec/10-images.md §7). */
 type RootSource = "image" | "disk" | "path";
 
 interface CreateVmFormProps {
@@ -47,7 +47,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   // Set once the user picks a credential, so a late load never overrides it.
   const credentialChosen = useRef(false);
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
-  // Workload identity (spec/workload-identity.md W5).
+  // Workload identity (spec/29-workload-identity.md W5).
   const [serviceAccount, setServiceAccount] = useState("");
   const [serviceAccounts, setServiceAccounts] = useState<ApiToken[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -90,10 +90,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const firmware = bootMode === "firmware";
   const fromKernelImage = !firmware && kernelSource === "image";
   // A managed root disk, or a kernel image, gets the generated cloud-init
-  // seed, and so a credential (spec/kernel-boot.md K4).
+  // seed, and so a credential (spec/23-kernel-boot.md K4).
   const seeded = firmware || fromKernelImage || rootSource !== "path";
 
-  // The VM's architecture (spec/clustering.md §9.2.1): its image's, else
+  // The VM's architecture (spec/14-clustering.md §9.2.1): its image's, else
   // the chosen node's. The kernels and firmware offered are of it.
   const rootImage = rootSource === "image" ? images.find((i) => i.id === image) : undefined;
   const nodeArch = (nodes.clustered && node && nodes.nodes.get(node)?.status?.features?.arch) || undefined;
@@ -110,7 +110,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const archMismatch =
     nodeArch && rootImage?.arch && rootImage.arch !== archToProto(nodeArch) ? archLabel(rootImage.arch) : undefined;
   // Kernels for that architecture; the one extracted from the image first
-  // (spec/kernel-boot.md K3).
+  // (spec/23-kernel-boot.md K3).
   const kernelChoices = kernelImages
     .filter((k) => ofVmArch(k.arch))
     .sort((a, b) => Number(b.for_image === image) - Number(a.for_image === image));
@@ -160,7 +160,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const changeHypervisor = (next: HypervisorType) => {
     setFirmwareImage(firmwareFor(firmwareImages, next).filter((i) => ofVmArch(i.arch))[0]?.id ?? "");
     setHypervisor(next);
-    // An elastic Pylon guest boots with all max_vcpus (spec/pylon.md P2).
+    // An elastic Pylon guest boots with all max_vcpus (spec/30-pylon.md P2).
     if (next === "pylon" && isElastic && typeof maxVcpus === "number") setVcpuCount(maxVcpus);
   };
 
@@ -236,7 +236,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
   // The first GPU pool asked for (not under one switch) goes as `gpus`:
   // aligned NUMA placement, and the pool's per-device sizing for the vCPU
-  // and memory fields until they're set by hand (spec/gpu-vms.md §3).
+  // and memory fields until they're set by hand (spec/27-gpu-vms.md §3).
   const gpuPool = pools.find(
     (p) => p.class === "gpu" && (poolAsks[p.name ?? ""]?.count ?? 0) > 0 && !poolAsks[p.name ?? ""]?.sameSwitch,
   );

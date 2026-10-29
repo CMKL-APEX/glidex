@@ -1,4 +1,4 @@
-//! Membership changes on the leader (spec/clustering.md §5.5–5.7, §5.11):
+//! Membership changes on the leader (spec/14-clustering.md §5.5–5.7, §5.11):
 //! remove an empty node, forget a lost one, purge what it left, and issue
 //! the token that lets a repaired host come back as itself.
 //!

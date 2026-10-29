@@ -20,7 +20,7 @@ export function TenantFlags({ tenant }: { tenant: Tenant }) {
   );
 }
 
-/** Whether this cluster admits the tenant (spec/tenancy.md D9). */
+/** Whether this cluster admits the tenant (spec/19-tenancy.md D9). */
 export function AdmissionBadge({ tenant }: { tenant: Tenant }) {
   const a = tenant.admission;
   if (!a) return <Badge kind="muted">not admitted</Badge>;
@@ -32,7 +32,7 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [operator, setOperator] = useState(false);
-  // The first tenant-admin, invited (spec/tenancy.md §11): optional.
+  // The first tenant-admin, invited (spec/19-tenancy.md §11): optional.
   const [adminEmail, setAdminEmail] = useState("");
   const [connector, setConnector] = useState("");
   const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);

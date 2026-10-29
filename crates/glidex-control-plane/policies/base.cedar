@@ -1,4 +1,4 @@
-// Base policies (spec/security.md §7.3): invariants that no role, link
+// Base policies (spec/11-security.md §7.3): invariants that no role, link
 // or site policy can override.
 
 @id("base.disabled-user")
@@ -18,7 +18,7 @@ unless { context.auth.age_secs <= 600 };
 forbid (principal, action in [Glidex::Action::"useDisk", Glidex::Action::"useCredential"], resource)
 unless { resource.project == context.project };
 
-// A VM's service account is of its own tenant (workload-identity.md W5).
+// A VM's service account is of its own tenant (29-workload-identity.md W5).
 @id("base.service-account-same-tenant")
 forbid (principal, action == Glidex::Action::"useServiceAccount", resource)
 unless { resource.tenant == context.project.tenant };
@@ -39,7 +39,7 @@ unless {
 permit (principal, action == Glidex::Action::"useNetwork", resource);
 
 // Which pools a project may ask for devices of without host.devices
-// (spec/host-topology.md §9).
+// (spec/22-host-topology.md §9).
 @id("base.pci-pool-grant")
 permit (principal, action == Glidex::Action::"usePciPool", resource)
 when {
@@ -83,7 +83,7 @@ when { resource has project && resource.project == context.project };
 permit (principal, action in [Glidex::Action::"readImage", Glidex::Action::"readNetwork", Glidex::Action::"readDatastore"], resource);
 
 // Every user may put disks on any datastore; a site policy can forbid one
-// to some (spec/storage.md §13).
+// to some (spec/24-storage.md §13).
 @id("base.use-datastore")
 permit (principal, action == Glidex::Action::"useDatastore", resource);
 
@@ -97,7 +97,7 @@ when { resource == principal };
 permit (principal is Glidex::User, action == Glidex::Action::"manageOwnTokens", resource)
 when { resource == principal };
 
-// ---- tenants, operators and directories (spec/tenancy.md §10.2) ----------
+// ---- tenants, operators and directories (spec/19-tenancy.md §10.2) ----------
 
 // D1, D15: a tenant's resources are its members'. Members of the
 // directory's owner tenant may be linked in (delegation); members of the

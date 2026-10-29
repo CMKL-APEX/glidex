@@ -1,6 +1,6 @@
 [Unit]
 Description=glidex PAM helper (verifies local users' passwords for the control plane)
-Documentation=https://github.com/akkarit/glidex/blob/main/spec/security.md
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/11-security.md
 Requires=glidex-authd.socket
 After=glidex-authd.socket
 
@@ -12,7 +12,7 @@ ExecStart=/usr/local/bin/glidex-authd
 Restart=on-failure
 RestartSec=2
 
-# Hardening (security.md §9). PAM modules that need setuid helpers, the
+# Hardening (11-security.md §9). PAM modules that need setuid helpers, the
 # network (LDAP/RADIUS without sssd) or writes outside /run/faillock are
 # not supported.
 NoNewPrivileges=yes

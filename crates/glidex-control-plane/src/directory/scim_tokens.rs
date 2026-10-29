@@ -1,4 +1,4 @@
-//! SCIM bearer tokens (spec/tenancy.md §8.1, D21): `gxs_<base62>`, minted
+//! SCIM bearer tokens (spec/19-tenancy.md §8.1, D21): `gxs_<base62>`, minted
 //! for one connector and shown once. Only the token's SHA-256 is stored,
 //! as the row's key, so a request is checked with one lookup. A token
 //! authorizes that connector's SCIM endpoints and nothing else: it is not

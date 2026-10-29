@@ -1,4 +1,4 @@
-//! Raft integration (spec/clustering.md §6.2): the log, the state machine and
+//! Raft integration (spec/14-clustering.md §6.2): the log, the state machine and
 //! the transport, from `glidex-raftstore`, for glidex's [`Glidex`] schema.
 
 use crate::store::{Db, Glidex, StoreError};

@@ -1,5 +1,5 @@
 //! Logging in to this cluster's web UI at a trusted directory
-//! (spec/tenancy.md D69): the cluster is that directory's OIDC client
+//! (spec/19-tenancy.md D69): the cluster is that directory's OIDC client
 //! `cluster:<id>`.
 //!
 //! - `GET /auth/t/{trusted}/start`: to the directory's `authorize` with

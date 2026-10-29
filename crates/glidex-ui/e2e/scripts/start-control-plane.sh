@@ -9,7 +9,7 @@
 # their primary group); tests/auth.setup.ts turns that into a browser
 # session. They are its `ui_user` too: the dev server and glidex-ui reach
 # it through its ui.sock, where the UI's gRPC-Web RPCs are taken
-# (spec/grpc.md §6).
+# (spec/18-grpc.md §6).
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -70,7 +70,7 @@ EOF
 export HOME=$e2e_home
 export GLIDEX_CONFIG=$e2e_home/control-plane.json
 export GLIDEX_RUN_DIR=$e2e_home/run
-# Registered datastores live under this, not /srv/glidex (spec/storage.md S11).
+# Registered datastores live under this, not /srv/glidex (spec/24-storage.md S11).
 export GLIDEX_DATASTORE_ROOT=$e2e_home/datastores
 mkdir -p "$GLIDEX_DATASTORE_ROOT"
 unset RUNTIME_DIRECTORY CREDENTIALS_DIRECTORY

@@ -1,4 +1,4 @@
-//! The access family on its RPCs and REST twins (spec/grpc.md §9.1, G2):
+//! The access family on its RPCs and REST twins (spec/18-grpc.md §9.1, G2):
 //! projects and bindings, users, teams, tokens, host bindings, policies,
 //! audit and capability checks, in the proto shape on both transports.
 

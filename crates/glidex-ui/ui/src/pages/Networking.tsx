@@ -31,7 +31,7 @@ function errorText(e: unknown): string {
 }
 
 /** Where a new network goes: `""` is a host network (net-admin), else a
- * project id (the project's owner; spec/security.md §6.2). */
+ * project id (the project's owner; spec/11-security.md §6.2). */
 type Scope = { value: string; label: string };
 
 function AddNetworkForm({
@@ -59,7 +59,7 @@ function AddNetworkForm({
   const [vlan, setVlan] = useState("");
   const [physnet, setPhysnet] = useState("");
   // A project NAT network spanning the nodes: the shared edge (""), or one of
-  // the project's routers (spec/clustering.md §11.2a).
+  // the project's routers (spec/14-clustering.md §11.2a).
   const [router, setRouter] = useState(initialRouter);
   const [routers, setRouters] = useState<Router[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +67,7 @@ function AddNetworkForm({
   // In a cluster: one OVN network for every node, or a bridge on this node.
   const nodes = useNodes();
   const { host } = useSession();
-  // Cluster networks need OVN on (spec/clustering-ui.md §8a): ask once.
+  // Cluster networks need OVN on (spec/16-clustering-ui.md §8a): ask once.
   const [ovnOn, setOvnOn] = useState<boolean | null>(null);
   const [edgeSet, setEdgeSet] = useState(false);
   useEffect(() => {
@@ -310,7 +310,7 @@ function AddNetworkForm({
   );
 }
 
-/** The network controller's view (spec/reconciliation.md §10.3). */
+/** The network controller's view (spec/12-reconciliation.md §10.3). */
 function NetworkStatus({ n }: { n: Network }) {
   const why = notReady(n.conditions);
   const phase = networkPhaseLabel(n.phase);

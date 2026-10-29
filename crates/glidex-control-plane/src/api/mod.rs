@@ -1,5 +1,5 @@
-//! REST API (spec/rest-api.md) with authentication and Cedar
-//! authorization (spec/security.md §5, §7).
+//! REST API (spec/06-rest-api.md) with authentication and Cedar
+//! authorization (spec/11-security.md §5, §7).
 //!
 //! Every route is declared once in [`routes`] together with the Cedar
 //! action it maps to. A per-route layer hands that action to the handler
@@ -72,14 +72,14 @@ pub enum Listener {
     /// `ui.sock`: glidex-ui proxying browsers.
     Ui,
     /// A request another server authenticated and forwarded over :8842
-    /// (spec/clustering.md §6.4); the principal comes from its header.
+    /// (spec/14-clustering.md §6.4); the principal comes from its header.
     Cluster,
     /// A browser request an agent's UI socket relayed over :8842
-    /// (spec/clustering-ui.md §3.6): authenticated here like `Ui`, with the
+    /// (spec/16-clustering-ui.md §3.6): authenticated here like `Ui`, with the
     /// Origin already checked by the agent.
     Relay,
     /// `metad.sock`: glidex-metad, with its own router
-    /// (spec/workload-identity.md W11).
+    /// (spec/29-workload-identity.md W11).
     Metad,
 }
 
@@ -89,7 +89,7 @@ pub struct RelayedBy(pub String);
 
 /// A relayed host-local request meant for this other node's host: the
 /// route's action is authorized here on that node's `Host`, then the
-/// request runs there (spec/clustering-ui.md §3.6).
+/// request runs there (spec/16-clustering-ui.md §3.6).
 #[derive(Debug, Clone)]
 pub struct RemoteHost(pub String);
 
@@ -135,7 +135,7 @@ struct AuditSlot(Arc<Mutex<AuditInfo>>);
 
 /// Route actions that aren't Cedar actions.
 pub const PUBLIC: &str = "public";
-/// Largest SCIM body (spec/tenancy.md §8.1).
+/// Largest SCIM body (spec/19-tenancy.md §8.1).
 const SCIM_BODY: usize = 1 << 20;
 /// Any authenticated principal; the handler scopes the result itself.
 pub const AUTHENTICATED: &str = "authenticated";
@@ -156,7 +156,7 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 
 pub fn router(app: AppState) -> Router {
     // What a server publishes as its web UI's address until its glidex-ui
-    // reports one (spec/host-page.md W3); the next self-report writes it.
+    // reports one (spec/28-host-page.md W3); the next self-report writes it.
     let cfg = &app.auth.config;
     app.manager.set_ui_url(
         cfg.cluster
@@ -609,7 +609,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "readSystemStatus",
         get(vms::system_reconcile),
     )
-    // ---- cluster (spec/clustering.md §5)
+    // ---- cluster (spec/14-clustering.md §5)
     .add("POST", "/cluster/init", "initCluster", post(cluster::init))
     .add("POST", "/cluster/join", "joinCluster", post(cluster::join))
     .add(
@@ -702,7 +702,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "snapshotCluster",
         get(cluster::snapshot),
     )
-    // ---- nodes (spec/clustering.md §7)
+    // ---- nodes (spec/14-clustering.md §7)
     .add("GET", "/nodes", "listNodes", get(nodes::list))
     .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
     .add(
@@ -838,13 +838,13 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(access::oidc_device_poll),
     )
-    // Directory connectors (spec/tenancy.md §6): discovery and each
+    // Directory connectors (spec/19-tenancy.md §6): discovery and each
     // connector's own login routes.
     .add("POST", "/auth/discover", PUBLIC, post(access::discover))
-    // Workload federation (spec/tenancy.md §9): a CI job's JWT for a
+    // Workload federation (spec/19-tenancy.md §9): a CI job's JWT for a
     // short-lived token; the JWT is the credential.
     .add("POST", "/auth/exchange", PUBLIC, post(exchange::exchange))
-    // A directory as an issuer (spec/tenancy.md D52, D53).
+    // A directory as an issuer (spec/19-tenancy.md D52, D53).
     .add(
         "GET",
         "/d/{dir}/.well-known/openid-configuration",
@@ -896,7 +896,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         AUTHENTICATED,
         post(op::device_answer),
     )
-    // Passkeys (spec/passkeys.md): the browser's ceremonies.
+    // Passkeys (spec/25-passkeys.md): the browser's ceremonies.
     .add(
         "POST",
         "/auth/passkeys/login/start",
@@ -940,7 +940,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(invitations::inspect),
     )
-    // A passkey invitation's first passkey (spec/tenancy.md D60).
+    // A passkey invitation's first passkey (spec/19-tenancy.md D60).
     .add(
         "POST",
         "/auth/invitation/passkey/start",
@@ -966,7 +966,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         get(access::connector_callback),
     )
-    // A browser's accounts in several directories (spec/tenancy.md D71):
+    // A browser's accounts in several directories (spec/19-tenancy.md D71):
     // public, so a browser without an active session can switch back.
     .add("GET", "/auth/accounts", PUBLIC, get(accounts::list))
     .add(
@@ -988,7 +988,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(accounts::logout_all),
     )
-    // Logins at a trusted directory (spec/tenancy.md D69).
+    // Logins at a trusted directory (spec/19-tenancy.md D69).
     .add(
         "GET",
         "/auth/t/{trusted}/start",
@@ -1126,7 +1126,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageTeams",
         delete(access::remove_member),
     )
-    // ---- tenants and admissions (spec/tenancy.md §14; REST twins of glidex.tenancy.v1)
+    // ---- tenants and admissions (spec/19-tenancy.md §14; REST twins of glidex.tenancy.v1)
     .add("GET", "/tenants", AUTHENTICATED, get(tenants::list))
     .add("POST", "/tenants", "createTenant", post(tenants::create))
     .add("GET", "/tenants/{id}", "readTenant", get(tenants::get))
@@ -1202,7 +1202,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageTenantBindings",
         delete(tenants::remove_binding),
     )
-    // ---- invitations (spec/tenancy.md §6.1)
+    // ---- invitations (spec/19-tenancy.md §6.1)
     .add(
         "GET",
         "/tenants/{id}/federations",
@@ -1251,7 +1251,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageTenantInvitations",
         delete(invitations::revoke),
     )
-    // ---- the directory's signing keys (spec/tenancy.md D53)
+    // ---- the directory's signing keys (spec/19-tenancy.md D53)
     .add(
         "GET",
         "/directory/keys",
@@ -1264,7 +1264,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "rotateSigningKey",
         post(issuer::rotate_key),
     )
-    // ---- directory connectors (spec/tenancy.md §5; REST twins of glidex.directory.v1)
+    // ---- directory connectors (spec/19-tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
         "GET",
         "/connectors",
@@ -1331,7 +1331,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageScimTokens",
         delete(connectors::revoke_scim_token),
     )
-    // SCIM 2.0 (spec/tenancy.md §8.1): its own bearer tokens, checked by
+    // SCIM 2.0 (spec/19-tenancy.md §8.1): its own bearer tokens, checked by
     // the handlers; bodies up to 1 MiB.
     .add(
         "GET",
@@ -1609,7 +1609,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(access::reload_policies),
     )
     .add("GET", "/audit", AUTHENTICATED, get(access::read_audit))
-    // ---- usage (spec/metering.md §9)
+    // ---- usage (spec/13-metering.md §9)
     .add("GET", "/usage", "readUsage", get(usage::usage))
     .add(
         "GET",
@@ -1691,7 +1691,7 @@ async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-/// A REST answer: the message as proto3 JSON (spec/grpc.md §9.1).
+/// A REST answer: the message as proto3 JSON (spec/18-grpc.md §9.1).
 pub(crate) struct Proto<T>(pub StatusCode, pub T);
 
 impl<T: serde::Serialize> axum::response::IntoResponse for Proto<T> {
@@ -1808,7 +1808,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         }
     }
 
-    // SCIM (spec/tenancy.md §8.1): the IdP's `gxs_` token is the SCIM
+    // SCIM (spec/19-tenancy.md §8.1): the IdP's `gxs_` token is the SCIM
     // handlers' to check; it is no principal of the API.
     let scim = req.uri().path().starts_with("/scim/v2/");
     let principal = if app.auth.is_disabled() {
@@ -1858,7 +1858,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                     };
                     match found {
                         // An API token only on the clusters it lists
-                        // (spec/tenancy.md §7.4); one fed from a trusted
+                        // (spec/19-tenancy.md §7.4); one fed from a trusted
                         // directory was made elsewhere.
                         Ok(Some(p))
                             if p.token.as_ref().is_some_and(|t| {
@@ -1936,7 +1936,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             }
         }
     };
-    // A trusted directory's people (spec/tenancy.md D13): refused once its
+    // A trusted directory's people (spec/19-tenancy.md D13): refused once its
     // replica here is older than its `max_staleness`, since a revocation
     // may be missing; behind, they are told by how much. `/auth/…` stays
     // open to them, to see who they are and to log out.
@@ -1981,7 +1981,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
 /// From glidex-ui: an `Origin` equal to `https://` + `X-Forwarded-Host`.
 /// The UI sets that header to the request's `Host`, which it has already
 /// checked against its allowlist, so this is a same-origin check that
-/// admits no name the UI wouldn't serve (spec/tailscale-tls.md T7).
+/// admits no name the UI wouldn't serve (spec/21-tailscale-tls.md T7).
 fn ui_same_origin(origin: &str, headers: &HeaderMap) -> bool {
     let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
     match (header("x-forwarded-proto"), header("x-forwarded-host")) {
@@ -2041,7 +2041,7 @@ async fn audit_layer(State(app): State<AppState>, mut req: Request, next: Next) 
     resp
 }
 
-/// The audit entry of one request (spec/security.md §10), for REST and
+/// The audit entry of one request (spec/11-security.md §10), for REST and
 /// RPCs alike: writes always, any request a policy denied, and reads a
 /// handler asked to record. `failure` is (result, error code);
 /// `transport` is the detail saying how the request came in.
@@ -2180,7 +2180,7 @@ impl Caller {
     }
 
     /// The directory a request about directory records is about: the
-    /// caller's own (spec/tenancy.md D58).
+    /// caller's own (spec/19-tenancy.md D58).
     pub fn directory_ent(&self) -> Ent {
         Ent::Directory(self.p.directory_id().to_string())
     }
@@ -2223,7 +2223,7 @@ impl Caller {
 
     /// Whether a fresh login would allow what step-up now refuses: a
     /// browser session older than the step-up window. A token can't log
-    /// in again, so it never would (spec/security.md §7.5).
+    /// in again, so it never would (spec/11-security.md §7.5).
     pub fn allowed_after_reauth(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
         if !matches!(
             self.p.method,
@@ -2301,7 +2301,7 @@ impl Caller {
     }
 
     /// D9: allocating on this cluster needs the project's tenant admitted
-    /// here (`useCluster`, spec/tenancy.md §10.4); `403 not_admitted` otherwise.
+    /// here (`useCluster`, spec/19-tenancy.md §10.4); `403 not_admitted` otherwise.
     pub fn require_admitted(&self, project: &str) -> Result<(), ApiErr> {
         let d = self.decide(
             "useCluster",
@@ -2536,7 +2536,7 @@ pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> En
     Ent::Network(n.id.clone())
 }
 
-/// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).
+/// Where `gxctl` on an agent logs in: a server's API (spec/17-gxctl-auth.md).
 fn agent_login_hint(m: &crate::state::VmManager) -> String {
     let servers: Vec<String> = m
         .nodes()
@@ -2666,7 +2666,7 @@ mod tests {
             ]
         );
 
-        // The RPC operation table (spec/grpc.md §5): the same rules, and
+        // The RPC operation table (spec/18-grpc.md §5): the same rules, and
         // each REST twin is registered with the same action.
         assert!(!glidex_api::OPERATIONS.is_empty());
         for op in glidex_api::OPERATIONS {

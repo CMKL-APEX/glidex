@@ -1,8 +1,8 @@
 # `gxctl` login profiles and client trust
 
 Status: **design accepted; specs merged, code pending** (milestones §12).
-Complements [cli.md](cli.md) "Transport and authentication" and
-[security.md](security.md) §5; it does not change the server's
+Complements [01-cli.md](01-cli.md) "Transport and authentication" and
+[11-security.md](11-security.md) §5; it does not change the server's
 authorization model. The spec edits it required are already applied to
 those documents — §9 and §10 are their change record — and every
 not-yet-built row there carries a *(draft)* tag, so the implemented
@@ -19,9 +19,9 @@ physically own, and fails for the two cases this document covers:
    and re-running `login` to swap the single token file, with no record
    of which token belongs to which server.
 2. **Self-signed certificates.** Remote control planes present the
-   `rcgen` self-signed certificate of [security.md §5.1.1](security.md).
+   `rcgen` self-signed certificate of [11-security.md §5.1.1](11-security.md).
    gxctl verifies against the system store plus `GLIDEX_CA_CERT` and
-   offers *no* way to accept anything else (cli.md:43-45,
+   offers *no* way to accept anything else (01-cli.md:43-45,
    `glidex-tls/src/lib.rs:453` "never accepts anything the WebPKI
    verifier refuses"), so every first connection to a new host is a
    dead end unless someone copies the PEM file out of band.
@@ -39,7 +39,7 @@ from an interactive or scripted login against a chosen target.
 | A4 | Self-signed trust | The supported "bypass" is **pinning the leaf-certificate SHA-256** (TOFU at login), not skipping verification. Verification of signature, validity dates and (by default) the name still run against the pinned certificate. |
 | A5 | Insecure bypass | A true "verify nothing" mode exists (`insecure`) but is a declared escape hatch: it needs an interactive confirmation echoed into the file, prints a warning on every command, and is never reachable by default, by expiry, or by an untrusted-certificate error. |
 | A6 | Cluster binding | Each profile records the `cluster_id` the server reports (`GET /auth/server-info`, new, §7.1); connecting to a server that reports a different id is a hard error, not a prompt. |
-| A7 | HA targets | A profile may list several server URLs of the **same** cluster (any node with the server role serves the API, [clustering.md §8](clustering.md)); gxctl tries them in order and reorders by recent success. |
+| A7 | HA targets | A profile may list several server URLs of the **same** cluster (any node with the server role serves the API, [14-clustering.md §8](14-clustering.md)); gxctl tries them in order and reorders by recent success. |
 | A8 | Command surface | New `auth` command group (`auth login`, `auth logout`, `auth status`, `auth use`, `auth token …`, `auth trust …`). The existing `login` / `logout` / `whoami` / `token …` names stay as aliases; `auth` is free today (main.rs:1441). |
 | A9 | Back compatibility | With no config file, behaviour is byte-for-byte today's. The legacy token file keeps working as the credential of an implicit `localhost` profile and is folded in on first `auth login`. |
 
@@ -52,7 +52,7 @@ from an interactive or scripted login against a chosen target.
 | Path | `$XDG_CONFIG_HOME/glidex/config.json`, default `~/.config/glidex/config.json` — the directory of `token_path()` (`client.rs:59-62`). |
 | Override | `GLIDEX_CONFIG=<path>` names a different file (CI, multiple laptops' users); `GLIDEX_CONFIG=` (empty) disables reading any file, which CI should set so a stray profile dir cannot change what a pipeline talks to. |
 | Modes | Directory `0700`, file `0600`; written to a temp file and renamed, exactly as `save_token_file` does (`client.rs:92-116`). |
-| Read guards | Refused, with the same wording as the token file, when any of `0o077` is set or the owner is not the euid. **Invariant:** the file holds a bearer token, which is as good as a password (security.md §5.5). |
+| Read guards | Refused, with the same wording as the token file, when any of `0o077` is set or the owner is not the euid. **Invariant:** the file holds a bearer token, which is as good as a password (11-security.md §5.5). |
 | Debug | The parsed config type implements `Debug` printing only profile names, URLs and trust modes — never a token or `token_command` output. |
 | Certificates | PEM files a profile references live under `~/.config/glidex/certs/` (dir `0700`, files `0600`…`0644`), or are embedded as `ca_pem`. A `ca_file` outside the glidex dir must pass the `trustworthy()` owner/mode check (`glidex-tls/src/lib.rs:387-397`) before being added to the trust store, so a plantable file in a world-writable directory never becomes a CA. |
 
@@ -112,15 +112,15 @@ Field rules:
 
 | Field | Meaning |
 |---|---|
-| `url` | One or more API base URLs of **one** cluster (all must report the same `cluster_id`; §4.3). Stored as given, `https://` always (plain `http://` only for loopback, cli.md:20). |
+| `url` | One or more API base URLs of **one** cluster (all must report the same `cluster_id`; §4.3). Stored as given, `https://` always (plain `http://` only for loopback, 01-cli.md:20). |
 | `cluster_id` | Written by `auth login` from `GET /auth/server-info`; the profile is bound to it (§4.3). `null` = never verified (hand-edited or pre-login skeleton); any request before the check completes is refused. |
 | `cluster_name` | Display only. |
-| `project` | Session default, equivalent to `--project` (cli.md:22). The server-side default from `project use` still wins when unset. |
+| `project` | Session default, equivalent to `--project` (01-cli.md:22). The server-side default from `project use` still wins when unset. |
 | `tls.ca_file` / `ca_pem` | Extra roots merged with the system store. |
 | `tls.pins` | Lowercase `sha256/<64 hex>` leaf-certificate fingerprints, §5.3. |
-| `tls.verify_host` | Default `true`. `false` is accepted **only** together with a matching `pins` entry, for dial-by-IP edge nodes whose certificate lacks the SAN (security.md §5.1.1: regenerate the cert is the better fix). |
+| `tls.verify_host` | Default `true`. `false` is accepted **only** together with a matching `pins` entry, for dial-by-IP edge nodes whose certificate lacks the SAN (11-security.md §5.1.1: regenerate the cert is the better fix). |
 | `tls.insecure` + `i_understand` | §5.4. `i_understand` must equal the profile's host, typed by the user at `auth login --insecure`. |
-| `token` | The `gxt_…` secret (security.md §5.5). Mutually exclusive with `token_command`; `token_command` wins when both exist (with a warning), so a site-wide helper beats a stale copy. |
+| `token` | The `gxt_…` secret (11-security.md §5.5). Mutually exclusive with `token_command`; `token_command` wins when both exist (with a warning), so a site-wide helper beats a stale copy. |
 | `identity.*` | Written from the `GET /auth/whoami` answer after the token is checked, and shown by `auth status`; never used for authorization, purely to show what the credential is. |
 | `last_used.url` | Failover reordering hint (§4.2); losing it costs nothing. |
 
@@ -143,9 +143,9 @@ one-off `--url` dance):
    profiles but no `current` — an error listing them.
 3. **No config file:** today's behaviour exactly — `--url` or
    `GLIDEX_TOKEN` → TCP, else the Unix socket ladder, else
-   `https://localhost:8841` (cli.md:16-21). A hand-edited skeleton file
+   `https://localhost:8841` (01-cli.md:16-21). A hand-edited skeleton file
    with only `url` fields behaves the same until a login fills it in.
-4. **Credential:** `GLIDEX_TOKEN` wins over the profile token (cli.md:29
+4. **Credential:** `GLIDEX_TOKEN` wins over the profile token (01-cli.md:29
    kept); `token_command`'s stdout (trimmed, one line, ≤ 4 KiB) wins
    over the stored field but not over `GLIDEX_TOKEN`, is never echoed or
    logged, and its failure aborts the request with the helper's exit
@@ -157,7 +157,7 @@ one-off `--url` dance):
    never deleted without `--revoke`.
 
 **Why precedence this way:** scripts pinning `GLIDEX_TOKEN` must keep
-working unchanged (cron jobs written against cli.md's current table),
+working unchanged (cron jobs written against 01-cli.md's current table),
 and an operator with `--profile prod` selected must be able to debug
 against `--url` without any chance of the prod token leaking into the
 debug target — the ad-hoc URL starts from the profile's trust settings
@@ -215,10 +215,10 @@ require a well-formed certificate and successful key agreement:
    self-signed PEM, owner-checked as §2.1.
 3. A profile `pins` entry matching the leaf certificate's SHA-256
    (`fingerprint_der`, `glidex-tls/src/lib.rs:224` — same computation as
-   the server logs at start, security.md §5.1.1, so the numbers users
+   the server logs at start, 11-security.md §5.1.1, so the numbers users
    compare are the same numbers).
 4. Loopback only: the published `/run/glidex-cp/tls.crt` ladder
-   (`published_certs()`, cli.md:40-42), unchanged.
+   (`published_certs()`, 01-cli.md:40-42), unchanged.
 
 Name verification (SAN match) runs in all four, and in 3 unless
 `verify_host: false` **with** pins present. The `Recording` verifier
@@ -262,7 +262,7 @@ trust anchor on first use and enforces it from then on.
   re-reads the server's published fingerprint and reports match/no-match
   without connecting anything else.
 - The server regenerates its certificate only in the narrow cases of
-  security.md §5.1.1 (missing, unreadable, < 30 days to expiry), and
+  11-security.md §5.1.1 (missing, unreadable, < 30 days to expiry), and
   the fingerprint-stable invariant keeps pins valid across restarts.
   When it *does* change, the pin-mismatch error prints the old pin, the
   new fingerprint, the `auth trust fetch` command, and warns that a
@@ -304,7 +304,7 @@ muscle memory survive.
 | `auth status [--profile P]` / `auth` with no argument | REPL banner and this: target URLs, cluster id/name, trust mode (`system+ca+pinned(<n>)` / `pinned+no-name-check` / **`UNVERIFIED`**), profile token name/expiry, server methods, and the `current` marker. |
 | `auth use P` / `auth use -` | Set / clear `current`. |
 | `auth profiles [--all]` | List profiles; `--all` adds each one's trust mode and token name. |
-| `auth token list\|create\|revoke …` | The old `token` commands (cli.md:138-140): `create` keeps `--days N --service-account [--project P] --role ROLE[@PROJECT]…` forwarded as today. |
+| `auth token list\|create\|revoke …` | The old `token` commands (01-cli.md:138-140): `create` keeps `--days N --service-account [--project P] --role ROLE[@PROJECT]…` forwarded as today. |
 | `auth trust list\|fetch\|remove …` | §5.3. |
 
 ### 6.1 `auth login` — what it does, in order
@@ -324,16 +324,16 @@ muscle memory survive.
      verification URI + user code, poll; `token_name: "gxctl@<profile>"`
      (§7.2), plus `{device: hostname, client: "gxctl/<version>"}`.
    - `--directory [ID]`: a login at the directory the target hosts
-     ([tenancy.md](tenancy.md) D57): its device grant, approved on the
+     ([19-tenancy.md](19-tenancy.md) D57): its device grant, approved on the
      web UI's `/device` page, gives a refresh token kept in the profile
      (`directory`) and an access token for this cluster (`token`), which
      gxctl renews from the refresh token before it expires.
    - `--token`: read the secret with echo off from a TTY, or raw from
-     stdin when piped (as `login --token` does, cli.md:134).
+     stdin when piped (as `login --token` does, 01-cli.md:134).
    - `--pam-user U`: `POST /auth/token {username, password,
      token_name}` (§7.3) — hidden password prompt → returns a fresh
      personal token. Rate limits and lockout are the server's (§5.3 of
-     security.md), so gxctl needs none of its own.
+     11-security.md), so gxctl needs none of its own.
    - Ad-hoc `--url` with an existing profile whose host matches: reuse
      the profile credential without re-prompting (a no-op convenience,
      like `docker login`'s silent token reuse).
@@ -361,7 +361,7 @@ operator knows which cluster `delete vm` points at.
 
 ## 7. Server-side additions
 
-Small, all consistent with security.md; §9 records the needed edits.
+Small, all consistent with 11-security.md; §9 records the needed edits.
 
 ### 7.1 `GET /auth/server-info` (public)
 
@@ -371,11 +371,11 @@ Same public allowlist as `/auth/methods` (`api/mod.rs:246`,
 `fingerprint` is `glidex_tls::fingerprint()` over the serving
 certificate — public information (the server logs it at start; a
 certificate's fingerprint is not a secret). `cluster_id`/`node_id` come
-from `<state dir>/cluster/identity.json` (clustering.md:1565); a
+from `<state dir>/cluster/identity.json` (14-clustering.md:1565); a
 standalone host reports its single-node cluster id, and leaves the
 field out before clustering state exists. The body is the proto JSON of
 `glidex.system.v1.GetServerInfoResponse`, the same message
-`SystemService.GetServerInfo` returns over RPC ([grpc.md](grpc.md) G0):
+`SystemService.GetServerInfo` returns over RPC ([18-grpc.md](18-grpc.md) G0):
 unset `cluster_id`, `node_id` and `fingerprint` are omitted rather than
 `null` (readers that index the JSON see no difference), and the three
 `methods` flags are always present. Caches nothing per client; no rate needed
@@ -386,13 +386,13 @@ monitoring sees it without a new route.
 
 - Device and PAM token flows stamp `api_tokens` with
   `{name: "gxctl@<profile>", device: "<hostname>", client: "gxctl/<version>"}`
-  (columns next to `last_used_from`, security.md §5.5). The name is
+  (columns next to `last_used_from`, 11-security.md §5.5). The name is
   what lets an owner `token revoke` the right laptop's credential from
   `token list`; `device` is display and audit only, never checked.
 - `token_name` on the device poll is already a parameter
   (admin.rs:159) — clients today hard-code `"gxctl"`; the server caps
   length (≤ 64) and rejects control characters.
-- The server's `auth.tokens.max_days` clamp (security.md §13) applies
+- The server's `auth.tokens.max_days` clamp (11-security.md §13) applies
   to login-created tokens exactly as to `token create`.
 
 ### 7.3 `POST /auth/token` — credential → personal token
@@ -400,12 +400,12 @@ monitoring sees it without a new route.
 `{username, password, token_name?, device?, client?, days?}` →
 `{issued: {token, token_id, expires_at, user_id, display_name}}`
 (`glidex.auth.v1.PasswordTokenResponse`; or `401`, rate-limited). It runs the
-same authd path as `POST /auth/login` (security.md §5.3: peer check,
+same authd path as `POST /auth/login` (11-security.md §5.3: peer check,
 `pam_acct_mgmt`, `allowed_groups`, the 5/15 min + 30/min limits, the
 fixed delay) but mints a *bearer token* like the device flow does,
 instead of a browser session cookie — the CLI and CI need bearer
-tokens; sessions are the browser's (security.md §5.5). TLS-only,
-password zeroized after use, never logged (security.md §10). JIT
+tokens; sessions are the browser's (11-security.md §5.5). TLS-only,
+password zeroized after use, never logged (11-security.md §10). JIT
 provisioning and `pam.group_teams` sync happen here as they do on any
 PAM login. Accepts the request only when `pam.enabled`; otherwise
 `401` pointing at the server config, so a site cannot not notice the
@@ -418,17 +418,17 @@ config file caches:
 
 | Identity | Created | First credential | Administered |
 |---|---|---|---|
-| `unix:<name>` (local) | Just-in-time on first `api.sock` connect, `glidex-users` only (security.md §5.2) | none (peer uid) | groups; `glidex-admin` = break-glass. Never reachable from a profile: TCP never carries unix identity. |
-| `pam:<name>` | JIT on first successful `glidex-authd` login when in `pam.allowed_groups` (security.md §5.3) | local Unix password → `auth login --pam-user` (§6.1.4) → personal `gxt_` token | `pam.group_teams` sync at each login; disable by removing from the Unix group **and** `PATCH /users/{id} {"disabled": true}`. |
-| `oidc:<issuer>+<sub>` | JIT on first device/browser login passing `allowed_domains`/`required_groups` (security.md §5.4) | browser at the IdP (device flow) | `oidc.group_teams` re-synced each login; deprovision at the IdP, then disable here. |
-| personal token | `token create` or `auth login` (§6.1) | the `gxt_` secret in the profile | owner may list/revoke own tokens; ∩ with owner on every request (§7.5 of security.md). |
+| `unix:<name>` (local) | Just-in-time on first `api.sock` connect, `glidex-users` only (11-security.md §5.2) | none (peer uid) | groups; `glidex-admin` = break-glass. Never reachable from a profile: TCP never carries unix identity. |
+| `pam:<name>` | JIT on first successful `glidex-authd` login when in `pam.allowed_groups` (11-security.md §5.3) | local Unix password → `auth login --pam-user` (§6.1.4) → personal `gxt_` token | `pam.group_teams` sync at each login; disable by removing from the Unix group **and** `PATCH /users/{id} {"disabled": true}`. |
+| `oidc:<issuer>+<sub>` | JIT on first device/browser login passing `allowed_domains`/`required_groups` (11-security.md §5.4) | browser at the IdP (device flow) | `oidc.group_teams` re-synced each login; deprovision at the IdP, then disable here. |
+| personal token | `token create` or `auth login` (§6.1) | the `gxt_` secret in the profile | owner may list/revoke own tokens; ∩ with owner on every request (§7.5 of 11-security.md). |
 | service-account token | `token create --service-account --project P` | handed out once, pasted into CI, or `token_command` | `project.members` in P or `system.identity`; linked roles live on the token itself. |
 | `system-admin` etc. | role links by an existing `system-admin` (`system-binding add`) / `project.members` (`binding add`) | — | break-glass on the socket bootstraps the first one. |
 
 **Remote bootstrap (the chicken-and-egg).** No OIDC yet, no remote
 login possible: from a shell on the host, root runs
 `gxctl auth token create bootstrap-1 --days 1 --role role.system-admin`
-(a host role, so the link lands on the `Cluster`, security.md §7.3; the
+(a host role, so the link lands on the `Cluster`, 11-security.md §7.3; the
 secret prints once, §5.5), hands it over any channel,
 the operator runs `gxctl auth login --url https://… --token`, and the
 token expires or is revoked after the real identities exist. This is
@@ -436,7 +436,7 @@ the documented path, not a back door: the grant still ends at the
 `role.system-admin` link, and `unix:glidex-admin` break-glass remains
 impossible remotely — a token is a `Token` principal and the
 `base.break-glass` team only gains members from `SO_PEERCRED`
-(security.md §7.3, "They can't be created, joined or synced from
+(11-security.md §7.3, "They can't be created, joined or synced from
 OIDC").
 
 Lifecycle (admin side, unchanged surface — `user list` shows
@@ -463,10 +463,10 @@ identities, `token list` shows `last_used_from` + the new `device`):
 | server has the method off | `the server does not accept <oidc/pam> logins` (+ its config key), not a raw 404. |
 | all endpoints down | each URL and reason (§4.2). |
 
-## 9. Changes to spec/security.md (applied — change record)
+## 9. Changes to spec/11-security.md (applied — change record)
 
 Applied alongside this design so the two documents agree; none of them
-changes an authorization decision. Reviewers can check security.md
+changes an authorization decision. Reviewers can check 11-security.md
 against this list.
 
 1. **§2 Decisions — add row 18.** *Client trust*: `Pinning the leaf
@@ -474,9 +474,9 @@ against this list.
    self-signed control planes. Verification of the chain, dates and
    name keeps running against the pinned certificate. A no-verify mode
    exists only as an explicitly confirmed, per-profile, loudly marked
-   escape hatch ([gxctl-auth.md §5](gxctl-auth.md)).`
+   escape hatch ([17-gxctl-auth.md §5](17-gxctl-auth.md)).`
 2. **§5.1.1 bullet "remote gxctl uses `GLIDEX_CA_CERT`"** → extend:
-   `…or the profile's ca_file/ca_pem/pins (gxctl-auth.md §5);
+   `…or the profile's ca_file/ca_pem/pins (17-gxctl-auth.md §5);
    GLIDEX_CA_CERT remains as the per-invocation override.` The
    fingerprint-stable invariant in that bullet is the *reason* pinning
    is sound, and should say so.
@@ -500,10 +500,10 @@ against this list.
 9. **§17 status table** → row when implemented: profiles, the ladder
    verifier in `glidex-tls` next to `Recording`, the two endpoints.
 
-## 10. Changes to spec/cli.md (applied — change record)
+## 10. Changes to spec/01-cli.md (applied — change record)
 
 Applied alongside this design; the new rows carry a *(draft)* tag until
-their milestone ships. Check cli.md against this list:
+their milestone ships. Check 01-cli.md against this list:
 
 1. **Transport table** — `--profile` / `GLIDEX_PROFILE` and
    `GLIDEX_CONFIG` rows added after `--url`.
@@ -601,7 +601,7 @@ still passes with no config file (byte-identical behaviour).
   `server_name` beside the tls config; `api/access.rs`: `server_info`
   handler (fingerprint via `glidex_tls::fingerprint()`, `lib.rs:224`;
   `cluster_id`/`node_id` from `<state dir>/cluster/identity.json`,
-  `null` pre-init — clustering.md:1565; `methods` as in
+  `null` pre-init — 14-clustering.md:1565; `methods` as in
   `access.rs:33-39`); route as `PUBLIC` in the `api/mod.rs` table
   beside `/auth/methods` (`mod.rs:246`), `gate.rs:29`, and the
   public-list pin `mod.rs:768-772`; `packaging/control-plane.json.example`
@@ -628,7 +628,7 @@ Acceptance: §11 TLS + binding rows.
   `api_tokens` (`store.rs:24`, beside `last_used_*` at `:183-185`),
   exposed by `GET /tokens` and the `whoami` token object; device poll
   accepts `token_name` cap ≤ 64, control chars refused; `auth.login`
-  audit entries (§10 of security.md).
+  audit entries (§10 of 11-security.md).
 - **Client track** — `COMMANDS`/`SUBCOMMANDS` (`main.rs:1441-1469`)
   gain `auth`; `handle_words` (`main.rs:2472+`) dispatches; new
   `admin.rs` section implementing §6.1 exactly (reuses `device_login`,
@@ -664,7 +664,7 @@ Acceptance: §11 PAM rows.
   errors for verification failures stop suggesting anything but
   `--pin`; `auth status --all` unsafe-profile roll-up.
 - Tests: §11 TLS refusal rows; docs: flip every *(draft)* tag, update
-  the security.md §17 row from **draft** to the landed modules.
+  the 11-security.md §17 row from **draft** to the landed modules.
 
 ### Sequencing note
 

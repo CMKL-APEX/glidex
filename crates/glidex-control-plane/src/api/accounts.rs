@@ -1,4 +1,4 @@
-//! Accounts in one browser (spec/tenancy.md D71): one session per
+//! Accounts in one browser (spec/19-tenancy.md D71): one session per
 //! directory, one active (`gx_session`); the others, and the directories
 //! whose sessions ended, in `gx_accounts`, which only these endpoints see
 //! (`Path=/api/auth/accounts`). Nothing here is stored or logged on the

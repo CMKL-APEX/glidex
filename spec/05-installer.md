@@ -34,8 +34,8 @@ by later runs (flags override the saved values):
 | `--ovs-profile kernel\|dpdk` | OVS flavour (default `kernel`; `dpdk` reserves hugepages and PMD cores). A host installed with `dpdk` keeps it on re-runs (saved in `install.conf`) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
-| `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [tailscale-tls.md](tailscale-tls.md) §4.6 |
-| `--vfio-devices LIST` / `--sriov PF=N` / `--no-vfio-devices` | devices bound to `vfio-pci` and SR-IOV VF counts at every boot, by `glidex-vfio-boot.service` ([gpu-vms.md](gpu-vms.md) §10). Saved as `vfio_devices=` and `sriov=`; recorded and enabled only, applied at the next boot |
+| `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [21-tailscale-tls.md](21-tailscale-tls.md) §4.6 |
+| `--vfio-devices LIST` / `--sriov PF=N` / `--no-vfio-devices` | devices bound to `vfio-pci` and SR-IOV VF counts at every boot, by `glidex-vfio-boot.service` ([27-gpu-vms.md](27-gpu-vms.md) §10). Saved as `vfio_devices=` and `sriov=`; recorded and enabled only, applied at the next boot |
 | `--now` | apply `--vfio-devices` / `--sriov` now as well, through netd's ops (never saved) |
 | `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
@@ -63,7 +63,7 @@ by later runs (flags override the saved values):
    dnf/yum and pacman package): `curl`; `unzip` (bun's installer);
    `pkg-config` and the OpenSSL headers (`openssl-sys`); `clang`;
    `dosfstools` + `mtools` for cloud-init seeds; `qemu-img`, `qemu-io`,
-   `sgdisk`, `growpart` for images and disks (spec/images.md §9);
+   `sgdisk`, `growpart` for images and disks (spec/10-images.md §9);
    QEMU with OVMF (`qemu-system-x86 ovmf` on apt — there is no
    `qemu-kvm` package there any more — `qemu-kvm edk2-ovmf` on dnf/yum,
    `qemu-base edk2-ovmf` on pacman); `setcap` (`libcap2-bin` /
@@ -99,7 +99,7 @@ by later runs (flags override the saved values):
 5. **Build** — `cargo build --release -p glidex-control-plane
    -p glidex-netd -p glidex-ui -p glidex-vm-shim` (and `-p glidex-authd` with services), then the UI: `bun install
    --frozen-lockfile` and `bun run build` in `crates/glidex-ui/ui`.
-6. **Users and groups** *(with services; spec/security.md §4, §11)*:
+6. **Users and groups** *(with services; spec/11-security.md §4, §11)*:
 
    | Identity | Created as | Members / use |
    |---|---|---|
@@ -122,7 +122,7 @@ by later runs (flags override the saved values):
    their process, so no restart follows. A replaced `glidex-vm-shim`
    binary likewise only applies to VMs launched afterwards; running
    shims keep running, and the control plane speaks the previous shim
-   protocol too (reconciliation.md §8.5).
+   protocol too (12-reconciliation.md §8.5).
 8. **Binaries** — `glidex-control-plane`, `gxctl`, `glidex-ui`,
    `glidex-vm-shim`, (with networking) `glidex-netd` and (with services) `glidex-authd` to
    `/usr/local/bin`, each only when it
@@ -145,7 +145,7 @@ by later runs (flags override the saved values):
     binary or unit changed (or it isn't running). Finally
     `cap_net_admin+ep` on `/usr/local/bin/cloud-hypervisor` for tap
     devices, re-applied whenever the binary was replaced.
-    See [networking.md](networking.md) §13.
+    See [09-networking.md](09-networking.md) §13.
 
     **Host settings** (no prompts):
     - `net.ipv4.ip_forward=1` for NAT networks.
@@ -174,7 +174,7 @@ by later runs (flags override the saved values):
     touched: ufw or firewalld dropping forwarded traffic must allow the NAT
     subnets. A plain iptables FORWARD DROP (e.g. Docker's) is handled by
     netd's `GLIDEX-FORWARD` chain, and an `INPUT` DROP (ufw's default-deny)
-    by its `GLIDEX-INPUT` chain (networking.md §10).
+    by its `GLIDEX-INPUT` chain (09-networking.md §10).
 12. **Configuration** *(with services)*:
     - `/etc/pam.d/glidex` from `packaging/glidex.pam` (`@include
       common-auth` / `common-account`; `auth/account include system-auth`
@@ -192,7 +192,7 @@ by later runs (flags override the saved values):
       to change listeners, TLS, PAM or OIDC; secrets go in systemd
       credentials (`LoadCredential=` lines in the unit), not in the file.
     - `/etc/glidex/policies/`, `root:glidex 0750`: read-only site policy
-      files (spec/security.md §7.6).
+      files (spec/11-security.md §7.6).
 13. **Services** *(unless `--no-services`; skipped without systemd)* —
     renders `packaging/glidex-control-plane.service.in` for the `glidex`
     user and installs `packaging/glidex-ui.service`,
@@ -200,7 +200,7 @@ by later runs (flags override the saved values):
     (each only when changed, then one `daemon-reload`), enables
     `glidex-authd.socket`, the control plane and the UI, and starts them.
     For VMs (`install_vm_units`,
-    [reconciliation.md §13](reconciliation.md#13-systemd-polkit-installer)):
+    [12-reconciliation.md §13](12-reconciliation.md#13-systemd-polkit-installer)):
     - `/etc/systemd/system/glidex-vm@.service`, rendered from
       `packaging/glidex-vm@.service.in` for the `glidex` user (`ExecStart`
       is `/usr/local/bin/glidex-vm-shim --vm %i --dir
@@ -211,7 +211,7 @@ by later runs (flags override the saved values):
       `glidex-vm@*` units get `systemctl set-property --runtime <unit>
       IOAccounting=yes MemoryAccounting=yes` after `daemon-reload`, so
       metering sees their I/O without a restart
-      ([metering.md §5.1](metering.md#51-cpu-and-memory-the-vm-cgroup)).
+      ([13-metering.md §5.1](13-metering.md#51-cpu-and-memory-the-vm-cgroup)).
     - `/etc/polkit-1/rules.d/50-glidex-vm.rules` (from
       `packaging/50-glidex-vm.rules.in`): the `glidex` user may `start`,
       `stop` and `kill` units named `glidex-vm@<uuid>.service`, and
@@ -242,9 +242,9 @@ by later runs (flags override the saved values):
     - the usage blurb prints the UI and API URLs
       (`https://<host name>:5173`, `https://<host name>:8841`) and the
       SHA-256 fingerprints of their self-signed certificates
-      (spec/security.md §5.1.1), read once the services have started.
+      (spec/11-security.md §5.1.1), read once the services have started.
       The installer does not touch the host firewall.
-    - ([tailscale-tls.md](tailscale-tls.md) §4.6) Tailscale
+    - ([21-tailscale-tls.md](21-tailscale-tls.md) §4.6) Tailscale
       certificate: decided by the flag, else the saved choice, else a
       prompt (interactive, `tailscaled` reporting certificate domains,
       default no, asked before the build), else off. When on,
@@ -303,7 +303,7 @@ network-online.target
   `on_host_boot: resume`). It serves HTTPS on every address, port 8841
   (self-signed certificate unless one is configured), and listens on
   `/run/glidex-cp/api.sock` and `ui.sock`; settings are in
-  `/etc/glidex/control-plane.json` (spec/security.md §5.1). Hardening (spec/security.md §9):
+  `/etc/glidex/control-plane.json` (spec/11-security.md §5.1). Hardening (spec/11-security.md §9):
   `RuntimeDirectory=glidex-cp` (`0755`) with
   `RuntimeDirectoryPreserve=yes` — required, since the running VMs'
   directories (`vms/<id>/`: shim, hypervisor and console sockets,
@@ -317,7 +317,7 @@ network-online.target
   `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
   `ProtectKernelTunables=`, `ProtectKernelModules=`,
   `ProtectKernelLogs=`, `ProtectControlGroups=`, `RestrictNamespaces=`
-  and `RestrictRealtime=` (reconciliation.md §13.3). It runs no
+  and `RestrictRealtime=` (12-reconciliation.md §13.3). It runs no
   hypervisor (they run in the `glidex-vm@` units, which keep the
   devices and cloud-hypervisor's `cap_net_admin`), so the detached VM
   runner can't be used under it: the control plane refuses to start
@@ -336,12 +336,12 @@ network-online.target
   then stops the hypervisor. It is ordered `After=` netd and Open
   vSwitch so that at host shutdown VMs stop first, but is not
   `PartOf=`/`BindsTo=` the control plane. It carries the hypervisor
-  sandbox (spec/security.md §9): `PrivateTmp` (so paths given to the
+  sandbox (spec/11-security.md §9): `PrivateTmp` (so paths given to the
   API must not be under `/tmp`), `ProtectSystem=strict`, `ProtectHome`,
   `ReadWritePaths=` the service home, its own `/run/glidex-cp/vms/%i`
   and `-/run/glidex/vhost`, `DevicePolicy=closed` with the VM devices,
   and no `NoNewPrivileges=`.
-- **glidex-authd** (root, spec/security.md §5.3) is socket-activated:
+- **glidex-authd** (root, spec/11-security.md §5.3) is socket-activated:
   `/run/glidex-authd/auth.sock`, `root:glidex 0660`, and it accepts only
   the `glidex` user's uid. It runs PAM with `/etc/pam.d/glidex` for
   accounts in `glidex-users` (`/etc/glidex/authd.json`).
@@ -350,7 +350,7 @@ network-online.target
   `StateDirectory=glidex-ui` unless `GLIDEX_UI_TLS_CERT` /
   `GLIDEX_UI_TLS_KEY` are set in a drop-in), and proxies `/api` to the control plane's
   `ui.sock` (`GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock`; see
-  [web-ui.md](web-ui.md)). It is sandboxed (`ProtectSystem=strict`,
+  [07-web-ui.md](07-web-ui.md)). It is sandboxed (`ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`,
   empty `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX
   AF_INET AF_INET6 AF_NETLINK`, and `InaccessiblePaths=` for `/run/glidex`,
@@ -381,7 +381,7 @@ removed. Order:
    onto their NICs and restoring NIC drivers after DPDK), delete NAT
    networks and bridges. Then stop netd's dnsmasq processes and drop the
    `inet glidex` and `inet glidex_meter` nftables tables (the only place the
-   metering table is deleted, metering.md D14).
+   metering table is deleted, 13-metering.md D14).
    **Invariant:** if the teardown fails (e.g. netd still running and
    holding the database), it stops before deleting netd's state, which is
    the only record of how to undo those host changes.
@@ -440,7 +440,7 @@ non-root run: the services' user can't read a home directory's
 
 ## UEFI firmware
 
-Firmware boot (see [hypervisors.md](hypervisors.md#firmware-boot)) needs
+Firmware boot (see [04-hypervisors.md](04-hypervisors.md#firmware-boot)) needs
 Cloud-Hypervisor's EDK2 build. It is downloaded rather than committed
 to the repo, to keep a 4 MB binary out of git history.
 
@@ -462,7 +462,7 @@ to the repo, to keep a 4 MB binary out of git history.
   from the first when its sha256 differs.
 - **Consumers.** The control plane auto-imports this file as the
   `cloudhv-edk2` firmware image at its first start
-  ([images.md](images.md#41-firmware-catalog), which pins the same
+  ([10-images.md](10-images.md#41-firmware-catalog), which pins the same
   release and digests in `images/firmware.rs`), and a manual pull copies
   it instead of downloading it, when its sha256 matches. VMs boot through that image,
   not this path; the control plane reports at startup whether a firmware
@@ -477,7 +477,7 @@ Earlier versions downloaded a kernel and built an ext4 rootfs from
 Firecracker's CI artifacts. That was removed together with Firecracker
 support. The out-of-the-box path is now firmware boot: the installer
 provides `CLOUDHV.fd`, and `gxctl image pull ubuntu-26.04` (or any catalog
-key; see [images.md](images.md#4-image-catalog)) fetches a verified cloud
+key; see [10-images.md](10-images.md#4-image-catalog)) fetches a verified cloud
 image at run time, not install time, so it is always the current build.
 It boots with an auto-generated cloud-init seed. Kernel boot still works
 but needs a user-supplied kernel + rootfs.
@@ -525,7 +525,7 @@ stack. What is downloaded and then run is pinned by version and sha256
 Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itself is therefore small and fast to build.
 
 
-## Joining a cluster (spec/clustering.md)
+## Joining a cluster (spec/14-clustering.md)
 
 `glidex-install --join SERVER:8842 [--role agent|server] [--token-file FILE]
 [--advertise IP:PORT] [--node-name NAME]` installs as usual, then asks the
@@ -533,11 +533,11 @@ running control plane to join (`gxctl cluster join`, with the token on its
 standard input). The token comes from `gxctl cluster join-token` on a server;
 it is read from a file (refused unless mode 0600) or stdin, never from argv.
 An agent host keeps its UI service: its control plane relays the UI's
-requests to a server, which authenticates them (spec/clustering-ui.md
+requests to a server, which authenticates them (spec/16-clustering-ui.md
 §3.6; `cluster.ui_relay = false` turns that off). Agents an older installer
 switched off get the UI back on the next run.
 
-## Datastores (spec/storage.md S13)
+## Datastores (spec/24-storage.md S13)
 
 The installer creates `/srv/glidex` (`root:root 0755`), and both units
 may write under it. Operators mount datastores there, owned by `glidex`
@@ -552,7 +552,7 @@ To register datastores once the services are up:
 - `--datastore-default` makes the first of them the default for new
   disks.
 
-For LVM-thin datastores (spec/storage.md §11.1) the installer installs
+For LVM-thin datastores (spec/24-storage.md §11.1) the installer installs
 `glidex-stord` with the services. `--stord-allow-vg VG` adds a volume
 group to `/etc/glidex/stord.json`'s `allowed_vgs`; without it stord may
 use none. The volume group and its thin pool are the operator's to make.
@@ -565,7 +565,7 @@ answer is no.
 ## OVN
 
 With networking, the installer also installs OVN for cluster networks
-(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` on a
+(spec/14-clustering.md §10.1): `ovn-host` on every host, `ovn-central` on a
 server or standalone host (not on an agent: the role comes from `--join
 --role`, or on a re-run from the node's `identity.json`, read as root), and
 `conntrack` for gateway metering. `--no-ovn` skips
@@ -575,7 +575,7 @@ Ubuntu start them on install, and a standalone host would only run empty
 databases. glidex-netd starts what a cluster needs (`ovn-host` for the
 chassis, `ovn-central` on servers). Installing OVN doesn't turn it on: that is
 a cluster setting, from the Cluster page or `PUT /cluster/settings/ovn`
-(spec/clustering-ui.md §8a), refused until every node reports OVN
+(spec/16-clustering-ui.md §8a), refused until every node reports OVN
 installed.
 
 ### Matching the cluster's ovn-northd
@@ -609,6 +609,6 @@ The control plane enforces the same rule: a node whose `ovn-controller` is
 older than the newest OVN its servers with `ovn-central` report is refused
 for VMs on cluster networks ("its ovn-controller 24.03.8 is older than the
 cluster's ovn-northd 26.03.0: re-run glidex-install on it"), and
-`GET /cluster/settings/ovn` reports it as `outdated` (spec/clustering-ui.md
+`GET /cluster/settings/ovn` reports it as `outdated` (spec/16-clustering-ui.md
 §8a).
 
