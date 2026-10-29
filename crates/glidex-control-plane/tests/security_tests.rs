@@ -2719,7 +2719,12 @@ async fn gpu_requests_expand_from_the_pool() {
     );
     assert_eq!(vm["numa_policy"], "NUMA_POLICY_ALIGNED", "{v}");
     assert_eq!(vm["devices"], json!([{"pool": "a100", "count": 1}]), "{v}");
-    assert_eq!(vm["gpus"], json!({"count": 1, "pool": "a100"}), "{v}");
+    // No fabric: an absent `nvlink` is false (spec/27-gpu-vms.md G11).
+    assert_eq!(
+        vm["gpus"],
+        json!({"count": 1, "pool": "a100", "nvlink": false}),
+        "{v}"
+    );
     assert_eq!(vm["pool_devices"][0]["address"], "0000:87:00.0", "{v}");
     // Its own sizing wins.
     let mut b = body("g2", json!({"count": 1, "pool": "t4"}));
@@ -2736,7 +2741,7 @@ async fn gpu_requests_expand_from_the_pool() {
         ),
         (
             json!({"count": 1, "pool": "a100", "nvlink": true}),
-            "NVLink needs a fabric",
+            "NVLink needs a fabric (Fabric Manager, spec/27-gpu-vms.md §7), and pool a100 has none",
         ),
         (json!({"count": 0, "pool": "a100"}), "at least 1"),
         (json!({"count": 1, "pool": "h100"}), "no device pool h100"),

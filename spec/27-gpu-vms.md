@@ -684,7 +684,11 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     `-global q35-pcihost.pci-hole64-size=<MiB>M` when it exceeds q35's
     32 GiB. Unit tests parse an R9700's `resource` and size one and two
     cards. A device hot-plugged later must fit what is left.
+  - **`nvlink` without a fabric (G11).** No pool has one until GV5, so
+    `expand_gpus` resolves an absent `nvlink` to `false`, kept on the VM,
+    and refuses `true` naming the pool. `security_tests`'
+    `gpu_requests_expand_from_the_pool` checks both.
   - **Not done:** a pool's own size (`bar_mib`); G13's check of each
-    Cloud Hypervisor PCI segment's share; `nvlink` without a fabric (G11); the docs for an AMD pool and
+    Cloud Hypervisor PCI segment's share; the docs for an AMD pool and
     guest image (G15); the reboot test. 16 GiB plus 8 GiB together hasn't
     been run on gpu-dev2 (2 × 8 GiB has).
