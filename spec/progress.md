@@ -21,7 +21,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 |---|---|---|---|
 | Datastores | S26 stale hyperstor holds | `feat/hyperstor-stale-holds` | A disk held by another node's `hyperstor-vhost` when its VM starts is preempted; nodes let go of holds for VMs placed elsewhere. Needs hyperstor's per-volume fencing (D150, D153) |
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
-| GPU VMs | GV6 AMD on gpu-dev2 | #206 → #207 → #208 (stacked); spec #204 merged | Decisions G11–G17 and the gpu-dev2 checks (27-gpu-vms.md §12). Code: locked memory and `prepare` loading `vfio-pci` with GPU windows capped (#206, which carries #205's commit), QEMU's 64-bit window (#207), `nvlink` without a fabric (#208). Next: the reboot test with `--vfio-devices`, the AMD pool and guest-image docs |
+| GPU VMs | GV6 AMD on gpu-dev2 | #210 (UI: GPUs section) | GV6's code is merged (#206, #211): locked memory, `prepare` loading `vfio-pci` with GPU windows capped (G17), QEMU's 64-bit window (G13), `nvlink` without a fabric (G11). #210 adds the create form's GPUs section. Left: the reboot test with `--vfio-devices`, the AMD pool and guest-image docs (G15), a pool's `bar_mib` |
 
 ## Areas
 
@@ -31,7 +31,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
-| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV6 AMD on gpu-dev2 (designed); GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211) | GV6's reboot test and docs; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
