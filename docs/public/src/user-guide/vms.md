@@ -53,7 +53,7 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
 | **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
 | **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
-| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
+| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
 | **Device Pools (optional)** | How many devices to take from each other pool (NICs, NVMe…) your project may use. |
 | **VFIO PCI Devices (optional)** | Under **Advanced options**: other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
@@ -436,7 +436,9 @@ With GPUs, an empty vCPU or memory answer takes the pool's sizing.
   through, with its address, vendor, ids and NUMA node. A ticked one is
   sent in `vfio_devices`. One not ready is greyed with the reason (for
   example *not bound to vfio-pci (driver: amdgpu)*): an operator
-  prepares it on the node's page. Listing them needs a host role on
+  prepares it on the node's page. One another VM holds is greyed with
+  its name (*PCI device 0000:43:00.0 is used by VM gpu-a*), whatever
+  project that VM is in; a stopped VM keeps its GPUs. Listing them needs a host role on
   that node; without one, only pools are shown. These GPUs don't size
   the VM.
 

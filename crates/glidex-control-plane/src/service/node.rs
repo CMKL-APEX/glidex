@@ -63,8 +63,11 @@ pub async fn get_node_topology(
         .node_topology(&id)
         .await
         .map_err(crate::service::host::manager_err)?;
+    let topology = crate::service::host::topology_pb(&t);
     Ok(pb::GetNodeTopologyResponse {
-        topology: crate::service::host::topology_pb(&t).into(),
+        topology: crate::service::host::with_taken(call.manager(), &id, &t, topology)
+            .await
+            .into(),
         ..Default::default()
     })
 }

@@ -13,6 +13,9 @@ const VENDORS: Record<string, string> = {
   "0x1a03": "ASPEED",
 };
 
+/** Ready for passthrough and held by no VM. */
+const free = (g: PciFunction) => !!g.ready && !g.taken;
+
 /** The sysfs path `vfio_devices` takes for a device. */
 export const sysfsPath = (address: string) => `/sys/bus/pci/devices/${address}`;
 
@@ -58,10 +61,10 @@ export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, picked, o
       stop = true;
     };
   }, [node]);
-  // GPUs picked on another node, or gone, aren't asked for.
+  // GPUs picked on another node, gone or taken since, aren't asked for.
   useEffect(() => {
     if (gpus === undefined) return;
-    const here = new Set((gpus ?? []).filter((g) => g.ready).map((g) => g.address));
+    const here = new Set((gpus ?? []).filter(free).map((g) => g.address));
     if (picked.some((a) => !here.has(a))) onPick(picked.filter((a) => here.has(a)));
   }, [gpus]);
 
@@ -126,14 +129,15 @@ export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, picked, o
             <ul className="mt-1 space-y-1">
               {gpus.map((g) => {
                 const vendor = VENDORS[g.vendor_id ?? ""];
+                const pickable = free(g);
                 const ids = `${(g.vendor_id ?? "").replace(/^0x/, "")}:${(g.device_id ?? "").replace(/^0x/, "")}`;
                 return (
                   <li key={g.address} className="text-sm">
-                    <label className={`flex flex-wrap items-center gap-2 ${g.ready ? "cursor-pointer" : "text-gray-400"}`}>
+                    <label className={`flex flex-wrap items-center gap-2 ${pickable ? "cursor-pointer" : "text-gray-400"}`}>
                       <input
                         type="checkbox"
                         aria-label={`GPU ${g.address}`}
-                        disabled={!g.ready}
+                        disabled={!pickable}
                         checked={picked.includes(g.address)}
                         onChange={(e) => toggle(g.address, e.target.checked)}
                       />
@@ -143,10 +147,12 @@ export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, picked, o
                       {g.numa_node !== undefined && g.numa_node >= 0 && (
                         <span className="text-xs text-gray-500">NUMA {g.numa_node}</span>
                       )}
-                      {g.ready ? (
-                        <span className="text-xs text-green-700">ready</span>
-                      ) : (
+                      {!g.ready ? (
                         <span className="text-xs">{(g.not_ready ?? []).join("; ") || "not ready"}</span>
+                      ) : g.taken ? (
+                        <span className="text-xs text-amber-700">{g.taken}</span>
+                      ) : (
+                        <span className="text-xs text-green-700">available</span>
                       )}
                     </label>
                   </li>

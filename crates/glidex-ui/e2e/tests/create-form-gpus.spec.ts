@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
       topology: {
         devices: [
           gpu("0000:03:00.0", "0x1002", { driver: "vfio-pci", ready: true }),
+          gpu("0000:43:00.0", "0x1002", { driver: "vfio-pci", ready: true, taken: "PCI device 0000:43:00.0 is used by VM gpu-a" }),
           gpu("0000:c6:00.0", "0x1a03", { driver: "ast", ready: false, not_ready: ["not bound to vfio-pci (driver: ast)"] }),
           // Neither is a GPU a VM could be given.
           { address: "0000:c4:00.0", vendor_id: "0x10de", class_id: "0x068000", assignable: false, fabric: true },
@@ -48,9 +49,12 @@ test("lists GPU pools and the node's GPUs, and sends what is picked", async ({ p
   await expect(page.getByLabel("GPUs from r9700")).toBeVisible();
   await expect(page.getByLabel("Devices from cx7-vfs")).toBeVisible();
   await expect(page.getByLabel("Devices from r9700")).toHaveCount(0);
-  // The node's GPUs: the ready one can be picked, the other says why not.
+  // The node's GPUs: the free one can be picked, the others say why not.
   const ready = page.getByLabel("GPU 0000:03:00.0");
   await expect(ready).toBeEnabled();
+  await expect(page.getByText("available", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("GPU 0000:43:00.0")).toBeDisabled();
+  await expect(page.getByText("PCI device 0000:43:00.0 is used by VM gpu-a")).toBeVisible();
   await expect(page.getByLabel("GPU 0000:c6:00.0")).toBeDisabled();
   await expect(page.getByText("not bound to vfio-pci (driver: ast)")).toBeVisible();
   await expect(page.getByLabel("GPU 0000:c4:00.0")).toHaveCount(0);

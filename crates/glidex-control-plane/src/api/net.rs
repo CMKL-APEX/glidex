@@ -384,7 +384,7 @@ pub async fn delete_uplink(
 pub async fn host_topology(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(
         StatusCode::OK,
-        host::get_host_topology(&c, Default::default())?,
+        host::get_host_topology(&c, Default::default()).await?,
     ))
 }
 
