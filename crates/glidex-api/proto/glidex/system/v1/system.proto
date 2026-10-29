@@ -1,4 +1,4 @@
-// What a client asks before and right after logging in (spec/grpc.md G0).
+// What a client asks before and right after logging in (spec/18-grpc.md G0).
 syntax = "proto3";
 
 package glidex.system.v1;
@@ -8,7 +8,7 @@ import "glidex/api/v1/options.proto";
 
 service SystemService {
   // The server's identity, which client login profiles bind to
-  // (spec/gxctl-auth.md §7.1). No authentication.
+  // (spec/17-gxctl-auth.md §7.1). No authentication.
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse) {
     option (glidex.api.v1.op) = {
       action: "public"
@@ -39,7 +39,7 @@ message GetServerInfoResponse {
   // SHA-256 of the server certificate; absent when TLS is off.
   optional string fingerprint = 5;
   LoginMethods methods = 6;
-  // The `aud` its access tokens carry (spec/tenancy.md D57): the cluster
+  // The `aud` its access tokens carry (spec/19-tenancy.md D57): the cluster
   // id, or a standalone host's own (`standalone-…`). What a directory
   // login asks tokens for (`resource=urn:glidex:cluster:<this>`).
   string token_audience = 7 [json_name = "token_audience"];
@@ -66,7 +66,7 @@ message WhoAmIResponse {
   repeated string host_roles = 7 [json_name = "host_roles"];
   repeated ProjectRole project_roles = 8 [json_name = "project_roles"];
   optional string default_project = 9 [json_name = "default_project"];
-  // A multi-factor login (spec/tenancy.md §6).
+  // A multi-factor login (spec/19-tenancy.md §6).
   optional bool mfa = 10;
   string directory_id = 11 [json_name = "directory_id"];
   // Absent for a service-account token.

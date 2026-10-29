@@ -1,4 +1,4 @@
-//! Workload federations (spec/tenancy.md §9, D48–D51): a tenant trusts a
+//! Workload federations (spec/19-tenancy.md §9, D48–D51): a tenant trusts a
 //! JWT issuer (GitHub Actions, GitLab CI, Kubernetes, …) and maps tokens
 //! whose claims match a rule to one of its service accounts. This module
 //! holds the records, their checks, and the issuer's keys; the exchange
@@ -138,7 +138,9 @@ impl Federation {
             return bad("a federation's id is [a-z0-9-], 1-48 characters");
         }
         if self.id == crate::directory::workload::VM_FEDERATION {
-            return bad("'vm' is the name of VMs' own identity tokens (workload-identity.md §5)");
+            return bad(
+                "'vm' is the name of VMs' own identity tokens (29-workload-identity.md §5)",
+            );
         }
         if self.display_name.chars().count() > 128 {
             return bad("display_name is at most 128 characters");

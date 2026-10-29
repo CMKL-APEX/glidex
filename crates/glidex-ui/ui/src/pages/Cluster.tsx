@@ -29,7 +29,7 @@ function ReadyCell({ n }: { n: NodeRecord }) {
   );
 }
 
-/** The cluster (spec/clustering-ui.md §6): its nodes and what can be done to
+/** The cluster (spec/16-clustering-ui.md §6): its nodes and what can be done to
  * them, pending imports and detaches, Raft, the CA, and the cluster's own
  * lifecycle. */
 /** A standalone host is one node (`local`): its page has its capacity,

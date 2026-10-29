@@ -261,7 +261,7 @@ vector, never a shell string. `OvsVsctl` resolves to `ovs_bin_dir`
 ```rust
 pub enum Datapath { System, Netdev }
 pub struct BridgeSpec { pub name: String, pub datapath: Datapath, pub mtu: Option<u16>, pub adopt: bool,
-                       pub isolated: bool } // isolated network: fenced off from the host (security.md §8.4)
+                       pub isolated: bool } // isolated network: fenced off from the host (11-security.md §8.4)
 
 pub enum UplinkKind {
     Kernel { ifname: String },
@@ -371,7 +371,7 @@ if the features the profile promises aren't in `iface_types`.
   since DPDK can't be stopped in a running one. It is refused while a
   DPDK port exists (`dpdk`, `dpdkvhostuser`, `dpdkvhostuserclient`: a
   vhost-user VM NIC or DPDK uplink would stop working). With DPDK off,
-  `br-int`'s `auto` datapath is `system` again (clustering.md §11.6),
+  `br-int`'s `auto` datapath is `system` again (14-clustering.md §11.6),
   and glidex moves it at its next OVN round (not while VM ports are on
   it). `glidex-install` with the
   kernel profile (the default) does this when it finds DPDK on, once
@@ -448,9 +448,9 @@ release FAQ's pairing.
   VM ports created on that connection.
 - The **admin socket** (`netd-admin.sock`) is the same for the admin
   group (`admin_group`, default `glidex-admin`), so break-glass
-  administrators reach netd without joining `glidex` (security.md §4).
+  administrators reach netd without joining `glidex` (11-security.md §4).
   It is bound only when the group exists.
-- **Per-op policy** (security.md §8.1), on both full sockets after the
+- **Per-op policy** (11-security.md §8.1), on both full sockets after the
   accept check: `policy` in `netd.json` maps a group name to the ops its
   members may send: op wire names (`release_vm`), `*`, or a prefix glob
   with a trailing `*` (`list_*`; a `*` anywhere else matches nothing and
@@ -499,7 +499,7 @@ per connection. The first message must be `hello`.
 
 Any request may carry a top-level `on_behalf_of`: `user` (required
 when present), `project` and `request_id` (optional). It is the
-caller's claim about who it acts for (security.md §8.3): netd logs it
+caller's claim about who it acts for (11-security.md §8.3): netd logs it
 and never uses it for authorization. Absent fields are omitted, so old
 clients and old netds are unaffected. `glidex_netd::client::Client`
 sends it with `call_as` / `call_value_as`; `call` sends none.
@@ -509,8 +509,8 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `hello` | all | `{protocol}` → versions |
 | `probe` | all | – → `HostCapabilities` |
 | `list_bridges` · `list_uplinks` · `list_nat` · `list_vm_ports` | full | – → records with live state |
-| `nat_counters` | full (never the status socket) | – → the `inet glidex_meter` counters for the current NAT state: per network and per reserved MAC, `dir` `in`/`out`, bytes (L2-normalized: + 14 × packets), packets and object `handle`. Read-only. netd keeps the table in line with reservations on `ensure_nat`, `delete_nat`, attach and `release_vm`, always incrementally ([metering.md §5.5](metering.md#55-nat-external-counters-inet-glidex_meter), D14). A failure there is logged and never fails the networking operation. |
-| `port_stats` | full (never the status socket) | – → per glidex bridge, every port's `role` (`vm`/`uplink`/`gateway`/`other`), VLAN `tag`, VM id and NIC, and OVS `rx`/`tx` bytes, packets and drops as OVS reports them. The `gateway` (internal) port is in the host's view ([metering.md §5.4](metering.md#54-network-bridge-port-counters)). Read-only. |
+| `nat_counters` | full (never the status socket) | – → the `inet glidex_meter` counters for the current NAT state: per network and per reserved MAC, `dir` `in`/`out`, bytes (L2-normalized: + 14 × packets), packets and object `handle`. Read-only. netd keeps the table in line with reservations on `ensure_nat`, `delete_nat`, attach and `release_vm`, always incrementally ([13-metering.md §5.5](13-metering.md#55-nat-external-counters-inet-glidex_meter), D14). A failure there is logged and never fails the networking operation. |
+| `port_stats` | full (never the status socket) | – → per glidex bridge, every port's `role` (`vm`/`uplink`/`gateway`/`other`), VLAN `tag`, VM id and NIC, and OVS `rx`/`tx` bytes, packets and drops as OVS reports them. The `gateway` (internal) port is in the host's view ([13-metering.md §5.4](13-metering.md#54-network-bridge-port-counters)). Read-only. |
 | `install_ovs` | full | `{profile, source_build, confirm}` → `InstallReport` |
 | `init_dpdk` | full | `{socket_mem, pmd_cpu_mask, confirm}` → – |
 | `ensure_bridge` · `delete_bridge` | full | `BridgeSpec` · `{name}` |
@@ -519,9 +519,9 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `delete_uplink` | full | `{bridge, name}` |
 | `ensure_nat` · `delete_nat` | full | `NatSpec` · `{bridge}` → `NatState` |
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
-| `device_holders` | full, read-only | `{groups}` → for each IOMMU group some process has open, the processes (`pid`, `uid`, `comm`), from every process's open files (host-topology.md §5.1) |
-| `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (host-topology.md §5.3) |
-| `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (host-topology.md §10.1) |
+| `device_holders` | full, read-only | `{groups}` → for each IOMMU group some process has open, the processes (`pid`, `uid`, `comm`), from every process's open files (22-host-topology.md §5.1) |
+| `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (22-host-topology.md §5.3) |
+| `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (22-host-topology.md §10.1) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 
@@ -597,7 +597,7 @@ WantedBy=multi-user.target
 `glidex-control-plane.service.in` is rendered by `glidex-install` for the
 installing user (`User=`, `HOME`, `SupplementaryGroups=kvm glidex`,
 `Wants=`/`After=glidex-netd.service`). Boot order and rationale:
-[installer.md](installer.md#boot-sequence-systemd).
+[05-installer.md](05-installer.md#boot-sequence-systemd).
 
 ### 7.7 Startup and reconciliation
 
@@ -615,7 +615,7 @@ directories, runs `probe`, then **reconciles**:
    ports whose VM isn't in `running` are detached (port, tap, socket).
    `running` is every VM that **owns ports** — whose `status.nics` is
    non-empty — not every VM that is running right now (D16,
-   [reconciliation.md](reconciliation.md#94-startup-order)): a VM keeps
+   [12-reconciliation.md](12-reconciliation.md#94-startup-order)): a VM keeps
    its tap and NAT address while it crash-restarts, and an adopted VM is
    never cut off.
 4. **Orphans:** glidex-tagged objects with no record are reported in
@@ -799,7 +799,7 @@ and came back reachable with the address re-applied.
    ```
    No outgoing interface is named, so traffic follows the host's
    existing route (decision 4). NAT networks are isolated from each
-   other and from the host (security.md §8.4): the per-bridge drops come
+   other and from the host (11-security.md §8.4): the per-bridge drops come
    before the accepts, and from a NAT bridge the host answers only DHCP,
    DNS on the gateway, ping to the gateway, and replies to connections it
    opened. Every other packet to any host address is dropped (IPv6 too;
@@ -872,7 +872,7 @@ pub struct Network {
     pub mtu: Option<u16>,
     pub owns_bridge: bool,         // created its bridge (and NAT); removes them on delete
     pub created_at: u64,
-    // project, all_projects, grants, shares, share_offers: security.md §6.2
+    // project, all_projects, grants, shares, share_offers: 11-security.md §6.2
     // Written by the network controller only (§11.2a); defaulted, so
     // older records load as `Ready`:
     pub phase: NetworkPhase,       // Ready | Degraded | NetdUnavailable
@@ -905,7 +905,7 @@ netd's reservation on NAT networks.
 
 ### 11.2a Network controller
 
-`controller/network.rs` ([reconciliation.md §10.3](reconciliation.md#103-network))
+`controller/network.rs` ([12-reconciliation.md §10.3](12-reconciliation.md#103-network))
 keeps netd's records in line with the `networks` table; netd reconciles
 the host from its own records. Each round (on create, and every resync)
 calls `list_bridges` (and `list_nat` for NAT networks) and records a
@@ -922,7 +922,7 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
   `ensure_bridge` (event `BridgeRestored`). An isolated network's bridge
   whose netd record lacks `isolated` (from before the flag) is ensured
   again with it (event `BridgeUpdated`), so netd fences it
-  ([security.md §8.4](security.md)).
+  ([11-security.md §8.4](11-security.md)).
 - A lost NAT is re-created with `ensure_nat` (new subnet; event
   `NatRestored`) **only while no VM uses the network**. With VMs on it it
   is reported, not re-created: its subnet lives only in netd, and a new
@@ -982,7 +982,7 @@ the same name is `409` ("is being deleted; try again once it is gone").
 ### 11.4 VM lifecycle
 
 VM ports belong to the VM controller
-([reconciliation.md §9.1](reconciliation.md#91-reconcile)); no API
+([12-reconciliation.md §9.1](12-reconciliation.md#91-reconcile)); no API
 handler calls netd for them.
 
 - **Launch** (desired running, no live instance): for each attachment,
@@ -1007,7 +1007,7 @@ handler calls netd for them.
   records the exit, the controller notices through its exit watch
   (`pidfd`) or the periodic resync, sets the desired state to stopped
   and detaches the ports as above.
-- **Port drift** ([reconciliation.md §10.3](reconciliation.md#103-network)):
+- **Port drift** ([12-reconciliation.md §10.3](12-reconciliation.md#103-network)):
   each round of a running VM compares its `status.nics` ports with the
   live bridge (`list_bridges`). An OVS port that is gone while its tap
   remains, or a missing vhost-user port, is re-added with
@@ -1056,7 +1056,7 @@ confirmation dialog for `confirmation_required`, a networks multi-select
 in `CreateVmForm`, and NICs/IPs in `VmDetail`. The page also creates
 project networks ("Network for"), and without host rights lists the
 networks the selected project can use
-([web-ui.md](web-ui.md#images-and-disks-pages)).
+([07-web-ui.md](07-web-ui.md#images-and-disks-pages)).
 
 ## 13. `glidex-install`
 
@@ -1068,7 +1068,7 @@ New step after Cloud-Hypervisor, every part prompted:
    missing feature.
 3. **netd:** install `glidex-netd` to `/usr/local/bin` and
    `packaging/glidex-netd.service`, then `systemctl enable --now`. This
-   is an explicit exception to [installer.md](installer.md)'s "does not
+   is an explicit exception to [05-installer.md](05-installer.md)'s "does not
    write systemd units".
 4. **CH capability:** `setcap cap_net_admin+ep` on the installed
    `cloud-hypervisor` (decision 9), after printing what it grants.
@@ -1076,7 +1076,7 @@ New step after Cloud-Hypervisor, every part prompted:
 ## 14. Security
 
 > Superseded for authentication, authorization and NAT isolation by
-> [security.md](security.md) (§4, §8). The notes below describe netd's
+> [11-security.md](11-security.md) (§4, §8). The notes below describe netd's
 > own invariants.
 
 - Only netd is privileged. It runs only the `Program` allow-list with
@@ -1089,7 +1089,7 @@ New step after Cloud-Hypervisor, every part prompted:
   gets the control plane's netd rights. M4 therefore changes the
   control plane's default bind from `0.0.0.0:8841` to `127.0.0.1:8841`
   (configurable). Superseded: with authentication and TLS in place
-  (security.md §5.1), the default is HTTPS on every address again.
+  (11-security.md §5.1), the default is HTTPS on every address again.
 - `cap_net_admin+ep` on `cloud-hypervisor` applies to anyone who can run
   it (decision 9).
 - vhost-user: OVS maps all guest RAM and is fully trusted by its VMs.

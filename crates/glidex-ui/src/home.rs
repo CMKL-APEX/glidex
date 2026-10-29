@@ -1,4 +1,4 @@
-//! Where this web UI belongs (spec/host-page.md §3, W4, W5).
+//! Where this web UI belongs (spec/28-host-page.md §3, W4, W5).
 //!
 //! glidex-ui reports its own address to the control plane (`PUT /ui/self`
 //! on the UI socket) at start and every 30 seconds. The answer says, on an

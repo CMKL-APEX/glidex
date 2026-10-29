@@ -1,4 +1,4 @@
-//! Resource usage metering (spec/metering.md).
+//! Resource usage metering (spec/13-metering.md).
 //!
 //! `ledger` turns counter and gauge readings into exactly-once hourly
 //! usage rows; `sources` reads the host; `sampler` maps VMs and disks to
@@ -35,7 +35,7 @@ pub struct Meter {
     /// cluster, the only database otherwise).
     ledger: Ledger,
     /// In a cluster, where this node's own rounds are written, before they are
-    /// shipped to the leader (spec/clustering.md §13.1).
+    /// shipped to the leader (spec/14-clustering.md §13.1).
     local: Option<Ledger>,
     cfg: MeteringConfig,
     host: sources::Host,
@@ -518,7 +518,7 @@ impl crate::state::VmManager {
     }
 
     /// A final sample before ports or bridges go away (detach, release,
-    /// network deletion, uplink changes; spec/metering.md §5.4): bounded
+    /// network deletion, uplink changes; spec/13-metering.md §5.4): bounded
     /// at 2 s, and never an error. Missing it costs at most one interval.
     pub async fn meter_final_sample(&self) {
         let Some(meter) = self.meter().filter(|m| m.cfg.enabled) else {

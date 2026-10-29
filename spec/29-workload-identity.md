@@ -1,12 +1,12 @@
 # Workload identity
 
 Status: **draft**; WI0, WI1a and WI1b-1 implemented (§13, §15). Extends
-[tenancy.md](tenancy.md) (§7 tokens, §9 workload federation, T6),
-[security.md](security.md) (§7 Cedar) and [networking.md](networking.md).
+[19-tenancy.md](19-tenancy.md) (§7 tokens, §9 workload federation, T6),
+[11-security.md](11-security.md) (§7 Cedar) and [09-networking.md](09-networking.md).
 §11 lists the changes other documents need once this is accepted.
 
 Glidex already trusts identities from **outside**: a tenant's workload
-federation (tenancy.md §9, T5) trades a CI job's JWT for a short-lived
+federation (19-tenancy.md §9, T5) trades a CI job's JWT for a short-lived
 token acting as a service account, so the job stores no glidex secret.
 Glidex gives **its own VMs** no identity. Software in a guest that has to
 call glidex (a Kubernetes node joining a cluster, a storage driver, a
@@ -21,7 +21,7 @@ which VM it is, in which project and tenant; glidex itself and outside
 systems verify it against the published keys. A VM with a **service
 account** attached can also get glidex API tokens for that account, with
 nothing stored in the guest. It comes before managed applications
-([apps.md](apps.md)) so that none of them ships secrets into
+([26-apps.md](26-apps.md)) so that none of them ships secrets into
 guests.
 
 | | Today | With this design |
@@ -53,17 +53,17 @@ guests.
 
 | # | Topic | Decision | Why |
 |---|---|---|---|
-| W1 | Trust domain | Workload tokens are issued by the VM's **directory**, under its issuer URL (tenancy.md D27: `https://<host>/d/<directory>`), with its signing keys. A cluster is never an issuer. | One stable issuer per organization, the same one its people log in with (T6, D11). Outside systems trust it once, however many clusters run the tenant's VMs; an issuer URL written into customers' AWS or Vault configuration can't be moved later. |
-| W2 | Who vouches for the VM | The **cluster** running the VM is the only one that knows which VM asks; it attests, the directory's key signs. Before T6 (one control plane, directory `local`) that is one process. With T6 the directory gives each cluster it trusts a **delegated signing key** (§6) that it lists in its own JWKS, so a cluster mints tokens while cut off from its directory, and a relying party still trusts the directory alone. | Clusters keep running workloads through a partition (tenancy.md T6 staleness); the directory stays the single root and can withdraw a cluster's key at once. |
+| W1 | Trust domain | Workload tokens are issued by the VM's **directory**, under its issuer URL (19-tenancy.md D27: `https://<host>/d/<directory>`), with its signing keys. A cluster is never an issuer. | One stable issuer per organization, the same one its people log in with (T6, D11). Outside systems trust it once, however many clusters run the tenant's VMs; an issuer URL written into customers' AWS or Vault configuration can't be moved later. |
+| W2 | Who vouches for the VM | The **cluster** running the VM is the only one that knows which VM asks; it attests, the directory's key signs. Before T6 (one control plane, directory `local`) that is one process. With T6 the directory gives each cluster it trusts a **delegated signing key** (§6) that it lists in its own JWKS, so a cluster mints tokens while cut off from its directory, and a relying party still trusts the directory alone. | Clusters keep running workloads through a partition (19-tenancy.md T6 staleness); the directory stays the single root and can withdraw a cluster's key at once. |
 | W3 | Delivery | A **link-local metadata endpoint** at `169.254.169.254:80` on every network a VM has, answered by a per-node daemon, **`glidex-metad`** (W11). It identifies the VM by the **port** a request arrives on, never by a source address alone. Requests need the header `Metadata-Flavor: Glidex`; replies leave with IP TTL 1. vsock is a second channel (W12). | Works from any cloud image with `curl`, on every network the VM has, with no agent. The port is what OVN and the node bridge already bind to the VM, so a guest can't claim to be another VM; the header and TTL defeat request forgery (SSRF) through a proxy in the guest and forwarding beyond it. |
 | W4 | Every VM has an identity | Any running VM may fetch its **identity token** (§4.2) for any audience; it grants nothing in glidex by itself. Rights come only from an attached service account (W5). | Identity is safe to give: an outside service decides what a VM's identity may do, as with any OIDC issuer. |
 | W5 | Service account on a VM | A VM may name **one service account** (`service_account`: a `SERVICE_ACCOUNT` token of a project of the VM's tenant). Setting it needs `useServiceAccount` on that service account's project (§7), not only `updateVm`. It can change while the VM runs and applies to the next token. | Without its own action, anyone who can create VMs could act as every service account in reach (the escalation GCP guards with `iam.serviceAccountUser`). |
-| W6 | Glidex tokens for the VM | `GET /v1/glidex/token` on the metadata endpoint returns an **access token for the cluster** (`aud` = cluster id, tenancy.md §7.3) acting as the VM's service account: a federated token (D48) with origin `vm`, TTL 15 min by default, at most 1 h, never past the service account's own expiry. No service account, no token (`404`). | The guest never holds a `gxt_` secret; rights stay on the service account's role links, as for T5. |
+| W6 | Glidex tokens for the VM | `GET /v1/glidex/token` on the metadata endpoint returns an **access token for the cluster** (`aud` = cluster id, 19-tenancy.md §7.3) acting as the VM's service account: a federated token (D48) with origin `vm`, TTL 15 min by default, at most 1 h, never past the service account's own expiry. No service account, no token (`404`). | The guest never holds a `gxt_` secret; rights stay on the service account's role links, as for T5. |
 | W7 | Outside relying parties | The directory publishes `/.well-known/openid-configuration` and its JWKS (already needed for T6 logins). An identity token's `aud` is what the guest asks for; there is no default audience. | AWS IAM OIDC providers, Vault's JWT auth, Google workload identity federation and Kubernetes accept any issuer that publishes these. |
 | W8 | Lifetimes and revocation | **Identity tokens 15 min** by default; a guest may ask for 10 min to 1 h. **Glidex tokens 15 min** (T5's default, D48), at most 1 h. `glidex-metad` hands out the same token until 80% of its lifetime has passed, then a new one, so a guest that asks again always holds one with time left (§4.4). Deleting or stopping the VM, detaching or revoking its service account, or (T6) withdrawing the cluster's key, stops new tokens at once; issued tokens live until `exp`. | Short lifetimes are the revocation; relying parties need no revocation list. Shorter than GCP's and Kubernetes' 1 h because asking is local and cheap; longer than SPIRE's 5 min JWT-SVIDs so a guest that caches naively doesn't fail; well short of Azure's 24 h tokens that can't be revoked (§4.4). |
-| W9 | Claims | `sub` is a SPIFFE ID, `spiffe://<trust domain>/tenant/<t>/project/<p>/vm/<vm id>` (trust domain: W13); glidex-specific claims sit under one `glidex` object (§4.2). | SPIFFE JWT-SVIDs require a SPIFFE ID as `sub`, so SPIFFE-aware software accepts the token as is (tenancy.md §20); one namespace keeps claims from colliding with relying parties' own. |
+| W9 | Claims | `sub` is a SPIFFE ID, `spiffe://<trust domain>/tenant/<t>/project/<p>/vm/<vm id>` (trust domain: W13); glidex-specific claims sit under one `glidex` object (§4.2). | SPIFFE JWT-SVIDs require a SPIFFE ID as `sub`, so SPIFFE-aware software accepts the token as is (19-tenancy.md §20); one namespace keeps claims from colliding with relying parties' own. |
 | W10 | Delegation (agents) | Tokens and audit records carry an **actor chain** from the start: a token obtained by an agent acting for a user names the user as `sub` and the agent in `act` (RFC 8693 §4.1). Issuing such tokens is milestone WI3 (§8). | Retrofitting "who acted for whom" into a token format and the audit later is a breaking change; carrying the field costs nothing now. |
-| W11 | `glidex-metad` | One **per-node daemon** serves the endpoint for every VM on its node. **netd** steers `169.254.169.254:80` from each VM port to it and tells it which port is which VM (§7.1). It never signs: it asks the control plane, authenticated as its node, to mint for a VM, and the control plane refuses a VM that isn't running **on that node**. | netd already owns every VM port and the node's datapaths, so steering stays where networking is (security.md §8) and metad needs no network privileges. One daemon per node, not per VM. A compromised node can mint only for the VMs it runs, which it controls anyway. |
+| W11 | `glidex-metad` | One **per-node daemon** serves the endpoint for every VM on its node. **netd** steers `169.254.169.254:80` from each VM port to it and tells it which port is which VM (§7.1). It never signs: it asks the control plane, authenticated as its node, to mint for a VM, and the control plane refuses a VM that isn't running **on that node**. | netd already owns every VM port and the node's datapaths, so steering stays where networking is (11-security.md §8) and metad needs no network privileges. One daemon per node, not per VM. A compromised node can mint only for the VMs it runs, which it controls anyway. |
 | W12 | vsock | A **second channel**: the same HTTP API over virtio-vsock, for VMs with no network, or whose networks the guest firewalls off. Every VM gets a vsock device; the guest connects to the host (CID 2) on a fixed port. The VM is known from the device the connection came through, with no address at all (§7.2). Needs a vsock-capable client in the guest (`socat`, or a small `glidex-meta` helper), so the network endpoint stays the default. | Isolated and network-less VMs still get identity, and an identity that depends on no network setting is the strongest binding glidex can offer. |
 | W13 | Trust domain | Each directory has a **trust domain**, a SPIFFE name with no path: by default `<directory slug>.<issuer host>` (`local.glidex.example.org`); a directory owner may set one under a domain the organization owns (`acme.com`, `glidex.acme.internal`) when the directory is created. It is **fixed once the first token is issued**. It need not resolve in DNS. A directory whose issuer has no public URL still issues tokens: glidex verifies them itself, and relying parties that can take keys directly (Vault's static JWKS, Kubernetes) are given the JWKS; those that fetch discovery themselves (AWS) need a public issuer. | SPIFFE trust domains carry no path, so hosted directories sharing a host (D27) need distinct names; every `sub` embeds it, so changing it would break every relying party's rules. |
 
@@ -113,7 +113,7 @@ This design takes T6's direction instead of competing with it.
   `<issuer>/jwks.json`.
 - Keys: ES256, rotated every 30 days, the previous key published until
   every token it signed has expired; private keys sealed with the
-  directory's data key (tenancy.md §13), like connector secrets.
+  directory's data key (19-tenancy.md §13), like connector secrets.
 - Before T6 there is one directory, `local`; its issuer URL is the
   control plane's public URL plus `/d/local`, so it doesn't change when
   T6 arrives. An install that has no public URL configured serves
@@ -139,7 +139,7 @@ This design takes T6's direction instead of competing with it.
 
 - Trust domain: the directory's (W13), `local.glidex.example.org` above.
 - `glidex.service_account` only when one is attached. Owner references
-  ([apps.md](apps.md)) add `glidex.owner` later. No node name, IP or MAC: they
+  ([26-apps.md](26-apps.md)) add `glidex.owner` later. No node name, IP or MAC: they
   change with placement and say nothing a relying party should match on.
 - Names in claims are slugs; a relying party should match on `sub` or
   ids, which never change.
@@ -173,7 +173,7 @@ What others do, for comparison (checked October 2026):
 
 ## 5. Exchange
 
-`POST /auth/exchange` (tenancy.md §9) accepts a VM's identity token as
+`POST /auth/exchange` (19-tenancy.md §9) accepts a VM's identity token as
 `subject_token` with `federation=<tenant>/vm` (a built-in name, no
 record): the token must be the directory's own, unexpired, with
 `aud` = this cluster's id, for a VM that still exists, runs, and has a
@@ -187,7 +187,7 @@ for VMs of another directory's tenants.
 
 When directory and cluster are apart:
 
-1. During the handshake (tenancy.md §12) and then daily, the cluster
+1. During the handshake (19-tenancy.md §12) and then daily, the cluster
    sends the directory a public key it generated; the directory signs a
    **cluster key certificate**: the key, the cluster id, the tenants the
    cluster may mint for (those admitted there and opted in), valid
@@ -217,7 +217,7 @@ When directory and cluster are apart:
   `system:vm:<vm id>`, the service account, the cluster) and every call
   made with it (the service account's `Token` as principal, with
   `federated` naming the VM). Identity tokens are not audited one by
-  one; a per-VM counter is (metering.md).
+  one; a per-VM counter is (13-metering.md).
 - **Metadata API** (both channels; all `GET`, header `Metadata-Flavor: Glidex`,
   no redirects, `Content-Type: application/json` except tokens):
   - `/v1/identity?audience=<aud>[&ttl=<secs>]`: the identity token, as
@@ -316,7 +316,7 @@ W10 keeps the token and audit formats ready for this; the grants
   any cloud. A Kubernetes cluster on glidex must keep its pods from the
   endpoint (a network policy, or the cluster's own per-pod identity) or
   every pod acts as the node (the GKE metadata concealment problem).
-  The Kubernetes app does this ([apps.md](apps.md) §9).
+  The Kubernetes app does this ([26-apps.md](26-apps.md) §9).
 - **Request forgery.** Required header, no redirects, `Forwarded`
   refused, TTL 1 on replies: a guest web application that can be made
   to fetch a URL can't be made to fetch a token without also setting a
@@ -339,19 +339,19 @@ W10 keeps the token and audit formats ready for this; the grants
   identity token with `curl`, verify it against the JWKS, get a glidex
   token and list their own project; a request on another VM's port
   can't get the first VM's token.
-- Interop checks (spec/idp-checks.md style): AWS `AssumeRoleWithWebIdentity`
+- Interop checks (spec/20-idp-checks.md style): AWS `AssumeRoleWithWebIdentity`
   and Vault's JWT auth accept an identity token.
 
 ## 11. Changes to other specs (on acceptance)
 
-- **tenancy.md:** §9 gains the built-in `vm` origin and §5; §7 notes the
+- **19-tenancy.md:** §9 gains the built-in `vm` origin and §5; §7 notes the
   shared signing keys; §20's SPIFFE item points here; T6's task list
   gains §6.
-- **security.md:** `useServiceAccount`; the metadata endpoint in the
+- **11-security.md:** `useServiceAccount`; the metadata endpoint in the
   threat model.
-- **networking.md:** serving `169.254.169.254` on node networks and OVN
+- **09-networking.md:** serving `169.254.169.254` on node networks and OVN
   networks.
-- **data-model.md:** `Vm.service_account`; directory signing keys;
+- **03-data-model.md:** `Vm.service_account`; directory signing keys;
   federated token origin `vm`.
 
 ## 12. Settled questions
@@ -367,7 +367,7 @@ W10 keeps the token and audit formats ready for this; the grants
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **WI0** issuer *(done)* | Directory signing keys, rotation, discovery and JWKS (built as tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
+| **WI0** issuer *(done)* | Directory signing keys, rotation, discovery and JWKS (built as 19-tenancy.md T6 task 2, D52–D53); minting identity tokens in the control plane | Unit tests; an outside verifier (a JWT library) accepts a token against the published JWKS. |
 | **WI1a** VMs' service accounts *(done)* | `service_account` on VMs; `useServiceAccount`; glidex tokens (W6); exchange (§5); audit; UI and gxctl | §10 API tests. |
 | **WI1b-1** the endpoint on NAT networks *(done)* | `glidex-metad`, the control plane's `metad.sock`, netd's steering on node NAT networks (§7.1); installer; user guide | The e2e test from inside a guest (§15). |
 | **WI1b-2** OVN networks and clusters | The per-network local port on OVN networks, address port security on OVN ports; on a node that isn't the leader, metad's asks forwarded to the leader as that node | A guest on an OVN network, on an agent node. |
@@ -402,7 +402,7 @@ W10 keeps the token and audit formats ready for this; the grants
 ## 15. Implementation status
 
 **WI0** is implemented. The directory's keys, discovery and JWKS came
-with tenancy.md T6 task 2 (D52, D53); on top of them:
+with 19-tenancy.md T6 task 2 (D52, D53); on top of them:
 
 | Spec | Code |
 |---|---|
@@ -461,7 +461,7 @@ Known limits of WI1b-1:
 its own cache (an agent's holds only its VMs, so only the id) and asks
 the leader as itself: `POST /cluster/v1/metadata` on :8842 with its node
 certificate, `{vm_id, kind, audience, ttl}`. The leader answers only
-about a running VM **placed on the asking node** (spec/clustering.md
+about a running VM **placed on the asking node** (spec/14-clustering.md
 §12.3), signs and records as it would for itself (D53), and keeps its
 answers by VM as before.
 

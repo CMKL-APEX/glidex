@@ -1,4 +1,4 @@
-//! The console proxy (spec console.md, reconciliation.md §8.6), moved here
+//! The console proxy (spec 02-console.md, 12-reconciliation.md §8.6), moved here
 //! from the control plane.
 //!
 //! One OS thread owns the PTY master, the console listener and the log.

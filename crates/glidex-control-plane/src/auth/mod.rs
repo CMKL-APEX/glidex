@@ -1,5 +1,5 @@
 //! Authentication and the bridge to Cedar authorization
-//! (spec/security.md §5, §7).
+//! (spec/11-security.md §5, §7).
 //!
 //! Every request gets a [`Principal`]: a peer-identified local user on
 //! `api.sock`, a browser session, an access token, or — only for embedding
@@ -61,10 +61,10 @@ pub enum Method {
     Peer,
     Pam,
     Oidc,
-    /// A passkey (spec/passkeys.md): user-verified, so multi-factor.
+    /// A passkey (spec/25-passkeys.md): user-verified, so multi-factor.
     Passkey,
     Token,
-    /// An access token of a directory hosted here (spec/tenancy.md D56).
+    /// An access token of a directory hosted here (spec/19-tenancy.md D56).
     Directory,
     Disabled,
 }
@@ -111,7 +111,7 @@ pub struct Principal {
     pub peer_uid: Option<u32>,
     /// A multi-factor browser login. Tokens, peer and PAM logins never are.
     pub mfa: bool,
-    /// The federated token this request came with (spec/tenancy.md D48):
+    /// The federated token this request came with (spec/19-tenancy.md D48):
     /// it acts as `token`, its service account; audit names both.
     pub federated: Option<String>,
     /// The directory it belongs to (D58): its user's, or its service
@@ -121,7 +121,7 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// The directory the principal belongs to (spec/tenancy.md §6). A host
+    /// The directory the principal belongs to (spec/19-tenancy.md §6). A host
     /// hosts one directory until directories and clusters come apart (T6).
     pub fn directory_id(&self) -> &str {
         &self.directory
@@ -247,24 +247,24 @@ struct Ticket {
 
 pub struct AuthService {
     pub store: IdentityStore,
-    /// Directory, tenants and admissions (spec/tenancy.md).
+    /// Directory, tenants and admissions (spec/19-tenancy.md).
     pub tenants: crate::tenants::TenantStore,
     pub engine: Engine,
     pub config: Config,
     /// No authentication: every request is [`Principal::system`].
     disabled: bool,
     tickets: Mutex<HashMap<String, Ticket>>,
-    /// Directory connectors and their secrets (spec/tenancy.md §5).
+    /// Directory connectors and their secrets (spec/19-tenancy.md §5).
     pub connectors: crate::directory::ConnectorStore,
-    /// Invitations to the directory's tenants (spec/tenancy.md §6.1).
+    /// Invitations to the directory's tenants (spec/19-tenancy.md §6.1).
     pub invitations: crate::directory::invitations::InvitationStore,
-    /// SCIM bearer tokens (spec/tenancy.md §8.1).
+    /// SCIM bearer tokens (spec/19-tenancy.md §8.1).
     pub scim_tokens: crate::directory::scim_tokens::ScimTokenStore,
-    /// Each pulled connector's last run (spec/tenancy.md §8.2).
+    /// Each pulled connector's last run (spec/19-tenancy.md §8.2).
     pub sync_status: crate::directory::sync::SyncStatusStore,
-    /// Workload federations (spec/tenancy.md §9).
+    /// Workload federations (spec/19-tenancy.md §9).
     pub federations: crate::directory::federation::FederationStore,
-    /// Passkeys (spec/passkeys.md), and their ceremonies in progress.
+    /// Passkeys (spec/25-passkeys.md), and their ceremonies in progress.
     pub passkeys: passkeys::PasskeyStore,
     pub ceremonies: passkeys::Ceremonies,
     /// The directory as an OpenID provider (D54–D57): codes and device
@@ -541,7 +541,7 @@ impl AuthService {
 
     /// Rebuild and publish the policy set from storage.
     /// Keep the policy set in step with links and site policies applied from
-    /// the replicated log (spec/clustering.md §6.5), so a role granted
+    /// the replicated log (spec/14-clustering.md §6.5), so a role granted
     /// through one server counts on every other.
     pub fn watch_policies(self: &Arc<Self>) {
         let me = self.clone();
@@ -636,7 +636,7 @@ impl AuthService {
     }
 
     /// Give a system administrator of a host that is its own directory
-    /// what it had before tenants (spec/tenancy.md §16 step 4): membership
+    /// what it had before tenants (spec/19-tenancy.md §16 step 4): membership
     /// of the operator tenant, the directory, and both tenants.
     pub fn make_administrator(&self, principal: &Ent, by: &str) -> Result<(), AuthError> {
         use crate::tenants::{ADMIN_TENANT, DEFAULT_TENANT, LOCAL_DIRECTORY};
@@ -718,7 +718,7 @@ impl AuthService {
 
     /// One-time: existing host-role holders become members of the operator
     /// tenant; system administrators get [`Self::make_administrator`]'s links;
-    /// auditors also audit the directory (spec/tenancy.md §16 steps 3-4).
+    /// auditors also audit the directory (spec/19-tenancy.md §16 steps 3-4).
     pub fn migrate_tenancy(&self) -> Result<(), AuthError> {
         const KEY: &str = "tenants_links_v1";
         if self.tenants.done(KEY).map_err(tenant_err)? || !self.tenants.can_write() {
@@ -769,7 +769,7 @@ impl AuthService {
         }
     }
 
-    /// Fill in what tenancy says about the request (spec/tenancy.md §10):
+    /// Fill in what tenancy says about the request (spec/19-tenancy.md §10):
     /// each project's tenant, the tenants with their attributes, the
     /// cluster's operator and admissions, the principal's memberships;
     /// returns the context fields `cluster`, `directory` and, when the
@@ -1207,7 +1207,7 @@ impl AuthService {
         }))
     }
 
-    /// A federated token's principal (spec/tenancy.md D48): its service
+    /// A federated token's principal (spec/19-tenancy.md D48): its service
     /// account, while the token, the service account, the federation and
     /// the rule that gave it all still hold.
     fn federated_principal(
@@ -1227,7 +1227,7 @@ impl AuthService {
         if f.expires_at <= now {
             return Ok(None);
         }
-        // A VM's own token (workload-identity.md W6) answers to no
+        // A VM's own token (29-workload-identity.md W6) answers to no
         // federation: it lives while its service account does (W8).
         if !f
             .federation
@@ -1523,7 +1523,7 @@ impl AuthService {
         })
     }
 
-    /// The common login path (spec/tenancy.md §6.2): the connector's rules,
+    /// The common login path (spec/19-tenancy.md §6.2): the connector's rules,
     /// the user (created on first login when `jit`), its managed team
     /// memberships, and a new user's tenant.
     pub fn external_login(
@@ -1680,7 +1680,7 @@ impl AuthService {
     }
 
     /// Add a sign-in through connector `c` to user `user_id`, who is
-    /// signed in (spec/tenancy.md §6.2): beside the ones it has, never in
+    /// signed in (spec/19-tenancy.md §6.2): beside the ones it has, never in
     /// place of them. The connector's rules apply as at a login; a sign-in
     /// that already reaches another user is refused, one that reaches this
     /// user is a no-op. A provisioned connector's sign-ins are its managed
@@ -1863,7 +1863,7 @@ impl AuthService {
     /// Create a token; returns its secret (shown once) and record.
     /// `device` / `client` are what a `gxctl auth login` client says it is;
     /// stored redacted for display and audit only, never trusted
-    /// (spec/gxctl-auth.md §7.2).
+    /// (spec/17-gxctl-auth.md §7.2).
     pub fn create_token(
         &self,
         name: &str,
@@ -2076,7 +2076,7 @@ impl AuthService {
     // ---- audit ----------------------------------------------------------
 
     /// Record an event a system actor did (`system:scim:<connector>`, spec/
-    /// tenancy.md §8.1): no principal of the directory, so it is named.
+    /// 19-tenancy.md §8.1): no principal of the directory, so it is named.
     #[allow(clippy::too_many_arguments)]
     pub fn audit_system(
         &self,
@@ -2373,7 +2373,7 @@ mod tests {
         let uid = p.user_id().unwrap().to_string();
         s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t")
             .unwrap();
-        // Host roles work for members of the operator tenant (spec/tenancy.md D4).
+        // Host roles work for members of the operator tenant (spec/19-tenancy.md D4).
         s.tenants
             .add_member(crate::tenants::ADMIN_TENANT, Ent::User(uid.clone()), "t")
             .unwrap();

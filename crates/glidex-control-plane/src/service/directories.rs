@@ -1,4 +1,4 @@
-//! The directories a host serves (spec/tenancy.md D27, D59):
+//! The directories a host serves (spec/19-tenancy.md D27, D59):
 //! `glidex.tenancy.v1.DirectoryService`, for the host's operator. It sees
 //! that a directory exists, never what is inside it.
 

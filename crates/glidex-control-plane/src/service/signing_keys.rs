@@ -1,4 +1,4 @@
-//! A directory's signing keys (spec/tenancy.md D52, D53):
+//! A directory's signing keys (spec/19-tenancy.md D52, D53):
 //! `glidex.directory.v1.SigningKeyService`. The keys themselves are
 //! `directory::issuer`; only their public facts come out here.
 

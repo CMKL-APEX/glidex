@@ -1,4 +1,4 @@
-// Two organizations (spec/tenancy.md D63–D73), on the two control planes
+// Two organizations (spec/19-tenancy.md D63–D73), on the two control planes
 // of scripts/start-peers.sh: `north`, a cluster, and `acme`, another
 // organization's directory. North's operator makes an offer on the
 // Admissions page; acme's tenant administrator accepts it on the tenant's

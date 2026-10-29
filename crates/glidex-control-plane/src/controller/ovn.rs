@@ -1,4 +1,4 @@
-//! The cluster network controller (spec/clustering.md §8.1, §11): on the
+//! The cluster network controller (spec/14-clustering.md §8.1, §11): on the
 //! leader, keeps the OVN northbound database equal to the cluster's networks,
 //! IPAM and placements; on every node, makes the host a chassis; on servers,
 //! runs this server's part of `ovn-central`.
@@ -91,7 +91,7 @@ impl VmManager {
                     },
                     (NetworkMode::Nat, _) => NetKind::Nat,
                     // An isolated network on a project's router is routed
-                    // there like a NAT network (clustering-ui.md §8d).
+                    // there like a NAT network (16-clustering-ui.md §8d).
                     (NetworkMode::Isolated, _) if n.router.is_some() => NetKind::Nat,
                     _ => NetKind::Isolated,
                 },
@@ -494,7 +494,7 @@ mod chrono_like {
 }
 
 impl VmManager {
-    /// The cluster turned OVN off (spec/clustering-ui.md §8a): stop being a
+    /// The cluster turned OVN off (spec/16-clustering-ui.md §8a): stop being a
     /// chassis. Only when the cluster setting says so, so a host that never
     /// used OVN is left alone; netd refuses while a VM port is on `br-int`.
     async fn leave_ovn_if_turned_off(&self) {
@@ -523,7 +523,7 @@ impl VmManager {
     }
 }
 
-/// Read-only views of OVN for the web UI (spec/clustering-ui.md §8).
+/// Read-only views of OVN for the web UI (spec/16-clustering-ui.md §8).
 impl VmManager {
     /// `ssl:<ip>:<port>` of every server, for the NB (`6641`) or SB (`6642`) database.
     fn ovn_endpoints(&self, port: u16) -> Vec<String> {
@@ -681,7 +681,7 @@ impl VmManager {
     }
 }
 
-/// Tunnel status (spec/clustering-ui.md §8b): each node's Geneve tunnels as
+/// Tunnel status (spec/16-clustering-ui.md §8b): each node's Geneve tunnels as
 /// its Open vSwitch sees them, gathered on request.
 impl VmManager {
     /// This node's OVN chassis and tunnels, from its netd.

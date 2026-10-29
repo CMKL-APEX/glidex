@@ -1,5 +1,5 @@
 //! End-to-end and functional tests for Pylon hypervisor integration
-//! (spec/pylon.md Milestone P4).
+//! (spec/30-pylon.md Milestone P4).
 //!
 //! Covers:
 //! - Pylon VM registration against pylond daemon over Unix domain socket with `SCM_RIGHTS`.

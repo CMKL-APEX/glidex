@@ -5,7 +5,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import { Loading } from "./Loading";
 import { Card, ErrorBanner, dangerLink, errorMessage, inputClass, primaryButton } from "./ui";
 
-/** The signed-in user's passkeys (spec/passkeys.md §4): add, rename,
+/** The signed-in user's passkeys (spec/25-passkeys.md §4): add, rename,
  * remove. A passkey is one more way to sign in, alongside the others. */
 export default function PasskeysCard({ user, onChange }: { user: string; onChange?: () => void }) {
   const [list, setList] = useState<api.Passkey[] | null>(null);

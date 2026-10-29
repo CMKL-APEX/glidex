@@ -1,4 +1,4 @@
-//! Presets (spec/tenancy.md §5.1): fixed configurations of the OIDC code
+//! Presets (spec/19-tenancy.md §5.1): fixed configurations of the OIDC code
 //! for one IdP. A preset fixes what the IdP fixes (issuer, scopes) and
 //! checks the claims it adds to the generic ones, after the ID token is
 //! verified.

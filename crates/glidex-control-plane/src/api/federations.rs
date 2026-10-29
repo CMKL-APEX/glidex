@@ -1,4 +1,4 @@
-//! REST twins of `glidex.directory.v1.FederationService` (spec/tenancy.md
+//! REST twins of `glidex.directory.v1.FederationService` (spec/19-tenancy.md
 //! §9): the proto messages as JSON, on `service::federations`.
 
 use super::{ApiErr, Caller, proto_body};

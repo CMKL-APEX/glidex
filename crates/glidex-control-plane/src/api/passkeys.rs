@@ -1,4 +1,4 @@
-//! The passkey ceremonies (spec/passkeys.md §2, P2–P5): HTTP only, as
+//! The passkey ceremonies (spec/25-passkeys.md §2, P2–P5): HTTP only, as
 //! WebAuthn's own JSON. Registration is a signed-in user's step-up action;
 //! sign-in is public, and every refusal is the same `401
 //! passkey_refused`, with the reason in the audit log.
@@ -364,7 +364,7 @@ pub async fn login_finish(
     Ok(with_cookie(r, "", 0, secure))
 }
 
-// ---- a passkey invitation's first passkey (spec/tenancy.md D60) ------------
+// ---- a passkey invitation's first passkey (spec/19-tenancy.md D60) ------------
 
 #[derive(Deserialize)]
 pub struct InviteStart {

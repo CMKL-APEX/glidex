@@ -1,4 +1,4 @@
-//! Placing VMs that have no node yet (spec/clustering.md §9.1): on the leader,
+//! Placing VMs that have no node yet (spec/14-clustering.md §9.1): on the leader,
 //! for every VM waiting for one, and again whenever nodes or capacity change.
 //! A VM is placed once; after that it stays (D6).
 
@@ -121,7 +121,7 @@ impl VmManager {
 }
 
 impl VmManager {
-    /// `POST /vms/{id}/place` (spec/storage.md S10, §9): place a stopped VM
+    /// `POST /vms/{id}/place` (spec/24-storage.md S10, §9): place a stopped VM
     /// again, or a lost one (its node forgotten, `--fenced`), on `node` or
     /// wherever the scheduler finds room. Only what can go with it may be
     /// on its old node: its disks on shared datastores (a node-local disk

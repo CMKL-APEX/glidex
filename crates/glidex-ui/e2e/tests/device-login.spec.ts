@@ -1,4 +1,4 @@
-// A directory's device login (spec/tenancy.md D54, D57): gxctl asks the
+// A directory's device login (spec/19-tenancy.md D54, D57): gxctl asks the
 // directory for a code, the signed-in user approves it on the web UI's
 // /device page, and gxctl's next poll gets its tokens for this cluster.
 import { api, expect, test } from "../fixtures";

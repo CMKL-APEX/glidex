@@ -1,4 +1,4 @@
-//! OIDC login (glidex spec/security.md §5.4).
+//! OIDC login (glidex spec/11-security.md §5.4).
 //!
 //! Authorization Code flow with PKCE and a nonce; the application is a
 //! confidential client (its secret from a [`ClientSecret`] it supplies).
@@ -90,7 +90,7 @@ pub struct Checked {
 }
 
 /// Checks of the claims one IdP adds to the generic ones, after the ID
-/// token is verified (glidex's presets, spec/tenancy.md §5.1).
+/// token is verified (glidex's presets, spec/19-tenancy.md §5.1).
 pub trait ClaimCheck: Send + Sync {
     /// `Err` with why the login isn't allowed.
     fn check(&self, claims: &HashMap<String, serde_json::Value>) -> Result<Checked, String>;
@@ -210,7 +210,7 @@ fn default_interval() -> u64 {
 
 pub struct OidcState<A> {
     cfg: ClientConfig,
-    /// What its preset adds (glidex spec/tenancy.md §5.1).
+    /// What its preset adds (glidex spec/19-tenancy.md §5.1).
     preset: Preset,
     secret: ClientSecret,
     http: reqwest::Client,

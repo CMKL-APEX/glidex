@@ -1,5 +1,5 @@
 //! Cloud Hypervisor: the whole VM config on its command line (D9,
-//! spec/reconciliation.md §8.2), and the runtime operations over its HTTP
+//! spec/12-reconciliation.md §8.2), and the runtime operations over its HTTP
 //! API (`glidex-hv-client`).
 //!
 //! The command line is the `vm.create` payload of earlier releases, option
@@ -55,7 +55,7 @@ fn disk_args(config: &VmConfig) -> Vec<String> {
         .into_iter()
         .map(|d| {
             // A hyperstor volume: hyperstor-vhost serves its socket, one
-            // queue unless it offers more (spec/storage.md §11.2).
+            // queue unless it offers more (spec/24-storage.md §11.2).
             if d.vhost {
                 return format!("vhost_user=on,socket={},num_queues=1", q(&d.path));
             }
@@ -117,7 +117,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         config.vcpu_count,
         config.effective_max_vcpus()
     );
-    // Dedicated vCPUs (spec/host-topology.md §7.2): vCPU i on its host CPU.
+    // Dedicated vCPUs (spec/22-host-topology.md §7.2): vCPU i on its host CPU.
     if !config.vcpu_pins.is_empty() {
         let pins: Vec<String> = config
             .vcpu_pins
@@ -140,7 +140,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     }
     let layout = super::guest_numa_layout(config);
     match config.host_numa_node {
-        // `aligned` over several host NUMA nodes (spec/gpu-vms.md §5): a
+        // `aligned` over several host NUMA nodes (spec/27-gpu-vms.md §5): a
         // zone, a guest NUMA node and a PCI segment for its devices per
         // share. Segment 0 (virtio devices) is guest node 0's.
         None if !config.host_numa.is_empty() => {
@@ -207,7 +207,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         }
     }
     // `tty` is CH's stdio: the shim's PTY, on whichever device the guest's
-    // console is (spec/kernel-boot.md §5.2).
+    // console is (spec/23-kernel-boot.md §5.2).
     let (console, serial) = match ConsoleDevice::of(config) {
         ConsoleDevice::Serial => ("off", "tty"),
         ConsoleDevice::Virtio => ("tty", "off"),
@@ -244,7 +244,7 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     a
 }
 
-/// The kernel extractor's run (spec/kernel-boot.md §10.2): the appliance,
+/// The kernel extractor's run (spec/23-kernel-boot.md §10.2): the appliance,
 /// the image read-only, the raw output disk, the serial port on stdio; no
 /// API socket, no NIC, 1 vCPU and 1 GiB.
 pub(crate) fn extractor_args(
@@ -462,7 +462,7 @@ mod tests {
                 backing_files: false,
                 lock: None,
             },
-            // An LVM volume (spec/storage.md §19, H6).
+            // An LVM volume (spec/24-storage.md §19, H6).
             VolumeBinding::Block {
                 path: "/dev/vg0/gx-d-1".into(),
             },
@@ -484,7 +484,7 @@ mod tests {
         );
     }
 
-    /// A hyperstor volume (spec/storage.md §11.2): its vhost-user-blk socket,
+    /// A hyperstor volume (spec/24-storage.md §11.2): its vhost-user-blk socket,
     /// and guest memory shared with hyperstor-vhost.
     #[test]
     fn hyperstor_disks_are_vhost_user_sockets_with_shared_memory() {

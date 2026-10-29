@@ -17,28 +17,28 @@ decision and the reason:
 
 | Spec | Numbering |
 |---|---|
-| [reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md) | D1–D20 |
-| [clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) | D1–D22 |
-| [security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md) | decisions 1–19 |
-| [tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md) | D1–D71 |
-| [grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md) | G-D1–G-D12 |
-| [storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md) | S1–S19 |
-| [networking.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/networking.md) | decisions 1–10 |
-| [kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md) | K1–K13 |
-| [host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md) | H1–H19 |
-| [gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md) | G1–G10 |
-| [metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md) | D1–D18 |
-| [passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md) | P1–P6 |
-| [tailscale-tls.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/tailscale-tls.md) | T1–T11 |
-| [gxctl-auth.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/gxctl-auth.md) | A1–A9 |
+| [12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md) | D1–D20 |
+| [14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) | D1–D22 |
+| [11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md) | decisions 1–19 |
+| [19-tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md) | D1–D71 |
+| [18-grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md) | G-D1–G-D12 |
+| [24-storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md) | S1–S19 |
+| [09-networking.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/09-networking.md) | decisions 1–10 |
+| [23-kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md) | K1–K13 |
+| [22-host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md) | H1–H19 |
+| [27-gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md) | G1–G10 |
+| [13-metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md) | D1–D18 |
+| [25-passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md) | P1–P6 |
+| [21-tailscale-tls.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/21-tailscale-tls.md) | T1–T11 |
+| [17-gxctl-auth.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/17-gxctl-auth.md) | A1–A9 |
 
 The numbers are scoped to their spec, so "D8" alone is ambiguous. The
-specs write `reconciliation.md D8`, and so does this page. Where the
+specs write `12-reconciliation.md D8`, and so does this page. Where the
 reason for a single rule doesn't fit a table, the spec carries a `Why:`
 or `Invariant:` note next to it. Settled open questions are kept, marked
 **Settled**, with the answer. Specs also record what they *rejected*, in
 "Settled questions" or "Why not" sections (for example
-[storage.md §12.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#121-why-not-first-s1)).
+[24-storage.md §12.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#121-why-not-first-s1)).
 
 **To change a decision:**
 
@@ -47,7 +47,7 @@ or `Invariant:` note next to it. Settled open questions are kept, marked
    give the reason. If a decision is replaced, say so in the row rather
    than deleting it silently.
 2. List the other specs the change touches. Larger designs do this in a
-   section of their own (for example clustering.md §16).
+   section of their own (for example 14-clustering.md §16).
 3. Land the code in the PR of the milestone that changes the behaviour,
    and update the spec's status table there.
 
@@ -69,7 +69,7 @@ role (VM, disk and image controllers, metering sampler, netd sync). On
 server hosts it also runs the **server** role (API, Raft, scheduler,
 cluster controllers, ledger). A standalone host runs both roles in one
 process
-([clustering.md D4](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#3-decisions)).
+([14-clustering.md D4](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#3-decisions)).
 Small companion binaries exist only where a separate process is needed:
 the per-VM shim, the root helpers, `glidex-ui` and `gxctl`.
 
@@ -82,15 +82,15 @@ catch generated mistakes at build time instead of in production. The
 specs also show a steady preference for pure-Rust dependencies over C
 ones. ReDB was
 "chosen over SQLite to avoid a C dependency"
-([data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md#storage)).
+([03-data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/03-data-model.md#storage)).
 Protobuf code is generated by `protox` so that `cargo` alone builds the
 workspace (G-D9). WebAuthn is checked in "pure Rust, no OpenSSL"
-(passkeys.md §7). Cloud Hypervisor, the default hypervisor, is also
+(25-passkeys.md §7). Cloud Hypervisor, the default hypervisor, is also
 Rust.
 For one binary, the reason is recorded: the node role is the host-facing
 code, unchanged in substance, so a cluster adds the server role around
 it rather than a second program. README goal 4 asks for minimal host
-dependencies, and clustering.md D1 adds "no new service to install,
+dependencies, and 14-clustering.md D1 adds "no new service to install,
 secure or upgrade".
 
 **Alternatives considered.** Separate binaries per role (an API server
@@ -99,7 +99,7 @@ against this directly. D4's reason is that the node role is the same
 code a standalone host already runs.
 
 **Consequences.** Upgrades are one binary per host, and a standalone
-host carries no cluster cost (clustering.md D5). The binary is large and
+host carries no cluster cost (14-clustering.md D5). The binary is large and
 every host builds or receives all of it, including server-only code.
 Mixed versions during rolling upgrades are handled by versioned API
 packages (G-D7) and by write sets that replicate bytes, not logic (see
@@ -112,7 +112,7 @@ packages (G-D7) and by write sets that replicate bytes, not logic (see
 **Decision.** Glidex supports two hypervisors, Cloud Hypervisor (the
 default) and QEMU, behind one stateless driver trait
 (`HypervisorDriver`,
-[hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/hypervisors.md)).
+[04-hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md)).
 Callers see the same features on both (README goal 1). Glidex builds the
 hypervisor command line itself and talks to the hypervisor's own API
 socket (Cloud Hypervisor's HTTP API, QEMU's QMP). There is no libvirt.
@@ -126,7 +126,7 @@ QEMU tap and vhost-user NICs, UEFI boot of cloud images, the generated
 cloud-init seed and graceful stop, and added the `qemu_*` end-to-end
 tests. The driver is stateless (everything it needs is a socket path),
 so a restarted control plane manages a VM exactly as the one that
-launched it did. "Launch = configured" (reconciliation.md D9): both
+launched it did. "Launch = configured" (12-reconciliation.md D9): both
 hypervisors get their whole configuration on the command line, so
 there is no half-configured instance and no crash window between
 "launched" and "booted".
@@ -137,11 +137,11 @@ feature would have to be expressed through), and it brings many external
 dependencies onto every host, against README goal 4 (minimal host
 dependencies). What the design needs from a VM runtime is also recorded,
 and it is specific: a supervisor per VM that owns
-the console PTY and the exit record (reconciliation.md D1), restart
+the console PTY and the exit record (12-reconciliation.md D1), restart
 policy in one place (D6), and everything needed to adopt an instance
 persisted in its runtime directory (D7). Glidex runs alongside libvirt
 on the same host, and treats devices a libvirt-managed QEMU holds as
-not ready (host-topology.md §5, PR #133).
+not ready (22-host-topology.md §5, PR #133).
 
 **Alternatives considered.**
 
@@ -152,7 +152,7 @@ not ready (host-topology.md §5, PR #133).
   back later as the VMM of a lightweight, container-compatible layer,
   where its small footprint and fast start matter more than devices.
   Old Firecracker records are skipped at load, not treated as fatal
-  ([data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md)).
+  ([03-data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/03-data-model.md)).
 - **One hypervisor only (Cloud Hypervisor).** QEMU is kept because it
   can also *emulate*: run a VM of another architecture on a host, or run
   VMs on a host without KVM, in software (TCG). Cloud Hypervisor needs
@@ -163,9 +163,9 @@ not ready (host-topology.md §5, PR #133).
 
 **Consequences.** Every feature is built and tested twice. The specs
 are full of per-backend details: Cloud Hypervisor needs `CAP_NET_ADMIN`
-for taps (networking.md decision 9), QEMU needs a per-VM UEFI variable
-store, vCPU pinning differs (host-topology.md H9), and Cloud Hypervisor
-reports no usable disk latency (metering.md D17). Features that only one
+for taps (09-networking.md decision 9), QEMU needs a per-VM UEFI variable
+store, vCPU pinning differs (22-host-topology.md H9), and Cloud Hypervisor
+reports no usable disk latency (13-metering.md D17). Features that only one
 backend can offer have to wait or be refused. Revisit if one backend
 falls behind on a feature users need, or if maintaining parity starts
 to block features.
@@ -177,7 +177,7 @@ to block features.
 **Decision.** Each running VM is supervised by its own
 `glidex-vm-shim`. The shim is the hypervisor's parent, owns the PTY
 master, the console socket and log, and records the exit
-(reconciliation.md D1). Under systemd the shim runs as
+(12-reconciliation.md D1). Under systemd the shim runs as
 `glidex-vm@<vm-id>.service`, started by the control plane over systemd's
 D-Bus API (`zbus`) and allowed by a polkit rule (D2). systemd never
 restarts a VM (`Restart=no`); restart policy belongs to the VM
@@ -192,7 +192,7 @@ controller (D6).
   running, and it adopts them on startup.
 - Only a separate unit escapes the control plane's cgroup. A unit per VM
   gives per-VM accounting, journal and shutdown ordering (D2). Metering
-  reads CPU and memory from that cgroup (metering.md D3).
+  reads CPU and memory from that cgroup (13-metering.md D3).
 - Two supervisors with restart policies fight, and only the controller
   knows why a VM exited (D6).
 - D-Bus rather than `systemctl`, for typed errors and unit signals.
@@ -252,29 +252,29 @@ peer-credential checks and a per-operation allow-list:
 
 | Helper | Does | Spec |
 |---|---|---|
-| `glidex-netd` | OVS, bridges, uplinks, NAT, DHCP, VM ports, `vfio-pci` binding | networking.md decision 1, security.md §8 |
-| `glidex-authd` | PAM password checks | security.md decision 6, §5.3 |
-| `glidex-stord` | LVM volumes and device access for VM units | storage.md S12, S17, S18 |
-| polkit rule | lets `glidex` start and stop `glidex-vm@` units | reconciliation.md D2 |
+| `glidex-netd` | OVS, bridges, uplinks, NAT, DHCP, VM ports, `vfio-pci` binding | 09-networking.md decision 1, 11-security.md §8 |
+| `glidex-authd` | PAM password checks | 11-security.md decision 6, §5.3 |
+| `glidex-stord` | LVM volumes and device access for VM units | 24-storage.md S12, S17, S18 |
+| polkit rule | lets `glidex` start and stop `glidex-vm@` units | 12-reconciliation.md D2 |
 
 The web UI's server, `glidex-ui`, runs as its own user with no authority
-of its own: it serves files and proxies `/api` (security.md decision 4).
+of its own: it serves files and proxies `/api` (11-security.md decision 4).
 
 **Why.**
 
-- netd is root "from the first milestone" (networking.md decision 1).
+- netd is root "from the first milestone" (09-networking.md decision 1).
   The control plane is the policy point for users; netd only decides
-  which local processes may ask it for what (security.md decision 2,
+  which local processes may ask it for what (11-security.md decision 2,
   §8), so netd doesn't need Cedar.
 - PAM: a non-root process can't check other users' passwords with
   `pam_unix`. authd is separate from netd "so netd stays network-only"
-  (security.md decision 6).
+  (11-security.md decision 6).
 - stord: creating and activating logical volumes needs root, and "the
   control plane must stay unprivileged". Its allow-list of volume groups
   and its volume-name rule mean the control plane can make and remove
-  Glidex's own volumes and nothing else (storage.md S17).
+  Glidex's own volumes and nothing else (24-storage.md S17).
 - Local callers are identified by `SO_PEERCRED`, never by claims in the
-  request (security.md decision 5).
+  request (11-security.md decision 5).
 
 **Alternatives considered.** Running the control plane as root (the
 simplest option, and common for VM managers); one root helper for
@@ -284,10 +284,10 @@ helper to one job.
 **Consequences.** Each helper is a protocol to version and a unit to
 install. Some things the control plane can't do for itself: it can't
 widen its own sandbox, which is why datastores must be mounted under
-one root, `/srv/glidex` (storage.md S11), and why per-VM CPU binding is
-done by the shim rather than by systemd drop-ins (host-topology.md H9).
+one root, `/srv/glidex` (24-storage.md S11), and why per-VM CPU binding is
+done by the shim rather than by systemd drop-ins (22-host-topology.md H9).
 Cloud Hypervisor still needs `cap_net_admin` on its binary to bring taps
-up (networking.md decision 9). See [Access control](../operator-guide/access-control.md)
+up (09-networking.md decision 9). See [Access control](../operator-guide/access-control.md)
 and [Installation](../operator-guide/installation.md) for what the
 installer sets up.
 
@@ -301,7 +301,7 @@ serde JSON.
 **Why.** ReDB is an embedded, copy-on-write, ACID key-value store,
 "chosen over SQLite to avoid a C dependency and over sled for its
 simpler transactional model"
-([data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md#storage)).
+([03-data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/03-data-model.md#storage)).
 See the [redb project](https://github.com/cberner/redb).
 
 **Alternatives considered.** SQLite and sled, as above. An external
@@ -318,13 +318,13 @@ are code with a schema version. Every write goes through one store API
 embedded in the control plane, using the
 [`openraft`](https://github.com/databendlabs/openraft) crate, pinned to
 an exact version. The state machine is the existing ReDB database
-(clustering.md D1). The store and its Raft integration are the
+(14-clustering.md D1). The store and its Raft integration are the
 `glidex-raftstore` crate.
 
 **Why.** "No new service to install, secure or upgrade." Every table,
 migration and test keeps working on ReDB (D1). Losing a minority of
 servers doesn't stop management, and VMs keep running through any
-control-plane outage anyway (clustering.md §2).
+control-plane outage anyway (14-clustering.md §2).
 
 **Alternatives considered** (from D1):
 
@@ -332,7 +332,7 @@ control-plane outage anyway (clustering.md §2).
 |---|---|
 | etcd | A separate daemon, value-size and per-transaction operation limits, and a rewrite of every table access |
 | dqlite (Incus's choice) | C, and a move to SQL |
-| An external database such as PostgreSQL | Not discussed directly; it falls under the "no new external database" goal (clustering.md §2) |
+| An external database such as PostgreSQL | Not discussed directly; it falls under the "no new external database" goal (14-clustering.md §2) |
 
 **Consequences.** Glidex owns its consensus code paths: snapshots,
 membership changes, and a voter that lost its state must never rejoin as
@@ -380,14 +380,14 @@ voter (D5).
 they opt in, and the code paths stay common (D5).
 
 **Consequences.** Both modes must stay tested. Joining a cluster is an
-explicit, backed-up step (clustering.md §5.1), not a default.
+explicit, backed-up step (14-clustering.md §5.1), not a default.
 
 ### Servers and agents
 
 **Decision.** A cluster has 1, 3 or 5 **server** hosts (Raft voters,
 API, cluster controllers) and any number of **agent** hosts (node role
-only) (clustering.md §2). Agents serve no API: an agent's web UI
-redirects browsers to a server (host-page.md W5). Node liveness is held
+only) (14-clustering.md §2). Agents serve no API: an agent's web UI
+redirects browsers to a server (28-host-page.md W5). Node liveness is held
 in the leader's memory; only transitions go through Raft (D7). There is
 no automatic failover of VMs (D8), and placement is sticky (D6).
 
@@ -402,16 +402,16 @@ no automatic failover of VMs (D8), and placement is sticky (D6).
   (D7).
 - A partitioned node may still be running its VMs. Starting copies
   elsewhere would put two writers on one disk (D8), and "at most one
-  instance per VM, ever" (reconciliation.md D8) comes first.
+  instance per VM, ever" (12-reconciliation.md D8) comes first.
 - One origin for the browser: SSO, passkeys and cookies work
-  (host-page.md W5).
+  (28-host-page.md W5).
 
 **Alternatives considered.** Automatic restart of a lost host's VMs
-elsewhere, rejected without fencing (clustering.md §2, D8).
+elsewhere, rejected without fencing (14-clustering.md §2, D8).
 
 **Consequences.** When a host dies, its VMs are `Unknown` until an
 operator acts. A VM whose disks are all on shared datastores can then be
-placed again after `node forget --fenced` (storage.md S10). Fencing and
+placed again after `node forget --fenced` (24-storage.md S10). Fencing and
 automatic evacuation are later work (§18). See
 [Clusters](../operator-guide/clusters.md).
 
@@ -420,20 +420,20 @@ automatic evacuation are later work (§18). See
 ### One service layer under REST and RPC
 
 **Decision.** Every operation is a transport-neutral service function.
-REST and RPC adapters only decode, call it and encode (grpc.md G-D1).
+REST and RPC adapters only decode, call it and encode (18-grpc.md G-D1).
 RPCs are served on the same listeners and port as REST (G-D2). REST/JSON
 stays permanently, for curl, scripts and HTTP-only protocols (OIDC
-callbacks, SCIM, the console WebSocket) (grpc.md §1).
+callbacks, SCIM, the console WebSocket) (18-grpc.md §1).
 
 **Why.** Authorization, quota and audit are written once. "Two copies of
 a Cedar check is exactly the kind of drift that becomes a cross-tenant
 bug" (G-D1). One port means no new firewall rule or certificate name, and
 the existing TLS, pinning and peer-uid identification are reused (G-D2).
 The RPC side gives typed contracts, generated clients, a compatibility
-check in CI, and server streaming for watch (grpc.md §1).
+check in CI, and server streaming for watch (18-grpc.md §1).
 
 **Alternatives considered.** Hand-written REST types mirrored by hand in
-`gxctl`, which is what Glidex had before (grpc.md §1). gRPC as a
+`gxctl`, which is what Glidex had before (18-grpc.md §1). gRPC as a
 replacement for REST, rejected: REST stays.
 
 **Consequences.** Every operation declares whether it reads or writes,
@@ -507,13 +507,13 @@ and the console WebSocket (PR #41).
 ### Cedar
 
 **Decision.** Authorization is [Cedar](https://www.cedarpolicy.com)
-policy, evaluated in process with the `cedar-policy` crate (security.md
+policy, evaluated in process with the `cedar-policy` crate (11-security.md
 decision 9, §7). Roles are template-linked policies; invariants are
 `forbid` policies; every policy is validated against a schema. Every
 route maps to one Cedar action, and a route without one fails a test
 (decision 7). Operators add site policies through the API (decision 10).
 
-**Why** (security.md §7):
+**Why** (11-security.md §7):
 
 - roles, project scoping, grants and host-wide rules are policies
   instead of `if` chains spread over handlers;
@@ -532,13 +532,13 @@ canonicalization and netd's peer check.
 alternatives are role tables in the database (RBAC), which can't express
 the `forbid` invariants or site rules without code, and an external
 policy service such as [OPA](https://www.openpolicyagent.org/), which
-would be another service to run; security.md says "there is no separate
+would be another service to run; 11-security.md says "there is no separate
 policy service".
 
 **Consequences.** Contributors change the schema and policies
 (`crates/glidex-control-plane/policies/`) along with handlers. Tenants
 can't author Cedar; site policies belong to operators and directory
-owners (tenancy.md D28), because tenant-authored policies would need
+owners (19-tenancy.md D28), because tenant-authored policies would need
 per-tenant validation scopes and lock-out rules. See
 [Access control](../operator-guide/access-control.md).
 
@@ -567,7 +567,7 @@ passkeys, capability checks) stay in the control plane and the UI.
 
 **Decision.** A **tenant** is an organization's account. Every project,
 VM, disk, network and credential belongs to exactly one tenant
-(tenancy.md D1). Each tenant is in exactly one **directory**, which holds
+(19-tenancy.md D1). Each tenant is in exactly one **directory**, which holds
 its users, teams and connectors to the organization's own identity
 provider (D2). Operator tenants operate clusters; only their members pass
 host-scoped actions, enforced by a `forbid` (D4). A cluster trusts a
@@ -575,7 +575,7 @@ directory only after a pairwise handshake (D8), keeps a read-only replica
 of what the directory sends it (D12), and accepts only tokens addressed
 to it (D11, §7.3).
 
-**Why** (tenancy.md):
+**Why** (19-tenancy.md):
 
 - Organizations keep their own identity and records; nothing about one
   is stored in another's directory (D2).
@@ -605,7 +605,7 @@ to it (D11, §7.3).
 workloads and serving credentials it can verify, and stops accepting that
 directory's credentials after `max_staleness` (D13): an operator-chosen
 balance between availability and revocation. The model is large (over
-seventy decisions); the implemented parts are tracked in tenancy.md §23.
+seventy decisions); the implemented parts are tracked in 19-tenancy.md §23.
 
 ### Workload federation
 
@@ -625,7 +625,7 @@ which is what federation replaces.
 **Consequences.** Exchanged tokens last at most an hour and can't be
 renewed. Identity for Glidex's own VMs (a metadata endpoint and SPIFFE
 IDs) is a separate draft,
-[workload-identity.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/workload-identity.md),
+[29-workload-identity.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/29-workload-identity.md),
 not implemented. See [Workload federation](../operator-guide/workload-federation.md).
 
 ## Networking
@@ -634,17 +634,17 @@ not implemented. See [Workload federation](../operator-guide/workload-federation
 
 **Decision.** VM networking is Open vSwitch. The control plane asks
 `glidex-netd` (root) for bridges, uplinks, NAT and VM ports. Glidex can
-install OVS from distro packages by profile (networking.md decision 6),
+install OVS from distro packages by profile (09-networking.md decision 6),
 or from a pinned source build when the distro lacks features (decision
 10). Addressing is DHCP plus NAT through the host's existing route
 (decision 4).
 
 **Why.** OVS covers every port type Glidex uses under one model: tap and
-vhost-user VM ports, and kernel, AF_XDP and DPDK uplinks (networking.md
-§2; clustering.md D15). It is also the base OVN needs for clusters. Its
+vhost-user VM ports, and kernel, AF_XDP and DPDK uplinks (09-networking.md
+§2; 14-clustering.md D15). It is also the base OVN needs for clusters. Its
 bridge-port counters are the one metering source that covers every port
 type, since vhost-user ports have no kernel network device
-(metering.md D5).
+(13-metering.md D5).
 
 **Alternatives considered.** Linux bridges on a single host. They are
 simpler and in every kernel, but the maintainers chose OVS everywhere
@@ -656,7 +656,7 @@ DPDK and no path to OVN.
 
 **Consequences.** OVS is a large host dependency, and an OVS upgrade
 restarts `ovs-vswitchd` and interrupts VM traffic, so the installer
-leaves OVS upgrades to the distro (installer.md). Static guest addressing
+leaves OVS upgrades to the distro (05-installer.md). Static guest addressing
 and persistent host network changes are non-goals. See
 [Host networking](../operator-guide/host-networking.md).
 
@@ -665,7 +665,7 @@ and persistent host network changes are non-goals. See
 **Decision.** Networks that span hosts use [OVN](https://www.ovn.org/) on
 the OVS each host already runs. The leader's network controller writes
 the OVN northbound database; netd only joins the host to OVN and plugs VM
-ports (clustering.md D9). Node-scoped OVS networks remain (D10). IPAM
+ports (14-clustering.md D9). Node-scoped OVS networks remain (D10). IPAM
 belongs to the control plane, not to OVN (D12). NAT egress is
 centralized on high-availability gateway chassis (D11).
 
@@ -689,7 +689,7 @@ One IPAM source of truth survives restarts and serves port security
   means renumbering running VMs (D10).
 
 **Consequences.** Two Raft groups run on the servers, Glidex's and
-OVSDB's, kept separate on purpose (clustering.md §4). External traffic
+OVSDB's, kept separate on purpose (14-clustering.md §4). External traffic
 on OVN is metered from conntrack accounting in each router's SNAT zone,
 because OVN exposes no counters on logical objects (D22). Routed
 networks, floating IPs and security groups are later work (§18).
@@ -699,7 +699,7 @@ networks, floating IPs and security groups are later work (§18).
 ### Datastores behind a CSI-shaped driver trait
 
 **Decision.** A **datastore** is a cluster-scoped record naming where
-disks and images live (storage.md S2). A driver creates, sizes, deletes
+disks and images live (24-storage.md S2). A driver creates, sizes, deletes
 and opens volumes in it, and a topology says which nodes reach it (S4).
 The drivers are `dir` (node-local; the built-in `local` datastore),
 `shared-dir` (a filesystem the operator mounts on every node: NFS,
@@ -752,7 +752,7 @@ See [Datastores](../operator-guide/datastores.md).
 
 **Decision.** `POST /images {"catalog": …}` downloads a distro cloud
 image and verifies it against the checksum file the vendor publishes
-next to it, fetched over HTTPS (images.md §4). Firmware is different: its
+next to it, fetched over HTTPS (10-images.md §4). Firmware is different: its
 digest is pinned. A VM's root disk is usually **linked**, a qcow2 overlay
 whose backing file is the image. Files are named only by id.
 
@@ -760,7 +760,7 @@ whose backing file is the image. Files are named only by id.
 
 - Cloud images are rebuilt weekly with security fixes, so pinning their
   digests would ship stale, vulnerable guests; a "current" image plus the
-  vendor's published checksum avoids that (images.md §4). One tested
+  vendor's published checksum avoids that (10-images.md §4). One tested
   firmware build is what guests should boot, so firmware is pinned
   (§4.1).
 - Debian's OVMF build is used because upstream EDK2 publishes no
@@ -772,14 +772,14 @@ whose backing file is the image. Files are named only by id.
 - Everything runs as the control-plane user; no step needs root (goal
   4).
 - On datastores, an overlay names its backing file by a relative path,
-  because nodes may mount a datastore at different paths (storage.md
+  because nodes may mount a datastore at different paths (24-storage.md
   S8).
 
 **Alternatives considered.** Pinned digests for cloud images (above).
 Full copies instead of overlays remain available (`clone: full`).
 
 **Consequences.** An image can't be deleted while a linked disk uses it
-(images.md §3). A linked disk needs its image copy in the same
+(10-images.md §3). A linked disk needs its image copy in the same
 datastore (S8). Disk snapshots, image building and non-cloud images
 (installer ISOs) are non-goals. See
 [Images and disks](../user-guide/images-and-disks.md).
@@ -791,7 +791,7 @@ the image's filesystems **inside a short-lived VM**, never on the host.
 It boots a pinned extractor kernel and initramfs with the image attached
 read-only and no network; the extractor writes the boot files to a raw
 disk in a simple stream format that the host parses with strict limits
-(kernel-boot.md K9).
+(23-kernel-boot.md K9).
 
 **Why.** No new host packages, no root, no loop devices, and the host
 never parses an untrusted filesystem (K9). A disk image, especially from
@@ -800,7 +800,7 @@ parser; inside the extractor, the worst outcome is a failed extraction
 (§8). Extracting from the image also guarantees that the kernel matches
 the image's modules (K3).
 
-**Alternatives considered** (kernel-boot.md §9):
+**Alternatives considered** (23-kernel-boot.md §9):
 
 | Option | Why not |
 |---|---|
@@ -819,12 +819,12 @@ the default is to be revisited "once boot-time numbers exist" (K2). See
 seed, a FAT volume labelled `CIDATA`, with `mkdosfs` and `mcopy`
 (`cloud_init.rs`). A VM gets a login only if it names a stored
 credential; there are no host-wide default keys or passwords
-([credentials.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/credentials.md)).
+([08-credentials.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/08-credentials.md)).
 
 **Why.** Distro cloud images ship with no usable login and wait for
 cloud-init. `mkdosfs`/`mcopy` build the volume without root or loop
 mounts, the same approach as Cloud Hypervisor's own script. One host-wide
-key or password would open VMs in every project (security.md §6.2).
+key or password would open VMs in every project (11-security.md §6.2).
 
 **Consequences.** The seed holds a password hash and is created `0600`.
 cloud-init provisions users once per instance id, so changing a
@@ -838,7 +838,7 @@ credential later doesn't change an already-provisioned guest. See
 **Decision.**
 
 - A device is identified per node, `(node, address)`; VFIO claims are
-  per node and by IOMMU group (host-topology.md H3).
+  per node and by IOMMU group (22-host-topology.md H3).
 - Each node reads its topology from sysfs, with no new dependency (H1). A
   small summary goes in replicated node status for the scheduler; the
   full PCIe tree stays on the node (H2).
@@ -847,7 +847,7 @@ credential later doesn't change an already-provisioned guest. See
   (H10, H11, H17).
 - VMs choose a NUMA policy (`none`, `preferred`, `strict`, and
   `aligned` for multi-GPU VMs) and a CPU policy (`shared` or
-  `dedicated`) (H5, H6, gpu-vms.md G2).
+  `dedicated`) (H5, H6, 27-gpu-vms.md G2).
 - The scheduler, not the node, picks exact CPUs (H8). Hugepages are a
   resource of their own, never overcommitted (H19).
 - Glidex can bind a device to `vfio-pci` through netd, but never changes
@@ -880,9 +880,9 @@ operator's job. Device health is reported, not used to refuse devices
 a PTY). The **shim** owns the PTY master, writes `console.log`, and
 serves any number of clients on a console socket. A new client first
 gets the current log replayed, then live output
-([console.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/console.md)).
+([02-console.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/02-console.md)).
 Logs are appended across restarts and rotated once at 16 MiB
-(reconciliation.md D14).
+(12-reconciliation.md D14).
 
 **Why.**
 
@@ -890,7 +890,7 @@ Logs are appended across restarts and rotated once at 16 MiB
   hypervisor exits. When Cloud Hypervisor owned the master, its hangup
   on exit threw away unread output, so a guest's last line ("reboot:
   Power down") was routinely lost. Owning the master also captures
-  firmware output from before boot completes (console.md, "Why the shim
+  firmware output from before boot completes (02-console.md, "Why the shim
   owns the master").
 - The shim, not the control plane, because whoever holds the master
   decides when the guest's terminal hangs up; while the control plane
@@ -911,7 +911,7 @@ canvas that screen readers can't read (PR #50). See
 
 ## Metering
 
-**Decision.** The meter runs inside the control plane (metering.md D1).
+**Decision.** The meter runs inside the control plane (13-metering.md D1).
 It samples cumulative counters and stores deltas (D2), into an hourly,
 UTC ledger that is immutable once closed, with a per-source cursor
 written in the same transaction as the deltas it produced (D8). Sources:
@@ -939,10 +939,10 @@ I/O also get a 5-minute 95th percentile per billing month (D15, D16).
 
 **Alternatives considered.** A separate metering daemon (D1). Rates
 computed upstream (D2). OVS flow statistics or eBPF for external traffic
-(rejected for conntrack accounting, clustering.md D15, D22).
+(rejected for conntrack accounting, 14-clustering.md D15, D22).
 
 **Consequences.** Metering history lives in the replicated store and is
-its largest table, about 12 MB per VM (clustering.md §4.1); moving it
+its largest table, about 12 MB per VM (14-clustering.md §4.1); moving it
 out is the first step past the scale ceiling. Usage outlives the VM and
 keeps the project and name from when it was sampled (D13). See
 [Usage](../user-guide/usage.md) and [Algorithms](algorithms.md).
@@ -955,8 +955,8 @@ keeps the project and name from when it was sampled (D13). See
 serve HTTPS on every address by default, with a self-signed ECDSA P-256
 certificate unless one is configured (PR #7). `gxctl` trusts a
 self-signed control plane by pinning the leaf certificate's SHA-256,
-trusted on first use at `gxctl auth login` (security.md decision 18,
-gxctl-auth.md A4). A verify-nothing mode exists only as an explicitly
+trusted on first use at `gxctl auth login` (11-security.md decision 18,
+17-gxctl-auth.md A4). A verify-nothing mode exists only as an explicitly
 confirmed, per-profile, loudly marked escape hatch (A5).
 
 **Why.** A fresh host has no name a public CA would sign, but its API
@@ -970,7 +970,7 @@ reused until near expiry so the fingerprint stays stable (PR #7).
 (replaced in PR #7). A "skip verification" flag as the normal way to
 reach a self-signed server (rejected, A4, A5). Running a private CA for
 every standalone host (not discussed; clusters do have their own CA,
-clustering.md D20).
+14-clustering.md D20).
 
 **Consequences.** Browsers show a warning for the self-signed
 certificate, and HSTS is sent only with a configured certificate,
@@ -982,7 +982,7 @@ because it would make that warning impossible to bypass (PR #7). See
 **Decision.** On a host on a tailnet, `glidex-ui` may serve the node's
 Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched
 from the host's `tailscaled` and chosen by SNI; every other name keeps
-the usual certificate (tailscale-tls.md T1–T3). It is opt-in (T4). The
+the usual certificate (21-tailscale-tls.md T1–T3). It is opt-in (T4). The
 control plane keeps its own certificate (T8).
 
 **Why.** Browser-trusted HTTPS with no certificate management. Opt-in
@@ -1003,7 +1003,7 @@ already holds it (T6).
 **Decision.** Users of a local directory can sign in with
 [WebAuthn](https://www.w3.org/TR/webauthn-3/) passkeys. Credentials are
 discoverable, user verification is required, and a passkey sign-in counts
-as multi-factor (passkeys.md P3). No attestation is trusted (P1). Only the
+as multi-factor (25-passkeys.md P3). No attestation is trusted (P1). Only the
 user adds its own passkeys, and a user can't be left with a single
 passkey as its only sign-in (P4). The checks are implemented in Glidex
 (`auth/webauthn.rs`, pure Rust).
@@ -1028,12 +1028,12 @@ logins. See [Authentication](../operator-guide/authentication.md#passkeys).
 managed with [Bun](https://bun.sh/) (`bun.lock`). A small Rust binary,
 `glidex-ui`, serves the built files over HTTPS and proxies `/api` to the
 control plane; `glidex-ui --dev` runs the Vite dev server instead
-([web-ui.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/web-ui.md)).
+([07-web-ui.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/07-web-ui.md)).
 
 **Why.** `glidex-ui` is a proxy with no authority of its own; the
-control plane authenticates and authorizes every request (security.md
+control plane authenticates and authorizes every request (11-security.md
 decision 4). Running it as its own user means a UI compromise can't
-reach what the control plane can (security.md §4). Proxying keeps the
+reach what the control plane can (11-security.md §4). Proxying keeps the
 browser on one origin, which cookies, CSRF checks, SSO and passkeys rely
 on. React, Vite and Bun were chosen for speed and ecosystem: **Vite and
 Bun** for fast builds, dev-server reloads and dependency installs;
@@ -1054,7 +1054,7 @@ Generated Connect-ES code is committed, and CI fails if it is stale.
 non-interactive and convergent program: each run detects what is missing
 or outdated and fixes just that, so the same command installs Glidex and
 later keeps it up to date
-([installer.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/installer.md)).
+([05-installer.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/05-installer.md)).
 It installs system dependencies through the host's package manager
 (apt, dnf/yum or pacman). `--prebuilt` uses binaries already built in
 the checkout.
@@ -1062,9 +1062,9 @@ the checkout.
 **Why.** README goal 4: minimal host dependencies and one command that
 stands the system up. Keeping all "check and fix" logic in one place
 lets the other crates assume their dependencies are present
-(installer.md "Philosophy"). Downloads are pinned and verified: the
+(05-installer.md "Philosophy"). Downloads are pinned and verified: the
 firmware and Cloud Hypervisor by sha256, and Rust and Bun at pinned
-versions with their published checksums (security.md §9).
+versions with their published checksums (11-security.md §9).
 
 **Alternatives considered.** Distro packages (`.deb`, `.rpm`) and
 prebuilt binaries. Installing from source is a stage, not a final

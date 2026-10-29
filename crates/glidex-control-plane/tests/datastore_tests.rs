@@ -1,4 +1,4 @@
-//! Datastores (spec/storage.md S2): the built-in `local`, registered `dir`
+//! Datastores (spec/24-storage.md S2): the built-in `local`, registered `dir`
 //! datastores under the datastore root, what each node finds at them, and
 //! disks put on them.
 
@@ -394,7 +394,7 @@ async fn only_administrators_manage_datastores() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
 }
 
-/// A shared datastore (spec/storage.md S3): claimed with its marker, disks
+/// A shared datastore (spec/24-storage.md S3): claimed with its marker, disks
 /// on it bound to no node and locked while they are worked on.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shared_datastore_is_claimed_and_its_disks_are_bound_to_no_node() {
@@ -470,7 +470,7 @@ async fn a_shared_datastore_is_claimed_and_its_disks_are_bound_to_no_node() {
 
 /// A linked disk on a shared datastore overlays the datastore's own copy of
 /// its image, made when the disk needs it and gone with the image
-/// (spec/storage.md S8, S9).
+/// (spec/24-storage.md S8, S9).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -575,7 +575,7 @@ async fn a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy() {
     assert!(!copy.exists(), "the datastore's copy goes with the image");
 }
 
-/// Moving disks between datastores (spec/storage.md §8.3): a blank disk to
+/// Moving disks between datastores (spec/24-storage.md §8.3): a blank disk to
 /// a shared datastore and back; a linked one as an overlay on the shared
 /// datastore's copy of its image, then flattened.
 #[tokio::test(flavor = "multi_thread")]
@@ -716,7 +716,7 @@ async fn disks_move_between_datastores() {
     assert_eq!(path.parent().unwrap(), ssd.join("disks"));
 }
 
-/// An `lvm` datastore (spec/storage.md §11.1): a volume group and thin
+/// An `lvm` datastore (spec/24-storage.md §11.1): a volume group and thin
 /// pool instead of a path, and its disks are raw. Without glidex-stord (or
 /// with the group not allowed) no node reaches it.
 #[tokio::test(flavor = "multi_thread")]
@@ -784,7 +784,7 @@ async fn lvm_datastores_name_a_volume_group_and_keep_raw_disks() {
 }
 
 /// The `lvm` driver against a real glidex-stord and volume group (spec/
-/// storage.md §11.1, §19 H4–H7). Ignored by default; run with a stord whose
+/// 24-storage.md §11.1, §19 H4–H7). Ignored by default; run with a stord whose
 /// stord.json allows the group and hands devices to this test's user:
 ///
 /// ```text
@@ -1015,7 +1015,7 @@ async fn lvm_disks_on_a_real_pool() {
 }
 
 /// An `lvm` datastore can't be deleted while a node keeps image volumes in
-/// it (spec/storage.md §11.1): nothing would remove them afterwards.
+/// it (spec/24-storage.md §11.1): nothing would remove them afterwards.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_lvm_datastore_with_image_volumes_is_not_deleted() {
     use glidex_control_plane::datastore::record;

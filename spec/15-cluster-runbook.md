@@ -1,6 +1,6 @@
 # Cluster runbook
 
-Operational procedures for a glidex cluster (spec/clustering.md §5, §12.5).
+Operational procedures for a glidex cluster (spec/14-clustering.md §5, §12.5).
 Commands run as `gxctl` on a server unless a step says it runs on the host.
 Tokens are shown once and are read by the installer from a 0600 file or stdin,
 never from the command line.
@@ -51,7 +51,7 @@ A removed or departed node's id is retired: it joins as a new node instead.
 
 ## Rotating the secrets key
 
-The key wrapping the connector secrets' data keys (spec/tenancy.md §13):
+The key wrapping the connector secrets' data keys (spec/19-tenancy.md §13):
 
     gxctl cluster rotate-secrets-key
 

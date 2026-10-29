@@ -1,4 +1,4 @@
-//! Joining with resources (spec/clustering.md §5.9): a standalone host with
+//! Joining with resources (spec/14-clustering.md §5.9): a standalone host with
 //! VMs, disks, images, networks and credentials joins a cluster and brings
 //! them in, under a new node id.
 //!
@@ -142,7 +142,7 @@ fn read_rows(db: &Db, plan: &ImportPlan) -> Vec<Row> {
 }
 
 /// What a plan brings that may need a new name here (the mapping editor,
-/// spec/clustering-ui.md §7.4): its projects, node networks and credentials.
+/// spec/16-clustering-ui.md §7.4): its projects, node networks and credentials.
 pub fn sources(db: &Db, plan: &ImportPlan) -> Value {
     let rows = read_rows(db, plan);
     let projects: Vec<Value> = table_rows(&rows, TableId::Projects)

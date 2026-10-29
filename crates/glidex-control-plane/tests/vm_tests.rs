@@ -1,4 +1,4 @@
-//! The VM family on its RPCs and REST twins (spec/grpc.md §9.1, G2):
+//! The VM family on its RPCs and REST twins (spec/18-grpc.md §9.1, G2):
 //! proto-shaped answers, `UpdateVm` with a field mask next to the old
 //! merge patch, versions, and deletes.
 
@@ -436,7 +436,7 @@ async fn vm_service_over_connect_and_grpc() {
 }
 
 /// Hugepages asked for are counted in their size on a standalone host too
-/// (spec/host-topology.md §8a.3); a bad size is refused.
+/// (spec/22-host-topology.md §8a.3); a bad size is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn hugepage_sizes_are_checked_and_recorded_with_the_placement() {
     let h = harness();
@@ -539,7 +539,7 @@ async fn hugepage_sizes_are_checked_and_recorded_with_the_placement() {
     assert!(v["vm"].get("hugepages").is_none(), "{v}");
 }
 
-/// NUMA and CPU policies on a standalone host (spec/host-topology.md H8):
+/// NUMA and CPU policies on a standalone host (spec/22-host-topology.md H8):
 /// placed by the same fit as in a cluster, against the host's topology.
 #[tokio::test(flavor = "multi_thread")]
 async fn numa_and_cpu_policies_are_placed_on_a_standalone_host() {

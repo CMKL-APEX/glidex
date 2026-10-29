@@ -1,5 +1,5 @@
 //! An in-process Raft cluster with fault injection (glidex
-//! spec/clustering.md §15): messages between members are routed through a
+//! spec/14-clustering.md §15): messages between members are routed through a
 //! [`Mesh`] that can drop, delay and reorder them, partition members and
 //! take them down. [`Test`] is a small schema for the crate's own tests and
 //! [`TestCluster`]; other applications use [`Mesh`] with theirs.

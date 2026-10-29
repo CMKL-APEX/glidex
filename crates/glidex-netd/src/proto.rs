@@ -59,14 +59,14 @@ pub enum Op {
     ListVmPorts,
     ListUplinks,
     /// Traffic counters of every port on glidex bridges (metering,
-    /// spec/metering.md §5.4). Read-only, but not a status op: traffic
+    /// spec/13-metering.md §5.4). Read-only, but not a status op: traffic
     /// volumes are tenant data.
     PortStats,
     /// External-traffic counters of NAT networks, per network and per
-    /// reserved MAC (spec/metering.md §5.5). Read-only; full socket only.
+    /// reserved MAC (spec/13-metering.md §5.5). Read-only; full socket only.
     NatCounters,
     /// Cumulative external-traffic counters of router SNAT zones, from
-    /// conntrack accounting (spec/clustering.md §13.3). Read-only; full socket only.
+    /// conntrack accounting (spec/14-clustering.md §13.3). Read-only; full socket only.
     CtExternalCounters,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
@@ -100,7 +100,7 @@ pub enum Op {
         nic_index: u8,
     },
     /// Move a VM port to another bridge (`br-int` and a glidex bridge, either
-    /// way) without recreating its tap or socket (spec/clustering.md §11.3).
+    /// way) without recreating its tap or socket (spec/14-clustering.md §11.3).
     /// The spec names the new bridge (and `ovn_lport` for `br-int`).
     MoveVmPort(VmPortSpec),
     /// The VM is being deleted: free its NAT reservations too.
@@ -110,7 +110,7 @@ pub enum Op {
     SyncVms {
         running: Vec<String>,
     },
-    /// Make this host an OVN chassis (spec/clustering.md §11.3).
+    /// Make this host an OVN chassis (spec/14-clustering.md §11.3).
     EnsureOvnChassis(EnsureOvnChassisArgs),
     /// Read-only: the chassis, `ovn-controller` and which ports have flows.
     OvnStatus,
@@ -124,7 +124,7 @@ pub enum Op {
     /// delete its chassis). Run on a remaining server.
     ForgetOvnMember(ForgetOvnMemberArgs),
     /// Bind a PCI device's IOMMU group to vfio-pci for VMs
-    /// (spec/host-topology.md §5.3).
+    /// (spec/22-host-topology.md §5.3).
     PrepareDevice {
         address: String,
     },
@@ -134,12 +134,12 @@ pub enum Op {
     },
     ListPreparedDevices,
     /// Read-only: the processes holding each of `groups` (`/dev/vfio/<g>`
-    /// open), whoever runs them (spec/host-topology.md §5.1).
+    /// open), whoever runs them (spec/22-host-topology.md §5.1).
     DeviceHolders {
         groups: Vec<String>,
     },
     /// Give a physical function `vfs` SR-IOV virtual functions
-    /// (spec/host-topology.md §10.1); 0 removes them.
+    /// (spec/22-host-topology.md §10.1); 0 removes them.
     SetSriovVfs {
         address: String,
         vfs: u32,
@@ -320,7 +320,7 @@ pub struct AttachResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv4: Option<Ipv4Addr>,
     /// The port's index for the metadata endpoint on a NAT network
-    /// (spec/workload-identity.md §7.1): metad sees its requests come from
+    /// (spec/29-workload-identity.md §7.1): metad sees its requests come from
     /// `glidex_ovs::metadata::peer_address(index)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_index: Option<u16>,

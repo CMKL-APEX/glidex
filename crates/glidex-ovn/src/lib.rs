@@ -1,4 +1,4 @@
-//! The OVN northbound database as glidex uses it (spec/clustering.md §11).
+//! The OVN northbound database as glidex uses it (spec/14-clustering.md §11).
 //!
 //! The control plane's network controller describes what should exist
 //! ([`Desired`]); [`sync`] makes the database say so, touching only rows

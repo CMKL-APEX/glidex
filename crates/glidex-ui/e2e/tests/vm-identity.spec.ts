@@ -1,4 +1,4 @@
-// A VM's service account (spec/workload-identity.md W5): the create form
+// A VM's service account (spec/29-workload-identity.md W5): the create form
 // and the VM page. The project's service accounts are mocked; what the UI
 // sends is what is checked.
 import { api, createVm, del, expect, field, listVms, RpcCode, rpcFetch, rpcRoute, test, waitForRpc } from "../fixtures";

@@ -1,4 +1,4 @@
-//! Kernel images (spec/kernel-boot.md §4): what a kernel file must look
+//! Kernel images (spec/23-kernel-boot.md §4): what a kernel file must look
 //! like (K8) and the size limits of a kernel and its initramfs.
 //!
 //! Only the header is read. A kernel is loaded into guest memory by the

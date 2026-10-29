@@ -109,7 +109,7 @@ async fn main() {
         );
     }
 
-    // `--force-new-cluster [--from <snapshot>]` (spec/clustering.md §5.12): recovery, then exit.
+    // `--force-new-cluster [--from <snapshot>]` (spec/14-clustering.md §5.12): recovery, then exit.
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--force-new-cluster") {
         let from = args
@@ -144,7 +144,7 @@ async fn main() {
         }
     }
 
-    // `--leave-removed` (spec/clustering.md §5.5 step 3): a node the cluster
+    // `--leave-removed` (spec/14-clustering.md §5.5 step 3): a node the cluster
     // removed becomes a standalone host, without its API (an agent's goes to
     // the servers, which refuse it now). Run with the service stopped.
     if args.iter().any(|a| a == "--leave-removed") {
@@ -164,7 +164,7 @@ async fn main() {
         }
     }
 
-    // `--detach-offline` (spec/clustering.md §5.8.3): leave with this host's resources
+    // `--detach-offline` (spec/14-clustering.md §5.8.3): leave with this host's resources
     // while no server can be reached, then exit. Run with the service stopped.
     if args.iter().any(|a| a == "--detach-offline") {
         let db = state::VmManager::default_db_path_pub();
@@ -188,7 +188,7 @@ async fn main() {
         }
     }
 
-    // Configuration and identity (spec/security.md §5, §13). A bad config
+    // Configuration and identity (spec/11-security.md §5, §13). A bad config
     // file stops startup rather than falling back to defaults.
     print_status("Loading configuration");
     let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
@@ -217,7 +217,7 @@ async fn main() {
     println!("OK");
     vm_manager.configure(&cfg);
 
-    // KVM (spec/reconciliation.md §13.3). Under the systemd runner the
+    // KVM (spec/12-reconciliation.md §13.3). Under the systemd runner the
     // hypervisors open /dev/kvm in their glidex-vm units, and this unit's
     // sandbox closes /dev: a missing device is reported, not fatal. Under
     // the detached runner they are this process's children and need it.
@@ -243,10 +243,10 @@ async fn main() {
         println!("OK");
     }
 
-    // Load VMs and adopt the instances still running (spec/reconciliation.md
+    // Load VMs and adopt the instances still running (spec/12-reconciliation.md
     // §9.4): nothing is launched or stopped before every VM was observed.
     // An agent starts from its cache: wait for it to be listed so that "not
-    // listed yet" is never read as "no VMs" (networking.md §7.7).
+    // listed yet" is never read as "no VMs" (09-networking.md §7.7).
     if let Some(link) = vm_manager.node_link() {
         print_status("Waiting for the cluster");
         if link.wait_ready(std::time::Duration::from_secs(20)).await {
@@ -326,8 +326,8 @@ async fn main() {
     }
 
     // An agent has no API of its own: the servers' is the cluster's
-    // (spec/clustering.md §4). Its UI socket relays the web UI's requests to
-    // a server, which authenticates them (spec/clustering-ui.md §3.6).
+    // (spec/14-clustering.md §4). Its UI socket relays the web UI's requests to
+    // a server, which authenticates them (spec/16-clustering-ui.md §3.6).
     if vm_manager.node_link().is_some() {
         println!(
             "  Agent node: serving VMs for the cluster; node API on {}",
@@ -352,7 +352,7 @@ async fn main() {
                 vm_manager.set_api_router(router.clone());
                 let app = router.layer(TraceLayer::new_for_http());
                 // glidex-metad's socket: an agent finds its VM and asks the
-                // leader for tokens (spec/workload-identity.md §15).
+                // leader for tokens (spec/29-workload-identity.md §15).
                 let metad_sock = cfg.metad_socket_path();
                 match serve::bind_unix(&metad_sock) {
                     Ok(l) => {
@@ -425,7 +425,7 @@ async fn main() {
         println!("OK (follower: setup is the leader's)");
     }
     auth.watch_policies();
-    // Pulled connectors' runs, where writes go (spec/tenancy.md §8.2).
+    // Pulled connectors' runs, where writes go (spec/19-tenancy.md §8.2).
     glidex_control_plane::directory::sync::spawn(auth.clone());
     glidex_control_plane::directory::issuer::spawn(auth.clone());
 
@@ -434,9 +434,9 @@ async fn main() {
         manager: vm_manager.clone(),
         auth,
     });
-    // Feeds from the directories this cluster trusts (spec/tenancy.md D67).
+    // Feeds from the directories this cluster trusts (spec/19-tenancy.md D67).
     api::trust::spawn_feeds(app_state.clone());
-    // glidex-metad's own socket and router (spec/workload-identity.md W11);
+    // glidex-metad's own socket and router (spec/29-workload-identity.md W11);
     // as the leader, the app answers its nodes' metadata questions (§15).
     let metad_router = api::metad::router(app_state.clone()).layer(TraceLayer::new_for_http());
     vm_manager.set_api_app(app_state.clone());
@@ -452,7 +452,7 @@ async fn main() {
         }
     };
     // Local clients (gxctl, a hand-started UI) trust the published copy
-    // (spec/security.md §5.1.1).
+    // (spec/11-security.md §5.1.1).
     let run_dir = glidex_control_plane::paths::run_dir();
     match &tls {
         Some(t) => {
@@ -507,7 +507,7 @@ async fn main() {
         tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
     }
     // Replaced certificate files are served without a restart, and
-    // published again for local clients (spec/tailscale-tls.md §4.1).
+    // published again for local clients (spec/21-tailscale-tls.md §4.1).
     if let Some(files) = tls.as_mut().and_then(|t| t.files.take()) {
         let run_dir = run_dir.clone();
         files.watch(glidex_tls::RELOAD_EVERY, move |f| {
@@ -613,7 +613,7 @@ fn leave_ovn() {
 }
 
 /// The configuration with the secrets key file defaulted to `secrets.kek`
-/// beside the database (spec/tenancy.md §13).
+/// beside the database (spec/19-tenancy.md §13).
 fn with_secrets_key(cfg: &config::Config, vm_manager: &state::VmManager) -> config::Config {
     let mut c = cfg.clone();
     if c.auth.secrets_key.is_none() {

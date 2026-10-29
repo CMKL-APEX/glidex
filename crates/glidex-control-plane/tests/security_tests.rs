@@ -1,5 +1,5 @@
 //! End-to-end security tests against the authenticated router
-//! (spec/security.md §14): authentication, project isolation, quotas,
+//! (spec/11-security.md §14): authentication, project isolation, quotas,
 //! step-up, CSRF/Origin, tokens, site policies, break-glass, audit, PAM
 //! login through an in-process glidex-authd, and OIDC against a mock IdP.
 
@@ -92,7 +92,7 @@ impl H {
     }
 
     fn link(&self, role: &str, principal: Ent, resource: Ent) {
-        // As the API and the migration do (spec/tenancy.md D4, §16): host
+        // As the API and the migration do (spec/19-tenancy.md D4, §16): host
         // roles go to members of the operator tenant, and a system admin of
         // a host that is its own directory also administers the directory
         // and both tenants.
@@ -168,7 +168,7 @@ impl H {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
-/// (spec/grpc.md §9.1).
+/// (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -307,7 +307,7 @@ async fn project_isolation_and_not_found() {
 }
 
 /// Members of a project are listed with their names, for callers who may
-/// read the project's links but not list users (spec/web-ui.md).
+/// read the project's links but not list users (spec/07-web-ui.md).
 #[tokio::test]
 async fn project_members_are_listed_with_names() {
     let h = harness();
@@ -473,7 +473,7 @@ async fn host_network_changes_need_a_recent_login() {
 
 /// From glidex-ui on ui.sock, an Origin equal to `https://` +
 /// `X-Forwarded-Host` passes without being listed: the UI already checked
-/// that Host (spec/tailscale-tls.md T7). Over TCP, from another peer, over
+/// that Host (spec/21-tailscale-tls.md T7). Over TCP, from another peer, over
 /// plain HTTP or for a different host it doesn't.
 #[tokio::test]
 async fn ui_peer_same_origin_from_forwarded_host() {
@@ -966,7 +966,7 @@ async fn audit_records_decisions_without_secrets() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
-/// Usage is tenant data (spec/metering.md §10): a viewer reads their own
+/// Usage is tenant data (spec/13-metering.md §10): a viewer reads their own
 /// project's usage, another project's is not found, host auditors read
 /// everything, and a CSV export is audited although it is a read.
 #[tokio::test]
@@ -1024,7 +1024,7 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(ids(&body), vec![pa.clone()]);
     assert_eq!(body["rows"][0]["project"]["name"], "pa");
-    // The proto shape (spec/grpc.md §9.1): enums by name, uint64 as strings.
+    // The proto shape (spec/18-grpc.md §9.1): enums by name, uint64 as strings.
     assert_eq!(body["granularity"], "GRANULARITY_MONTH", "{body}");
     assert_eq!(body["group_by"], json!(["GROUP_KEY_PROJECT"]), "{body}");
     assert_eq!(body["rows"][0]["meters"]["cpu.used"]["raw"], "3600000000");
@@ -1482,7 +1482,7 @@ fn fake_authd(dir: &TempDir) -> std::path::PathBuf {
 
 #[tokio::test]
 async fn pam_token_exchanges_credentials_for_a_personal_token() {
-    // spec/gxctl-auth.md §7.3: the CLI/CI login path.
+    // spec/17-gxctl-auth.md §7.3: the CLI/CI login path.
     let dir = TempDir::new().unwrap();
     let sock = fake_authd(&dir);
     let h = harness_with(|c| {
@@ -1552,7 +1552,7 @@ async fn pam_token_needs_pam_enabled() {
 
 #[tokio::test]
 async fn server_info_is_public_and_describes_the_host() {
-    // spec/gxctl-auth.md §7.1.
+    // spec/17-gxctl-auth.md §7.1.
     let h = harness_with(|c| {
         c.server_name = Some("lab-cp".into());
         c.auth.pam.enabled = false;
@@ -2190,7 +2190,7 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
     // grant covers it.
     assert_eq!(names(2), ["drainNode"], "another node");
     assert_eq!(names(3), ["createVm"]);
-    // Projects are created in a tenant (spec/tenancy.md D1).
+    // Projects are created in a tenant (spec/19-tenancy.md D1).
     assert_eq!(names(4), ["createProject"]);
 
     // Item by item, the same answers as /authz/check.
@@ -2249,7 +2249,7 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
-/// spec/host-topology.md §8.5: a `pci.allow` grant names the device on one
+/// spec/22-host-topology.md §8.5: a `pci.allow` grant names the device on one
 /// node (by id or name), or the address on every node; the device is
 /// `PciDevice::"<node>/<address>"` in that node's host.
 #[tokio::test]
@@ -2295,7 +2295,7 @@ async fn pci_grants_name_the_node() {
     }
 }
 
-/// spec/host-topology.md H13: a host's topology takes a host role.
+/// spec/22-host-topology.md H13: a host's topology takes a host role.
 #[tokio::test]
 async fn host_topology_needs_a_host_role() {
     let h = harness();
@@ -2320,7 +2320,7 @@ async fn host_topology_needs_a_host_role() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
-/// spec/host-topology.md §5.3–5.4: preparing, releasing and cordoning a
+/// spec/22-host-topology.md §5.3–5.4: preparing, releasing and cordoning a
 /// device take a host role (net-admin); a cordoned device is refused to a
 /// new VM until it is uncordoned.
 #[tokio::test]
@@ -2383,7 +2383,7 @@ async fn devices_are_cordoned_and_prepared_by_net_admins() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
-/// spec/host-topology.md §9: a pool granted to a project gives its VMs
+/// spec/22-host-topology.md §9: a pool granted to a project gives its VMs
 /// devices by count; other projects are refused; the listing shows who
 /// holds what.
 #[tokio::test]
@@ -2522,7 +2522,7 @@ async fn pools_are_granted_and_hand_out_devices() {
     assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
 }
 
-/// spec/host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
+/// spec/22-host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
 /// and the PF's VF count can't change while a VM holds one of them; only
 /// net-admins may change it.
 #[tokio::test]
@@ -2621,7 +2621,7 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
     );
 }
 
-/// spec/gpu-vms.md §3: `gpus` expands to a pool request, `aligned` and the
+/// spec/27-gpu-vms.md §3: `gpus` expands to a pool request, `aligned` and the
 /// pool's per-device sizing; what the VM gives itself wins; a missing pool
 /// name with several GPU pools, NVLink without a fabric, and no sizing at
 /// all are refused.

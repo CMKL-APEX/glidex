@@ -1,4 +1,4 @@
-//! Invitations to tenants (spec/tenancy.md D40, §6.1): `glidex.directory.v1.
+//! Invitations to tenants (spec/19-tenancy.md D40, §6.1): `glidex.directory.v1.
 //! InvitationService`, and `LoginService.InspectInvitation` for the
 //! invitation page before its login.
 

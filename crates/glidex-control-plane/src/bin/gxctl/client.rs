@@ -1,8 +1,8 @@
-//! gxctl's API client (spec/cli.md "Transport").
+//! gxctl's API client (spec/01-cli.md "Transport").
 //!
 //! Requests go over HTTP/1.1, either on the control plane's Unix socket
 //! `api.sock`, where the server identifies the caller by peer uid and no
-//! credentials are sent (spec/security.md §5.2), or over TCP (TLS for
+//! credentials are sent (spec/11-security.md §5.2), or over TCP (TLS for
 //! `https://`) with `Authorization: Bearer <token>`. One connection per
 //! request; a streaming call (the console) gets an HTTP/2 connection of its
 //! own, made the same way. The token is never printed, logged or put in a
@@ -38,7 +38,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Conn for T {}
 pub const AGENT_UI_SOCKET: &str = "/run/glidex-cp/ui.sock";
 
 /// What `gxctl` says on a cluster agent, which has no API of its own.
-pub const AGENT_HINT: &str = "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server instead: `gxctl auth login --url https://<server>:8841` (spec/gxctl-auth.md)";
+pub const AGENT_HINT: &str = "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server instead: `gxctl auth login --url https://<server>:8841` (spec/17-gxctl-auth.md)";
 
 pub fn socket_candidates(xdg_runtime_dir: Option<&str>, euid: u32) -> Vec<PathBuf> {
     let mut v = vec![PathBuf::from("/run/glidex-cp/api.sock")];
@@ -160,7 +160,7 @@ pub fn load_token() -> Result<Option<Zeroizing<String>>, String> {
 }
 
 /// Just the `GLIDEX_TOKEN` environment variable — the top of the
-/// credential ladder (gxctl-auth.md §3.4) when a profile, not the legacy
+/// credential ladder (17-gxctl-auth.md §3.4) when a profile, not the legacy
 /// file, is in effect.
 pub fn token_from_env() -> Option<Zeroizing<String>> {
     match std::env::var("GLIDEX_TOKEN") {
@@ -358,7 +358,7 @@ pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
 // ---- the client ------------------------------------------------------------
 
 /// One TCP endpoint of a profile: any node of the same cluster serves the
-/// API (clustering.md §8), and the profile lists the ones that should.
+/// API (14-clustering.md §8), and the profile lists the ones that should.
 #[derive(Clone)]
 pub struct TcpEp {
     pub tls: Option<glidex_tls::ClientTls>,
@@ -432,7 +432,7 @@ pub fn is_loopback_host(h: &str) -> bool {
 
 /// The TLS config for one endpoint: today's ladder (system store,
 /// `GLIDEX_CA_CERT`, the published certificate on loopback) extended with
-/// the profile's roots and first-use pins (spec/gxctl-auth.md §5.1).
+/// the profile's roots and first-use pins (spec/17-gxctl-auth.md §5.1).
 /// `insecure` is the declared bypass, reached only through a profile the
 /// owner confirmed with the host name typed (§5.4) or the CI-only
 /// `GLIDEX_TLS_INSECURE`; every other failure keeps verification total.
@@ -470,7 +470,7 @@ fn tls_config_for(
     }
     // `with_trust` reproduces the classic path when the profile adds
     // nothing (A9): same store, same refusal of an empty world, and —
-    // cli.md's invariant — there is no configuration that skips
+    // 01-cli.md's invariant — there is no configuration that skips
     // verification except the audited `insecure` the profile can only
     // have reached by typing the host name.
     glidex_tls::ClientTls::with_trust(&t, &[b"http/1.1"])
@@ -849,7 +849,7 @@ impl ApiClient {
         }
     }
 
-    /// `GET /auth/server-info` (spec/gxctl-auth.md §7.1), asked without
+    /// `GET /auth/server-info` (spec/17-gxctl-auth.md §7.1), asked without
     /// credentials: the token, if any, is set aside so the answer is the
     /// unauthenticated one every client sees.
     pub async fn server_info(&self) -> Result<serde_json::Value, Failure> {
@@ -987,7 +987,7 @@ impl ApiClient {
     }
 
     /// A transport for the generated RPC clients of `glidex-api`
-    /// (spec/grpc.md §10): one connection, made like every other request
+    /// (spec/18-grpc.md §10): one connection, made like every other request
     /// (api.sock with peer identity, or TLS with the profile's trust and
     /// token), speaking the Connect protocol, whose unary calls are plain
     /// HTTP/1.1 POSTs.

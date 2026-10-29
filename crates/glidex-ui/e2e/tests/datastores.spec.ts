@@ -1,4 +1,4 @@
-// The Datastores page (spec/storage.md S2): the built-in `local`, adding a
+// The Datastores page (spec/24-storage.md S2): the built-in `local`, adding a
 // directory datastore, what the node finds there, making it the default,
 // and the disk form offering it. Nothing is booted.
 import { mkdirSync } from "node:fs";

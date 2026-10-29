@@ -13,7 +13,7 @@ function age(secs: number): string {
 }
 
 /** The directories of other organizations this cluster trusts
- *  (spec/tenancy.md D65): their tenants, how fresh their feed is, and the
+ *  (spec/19-tenancy.md D65): their tenants, how fresh their feed is, and the
  *  staleness limit past which their people are refused here (D13). */
 export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
   const [dirs, setDirs] = useState<api.TrustedDirectory[] | null>(null);
@@ -126,7 +126,7 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
   );
 }
 
-/** Offers (spec/tenancy.md D64): admission for a tenant of another
+/** Offers (spec/19-tenancy.md D64): admission for a tenant of another
  *  organization's directory, as a one-time token its administrator
  *  redeems at their directory. */
 export function OffersCard({ manage }: { manage: boolean }) {

@@ -1,4 +1,4 @@
-//! Leaving with resources (spec/clustering.md §5.8): the departure bundle, the
+//! Leaving with resources (spec/14-clustering.md §5.8): the departure bundle, the
 //! two-phase handover with a signed receipt, and the switch that makes the
 //! host a standalone glidex host owning what it took.
 //!
@@ -791,7 +791,7 @@ impl VmManager {
             return Err(DepartureError::Conflict(why));
         }
         // The other cluster has no record of a registered datastore
-        // (spec/storage.md §14).
+        // (spec/24-storage.md §14).
         let mut elsewhere: Vec<String> = self
             .images
             .list_disks()
@@ -814,7 +814,7 @@ impl VmManager {
                 .map_err(|e| DepartureError::Conflict(e.to_string()))?;
         }
         // Networks are named by id or name (unique among those that fit); the
-        // plan keeps ids, as the NICs do (spec/tenancy.md D24).
+        // plan keeps ids, as the NICs do (spec/19-tenancy.md D24).
         let nets = self.networks.list().unwrap_or_default();
         let pick = |key: &str, fits: &dyn Fn(&crate::network::Network) -> bool| {
             let mut m = nets

@@ -1,5 +1,5 @@
 //! The control plane's side of the metadata endpoint
-//! (spec/workload-identity.md W11, §7): `metad.sock`, which only
+//! (spec/29-workload-identity.md W11, §7): `metad.sock`, which only
 //! glidex-metad's Unix user may use. metad says which peer address a guest
 //! request came from (`glidex_ovs::metadata::peer_address` of a VM port,
 //! W3); this finds the running VM on this node behind it and answers for
@@ -228,7 +228,7 @@ async fn ask_leader(app: &App, q: &Question) -> Result<Value, super::ApiErr> {
 pub const LEADER_PATH: &str = "/cluster/v1/metadata";
 
 /// The leader's answer for node `node` (from its certificate): only about a
-/// running VM placed on that node (spec/clustering.md §12.3).
+/// running VM placed on that node (spec/14-clustering.md §12.3).
 pub async fn leader_answer(app: &App, node: &str, q: &Question) -> Result<Value, super::ApiErr> {
     let refused = || {
         err(
@@ -253,7 +253,7 @@ async fn answer(app: &App, ask: &Ask, kind: Kind) -> Result<Value, super::ApiErr
         audience: ask.audience.clone(),
         ttl: ask.ttl,
     };
-    // Tokens are signed and recorded where writes go (tenancy.md D53); a
+    // Tokens are signed and recorded where writes go (19-tenancy.md D53); a
     // node that can't write asks the leader, as itself.
     if app.auth.tenants.can_write() {
         let vm = issuer::vm_identity(app, &q.vm_id).await?;

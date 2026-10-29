@@ -1,5 +1,5 @@
 //! OVN on a cluster member matches the cluster's ovn-northd
-//! (spec/installer.md, OVN): an `ovn-controller` older than the northd that
+//! (spec/05-installer.md, OVN): an `ovn-controller` older than the northd that
 //! compiles the logical flows can't run them (its tables stop short of the
 //! newer pipeline), so a VM's traffic is dropped on that node.
 //!

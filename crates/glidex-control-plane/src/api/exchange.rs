@@ -1,4 +1,4 @@
-//! `POST /auth/exchange` (spec/tenancy.md §9): RFC 8693's token exchange,
+//! `POST /auth/exchange` (spec/19-tenancy.md §9): RFC 8693's token exchange,
 //! form or JSON, public. The work is `directory::exchange`.
 
 use super::{AppState, RequestId};

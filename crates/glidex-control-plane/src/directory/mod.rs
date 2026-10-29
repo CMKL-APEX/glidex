@@ -1,4 +1,4 @@
-//! Directory connectors (spec/tenancy.md §5, D16; milestone T1).
+//! Directory connectors (spec/19-tenancy.md §5, D16; milestone T1).
 //!
 //! A connector is one IdP or user source of a directory: in T1, `pam`
 //! (the co-hosted cluster's Unix accounts through glidex-authd) and
@@ -150,7 +150,7 @@ pub struct PamSettings {
     pub allowed_groups: Vec<String>,
 }
 
-/// `oidc` settings (security.md §5.4).
+/// `oidc` settings (11-security.md §5.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OidcSettings {
@@ -230,7 +230,7 @@ fn yes() -> bool {
     true
 }
 
-/// spec/tenancy.md §8: who creates and removes a connector's users.
+/// spec/19-tenancy.md §8: who creates and removes a connector's users.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provisioning {
@@ -267,7 +267,7 @@ impl Provisioning {
     }
 }
 
-/// A pull's settings (spec/tenancy.md §8.2).
+/// A pull's settings (spec/19-tenancy.md §8.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncSettings {
     /// Minutes between runs (default 15, at least 5).
@@ -639,7 +639,7 @@ impl Connector {
     }
 }
 
-/// A verified login, whatever the connector (spec/tenancy.md §6).
+/// A verified login, whatever the connector (spec/19-tenancy.md §6).
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
     pub connector_id: String,
@@ -914,7 +914,7 @@ impl ConnectorStore {
 
     /// Seals `value` as `owner`'s `field`, beside connectors' secrets, under
     /// the data key of the pseudo-directory `values` (rotated with the
-    /// others). A hyperstor datastore's key (spec/storage.md S20).
+    /// others). A hyperstor datastore's key (spec/24-storage.md S20).
     pub fn set_value(&self, owner: &str, field: &str, value: &str) -> Result<(), ConnectorError> {
         if value.is_empty() || value.len() > 16384 {
             return Err(ConnectorError::Invalid(

@@ -2,13 +2,13 @@
 
 Status: **implemented (TS0–TS2)**; TS3 waits on tailscale-rs (§6).
 The open questions are settled as decisions T6–T11 (§8).
-Extends [security.md](security.md) §5.1 and §5.1.1 and
-[web-ui.md](web-ui.md) *Server*. The edits it needs in those documents
-and in [installer.md](installer.md) are applied; §11 is their change
+Extends [11-security.md](11-security.md) §5.1 and §5.1.1 and
+[07-web-ui.md](07-web-ui.md) *Server*. The edits it needs in those documents
+and in [05-installer.md](05-installer.md) are applied; §11 is their change
 record.
 
 The web UI serves HTTPS with a self-signed certificate unless the
-operator supplies one (security.md §5.1.1). Every user's first visit is
+operator supplies one (11-security.md §5.1.1). Every user's first visit is
 a browser warning, a fingerprint comparison most people skip, and a
 "proceed anyway" that trains them to click through warnings. Many glidex
 hosts are already on a Tailscale tailnet, and Tailscale issues Let's
@@ -21,11 +21,11 @@ renewal in place.
 
 - **In:** `glidex-ui` (port 5173), the only listener browsers use. They
   never reach port 8841: the UI proxies `/api`, and OIDC redirect URIs
-  are on the UI origin (security.md §5.4).
+  are on the UI origin (11-security.md §5.4).
 - **In:** reloading a certificate without a restart (§4.1), which
   operator-supplied certificates get too.
 - **Out:** the control plane's port 8841. Its clients (gxctl,
-  scripts) pin or are given a CA (gxctl-auth.md §5); see T8.
+  scripts) pin or are given a CA (17-gxctl-auth.md §5); see T8.
 - **Out:** reaching glidex from the public internet. A ts.net
   certificate is browser-trusted, but the name only resolves and routes
   inside the tailnet. Tailscale Funnel would publish it to the internet;
@@ -90,7 +90,7 @@ Today `glidex_tls::server_config` builds a rustls `ServerConfig` with
   default slot.
 - File-backed slots (a configured `cert`/`key`) are re-read when the
   certificate file's modification time or size changes, checked every
-  minute, the same rule web-ui.md applies to trusted files. A file that
+  minute, the same rule 07-web-ui.md applies to trusted files. A file that
   fails to load or whose key doesn't match is logged and the old pair
   kept. Self-signed slots are unchanged (generated, kept 5 years).
 - Invariant: a slot never holds a pair whose key doesn't match its leaf
@@ -149,7 +149,7 @@ copy under `/var/lib/tailscale/certs`).
 
 ### 4.3 Names: `Host` and `Origin`
 
-- **UI `Host` check** (security.md §5.6): the current certificate
+- **UI `Host` check** (11-security.md §5.6): the current certificate
   domains are allowed hosts. They are read at request time from the
   Tailscale state above, so this works with the default list *and* an
   explicit `GLIDEX_UI_HOSTS`. That name is one the UI holds a
@@ -174,7 +174,7 @@ copy under `/var/lib/tailscale/certs`).
 
 `Strict-Transport-Security: max-age=86400` (T10) is sent on
 connections that were served the Tailscale certificate, as with any
-configured certificate (security.md §5.1.1) but shorter. HSTS applies
+configured certificate (11-security.md §5.1.1) but shorter. HSTS applies
 to every port of the name, so a browser that later opens
 `https://<node>.ts.net:8841` (where the control plane serves its
 self-signed certificate) gets a non-bypassable error. Browsers have no
@@ -370,12 +370,12 @@ in §2.
 
 ## 11. Changes to other specs (applied — change record)
 
-- **security.md:** decision 19; §5.1 certificate table, row
+- **11-security.md:** decision 19; §5.1 certificate table, row
   "Tailscale"; §5.1.1 HSTS bullet; §5.6 `Host` and `Origin` checks;
   §17 status row.
-- **web-ui.md:** *Server* environment table rows for
+- **07-web-ui.md:** *Server* environment table rows for
   `GLIDEX_UI_TLS_TAILSCALE` and `GLIDEX_UI_TAILSCALE_SOCKET`; the HSTS
   sentence.
-- **installer.md:** the `--tailscale-cert` option, step 13's
+- **05-installer.md:** the `--tailscale-cert` option, step 13's
   Tailscale step and usage blurb, uninstall.
 - **README.md, SUMMARY.md:** this document's entry.

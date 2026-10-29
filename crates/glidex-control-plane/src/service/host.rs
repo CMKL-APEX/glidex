@@ -1,4 +1,4 @@
-//! The host family (spec/grpc.md §9, G3): this host's networking through
+//! The host family (spec/18-grpc.md §9, G3): this host's networking through
 //! glidex-netd, and its PCI devices. Every operation acts on the host that
 //! answers it; an agent's UI has a server authorize it on the agent's
 //! `Host` and run it there (`PreAuthorized`, api/relay.rs).
@@ -488,7 +488,7 @@ pub async fn ensure_uplink(
     req: pb::EnsureUplinkRequest,
 ) -> ServiceResult<pb::EnsureUplinkResponse> {
     call.set_target(format!("uplink:{}/{}", req.bridge, req.name));
-    // A confirmed uplink may move the host's IP: step-up (spec/security.md §7.1).
+    // A confirmed uplink may move the host's IP: step-up (spec/11-security.md §7.1).
     let action = if req.confirm {
         "confirmUplink"
     } else {
@@ -590,7 +590,7 @@ pub fn list_pci_devices(
     _req: pb::ListPciDevicesRequest,
 ) -> ServiceResult<pb::ListPciDevicesResponse> {
     host(call)?;
-    // Readiness from the tree (spec/host-topology.md §5.1).
+    // Readiness from the tree (spec/22-host-topology.md §5.1).
     let tree = call.manager().local_topology();
     let ready = |a: &str| tree.devices.iter().find(|d| d.address == a && d.assignable);
     Ok(pb::ListPciDevicesResponse {

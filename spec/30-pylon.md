@@ -1,14 +1,14 @@
 # Pylon and CPU elasticity
 
 Status: **design** (§10 milestones). Extends
-[hypervisors.md](hypervisors.md) (drivers, command lines, live resize),
-[host-topology.md](host-topology.md) (CPU policies, reserved CPUs,
-scheduler), [data-model.md](data-model.md) (`VmConfig`, `HypervisorType`),
-[reconciliation.md](reconciliation.md) (live vCPU drift, VM sandbox) and
-[installer.md](installer.md).
+[04-hypervisors.md](04-hypervisors.md) (drivers, command lines, live resize),
+[22-host-topology.md](22-host-topology.md) (CPU policies, reserved CPUs,
+scheduler), [03-data-model.md](03-data-model.md) (`VmConfig`, `HypervisorType`),
+[12-reconciliation.md](12-reconciliation.md) (live vCPU drift, VM sandbox) and
+[05-installer.md](05-installer.md).
 
 A VM in glidex today gets a fixed `vcpu_count` at launch, with one of two
-CPU policies ([host-topology.md](host-topology.md) H6):
+CPU policies ([22-host-topology.md](22-host-topology.md) H6):
 
 - `cpu_policy: shared`: every vCPU thread floats over the host's
   shareable CPUs under Linux EEVDF (`sched_fair`). When two VMs burst on
@@ -19,7 +19,7 @@ CPU policies ([host-topology.md](host-topology.md) H6):
   cannot burst beyond its static allocation.
 
 Changing `vcpu_count` on a running VM always sets `RestartRequired=True`
-([data-model.md](data-model.md)) and waits for a reboot, even though all
+([03-data-model.md](03-data-model.md)) and waits for a reboot, even though all
 three hypervisor backends can change a running guest's active CPU count.
 
 This document makes two changes:
@@ -53,7 +53,7 @@ This document makes two changes:
     `ChClient` reuse.
   - Host arbiter daemon (`glidex-pylond.service`) and `scx_pylon` BPF
     scheduler lifecycle, core pool partitioning with
-    [host-topology.md](host-topology.md), and fallback when Pylon or
+    [22-host-topology.md](22-host-topology.md), and fallback when Pylon or
     `sched_ext` is unavailable on a host.
   - Quotas and metering for elastic VMs.
 - **Out:**
@@ -332,14 +332,14 @@ The `-` prefix means `systemd` ignores the path on hosts where
 is `Some`. In addition, `NodeFeatures` reports `pylond: bool`
 (`Path::new("/run/pylon/pylond.sock").exists()`).
 
-### 8.2 Core pool coordination with `host-topology.md`
+### 8.2 Core pool coordination with `22-host-topology.md`
 
 - `pylond` requires two host CPUs for itself (Plane 1 control thread and
   Plane 2 polling engine) and manages a set of tenant pCPUs.
 - When `glidex-pylond` is active, its two engine CPUs are included in
   `TopologySummary.reserved_cpus`.
 - Whenever a `dedicated` VM starts or stops on the node
-  ([host-topology.md §7.1](host-topology.md#71-cpu-binding)), the VM
+  ([22-host-topology.md §7.1](22-host-topology.md#71-cpu-binding)), the VM
   controller updates the shared CPU pool (`local_shared_pool()`), which
   rebinds shared hypervisors and updates `pylond`'s tenant pCPU mask so
   `pylond` never dispatches elastic vCPUs onto a `dedicated` VM's pinned
@@ -372,7 +372,7 @@ Stacked PRs on `main`:
 
 | Milestone | Scope | Key files |
 |---|---|---|
-| **P0: Spec** | This document (`spec/pylon.md`), linked in `spec/README.md`, `spec/SUMMARY.md`, `spec/progress.md`, and cross-referenced in `spec/hypervisors.md` and `spec/data-model.md`. | `spec/pylon.md`, `spec/hypervisors.md`, `spec/README.md`, `spec/SUMMARY.md`, `spec/progress.md` |
+| **P0: Spec** | This document (`spec/30-pylon.md`), linked in `spec/README.md`, `spec/SUMMARY.md`, `spec/progress.md`, and cross-referenced in `spec/04-hypervisors.md` and `spec/03-data-model.md`. | `spec/30-pylon.md`, `spec/04-hypervisors.md`, `spec/README.md`, `spec/SUMMARY.md`, `spec/progress.md` |
 | **P1: `HypervisorType::Pylon` driver & shim** | Add `HYPERVISOR_PYLON = 3` in `common.proto`; add `HypervisorType::Pylon`, `PylonDriver` (`--pylon shm=…`), firmware sharing with `cloudhv-edk2`, shim allowlist (`pylon`), `glidex-vm@.service.in` `-/run/pylon` path, `gxctl` and UI picker. | `crates/glidex-api/proto/glidex/common/v1/common.proto`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-control-plane/src/hypervisor/`, `packaging/glidex-vm@.service.in`, `crates/glidex-ui/` |
 | **P2: Generalized elasticity (`min_vcpus`, `max_vcpus`, `cpu_weight`) & ACPI hotplug fallback** | Add `min_vcpus`, `max_vcpus`, `cpu_weight` to `VmConfig` and protos; pass `max_vcpus` to CH (`--cpus boot=,max=`) and QEMU (`-smp cpus=,maxcpus=`); implement `HypervisorDriver::resize_vcpus` (CH `PUT /vm.resize`, QEMU QMP `device_add`/`device_del`) and controller live drift without `RestartRequired`; apply `cpu_weight` to cgroup v2 `cpu.weight` in `glidex-vm-shim`. | `crates/glidex-api/proto/glidex/vm/v1/vm.proto`, `crates/glidex-hv-client/src/{ch,qmp}.rs`, `crates/glidex-control-plane/src/{models,state,hypervisor,controller/vm}.rs`, `crates/glidex-vm-shim/src/{launch,supervisor}.rs` |
 | **P3: `glidex-pylond` daemon, installer & topology integration** | Package `glidex-pylond.service`; add `pylon` and `pylond` installation and capabilities to `glidex-install`; report `pylond` status in `NodeFeatures` and reserve `pylond` engine cores in `host-topology`. | `packaging/glidex-pylond.service`, `crates/glidex-install/src/{main,uninstall}.rs`, `crates/glidex-control-plane/src/node.rs` |

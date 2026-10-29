@@ -1,4 +1,4 @@
-//! Pull sync (spec/tenancy.md §8.2, D44–D46): a run reads a connector's
+//! Pull sync (spec/19-tenancy.md §8.2, D44–D46): a run reads a connector's
 //! users and groups from its IdP's directory (a [`Source`]), plans what
 //! changes, stops when it would disable too many, and applies the plan
 //! through the same writes SCIM uses ([`ScimTx`]), at most

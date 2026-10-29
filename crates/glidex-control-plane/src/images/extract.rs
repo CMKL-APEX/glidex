@@ -1,4 +1,4 @@
-//! Kernel images extracted from disk images (spec/kernel-boot.md §10),
+//! Kernel images extracted from disk images (spec/23-kernel-boot.md §10),
 //! the image manager's half: the extractor appliance, `kernel_from` pulls,
 //! and turning the extractor's output into an installed kernel image. The
 //! run itself is the VM controller's (`controller/extract.rs`): it needs a

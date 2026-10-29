@@ -1,4 +1,4 @@
-//! Peer authorization (spec/storage.md S17), as glidex-netd's: who may
+//! Peer authorization (spec/24-storage.md S17), as glidex-netd's: who may
 //! connect, and which ops each group may send.
 
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};

@@ -1,4 +1,4 @@
-//! Usage records (spec/metering.md §9.1–§9.2, §10): the REST twins of
+//! Usage records (spec/13-metering.md §9.1–§9.2, §10): the REST twins of
 //! `glidex.usage.v1.UsageService`'s usage queries, on `service::usage`.
 //! They answer the proto messages as JSON, or with `format=csv` a CSV
 //! export (REST only, audited).

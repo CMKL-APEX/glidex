@@ -1,4 +1,4 @@
-//! The node's Tailscale certificates (spec/tailscale-tls.md §4.2), for
+//! The node's Tailscale certificates (spec/21-tailscale-tls.md §4.2), for
 //! glidex-ui and hyperstor's management service.
 //!
 //! [`Tailscale`] asks the host's `tailscaled` (its local API on a Unix
@@ -35,7 +35,7 @@ const BODY_LIMIT: usize = 1 << 20;
 
 /// The ts.net names a Tailscale certificate is held for right now: the
 /// `Host` allowlist takes them, and connections served one get HSTS
-/// (spec/tailscale-tls.md §4.3, §4.4).
+/// (spec/21-tailscale-tls.md §4.3, §4.4).
 #[derive(Debug, Default)]
 pub struct Held(RwLock<Vec<String>>);
 
@@ -50,7 +50,7 @@ impl Held {
             .any(|n| n.eq_ignore_ascii_case(name))
     }
 
-    /// The first name, the one this UI reports (spec/host-page.md W3).
+    /// The first name, the one this UI reports (spec/28-host-page.md W3).
     pub fn first(&self) -> Option<String> {
         self.0.read().unwrap().first().cloned()
     }

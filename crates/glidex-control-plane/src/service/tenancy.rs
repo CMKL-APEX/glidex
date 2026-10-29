@@ -1,5 +1,5 @@
 //! `glidex.tenancy.v1`: tenants, their members and bindings, and this
-//! cluster's admissions (spec/tenancy.md §14, T0). REST (`api/tenants.rs`)
+//! cluster's admissions (spec/19-tenancy.md §14, T0). REST (`api/tenants.rs`)
 //! and RPC (`api/rpc/tenancy.rs`) both call these functions and nothing
 //! else.
 
@@ -194,7 +194,7 @@ fn principal_exists(call: &Call, e: &Ent, directory: &str) -> ServiceResult<()> 
 }
 
 /// A tenant the caller may read, by id or slug; `404` otherwise (as for
-/// projects, security.md §7.4).
+/// projects, 11-security.md §7.4).
 pub(crate) fn visible(call: &Call, key: &str) -> ServiceResult<tenants::Tenant> {
     let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "tenant not found");
     let t = call
@@ -666,7 +666,7 @@ pub fn remove_admission(
     Ok(pb::RemoveAdmissionResponse::default())
 }
 
-// ---- tenant pools (spec/host-topology.md §9.1a) ----------------------------
+// ---- tenant pools (spec/22-host-topology.md §9.1a) ----------------------------
 
 /// The tenant's pools as answered: with what its projects ask of each,
 /// the cluster pool's free count, and whether the tenant is still granted
@@ -832,7 +832,7 @@ pub async fn set_device_pools(
     })
 }
 
-// ---- offers to other directories' tenants (spec/tenancy.md D64) -------------
+// ---- offers to other directories' tenants (spec/19-tenancy.md D64) -------------
 
 fn offer_pb(o: &tenants::Offer) -> pb::Offer {
     pb::Offer {
@@ -969,7 +969,7 @@ pub fn revoke_offer(
     Ok(pb::RevokeOfferResponse::default())
 }
 
-// ---- trust with other organizations (spec/tenancy.md D65, D66) --------------
+// ---- trust with other organizations (spec/19-tenancy.md D65, D66) --------------
 
 fn trust_err(e: crate::trust::StoreError) -> ServiceError {
     ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())

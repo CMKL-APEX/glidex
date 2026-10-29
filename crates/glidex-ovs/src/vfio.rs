@@ -1,4 +1,4 @@
-//! Preparing a PCI device for VM passthrough (spec/host-topology.md §5.3):
+//! Preparing a PCI device for VM passthrough (spec/22-host-topology.md §5.3):
 //! its whole IOMMU group bound to `vfio-pci`, the group device given to the
 //! VMs' group, and back again. Runs in glidex-netd (root).
 

@@ -1,4 +1,4 @@
-//! `auth login --directory` (spec/tenancy.md D57): a login at a directory
+//! `auth login --directory` (spec/19-tenancy.md D57): a login at a directory
 //! with its device grant: one the profile's servers host, or another
 //! organization's, reached through the profile that dials its servers
 //! (`--via`, D69). The profile keeps the refresh token; before a command,

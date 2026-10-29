@@ -53,7 +53,7 @@ export default defineConfig<Options>({
       cwd: "../ui",
       url: `http://localhost:${uiPort}`,
       // Through the scratch control plane's ui.sock: the UI's RPCs are
-      // gRPC-Web, taken there only (spec/grpc.md §6).
+      // gRPC-Web, taken there only (spec/18-grpc.md §6).
       env: { GLIDEX_API_SOCKET: `${process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e"}/ui.sock` },
       reuseExistingServer: false,
       stdout: "ignore",

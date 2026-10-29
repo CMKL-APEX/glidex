@@ -9,7 +9,7 @@ prove who they are (§5), how users, teams and projects are modeled (§6),
 how a request is authorized (§7), what `glidex-netd` trusts (§8), and
 how the processes are confined (§9). It supersedes the "unauthenticated
 REST API" non-goal in [README.md](README.md) and the authorization
-bullets of [networking.md §14](networking.md#14-security).
+bullets of [09-networking.md §14](09-networking.md#14-security).
 
 ## 1. Starting point (617594e)
 
@@ -47,8 +47,8 @@ bullets of [networking.md §14](networking.md#14-security).
 | 15 | Step-up window | **10 minutes** for host-wide network changes and policy writes (`base.step-up`). |
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
-| 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([gxctl-auth.md §5](gxctl-auth.md)). |
-| 19 | Browser-trusted certificates on a tailnet | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([tailscale-tls.md](tailscale-tls.md) §2). |
+| 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([17-gxctl-auth.md §5](17-gxctl-auth.md)). |
+| 19 | Browser-trusted certificates on a tailnet | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([21-tailscale-tls.md](21-tailscale-tls.md) §2). |
 
 ## 3. Threat model
 
@@ -74,7 +74,7 @@ service user, and the control plane's own state (`glidex.db`).
 `glidex-authd`, ↔ `glidex-netd` (peer uid); control plane ↔ IdP (TLS,
 signed ID tokens).
 
-**VM units** (reconciliation.md §8.3, §13). Each running VM is a
+**VM units** (12-reconciliation.md §8.3, §13). Each running VM is a
 `glidex-vm@<id>.service` running `glidex-vm-shim` as `glidex`, started by
 the control plane over D-Bus. Two rules keep that from widening what a
 compromised control plane can do:
@@ -145,13 +145,13 @@ was usable, and nothing on the wire should carry passwords, tokens or
 session cookies in clear text.
 
 The certificate (`tls` in `control-plane.json`; `GLIDEX_UI_TLS_*` for
-the UI, [web-ui.md](web-ui.md#server)):
+the UI, [07-web-ui.md](07-web-ui.md#server)):
 
 | Setting | Effect |
 |---|---|
 | `"auto"` (default) | A self-signed certificate, generated on first start (§5.1.1). |
 | `{"cert": …, "key": …}` | That PEM chain and key (the key defaults to the systemd credential `tls-key`). |
-| Tailscale, UI only | In addition to one of the above, `GLIDEX_UI_TLS_TAILSCALE=on` serves the node's Tailscale certificate to clients whose SNI is one of its `ts.net` certificate domains, renewed in place ([tailscale-tls.md](tailscale-tls.md) §4). |
+| Tailscale, UI only | In addition to one of the above, `GLIDEX_UI_TLS_TAILSCALE=on` serves the node's Tailscale certificate to clients whose SNI is one of its `ts.net` certificate domains, renewed in place ([21-tailscale-tls.md](21-tailscale-tls.md) §4). |
 | `"off"` | Plain HTTP. Accepted **only** when every listener is a loopback address; otherwise the process refuses to start. For development and tests. |
 
 `glidex-ui` follows the same rules, sets cookies `Secure` whenever it
@@ -181,7 +181,7 @@ redirect: API clients should be told, not silently upgraded.
 - Configured and self-signed certificate files are checked once a
   minute and a replaced, matching pair is served without a restart; a
   pair that fails to load or doesn't match keeps the current one and is
-  logged ([tailscale-tls.md](tailscale-tls.md) §4.1). The control plane
+  logged ([21-tailscale-tls.md](21-tailscale-tls.md) §4.1). The control plane
   re-publishes `tls.crt` after a reload. A key read from a systemd
   credential is the copy made at service start, so a new key still needs
   a restart.
@@ -198,8 +198,8 @@ redirect: API clients should be told, not silently upgraded.
   verified TLS with no setup); remote gxctl trusts the profile's
   `ca_file`/`ca_pem`/`pins` — including the SHA-256 fingerprint of the
   self-signed certificate pinned on first use at `gxctl auth login`
-  ([gxctl-auth.md §5](gxctl-auth.md)) — or `GLIDEX_CA_CERT` per
-  invocation ([cli.md](cli.md)). Pinning is sound precisely because of
+  ([17-gxctl-auth.md §5](17-gxctl-auth.md)) — or `GLIDEX_CA_CERT` per
+  invocation ([01-cli.md](01-cli.md)). Pinning is sound precisely because of
   the stability invariant above: the fingerprint a user compared against
   a second channel stays valid for the certificate's lifetime. There is
   no verify-nothing default; `insecure` profiles are opt-in, confirmed
@@ -210,7 +210,7 @@ redirect: API clients should be told, not silently upgraded.
   a host whose self-signed certificate they had not yet trusted. The
   Tailscale certificate counts as configured, with `max-age=86400`
   for now: HSTS is sent on the connections that were served it
-  ([tailscale-tls.md](tailscale-tls.md) §4.4).
+  ([21-tailscale-tls.md](21-tailscale-tls.md) §4.4).
 
 **Exposure.** Listening on every address also listens on the gateway
 addresses of glidex NAT bridges; the `input` chain of §8.4 keeps guests
@@ -292,7 +292,7 @@ selects TCP.
   browser session (sessions stay the browser's half of §5.5; the CLI
   and CI carry tokens). TLS only, the password is zeroized after use,
   and `pam.enabled` off answers `401` naming the config key
-  ([gxctl-auth.md §7.3](gxctl-auth.md)).
+  ([17-gxctl-auth.md §7.3](17-gxctl-auth.md)).
 
 ### 5.4 OIDC
 
@@ -305,7 +305,7 @@ selects TCP.
   skew ≤ 60 s, `nonce`. Algorithms limited to `RS256`/`ES256`.
 - Redirect URI on the UI origin: `https://<ui>/api/auth/oidc/callback`
   for the file-defined connector, `https://<ui>/api/auth/c/<id>/callback`
-  for one made through the API ([tenancy.md](tenancy.md) §6).
+  for one made through the API ([19-tenancy.md](19-tenancy.md) §6).
   `state` binds the browser session; it is single-use and valid 10
   minutes.
 - Identity key: `(issuer, sub)`. `email` / `name` are display only and
@@ -348,7 +348,7 @@ selects TCP.
   `device` and `client` metadata recorded next to `last_used_from` and
   the same expiry clamp as `POST /tokens` — so `token list`/`revoke`
   can pick out one laptop's credential. The metadata is display and
-  audit only, never checked ([gxctl-auth.md §7.2](gxctl-auth.md)).
+  audit only, never checked ([17-gxctl-auth.md §7.2](17-gxctl-auth.md)).
 
 ### 5.6 `glidex-ui` and browser protections
 
@@ -365,7 +365,7 @@ selects TCP.
   (a VPN, a DHCP change) works without a restart; an explicit
   `GLIDEX_UI_HOSTS` is taken as is. With `GLIDEX_UI_TLS_TAILSCALE=on`,
   the ts.net names the UI currently holds a certificate for are allowed
-  in either case ([tailscale-tls.md](tailscale-tls.md) §4.3).
+  in either case ([21-tailscale-tls.md](21-tailscale-tls.md) §4.3).
   Other `Host` values get `421`. This
   blocks DNS rebinding: an attacker's domain never matches, and names or
   addresses that do belong to the host are not a rebinding risk.
@@ -374,7 +374,7 @@ selects TCP.
   (default: the UI's origins, `https://<h>:5173` for every default
   `GLIDEX_UI_HOSTS` entry `<h>`, computed at startup, plus
   `https://<ip>:5173` for any address the host has at request time). Bearer-token requests without `Origin`
-  (non-browser clients) are allowed. ([tailscale-tls.md](tailscale-tls.md)
+  (non-browser clients) are allowed. ([21-tailscale-tls.md](21-tailscale-tls.md)
   §4.3) From the `glidex-ui`
   peer on `ui.sock` only, an `Origin` equal to `https://` +
   `X-Forwarded-Host` is also accepted: the UI sets that header to the
@@ -396,7 +396,7 @@ selects TCP.
   the session is re-checked at upgrade.
 - Response headers from the UI: `Content-Security-Policy: default-src
   'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self';
-  frame-ancestors 'none'` and more (web-ui.md; `'wasm-unsafe-eval'` for
+  frame-ancestors 'none'` and more (07-web-ui.md; `'wasm-unsafe-eval'` for
   the console's WebAssembly terminal),
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
   `Strict-Transport-Security` under TLS with a configured certificate
@@ -406,8 +406,8 @@ selects TCP.
 
 Tenants now sit above projects: every project belongs to one tenant,
 users and teams to a directory, and a cluster's host roles to members of
-its operator tenant ([tenancy.md](tenancy.md), T0 implemented). What
-follows still holds inside a tenant. Role changes (tenancy.md §10.5):
+its operator tenant ([19-tenancy.md](19-tenancy.md), T0 implemented). What
+follows still holds inside a tenant. Role changes (19-tenancy.md §10.5):
 `system-admin` no longer covers users, teams and project creation; those
 are `directory-admin` (on the `Directory`) and `tenant-admin` (on a
 `Tenant`), and the migration gives existing system administrators both.
@@ -432,7 +432,7 @@ are `directory-admin` (on the `Directory`) and `tenant-admin` (on a
 | Host network (NAT, bridged) | system, granted to projects | Created by `net-admin`; `grants: [project_id] \| "all"`. Project editors attach their VMs to granted networks only. Projects sharing a network share an L2 segment: give each project its own network when they must be isolated. |
 | Project network (NAT or isolated) | project | Created and deleted by the project's `owner` (`network.manage`), usable only by that project unless explicitly shared (§6.2.1); never opened to all projects or granted by `net-admin` (`base.project-network-private`). Constraints: NAT or isolated, no uplinks or bridged mode (bridged networks put guests on the host's LAN and need `host.network`); an isolated network reaches neither the host nor other networks (§8.4); a NAT network's subnet is a free `/24` from netd's `nat_supernet` unless the owner picks a free one; the bridge name is generated (`gxp-<8 hex>`), not chosen by the user, and no VLAN can be set; the VM port is tap or vhost-user, as for host networks (vhost-user needs DPDK set up on the host, otherwise `422 unsupported_on_host`); delete is refused while a VM is attached. Counts against the `networks` quota. |
 | OVS bridges, uplinks, DPDK, OVS install | system | `host.network`. |
-| PCI devices (VFIO) | system, granted to projects | `/etc/glidex/control-plane.json` `pci.allow: [{bdf, projects, tenants, node}]`. A VM may only pass through BDFs granted to its project, on the node it runs on (host-topology.md §8.5). |
+| PCI devices (VFIO) | system, granted to projects | `/etc/glidex/control-plane.json` `pci.allow: [{bdf, projects, tenants, node}]`. A VM may only pass through BDFs granted to its project, on the node it runs on (22-host-topology.md §8.5). |
 | Host paths | system | `host.paths` (§7.4). |
 
 A VM without a guest credential has **no login**: the generated
@@ -471,7 +471,7 @@ Projects sharing a network share its L2 segment (§6.2). The NAT
 isolation of §8 still separates it from every other network.
 
 VM names are unique per project. Disk names are unique per tenant
-(tenancy.md D24), so a disk can be named without its project within the
+(19-tenancy.md D24), so a disk can be named without its project within the
 caller's tenant. Lookups
 by name need `?project=`, or resolve within the caller's default project.
 
@@ -485,7 +485,7 @@ which stays 2; `null` is unlimited); the `default` project takes it once,
 on the first start that sees it. Unknown quota names are refused. Checked under the `VmManager`
 write lock at create, start, disk create, resize and network create.
 In `control-plane.json`, `null` means unlimited. Over the API (the
-`glidex.tenancy.v1.Quotas` message, rest-api.md) an absent limit is
+`glidex.tenancy.v1.Quotas` message, 06-rest-api.md) an absent limit is
 unlimited, except that `networks`, `routers` and `external_ips` left out
 of a project's quotas take their defaults; there is no `null`.
 
@@ -537,7 +537,7 @@ namespace Glidex {
   type NetworkCtx = { auth: Auth, network: Network };
 
   // A standalone host is a cluster of one: Host::"local" in Cluster::"local"
-  // (clustering.md §12.2). System roles link to the Cluster and so cover
+  // (14-clustering.md §12.2). System roles link to the Cluster and so cover
   // every host; host-specific actions (OVS, uplinks, PCI devices, host
   // paths) take the node's Host, so a grant can be limited to one node.
   entity Cluster;
@@ -556,7 +556,7 @@ namespace Glidex {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project> };
-  entity Datastore in [Cluster];   // storage.md §13
+  entity Datastore in [Cluster];   // 24-storage.md §13
 
   // Roles are action groups. A role includes every role listed under it.
   action "role.system-admin";
@@ -590,7 +590,7 @@ namespace Glidex {
   action listVms in ["vm.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   // updateVm: PATCH of spec fields other than power, devices, disks and
-  // networks (reconciliation.md §12.1).
+  // networks (12-reconciliation.md §12.1).
   action startVm, stopVm, pauseVm, updateVm in ["vm.operate"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console"]
@@ -603,7 +603,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
   action useCredential in ["vm.write"]
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
-  // A VM's service account (workload-identity.md W5): on its project;
+  // A VM's service account (29-workload-identity.md W5): on its project;
   // context.project is the VM's.
   action useServiceAccount in ["project.members"]
     appliesTo { principal: [User, Token], resource: [Project], context: ProjectCtx };
@@ -627,7 +627,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action exceedQuota in ["quota.exceed"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
-  // readSystemStatus: GET /system/reconcile (reconciliation.md §12.5).
+  // readSystemStatus: GET /system/reconcile (12-reconciliation.md §12.5).
   action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink
@@ -644,7 +644,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action writePolicy, deletePolicy in ["policy.write"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  // Nodes (clustering.md §7): the list is cluster-wide, one node is a Host.
+  // Nodes (14-clustering.md §7): the list is cluster-wide, one node is a Host.
   action listNodes in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readNode in ["host.read"]
@@ -682,25 +682,25 @@ Rules for the schema:
 | `vm.operate` | project | Start, stop, pause; other spec edits (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel args, hugepages, credential) |
 | `vm.console` | project | Console tickets / WebSocket |
 | `vm.write` | project | Create and delete VMs; attach and detach disks, devices and networks; use project disks and credentials |
-| `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root, move to another datastore (`moveDisk`, storage.md §8.3) |
+| `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root, move to another datastore (`moveDisk`, 24-storage.md §8.3) |
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |
 | `project.members` | project | Role links and service-account tokens in the project |
 | `network.manage` | project | Create and delete the project's own NAT and isolated networks |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
 | `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /host/topology` and `GET /nodes/{id}/topology` (`readHostTopology`), `GET /system/reconcile` (`readSystemStatus`) |
-| `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, host-topology.md §5.3–5.4); `setSriovVfs` (`POST /nodes/{id}/devices/{pf}/sriov`, §10.1) |
+| `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, 22-host-topology.md §5.3–5.4); `setSriovVfs` (`POST /nodes/{id}/devices/{pf}/sriov`, §10.1) |
 | `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
 | `host.paths` | host | Boot and disk paths outside managed directories (§7.4) |
 | `image.manage` | host | Pull and delete images |
-| `datastore.manage` | host | Register, change and delete datastores (`manageDatastore`, storage.md §13). Reading them (`readDatastore`) and putting disks on them (`useDatastore`, policy `base.use-datastore`; a site policy can forbid a datastore to some) are open to every user |
-| `node.drain` | host | Place a stopped or Lost VM again on another node (`placeVm`, storage.md §9) |
+| `datastore.manage` | host | Register, change and delete datastores (`manageDatastore`, 24-storage.md §13). Reading them (`readDatastore`) and putting disks on them (`useDatastore`, policy `base.use-datastore`; a site policy can forbid a datastore to some) are open to every user |
+| `node.drain` | host | Place a stopped or Lost VM again on another node (`placeVm`, 24-storage.md §9) |
 | `policy.read` · `policy.write` | host | List, validate and simulate policies · create, update and delete site policies (step-up) |
 | `quota.exceed` | host | Go over a project quota (§6.3) |
 | `system.identity` · `system.projects` · `system.audit` | host | Users, identities, teams, auth settings · projects, quotas, links in any project · `GET /audit` |
-| `usage.read` | project | Usage of the project, its VMs and disks (`readProjectUsage`, `readVmUsage`, `readDiskUsage`, `readVmBandwidth`, `readVmIo`, `readVmCompute`, `readDiskIo`), and of its networks (`readNetworkBandwidth`, `readNetworkStats`; host networks need a host role such as auditor) ([metering.md §10](metering.md#10-authorization)) |
+| `usage.read` | project | Usage of the project, its VMs and disks (`readProjectUsage`, `readVmUsage`, `readDiskUsage`, `readVmBandwidth`, `readVmIo`, `readVmCompute`, `readDiskIo`), and of its networks (`readNetworkBandwidth`, `readNetworkStats`; host networks need a host role such as auditor) ([13-metering.md §10](13-metering.md#10-authorization)) |
 | `system.usage` | host | Usage of every project, deleted ones included (`readUsage`, `readBandwidth`, `readDiskIoUsage`, `readComputeUsage`) |
 
 ### 7.3 Policies shipped with glidex
@@ -781,7 +781,7 @@ unless { context.auth.age_secs <= 600 };
 forbid (principal, action in [Glidex::Action::"useDisk", Glidex::Action::"useCredential"], resource)
 unless { resource.project == context.project };
 
-// A VM's service account is of its own tenant (workload-identity.md W5).
+// A VM's service account is of its own tenant (29-workload-identity.md W5).
 @id("base.service-account-same-tenant")
 forbid (principal, action == Glidex::Action::"useServiceAccount", resource)
 unless { resource.tenant == context.project.tenant };
@@ -858,7 +858,7 @@ allow.**
 |---|---|
 | `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
-| `POST /vms/{id}/extract-kernel` | `readVm`, then `updateVm` on the Vm (kernel-boot.md §10.5) |
+| `POST /vms/{id}/extract-kernel` | `readVm`, then `updateVm` on the Vm (23-kernel-boot.md §10.5) |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
 | `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
@@ -874,7 +874,7 @@ too; VMs then boot it with `readImage` only. Kernels extracted from a
 disk image (`kernel_from`, and catalog pulls) are read by a network-less
 extractor VM in a `glidex-vm@` unit, never by the control plane: the
 host only parses the extractor's length-checked output stream
-([kernel-boot.md](kernel-boot.md) K9, §10). Paths into the disk or image directories are not
+([23-kernel-boot.md](23-kernel-boot.md) K9, §10). Paths into the disk or image directories are not
 treated as managed: they would reach other projects' disks, or let a VM
 write to a shared base image.
 
@@ -1051,10 +1051,10 @@ impl Authz {
    `{actions, resources}` → `{allowed: [[action…] per resource]}`,
    leaving out actions whose `appliesTo` doesn't list the resource's
    type; an unknown action is `400`; at most 50 actions × 500 resources
-   (spec/clustering-ui.md §3.5). A `Host` or `Node` resource gets the
+   (spec/16-clustering-ui.md §3.5). A `Host` or `Node` resource gets the
    cluster as parent, so a link on the cluster covers every node's host.
 9. **Live stream.** `GET /watch` (server-sent events,
-   [rest-api.md](rest-api.md#live-stream-get-watch)) needs only an
+   [06-rest-api.md](06-rest-api.md#live-stream-get-watch)) needs only an
    authenticated caller; each kind is filtered exactly like its list
    endpoint (`readVm` / `readDisk` per item in visible projects,
    `readImage` / `readNetwork` on `Host` with the network view of
@@ -1096,9 +1096,9 @@ may ask it for what.
    ping to the gateway, and a VM port's own marked request to the
    metadata endpoint (`169.254.169.254:8775` after its DNAT; unmarked
    ones, from anywhere, are dropped:
-   [workload-identity.md](workload-identity.md) §7.1), and drops the
+   [29-workload-identity.md](29-workload-identity.md) §7.1), and drops the
    rest; a network whose administrator set `host_api` also gets the
-   API's ports (workload-identity.md §15). Project networks (§6.2)
+   API's ports (29-workload-identity.md §15). Project networks (§6.2)
    depend on this. Where
    iptables' `INPUT` also drops (ufw), netd's `GLIDEX-INPUT` chain
    accepts exactly the same traffic and no more.
@@ -1124,18 +1124,18 @@ may ask it for what.
 
 | Unit | Changes |
 |---|---|
-| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex` (datastores, storage.md S11), `DevicePolicy=closed` with only `DeviceAllow=block-device-mapper rw` (lvm datastores' volumes, which glidex-stord hands to `glidex`; the host's other device-mapper devices stay root's, storage.md S18), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
+| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex` (datastores, 24-storage.md S11), `DevicePolicy=closed` with only `DeviceAllow=block-device-mapper rw` (lvm datastores' volumes, which glidex-stord hands to `glidex`; the host's other device-mapper devices stay root's, 24-storage.md S18), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
 | `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
-| `glidex-stord` (S6, storage.md §11.1) | Root, `Type=notify`, `RuntimeDirectory=glidex-stord` (`stord.sock` `root:glidex 0660`, `stord-admin.sock` for `glidex-admin`). `ProtectSystem=strict` with `ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system` (LVM's backups and locks, the VM units' drop-ins), `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_IPC_LOCK CAP_SYS_RAWIO CAP_MKNOD`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`. It acts only on the volume groups in `/etc/glidex/stord.json` (`allowed_vgs`, none by default) and on volumes named `gx-d-*`/`gx-i-*` (storage.md S17). |
+| `glidex-stord` (S6, 24-storage.md §11.1) | Root, `Type=notify`, `RuntimeDirectory=glidex-stord` (`stord.sock` `root:glidex 0660`, `stord-admin.sock` for `glidex-admin`). `ProtectSystem=strict` with `ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system` (LVM's backups and locks, the VM units' drop-ins), `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_IPC_LOCK CAP_SYS_RAWIO CAP_MKNOD`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`. It acts only on the volume groups in `/etc/glidex/stord.json` (`allowed_vgs`, none by default) and on volumes named `gx-d-*`/`gx-i-*` (24-storage.md S17). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
-- **Datastores under `/srv/glidex`** (storage.md S11). Both units may
+- **Datastores under `/srv/glidex`** (24-storage.md S11). Both units may
   write there, so an operator mounts datastores below it, owned by
   `glidex`. A mount made after a unit started is writable inside it
   **even outside every `ReadWritePaths` entry**: `ProtectSystem=strict`
-  only makes read-only what was mounted at start (storage.md §19, H1).
+  only makes read-only what was mounted at start (24-storage.md §19, H1).
   For late mounts, file ownership and modes are the boundary, not the
   sandbox; mount only what `glidex` may write.
 - **The sandbox split.** Under the systemd runner hypervisors are
@@ -1152,7 +1152,7 @@ may ask it for what.
   kernel ignores file capabilities under no_new_privs. On the VM unit
   this stays until netd fully prepares taps, so the hypervisor needs no
   capability.
-- **The control-plane unit runs no hypervisor** (reconciliation.md
+- **The control-plane unit runs no hypervisor** (12-reconciliation.md
   §13.3): `DevicePolicy=closed` with no device allowed, no
   `/run/glidex/vhost`, and `NoNewPrivileges=yes`,
   `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
@@ -1270,7 +1270,7 @@ connect` uses the API's console WebSocket instead of the raw socket.
 `packaging/control-plane.json.example` carries it too.
 
 `metering` (all keys in `packaging/control-plane.json.example`,
-[metering.md §11](metering.md#11-configuration)): `sample_secs` must
+[13-metering.md §11](13-metering.md#11-configuration)): `sample_secs` must
 divide 300, and `billing_timezone` is `UTC`, `±HH:00` or an IANA zone
 with one fixed whole-hour offset. An invalid value stops the control
 plane at start.
@@ -1282,7 +1282,7 @@ New endpoints:
 | `GET /auth/methods` | none |
 | `POST /auth/login` (`{method: "pam", username, password}`) | none |
 | `GET /auth/oidc/start`, `GET /auth/oidc/callback` | none |
-| `POST /auth/discover`; `GET /auth/c/{id}/start`, `/callback`; `POST /auth/c/{id}/device`, `/device/poll` | none (login through connector `id`; [tenancy.md](tenancy.md) §6, §14) |
+| `POST /auth/discover`; `GET /auth/c/{id}/start`, `/callback`; `POST /auth/c/{id}/device`, `/device/poll` | none (login through connector `id`; [19-tenancy.md](19-tenancy.md) §6, §14) |
 | `/connectors…` | `role.directory-admin` in the owner tenant; writes need a recent login |
 | `POST /auth/logout`, `GET /auth/whoami` | authenticated |
 | `GET/POST/DELETE /tokens` | own tokens; `project.members` for service accounts; `system.identity` for others' |
@@ -1311,7 +1311,7 @@ the principal is included.
 | `PATCH /users/me` (`{default_project}`) | authenticated |
 | `GET /users/me/ssh-keys` | authenticated (the caller's own local account only; `available: false` with a reason otherwise) |
 | `POST /auth/oidc/device`, `POST /auth/oidc/device/poll` | none (device grant for gxctl; returns a 1-day personal token) |
-| `GET /auth/server-info` | none (cluster id/name, node id, version, own certificate fingerprint, login methods — what client profiles bind to; [gxctl-auth.md §7.1](gxctl-auth.md)) |
+| `GET /auth/server-info` | none (cluster id/name, node id, version, own certificate fingerprint, login methods — what client profiles bind to; [17-gxctl-auth.md §7.1](17-gxctl-auth.md)) |
 | `POST /auth/token` | none (PAM credentials → personal bearer token, authd rate limits, TLS only; §5.3) |
 | `POST /vms/{id}/console/ticket` | `vm.console` |
 | `GET /audit` | §10 |
@@ -1398,7 +1398,7 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
   TLS-terminating proxy is caught by the `server-info` fingerprint
   cross-check. Plus the profile-file refusals and the
   `GLIDEX_TOKEN`/profile/`token_command` precedence matrix
-  ([gxctl-auth.md §11](gxctl-auth.md)).
+  ([17-gxctl-auth.md §11](17-gxctl-auth.md)).
 - **UI e2e:** login, CSRF header, console via ticket, a foreign `Host` is refused.
 
 ## 15. Milestones
@@ -1427,13 +1427,13 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | OIDC (§5.4) | `src/directory/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
-| Reloadable certificates ([tailscale-tls.md](tailscale-tls.md) TS0) | `glidex_tls::{CertSlot, Resolver, FileCert}`; control plane `serve.rs`/`main.rs` (re-publishes `tls.crt`), UI `main.rs` |
-| Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-tls/src/tailscale.rs` (local API client, polling; shared with hyperstor's management service), `crates/glidex-ui/src/main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([tailscale-tls.md](tailscale-tls.md) §4.6) |
+| Reloadable certificates ([21-tailscale-tls.md](21-tailscale-tls.md) TS0) | `glidex_tls::{CertSlot, Resolver, FileCert}`; control plane `serve.rs`/`main.rs` (re-publishes `tls.crt`), UI `main.rs` |
+| Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-tls/src/tailscale.rs` (local API client, polling; shared with hyperstor's management service), `crates/glidex-ui/src/main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([21-tailscale-tls.md](21-tailscale-tls.md) §4.6) |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |
 | netd ownership, policy, admin socket, audit context, NAT isolation (§8) | `crates/glidex-netd`, `crates/glidex-ovs/src/nat.rs` |
-| Login profiles, trust ladder and client trust ([gxctl-auth.md](gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
+| Login profiles, trust ladder and client trust ([17-gxctl-auth.md](17-gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
 Still to verify on a real host: the generated nftables rules (§8.4),

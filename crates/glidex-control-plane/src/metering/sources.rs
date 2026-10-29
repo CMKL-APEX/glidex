@@ -1,4 +1,4 @@
-//! Where readings come from (spec/metering.md §5): a VM unit's cgroup,
+//! Where readings come from (spec/13-metering.md §5): a VM unit's cgroup,
 //! or `/proc` for detached instances. Paths are rooted so tests can point
 //! them at fixtures.
 

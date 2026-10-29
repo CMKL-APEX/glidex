@@ -1,9 +1,9 @@
-//! The watch family (spec/grpc.md §9, G4; spec/reconciliation.md §12.6): a
+//! The watch family (spec/18-grpc.md §9, G4; spec/12-reconciliation.md §12.6): a
 //! live stream of the VMs, disks, images and networks the caller may list,
 //! as `glidex.watch.v1.WatchService.Watch` and, the same events as
 //! server-sent events, `GET /watch`.
 //! On request (`kinds=`) also the cluster's nodes, import plans, a cluster
-//! summary and a policy marker (spec/clustering-ui.md §3.7).
+//! summary and a policy marker (spec/16-clustering-ui.md §3.7).
 //!
 //! On connect the stream sends every visible object (`added`), then
 //! `synced`; afterwards `added`, `modified` and `deleted` as they change.
@@ -140,7 +140,7 @@ async fn snapshot(
                     }
                     let (e, es) = disk_entities(&d.id, &d.project);
                     if c.allowed("readDisk", e, es) {
-                        // The proto shape, as REST answers (spec/grpc.md §9.1).
+                        // The proto shape, as REST answers (spec/18-grpc.md §9.1).
                         view.insert(
                             (Kind::Disk, d.id.clone()),
                             serde_json::to_value(crate::service::storage::disk_pb(&d))

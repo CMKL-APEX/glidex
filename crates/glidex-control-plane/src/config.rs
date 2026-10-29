@@ -1,4 +1,4 @@
-//! `/etc/glidex/control-plane.json` (spec/security.md §13).
+//! `/etc/glidex/control-plane.json` (spec/11-security.md §13).
 //!
 //! The file holds no secrets: the TLS key, the OIDC client secret and the
 //! cloud-init password hash come from systemd credentials
@@ -26,7 +26,7 @@ pub struct Config {
     /// certificate.
     pub tls: TlsSetting,
     /// Display name `GET /auth/server-info` reports and gxctl shows in
-    /// profile banners (spec/gxctl-auth.md §7.1). Default: the host name.
+    /// profile banners (spec/17-gxctl-auth.md §7.1). Default: the host name.
     pub server_name: Option<String>,
     /// Unix socket for local gxctl users (peer identity, spec §5.2).
     /// Default: `<run dir>/api.sock`.
@@ -35,14 +35,14 @@ pub struct Config {
     pub ui_socket: Option<PathBuf>,
     /// The user glidex-ui runs as; only it may use `ui_socket`.
     pub ui_user: String,
-    /// Unix socket for glidex-metad (spec/workload-identity.md W11).
+    /// Unix socket for glidex-metad (spec/29-workload-identity.md W11).
     /// Default: `<run dir>/metad.sock`.
     pub metad_socket: Option<PathBuf>,
     /// The user glidex-metad runs as; only it may use `metad_socket`.
     pub metad_user: String,
     /// Open this host's API (the `listen` ports) to the guests of every
     /// node NAT network on it, as each network's `host_api` does for one
-    /// (spec/workload-identity.md §15). Default: closed.
+    /// (spec/29-workload-identity.md §15). Default: closed.
     pub nat_host_api: bool,
     /// Group whose members may use `api_socket`.
     pub users_group: String,
@@ -56,9 +56,9 @@ pub struct Config {
     pub reconcile: ReconcileConfig,
     pub console: ConsoleConfig,
     pub metering: MeteringConfig,
-    /// Clustering tunables (spec/clustering.md §10.2).
+    /// Clustering tunables (spec/14-clustering.md §10.2).
     pub cluster: crate::cluster::config::ClusterConfig,
-    /// Directories of other organizations (spec/tenancy.md D13).
+    /// Directories of other organizations (spec/19-tenancy.md D13).
     pub trust: TrustConfig,
 }
 
@@ -138,16 +138,16 @@ pub struct AuthConfig {
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
-    /// Passkeys (spec/passkeys.md).
+    /// Passkeys (spec/25-passkeys.md).
     pub passkeys: PasskeyConfig,
-    /// File holding the host's secrets key (spec/tenancy.md §13); the
+    /// File holding the host's secrets key (spec/19-tenancy.md §13); the
     /// systemd credential `secrets-kek` wins when present. The control
     /// plane defaults it to `secrets.kek` beside its database.
     pub secrets_key: Option<PathBuf>,
     /// Where the directories this host serves issue tokens from:
     /// `https://host[:port][/path]`, each directory's issuer being
-    /// `<base>/d/<directory>` (spec/tenancy.md D52). Unset: the web UI's
-    /// published address (host-page.md W3).
+    /// `<base>/d/<directory>` (spec/19-tenancy.md D52). Unset: the web UI's
+    /// published address (28-host-page.md W3).
     pub issuer_base: Option<String>,
     /// How long a directory's access tokens last, 5–720 minutes (default
     /// 60, D55).
@@ -155,7 +155,7 @@ pub struct AuthConfig {
     pub federation: FederationConfig,
 }
 
-/// Workload federations (spec/tenancy.md §9).
+/// Workload federations (spec/19-tenancy.md §9).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct FederationConfig {
@@ -264,7 +264,7 @@ impl Default for PamConfig {
     }
 }
 
-/// Passkeys (spec/passkeys.md P2).
+/// Passkeys (spec/25-passkeys.md P2).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PasskeyConfig {
@@ -341,7 +341,7 @@ impl Default for AuthzConfig {
     }
 }
 
-/// Site-wide quota defaults (spec/security.md §6.3).
+/// Site-wide quota defaults (spec/11-security.md §6.3).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct QuotasConfig {
@@ -367,7 +367,7 @@ pub struct PciConfig {
     /// `host.devices`.
     pub allow: Vec<PciGrant>,
     /// Named sets of devices a VM asks for by count
-    /// (spec/host-topology.md §9.1).
+    /// (spec/22-host-topology.md §9.1).
     pub pools: Vec<PciPool>,
 }
 
@@ -383,16 +383,16 @@ pub struct PciGrant {
     #[serde(default)]
     pub projects: Vec<String>,
     /// Tenant ids or slugs: every project of theirs may use the device
-    /// (spec/tenancy.md D25).
+    /// (spec/19-tenancy.md D25).
     #[serde(default)]
     pub tenants: Vec<String>,
     /// The node (id or name) whose device this is; absent: the device at
-    /// that address on every node (spec/host-topology.md §8.5).
+    /// that address on every node (spec/22-host-topology.md §8.5).
     #[serde(default)]
     pub node: Option<String>,
 }
 
-/// A pool of devices (spec/host-topology.md §9.1).
+/// A pool of devices (spec/22-host-topology.md §9.1).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PciPool {
@@ -407,16 +407,16 @@ pub struct PciPool {
     #[serde(default)]
     pub nodes: Vec<String>,
     /// Each node binds its devices of the pool to `vfio-pci` at start
-    /// (spec/host-topology.md §5.3).
+    /// (spec/22-host-topology.md §5.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prepare: bool,
     /// What a VM gets per device it asks of the pool by `gpus`, unless it
-    /// sizes itself (spec/gpu-vms.md §6).
+    /// sizes itself (spec/27-gpu-vms.md §6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_device: Option<PerDevice>,
 }
 
-/// A VM's share per device of a pool (spec/gpu-vms.md §6).
+/// A VM's share per device of a pool (spec/27-gpu-vms.md §6).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerDevice {
@@ -442,7 +442,7 @@ pub struct PoolMatch {
     #[serde(default)]
     pub addresses: Vec<String>,
     /// Virtual functions of the physical functions this matches
-    /// (spec/host-topology.md §10.1); the other keys then match the VF.
+    /// (spec/22-host-topology.md §10.1); the other keys then match the VF.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vf_of: Option<Box<PoolMatch>>,
 }
@@ -547,7 +547,7 @@ impl PciConfig {
 #[serde(deny_unknown_fields, default)]
 pub struct TrustConfig {
     /// How long a trusted directory's credentials stay good here after
-    /// its last feed, unless set for that directory (spec/tenancy.md D13).
+    /// its last feed, unless set for that directory (spec/19-tenancy.md D13).
     pub default_max_staleness_minutes: u64,
 }
 
@@ -571,7 +571,7 @@ impl Default for AuditConfig {
     }
 }
 
-/// How VM instances are run and reconciled (spec/reconciliation.md §14).
+/// How VM instances are run and reconciled (spec/12-reconciliation.md §14).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReconcileConfig {
@@ -619,7 +619,7 @@ impl Default for ConsoleConfig {
     }
 }
 
-/// Resource usage metering (spec/metering.md §11).
+/// Resource usage metering (spec/13-metering.md §11).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct MeteringConfig {
@@ -699,7 +699,7 @@ impl Config {
             cfg.auth.origins_from_host = true;
         }
         // A published address (a load balancer) is an origin too, and
-        // first: the OIDC callback's default (spec/host-page.md W4).
+        // first: the OIDC callback's default (spec/28-host-page.md W4).
         if let Some(o) = cfg.cluster.ui_origin() {
             cfg.auth.allowed_origins.retain(|a| *a != o);
             cfg.auth.allowed_origins.insert(0, o);
@@ -996,12 +996,12 @@ mod tests {
         assert!(parse(r#"{"authz": {"policy_history": 0}}"#).is_err());
     }
 
-    /// The example in spec/security.md §13 must be a loadable config, so
+    /// The example in spec/11-security.md §13 must be a loadable config, so
     /// the spec can't document keys the parser refuses.
     #[test]
     fn spec_example_parses() {
         let spec = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/11-security.md"),
         )
         .unwrap();
         let start = spec

@@ -1,4 +1,4 @@
-//! Per-node image caches (spec/clustering.md §9.2): the catalog record of an
+//! Per-node image caches (spec/14-clustering.md §9.2): the catalog record of an
 //! image is cluster-wide, its files are a copy on each node that needs one.
 //! `image_caches/<image>/<node>` says where a copy is.
 //!
@@ -27,7 +27,7 @@ pub struct CacheRow {
     pub verified_at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
-    /// A kernel this node extracted for the leader (spec/kernel-boot.md
+    /// A kernel this node extracted for the leader (spec/23-kernel-boot.md
     /// §10.2): what the leader records on the image once the row is Ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted: Option<crate::images::extract::ExtractedKernel>,

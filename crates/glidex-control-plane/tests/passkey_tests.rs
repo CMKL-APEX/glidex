@@ -1,4 +1,4 @@
-//! Passkeys (spec/passkeys.md §5) through the API, with a software
+//! Passkeys (spec/25-passkeys.md §5) through the API, with a software
 //! authenticator: registration, sign-in, and every refusal looking the
 //! same; MFA and step-up; P4's removal rules.
 
@@ -587,7 +587,7 @@ async fn adding_needs_a_fresh_sign_in_and_two_passkeys_are_needed_to_lose_the_re
     assert_eq!(st, StatusCode::CREATED, "{v}");
 }
 
-/// spec/tenancy.md D59, D60: a directory's first administrator comes in
+/// spec/19-tenancy.md D59, D60: a directory's first administrator comes in
 /// with a passkey through the operator's invitation, administers the new
 /// directory and nothing of the host's own, and signs in again with it.
 #[tokio::test]

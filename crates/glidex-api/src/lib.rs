@@ -1,4 +1,4 @@
-//! The glidex RPC API (spec/grpc.md): messages, service traits and
+//! The glidex RPC API (spec/18-grpc.md): messages, service traits and
 //! clients generated from `proto/`, plus the operation table every RPC
 //! is checked against.
 //!
@@ -11,7 +11,7 @@ pub mod proto {
     connectrpc::include_generated!();
 }
 
-/// How the cluster treats an operation (spec/grpc.md G-D6).
+/// How the cluster treats an operation (spec/18-grpc.md G-D6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// Served by any server after a read barrier.
@@ -109,7 +109,7 @@ pub fn unknown_field(full_name: &str, v: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Domain of every `google.rpc.ErrorInfo` glidex sends (spec/grpc.md §7).
+/// Domain of every `google.rpc.ErrorInfo` glidex sends (spec/18-grpc.md §7).
 pub const ERROR_DOMAIN: &str = "glidex";
 
 #[cfg(test)]

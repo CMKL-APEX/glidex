@@ -1,4 +1,4 @@
-//! Where the control plane keeps per-VM runtime files (spec/security.md §9).
+//! Where the control plane keeps per-VM runtime files (spec/11-security.md §9).
 //!
 //! Each VM gets a private directory `<run dir>/vms/<id>/` (mode 0700) for
 //! its hypervisor API socket, console socket, console log and generated
@@ -62,7 +62,7 @@ pub fn file_in(dir: &Path, name: &str) -> PathBuf {
 /// first (`None` if either can't be). A linked disk names its image this
 /// way, so the overlay stays valid wherever the two directories are
 /// mounted, as long as they keep their places relative to each other
-/// (spec/storage.md S8).
+/// (spec/24-storage.md S8).
 pub fn relative_to(target: &Path, from: &Path) -> Option<PathBuf> {
     let target = target.canonicalize().ok()?;
     let from = from.canonicalize().ok()?;
@@ -81,7 +81,7 @@ pub fn vm_dir(vm_id: &str) -> PathBuf {
 }
 
 /// Runtime file paths of a VM, inside its private directory
-/// (spec/reconciliation.md §5.1).
+/// (spec/12-reconciliation.md §5.1).
 #[derive(Debug, Clone)]
 pub struct VmPaths {
     pub dir: PathBuf,

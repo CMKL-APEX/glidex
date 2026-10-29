@@ -4,9 +4,9 @@ Status: **draft**; K0 to K3b implemented (§12). The open questions of the first
 draft are settled (§9): kernels come from the cloud image itself (K3,
 K9, K13), a catalog pull brings its kernel (K10), a VM's kernel may
 change at the next restart (K6), and a VM may opt in to following the
-kernels its guest installs, each version kept while used (K11, K12). Extends [images.md](images.md),
-[storage.md](storage.md), [hypervisors.md](hypervisors.md),
-[console.md](console.md) and [credentials.md](credentials.md). §13 lists
+kernels its guest installs, each version kept while used (K11, K12). Extends [10-images.md](10-images.md),
+[24-storage.md](24-storage.md), [04-hypervisors.md](04-hypervisors.md),
+[02-console.md](02-console.md) and [08-credentials.md](08-credentials.md). §13 lists
 the changes the other documents need once this is accepted.
 
 Every VM boots in one of two ways. **Firmware boot** passes UEFI firmware
@@ -14,7 +14,7 @@ to the hypervisor, and the firmware runs the bootloader on the root disk.
 **Kernel boot** passes a kernel to the hypervisor, which loads it
 directly, with no firmware or bootloader. Both backends have had kernel
 boot since the beginning (`--kernel`/`--cmdline` and `-kernel`/`-append`).
-Since [images.md](images.md) it has fallen behind firmware boot:
+Since [10-images.md](10-images.md) it has fallen behind firmware boot:
 
 | | Firmware boot today | Kernel boot today |
 |---|---|---|
@@ -178,10 +178,10 @@ disk image, the digest of the copy that was read, and the kernel's path
 inside it (`vda16:/vmlinuz-6.8.0-147-generic`). URL pulls stay `Url`
 with the initrd URL in `DownloadMeta`.
 
-Storage ([images.md §2](images.md#2-storage-layout)):
+Storage ([10-images.md §2](10-images.md#2-storage-layout)):
 `images/<id>.kernel` and `images/<id>.initrd`, `0444`, both named only
 by id. The `.part` files follow the same rules. On datastores
-([storage.md §6](storage.md#6-images-on-datastores)), kernel images
+([24-storage.md §6](24-storage.md#6-images-on-datastores)), kernel images
 follow the firmware rule: a copy per location, and launch resolves the
 files on the placed node.
 
@@ -200,20 +200,20 @@ extracting returns that record (`200`). A catalog pull does this itself
 
 **Arbitrary URL.** `{"url": …, "sha256"?, "kind": "kernel", "initrd_url"?,
 "initrd_sha256"?, "cmdline"?, "arch"?}`. These follow the URL rules of
-[images.md](images.md#arbitrary-urls) (https, no private addresses,
+[10-images.md](10-images.md#arbitrary-urls) (https, no private addresses,
 every redirect checked). The image is `verified` only when every file
 had a digest.
 
 **Host import.** `{"kernel_path": "/boot/…", "initrd_path"?, "cmdline"?}`
 copies host files into a kernel image. This needs `host.paths`, as any
-host path does (security.md §7.4). Afterwards the VM needs only
+host path does (11-security.md §7.4). Afterwards the VM needs only
 `readImage`, so an admin can publish a custom kernel to projects
 without handing out host paths. No auto-import: unlike OVMF, there is no
 host kernel a guest should get by default.
 
 ### 4.3 Download and verify
 
-The [images.md §5](images.md#5-download-pipeline) pipeline handles each
+The [10-images.md §5](10-images.md#5-download-pipeline) pipeline handles each
 file of a URL pull in turn (kernel, then initrd), with resume, retry and
 the download limit as before. `qemu-img` is skipped, as for firmware.
 Extracted files come from §10.3 instead. Either way:
@@ -227,7 +227,7 @@ Extracted files come from §10.3 instead. Either way:
 
 ### 4.4 Lifecycle
 
-These are the same as firmware ([images.md §6.6](images.md#66-images-delete-and-inspect)),
+These are the same as firmware ([10-images.md §6.6](10-images.md#66-images-delete-and-inspect)),
 with `VmConfig.kernel_image` in place of `firmware_image`:
 
 - `409 conflict` (naming the VMs) when deleting a kernel image that VMs
@@ -236,7 +236,7 @@ with `VmConfig.kernel_image` in place of `firmware_image`:
   and a disk image is never a VM's `kernel`.
 - Ready ↔ Missing checks, events and `retry` apply unchanged, per file.
 
-**Clusters** ([clustering.md](clustering.md)). The image cache
+**Clusters** ([14-clustering.md](14-clustering.md)). The image cache
 controller's `image_files` adds `("main", <id>.kernel)` and
 `("initrd", <id>.initrd)`. `needs_image_here` also counts local VMs
 whose `kernel_image` is the image. A VM's architecture (§9.2.1) is that
@@ -278,7 +278,7 @@ away. The architecture is a kernel image's, else the pinned node's (its
 reported `arch`), else the host's.
 
 The shim, the console proxy and the ring buffer don't change. They see
-the hypervisor's stdio either way ([console.md](console.md#physical-io)).
+the hypervisor's stdio either way ([02-console.md](02-console.md#physical-io)).
 
 ### 5.3 Command line rules
 
@@ -349,7 +349,7 @@ The VM controller generates the seed when `generate_seed` resolves to
 `true` (`controller/vm.rs`, step 5.1), with the same contents, the same
 `[root, data…, seed]` order and the same growpart handling. A VM with a
 credential needs `generate_seed`. This replaces the "credential requires
-firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
+firmware boot" check in `check_credential` (08-credentials.md *Use by VMs*).
 
 ## 7. Clients
 
@@ -389,14 +389,14 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
 - **REST/gRPC.** The `PullImageRequest` oneof gains `kernel_from` and
   `kernel_path`, and the request `with_kernel`. `IMAGE_KIND_KERNEL`,
   `IMAGE_STATE_EXTRACTING`.
-  The fields above. `grpc.md` and `rest-api.md` tables are updated.
+  The fields above. `18-grpc.md` and `06-rest-api.md` tables are updated.
 
 ## 8. Security considerations
 
 - **No new host access.** Managed kernels live in the image directory and
   are named by id. Host paths (`kernel_image_path`, `initrd_path`, and
   `kernel_path` on import) still need `useHostPath`. Paths into the image
-  directory are still not "managed" (security.md §7.4).
+  directory are still not "managed" (11-security.md §7.4).
 - **Untrusted kernels harm only their own guest.** The hypervisor loads
   the kernel into guest memory: Cloud Hypervisor's loader (Rust) or
   QEMU's. A hostile kernel or initrd is a hostile guest, which is
@@ -485,7 +485,7 @@ runs it when it can extract that architecture and has the disk image's
 file, or is downloading it. Otherwise, once the disk image is `Ready`, it
 picks a node that is ready, schedulable, of the image's architecture and
 with KVM, preferring one with a `Ready` copy; a node without one gets
-the disk image added to its `pinned`, so a copy comes to it (clustering.md
+the disk image added to its `pinned`, so a copy comes to it (14-clustering.md
 §9.2.2). The kernel image records the node in `extract_node` (an event
 `Delegated` says so); with no such node it is `Failed` with the reason.
 
@@ -497,7 +497,7 @@ goes in its own `image_caches/<kernel image>/<node>` row, `Ready` with
 line, and the source path and digest) or `Failed` with the error. The
 leader then records that on the image (`Ready`, event `Extracted … on
 <node>`) or fails it (`on <node>: <error>`). The kernel's files stay on
-that node, as a copy others fetch from (clustering.md §9.2). If the node
+that node, as a copy others fetch from (14-clustering.md §9.2). If the node
 leaves the cluster first, the leader picks again. A retry clears the
 node's row and picks again.
 
@@ -512,7 +512,7 @@ node's row and picks again.
   shim and removes the instance directory. Startup's orphan scan leaves
   `extract-*` units and directories alone. Its unit is
   `glidex-vm@extract-<image id>.service`, which the polkit rule allows
-  beside the VMs' `glidex-vm@<uuid>.service` (reconciliation.md §13.2);
+  beside the VMs' `glidex-vm@<uuid>.service` (12-reconciliation.md §13.2);
   installs before that rule change refuse it ("Access denied requiring
   interactive authentication") until the installer is re-run.
 - The preferred hypervisor that is installed (Cloud Hypervisor, else
@@ -568,7 +568,7 @@ path: files are kept in memory or written under the image's id.
 
 Both forms read the VM's managed root disk on a node that reaches it
 (its node on a node-local datastore; any node on a shared one,
-[storage.md](storage.md) §5), never while it is being moved (S5):
+[24-storage.md](24-storage.md) §5), never while it is being moved (S5):
 read-only, with `backing_files=on` (or QEMU's qcow2 backing) for a
 linked disk glidex made, and the disk busy for the run, so the VM can't
 start meanwhile. The result is a kernel image the VM owns (`owner`,
@@ -612,7 +612,7 @@ controller:
 **On a node that doesn't write the catalog** (an agent, or a server
 that isn't the leader), step 3 goes through the leader (§10.2). The node
 creates the kernel image itself, `extracting` with `extract_node` set to
-itself: the one catalog write a node may make (clustering.md §8.3), and
+itself: the one catalog write a node may make (14-clustering.md §8.3), and
 only for a kernel from the disk of a VM placed on it. It runs the
 extractor and reports in its cache row, and the leader records the
 image. Meanwhile the launch waits (`KernelExtracted=Unknown/Extracting`).
@@ -756,32 +756,32 @@ the mask turns following off, and the VM boots the spec's kernel again.
 | **K2** VM integration *(done)* | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch; the UI keeps kernel images out of its disk-image lists and lists them under *Kernels* | §11 VM API tests; the functional test with a kernel image and a credential. |
 | **K3** extraction *(done)* | The extractor appliance (§10.1, K13), runs as shim jobs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10) | Stream and choice unit tests; the functional test on the catalog distros (§11). |
 | **K3b** following the guest *(done)* | `POST /vms/{id}/extract-kernel` (§10.5; moved from K3: it makes VM-owned kernel images), `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | `kernel_from_disk_requests` (API); `guest_kernel_updates_are_followed` (functional, §11). |
-| **K4** clients and docs *(done)* | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |
+| **K4** clients and docs *(done)* | UI, gxctl, user guide (`vms.md`, `10-images.md`, `08-credentials.md`, `02-console.md`) | UI e2e; docs build. |
 
 ## 13. Changes to other specs (to apply on acceptance)
 
-- **images.md:** §1 adds kernel images to the list. §2 adds the
+- **10-images.md:** §1 adds kernel images to the list. §2 adds the
   `.kernel`/`.initrd` files. §3 adds `ImageKind::Kernel`, the new
   fields and the `Extracting` state. §4 says a catalog pull brings the
   image's kernel (K10). §6.6 covers in-use kernels. §7 adds the `kernel`
   field and the K2 rule (replacing "a caller who brings a kernel keeps
   kernel boot"). §8 adds the REST rows. §1's non-goal "image building or
   customization" stays: extraction reads, never writes.
-- **storage.md:** §6 names kernel images beside firmware.
-- **hypervisors.md:** the boot-mode table becomes boot mode × console
+- **24-storage.md:** §6 names kernel images beside firmware.
+- **04-hypervisors.md:** the boot-mode table becomes boot mode × console
   device (§5.2). Both argv listings get initramfs. *Default kernel args*
   becomes one shared default.
-- **console.md:** *Physical I/O* says the device follows `console=`.
-- **credentials.md:** *Use by VMs* says "generated seed", not "firmware
+- **02-console.md:** *Physical I/O* says the device follows `console=`.
+- **08-credentials.md:** *Use by VMs* says "generated seed", not "firmware
   boot".
-- **data-model.md:** `VmConfig` fields, the `CreateVmRequest` defaults
+- **03-data-model.md:** `VmConfig` fields, the `CreateVmRequest` defaults
   and the mutability paragraph.
-- **reconciliation.md:** §7.3 mutability table. §8.2 adds the
+- **12-reconciliation.md:** §7.3 mutability table. §8.2 adds the
   `--initramfs` row and changes the console row.
-- **security.md:** §7.4 lists `initrd_path`, and `kernel_path` on
+- **11-security.md:** §7.4 lists `initrd_path`, and `kernel_path` on
   import. The `POST /vms` row adds `readImage` on the kernel image. The
   `PATCH` row adds `kernel`.
-- **clustering.md:** §9.2.1 VM architecture includes the kernel image.
-- **cli.md, web-ui.md, rest-api.md, grpc.md:** §7.
+- **14-clustering.md:** §9.2.1 VM architecture includes the kernel image.
+- **01-cli.md, 07-web-ui.md, 06-rest-api.md, 18-grpc.md:** §7.
 - **README.md, SUMMARY.md:** this document's entry (added with the
   draft).

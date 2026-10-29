@@ -1,4 +1,4 @@
-//! The `jumpcloud` preset (spec/tenancy.md §5.1): JumpCloud SSO over OIDC.
+//! The `jumpcloud` preset (spec/19-tenancy.md §5.1): JumpCloud SSO over OIDC.
 //! The issuer and scopes are JumpCloud's; groups come in the claim the
 //! application's *Include group attribute* names.
 //!

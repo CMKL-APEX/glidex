@@ -4,7 +4,7 @@ import type { NodeRecord } from "../types";
 import ConfirmDialog from "./ConfirmDialog";
 import { inputClass } from "./ui";
 
-/** A node's physical networks (spec/clustering.md §11.3): which of its
+/** A node's physical networks (spec/14-clustering.md §11.3): which of its
  * bridges (with an uplink) is which physical network, for provider networks
  * and OVN gateways. Takes effect without a restart. */
 export default function MappingsDialog({ node, onClose, onDone }: { node: NodeRecord; onClose: () => void; onDone: () => void }) {

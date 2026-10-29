@@ -50,9 +50,9 @@ const CAPS = [
 type Cap = (typeof CAPS)[number];
 
 /** The tenant's shares of cluster device pools, split among its projects
- *  (spec/host-topology.md §9.1a). */
+ *  (spec/22-host-topology.md §9.1a). */
 /** The clusters of other organizations the tenant uses, and what each last
- *  reported of it (spec/tenancy.md D70). */
+ *  reported of it (spec/19-tenancy.md D70). */
 function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
   const [clusters, setClusters] = useState<api.TenantCluster[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -472,7 +472,7 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
 const INVITE_ROLES = ["member", ...TENANT_ROLES] as const;
 const inviteRoleLabel = (r: string) => (r === "member" ? "member (no tenant role)" : r);
 
-/** A tenant's invitations (spec/tenancy.md §6.1): a link, shown once, that
+/** A tenant's invitations (spec/19-tenancy.md §6.1): a link, shown once, that
  *  lets one email address in through one connector. */
 function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
   const [list, setList] = useState<api.Invitation[] | null>(null);

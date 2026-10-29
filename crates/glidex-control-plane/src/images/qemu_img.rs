@@ -265,7 +265,7 @@ pub fn convert(
 }
 
 /// `qemu-img convert` into an existing, freshly made block device (a new
-/// thin volume reads as zeros, so zeros aren't written: spec/storage.md
+/// thin volume reads as zeros, so zeros aren't written: spec/24-storage.md
 /// §19, H4). `src_format` `None`: probed (only for files glidex made).
 pub fn convert_to_device(
     src: &Path,
@@ -326,7 +326,7 @@ pub fn read_region(
 ) -> Result<(), ImageError> {
     debug_assert!(offset.is_multiple_of(512) && len.is_multiple_of(512));
     let _ = std::fs::remove_file(out);
-    // A hyperstor volume (spec/storage.md §11.2).
+    // A hyperstor volume (spec/24-storage.md §11.2).
     if crate::datastore::hyperstor::parse_tool_path(path).is_some() {
         return crate::datastore::hyperstor::read_region(path, offset, len, out);
     }
@@ -374,7 +374,7 @@ pub fn write_region(
     len: u64,
 ) -> Result<(), ImageError> {
     debug_assert!(!src.contains(' ') && !src.contains('/'));
-    // A hyperstor volume (spec/storage.md §11.2).
+    // A hyperstor volume (spec/24-storage.md §11.2).
     if crate::datastore::hyperstor::parse_tool_path(path).is_some() {
         let _ = (format, len);
         return crate::datastore::hyperstor::write_region(path, &dir.join(src), offset, false);
@@ -412,7 +412,7 @@ pub fn copy_sparse(src: &Path, dst: &Path) -> Result<(), ImageError> {
 /// `qemu-img rebase -u`: name another file, with the same content, as the
 /// qcow2 overlay's backing file. Unsafe mode writes only the header; right
 /// only when the new backing file is a copy of the old (a disk moved with
-/// its image, spec/storage.md §8.3).
+/// its image, spec/24-storage.md §8.3).
 pub fn rebase_unsafe(path: &Path, backing: &Path) -> Result<(), ImageError> {
     let mut cmd = QEMU_IMG.command()?;
     cmd.args(["rebase", "-q", "-u", "-f", "qcow2", "-F", "qcow2", "-b"])

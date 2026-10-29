@@ -11,14 +11,14 @@ the control plane's REST API (see "Transport" below).
 
 ## Transport and authentication
 
-See [security.md](security.md) §5.1, §5.2, §5.5.
+See [11-security.md](11-security.md) §5.1, §5.2, §5.5.
 
 | Option | Effect |
 |---|---|
 | `--socket <path>` / `GLIDEX_SOCKET` | HTTP over this Unix socket. |
 | *(default)* | The first existing socket of `/run/glidex-cp/api.sock` (systemd unit), `$XDG_RUNTIME_DIR/glidex/api.sock`, `/tmp/glidex-<euid>/api.sock` (a control plane started by hand, `paths::run_dir`). |
 | `--url http(s)://host:port[/prefix]` (`-s`, alias `--server`) | TCP instead; wins over `--socket`. Plain `http://` is refused unless the host is loopback, so a token never crosses the network in clear text. |
-| `--profile P` (`GLIDEX_PROFILE`) | Use the named profile from `~/.config/glidex/config.json` — the file `auth login` generates, holding target URLs, cluster binding, TLS trust and the token together ([gxctl-auth.md](gxctl-auth.md)). |
+| `--profile P` (`GLIDEX_PROFILE`) | Use the named profile from `~/.config/glidex/config.json` — the file `auth login` generates, holding target URLs, cluster binding, TLS trust and the token together ([17-gxctl-auth.md](17-gxctl-auth.md)). |
 | `GLIDEX_CONFIG` | Path to the profile file; empty disables reading it, which is what CI should set. |
 | *(no socket, no `--url`)* | TCP to `https://localhost:8841`. |
 | `--project <id\|name>` (`-p`) / `GLIDEX_PROJECT` | Project for this session (below). |
@@ -35,7 +35,7 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
   read a token file that group or others can access, or that another
   user owns, and says so. The token is never printed (except once by
   `token create`), logged, put in a URL or shown by `Debug`; the header
-  is marked sensitive. Once the config file of [gxctl-auth.md §3](gxctl-auth.md)
+  is marked sensitive. Once the config file of [17-gxctl-auth.md §3](17-gxctl-auth.md)
   exists, the credential comes from the selected profile and
   `~/.config/glidex/token` is the legacy fallback — the credential of
   the implicit `localhost` profile.
@@ -50,7 +50,7 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
   fingerprint the server sent. HTTP/1.1 only. The profile-based trust
   ladder — `ca_file`/`ca_pem`, TOFU-pinned `pins` for self-signed
   certificates, and the explicit `insecure` last resort — is designed
-  in [gxctl-auth.md §5](gxctl-auth.md); until it lands, the above is
+  in [17-gxctl-auth.md §5](17-gxctl-auth.md); until it lands, the above is
   the whole trust story.
 - **Implementation:** `ApiClient` (`client.rs`) opens one connection per
   request (`tokio::net::UnixStream`, `TcpStream`, or `tokio-rustls` over
@@ -67,16 +67,16 @@ validation errors). Special cases:
 
 | Response | Shown as |
 |---|---|
-| `401 reauth_required` | `log in again: <message>` (step-up, security.md §7.3) |
+| `401 reauth_required` | `log in again: <message>` (step-up, 11-security.md §7.3) |
 | `401 unauthenticated` on TCP | `not logged in: … (run gxctl login --oidc / --token, or set GLIDEX_TOKEN)` |
 | `403 *` | `permission denied (<code>): <message>` |
 | non-JSON body | `HTTP <status>: <body>` |
-| profile ↔ server `cluster_id` differ| hard error quoting both ids and the `auth login --rebind` fix ([gxctl-auth.md §4.3](gxctl-auth.md)) |
+| profile ↔ server `cluster_id` differ| hard error quoting both ids and the `auth login --rebind` fix ([17-gxctl-auth.md §4.3](17-gxctl-auth.md)) |
 | pinned fingerprint no longer matches| hard error with old vs new fingerprint and `auth trust fetch`; never a silent re-pin |
 | profile file unreadable / bad| the token-file refusal wording, or path + parser message; `GLIDEX_CONFIG=` ignores the file |
 
 The full table of profile-mode errors, including the `token_command`
-helper and all-endpoints-down cases, is [gxctl-auth.md §8](gxctl-auth.md).
+helper and all-endpoints-down cases, is [17-gxctl-auth.md §8](17-gxctl-auth.md).
 
 ### Projects
 
@@ -102,11 +102,11 @@ name (ids when `/projects` isn't readable).
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
 | `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
-| `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/storage.md §9); prints where it went, or why it waits |
+| `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/24-storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
-| `service-account <name\|id> [--set <service account> \| --none]` | `GetVm` and `ListTokens`: the VM's service account; `--set` (an id, or a name in the VM's project) / `--none`: `UpdateVm` (`service_account`), for its next token ([workload-identity.md](workload-identity.md) W5) |
-| `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/kernel-boot.md §10.5) |
+| `service-account <name\|id> [--set <service account> \| --none]` | `GetVm` and `ListTokens`: the VM's service account; `--set` (an id, or a name in the VM's project) / `--none`: `UpdateVm` (`service_account`), for its next token ([29-workload-identity.md](29-workload-identity.md) W5) |
+| `kernel <name\|id> [--set <image>] [--follow on\|off] [--extract]` | `GetVm`: the kernel image, and the booted and previous kernels when following the guest; `--set`/`--follow`: `UpdateVm` (`kernel`, `kernel_from_disk`), from the next start; `--extract`: `POST /vms/{id}/extract-kernel`, then polls the image (spec/23-kernel-boot.md §10.5) |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
@@ -125,19 +125,19 @@ name (ids when `/projects` isn't readable).
 | `image catalog` | `GET /images/catalog` |
 | `image list` / `images` | `GET /images` |
 | `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
-| `image pull <key> [--no-kernel]`, `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline S]`, `image pull --kernel-path P [--initrd-path P]` | Kernel images (spec/kernel-boot.md §4.2): a catalog pull brings its kernel unless `--no-kernel`; waits through `Extracting` and prints the release and command line |
+| `image pull <key> [--no-kernel]`, `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline S]`, `image pull --kernel-path P [--initrd-path P]` | Kernel images (spec/23-kernel-boot.md §4.2): a catalog pull brings its kernel unless `--no-kernel`; waits through `Extracting` and prints the release and command line |
 | `image extract-kernel <image>` | `POST /images` with `kernel_from`, then polls until ready |
 | `image retry <name\|id>` | `POST /images/{id}/retry`: download a failed image again (follow it with `image list`) |
 | `image rm <image>` | `DELETE /images/{id}?wait=60`; prints `Image deleted:` once gone, else `Deleting:` with the reason it waits |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | `POST /disks?wait=300` (it may wait for its image to download); `--datastore`: where it goes, else the default for disks (spec/storage.md S13) |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]` | `POST /disks?wait=300` (it may wait for its image to download); `--datastore`: where it goes, else the default for disks (spec/24-storage.md S13) |
 | `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize?wait=120`; a refused shrink prints the minimum |
-| `disk move <disk> --datastore D [--node N] [--flatten]` | `MoveDisk`, waiting up to 300 s: to another datastore (spec/storage.md §8.3); prints the disk, or that it is still moving |
+| `disk move <disk> --datastore D [--node N] [--flatten]` | `MoveDisk`, waiting up to 300 s: to another datastore (spec/24-storage.md §8.3); prints the disk, or that it is still moving |
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `datastore list` / `datastores` | `ListDatastores`: name, default marker, nodes reaching it, the most free space on one, disks, path |
 | `datastore show <datastore>` | `GetDatastore`: path and per-node paths, nodes, overcommit, and each node's view (reachable with free/total and path, else its reason) |
-| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`); with `--lvm` LVM-thin on each node (`lvm`, §11.1), `--node-path NODE=VG` naming a node's own volume group; with `--hyperstor` a hyperstor cluster's pool (`hyperstor`, §11.2), enrolling with the token in F |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit]` | `CreateDatastore`: a directory under `/srv/glidex` (spec/24-storage.md §13), each node's own (driver `dir`), or with `--shared` one filesystem every node mounts (`shared-dir`); with `--lvm` LVM-thin on each node (`lvm`, §11.1), `--node-path NODE=VG` naming a node's own volume group; with `--hyperstor` a hyperstor cluster's pool (`hyperstor`, §11.2), enrolling with the token in F |
 | `datastore set <datastore> [--node-path NODE=P]... [--nodes N,M \| --all-nodes] [--default \| --no-default] [--overcommit \| --no-overcommit]` | `UpdateDatastore` with the mask of the flags given; `--node-path` replaces the whole map |
 | `datastore rm <datastore>` | `DeleteDatastore`; refused while a disk is on it |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
@@ -162,8 +162,8 @@ name (ids when `/projects` isn't readable).
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
-| `auth login [--profile P] (--url U… \| --server U…) [--directory [ID] \| --oidc \| --token \| --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--save] [--name N] [--days N] [--non-interactive]`| The `auth` group is the canonical surface; `login`, `logout`, `token …` and `whoami` remain as aliases. Connects to the chosen target (TOFU-pinning an untrusted certificate with confirmation or `--pin`), binds the profile to the server's `cluster_id`, proves the credential with `whoami`, and merges it into `config.json` (`0600`) — this is the command that **generates the config file**. Flags per [gxctl-auth.md §6.1](gxctl-auth.md). |
-| `auth login --directory [ID]` | The directory's device grant (`POST /d/{ID}/device_authorization`, default `local`; the web UI's `/device` page approves it), then `token` with `resource=urn:glidex:cluster:<cluster id>` ([tenancy.md](tenancy.md) D57). The profile keeps `directory {id, refresh_token, resource, access_expires_at}` and the access token as `token`; before each run gxctl refreshes it when it expires within 2 minutes (the refresh token is replaced each time), with no credential on the request |
+| `auth login [--profile P] (--url U… \| --server U…) [--directory [ID] \| --oidc \| --token \| --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--save] [--name N] [--days N] [--non-interactive]`| The `auth` group is the canonical surface; `login`, `logout`, `token …` and `whoami` remain as aliases. Connects to the chosen target (TOFU-pinning an untrusted certificate with confirmation or `--pin`), binds the profile to the server's `cluster_id`, proves the credential with `whoami`, and merges it into `config.json` (`0600`) — this is the command that **generates the config file**. Flags per [17-gxctl-auth.md §6.1](17-gxctl-auth.md). |
+| `auth login --directory [ID]` | The directory's device grant (`POST /d/{ID}/device_authorization`, default `local`; the web UI's `/device` page approves it), then `token` with `resource=urn:glidex:cluster:<cluster id>` ([19-tenancy.md](19-tenancy.md) D57). The profile keeps `directory {id, refresh_token, resource, access_expires_at}` and the access token as `token`; before each run gxctl refreshes it when it expires within 2 minutes (the refresh token is replaced each time), with no credential on the request |
 | `auth logout [--profile P] [--revoke] [--keep-token]`| Drops the profile's credential (`--revoke` deletes that token server-side first, by `identity.token_id`); pins and CA stay, so a later `login` needs only the credential |
 | `auth status` / `auth use P` / `auth profiles`| Where am I: target, cluster, trust mode, token and expiry (also the REPL banner); set / clear `current`; list profiles |
 | `auth trust list\|fetch\|remove`| Manage a profile's pinned fingerprints; `fetch` compares the server's claim without sending anything else |
@@ -171,21 +171,21 @@ name (ids when `/projects` isn't readable).
 | `token list` | `GET /tokens` |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | `POST /tokens {name, expires_in_days, kind, project, roles}`; prints the secret once with a warning |
 | `token revoke <id>` | `DELETE /tokens/{id}` |
-| `tenant list` / `show <t>` / `create <slug> [--name N] [--operator]` / `rename <t> <name>` / `suspend <t>` / `resume <t>` / `delete <t>` | `TenantService` RPCs (spec/tenancy.md §14) through the generated connectrpc client, Connect protocol over gxctl's own connection (api.sock or pinned TLS) |
+| `tenant list` / `show <t>` / `create <slug> [--name N] [--operator]` / `rename <t> <name>` / `suspend <t>` / `resume <t>` / `delete <t>` | `TenantService` RPCs (spec/19-tenancy.md §14) through the generated connectrpc client, Connect protocol over gxctl's own connection (api.sock or pinned TLS) |
 | `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
-| `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([tenancy.md](tenancy.md) §6.1); `create` prints the link once |
-| `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([tenancy.md](tenancy.md) §9) |
-| `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([tenancy.md](tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
+| `invite list <tenant>` / `create <tenant> <email> --connector C [--role member\|role.tenant-admin\|role.tenant-auditor] [--days N]` / `revoke <id>` | `InvitationService` ([19-tenancy.md](19-tenancy.md) §6.1); `create` prints the link once |
+| `federation list <t>` / `show <t> <id>` / `add <t> <id> --issuer U --audience A (--match K=V… --service-account TOKEN [--ttl S] \| --rules-file F)` / `enable` / `disable` / `remove <t> <id>` | `FederationService` ([19-tenancy.md](19-tenancy.md) §9) |
+| `admission offer <t> --directory ISSUER [--days N]` / `offers` / `revoke-offer <id>` / `directories` | `AdmissionService` ([19-tenancy.md](19-tenancy.md) D64, D65): offer an admission to another directory's tenant (prints the `gxo_` token once), list and revoke offers, the directories trusted |
 | `tenant clusters <t>` / `opt-in <t> --offer TOKEN` / `opt-out <t> --cluster ID` | `TenantService` (D65, D66): at the tenant's directory |
-| `directory keys` / `directory keys rotate` | `SigningKeyService` ([tenancy.md](tenancy.md) D52, D53): the issuer URL and the token signing keys |
-| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N] [--trust-domain NAME]` / `delete <id>` | `DirectoryService` ([tenancy.md](tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
-| `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
-| `network host-api <net> on\|off` | `PUT /networks/{id}/host_api`: a node NAT network's guests reach this host's API, or not ([workload-identity.md](workload-identity.md) §15) |
-| `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
-| `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |
+| `directory keys` / `directory keys rotate` | `SigningKeyService` ([19-tenancy.md](19-tenancy.md) D52, D53): the issuer URL and the token signing keys |
+| `directory list` / `create <id> --admin-email E [--name T] [--owner SLUG] [--days N] [--trust-domain NAME]` / `delete <id>` | `DirectoryService` ([19-tenancy.md](19-tenancy.md) D59): the host's operator; `create` prints the first administrator's invitation link once (owner defaults to `<id>-admin`) |
+| `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/19-tenancy.md D9, D19) |
+| `network host-api <net> on\|off` | `PUT /networks/{id}/host_api`: a node NAT network's guests reach this host's API, or not ([29-workload-identity.md](29-workload-identity.md) §15) |
+| `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/19-tenancy.md D25); the lists replace the current ones |
+| `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/19-tenancy.md §13) |
 | `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |
-| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…` / `add google <id> --client-id ID (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID]` / `add jumpcloud <id> --client-id ID [--groups-claim C] [--allow-email E]…` (tenancy.md §5.1), all with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
+| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…` / `add google <id> --client-id ID (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID]` / `add jumpcloud <id> --client-id ID [--groups-claim C] [--allow-email E]…` (19-tenancy.md §5.1), all with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
 | `connector update <id> [--name N] [--enable\|--disable] [same flags]` | `UpdateConnector` with a field mask of the flags given |
 | `connector secret set <id> [field] [--from-file PATH]` | `SetSecret` (default field `client_secret`); the value comes from a hidden prompt, piped stdin or the file, never from argv |
 | `connector test <id>` / `remove <id>` | `TestConnector` (one line per step) / `DeleteConnector` |
@@ -211,7 +211,7 @@ name (ids when `/projects` isn't readable).
 | `usage bandwidth\|disk-io\|compute [--month YYYY-MM] [--by k,…] [--project P] [--csv]` | `GET /usage/bandwidth` / `/usage/disk-io` / `/usage/compute`: average, 30-second peak and 95th percentile per group |
 | `stats <vm>` | `GET /vms/{id}/stats`: current CPU, memory, NIC and disk rates |
 | `bandwidth <vm> \| --network N`, `io <vm> \| --disk D`, `compute <vm>` `[--from D] [--to D]` | The 5-minute series and its 95th percentile |
-| `usage [--project P] [--from D] [--to D] [--by k,…] [--granularity hour\|day\|month] [--meters m,…] [--tz Z] [--csv]` | `GET /usage?…`: this billing month by project unless told otherwise; prints each bucket's meters in presentation units (core-hours, GiB, Mbps…), or the raw CSV with `--csv` ([metering.md §12](metering.md#12-cli-and-ui)) |
+| `usage [--project P] [--from D] [--to D] [--by k,…] [--granularity hour\|day\|month] [--meters m,…] [--tz Z] [--csv]` | `GET /usage?…`: this billing month by project unless told otherwise; prints each bucket's meters in presentation units (core-hours, GiB, Mbps…), or the raw CSV with `--csv` ([13-metering.md §12](13-metering.md#12-cli-and-ui)) |
 
 Roles are written as `owner` or `role.owner` (a name with a `.` is
 taken as is, e.g. `grant.host-paths`). Principals are `user:<id>`,
@@ -260,7 +260,7 @@ echoes file contents. Request structs carrying a password don't derive
 ### Lifecycle commands wait
 
 `start`, `stop`, `pause` and `delete` change the VM's desired state
-([reconciliation.md §12.3](reconciliation.md#123-waitsecs-d20)), so by
+([12-reconciliation.md §12.3](12-reconciliation.md#123-waitsecs-d20)), so by
 default they send `?wait` and print the VM as the controller left it:
 `Success: VM <name> is now <state>`, plus `Not there yet: <Ready
 reason>: <message>` when the wait ended before the VM converged (a
@@ -270,7 +270,7 @@ synchronous calls of earlier releases did. `--no-wait` returns at once
 with `state → desired_state`; `get` or `events` shows how it went.
 
 `disk create`, `resize` and `extend-root` wait the same way
-([images.md §8](images.md#8-rest-api)) and print the disk's size,
+([10-images.md §8](10-images.md#8-rest-api)) and print the disk's size,
 format and status, plus `Not there yet: <Ready reason>: <message>` when
 it has not converged (e.g. `ImageNotReady` while its image downloads,
 `ResizePending` / `ExtendRootPending` while a VM has it open). They have
@@ -279,7 +279,7 @@ are on the API (`GET /{disks,images,networks}/{id}/events`).
 
 ### `watch`
 
-`watch [kinds]` opens `GET /watch` ([rest-api.md](rest-api.md#live-stream-get-watch))
+`watch [kinds]` opens `GET /watch` ([06-rest-api.md](06-rest-api.md#live-stream-get-watch))
 and prints `Synced: N objects; changes follow`, then one line per
 change: `HH:MM:SS  <kind> <name> <what>`, where `what` is a VM's state
 (`state → desired` while they differ), a disk's status, an image's state
@@ -313,7 +313,7 @@ Interactive `handle_create` asks, in order:
    `cloudhypervisor`. Aliases: `ch`, `q`. Asked first
    because it decides which of the following prompts appear.
 5. UEFI firmware: a firmware image built for the hypervisor
-   ([images.md](images.md#41-firmware-catalog)), defaulting to the newest
+   ([10-images.md](10-images.md#41-firmware-catalog)), defaulting to the newest
    ready one (sent as `firmware`); `none` selects kernel boot; an
    absolute path is sent as `firmware_path` (needs `useHostPath`). With no
    firmware image it says which to pull (`image pull --firmware
@@ -327,7 +327,7 @@ Interactive `handle_create` asks, in order:
    boot) asks for a disk image or rootfs path, as before. Then optional
    data disks, comma-separated names.
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
-   auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
+   auto-generated at start, see [04-hypervisors.md](04-hypervisors.md#firmware-boot)).
    *(auto-generated seed only)* Login credential: lists the project's
    stored usernames; empty → none, and the VM has no way to log in. If
    the project has a credential named after the signed-in user, that is
@@ -340,7 +340,7 @@ Interactive `handle_create` asks, in order:
 10. Optional VFIO PCI devices, comma-separated sysfs paths.
 
 The request is `POST /vms`. Tilde in paths is expanded server-side
-(see [data-model.md](data-model.md)); the CLI does not do it itself.
+(see [03-data-model.md](03-data-model.md)); the CLI does not do it itself.
 
 
 ### `connect` loop
@@ -358,7 +358,7 @@ The VM's console socket is in its private `0700` run directory
    `{open: {id}}`; the server's answer, or its refusal (unknown VM, not
    allowed, no console), comes back before the terminal is touched.
    Local peers and token holders need no console ticket (tickets are for
-   browser sessions, security.md §5.6). Browsers use the WebSocket
+   browser sessions, 11-security.md §5.6). Browsers use the WebSocket
    instead (gRPC-Web can't stream both ways).
 3. stdin goes into raw mode (termios: no `ICANON`, `ECHO`, `ISIG`, so
    Ctrl+C reaches the guest). A thread `poll`s fd 0 every 100 ms and
@@ -372,7 +372,7 @@ The VM's console socket is in its private `0700` run directory
 The console proxy behind it supports many clients, so several
 `gxctl connect` sessions and browser sessions can share a VM. They all
 see the same output and share one input stream (no locking). The
-terminal size is not sent ([console.md](console.md) "Known gaps").
+terminal size is not sent ([02-console.md](02-console.md) "Known gaps").
 
 ### `log` command
 

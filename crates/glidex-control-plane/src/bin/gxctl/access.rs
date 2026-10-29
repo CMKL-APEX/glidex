@@ -1,8 +1,8 @@
-//! Who may do what (spec/security.md §5–§7, §10, §13): `whoami`,
+//! Who may do what (spec/11-security.md §5–§7, §10, §13): `whoami`,
 //! `project`, `binding`, `system-binding`, `user`, `team`, `token`,
 //! `policy` and `audit` on the generated `glidex.access.v1` clients (and
 //! `glidex.system.v1.SystemService.WhoAmI`), over the Connect protocol
-//! (spec/grpc.md §9.1). Logging in (`/auth/token`, the OIDC device
+//! (spec/18-grpc.md §9.1). Logging in (`/auth/token`, the OIDC device
 //! routes) stays REST, in `admin.rs`.
 
 use crate::admin::positional;
@@ -246,7 +246,7 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                 }
             }
             // Other organizations' clusters it should work on too
-            // (spec/tenancy.md §7.4).
+            // (spec/19-tenancy.md §7.4).
             req.clusters = flag_values(args, "--cluster")
                 .into_iter()
                 .map(String::from)
@@ -622,7 +622,7 @@ fn print_links(links: &[Binding]) {
     }
 }
 
-/// ` on host:<node>` for a link on one node's host (spec/clustering.md §12.2).
+/// ` on host:<node>` for a link on one node's host (spec/14-clustering.md §12.2).
 fn on_host(l: &Binding) -> String {
     match l.resource.as_option() {
         Some(r) if r.r#type == "Host" => format!(" on {}", entity(Some(r))),

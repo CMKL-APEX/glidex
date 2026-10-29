@@ -7,7 +7,7 @@ use std::path::Path;
 /// without waiting: `Ok(None)` when another open file holds one, on this
 /// host or (over NFSv4) another. The lock lasts as long as the returned
 /// file stays open, which is close-on-exec, so a child never inherits it
-/// (spec/storage.md S16).
+/// (spec/24-storage.md S16).
 pub fn try_lock_file(path: &Path) -> std::io::Result<Option<std::fs::File>> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;

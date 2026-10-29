@@ -32,7 +32,7 @@ pub struct VmPortSpec {
     pub queue_pairs: u8,
     /// A port on an OVN network: the logical port this interface is
     /// (`external_ids:iface-id`); `bridge` must be `br-int`
-    /// (spec/clustering.md §11.3).
+    /// (spec/14-clustering.md §11.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ovn_lport: Option<String>,
 }
@@ -208,7 +208,7 @@ pub fn attach(
 }
 
 /// Take a port out of OVS but keep its tap (or vhost-user socket): the first
-/// half of moving it to another bridge (spec/clustering.md §11.3,
+/// half of moving it to another bridge (spec/14-clustering.md §11.3,
 /// `move_vm_port`). The hypervisor keeps its device; OVS reconnects a
 /// vhost-user client port by itself. Idempotent; refuses a port glidex didn't tag.
 pub fn unplug(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {

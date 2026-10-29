@@ -22,7 +22,7 @@ export function directoryTabs(host: Record<string, boolean>, readsATenant: boole
   ].filter((t) => t.show);
 }
 
-/** The directory (spec/tenancy.md §15): its tenants, users, teams and
+/** The directory (spec/19-tenancy.md §15): its tenants, users, teams and
  *  roles, login connectors and policies, one page with a tab each. */
 export default function Directory() {
   const { tab = "overview" } = useParams<{ tab: string }>();

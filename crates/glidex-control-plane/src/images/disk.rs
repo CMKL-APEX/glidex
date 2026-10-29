@@ -1,6 +1,6 @@
 //! Disk operations (spec §6): create, grow, shrink, extend root, delete.
 //! The volume itself is made and changed by the disk's datastore driver
-//! (spec/storage.md §7); partitions are edited here, on what it hands back.
+//! (spec/24-storage.md §7); partitions are edited here, on what it hands back.
 //!
 //! Everything here blocks (it shells out to qemu-img & co.) and assumes
 //! the caller (`VmManager`) has already checked that no running or paused
@@ -68,9 +68,9 @@ fn too_small(size: u64, image: &str, image_size: u64) -> ImageError {
 impl ImageManager {
     /// Validate a create request (spec §6.1) and return the record, in
     /// phase `Pending` and not yet persisted: the disk controller makes its
-    /// file once the source image is ready (spec/reconciliation.md §10.1).
+    /// file once the source image is ready (spec/12-reconciliation.md §10.1).
     /// `in_tenant` accepts the projects of the new disk's tenant, among
-    /// which its name must be unique (spec/tenancy.md D24).
+    /// which its name must be unique (spec/19-tenancy.md D24).
     pub fn new_disk_record(
         &self,
         req: &CreateDiskRequest,
@@ -83,7 +83,7 @@ impl ImageManager {
                 req.name
             )));
         }
-        // A block datastore's volumes are raw (spec/storage.md S19).
+        // A block datastore's volumes are raw (spec/24-storage.md S19).
         let block = self.datastore_is_block(req.datastore.as_deref());
         let format = match (req.format, block) {
             (Some(DiskFormat::Qcow2), true) => {
@@ -196,7 +196,7 @@ impl ImageManager {
     }
 
     /// Put a new disk on the datastore asked for, else the default for disks
-    /// (spec/storage.md S13), checking that it can go there: the node it is
+    /// (spec/24-storage.md S13), checking that it can go there: the node it is
     /// bound to is one of the datastore's, and a datastore that doesn't
     /// overcommit has room on some node it can go to (§5.2).
     fn choose_datastore(&self, key: Option<&str>, disk: &mut Disk) -> Result<(), ImageError> {
@@ -349,7 +349,7 @@ impl ImageManager {
                 }
                 // A linked disk on a shared datastore overlays the
                 // datastore's own copy, which every node there sees
-                // (spec/storage.md S8); anything else this node's.
+                // (spec/24-storage.md S8); anything else this node's.
                 let store = (mode == CloneMode::Linked)
                     .then(|| crate::datastore::record::find(&self.db, &disk.datastore))
                     .and_then(|r| r.ok().flatten())
@@ -359,7 +359,7 @@ impl ImageManager {
                     None => self.image_path(&img.id),
                 };
                 // On a node of a cluster the catalog says Ready before this
-                // node's copy has arrived (spec/clustering.md §9.2).
+                // node's copy has arrived (spec/14-clustering.md §9.2).
                 if !image_path.exists() {
                     return Err(ImageError::NotReady(match &store {
                         Some(ds) => format!(
@@ -635,7 +635,7 @@ impl ImageManager {
 }
 
 impl ImageManager {
-    /// The record a disk has once moved as `spec` says (spec/storage.md
+    /// The record a disk has once moved as `spec` says (spec/24-storage.md
     /// §8.3): on its new datastore, bound or worked by the mover, standalone
     /// when flattened.
     pub fn moved_record(&self, disk: &Disk, spec: &super::MoveSpec) -> Disk {

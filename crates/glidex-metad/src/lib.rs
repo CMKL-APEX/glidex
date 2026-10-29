@@ -1,5 +1,5 @@
 //! glidex-metad: the metadata endpoint guests reach at
-//! `169.254.169.254:80` (spec/workload-identity.md W3, W11, §7).
+//! `169.254.169.254:80` (spec/29-workload-identity.md W3, W11, §7).
 //!
 //! netd's rules bring a guest's request here (`glidex_ovs::metadata`), from
 //! its VM port's own peer address. metad checks the request, then asks the

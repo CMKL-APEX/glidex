@@ -1,4 +1,4 @@
-//! The `cluster` section of `/etc/glidex/control-plane.json` (spec/clustering.md
+//! The `cluster` section of `/etc/glidex/control-plane.json` (spec/14-clustering.md
 //! §10.2): tunables and, for a host installed to join, where it will listen.
 //! Whether this host *is* in a cluster is not decided here but by the identity
 //! `gxctl cluster init` or a join wrote to the state directory
@@ -31,14 +31,14 @@ pub struct ClusterConfig {
     pub ca_rotation_grace_secs: u64,
     pub ovn: OvnConfig,
     /// On an agent, relay the web UI's requests to a server, which
-    /// authenticates them (spec/clustering-ui.md §3.6). Off: the agent's UI
+    /// authenticates them (spec/16-clustering-ui.md §3.6). Off: the agent's UI
     /// socket answers `421` with the servers to use instead.
     /// Replaced: an agent's UI now sends browsers to a server
-    /// (spec/host-page.md W5, W6); still accepted, ignored.
+    /// (spec/28-host-page.md W5, W6); still accepted, ignored.
     pub ui_relay: bool,
     /// The address this server's web UI is published at, over what its
     /// glidex-ui reports: e.g. a load balancer in front of the servers
-    /// (spec/host-page.md W3). Also an accepted origin and the OIDC
+    /// (spec/28-host-page.md W3). Also an accepted origin and the OIDC
     /// callback's default (W4).
     pub ui_url: Option<String>,
     /// The API address directories of other organizations reach this
@@ -61,7 +61,7 @@ pub struct SchedulerConfig {
     pub cpu_overcommit: f64,
     pub memory_overcommit: f64,
     /// Dedicated vCPUs take whole SMT cores, so no other VM shares a core
-    /// with them (spec/host-topology.md H16).
+    /// with them (spec/22-host-topology.md H16).
     pub dedicated_whole_cores: bool,
 }
 
@@ -72,7 +72,7 @@ pub struct NodeReserved {
     pub memory_mib: u64,
     /// CPUs no VM gets, as a list (`0-1,128-129`). Set, it replaces the
     /// default host core per NUMA node that dedicated VMs leave free;
-    /// empty reserves none (spec/host-topology.md H7).
+    /// empty reserves none (spec/22-host-topology.md H7).
     pub cpu_list: Option<String>,
 }
 
@@ -80,7 +80,7 @@ pub struct NodeReserved {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OvnConfig {
-    /// Cluster networks on OVN (spec/clustering.md §11). Off until OVN is
+    /// Cluster networks on OVN (spec/14-clustering.md §11). Off until OVN is
     /// installed on the servers and the chassis.
     pub enabled: bool,
     pub underlay_mtu: Option<u16>,

@@ -1,11 +1,11 @@
 # gRPC API
 
 Status: **implemented**: G0–G5 (§15). Adds an RPC transport (gRPC, gRPC-Web and the
-Connect protocol, served by `connectrpc`) next to the REST API of [rest-api.md](rest-api.md), sharing its authentication
-([security.md](security.md) §5), Cedar authorization (§7), audit (§10)
-and cluster forwarding ([clustering.md](clustering.md) §6.4). The first
+Connect protocol, served by `connectrpc`) next to the REST API of [06-rest-api.md](06-rest-api.md), sharing its authentication
+([11-security.md](11-security.md) §5), Cedar authorization (§7), audit (§10)
+and cluster forwarding ([14-clustering.md](14-clustering.md) §6.4). The first
 services to use it are the tenancy services of
-[tenancy.md](tenancy.md) §14.
+[19-tenancy.md](19-tenancy.md) §14.
 
 ## 1. Why, and what it is not
 
@@ -29,7 +29,7 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
 
 | # | Decision | Why |
 |---|---|---|
-| G-D1 | **One implementation, two adapters.** Every operation is a transport-neutral service function; REST and gRPC adapters only decode, call it and encode (tenancy.md §14.1 rules). | Authorization, quota and audit written once. Two copies of a Cedar check is exactly the kind of drift that becomes a cross-tenant bug. |
+| G-D1 | **One implementation, two adapters.** Every operation is a transport-neutral service function; REST and gRPC adapters only decode, call it and encode (19-tenancy.md §14.1 rules). | Authorization, quota and audit written once. Two copies of a Cedar check is exactly the kind of drift that becomes a cross-tenant bug. |
 | G-D2 | **Same listeners, same port.** RPCs are served on `:8841`, `api.sock`, `ui.sock` and the cluster port, inside the existing axum router at their procedure paths (`/glidex.<area>.v1.<Service>/<Method>`); which protocols each listener accepts is in §6. | No new port to open, firewall or put in certificates; the TLS setup, certificate pinning and peer-uid identification are reused unchanged. |
 | G-D3 | **Proto is the source of truth for every API type.** REST JSON is the proto3 JSON mapping of the same `buffa` messages, with `snake_case` names (G-D11). New operations start that way; existing hand-written request/response types in `models.rs` and `api/*.rs` are **removed** when their family is ported (§9), and the REST shape changes to the proto JSON form where they differ (§9.1). | Two type systems for one API drift apart; one definition serves REST, gRPC, gxctl and the UI. The cost is a documented, one-time shape change per family. |
 | G-D4 | **Credentials per listener.** Native gRPC accepts `authorization: Bearer gxt_…` metadata, or peer uid on `api.sock`. Session cookies are accepted **only** for gRPC-Web from the `glidex-ui` peer on `ui.sock`, with the same Origin and CSRF checks as REST (§11). | Cookies are the browser's credential; keeping them on the one browser path keeps CSRF and Origin rules where browsers are. |
@@ -40,7 +40,7 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
 | G-D10 | **Runtime: `connectrpc`, not tonic.** One tower service answers Connect, gRPC and gRPC-Web, with binary or JSON messages; messages are `buffa` types, which carry their own proto3 JSON; health is `connectrpc-health`. Pinned to an exact version (`=0.9.x`), upgraded deliberately, like `openraft`. | Replaces `tonic`, `tonic-web`, `tonic-health`, `prost` and `pbjson` with one stack from the Connect project, the same protocol family as the browser client. It passes the ConnectRPC conformance suite; the cost is a pre-1.0 API that may still move. |
 | G-D11 | **JSON names are the proto names.** Every field whose name has an underscore declares `json_name` equal to its name (`uint32 mem_size_mib = 3 [json_name = "mem_size_mib"];`); `build.rs` fails otherwise. | proto3 JSON defaults to `lowerCamelCase`; the REST API is `snake_case`. Declaring it in the proto (rather than rewriting descriptors at build time) keeps every generator, the TypeScript one included, and `buf curl` on the same names. |
 | G-D12 | **No transition release (G5).** The one-release window of §9.1 step 3 is waived: G5 drops the old request shapes and the `Glidex-Api-Shape` header in the same release as the ports, and clients from before the ports break against it. | No release shipped the proto shapes before G5 (v0.0.3 predates every port), so the window would only have covered clients that already moved; one shape to read and test is simpler than two. |
-| G-D7 | **Versioned packages** `glidex.<area>.v1`; breaking changes need a `v2` package served alongside `v1`. | Rolling upgrades (cluster-runbook.md) run mixed versions; field numbers and names are the compatibility contract. |
+| G-D7 | **Versioned packages** `glidex.<area>.v1`; breaking changes need a `v2` package served alongside `v1`. | Rolling upgrades (15-cluster-runbook.md) run mixed versions; field numbers and names are the compatibility contract. |
 
 ## 3. Stack
 
@@ -87,7 +87,7 @@ crates/glidex-api/
 │   ├── glidex/directory/v1/connectors.proto # T1: ConnectorService
 │   ├── glidex/auth/v1/login.proto    # LoginService (public)
 │   ├── glidex/common/v1/common.proto # shared: Arch, Hypervisor, Condition, Event
-│   ├── glidex/storage/v1/storage.proto # G2: CredentialService, ImageService, DiskService; DatastoreService (storage.md §13)
+│   ├── glidex/storage/v1/storage.proto # G2: CredentialService, ImageService, DiskService; DatastoreService (24-storage.md §13)
 │   ├── glidex/vm/v1/vm.proto         # G2: VmService
 │   ├── glidex/usage/v1/usage.proto   # G2: UsageService, MetricsService
 │   ├── glidex/access/v1/access.proto # G2: Project, User, Team, Token, SystemBinding, Policy, Audit, Authz services
@@ -166,9 +166,9 @@ On top of that, the RPC adapter (`src/api/rpc/`) enforces per listener:
 | Listener | Protocols | Credentials |
 |---|---|---|
 | TCP `:8841` | gRPC, Connect | `authorization: Bearer gxt_…` |
-| `api.sock` | gRPC, Connect | peer uid (security.md §5.2) |
+| `api.sock` | gRPC, Connect | peer uid (11-security.md §5.2) |
 | `ui.sock`, relayed UI (`Relay`) | gRPC-Web only | session cookie (+ CSRF) or bearer token |
-| cluster `:8842` (forwarded) | as forwarded | `x-glidex-principal`, trusted only from a server certificate (clustering.md §12.3) |
+| cluster `:8842` (forwarded) | as forwarded | `x-glidex-principal`, trusted only from a server certificate (14-clustering.md §12.3) |
 
 The browser's path is `glidex-ui` → `ui.sock`, in development and the
 UI e2e suite too: `glidex-ui --dev` and the suite's Vite dev server
@@ -221,7 +221,7 @@ missing.
 
 ## 8. Cluster
 
-- **Forwarding** (clustering.md §6.4): `gate::cluster_gate` decides
+- **Forwarding** (14-clustering.md §6.4): `gate::cluster_gate` decides
   read vs write from the operation's `kind` instead of `is_safe`. A
   unary write on a follower is forwarded whole over `:8842` (already
   HTTP/2) with `x-glidex-principal` and `forwarded_by` as today, plus
@@ -243,14 +243,14 @@ missing.
 
 | Family | Services | Milestone |
 |---|---|---|
-| Tenancy, directory, login | `tenancy.v1`, `directory.v1`, `auth.v1` | G1, built with tenancy.md T0–T1 |
+| Tenancy, directory, login | `tenancy.v1`, `directory.v1`, `auth.v1` | G1, built with 19-tenancy.md T0–T1 |
 | VMs, disks, credentials, images | `vm.v1`, `storage.v1` | G2 |
 | Projects, teams, users, tokens, bindings, policies, audit, usage | `access.v1`, `usage.v1` | G2 |
 | Networks, routers, shares, host networking, PCI, nodes, cluster | `network.v1`, `host.v1`, `cluster.v1` | G3 |
 | Watch, VM events, console | `watch.v1` server stream; console bidi stream | G4 |
 
 Porting a family means: move its handler logic into `src/service/`
-(tenancy.md §14.1), keep the REST adapter's JSON identical (the
+(19-tenancy.md §14.1), keep the REST adapter's JSON identical (the
 existing API tests are the check), add the gRPC adapter. A family is
 ported whole, never half.
 
@@ -261,7 +261,7 @@ When a family is ported:
    proto3 JSON mapping allows it (same field names, `optional` for
    fields that are omitted today).
 2. Where the mapping can't match, the proto form wins and the
-   difference is listed in rest-api.md under the family. The known
+   difference is listed in 06-rest-api.md under the family. The known
    ones: 64-bit integers are JSON strings (so sizes and counts that fit
    use `uint32`; byte counts and timestamps-as-integers stay `uint64`
    and become strings), enum values are their full proto names
@@ -334,7 +334,7 @@ a client that stops sending (half-close) ends the call.
   so `api.sock` with peer identity, the TLS trust ladder and pins, and the
   token all work unchanged. The console, a bidi stream, gets an HTTP/2
   connection of its own, made the same way (TLS offers only `h2`). The profile file, the TLS trust ladder, fingerprint pins and
-  `token_command` ([gxctl-auth.md](gxctl-auth.md)) are unchanged: the
+  `token_command` ([17-gxctl-auth.md](17-gxctl-auth.md)) are unchanged: the
   gRPC channel is built from the same `glidex_tls::ClientTls`.
 - Local `gxctl` uses the same Connect transport over `api.sock`, so peer
   identity works as it does for REST.
@@ -363,7 +363,7 @@ a client that stops sending (half-close) ends the call.
   for SSE.
 - **Server.** Nothing extra: `connectrpc` answers gRPC-Web. §6 limits
   `ui.sock` to it, and keeps it off the other listeners.
-- **Browser protections stay** (security.md §5.6): the Origin check,
+- **Browser protections stay** (11-security.md §5.6): the Origin check,
   CSRF for cookie-authenticated calls, no CORS (same origin through the
   UI). The browser's console stays a WebSocket with tickets: gRPC-Web
   can't stream both ways (`VmService.Console`, §9.1, is for HTTP/2
@@ -373,7 +373,7 @@ a client that stops sending (half-close) ends the call.
 
 - Operation table tests (§5), error-mapping test (§7), secret-field
   build check (§4).
-- Tenancy API tests run on both transports (tenancy.md §17); each later
+- Tenancy API tests run on both transports (19-tenancy.md §17); each later
   family adds the same `{rest, grpc}` table when ported.
 - Auth: cookies refused on native gRPC; gRPC-Web with a cookie
   accepted only on `ui.sock` with a valid Origin and `x-glidex-csrf`;
@@ -392,8 +392,8 @@ a client that stops sending (half-close) ends the call.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **G0** scaffold | `glidex-api` crate (protox → `connectrpc-build`, build checks, operation table), `buf.yaml` + CI job, RPC routes in `api::router`, the RPC adapter (§6), `ServiceError` with both mappings, health, forwarding by `kind` with trailers, a first `SystemService`: `GetServerInfo` (REST twin `GET /auth/server-info`, same JSON, both served by one service function) and `WhoAmI` (RPC only; `GET /auth/whoami` moves onto its message with the access family in G2) | `System` round-trips over gRPC, Connect and REST; listener/credential, error-mapping and operation-table tests. Lands before tenancy.md T0. |
-| **G1** tenancy | tenancy, directory, login services (tenancy.md §14) | Both-transport tenancy tests. |
+| **G0** scaffold | `glidex-api` crate (protox → `connectrpc-build`, build checks, operation table), `buf.yaml` + CI job, RPC routes in `api::router`, the RPC adapter (§6), `ServiceError` with both mappings, health, forwarding by `kind` with trailers, a first `SystemService`: `GetServerInfo` (REST twin `GET /auth/server-info`, same JSON, both served by one service function) and `WhoAmI` (RPC only; `GET /auth/whoami` moves onto its message with the access family in G2) | `System` round-trips over gRPC, Connect and REST; listener/credential, error-mapping and operation-table tests. Lands before 19-tenancy.md T0. |
+| **G1** tenancy | tenancy, directory, login services (19-tenancy.md §14) | Both-transport tenancy tests. |
 | **G2** VMs, storage, access | as §9 | Existing REST suites unchanged; `{rest, grpc}` tables. |
 | **G3** networking, host, cluster | as §9, including relay and `PreAuthorized` | Host tests on a real cluster. |
 | **G4** streams and UI | watch, events as server streams; Connect-ES clients in the UI for every ported family; console after its test suite | Watch tests on both transports; UI e2e on gRPC-Web. |
@@ -422,9 +422,9 @@ a client that stops sending (half-close) ends the call.
 | `ConnectorService` (T1) | `service/directory.rs`, `api/rpc/directory.rs`; REST twins `api/connectors.rs`; `SetSecretRequest.value` is the first field marked `secret` |
 | Storage family (G2): `CredentialService`, `ImageService`, `DiskService` | protos `glidex/storage/v1/storage.proto`, shared `glidex/common/v1/common.proto`; `service/storage.rs` (with `service/common.rs`); RPC `api/rpc/storage.rs`; REST twins `api/storage.rs` (`Proto`, `proto_body` in `api/mod.rs`); tests `tests/storage_tests.rs` |
 | VM family (G2): `VmService` | proto `glidex/vm/v1/vm.proto`; `service/vm.rs`; RPC `api/rpc/vm.rs`; REST twins `api/vms.rs` (with the console WebSocket, `?view=full` and `/system/reconcile`, which stay REST); `PATCH` reads `{change, update_mask}`; tests `tests/vm_tests.rs` |
-| Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in metering.md §9.5 |
+| Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in 13-metering.md §9.5 |
 | Access family (G2): `ProjectService`, `UserService`, `TeamService`, `TokenService`, `SystemBindingService`, `PolicyService`, `AuditService`, `AuthzService`; `SystemService.WhoAmI` gains `user`, `token`, `csrf` and the REST twin `GET /auth/whoami` | proto `glidex/access/v1/access.proto`; `service/access.rs` (`whoami_of` in `service/system.rs`); RPC `api/rpc/access.rs`; REST twins `api/access.rs` (updates take `update_mask` or the fields present); gxctl and the UI on the new shapes; tests `tests/access_tests.rs` |
-| Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
+| Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (19-tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
 | Host family (G3): `HostNetworkService` (OVS status and install, DPDK, bridges, uplinks), `PciService` | proto `glidex/host/v1/host.proto`; `service/host.rs`; RPC `api/rpc/host.rs`; REST twins in `api/net.rs`; host-local in `gate::is_host_local` and relayed from an agent's UI like the REST paths (`relay::is_remote_host_path`, `relay::remote_host` on the RPC mount, the action from the operation table; the agent runs it `PreAuthorized`); gxctl and the UI on the new shapes; tests `network_tests.rs::ovs_status_and_bridges`, `cluster_tests.rs::an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent` (gRPC-Web through the relay) |
 | Cluster family (G3): `ClusterService` (init, join, import, rejoin, status, join tokens, promote, dissolve, leave, CA and secrets-key rotation, OVN settings, edge defaults, OVN overview and tunnels), `NodeService` (nodes, drain, br-int and mappings, spare image files, remove, forget, purge, rejoin tokens, detach, abort, departed, departures), `ImportService` | proto `glidex/cluster/v1/cluster.proto`; `service/cluster.rs`, `service/node.rs` (the cluster code's JSON turned into the messages by `cluster::proto_of`: times and enum names by field path); RPC `api/rpc/cluster.rs`; REST twins `api/cluster.rs`, `api/nodes.rs`; `GET /cluster/snapshot` stays REST (a binary download); init, join and leave are host-local as RPCs too, and leave runs on the agent from its UI; `/watch` nodes and imports are the messages; gxctl and the UI on the new shapes; tests `tests/cluster_tests.rs` |
 | Watch (G4): `WatchService.Watch`, a server stream | proto `glidex/watch/v1/watch.proto`; `service/watch.rs` (snapshots, diffs, watcher slots; events as data); RPC `api/rpc/watch.rs`; `GET /watch` as server-sent events in `api/watch.rs`; gxctl `watch` on the stream; tests `api_tests.rs::test_watch_over_rpc_streams_the_same_events` and the REST watch tests |

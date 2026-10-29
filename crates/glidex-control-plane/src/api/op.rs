@@ -1,4 +1,4 @@
-//! A directory's OpenID provider endpoints (spec/tenancy.md D54–D57),
+//! A directory's OpenID provider endpoints (spec/19-tenancy.md D54–D57),
 //! under its issuer, HTTP only:
 //!
 //! - `GET /d/{dir}/authorize`: the code flow with PKCE (S256) for the

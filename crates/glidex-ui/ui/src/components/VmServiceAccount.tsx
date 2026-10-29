@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import * as api from "../api";
 import type { ApiToken, VmResponse } from "../types";
 
-/** A VM's service account (spec/workload-identity.md W5, W6): the glidex
+/** A VM's service account (spec/29-workload-identity.md W5, W6): the glidex
  * identity its guest gets short-lived tokens for from its metadata
  * endpoint. Changing it applies to the next token, no restart. */
 export default function VmServiceAccount({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {

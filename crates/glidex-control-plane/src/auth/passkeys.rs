@@ -1,4 +1,4 @@
-//! Passkeys (spec/passkeys.md): the stored credentials, and the
+//! Passkeys (spec/25-passkeys.md): the stored credentials, and the
 //! registration and sign-in ceremonies around `auth::webauthn`'s checks.
 //! A passkey is also an identity of provider `passkey` (P1), so it is one
 //! of its user's sign-in methods.
@@ -199,7 +199,7 @@ pub enum Purpose {
     },
     Login,
     /// A passkey invitation's first passkey, for a user still to be made
-    /// (spec/tenancy.md D60).
+    /// (spec/19-tenancy.md D60).
     Invite {
         invitation: String,
         user_id: String,

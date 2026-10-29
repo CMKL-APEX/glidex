@@ -1,5 +1,5 @@
 // Images across architectures and copies on chosen nodes in the UI
-// (spec/clustering.md §9.2.1–3, clustering-ui.md §5.3). The cluster, its
+// (spec/14-clustering.md §9.2.1–3, 16-clustering-ui.md §5.3). The cluster, its
 // images and catalogs are mocked: an x86_64 server and an aarch64 agent.
 import type { Page } from "@playwright/test";
 import { expect, RpcCode, rpcRoute, test } from "../fixtures";
@@ -29,7 +29,7 @@ function node(id: string, name: string, role: "server" | "agent", arch: string, 
 
 const SPARE = [{ name: "old.qcow2", bytes: "3758096384", mtime: "1970-01-01T00:00:01Z" }];
 
-/** An image in the storage API's proto3 JSON shape (spec/grpc.md §9.1). */
+/** An image in the storage API's proto3 JSON shape (spec/18-grpc.md §9.1). */
 function image(id: string, name: string, arch: string, copies: unknown[]) {
   return {
     id, name, kind: "IMAGE_KIND_DISK", arch: `ARCH_${arch.toUpperCase()}`, copies,

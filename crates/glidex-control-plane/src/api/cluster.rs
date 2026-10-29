@@ -170,7 +170,7 @@ fn tokio_util_stream(
     })
 }
 
-// ---- OVN as a cluster setting (spec/clustering-ui.md §8a) -----------------
+// ---- OVN as a cluster setting (spec/16-clustering-ui.md §8a) -----------------
 
 pub async fn get_ovn_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(

@@ -115,7 +115,7 @@ on Kubernetes, KubeVirt and Longhorn, managed alongside Rancher.
 
 - **Differs:** Glidex does not need Kubernetes; its state is in its own
   Raft store, and VMs are not pods. Glidex's draft app layer
-  ([apps.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/apps.md))
+  ([26-apps.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/26-apps.md))
   would run Kubernetes *on* Glidex VMs, not Glidex on Kubernetes.
 - **Pick Harvester or KubeVirt when** your team already runs Kubernetes and
   wants VMs and containers under one API and toolchain.
@@ -131,7 +131,7 @@ and maintained by Canonical.
 - **Differs:** the closest in shape: one daemon, a REST API, embedded
   replicated state, OVN networks. Glidex chose Raft over ReDB instead of a
   replicated SQL database
-  ([clustering.md D1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md)),
+  ([14-clustering.md D1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md)),
   manages VMs only, offers Cloud Hypervisor as well as QEMU, and puts more
   into the control plane for tenants, identity and NUMA-aware device
   placement. Incus has containers, live migration and many storage
@@ -187,18 +187,18 @@ Each follows from a design decision; see
 
 | Differentiator | Design decision | Evidence |
 |---|---|---|
-| No external database or message bus, even in a cluster | Raft embedded in the control plane over ReDB; the leader computes write sets, others apply bytes | [clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) D1–D5, `crates/glidex-raftstore` |
-| A single host stays a single host | Standalone uses the local store; Raft only after `gxctl cluster init` | clustering.md D5 |
-| Guests survive control-plane restarts and upgrades | Each VM runs under its own `glidex-vm-shim` in its own systemd unit; the control plane adopts them on start | [reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md) |
-| Two hypervisors behind one API | One driver contract for Cloud Hypervisor and QEMU | [hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/hypervisors.md) |
-| One API, two transports | Protos are the source of truth; one service layer under REST and gRPC/Connect | [grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md) |
-| Policy as code | Cedar policies with shipped roles, decisions recorded in the audit log | [security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md) §7, §10 |
-| Identity from the organization | Connectors (OIDC presets), SCIM, Google Workspace pull sync, invitations, passkeys, workload federation | [tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md) T1–T5, [passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md) |
-| Topology-aware device placement | Each node reports NUMA, CPUs, hugepages and PCIe tree; scheduler aligns devices, memory and dedicated CPUs; pools and GPU requests | [host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md), [gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md) |
-| Unprivileged control plane | Root work goes through small helpers (`glidex-netd`, `glidex-authd`, `glidex-stord`) | [architecture.md](architecture.md), storage.md S12, S17 |
-| Storage by mounts, not plugins first | `shared-dir` uses mounts the operator makes; driver trait shaped like CSI for later | [storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md) S1 |
-| Verified images and kernel boot | Checksum-verified catalog, linked qcow2 disks, kernels extracted from cloud images | [images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md), [kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md) |
-| Metering built in | Hourly exactly-once usage ledger, per-VM and per-network traffic | [metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md) |
+| No external database or message bus, even in a cluster | Raft embedded in the control plane over ReDB; the leader computes write sets, others apply bytes | [14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) D1–D5, `crates/glidex-raftstore` |
+| A single host stays a single host | Standalone uses the local store; Raft only after `gxctl cluster init` | 14-clustering.md D5 |
+| Guests survive control-plane restarts and upgrades | Each VM runs under its own `glidex-vm-shim` in its own systemd unit; the control plane adopts them on start | [12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md) |
+| Two hypervisors behind one API | One driver contract for Cloud Hypervisor and QEMU | [04-hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md) |
+| One API, two transports | Protos are the source of truth; one service layer under REST and gRPC/Connect | [18-grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md) |
+| Policy as code | Cedar policies with shipped roles, decisions recorded in the audit log | [11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md) §7, §10 |
+| Identity from the organization | Connectors (OIDC presets), SCIM, Google Workspace pull sync, invitations, passkeys, workload federation | [19-tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md) T1–T5, [25-passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md) |
+| Topology-aware device placement | Each node reports NUMA, CPUs, hugepages and PCIe tree; scheduler aligns devices, memory and dedicated CPUs; pools and GPU requests | [22-host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md), [27-gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md) |
+| Unprivileged control plane | Root work goes through small helpers (`glidex-netd`, `glidex-authd`, `glidex-stord`) | [architecture.md](architecture.md), 24-storage.md S12, S17 |
+| Storage by mounts, not plugins first | `shared-dir` uses mounts the operator makes; driver trait shaped like CSI for later | [24-storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md) S1 |
+| Verified images and kernel boot | Checksum-verified catalog, linked qcow2 disks, kernels extracted from cloud images | [10-images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md), [23-kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md) |
+| Metering built in | Hourly exactly-once usage ledger, per-VM and per-network traffic | [13-metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md) |
 
 ## Non-goals and current gaps
 
@@ -206,17 +206,17 @@ Non-goals (by design):
 
 - **Automatic VM failover.** A node that stops heartbeating leaves its VMs
   unknown; nothing restarts them elsewhere, because a partitioned node may
-  still run them (clustering.md D8). Moving a stopped or lost VM is an
+  still run them (14-clustering.md D8). Moving a stopped or lost VM is an
   explicit operator action.
 - **Containers.** Glidex runs VMs only.
 - **Running on Kubernetes**, or an etcd/SQL dependency.
-- **An eBPF datapath** (clustering.md D15).
-- **vGPU and mediated devices** (host-topology.md §1).
+- **An eBPF datapath** (14-clustering.md D15).
+- **vGPU and mediated devices** (22-host-topology.md §1).
 
 Gaps (not built yet, some planned):
 
-- Live migration (planned after shared datastores; clustering.md §18).
-- Disk snapshots, backups, encryption at rest (storage.md §1).
+- Live migration (planned after shared datastores; 14-clustering.md §18).
+- Disk snapshots, backups, encryption at rest (24-storage.md §1).
 - Shared block storage: `lvm` is node-local LVM-thin; shared LVM, Ceph RBD
   and a CSI adapter are later milestones. Ceph is usable only as a mounted
   CephFS through `shared-dir`.
@@ -225,9 +225,9 @@ Gaps (not built yet, some planned):
   provisioned by cloud-init, and Windows guests are not a target today.
   They may come later, once the tooling supports them (a graphical
   console and Windows provisioning).
-- Security groups, floating IPs, BGP and load balancers (clustering.md §2).
-- Scale: designed for about 50 hosts and 2,000 VMs (clustering.md §4.1).
-- LDAP, Entra ID and GitHub connectors (tenancy.md T2b, T4b); directories
+- Security groups, floating IPs, BGP and load balancers (14-clustering.md §2).
+- Scale: designed for about 50 hosts and 2,000 VMs (14-clustering.md §4.1).
+- LDAP, Entra ID and GitHub connectors (19-tenancy.md T2b, T4b); directories
   apart from clusters and fleets (T6, T7).
 - Distribution packages: install is from source with Rust while Glidex is
   under active development; prebuilt binaries and distro packages are
@@ -239,10 +239,10 @@ Glidex:
 
 - https://github.com/CMKL-APEX/glidex/blob/main/README.md
 - https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md
-- https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md
-- https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md
-- https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md
-- https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md
+- https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md
+- https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md
+- https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md
+- https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md
 
 Other products (official pages fetched for this comparison, October 2026):
 

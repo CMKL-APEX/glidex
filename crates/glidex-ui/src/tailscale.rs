@@ -1,4 +1,4 @@
-//! The node's Tailscale certificates (spec/tailscale-tls.md §4.2): with
+//! The node's Tailscale certificates (spec/21-tailscale-tls.md §4.2): with
 //! `GLIDEX_UI_TLS_TAILSCALE=on`, the UI serves them by SNI through
 //! `glidex_tls::tailscale`, which hyperstor's management service shares.
 

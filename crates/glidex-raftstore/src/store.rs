@@ -1,4 +1,4 @@
-//! The write path of a replicated ReDB database (glidex spec/clustering.md
+//! The write path of a replicated ReDB database (glidex spec/14-clustering.md
 //! §6.1).
 //!
 //! Every change goes through [`Db::write`]. The closure works on a [`Tx`],
@@ -94,7 +94,7 @@ pub trait Schema:
 
     /// Writes that a member which isn't the leader sends to the leader
     /// through its [`Forwarder`] instead of refusing (glidex: a node's
-    /// status writes, spec/clustering.md §8.3).
+    /// status writes, spec/14-clustering.md §8.3).
     fn forwarded(_origin: Self::Origin) -> bool {
         false
     }
@@ -437,7 +437,7 @@ pub trait Replicator<S: Schema>: Send + Sync {
 }
 
 /// How a follower gets a *simple* write done by the leader (glidex
-/// spec/clustering.md §6.4): it can't be a closure (the leader must run it
+/// spec/14-clustering.md §6.4): it can't be a closure (the leader must run it
 /// against its state), so it is either raw puts and deletes, a forwarded
 /// write set ([`Schema::forwarded`]), or a named operation.
 pub trait Forwarder<S: Schema>: Send + Sync {

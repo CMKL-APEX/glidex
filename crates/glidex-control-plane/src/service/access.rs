@@ -1,4 +1,4 @@
-//! `glidex.access.v1` (spec/security.md §6, §7, §10, §13): projects and
+//! `glidex.access.v1` (spec/11-security.md §6, §7, §10, §13): projects and
 //! their role bindings, users, teams, API tokens, host role bindings, site
 //! policies, the audit log and capability checks. The REST twins in
 //! `api/access.rs` and the RPC adapter in `api/rpc/access.rs` call these.
@@ -650,7 +650,7 @@ pub fn add_system_binding(
             .ok_or_else(|| bad("principal is required"))?,
     )?;
     check_principal_exists(call, &principal)?;
-    // Host roles go to the operator's people only (spec/tenancy.md D4).
+    // Host roles go to the operator's people only (spec/19-tenancy.md D4).
     let operator = call
         .auth()
         .tenants
@@ -951,7 +951,7 @@ pub fn unlink_identity(
     call: &Call,
     req: pb::UnlinkIdentityRequest,
 ) -> ServiceResult<pb::UnlinkIdentityResponse> {
-    // One's own sign-in methods with a recent login (spec/tenancy.md §6.2),
+    // One's own sign-in methods with a recent login (spec/19-tenancy.md §6.2),
     // anyone's as a directory administrator.
     let own = call.p.user_id() == Some(req.id.as_str());
     if own {
@@ -995,7 +995,7 @@ pub fn unlink_identity(
 /// A user may have many sign-in methods, but not none, unless it is
 /// disabled (it can't sign in anyway): then its last one can go, to be
 /// added to the user its person really is. Passkeys alone are enough only
-/// when there are two (spec/passkeys.md P4): one lost device isn't a
+/// when there are two (spec/25-passkeys.md P4): one lost device isn't a
 /// lock-out.
 fn keeps_a_way_in(all: &[Identity], removing: &Identity, disabled: bool) -> ServiceResult<()> {
     if disabled {
@@ -1196,7 +1196,7 @@ pub async fn my_ssh_keys(
             .find(|i| i.provider == *p)
             .map(|i| i.subject.clone())
     }) else {
-        // Keys its directory holds (a pull's SSH key field, spec/tenancy.md §8.2).
+        // Keys its directory holds (a pull's SSH key field, spec/19-tenancy.md §8.2).
         let stored = call.auth().store.user(&user.id).map_err(store_err)?;
         if let Some(m) = stored
             .and_then(|u| u.managed)
@@ -1533,7 +1533,7 @@ pub fn create_token(
     })
 }
 
-/// A new token's `clusters` (spec/tenancy.md §7.4): this cluster, the
+/// A new token's `clusters` (spec/19-tenancy.md §7.4): this cluster, the
 /// clusters of other organizations the caller's directory trusts, or
 /// `all`; none asked for, or only this one, is stored as none.
 fn token_clusters(call: &Call, asked: &[String]) -> ServiceResult<Vec<String>> {

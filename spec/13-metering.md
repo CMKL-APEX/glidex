@@ -12,11 +12,11 @@
 > `/proc/<pid>/cgroup` (§5.1); a bridge shared by several networks
 > splits its totals (§5.4); NAT counters are named by MAC (§5.5); CSV
 > export is in M1, not M2 (§15.4). It changes the
-> contracts in [reconciliation.md](reconciliation.md) §8.4 and §13.1,
-> [networking.md](networking.md), [hypervisors.md](hypervisors.md),
-> [data-model.md](data-model.md), [rest-api.md](rest-api.md),
-> [security.md](security.md) §7 and §13, [installer.md](installer.md),
-> [cli.md](cli.md) and [web-ui.md](web-ui.md). §14 lists the edit each
+> contracts in [12-reconciliation.md](12-reconciliation.md) §8.4 and §13.1,
+> [09-networking.md](09-networking.md), [04-hypervisors.md](04-hypervisors.md),
+> [03-data-model.md](03-data-model.md), [06-rest-api.md](06-rest-api.md),
+> [11-security.md](11-security.md) §7 and §13, [05-installer.md](05-installer.md),
+> [01-cli.md](01-cli.md) and [07-web-ui.md](07-web-ui.md). §14 lists the edit each
 > needs. Make those edits in the same PR as the milestone that changes
 > the behaviour (§15), not before it.
 
@@ -30,7 +30,7 @@ roll-ups; `api.rs`: handlers). There are also new read-only ops in
 
 Glidex enforces **allocation quotas**: `vcpus`, `memory_mib` and
 `disk_gib` are checked when a VM or disk is admitted
-([security.md](security.md), `tenancy.rs`). Nothing records what was
+([11-security.md](11-security.md), `tenancy.rs`). Nothing records what was
 used over time. This module records it as durable hourly usage records
 per VM, disk, NIC and project. Accounting, chargeback, capacity
 planning and "who is using the host" all read these records.
@@ -74,7 +74,7 @@ Non-goals:
   `/metrics` exporter is listed as future work (§16).
 - Enforcing limits on usage, such as throttling a VM that used too
   much CPU. Quotas stay allocation-based. Site resource controls go on
-  `glidex-vms.slice` ([reconciliation.md](reconciliation.md) §13.1).
+  `glidex-vms.slice` ([12-reconciliation.md](12-reconciliation.md) §13.1).
 - Metering inside the guest. No agent runs in the guest. Every source
   is on the host.
 - Multi-host aggregation (see the clustering non-goal in
@@ -92,7 +92,7 @@ Records store integers in the base unit. Hour figures such as
 | `cpu.alloc` | gauge × time | VM | vCPU·s | vCPU-hours | `launch.json` `vcpu_count` × running time |
 | `mem.used` | gauge × time | VM | MiB·s | MiB-hours | cgroup `memory.current` (+ hugepages, §5.1) |
 | `mem.alloc` | gauge × time | VM | MiB·s | MiB-hours | `launch.json` `mem_size_mib` × live time |
-| `device.alloc.<pool>` | gauge × time | VM | device·s | device-hours | `status.placement.pool_devices` of the pool × live time ([host-topology.md §9.4](host-topology.md#94-metering)) |
+| `device.alloc.<pool>` | gauge × time | VM | device·s | device-hours | `status.placement.pool_devices` of the pool × live time ([22-host-topology.md §9.4](22-host-topology.md#94-metering)) |
 | `mem.peak` | max | VM | MiB | MiB | max of `memory.current` samples in the hour |
 | `cpu.cores_peak` | max | VM | cores ×1000 | cores | max CPU rate over one sample interval, `Δcpu.used / Δt` (M4, §8.7) |
 | `disk.alloc` | gauge × time | disk | MiB·s | GiB-hours | `Disk.size_bytes` (provisioned) |
@@ -190,9 +190,9 @@ traffic from addresses that are not reserved (§5.5).
 |---|---|---|
 | D1 | The meter runs **inside the control plane** as a set of tokio tasks, not as a separate daemon. | The control plane already knows the identity of every VM, disk and NIC (`status.instance`, `NicState`) and holds the database. A separate daemon would duplicate adoption logic. Kernel and OVS counters are cumulative, so downtime costs no data (§6.4). |
 | D2 | Sample **cumulative counters** and store deltas. Never trust rates computed upstream. | Missing a sample only blurs which hour a delta belongs to (§6.3). No usage is lost. |
-| D3 | VM CPU and memory come from the **VM unit's cgroup** (`glidex.slice/glidex-vms.slice/glidex-vm@<id>.service`). | It covers the hypervisor and every thread it spawns (vhost, I/O workers), plus the shim. D2 in reconciliation.md exists for this purpose. The control plane can already read it (`ProtectControlGroups=yes` makes it read-only, not hidden). |
+| D3 | VM CPU and memory come from the **VM unit's cgroup** (`glidex.slice/glidex-vms.slice/glidex-vm@<id>.service`). | It covers the hypervisor and every thread it spawns (vhost, I/O workers), plus the shim. D2 in 12-reconciliation.md exists for this purpose. The control plane can already read it (`ProtectControlGroups=yes` makes it read-only, not hidden). |
 | D4 | Disk operation counters come from the **hypervisor** (CH `GET /vm.counters`, QMP `query-blockstats`), per disk. cgroup `io.stat` is a host-side secondary meter. | Guest-visible operations per disk are what users reason about. `io.stat` is per VM, after the page cache and qcow2 metadata I/O, and is useful for capacity planning only. |
-| D5 | All network traffic comes from **OVS bridge-port counters** (OVSDB `Interface.statistics`): VM ports for per-VM meters, and every port of the bridge for per-network meters. | It is the only source that covers tap, `dpdkvhostuserclient`, uplink (kernel, AF_XDP, DPDK) and internal ports alike. vhost-user ports have no kernel netdev ([networking.md](networking.md)). One source and one reset rule keep the two views consistent. |
+| D5 | All network traffic comes from **OVS bridge-port counters** (OVSDB `Interface.statistics`): VM ports for per-VM meters, and every port of the bridge for per-network meters. | It is the only source that covers tap, `dpdkvhostuserclient`, uplink (kernel, AF_XDP, DPDK) and internal ports alike. vhost-user ports have no kernel netdev ([09-networking.md](09-networking.md)). One source and one reset rule keep the two views consistent. |
 | D6 | **External/internal split on NAT networks only**, from named **nftables counters** on the host's `forward` hook in a separate table, `inet glidex_meter`: one pair per NIC reservation and one pair per bridge. Totals stay on OVS port counters (D5). Bridged and isolated networks are not split. | Every packet that leaves or enters a NAT network is routed by the host. It passes `forward` before SNAT on the way out and after de-SNAT on the way back, so the VM's private address identifies it. Packets that stay on the bridge never reach nftables. Gateway services (DHCP, DNS, ping) hit `input`, not `forward`, so they are internal. A bridged network's uplink traffic is switched in OVS and never seen by the host stack, so splitting it would need per-port OpenFlow rules. |
 | D15 | **95th-percentile bandwidth** uses 5-minute slots built from the same counter deltas as the volume meters, and is computed per billing month with the nearest-rank method on max(in, out). Group figures are the p95 of the **summed** slot series, never a sum of p95s. | 5-minute 95th percentile on the larger direction is the industry convention for burstable billing, so customers can check the figures against their own tools. Building slots from the ledger's deltas keeps one source of truth: a slot's bytes always add up to the hour's bytes. The p95 of a sum is what the group actually consumed at once. Summing p95s over-bills, because peaks don't line up. |
 | D16 | **Disk I/O uses the 5-minute slot design of D15**, but its billable p95 is on **read+write combined** (total IOPS, total MB/s), not on the larger direction. Average latency is **op-weighted**: Σtime / Σops. | Reads and writes share one device and one queue, and IOPS and throughput caps (cloud disk tiers, `fio` reports, CH and QEMU throttling) are on the total. Network links are full duplex, so there the larger direction is the bottleneck. An average of per-slot averages would let idle slots outweigh busy ones. |
@@ -203,7 +203,7 @@ traffic from addresses that are not reserved (§5.5).
 | D8 | The ledger is **hourly, UTC, immutable once closed**, with a per-source **cursor** written in the same transaction as the deltas it produced. | Without that one transaction, a crash between "record delta" and "advance cursor" would count the delta twice or never. UTC hours stay simple across DST and time zones. Days and months are roll-ups (§8.3). |
 | D9 | Binary units (MiB, GiB) for **volumes**. **Bandwidth rates** are decimal bit/s (kbps = 10³, Mbps = 10⁶ bit/s). | Volumes match the quota fields and `qemu-img`. Bandwidth is sold and measured in decimal bit/s everywhere (links, transit contracts, `iperf`), so a binary "Mbps" would disagree with every other tool. The two are different quantities with different names (GiB vs Mbps), and each one is consistent across every report. |
 | D10 | Network traffic is metered in **GiB transferred**, not GiB-hours, and billed as the **total for the billing month** (§8.4). Hourly rows are the atom. | Transfer is a volume, so time-weighting it has no meaning. Hourly rows add up exactly to any month boundary in a whole-hour time zone. |
-| D11 | Allocation meters count **from launch to exit**, using the sizing in `launch.json`, not `spec`. `cpu.alloc` stops while the VM is paused. `mem.alloc` does not stop. | `spec` can change at any time, but sizing only takes effect at the next launch ([reconciliation.md](reconciliation.md) §7.3). A paused guest keeps its memory and gives up its CPUs. |
+| D11 | Allocation meters count **from launch to exit**, using the sizing in `launch.json`, not `spec`. `cpu.alloc` stops while the VM is paused. `mem.alloc` does not stop. | `spec` can change at any time, but sizing only takes effect at the next launch ([12-reconciliation.md](12-reconciliation.md) §7.3). A paused guest keeps its memory and gives up its CPUs. |
 | D12 | The **shim writes a final counter snapshot** into `instance.json` when the hypervisor exits. | When the unit stops, its cgroup and the hypervisor's counters vanish. Without the snapshot, the usage between the last sample and the exit is lost every time, and all of it is lost for a VM that ran entirely while the control plane was down. |
 | D13 | Usage records are **attributed to the project that owned the subject when it was sampled** and keep a snapshot of the subject's name. Records outlive the subject. | Deleting a VM must not delete what it used. A later rename must not rewrite history. |
 
@@ -404,19 +404,19 @@ New calls in `glidex-hv-client`:
   `storage_secs` (default 15 min), not every sample, because it opens
   the file. Between runs the last value is held. A linked disk's stored
   size is its overlay only. Base images are a shared library
-  ([security.md](security.md)) and are metered once as host-level
+  ([11-security.md](11-security.md)) and are metered once as host-level
   `image.stored`, with no project.
 - A resize changes `size_bytes`. The sampler sees the new value at its
   next round, so the change takes effect with up to `sample_secs` of
   lag. That error is accepted.
 - Unmanaged `rootfs_path` disks are not metered, just as they are not
   under quota.
-- **Datastores** ([storage.md](storage.md)). A disk is sampled by the
+- **Datastores** ([24-storage.md](24-storage.md)). A disk is sampled by the
   node acting on it: its `node` on a node-local datastore, its `worker`
   on a shared one (`VmManager::is_local_disk`), so a shared disk is
   counted once. Its driver measures it (`StorageDriver::stored_bytes`):
   a file's actual size, or an LVM volume's blocks in its thin pool. A shared datastore's copy of an image
-  (`<path>/images/<id>.qcow2`, storage.md §4.5) is not metered yet,
+  (`<path>/images/<id>.qcow2`, 24-storage.md §4.5) is not metered yet,
   and usage can't be grouped by datastore yet (`group_by=datastore`,
   later).
 
@@ -539,7 +539,7 @@ table inet glidex_meter {
 - **Attribution keys.**
   - Outbound is keyed on the NIC's MAC **and** its DHCP reservation
     (`NatState.reservations`). The reservation is fixed for the VM's
-    lifetime ([networking.md](networking.md)).
+    lifetime ([09-networking.md](09-networking.md)).
   - Inbound packets have already been de-SNATed when they reach
     `forward`, so `ip daddr` is the private address. Their source MAC
     is the gateway's, so they are keyed on the address only.
@@ -582,7 +582,7 @@ table inet glidex_meter {
   small ones. So netd reports `ext bytes = nft bytes + 14 × nft
   packets`, which makes both meters count the same unit. VLAN tags on
   NAT bridges don't apply: NAT ports are untagged.
-- **IPv4 only**, like NAT networks ([networking.md](networking.md)).
+- **IPv4 only**, like NAT networks ([09-networking.md](09-networking.md)).
   If NAT gains IPv6, add the same rules with `ip6 saddr`/`ip6 daddr`.
 - **The `nat_counters` op.** It is read-only and on `netd.sock` only
   (not `netd-ro.sock`), like `port_stats`. It runs `nft -j list
@@ -804,7 +804,7 @@ each closed billing month's per-subject p95 figures are written to
 (in a cluster) groups by the node a subject was on: a VM's and its NICs'
 placement, a disk's node, a node network's node; subjects record it as
 `node`, which is not part of their key. The rate endpoints accept it too
-(spec/clustering-ui.md §5.4). Granularity
+(spec/16-clustering-ui.md §5.4). Granularity
 is in UTC by default. `tz=<IANA>` regroups the hourly rows into local
 days and months at query time, which works because hours are the atom.
 
@@ -1186,7 +1186,7 @@ design:
 ### 9.5 RPC and the proto shape (G2)
 
 The routes of §9.1–§9.4 are the REST twins of `glidex.usage.v1`
-([grpc.md](grpc.md) §9.1; proto `glidex/usage/v1/usage.proto`), one
+([18-grpc.md](18-grpc.md) §9.1; proto `glidex/usage/v1/usage.proto`), one
 service function each in `service/usage.rs`, RPC adapter
 `api/rpc/usage.rs`:
 
@@ -1438,23 +1438,23 @@ before it.
 | Document | Edit | PR |
 |---|---|---|
 | [README.md](README.md) | Index row | done |
-| [installer.md](installer.md) | Re-render `glidex-vm@.service` with accounting on, and set it at runtime on running VM units; no new packages (`nft` and `ovs-vsctl` are already present) | M1.2 |
-| [reconciliation.md](reconciliation.md) §13.1 | `glidex-vm@.service`: `IOAccounting=yes`, `MemoryAccounting=yes` (not on the slice, §5.1) | M1.2 |
-| [reconciliation.md](reconciliation.md) §7.2 | `status.phase_since` | M1.2 |
-| [reconciliation.md](reconciliation.md) §7.2 | The controllers request a final meter sample before `detach_vm_port`, `release_vm` and network deletion | M1.3 |
-| [data-model.md](data-model.md) | Metering tables (§7.1) | M1.1; `rate_5m`, `usage_monthly_rates` in M2.3 |
-| [networking.md](networking.md) | Op `port_stats` (read-only, not on `netd-ro.sock`); port roles `vm`/`uplink`/`gateway`; final sample before detach, `release_vm`, uplink change and bridge/NAT delete | M1.3 |
-| [networking.md](networking.md) | Table `inet glidex_meter` with its incremental-update rule (D14); op `nat_counters`; host check for `ether saddr` in `forward` | M1.4 |
-| [installer.md](installer.md) | `uninstall` drops `inet glidex_meter` next to `inet glidex` (`uninstall.rs` `DropNftTable`) | M1.4 |
-| [rest-api.md](rest-api.md) | `/usage`, `/vms/{id}/usage`, `/projects/{id}/usage`, `/disks/{id}/usage` | M1.5 |
-| [rest-api.md](rest-api.md) | `/usage/bandwidth`, `/usage/disk-io`, `/bandwidth` and `/io` series, `/stats`, `stats` watch kind | M2.4 |
-| [security.md](security.md) §7, §13 | `usage.read` group and the M1 actions; `metering` config section | M1.5 |
-| [security.md](security.md) §7 | Bandwidth, disk I/O and stats actions | M2.4 |
-| [cli.md](cli.md) | `usage` | M1.5 |
-| [cli.md](cli.md) | `usage bandwidth`, `usage disk-io`, `vm/network bandwidth`, `vm/disk io`, `vm stats` | M2.4 |
-| [hypervisors.md](hypervisors.md) | CH `vm.counters` and QMP `query-blockstats` (including `*_total_time_ns`) in the client tables; CH block latency fields not metered (D17), with the v53 findings; the device-id → disk mapping in `status.instance.disks` | M2.1 |
-| [reconciliation.md](reconciliation.md) §8.4 | `instance.json` `exit.usage` (D12); the shim's polling of hypervisor counters | M2.2 |
-| [web-ui.md](web-ui.md) | §12 pages, cards and charts | M2.6 |
+| [05-installer.md](05-installer.md) | Re-render `glidex-vm@.service` with accounting on, and set it at runtime on running VM units; no new packages (`nft` and `ovs-vsctl` are already present) | M1.2 |
+| [12-reconciliation.md](12-reconciliation.md) §13.1 | `glidex-vm@.service`: `IOAccounting=yes`, `MemoryAccounting=yes` (not on the slice, §5.1) | M1.2 |
+| [12-reconciliation.md](12-reconciliation.md) §7.2 | `status.phase_since` | M1.2 |
+| [12-reconciliation.md](12-reconciliation.md) §7.2 | The controllers request a final meter sample before `detach_vm_port`, `release_vm` and network deletion | M1.3 |
+| [03-data-model.md](03-data-model.md) | Metering tables (§7.1) | M1.1; `rate_5m`, `usage_monthly_rates` in M2.3 |
+| [09-networking.md](09-networking.md) | Op `port_stats` (read-only, not on `netd-ro.sock`); port roles `vm`/`uplink`/`gateway`; final sample before detach, `release_vm`, uplink change and bridge/NAT delete | M1.3 |
+| [09-networking.md](09-networking.md) | Table `inet glidex_meter` with its incremental-update rule (D14); op `nat_counters`; host check for `ether saddr` in `forward` | M1.4 |
+| [05-installer.md](05-installer.md) | `uninstall` drops `inet glidex_meter` next to `inet glidex` (`uninstall.rs` `DropNftTable`) | M1.4 |
+| [06-rest-api.md](06-rest-api.md) | `/usage`, `/vms/{id}/usage`, `/projects/{id}/usage`, `/disks/{id}/usage` | M1.5 |
+| [06-rest-api.md](06-rest-api.md) | `/usage/bandwidth`, `/usage/disk-io`, `/bandwidth` and `/io` series, `/stats`, `stats` watch kind | M2.4 |
+| [11-security.md](11-security.md) §7, §13 | `usage.read` group and the M1 actions; `metering` config section | M1.5 |
+| [11-security.md](11-security.md) §7 | Bandwidth, disk I/O and stats actions | M2.4 |
+| [01-cli.md](01-cli.md) | `usage` | M1.5 |
+| [01-cli.md](01-cli.md) | `usage bandwidth`, `usage disk-io`, `vm/network bandwidth`, `vm/disk io`, `vm stats` | M2.4 |
+| [04-hypervisors.md](04-hypervisors.md) | CH `vm.counters` and QMP `query-blockstats` (including `*_total_time_ns`) in the client tables; CH block latency fields not metered (D17), with the v53 findings; the device-id → disk mapping in `status.instance.disks` | M2.1 |
+| [12-reconciliation.md](12-reconciliation.md) §8.4 | `instance.json` `exit.usage` (D12); the shim's polling of hypervisor counters | M2.2 |
+| [07-web-ui.md](07-web-ui.md) | §12 pages, cards and charts | M2.6 |
 
 ## 15. Milestones
 
@@ -1512,7 +1512,7 @@ M2.1, M2.3 and M2.5 are independent of each other.
 ### 15.3 M0: host checks (no product code)
 
 Short experiments on a KVM host with the pinned versions. The results
-go into §5 in the same style as [networking.md](networking.md) §0.
+go into §5 in the same style as [09-networking.md](09-networking.md) §0.
 
 | Check | Result needed | Feeds |
 |---|---|---|
@@ -1895,7 +1895,7 @@ spec change:
   ledger) for sites that already run Prometheus. It would need its own
   auth story, because it is a scrape endpoint.
 - **GPU / VFIO devices.** Pool devices are metered as
-  `device.alloc.<pool>` (host-topology.md §9.4). Devices named by
+  `device.alloc.<pool>` (22-host-topology.md §9.4). Devices named by
   address (`vfio_devices`) are not yet; utilization would need vendor
   tools.
 - **Port security.** Add OVS rules that let a VM port send only from

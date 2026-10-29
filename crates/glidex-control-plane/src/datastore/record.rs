@@ -1,4 +1,4 @@
-//! The `Datastore` record and each node's view of it (spec/storage.md §4.1),
+//! The `Datastore` record and each node's view of it (spec/24-storage.md §4.1),
 //! in the replicated store.
 //!
 //! The built-in `local` datastore is not stored: [`list`] and [`find`]
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The feature level a node needs to keep datastores (spec/clustering.md
+/// The feature level a node needs to keep datastores (spec/14-clustering.md
 /// §6.6): the cluster's level must reach it before any is created, and an
 /// agent below it is sent none.
 pub const DATASTORE_FEATURE_LEVEL: u32 = 2;
@@ -40,7 +40,7 @@ pub struct Datastore {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub default_for_disks: bool,
     /// Disks may promise more than the free space (thin, like qcow2 files).
-    /// Off: a disk is refused when it doesn't fit (spec/storage.md §5.2).
+    /// Off: a disk is refused when it doesn't fit (spec/24-storage.md §5.2).
     #[serde(default = "yes")]
     pub overcommit: bool,
     pub created_at: u64,
@@ -61,14 +61,14 @@ pub enum DriverSpec {
         node_paths: BTreeMap<String, String>,
     },
     /// One filesystem every node mounts (NFS, CephFS, a vendor's): the same
-    /// files from each node (spec/storage.md §5). glidex never mounts it.
+    /// files from each node (spec/24-storage.md §5). glidex never mounts it.
     SharedDir {
         path: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,
     },
     /// LVM-thin on each node: a volume group and thin pool the operator
-    /// made, through glidex-stord (spec/storage.md §11.1, S19).
+    /// made, through glidex-stord (spec/24-storage.md §11.1, S19).
     Lvm {
         vg: String,
         thin_pool: String,
@@ -76,7 +76,7 @@ pub enum DriverSpec {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_vgs: BTreeMap<String, String>,
     },
-    /// A hyperstor cluster's pool (spec/storage.md §11.2): volumes served
+    /// A hyperstor cluster's pool (spec/24-storage.md §11.2): volumes served
     /// to VMs over vhost-user-blk by each node's `hyperstor-vhost`.
     Hyperstor {
         /// The cluster API's addresses (`host:port`).
@@ -236,11 +236,11 @@ pub struct NodeRow {
     pub free_bytes: u64,
     pub checked_at: u64,
     /// What is risky about how it is mounted here, though it is reachable
-    /// (spec/storage.md §4.4): NFS mounted `soft`, or with local locks.
+    /// (spec/24-storage.md §4.4): NFS mounted `soft`, or with local locks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// `lvm`: the images this node keeps a volume of in it (`gx-i-<id>`,
-    /// spec/storage.md §11.1), so the datastore isn't deleted from under
+    /// spec/24-storage.md §11.1), so the datastore isn't deleted from under
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_volumes: Vec<String>,
@@ -318,7 +318,7 @@ pub fn check_path(path: &str, root: &Path) -> Result<(), DatastoreError> {
     }
     if p == root || !p.starts_with(root) {
         return Err(bad(&format!(
-            "must be a directory under {} (spec/storage.md S11)",
+            "must be a directory under {} (spec/24-storage.md S11)",
             root.display()
         )));
     }
@@ -475,7 +475,7 @@ pub fn rows(db: &Db, datastore: &str) -> Result<BTreeMap<String, NodeRow>, Datas
     Ok(out)
 }
 
-/// This node's row about `datastore` (a status write, spec/clustering.md
+/// This node's row about `datastore` (a status write, spec/14-clustering.md
 /// §8.3); `None` removes it.
 pub fn put_row(
     db: &Db,

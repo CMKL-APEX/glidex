@@ -1,4 +1,4 @@
-//! OIDC login (spec/security.md §5.4).
+//! OIDC login (spec/11-security.md §5.4).
 //!
 //! Authorization Code flow with PKCE and a nonce; the control plane is a
 //! confidential client (secret from the systemd credential
@@ -29,7 +29,7 @@ pub enum After {
     /// Signing in.
     #[default]
     Login,
-    /// Signing in and taking an invitation (`<id>.<secret>`, spec/tenancy.md §6.1).
+    /// Signing in and taking an invitation (`<id>.<secret>`, spec/19-tenancy.md §6.1).
     Invite(String),
     /// Adding this sign-in to `user`, who started it signed in through
     /// `session` (its hash; §6.2). The session cookie is `SameSite=Strict`
@@ -46,7 +46,7 @@ pub enum ClientSecret {
     /// The systemd credential `oidc-client-secret` (the file-defined
     /// connector, as before connectors).
     Credential,
-    /// Decrypted from the connector store on each use (spec/tenancy.md §13).
+    /// Decrypted from the connector store on each use (spec/19-tenancy.md §13).
     Stored(Box<dyn Fn() -> Result<zeroize::Zeroizing<String>, String> + Send + Sync>),
 }
 

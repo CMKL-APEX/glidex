@@ -1,4 +1,4 @@
-# Real-IdP checks (spec/tenancy.md §17, T2–T6)
+# Real-IdP checks (spec/19-tenancy.md §17, T2–T6)
 
 The connector presets are tested in CI against a mock IdP
 (`tests/connector_tests.rs`). What a mock can't show — how the real

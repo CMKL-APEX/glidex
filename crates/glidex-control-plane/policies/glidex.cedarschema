@@ -1,4 +1,4 @@
-// Cedar schema for glidex authorization (spec/security.md §7.1).
+// Cedar schema for glidex authorization (spec/11-security.md §7.1).
 //
 // Every API route maps to exactly one concrete action below. Roles and
 // permission groups are action groups and are never requested directly.
@@ -12,12 +12,12 @@ namespace Glidex {
   };
   // Every request is decided for one cluster (or directory) by one control
   // plane; `tenant` is the tenant owning the resource, when it has one
-  // (spec/tenancy.md §10).
+  // (spec/19-tenancy.md §10).
   type Ctx = { auth: Auth, cluster?: Cluster, directory?: Directory, tenant?: Tenant };
   type ProjectCtx = { auth: Auth, cluster?: Cluster, directory?: Directory, tenant?: Tenant, project: Project };
   type NetworkCtx = { auth: Auth, cluster?: Cluster, directory?: Directory, tenant?: Tenant, network: Network };
 
-  // Directories hold tenants, users and teams (spec/tenancy.md D2); a user
+  // Directories hold tenants, users and teams (spec/19-tenancy.md D2); a user
   // or team is `in` each tenant it is a member of (D3).
   entity Directory { owner: Tenant };
   entity Tenant in [Directory] {
@@ -27,7 +27,7 @@ namespace Glidex {
   // A standalone host is a cluster of one: Host::"local" in Cluster::"local".
   // System roles link to the Cluster and so cover every host; host-specific
   // actions (OVS, uplinks, PCI devices, host paths) take the node's Host, so
-  // a grant can be limited to one node (spec/clustering.md §12.2).
+  // a grant can be limited to one node (spec/14-clustering.md §12.2).
   entity Cluster { operator: Tenant, admitted: Set<Tenant> };
   entity Host in [Cluster];
   entity Team in [Tenant];
@@ -40,21 +40,21 @@ namespace Glidex {
   entity Disk in [Project] { project: Project };
   entity Credential in [Project] { project: Project };
   entity Image in [Cluster];
-  // Where disks live (spec/storage.md §13); `local` is built in.
+  // Where disks live (spec/24-storage.md §13); `local` is built in.
   entity Datastore in [Cluster];
   // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network.
   // tenant_grants: tenants whose every project may use a host network or
-  // a device (spec/tenancy.md D25).
+  // a device (spec/19-tenancy.md D25).
   entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
     tenant_grants: Set<Tenant>,
   };
   entity PciDevice in [Host] { grants: Set<Project>, tenant_grants: Set<Tenant> };
-  // A pool of devices, asked for by count (spec/host-topology.md §9).
+  // A pool of devices, asked for by count (spec/22-host-topology.md §9).
   entity PciPool in [Cluster] { grants: Set<Project>, tenant_grants: Set<Tenant> };
 
-  // Marker groups (spec/tenancy.md §10): every concrete action is in
+  // Marker groups (spec/19-tenancy.md §10): every concrete action is in
   // exactly one of these; base.cedar bounds who can ever pass each.
   action "tenant-scoped";
   action "host-scoped";
@@ -83,7 +83,7 @@ namespace Glidex {
          "network.use" in ["role.editor"];
   action "project.members", "network.manage", "network.share" in ["role.owner"];
   action "host.read" in ["role.auditor", "role.net-admin"];
-  // Cluster membership and recovery (spec/clustering.md §12.2). Tokens, joins
+  // Cluster membership and recovery (spec/14-clustering.md §12.2). Tokens, joins
   // and snapshots are secrets or irreversible, so they need a recent login.
   action "host.cluster" in ["role.system-admin"];
   action "node.drain" in ["role.system-admin"];
@@ -95,13 +95,13 @@ namespace Glidex {
   action "datastore.manage" in ["role.system-admin"];
   action "policy.write" in ["role.system-admin", "step-up"];
   action "host.paths", "quota.exceed", "cluster.admissions", "cluster.directories" in ["role.system-admin"];
-  // Tenants and directories (spec/tenancy.md §10.5).
+  // Tenants and directories (spec/19-tenancy.md §10.5).
   action "tenant.read" in ["role.tenant-auditor"];
   action "tenant.members", "tenant.projects", "tenant.federations", "tenant.clusters" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
   action "directory.users", "directory.tenants", "directory.connectors", "directory.keys" in ["role.directory-admin"];
 
-  // ---- usage (spec/metering.md §10) ----------------------------------------
+  // ---- usage (spec/13-metering.md §10) ----------------------------------------
   action readUsage in ["system.usage", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readProjectUsage in ["usage.read", "tenant-scoped"]
@@ -140,7 +140,7 @@ namespace Glidex {
   action exceedQuota in ["quota.exceed", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
 
-  // ---- tenants and admissions (spec/tenancy.md §14) -------------------------
+  // ---- tenants and admissions (spec/19-tenancy.md §14) -------------------------
   action listTenants in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action createTenant in ["directory.tenants", "directory-scoped"]
@@ -154,52 +154,52 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantMembers, manageTenantBindings in ["tenant.members", "directory.tenants", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
-  // Invitations (spec/tenancy.md §6.1) name an email address: listed only
+  // Invitations (spec/19-tenancy.md §6.1) name an email address: listed only
   // to those who may invite.
   action readTenantInvitations, manageTenantInvitations in ["tenant.members", "directory.tenants", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
-  // Tenant pools (spec/host-topology.md §9.1a): a tenant's share of a
+  // Tenant pools (spec/22-host-topology.md §9.1a): a tenant's share of a
   // cluster device pool, split among its projects.
   action readTenantDevicePools in ["tenant.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantDevicePools in ["tenant.projects", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
-  // Workload federations (spec/tenancy.md §9, D51): trusting a CI system
+  // Workload federations (spec/19-tenancy.md §9, D51): trusting a CI system
   // gives its jobs a service account's rights in the tenant.
   action readTenantFederations in ["tenant.read", "tenant.federations", "directory.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantFederations in ["tenant.federations", "directory.tenants", "step-up", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
-  // Clusters of other organizations a tenant uses (spec/tenancy.md D65).
+  // Clusters of other organizations a tenant uses (spec/19-tenancy.md D65).
   action readTenantClusters in ["tenant.read", "tenant.clusters", "directory.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantClusters in ["tenant.clusters", "step-up", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
-  // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
+  // ---- directory connectors (spec/19-tenancy.md §5, T1) ------------------------
   action listConnectors, readConnector in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action createConnector, updateConnector, deleteConnector, setConnectorSecret in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action testConnector in ["directory.connectors", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
-  // The directory's token signing keys (spec/tenancy.md D53).
+  // The directory's token signing keys (spec/19-tenancy.md D53).
   action readSigningKeys in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action rotateSigningKey in ["directory.keys", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
-  // SCIM bearer tokens (spec/tenancy.md §8.1): who holds one provisions
+  // SCIM bearer tokens (spec/19-tenancy.md §8.1): who holds one provisions
   // the connector's users.
   action readScimTokens in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action manageScimTokens in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
-  // A pull now (spec/tenancy.md §8.2); confirming one the safety stop
+  // A pull now (spec/19-tenancy.md §8.2); confirming one the safety stop
   // blocked (D46) disables many users at once.
   action syncConnector in ["directory.connectors", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action confirmConnectorSync in ["directory.connectors", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
-  // Directories the host serves (spec/tenancy.md D59): the operator's.
+  // Directories the host serves (spec/19-tenancy.md D59): the operator's.
   action listDirectories in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageDirectories in ["cluster.directories", "step-up", "host-scoped"]
@@ -219,8 +219,8 @@ namespace Glidex {
   action listVms in ["vm.read", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   // updateVm: PATCH of spec fields other than power, devices, disks and
-  // networks (spec/reconciliation.md §12.1).
-  // Placing a VM on another node is the cluster operator's (spec/storage.md S10).
+  // networks (spec/12-reconciliation.md §12.1).
+  // Placing a VM on another node is the cluster operator's (spec/24-storage.md S10).
   action placeVm in ["node.drain", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action startVm, stopVm, pauseVm, updateVm in ["vm.operate", "tenant-scoped"]
@@ -235,7 +235,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
   action useCredential in ["vm.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
-  // Giving a VM a service account (workload-identity.md W5): on the service
+  // Giving a VM a service account (29-workload-identity.md W5): on the service
   // account's project, with those who manage its service tokens;
   // context.project is the VM's.
   action useServiceAccount in ["project.members", "tenant-scoped"]
@@ -276,7 +276,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
-  // VPC routers (spec/clustering.md §11.2a), on the owning project.
+  // VPC routers (spec/14-clustering.md §11.2a), on the owning project.
   action createRouter, deleteRouter in ["network.manage", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action readRouter in ["project.read", "tenant-scoped"]
@@ -291,7 +291,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
 
   // ---- host --------------------------------------------------------------
-  // readSystemStatus: GET /system/reconcile (spec/reconciliation.md §12.5).
+  // readSystemStatus: GET /system/reconcile (spec/12-reconciliation.md §12.5).
   action readOvsStatus, listBridges, listUplinks, listPciDevices, listPciPools, readHostTopology, readSystemStatus in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
@@ -301,21 +301,21 @@ namespace Glidex {
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink, deleteBridge in ["host.network.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
 
-  // ---- cluster (spec/clustering.md §5) ---------------------------------------
+  // ---- cluster (spec/14-clustering.md §5) ---------------------------------------
   action readCluster in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action initCluster, joinCluster, importCluster, rejoinCluster, leaveCluster in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  // Membership (spec/clustering.md §5.5-5.7).
+  // Membership (spec/14-clustering.md §5.5-5.7).
   action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, rotateSecretsKey, detachNode, approveImport, rejectImport, dissolveCluster in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  // OVN as a cluster setting (spec/clustering-ui.md §8a).
+  // OVN as a cluster setting (spec/16-clustering-ui.md §8a).
   action configureOvn in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
-  // ---- nodes (spec/clustering.md §7) -------------------------------------
+  // ---- nodes (spec/14-clustering.md §7) -------------------------------------
   action listImports, readImport in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action listNodes in ["host.read", "host-scoped"]
@@ -324,7 +324,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action drainNode, undrainNode in ["node.drain", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  // A node's own OVN options, e.g. its br-int datapath (spec/clustering.md §11.6).
+  // A node's own OVN options, e.g. its br-int datapath (spec/14-clustering.md §11.6).
   action configureNode in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
 
@@ -336,7 +336,7 @@ namespace Glidex {
   action deleteImage in ["image.manage", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Image], context: Ctx };
 
-  // ---- datastores (spec/storage.md §13) ----------------------------------
+  // ---- datastores (spec/24-storage.md §13) ----------------------------------
   action readDatastore in ["shared"]
     appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
   action manageDatastore in ["datastore.manage", "host-scoped"]
@@ -353,14 +353,14 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action manageOwnTokens in ["shared"]
     appliesTo { principal: [User, Token], resource: [User], context: Ctx };
-  // A user's own sign-in methods (spec/tenancy.md §6.2): adding or
+  // A user's own sign-in methods (spec/19-tenancy.md §6.2): adding or
   // removing one needs a recent login, so a stolen session can't add its
   // thief's account.
   action manageOwnSignIns in ["shared", "step-up"]
     appliesTo { principal: [User, Token], resource: [User], context: Ctx };
   action readAudit in ["system.audit", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  // A hosted directory's own audit (spec/tenancy.md D74).
+  // A hosted directory's own audit (spec/19-tenancy.md D74).
   action readDirectoryAudit in ["directory.read", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read", "host-scoped"]

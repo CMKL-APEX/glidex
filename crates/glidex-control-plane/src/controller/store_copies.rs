@@ -1,4 +1,4 @@
-//! Copies of images in shared datastores (spec/storage.md S8, S9): a linked
+//! Copies of images in shared datastores (spec/24-storage.md S8, S9): a linked
 //! disk on a shared datastore overlays the datastore's own copy of its
 //! image, `<path>/images/<image-id>.qcow2`, which every node reaching the
 //! datastore sees. `image_caches/<image>/ds:<datastore>` says where one is,
@@ -264,7 +264,7 @@ impl VmManager {
 
     /// A deleted image: this node removes the copies in shared datastores
     /// it reaches, and their rows. Linked disks on them kept the image from
-    /// being deleted until they went (images.md §3).
+    /// being deleted until they went (10-images.md §3).
     pub(crate) fn drop_store_copies(&self, img: &Image) -> Result<(), VmManagerError> {
         let db = self.store.database();
         let me = self.local_node_id();
@@ -293,7 +293,7 @@ impl VmManager {
 
 impl VmManager {
     /// Remove image `id`'s volume from every lvm datastore on this node
-    /// (spec/storage.md §11.1). One a snapshot still uses stays (stord says
+    /// (spec/24-storage.md §11.1). One a snapshot still uses stays (stord says
     /// busy); deleting the image waited for its linked disks. Blocks.
     pub(crate) fn drop_image_volumes(&self, id: &str) {
         use crate::datastore::lvm;

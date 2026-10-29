@@ -1,4 +1,4 @@
-//! Load targets (spec/metering.md §15.6): a sampling round at 200 VMs
+//! Load targets (spec/13-metering.md §15.6): a sampling round at 200 VMs
 //! (2 NICs, 2 disks each) within `sample_secs / 2`, and a one-project
 //! month query under 200 ms. Run with
 //! `cargo test --release --lib metering::bench -- --ignored --nocapture`.

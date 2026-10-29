@@ -338,7 +338,7 @@ On an NVSwitch board (HGX A100, say), the node page's **Topology** card
 lists the NVSwitches under **NVLink fabric**: their driver, IOMMU group
 and NUMA node. `gxctl node topology <node>` prints them too. They are
 never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
-a service VM (spec/gpu-vms.md). Today glidex VMs on such a board get
+a service VM (spec/27-gpu-vms.md). Today glidex VMs on such a board get
 their GPUs without NVLink between them.
 
 ## SR-IOV virtual functions

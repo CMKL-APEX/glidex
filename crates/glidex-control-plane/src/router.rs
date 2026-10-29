@@ -1,4 +1,4 @@
-//! VPC routers (spec/clustering.md §11.2a): project-owned logical routers
+//! VPC routers (spec/14-clustering.md §11.2a): project-owned logical routers
 //! on OVN. The record is the source of truth; the leader's network
 //! controller makes the `gxr-<id>` objects from it.
 

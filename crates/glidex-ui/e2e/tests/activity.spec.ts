@@ -1,4 +1,4 @@
-// Reconciliation in progress (spec/reconciliation.md): writes are carried
+// Reconciliation in progress (spec/12-reconciliation.md): writes are carried
 // out by the controllers, and the UI says what they are still doing.
 import { api, createVm, del, expect, listVms, test, vmCard } from "../fixtures";
 

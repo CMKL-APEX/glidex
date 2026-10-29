@@ -1,4 +1,4 @@
-//! Connector secrets (spec/tenancy.md §13, D21).
+//! Connector secrets (spec/19-tenancy.md §13, D21).
 //!
 //! Each directory has a random **data key** that encrypts its connectors'
 //! secrets with ChaCha20-Poly1305 (`ring`; a random 96-bit nonce per
@@ -7,7 +7,7 @@
 //! credential `secrets-kek`, or the file `auth.secrets_key`, 32 random
 //! bytes made on first use, never written to the database, snapshots,
 //! feeds or departure bundles. A cluster's servers share it: the leader
-//! sends it with the CA key to each new server (clustering.md §12.1).
+//! sends it with the CA key to each new server (14-clustering.md §12.1).
 
 use base64::Engine as _;
 use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};

@@ -1,4 +1,4 @@
-// Cluster operations in the UI (spec/clustering-ui.md §11): a mocked
+// Cluster operations in the UI (spec/16-clustering-ui.md §11): a mocked
 // two-node cluster in front of the scratch (standalone) control plane. Each
 // dialog's request is checked, tokens never reach storage or the URL, and
 // the client rides out a leader change and says when there is no quorum.

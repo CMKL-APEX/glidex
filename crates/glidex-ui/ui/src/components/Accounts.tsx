@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import * as api from "../api";
 import type { BrowserAccount } from "../types";
 
-/** The browser's accounts (spec/tenancy.md D71), `null` while loading. */
+/** The browser's accounts (spec/19-tenancy.md D71), `null` while loading. */
 export function useAccounts(): [BrowserAccount[] | null, number, (a: BrowserAccount[]) => void] {
   const [accounts, setAccounts] = useState<BrowserAccount[] | null>(null);
   const [max, setMax] = useState(5);

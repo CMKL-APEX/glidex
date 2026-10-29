@@ -41,7 +41,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await page.getByRole("button", { name: "Add Network" }).click();
       await page.getByPlaceholder("lab").fill(network);
       await page.getByRole("button", { name: "Create", exact: true }).click();
-      // A new node network's bridge is named from its id (spec/tenancy.md D24).
+      // A new node network's bridge is named from its id (spec/19-tenancy.md D24).
       await expect(page.getByRole("row", { name: new RegExp(network) })).toContainText(/gxbr-[0-9a-f]{8}/, { timeout: 30_000 });
     });
 

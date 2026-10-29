@@ -1,4 +1,4 @@
-//! One sampling round over VMs and disks (spec/metering.md §5.1, §5.3,
+//! One sampling round over VMs and disks (spec/13-metering.md §5.1, §5.3,
 //! §5.6, §6.1): snapshots in, ledger observations out.
 
 use super::ledger::{Flag, MeteringError, Origin, Round, Subject, SubjectKind};
@@ -18,8 +18,8 @@ const VM_GAUGES: [&str; 5] = [
 
 const MIB: u64 = 1 << 20;
 
-/// `device.alloc.<pool>`: devices of a pool a VM holds (spec/metering.md
-/// §2, spec/host-topology.md §11).
+/// `device.alloc.<pool>`: devices of a pool a VM holds (spec/13-metering.md
+/// §2, spec/22-host-topology.md §11).
 pub const DEVICE_ALLOC: &str = "device.alloc.";
 
 /// Devices the VM holds of each pool it asks of or holds: what it was
@@ -236,7 +236,7 @@ fn sample_vm(
         round.live(&s, "pylon_runnable_threads", pstats.runnable_threads as f64);
     }
     // Hugepage-backed guest RAM is not in memory.current (§5.1). Whether
-    // it is hugepages: what the scheduler counted (spec/host-topology.md
+    // it is hugepages: what the scheduler counted (spec/22-host-topology.md
     // §8a.3), else what the VM asked for.
     let in_hugepages = vm
         .status

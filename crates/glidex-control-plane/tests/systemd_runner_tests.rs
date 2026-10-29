@@ -3,7 +3,7 @@
 //! needed. Covers StartUnit + JobRemoved, the unit's ActiveState in the
 //! liveness checks, adoption by a restarted control plane, a requested
 //! stop, and a unit stopped outside glidex (`Terminated`, spec
-//! reconciliation.md §7.5).
+//! 12-reconciliation.md §7.5).
 //!
 //! Ignored by default: it boots a real guest. Needs a running user systemd
 //! manager, KVM, cloud-hypervisor, a built `glidex-vm-shim` and

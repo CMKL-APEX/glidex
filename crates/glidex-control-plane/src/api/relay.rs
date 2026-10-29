@@ -1,5 +1,5 @@
 //! Host-only requests across nodes, and the web UI on agents
-//! (spec/host-page.md, spec/clustering-ui.md §3.6).
+//! (spec/28-host-page.md, spec/16-clustering-ui.md §3.6).
 //!
 //! A host-only request (`/ovs`, `/pci-devices`, `/system/reconcile`, …)
 //! means this host, unless it names another node in `X-Glidex-Target-Node`
@@ -51,7 +51,7 @@ const PASS_RESPONSE: [&str; 12] = [
 pub fn is_remote_host_path(path: &str) -> bool {
     // `leave` is this host leaving, not the server it is relayed to.
     path.starts_with("/ovs/")
-        // The host family's RPCs (spec/grpc.md §8).
+        // The host family's RPCs (spec/18-grpc.md §8).
         || path.starts_with("/glidex.host.v1.")
         || path == "/pci-devices"
         || path == "/host/topology"
@@ -82,7 +82,7 @@ fn respond_headers(resp: &mut Response, from: &HeaderMap) {
 }
 
 /// Global layer, outermost. On every host: glidex-ui's own `PUT /ui/self`
-/// on the UI socket (§3 of spec/host-page.md), and the target-node header
+/// on the UI socket (§3 of spec/28-host-page.md), and the target-node header
 /// of host-only requests (W2). On an agent, the UI socket's API requests
 /// get `421 use_a_server`: its glidex-ui sends browsers to a server (W5).
 pub async fn ui_relay(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -113,7 +113,7 @@ pub async fn ui_relay(State(app): State<AppState>, mut req: Request, next: Next)
     next.run(req).await
 }
 
-/// glidex-ui's report of itself (spec/host-page.md §3). glidex-ui never
+/// glidex-ui's report of itself (spec/28-host-page.md §3). glidex-ui never
 /// proxies a browser to it (it answers `/api/ui/…` itself).
 pub const UI_SELF_PATH: &str = "/ui/self";
 

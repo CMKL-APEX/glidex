@@ -26,10 +26,10 @@ draft's questions (§17). The edits this document needed in other specs
 are applied (§18).
 
 Before datastores, every managed image and disk was a file in one of two
-directories on the node that used it ([images.md](images.md) §2). A disk
+directories on the node that used it ([10-images.md](10-images.md) §2). A disk
 was bound to one node, and its VM was pinned to that node
-([clustering.md](clustering.md) D6). The specs marked shared storage as a
-non-goal (images.md §1) and as later work (clustering.md §18: "shared
+([14-clustering.md](14-clustering.md) D6). The specs marked shared storage as a
+non-goal (10-images.md §1) and as later work (14-clustering.md §18: "shared
 storage classes", "a shared image store", "moving resources between
 hosts").
 
@@ -56,11 +56,11 @@ later milestones (§11, §12).
   - moving a disk between datastores offline;
   - the bugs that block all of this (§15).
 - **Out:**
-  - live migration (clustering.md §18; datastores are its prerequisite);
+  - live migration (14-clustering.md §18; datastores are its prerequisite);
   - automatic failover and fencing hardware (D8 stays);
   - disk snapshots;
   - encryption at rest;
-  - provisioned IOPS (metering.md §16);
+  - provisioned IOPS (13-metering.md §16);
   - per-datastore quotas (queued for later, S15).
 - **Out, designed only far enough to keep the interface right:**
   - block drivers (`lvm`, `rbd`);
@@ -70,28 +70,28 @@ later milestones (§11, §12).
 
 | # | Decision | Why |
 |---|---|---|
-| S1 | **CSI is not the first interface.** Shared storage starts as filesystems that the vendor or operator mounts (`shared-dir`). glidex never mounts them. glidex's own driver trait follows CSI's split between controller (create/delete/expand/publish) and node (stage/unstage), and uses CSI's topology and capability model. That way a CSI adapter is one more driver (§12, milestone S7), added only when a plugin is actually needed. | **Mounted filesystems:** nearly every vendor and open-source system offers an NFS or POSIX mount (NetApp, Pure, Dell PowerScale, CephFS, GPFS, Lustre). A mount keeps qcow2 and its features: linked clones, sparse files, `qemu-img` resize and shrink. It needs no root, because the mount is done outside glidex (README goal 4, images.md §1 "No step needs root").<br><br>**CSI:** it was designed for container orchestrators. Many plugins assume Kubernetes sidecars and Kubernetes objects such as Secrets, CRDs and node labels. Node plugins run as root and mount things. A VM can only use CSI's `Block` volume mode, which gives up qcow2. Outside Kubernetes, only Nomad and a few others host CSI plugins, and their compatibility differs from plugin to plugin. The cost is high and arrives before any user asks for a particular plugin. |
-| S2 | **A datastore is a cluster-scoped record in the replicated store.** Disks and image copies name their datastore by id. | Disks belong to a project and images to the cluster (security.md §7). Storage belongs to the operator, like nodes and networks. In a single-host install the "cluster" is the host (clustering.md D5), so this works the same there. |
+| S1 | **CSI is not the first interface.** Shared storage starts as filesystems that the vendor or operator mounts (`shared-dir`). glidex never mounts them. glidex's own driver trait follows CSI's split between controller (create/delete/expand/publish) and node (stage/unstage), and uses CSI's topology and capability model. That way a CSI adapter is one more driver (§12, milestone S7), added only when a plugin is actually needed. | **Mounted filesystems:** nearly every vendor and open-source system offers an NFS or POSIX mount (NetApp, Pure, Dell PowerScale, CephFS, GPFS, Lustre). A mount keeps qcow2 and its features: linked clones, sparse files, `qemu-img` resize and shrink. It needs no root, because the mount is done outside glidex (README goal 4, 10-images.md §1 "No step needs root").<br><br>**CSI:** it was designed for container orchestrators. Many plugins assume Kubernetes sidecars and Kubernetes objects such as Secrets, CRDs and node labels. Node plugins run as root and mount things. A VM can only use CSI's `Block` volume mode, which gives up qcow2. Outside Kubernetes, only Nomad and a few others host CSI plugins, and their compatibility differs from plugin to plugin. The cost is high and arrives before any user asks for a particular plugin. |
+| S2 | **A datastore is a cluster-scoped record in the replicated store.** Disks and image copies name their datastore by id. | Disks belong to a project and images to the cluster (11-security.md §7). Storage belongs to the operator, like nodes and networks. In a single-host install the "cluster" is the host (14-clustering.md D5), so this works the same there. |
 | S3 | **The current directories become the built-in datastore `local`** (driver `dir`, on every node, default for disks and images). A disk record that names no datastore is on `local`. No file moves. As built (S1), this is a serde default rather than a schema migration: `local` is never written into a record, so records stay as older releases wrote them, and nothing needs a schema bump. The stored `local` record comes with the resource in S2. | No user sees a change until an operator adds a datastore. D19 ("ids travel") still holds, because files stay named by id. |
 | S4 | **A datastore's topology says where it is reachable.**<br>- `node-local`: each node has its own separate copy; `dir`. A volume is bound to one node.<br>- `shared`: every node that reaches it sees the same files; `shared-dir`.<br>The scheduler places a VM only on a node that reaches every one of its volumes. | This generalises D6 without changing it for `local`. A shared volume has no node binding, so its VM can move when it is stopped (§9). |
 | S5 | **A node reaches a shared datastore only when it finds the datastore's marker file** (`<path>/.glidex-datastore`, holding datastore and cluster id) **on a writable mount**. | An NFS export that isn't mounted leaves an empty directory on the root filesystem. Writing there would quietly put disks on the wrong disk, and different nodes would see different files. The cluster id stops two clusters from sharing one export by mistake. |
 | S6 | **Exactly one node acts on a volume's files at a time:** the volume's **worker**. For a node-local volume it is the bound node. For a shared volume the leader chooses it and records it (`Disk.worker`): the VM's placement if the VM is placed, otherwise a Ready node that reaches the datastore. | Today "the disk controller on the bound node" gives this for free. With shared storage, every node's disk controller could see the record and act on it. Two `qemu-img resize` runs on one file corrupt it. |
 | S7 | **Disk operations run on the worker, never on the server that answers the API call** (§8). That includes reading the partition table for shrink and extend-root. | This fixes the gaps found in §15: the API currently reads the file locally. It is also the only correct rule once files are not on the server. |
 | S8 | **Linked clones need the image copy in the same file datastore as the disk.** The overlay names its backing file by a **relative** path (`../images/<id>.qcow2`). | The qcow2 header stores the backing path. An absolute path breaks as soon as nodes mount the datastore at different paths, or `GLIDEX_IMAGE_DIR` differs from node to node. |
-| S9 | **A shared datastore holds one copy of each image it needs** (`image_caches/<image>/ds:<datastore>`). A `node-local` one keeps a copy on each node (`.../<node>`, as today). | This is the "shared image store" of clustering.md §18 without a new service. Images stay cluster records. Only where their files live changes. |
+| S9 | **A shared datastore holds one copy of each image it needs** (`image_caches/<image>/ds:<datastore>`). A `node-local` one keeps a copy on each node (`.../<node>`, as today). | This is the "shared image store" of 14-clustering.md §18 without a new service. Images stay cluster records. Only where their files live changes. |
 | S10 | **Moving a VM stays explicit and offline**, and needs every disk on a shared datastore. A **stopped** VM can be re-placed (`POST /vms/{id}/place`). A **`Lost`** VM can be re-placed after `node forget --fenced`. Nothing moves automatically. | D8 still holds: a partitioned node may still be running the VM. Today only the operator's `--fenced` statement establishes that it isn't. Hypervisor file locks (§10) are a second check, not the guarantee. |
-| S11 | **Mount points live under one root, `/srv/glidex/<name>`**, which both units list as `ReadWritePaths=-/srv/glidex`. Paths outside it are refused unless an operator adds a drop-in. | Registering a datastore through the API must not require editing systemd units on every node, and the control plane can't widen its own sandbox (security.md §10). |
+| S11 | **Mount points live under one root, `/srv/glidex/<name>`**, which both units list as `ReadWritePaths=-/srv/glidex`. Paths outside it are refused unless an operator adds a drop-in. | Registering a datastore through the API must not require editing systemd units on every node, and the control plane can't widen its own sandbox (11-security.md §10). |
 | S12 | **Block volumes and a privileged storage helper come with S6** (`glidex-stord`, §11, S17–S19), on the netd pattern. | Mapping LUNs, activating LVs and `rbd map` need root. The unprivileged control plane asks a small root daemon, as it does with netd for networking. |
 | S13 | **New disks default to `local`, even once a shared datastore exists.** The operator moves the default with `default_for` (`gxctl datastore set <name> --default disks`). When the installer registers a shared datastore, it asks whether that datastore should become the default; the suggested answer is no. | `local` is what every existing install uses, and it is the fastest store. Choosing shared storage (VMs can move, at network-storage speed) is the operator's call, made once, not something glidex decides for them. |
 | S14 | **A datastore has one path, which each node may override** (`node_paths: {node: path}`). A node without an override uses `path`. Every path, default or override, is under the S11 root. | Most sites mount the same export at the same place everywhere, so one path covers them. Some nodes can't (an existing mount, a different vendor agent layout). Overrides cost little: backing paths are relative (S8), and the marker plus `fs_id` (§4.1) prove that every node's path reaches the same filesystem. |
-| S15 | **Per-datastore quotas are queued, not built now.** Project `disk_gib` stays cluster-wide across all datastores. | No site has a scarce fast datastore yet. When one does, the quota follows tenancy.md's per-cluster model (T6): `disk_gib` per project per datastore, checked where `disk_gib` is checked today. |
+| S15 | **Per-datastore quotas are queued, not built now.** Project `disk_gib` stays cluster-wide across all datastores. | No site has a scarce fast datastore yet. When one does, the quota follows 19-tenancy.md's per-cluster model (T6): `disk_gib` per project per datastore, checked where `disk_gib` is checked today. |
 | S16 | **glidex locks shared volumes itself** (§10): an OFD lock on `<root>/.locks/<disk-id>.lock`, taken by the shim before the hypervisor starts and by the worker around disk operations. | Placement and claims can't stop a node that was partitioned and kept running (D8). Cloud Hypervisor's own lock comes too late for qcow2, because it repairs a dirty image before locking it (§19, H2). A separate lock file works the same for both hypervisors and for `qemu-img`. |
 | S17 | **Block volumes go through `glidex-stord`, a root helper on netd's model** (§11.1): a Unix socket for the `glidex` group, newline JSON with a `hello` handshake, peer-uid authorization and a per-op policy. It acts only on volume groups the operator lists in `/etc/glidex/stord.json` (`allowed_vgs`), and only on logical volumes named `gx-d-<disk-id>` or `gx-i-<image-id>`. | Creating and activating LVs needs root, and the control plane must stay unprivileged. The allow-list and the name rule mean a compromised control plane can make and remove glidex's own volumes, but can't touch the host's root LV or another application's. |
 | S18 | **Device access is per VM** (§11.1). At activation stord makes the LV's device node `glidex:glidex 0600`. Before a VM starts, stord writes a drop-in for its `glidex-vm@<id>` unit, `DeviceAllow=` for exactly its volumes, and reloads systemd. The control plane's own unit gets `DeviceAllow=block-device-mapper rw`, to make and edit glidex-owned volumes; file ownership is what limits it. | `DevicePolicy=closed` on the VM unit then still keeps each hypervisor to its own disks. `systemctl set-property` is not used: its reset line drops the unit's own devices (`/dev/kvm`) (§19, H5). |
 | S19 | **The first block driver is `lvm`: node-local LVM-thin** in a volume group and thin pool the operator made (§11.1). Volumes are raw. A linked disk is a thin snapshot of the node's image LV; a full one is a copy. Disks grow, and never shrink. glidex takes no volume lock of its own on them: on one node the hypervisors' own locks refuse a second instance (§19, H6). `shared-lvm` and `rbd` come later. | Thin pools give the same thin, overcommitted, fast-clone behaviour as qcow2 files, on the device a site gives VMs. Raw block devices carry no qcow2 metadata, so H2's refcount rewrite can't happen. |
 | S20 | **Glidex enrolls with a hyperstor cluster as a management identity of its own** (§11.2): the operator makes a single-use `mgmt` token (`hyperstorctl token create --role mgmt --name glidex`) and gives it to `datastore create`. The server that takes the request makes a key, joins with the token (TLS pinned to the root the token names) and seals the key with the cluster's secrets key; the record keeps the certificate. The leader renews it when a third of its life is left. | No hyperstor password or admin certificate passes through glidex, and the key never leaves it unsealed. The token is single-use and short-lived, as glidex's own join tokens are. hyperstor's audit log and access rules then see glidex as itself. |
 | S21 | **Disk bytes go through `hyperstorctl write-volume` and `read-volume`**, straight to the map service and the storage nodes, holding the volume's lease: filling an image's volume (zeros skipped) and the partition code's reads and writes (§11.2). For the partition code a volume is the path `hyperstor://<map>/<volume>`. | There is no block device to give `qemu-img` or `sgdisk`, and making one (ublk) needs root. Glidex already edits partitions through a shadow file (H7); only the region reads and writes change. Holding the lease means a volume a VM has attached is refused, not corrupted. |
-| S22 | **A hyperstor disk's worker is a server.** Its volume operations (create, clone, grow, delete) run where glidex's identity can be opened, whatever node its VM runs on; staging is the VM's node's, through its `hyperstor-vhost`, and needs no identity. | Agents don't hold the secrets key (tenancy.md §13). Staging talks only to the node's local `hyperstor-vhost`, which the node's own certificate lets in. |
+| S22 | **A hyperstor disk's worker is a server.** Its volume operations (create, clone, grow, delete) run where glidex's identity can be opened, whatever node its VM runs on; staging is the VM's node's, through its `hyperstor-vhost`, and needs no identity. | Agents don't hold the secrets key (19-tenancy.md §13). Staging talks only to the node's local `hyperstor-vhost`, which the node's own certificate lets in. |
 | S23 | **A VM's disks preempt their leases only when it was placed again after its node was forgotten as fenced** (`takeover_disks`, set by `place` for a `Lost` VM, cleared at the next launch). Every other attach waits for the holder. | hyperstor's preemption cuts the holder off (hyperstor D119): safe only when the operator has said the old node is fenced (S10, D8). A normal restart elsewhere finds the volume detached by the stop. |
 | S24 | **Image volumes are named for their datastore, and the leader removes those whose image is gone.** `glidex image <image> on <datastore id>`; each probe round, the leader deletes this datastore's image volumes whose image no longer exists; one a clone still needs is left for the next round. | A deleted disk's volume goes to hyperstor's trash, where its clone still needs the image's snapshot, so deleting the image's volume with the image fails until the trash is purged. Naming them by datastore keeps two glidex clusters sharing a hyperstor pool from removing each other's. |
 | S25 | **A volume a failed creation left is discarded for good, not kept in hyperstor's trash** (open for review): the driver deletes it and purges it from the trash, and before making a volume it frees the id (a leftover under it deleted, a trashed one purged and waited for, up to 2 min). The image volume is converted before it is made, so it exists only while being written, holding its lease. Retrying an image volume is bounded. A disk a person deletes still goes to the trash. | hyperstor keeps a deleted volume's id taken until it is purged, and glidex's volume ids are derived from the disk's or image's: a failed fill, deleted, made every retry fail with "exists" (on a pilot cluster the image loop retried without pause, about 100 refused calls a second into hyperstor's audit log). A failed creation's volume never held a disk's data, so the trash protects nothing there. |
@@ -106,7 +106,7 @@ later milestones (§11, §12).
 | `is_local_disk` (`state.rs:889`) | `is_worker(disk)` |
 | scheduler filter "disk bound to this node" (`scheduler.rs:114`) | "node reaches every volume's datastore, and node-local volumes are bound here or unbound" |
 | `DiskBinding {path, format, backing_files}` | `VolumeBinding::File{…}` now, `Block{dev}` and `Rbd{…}` later (§11) |
-| disk files never leave their node (clustering.md §18) | `POST /disks/{id}/move {datastore}` copies offline (§8.3) |
+| disk files never leave their node (14-clustering.md §18) | `POST /disks/{id}/move {datastore}` copies offline (§8.3) |
 
 ## 4. Model
 
@@ -122,7 +122,7 @@ pub struct Datastore {
     pub nodes: NodeSelector,         // All | Only(Vec<node id>); node-local: where it exists
     pub default_for: Vec<Content>,   // at most one datastore is the default per content
     pub linked_clones: bool,         // default true where the driver supports it
-    pub direct_io: Option<bool>,     // QEMU cache.direct; None = probe (hypervisors.md)
+    pub direct_io: Option<bool>,     // QEMU cache.direct; None = probe (04-hypervisors.md)
     pub phase: DatastorePhase,       // Pending | Ready | Draining | Deleting
     pub created_at: u64,
     pub deletion_requested_at: Option<u64>,
@@ -220,7 +220,7 @@ pub struct Datastore {
 - **Rows are dropped** when the node leaves the datastore's `nodes`.
 - **When nodes probe:** every 60 s, when a datastore is written (in a
   cluster, `cache_sync`), and right after create and update.
-- **Row writes are status writes** (spec/clustering.md §8.3). The leader
+- **Row writes are status writes** (spec/14-clustering.md §8.3). The leader
   accepts only the node's own key (`check_status_write`). A server that
   isn't the leader sends them like an agent (`fix/follower-status-writes`).
 
@@ -395,7 +395,7 @@ topology `Shared`):
 - The overlay names the copy by the relative path
   `../images/<id>.qcow2`, which is right from any node's mount.
 - Full clones still read this node's own copy.
-- The image can't be deleted while a linked disk uses it (images.md §3).
+- The image can't be deleted while a linked disk uses it (10-images.md §3).
 
 **Deleting an image:**
 - Every node that reaches a datastore holding a copy removes the file
@@ -443,7 +443,7 @@ leader made the disk there.
 
 ```rust
 pub struct Disk {
-    // ...existing fields (images.md §3)...
+    // ...existing fields (10-images.md §3)...
     pub datastore: String,           // serde default "local" (S3)
     pub node: Option<String>,        // node-local datastores only
     pub worker: Option<String>,      // S6; written by the leader
@@ -459,7 +459,7 @@ pub struct Disk {
 
 **Invariant.** A `Linked` disk's datastore holds a Ready copy of its
 image before `materialize` runs. That copy can't be dropped while a
-linked disk in that datastore uses it. This extends images.md §3's
+linked disk in that datastore uses it. This extends 10-images.md §3's
 `ImageHold` from the image to the copy.
 
 **Invariant.** `node` is `None` exactly when the datastore is `Shared`.
@@ -470,15 +470,15 @@ linked disk in that datastore uses it. This extends images.md §3's
 ```
 <datastore root>/
 ├── .glidex-datastore       # {"datastore": "<id>", "cluster": "<cluster id>", "created_at": …}, 0444
-├── images/<image-id>.qcow2 # as images.md §2, 0444
+├── images/<image-id>.qcow2 # as 10-images.md §2, 0444
 ├── disks/<disk-id>.qcow2   # 0600; linked overlays back onto ../images/<image-id>.qcow2
-└── .gx-tmp/                # dot temporaries, same filesystem (images.md §2)
+└── .gx-tmp/                # dot temporaries, same filesystem (10-images.md §2)
 ```
 
 - The `local` datastore keeps today's two directories and has no marker.
   It is node-local, so the node-local rule applies and nothing else can
   reach it.
-- Every invariant of images.md §2 still holds within a datastore:
+- Every invariant of 10-images.md §2 still holds within a datastore:
   - names are by id only;
   - orphan files are reported, never deleted;
   - a record whose file is missing is marked missing.
@@ -516,7 +516,7 @@ The scheduler's `Request` (`state.rs:678`) gains each volume's
 - the volume's datastore is in `nodes` and `datastore_nodes/<ds>/<node>` is reachable; and
 - if the datastore is node-local, the volume is unbound or bound to this node.
 
-**Bind** (unchanged for node-local, clustering.md §9.1): unbound node-local volumes bind to the chosen node in the same write. Shared volumes get `worker` set to the chosen node.
+**Bind** (unchanged for node-local, 14-clustering.md §9.1): unbound node-local volumes bind to the chosen node in the same write. Shared volumes get `worker` set to the chosen node.
 
 **Score:** prefer nodes with free space on node-local datastores of unbound volumes. A shared datastore scores the same on every node.
 
@@ -524,9 +524,9 @@ The scheduler's `Request` (`state.rs:678`) gains each volume's
 
 ### 5.3 Host paths
 
-Raw host paths (`rootfs_path` and the others, security.md §7.4) stay as
+Raw host paths (`rootfs_path` and the others, 11-security.md §7.4) stay as
 an admin escape hatch. The scheduler still doesn't know where those files
-exist (a gap noted in clustering.md). A VM with host paths should be
+exist (a gap noted in 14-clustering.md). A VM with host paths should be
 pinned with `node`.
 
 A **registered `dir` datastore** is now the recommended way to use
@@ -551,7 +551,7 @@ The image-cache controller (`controller/image_cache.rs`) works per
 the fetching node: another shared datastore it mounts, or a peer over
 the cluster port, as today. sha256 is checked either way.
 
-**Firmware and kernel images** ([kernel-boot.md](kernel-boot.md) §4) follow the same rule. Launch resolves the firmware
+**Firmware and kernel images** ([23-kernel-boot.md](23-kernel-boot.md) §4) follow the same rule. Launch resolves the firmware
 path on the placed node (§15, bug 1).
 
 **Linked overlays.** New overlays are created with a relative backing
@@ -560,9 +560,9 @@ directory). Existing overlays in `local` keep their absolute paths. They
 stay correct as long as `local` never moves, which S3 guarantees. A
 `move` (§8.3) rebases them (`qemu-img rebase -u`).
 
-**Dedup.** On import (clustering.md §5.9), an image whose sha256 matches
+**Dedup.** On import (14-clustering.md §5.9), an image whose sha256 matches
 a Ready copy on a shared datastore can share that file. This settles
-clustering.md O6 for shared datastores only. Two records still keep two
+14-clustering.md O6 for shared datastores only. Two records still keep two
 files on `local`.
 
 ## 7. The driver interface
@@ -648,7 +648,7 @@ unchanged.
   same transaction as the request.
 - If the worker goes `Unknown` while the disk is not attached to a
   placed VM, the leader reassigns it after the node grace period. Every
-  operation already writes to a dot temporary and renames (images.md §2),
+  operation already writes to a dot temporary and renames (10-images.md §2),
   so a half-done operation on the old worker leaves only a temporary. A
   new worker deletes temporaries older than the reassignment.
 - A worker that comes back after losing the role must not finish its
@@ -666,8 +666,8 @@ unchanged.
 - They record the request.
 - The checks that need the file (minimum shrink size, growable root
   partition) run on the worker. The result comes back as the `Ready`
-  condition (`ResizeInvalid`, already in reconciliation.md §10.1) and the
-  `?wait` outcomes (rest-api.md).
+  condition (`ResizeInvalid`, already in 12-reconciliation.md §10.1) and the
+  `?wait` outcomes (06-rest-api.md).
 - A synchronous early answer, as today, is kept only when the answering
   server is the worker.
 
@@ -687,7 +687,7 @@ unchanged.
 - The source file is then deleted by its old worker. If that worker is
   gone, the file is reported as an orphan, never deleted blindly.
 
-This also gives clustering.md §18's "moving resources between hosts"
+This also gives 14-clustering.md §18's "moving resources between hosts"
 for node-local disks: moving from `local` on node A to `local` on node B.
 
 **As built (S5).** One node, the **mover**, does the whole move: it
@@ -745,7 +745,7 @@ over the cluster port.
   - It clears `status.placement`, and runs the scheduler with the pin if given.
   - It moves each shared disk's `worker` to the new node and re-binds the VM's node-scoped resources (node networks are refused; OVN ports move, as at start).
   - Needs `placeVm` (operators, §13).
-- **`Lost` VM** (after `node forget --fenced`, clustering.md §5.6): the same call is allowed, which is what that section anticipated.
+- **`Lost` VM** (after `node forget --fenced`, 14-clustering.md §5.6): the same call is allowed, which is what that section anticipated.
 - **Running VM:** refused with `409 invalid_state`. Live migration is out of scope.
 
 **As built (S4)** (`VmManager::place_vm`, `controller/placement.rs`):
@@ -795,13 +795,13 @@ over the cluster port.
 
 ## 10. Exclusive access
 
-The invariants of images.md §3 and reconciliation.md D11 (one VM per
+The invariants of 10-images.md §3 and 12-reconciliation.md D11 (one VM per
 disk, claims) don't change. On shared storage they are what stops two
 nodes from writing one disk. Three more layers back them up:
 
 1. **Placement is the lock.** A node launches a VM only if `placement`
    is itself. It acts on a disk only if it is the `worker`. Both are
-   Raft writes. A partitioned node doesn't launch (clustering.md §8.2),
+   Raft writes. A partitioned node doesn't launch (14-clustering.md §8.2),
    but it can keep a VM that is already running (D8). That's why S10
    needs `--fenced` before a `Lost` VM is re-placed.
 2. **glidex's own volume lock (S16).**
@@ -841,7 +841,7 @@ nodes from writing one disk. Three more layers back them up:
      the qcow2 parser runs).
 4. **Leases are later.** Protection that doesn't depend on locks
    (sanlock-style leases, RBD exclusive locks) comes with fencing
-   (clustering.md §18).
+   (14-clustering.md §18).
 
 ## 11. Block drivers and `glidex-stord`
 
@@ -862,7 +862,7 @@ stay right:
     vhost-user-blk from a separate daemon **(verify)**.
   - Exclusive locks provide fencing.
 - **`glidex-stord`:**
-  - a root helper on netd's model (networking.md §7): a Unix socket,
+  - a root helper on netd's model (09-networking.md §7): a Unix socket,
     peer-uid authorization, its own state database;
   - it maps and unmaps devices and fixes their ownership for the
     `glidex` user;
@@ -893,7 +893,7 @@ per node, as `node_paths` does for `dir`).
 **`glidex-stord`** (S17), `crates/glidex-stord`:
 - **Sockets:** `/run/glidex-stord/stord.sock` (`root:glidex 0660`; its own runtime directory, apart from netd's `/run/glidex`), and
   `stord-admin.sock` for `glidex-admin` when that group exists, as netd.
-- **Protocol:** netd's (§7.3 of networking.md): one request per line,
+- **Protocol:** netd's (§7.3 of 09-networking.md): one request per line,
   `{id, op, args, on_behalf_of?}`, `hello {protocol}` first.
 - **State:** none of its own. The volumes are in LVM, and the devices
   each VM may open are its drop-ins, under `/run`, which a reboot clears.
@@ -951,7 +951,7 @@ QEMU `driver: host_device`, `locking: on`, `cache.direct: on`.
 
 **Image deletion:** every node removes its image LVs that no snapshot
 uses (`list_volumes`), as `drop_store_copies` does for shared copies.
-Linked disks keep the image from being deleted (images.md §3).
+Linked disks keep the image from being deleted (10-images.md §3).
 
 **Datastore deletion:** each node's probe lists the image volumes it
 keeps in the datastore (`NodeRow.image_volumes`, the API's
@@ -1124,7 +1124,7 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
 | Kubernetes assumptions | The CSI spec doesn't depend on any container orchestrator, but plugins often do. Provisioning goes through Kubernetes sidecars (`external-provisioner`, `-attacher`, `-resizer`, `-snapshotter`) that watch Kubernetes objects. Credentials come as Kubernetes Secrets. Some plugins read their own CRDs or node labels. glidex would have to play the sidecars' role, plugin by plugin. |
 | Root and containers | Node plugins mount, run `iscsiadm` and `rbd map` as root, usually from a privileged container with host mount propagation. glidex has neither containers nor a root storage daemon (S12). |
 | Volume model | VMs need `Block` access mode (as KubeVirt uses it). `Mount` mode gives a filesystem, so glidex would write a raw image file inside it, which wastes the volume. Block mode means raw only: no qcow2 overlays (linked clones become `VolumeContentSource` clones, where the plugin supports them) and no shrink. |
-| Operations | Each plugin is a gRPC service per node with its own release cycle, upgrade story and failure modes. Today glidex runs one binary per host (clustering.md D4). |
+| Operations | Each plugin is a gRPC service per node with its own release cycle, upgrade story and failure modes. Today glidex runs one binary per host (14-clustering.md D4). |
 | Demand | No user has asked for a particular plugin yet. The vendors we would meet first also offer NFS. |
 
 ### 12.2 How the adapter would map
@@ -1159,7 +1159,7 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
 
 ## 13. API, authorization, quota and metering
 
-**REST** (and `glidex.storage.v1.DatastoreService`, grpc.md):
+**REST** (and `glidex.storage.v1.DatastoreService`, 18-grpc.md):
 
 | Route | Action |
 |---|---|
@@ -1189,9 +1189,9 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
     the operator and system-admin roles;
   - `useDatastore` is permitted to every principal that may create disks
     in a project, unless a site policy forbids it. That lets operators
-    keep a fast datastore for certain tenants (tenancy.md);
+    keep a fast datastore for certain tenants (19-tenancy.md);
   - `placeVm` is in the operator role.
-- On a shared datastore, host-path rules (security.md §7.4) treat its
+- On a shared datastore, host-path rules (11-security.md §7.4) treat its
   root like the managed directories: a raw path into it needs
   `useHostPath`.
 
@@ -1226,22 +1226,22 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
   threshold (§4.3).
 - **gxctl:** `datastore list | show | create | set | rm`, and
   `disk create --datastore`. `disk show` names the disk's datastore.
-  See cli.md.
+  See 01-cli.md.
 - **UI:** `pages/Datastores.tsx`, in the nav with `readDatastore`; its
   actions need `manageDatastore`. The Disks page gets a Datastore column
   and a create-form select once there is more than `local`. See
-  web-ui.md.
+  07-web-ui.md.
 - **Tests:**
   - UI e2e: `datastores.spec.ts` (the `ui` project). The scratch
     control plane sets `GLIDEX_DATASTORE_ROOT`;
   - gxctl: `node_paths_are_node_equals_path`, and the in-process RPC
     test lists `local`.
 
-**Quota:** project `disk_gib` stays cluster-wide (clustering.md §9.2),
+**Quota:** project `disk_gib` stays cluster-wide (14-clustering.md §9.2),
 counting disks on every datastore. Per-datastore quotas are queued
 (S15).
 
-**Metering** (metering.md):
+**Metering** (13-metering.md):
 - `disk.alloc` doesn't change.
 - `disk.stored` and `image.stored` are sampled by the volume's worker,
   or for a shared copy by its fetching node. A shared datastore is
@@ -1260,7 +1260,7 @@ registered datastore, not only shared ones (§4.3). The plan was:
    same migration.
 2. Nothing on disk moves. `GLIDEX_IMAGE_DIR` and `GLIDEX_DISK_DIR` keep
    working as the paths of `local`.
-3. Detach and import (clustering.md §5.8–5.9) carry `local` disks as
+3. Detach and import (14-clustering.md §5.8–5.9) carry `local` disks as
    today. A disk on a shared datastore can't be detached with its node:
    the receiving cluster has no such datastore. That is refused with
    `409`, naming the disks, and the operator moves them to `local`
@@ -1355,38 +1355,38 @@ Open: none.
 ## 18. Edits to other documents (applied)
 
 Applied once S5 was in, as the list below says, except:
-- reconciliation.md got no `Moving` phase: a move is the disk's
+- 12-reconciliation.md got no `Moving` phase: a move is the disk's
   `moving` field, and the phase stays `Ready` (§8.3);
-- the hardening note went to security.md §9 (process and host
+- the hardening note went to 11-security.md §9 (process and host
   hardening), not §10;
-- metering.md records that disks are sampled by their node or worker,
+- 13-metering.md records that disks are sampled by their node or worker,
   and that `group_by=datastore` and metering datastore image copies
   are later work.
 
-- **README.md:** add `storage.md` to the contents table (done with this
+- **README.md:** add `24-storage.md` to the contents table (done with this
   draft) and a "shared storage" line under non-goals until S3 lands.
-- **images.md:**
+- **10-images.md:**
   - §1: lift "Remote or shared storage (NFS, Ceph, iSCSI)" once S3 lands;
   - §2: describe `local` as a datastore;
   - §3: add `Disk.datastore`, `worker` and `volume`;
   - §6: operations run on the worker;
   - §11: point to here.
-- **clustering.md:**
+- **14-clustering.md:**
   - D6: "bound to a node" becomes "bound to a node on a node-local
     datastore; placement follows datastore topology";
   - §9.1: the filter in §5.2;
   - §9.2: copies per location;
   - §18: move "shared storage classes", "shared image store" and "moving
     resources between hosts" here.
-- **reconciliation.md §10.1:** worker rule; `Moving` phase.
-- **security.md:**
+- **12-reconciliation.md §10.1:** worker rule; `Moving` phase.
+- **11-security.md:**
   - §7: `Datastore` entity and actions;
   - §10: `ReadWritePaths=-/srv/glidex` in both units, and the H1
     hardening note: a mount made after a unit starts is writable inside
     it, whatever `ReadWritePaths` says.
-- **rest-api.md / grpc.md / cli.md / web-ui.md:** §13 surfaces.
-- **metering.md:** per-worker sampling and `group_by=datastore`.
-- **installer.md:** create `/srv/glidex` (`0755 root`). Explain that
+- **06-rest-api.md / 18-grpc.md / 01-cli.md / 07-web-ui.md:** §13 surfaces.
+- **13-metering.md:** per-worker sampling and `group_by=datastore`.
+- **05-installer.md:** create `/srv/glidex` (`0755 root`). Explain that
   operators mount datastores under it, owned by `glidex` (NFS: export with
   that uid, root squash is fine). Add the optional step that registers a
   mounted shared datastore and asks whether it becomes the default for new
@@ -1419,7 +1419,7 @@ two separate clients. Everything was removed afterwards.
   - checked with an unlisted `/srv/gx-unlisted`: writable when mounted
     after start, read-only for a unit started after it;
   - normal file permissions still apply. The sandbox just isn't the
-    boundary for late mounts, which security.md §10 should say.
+    boundary for late mounts, which 11-security.md §10 should say.
 
 **H2. Disk locks.**
 - **Cloud Hypervisor, same host:**

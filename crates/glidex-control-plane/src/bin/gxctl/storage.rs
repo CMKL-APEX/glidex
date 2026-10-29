@@ -1,6 +1,6 @@
-//! Guest credentials, images and disks (spec/images.md, spec/credentials.md)
+//! Guest credentials, images and disks (spec/10-images.md, spec/08-credentials.md)
 //! on the generated `glidex.storage.v1` clients, over the Connect protocol
-//! (spec/grpc.md §9.1). Passwords come from hidden prompts and are never
+//! (spec/18-grpc.md §9.1). Passwords come from hidden prompts and are never
 //! shown.
 
 use crate::client::{ApiClient, RpcTransport};
@@ -437,7 +437,7 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
         },
         "pull" | "extract-kernel" => {
             let firmware = flag_value(args, "--firmware");
-            // A kernel extracted from a disk image (spec/kernel-boot.md §10).
+            // A kernel extracted from a disk image (spec/23-kernel-boot.md §10).
             let kernel_from = flag_value(args, "--kernel-from").or_else(|| {
                 (args[0] == "extract-kernel")
                     .then(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
@@ -637,7 +637,7 @@ fn not_ready(conditions: &[Condition]) -> Option<&Condition> {
 }
 
 /// A disk after a write the disk controller carries out (spec/
-/// reconciliation.md §10.1): its state, and what is still pending.
+/// 12-reconciliation.md §10.1): its state, and what is still pending.
 fn print_disk_result(d: &Disk) {
     println!(
         "  {} {} {} {}",
@@ -903,7 +903,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
     }
 }
 
-// ---- datastores (spec/storage.md §13) -------------------------------------
+// ---- datastores (spec/24-storage.md §13) -------------------------------------
 
 const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] | rm <datastore>";
 
@@ -1108,7 +1108,7 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
         },
         "create" => {
             let name = args.get(1).filter(|a| !a.starts_with("--"));
-            // `--lvm VG/POOL` instead of `--path` (spec/storage.md §11.1).
+            // `--lvm VG/POOL` instead of `--path` (spec/24-storage.md §11.1).
             let lvm = flag_value(args, "--lvm").map(|v| v.split_once('/'));
             // `--hyperstor API,… --pool N --token-file F` (§11.2): glidex
             // enrolls with the token, which is never stored.
