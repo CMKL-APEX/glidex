@@ -1,4 +1,4 @@
-//! Kernel extraction runs (spec/kernel-boot.md §10.2): the extractor
+//! Kernel extraction runs (spec/23-kernel-boot.md §10.2): the extractor
 //! appliance boots as a one-shot job in a VM instance, so under the
 //! systemd runner it gets the same unit and sandbox as a VM (the control
 //! plane's own sandbox has no `/dev/kvm`). The image manager prepares the
@@ -685,7 +685,7 @@ impl VmManager {
             .vm_arch(c, std::slice::from_ref(&disk))
             .unwrap_or(crate::images::catalog::Arch::X86_64);
         // On a node-local datastore, the disk's node reads it (§10.2); on a
-        // shared one, any node that reaches the datastore (spec/storage.md §5).
+        // shared one, any node that reaches the datastore (spec/24-storage.md §5).
         if let Some(n) = disk.node.as_deref().filter(|n| *n != self.local_node_id()) {
             let node = self.copy_node(n)?;
             if let Some(why) = Self::extract_refused_on(&node, arch) {
@@ -745,7 +745,7 @@ impl VmManager {
             return Ok(true);
         };
         let disk = self.images.get_disk(&disk_id)?;
-        // Not made yet, busy, or moving (spec/storage.md §8.3): the disk
+        // Not made yet, busy, or moving (spec/24-storage.md §8.3): the disk
         // check that follows holds the launch; extract once it is ready.
         if disk.phase != crate::images::DiskPhase::Ready
             || self.images.busy_op(&disk.id).is_some()

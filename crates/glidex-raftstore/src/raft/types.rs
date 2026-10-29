@@ -1,4 +1,4 @@
-//! openraft's type configuration (glidex spec/clustering.md D1, §6.2), for
+//! openraft's type configuration (glidex spec/14-clustering.md D1, §6.2), for
 //! a store of schema `S`.
 
 use crate::store::{Schema, SnapshotView, WriteSet};

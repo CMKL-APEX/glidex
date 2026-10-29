@@ -1,4 +1,4 @@
-//! RPC adapters (spec/grpc.md §6): gRPC, gRPC-Web and the Connect
+//! RPC adapters (spec/18-grpc.md §6): gRPC, gRPC-Web and the Connect
 //! protocol, served by `connectrpc` inside the API router.
 //!
 //! Each service is mounted at `/<package>.<Service>/{*method}`, so the
@@ -38,7 +38,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Largest RPC message (spec/grpc.md §3).
+/// Largest RPC message (spec/18-grpc.md §3).
 pub const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 /// Longest deadline a unary call may ask for.
 const MAX_DEADLINE: Duration = Duration::from_secs(300);
@@ -47,7 +47,7 @@ const MAX_DEADLINE: Duration = Duration::from_secs(300);
 /// server receives them, never forwarded, never audited.
 const LOCAL_SERVICES: &[&str] = &["grpc.health.v1.Health", REFLECTION, REFLECTION_ALPHA];
 
-/// Server reflection (spec/grpc.md §3): on `api.sock` only, where the
+/// Server reflection (spec/18-grpc.md §3): on `api.sock` only, where the
 /// caller is a local user.
 const REFLECTION: &str = "grpc.reflection.v1.ServerReflection";
 const REFLECTION_ALPHA: &str = "grpc.reflection.v1alpha.ServerReflection";
@@ -124,7 +124,7 @@ async fn api_socket_only(req: axum::extract::Request, next: axum::middleware::Ne
     }
 }
 
-/// Which protocols a listener takes (spec/grpc.md §6): gRPC-Web is the
+/// Which protocols a listener takes (spec/18-grpc.md §6): gRPC-Web is the
 /// browser's, so only the UI socket (and UI requests relayed from an
 /// agent) take it, and they take nothing else.
 fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
@@ -175,7 +175,7 @@ where
         Err(ServiceError::new(
             StatusCode::FORBIDDEN,
             "protocol_not_allowed",
-            "this listener doesn't take this RPC protocol (spec/grpc.md §6)",
+            "this listener doesn't take this RPC protocol (spec/18-grpc.md §6)",
         ))
     } else if principal.is_some_and(|p| !cookie_ok(listener, protocol, p)) {
         Err(ServiceError::new(
@@ -231,7 +231,7 @@ fn rpc_detail(op: &Operation, protocol: Option<Protocol>) -> String {
     format!("{p} {}", op.procedure)
 }
 
-/// The RPC status for an error code (spec/grpc.md §7). Codes not listed
+/// The RPC status for an error code (spec/18-grpc.md §7). Codes not listed
 /// fall back to their REST status.
 pub(crate) fn rpc_code(code: &str, status: StatusCode) -> ErrorCode {
     match code {

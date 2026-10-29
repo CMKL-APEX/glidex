@@ -1,4 +1,4 @@
-//! Listeners (spec/security.md §5.1): TCP (HTTPS unless `tls` is `"off"`,
+//! Listeners (spec/11-security.md §5.1): TCP (HTTPS unless `tls` is `"off"`,
 //! which only loopback listeners allow), `api.sock` for local users and
 //! `ui.sock` for glidex-ui.
 //!

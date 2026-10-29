@@ -13,7 +13,7 @@ Read first, and don't repeat them here:
 | Building, running, the test layers, conventions, a worked example of adding an API operation | [docs/public/src/developer-guide/contributing.md](docs/public/src/developer-guide/contributing.md) |
 | What each crate and module is | [developer-guide/organization.md](docs/public/src/developer-guide/organization.md) |
 | How the pieces fit at run time, and why they are shaped so | [developer-guide/architecture.md](docs/public/src/developer-guide/architecture.md), [design-decisions.md](docs/public/src/developer-guide/design-decisions.md) |
-| The design of an area: invariants, decisions, milestones, what is built | [spec/](spec/README.md), one file per area |
+| The design of an area: invariants, decisions, milestones, what is built | [spec/](spec/README.md), one numbered file per area (`27-gpu-vms.md`) |
 | What is built, in flight and next, across all areas | **[spec/progress.md](spec/progress.md)** |
 
 ## Ground rules
@@ -24,7 +24,7 @@ Read first, and don't repeat them here:
   write-only UI fields, `--from-file`, or standard input; scripts keep
   non-secret settings in a 0600 file outside the repository. A secret
   that was shown is compromised: say so, and have it revoked. Real-IdP
-  and real-host results ([spec/idp-checks.md](spec/idp-checks.md)) name
+  and real-host results ([spec/20-idp-checks.md](spec/20-idp-checks.md)) name
   no accounts and quote no tokens. Don't print a credential while
   checking one: pass it through files and stdin.
 - **Ask before anything shared or hard to undo.** Merging a PR,
@@ -46,6 +46,8 @@ Read first, and don't repeat them here:
    spec's last (`D71` follows `D70`; ids are per spec), the task list
    for the milestone, and open questions. Ask the person steering to
    settle open questions before code; record their answer as a decision.
+   A new area gets a new spec, numbered on from the last
+   (`spec/31-<area>.md`; [spec/README.md](spec/README.md)).
    A bug fix or a refactor needs no spec change unless it changes a
    documented behaviour.
 3. **Claim it.** Open the spec PR (or, for a small change, the first
@@ -60,7 +62,7 @@ Read first, and don't repeat them here:
    Docs for users and operators (`docs/public/`) change in the same PR as
    the behaviour.
 6. **Real checks.** What only a real host or a real identity provider can
-   show is written as a check in [spec/idp-checks.md](spec/idp-checks.md)
+   show is written as a check in [spec/20-idp-checks.md](spec/20-idp-checks.md)
    (or the area's spec) and run on the hosts when the person steering
    agrees; the result row gives the date, the build and pass/fail.
 7. **Finish.** When the PRs merge: the board's *In flight* row goes, the

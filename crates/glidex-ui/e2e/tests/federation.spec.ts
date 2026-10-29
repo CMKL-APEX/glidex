@@ -1,4 +1,4 @@
-// Workload federation (spec/tenancy.md §9): a federation made on the
+// Workload federation (spec/19-tenancy.md §9): a federation made on the
 // tenant's page, against a small OIDC issuer this test serves on the
 // loopback, then a job's JWT from it exchanged for a token acting as a
 // service account, and used.

@@ -1,4 +1,4 @@
-//! `glidex.auth.v1.LoginService` (spec/tenancy.md §6, §14): discovery,
+//! `glidex.auth.v1.LoginService` (spec/19-tenancy.md §6, §14): discovery,
 //! the device grant and password tokens. The REST twins in `api/access.rs`
 //! call these too; browser logins (redirects) stay there and share
 //! `oidc_client` and `oidc_user`.
@@ -48,7 +48,7 @@ impl Minted {
     }
 }
 
-/// Audit a login outcome (spec/security.md §10).
+/// Audit a login outcome (spec/11-security.md §10).
 pub fn audit_login(
     app: &AppState,
     p: Option<&Principal>,
@@ -298,11 +298,11 @@ pub async fn poll_device(
     }))
 }
 
-/// CLI/CI token login (spec/gxctl-auth.md §7.3): PAM credentials in, a
+/// CLI/CI token login (spec/17-gxctl-auth.md §7.3): PAM credentials in, a
 /// personal bearer token out. Same authd path, rate limits, fixed delay
 /// and JIT provisioning as `POST /auth/login`; the answer is a token
 /// because the CLI and CI carry tokens while sessions stay the browser's
-/// half of security.md §5.5.
+/// half of 11-security.md §5.5.
 pub async fn password_token(
     app: &AppState,
     origin: &Origin<'_>,
@@ -313,7 +313,7 @@ pub async fn password_token(
             "PAM logins are off: set auth.pam.enabled in control-plane.json, or name a PAM connector",
         ));
     }
-    // Passwords only over TLS or from this host (security.md §5.3), the
+    // Passwords only over TLS or from this host (11-security.md §5.3), the
     // same rule as `login`.
     let local = match origin.listener {
         Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,

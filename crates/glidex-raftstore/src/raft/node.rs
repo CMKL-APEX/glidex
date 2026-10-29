@@ -1,6 +1,6 @@
 //! A running Raft member: the log, the state machine, the transport, and the
 //! [`Replicator`] that makes [`Db::write`] a Raft proposal (glidex
-//! spec/clustering.md §6.1).
+//! spec/14-clustering.md §6.1).
 
 use super::*;
 use crate::store::{Db, Replicator, Schema, StoreError, WriteSet};

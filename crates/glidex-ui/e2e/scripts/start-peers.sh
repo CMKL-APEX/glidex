@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Two more throwaway control planes for the two-organization spec
-# (tests/two-organizations.spec.ts, spec/tenancy.md D63–D73): `north`, a
+# (tests/two-organizations.spec.ts, spec/19-tenancy.md D63–D73): `north`, a
 # cluster, and `acme`, another organization whose directory's tenant
 # north admits. Each serves its API over HTTPS with a self-signed
 # certificate (trust pins it) and has its own glidex-ui over HTTPS:

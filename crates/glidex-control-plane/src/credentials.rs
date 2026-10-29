@@ -91,7 +91,7 @@ storage_err!(
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
     pub username: String,
-    /// Owning project id (spec/security.md §6.2). Credentials are keyed by
+    /// Owning project id (spec/11-security.md §6.2). Credentials are keyed by
     /// `(project, username)`.
     #[serde(default)]
     pub project: String,

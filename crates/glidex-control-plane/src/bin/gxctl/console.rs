@@ -1,4 +1,4 @@
-//! `connect` and `log`: the VM console through the API (spec/cli.md).
+//! `connect` and `log`: the VM console through the API (spec/01-cli.md).
 //!
 //! The console is the bidi RPC `VmService.Console`, on an HTTP/2
 //! connection of its own made like every other (api.sock, TCP or TLS).

@@ -12,7 +12,7 @@ import { useNodes } from "../nodes";
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
 
-/** Where registered datastores are mounted (spec/storage.md S11). */
+/** Where registered datastores are mounted (spec/24-storage.md S11). */
 const ROOT = "/srv/glidex";
 
 function errorText(e: unknown): string {

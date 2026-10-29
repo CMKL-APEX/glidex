@@ -1,4 +1,4 @@
-// Logging in at a directory (spec/tenancy.md §6, §14): what to offer for a
+// Logging in at a directory (spec/19-tenancy.md §6, §14): what to offer for a
 // hint, the device grant for gxctl, and password tokens through a PAM
 // connector. Browser logins are redirects and stay HTTP-only.
 
@@ -32,7 +32,7 @@ export type DiscoverRequest = Message<"glidex.auth.v1.DiscoverRequest"> & {
 
   /**
    * The directory whose login page asks (`/login/<directory>`,
-   * spec/tenancy.md D61); unset: found from an email, else the host's own.
+   * spec/19-tenancy.md D61); unset: found from an email, else the host's own.
    *
    * @generated from field: string directory = 2;
    */
@@ -52,7 +52,7 @@ export type DiscoverRequestJson = {
 
   /**
    * The directory whose login page asks (`/login/<directory>`,
-   * spec/tenancy.md D61); unset: found from an email, else the host's own.
+   * spec/19-tenancy.md D61); unset: found from an email, else the host's own.
    *
    * @generated from field: string directory = 2;
    */
@@ -796,7 +796,7 @@ export const LoginService: GenService<{
     output: typeof PollDeviceResponseSchema;
   },
   /**
-   * PAM credentials in, a personal token out (spec/gxctl-auth.md §7.3).
+   * PAM credentials in, a personal token out (spec/17-gxctl-auth.md §7.3).
    * Over TLS or from this host only.
    *
    * @generated from rpc glidex.auth.v1.LoginService.PasswordToken
@@ -807,7 +807,7 @@ export const LoginService: GenService<{
     output: typeof PasswordTokenResponseSchema;
   },
   /**
-   * What an invitation link is for, before its login (spec/tenancy.md
+   * What an invitation link is for, before its login (spec/19-tenancy.md
    * §6.1): the tenant, the connector and the invited address. Needs the
    * invitation's secret; any other answer is `404`.
    *

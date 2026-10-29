@@ -1,4 +1,4 @@
-//! REST twins of `glidex.tenancy.v1` (spec/tenancy.md §14): the proto
+//! REST twins of `glidex.tenancy.v1` (spec/19-tenancy.md §14): the proto
 //! messages as JSON, path parameters merged into the request, and the same
 //! `service::tenancy` functions as the RPCs.
 
@@ -215,7 +215,7 @@ pub async fn set_device_pools(
     Ok(Json(svc::set_device_pools(&c, req).await?))
 }
 
-// ---- DirectoryService (spec/tenancy.md D59) --------------------------------
+// ---- DirectoryService (spec/19-tenancy.md D59) --------------------------------
 
 pub async fn list_directories(c: Caller) -> Result<Json<pb::ListDirectoriesResponse>, ApiErr> {
     Ok(Json(crate::service::directories::list_directories(
@@ -245,7 +245,7 @@ pub async fn delete_directory(c: Caller, Path(id): Path<String>) -> Result<Statu
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- offers (spec/tenancy.md D64) ------------------------------------------
+// ---- offers (spec/19-tenancy.md D64) ------------------------------------------
 
 pub async fn offer_admission(
     c: Caller,
@@ -272,7 +272,7 @@ pub async fn revoke_offer(c: Caller, Path(id): Path<String>) -> Result<StatusCod
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- trust (spec/tenancy.md D65) ---------------------------------------------
+// ---- trust (spec/19-tenancy.md D65) ---------------------------------------------
 
 pub async fn list_tenant_clusters(
     c: Caller,

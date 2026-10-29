@@ -1,4 +1,4 @@
-//! What a node finds at its path to a datastore (spec/storage.md §4.1).
+//! What a node finds at its path to a datastore (spec/24-storage.md §4.1).
 
 use super::record::{Datastore, NodeRow};
 use serde::{Deserialize, Serialize};
@@ -136,7 +136,7 @@ fn unescape(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// What is risky for disks about a shared mount (spec/storage.md §17):
+/// What is risky for disks about a shared mount (spec/24-storage.md §17):
 /// on NFS, `soft` (a server outage fails guests' writes, which can leave
 /// a qcow2 corrupt) and locks kept on this node only (`nolock`,
 /// `local_lock=`), with which the volume locks (S16) no longer keep two
@@ -176,7 +176,7 @@ fn mount_warnings(fstype: &str, options: &[String]) -> Vec<String> {
 /// put disks where no other node sees them. Every other node must find the
 /// marker. The marker is created with `O_EXCL`, so of two clusters claiming
 /// one export at once only one wins (checked across NFSv4 clients,
-/// spec/storage.md §19 H3).
+/// spec/24-storage.md §19 H3).
 fn claim(
     p: &Path,
     id: &str,

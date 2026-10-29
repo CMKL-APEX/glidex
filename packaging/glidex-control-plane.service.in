@@ -11,7 +11,7 @@ After=network-online.target glidex-netd.service glidex-authd.socket
 [Service]
 Type=simple
 # The glidex system user; its primary group also opens glidex-netd's and
-# glidex-authd's sockets. No human is in this group (spec/security.md §4).
+# glidex-authd's sockets. No human is in this group (spec/11-security.md §4).
 User=@USER@
 Group=glidex
 # kvm for /dev/kvm (left out when the group doesn't exist).
@@ -26,7 +26,7 @@ ExecStart=@BIN@
 # see control-plane.json.example. Plain HTTP ("tls": "off") is refused
 # unless every listener is loopback.
 # Each VM runs in its own glidex-vm unit: stopping, restarting or upgrading
-# this service leaves them running (spec/reconciliation.md D1/D2).
+# this service leaves them running (spec/12-reconciliation.md D1/D2).
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
@@ -35,7 +35,7 @@ Restart=on-failure
 RestartForceExitStatus=SIGHUP
 RestartSec=2
 
-# Runtime files (spec/security.md §9): api.sock and ui.sock in
+# Runtime files (spec/11-security.md §9): api.sock and ui.sock in
 # /run/glidex-cp (0755 so glidex-users and glidex-ui reach their socket;
 # each socket checks its peer), per-VM directories in vms/<id>/ (0700:
 # launch.json, instance.json, the shim, hypervisor API and console sockets,
@@ -48,7 +48,7 @@ RuntimeDirectoryPreserve=yes
 # reached through the API (vm.console), not the raw sockets.
 UMask=0077
 
-# Credentials (spec/security.md §13): secrets are not put in
+# Credentials (spec/11-security.md §13): secrets are not put in
 # control-plane.json or the environment. Uncomment in a drop-in
 # (systemctl edit glidex-control-plane) for the features you use; systemd
 # copies each file into $CREDENTIALS_DIRECTORY, readable only by this unit.
@@ -56,7 +56,7 @@ UMask=0077
 #LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
 #LoadCredential=secrets-kek:/etc/glidex/secrets.kek
 
-# Sandbox (spec/reconciliation.md §13.3). Hypervisors run in the
+# Sandbox (spec/12-reconciliation.md §13.3). Hypervisors run in the
 # glidex-vm units with their own sandbox (and keep cloud-hypervisor's
 # CAP_NET_ADMIN there); this unit runs none, so it closes /dev and sets
 # no_new_privs. Its remaining children are disk tools (qemu-img, qemu-io,
@@ -66,14 +66,14 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 # The service home holds the database, images, disks, firmware and logs;
-# registered datastores are mounted under /srv/glidex (spec/storage.md
+# registered datastores are mounted under /srv/glidex (spec/24-storage.md
 # S11). Disk images and kernels given to the API must be outside /home,
 # /root and /run/user (ProtectHome).
 ProtectHome=yes
 ReadWritePaths=@HOME@ -/srv/glidex
 DevicePolicy=closed
 # LVM volumes of lvm datastores, to fill them and edit their partitions
-# (spec/storage.md S18). glidex-stord hands only glidex's own volumes to
+# (spec/24-storage.md S18). glidex-stord hands only glidex's own volumes to
 # the glidex user; the host's other device-mapper devices stay root's.
 DeviceAllow=block-device-mapper rw
 # Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs), TCP

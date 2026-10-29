@@ -14,7 +14,7 @@ const emptyEdge: EdgeForm = { physnet: "", external_cidr: "", gateway: "", exter
 
 /** Nodes whose ovn-controller is older than the cluster's ovn-northd: they
  * can't run its logical flows, so VMs on cluster networks aren't placed
- * there (spec/clustering-ui.md §8a). */
+ * there (spec/16-clustering-ui.md §8a). */
 export function OvnOutdated({ view }: { view: OvnSettingsView }) {
   const outdated = (view.nodes ?? []).filter((n) => n.outdated);
   if (!outdated.length) return null;
@@ -31,7 +31,7 @@ export function OvnOutdated({ view }: { view: OvnSettingsView }) {
   );
 }
 
-/** OVN while it is off (spec/clustering-ui.md §8a): which nodes are ready
+/** OVN while it is off (spec/16-clustering-ui.md §8a): which nodes are ready
  * for it, and the button that turns it on for the whole cluster. */
 export function OvnOff({ view, onDone }: { view: OvnSettingsView; onDone: () => void }) {
   const { host } = useSession();

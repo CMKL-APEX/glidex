@@ -1,4 +1,4 @@
-//! SCIM 2.0 endpoints (spec/tenancy.md §8.1, D41–D43): `/scim/v2/c/{id}/…`,
+//! SCIM 2.0 endpoints (spec/19-tenancy.md §8.1, D41–D43): `/scim/v2/c/{id}/…`,
 //! called by a connector's IdP with one of its `gxs_` tokens. REST only
 //! (D29). Every request that writes does it in one store write, and is
 //! audited as `system:scim:<connector>`. The protocol is in

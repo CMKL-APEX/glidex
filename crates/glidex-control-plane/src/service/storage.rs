@@ -1,4 +1,4 @@
-//! `glidex.storage.v1` (spec/images.md §8, spec/credentials.md): guest
+//! `glidex.storage.v1` (spec/10-images.md §8, spec/08-credentials.md): guest
 //! credentials, images and disks, scoped to projects. The REST twins in
 //! `api/storage.rs` and the RPC adapter in `api/rpc/storage.rs` both call
 //! these.
@@ -528,7 +528,7 @@ pub async fn pull_image(
     req: pb::PullImageRequest,
 ) -> ServiceResult<pb::PullImageResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
-    // A kernel copied from host files (spec/kernel-boot.md §4.2).
+    // A kernel copied from host files (spec/23-kernel-boot.md §4.2).
     if req.kernel_path.is_some() || req.initrd_path.is_some() {
         call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
     }
@@ -693,7 +693,7 @@ pub fn list_disks(call: &Call, req: pb::ListDisksRequest) -> ServiceResult<pb::L
 }
 
 /// Disk `key` (an id, or a name in the tenants of the projects the caller
-/// sees, spec/tenancy.md D24) if the caller may see it, else not found.
+/// sees, spec/19-tenancy.md D24) if the caller may see it, else not found.
 async fn visible_disk(call: &Call, key: &str) -> ServiceResult<DiskResponse> {
     let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "disk not found");
     let visible = call.visible_projects()?;
@@ -726,7 +726,7 @@ pub async fn get_disk(call: &Call, req: pb::GetDiskRequest) -> ServiceResult<pb:
     })
 }
 
-/// Where a disk write left the disk (spec/reconciliation.md §12.3).
+/// Where a disk write left the disk (spec/12-reconciliation.md §12.3).
 pub enum DiskReply {
     /// Not waited for: the disk as it is now.
     Now(DiskResponse),
@@ -838,7 +838,7 @@ pub async fn resize_disk(call: &Call, req: pb::ResizeDiskRequest) -> ServiceResu
     disk_reply(call, &disk.id, req.wait_secs).await
 }
 
-/// `POST /disks/{id}/move` (spec/storage.md §8.3); the destination must be
+/// `POST /disks/{id}/move` (spec/24-storage.md §8.3); the destination must be
 /// one the caller may put disks on.
 pub async fn move_disk(call: &Call, req: pb::MoveDiskRequest) -> ServiceResult<DiskReply> {
     let d = visible_disk(call, &req.id).await?;
@@ -898,7 +898,7 @@ pub async fn disk_events(
     })
 }
 
-// ---- datastores (spec/storage.md §13) -------------------------------------
+// ---- datastores (spec/24-storage.md §13) -------------------------------------
 
 /// The datastore a new disk goes to (the one asked for, else the default
 /// for disks), which the caller must be allowed to use. Its id.

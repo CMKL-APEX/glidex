@@ -50,7 +50,7 @@ function Use({ label, taken, total, unit }: { label: string; taken: number; tota
   );
 }
 
-/** A host's page (spec/host-page.md W1, clustering-ui.md §5.2): its state,
+/** A host's page (spec/28-host-page.md W1, 16-clustering-ui.md §5.2): its state,
  * capacity, topology and devices, networking, what runs on it, and the
  * operations on it; on a standalone host, its one node. */
 export default function HostDetail() {
@@ -323,7 +323,7 @@ export default function HostDetail() {
 }
 
 /** Files in the node's image directory that no image record names
- * (spec/clustering.md §9.2.3): from before it joined, mostly. Files
+ * (spec/14-clustering.md §9.2.3): from before it joined, mostly. Files
  * matching a ready image are adopted as its copies; these are the rest. */
 function SpareFilesCard({ node }: { node: NodeRecord }) {
   const files = node.status.features?.spare_image_files ?? [];

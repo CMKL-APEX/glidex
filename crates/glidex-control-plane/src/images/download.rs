@@ -194,7 +194,7 @@ impl ImageManager {
         self: &Arc<Self>,
         req: PullImageRequest,
     ) -> Result<(Image, bool), ImageError> {
-        // A kernel extracted from a disk image (spec/kernel-boot.md §10).
+        // A kernel extracted from a disk image (spec/23-kernel-boot.md §10).
         if let Some(from) = &req.kernel_from {
             if req.catalog.is_some()
                 || req.url.is_some()
@@ -236,7 +236,7 @@ impl ImageManager {
                 "hypervisor is only for a firmware download (kind: firmware)".into(),
             ));
         }
-        // A kernel image (spec/kernel-boot.md §4.2): a URL download, or a
+        // A kernel image (spec/23-kernel-boot.md §4.2): a URL download, or a
         // copy of host files.
         let kernel = req.kind == Some(ImageKind::Kernel) || req.kernel_path.is_some();
         if req.kernel_path.is_some() && req.kind.is_some_and(|k| k != ImageKind::Kernel) {
@@ -717,7 +717,7 @@ impl ImageManager {
     }
 
     /// Run `work` for image `id` unless a task for it already runs (a
-    /// download, or an extraction, spec/kernel-boot.md §10). If it fails,
+    /// download, or an extraction, spec/23-kernel-boot.md §10). If it fails,
     /// its temporary files go and an image still in progress is `Failed`;
     /// never one that finished.
     pub(crate) fn spawn_task(

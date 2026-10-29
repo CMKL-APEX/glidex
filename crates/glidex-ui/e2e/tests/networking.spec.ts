@@ -1,4 +1,4 @@
-// Project networks from the Networking page (spec/web-ui.md, security.md
+// Project networks from the Networking page (spec/07-web-ui.md, 11-security.md
 // §6.2): the project page links to the shared "Add Network" form with the
 // project chosen; project networks are NAT or isolated, never bridged.
 // Needs glidex-netd and Open vSwitch; no VM is booted.

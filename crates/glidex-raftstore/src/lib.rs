@@ -4,7 +4,7 @@
 //! - [`store`]: the database. Every write is a transaction whose `insert`s
 //!   and `remove`s are recorded as a [`store::WriteSet`]; applying a write
 //!   set is a pure byte operation, the same on every member and version
-//!   (glidex spec/clustering.md §6.1).
+//!   (glidex spec/14-clustering.md §6.1).
 //! - [`raft`]: write sets as Raft log entries, the database as the state
 //!   machine, snapshots as views of it, and a running member
 //!   ([`raft::ClusterNode`]) that turns [`store::Db::write`] into a

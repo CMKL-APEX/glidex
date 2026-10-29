@@ -1,4 +1,4 @@
-//! REST twins of `glidex.directory.v1.ConnectorService` (spec/tenancy.md
+//! REST twins of `glidex.directory.v1.ConnectorService` (spec/19-tenancy.md
 //! §14): the proto messages as JSON, path parameters merged in, and the
 //! same `service::directory` functions as the RPCs.
 

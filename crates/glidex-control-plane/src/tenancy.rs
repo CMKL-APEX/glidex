@@ -1,4 +1,4 @@
-//! Projects and quotas (spec/security.md §6).
+//! Projects and quotas (spec/11-security.md §6).
 //!
 //! Every VM, disk and guest credential belongs to exactly one project.
 //! Projects live in the `projects` table of the control-plane database;
@@ -72,14 +72,14 @@ pub struct Quotas {
     /// Project networks (spec §6.2).
     #[serde(default = "default_network_quota")]
     pub networks: Option<u64>,
-    /// VPC routers (spec/clustering.md §11.2a).
+    /// VPC routers (spec/14-clustering.md §11.2a).
     #[serde(default = "default_router_quota")]
     pub routers: Option<u64>,
     /// Addresses of the site's external pool, one per VPC router with a gateway.
     #[serde(default = "default_router_quota")]
     pub external_ips: Option<u64>,
     /// Devices of each PCI pool, by pool name; a pool not named is
-    /// unlimited (spec/host-topology.md §11).
+    /// unlimited (spec/22-host-topology.md §11).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub devices: BTreeMap<String, u64>,
 }
@@ -178,7 +178,7 @@ pub struct Delta {
     pub external_ips: u64,
     /// Pool devices, by pool.
     pub devices: BTreeMap<String, u64>,
-    /// Devices asked of each tenant pool (spec/host-topology.md §9.1a).
+    /// Devices asked of each tenant pool (spec/22-host-topology.md §9.1a).
     pub tenant_pools: BTreeMap<String, u64>,
 }
 
@@ -236,7 +236,7 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
 pub struct Project {
     pub id: String,
     pub name: String,
-    /// The tenant owning it (spec/tenancy.md D1); records from before
+    /// The tenant owning it (spec/19-tenancy.md D1); records from before
     /// tenants belong to `default`.
     #[serde(default = "default_tenant")]
     pub tenant_id: String,
@@ -393,7 +393,7 @@ impl ProjectStore {
     }
 
     /// A new project of `tenant`; names are unique per tenant
-    /// (spec/tenancy.md D24).
+    /// (spec/19-tenancy.md D24).
     pub fn create_in(
         &self,
         tenant: &str,

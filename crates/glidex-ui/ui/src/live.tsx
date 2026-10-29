@@ -1,9 +1,9 @@
-// The live stream (spec/reconciliation.md §12.6): one
+// The live stream (spec/12-reconciliation.md §12.6): one
 // `glidex.watch.v1.WatchService.Watch` server stream (gRPC-Web) for the
 // selected project, shared by the whole app. It keeps the latest copy of
 // every VM, disk, image and network the user can see, and, in a cluster,
 // of its nodes, import plans and status, plus a marker that changes with
-// the policies (spec/clustering-ui.md §3.7); it tells subscribers when one
+// the policies (spec/16-clustering-ui.md §3.7); it tells subscribers when one
 // of a kind changes. Without it (an old control plane, a proxy that
 // buffers) pages fall back to polling. Objects arrive in the proto3 JSON
 // shape their list operations answer in; the cluster summary is read into

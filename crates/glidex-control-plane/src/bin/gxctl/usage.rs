@@ -1,6 +1,6 @@
-//! `usage`, `stats`, `bandwidth`, `io` and `compute` (spec/metering.md
+//! `usage`, `stats`, `bandwidth`, `io` and `compute` (spec/13-metering.md
 //! §9, §12) on the generated `glidex.usage.v1` clients, over the Connect
-//! protocol (spec/grpc.md §9.1). `--csv` exports stay REST: the CSV is
+//! protocol (spec/18-grpc.md §9.1). `--csv` exports stay REST: the CSV is
 //! the REST route's own answer (and its audited export).
 
 use crate::client::{self, ApiClient, RpcTransport};

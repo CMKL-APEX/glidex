@@ -1,4 +1,4 @@
-//! In-memory failure rate limits (spec/security.md §5.3): a per-user and a
+//! In-memory failure rate limits (spec/11-security.md §5.3): a per-user and a
 //! global sliding window of failure times.
 //!
 //! Memory is bounded: a failure is only recorded while the global window is

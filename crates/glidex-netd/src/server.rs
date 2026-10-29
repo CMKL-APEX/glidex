@@ -411,7 +411,7 @@ impl Netd {
             .collect())
     }
 
-    /// spec/host-topology.md §5.3: bind the device's IOMMU group to
+    /// spec/22-host-topology.md §5.3: bind the device's IOMMU group to
     /// vfio-pci and give its group device to the VMs' group, remembering
     /// the drivers for `release_device`. A group prepared already is
     /// prepared again with what it had first.
@@ -434,7 +434,7 @@ impl Netd {
         Ok(p)
     }
 
-    /// spec/host-topology.md §10.1: set a PF's VF count. On a change every
+    /// spec/22-host-topology.md §10.1: set a PF's VF count. On a change every
     /// VF it had is removed from the bus (new ones come back on their
     /// default driver), so their prepared groups are forgotten with their
     /// udev rules; whether a VM holds one is the control plane's to check
@@ -483,7 +483,7 @@ impl Netd {
         }
     }
 
-    /// spec/gpu-vms.md §10: apply the boot settings: VF counts first, then
+    /// spec/27-gpu-vms.md §10: apply the boot settings: VF counts first, then
     /// bind the selected devices that aren't on `vfio-pci` yet, recording
     /// each like `prepare_device`. A device already on `vfio-pci` is left
     /// alone; outside boot, a VF count whose PF has a VF on `vfio-pci` is
@@ -862,7 +862,7 @@ impl Netd {
     }
 
     /// Bring the metering counters in line with the NAT state (D14 in
-    /// spec/metering.md). Metering never fails a networking operation.
+    /// spec/13-metering.md). Metering never fails a networking operation.
     fn apply_meter(&self, all: &[NatState]) {
         if let Err(e) = glidex_ovs::nat_meter::apply_meter(self.ex(), all) {
             tracing::warn!("NAT metering counters not updated: {}", e);
@@ -1012,7 +1012,7 @@ impl Netd {
             }
             None => None,
         };
-        // The metadata endpoint on a NAT network (spec/workload-identity.md
+        // The metadata endpoint on a NAT network (spec/29-workload-identity.md
         // §7.1): the port keeps its index across re-attaches.
         let metadata_index = match ipv4 {
             Some(_) => {
@@ -1245,7 +1245,7 @@ impl Netd {
             }
         }
         // OVS keeps no OpenFlow rules across a restart: the metadata
-        // endpoint's, again (spec/workload-identity.md §7.1).
+        // endpoint's, again (spec/29-workload-identity.md §7.1).
         let ports = self.vm_ports().unwrap_or_default();
         if ports.iter().any(|r| r.metadata_index.is_some())
             && let Err(e) = glidex_ovs::metadata::ensure_address(ex)

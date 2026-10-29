@@ -1,5 +1,5 @@
-// The live stream of what the caller may see (spec/reconciliation.md
-// §12.6, clustering-ui.md §3.7): a snapshot of every visible object
+// The live stream of what the caller may see (spec/12-reconciliation.md
+// §12.6, 16-clustering-ui.md §3.7): a snapshot of every visible object
 // (`added`), `synced`, then `added`, `modified` and `deleted` as they
 // change, each re-checked against the caller's current rights; the stream
 // ends (`expired`) after a while and the client reconnects. `GET /watch`
@@ -401,7 +401,7 @@ export enum WatchKind {
   POLICY = 8,
 
   /**
-   * Datastores, with what each node finds at them (spec/storage.md §13).
+   * Datastores, with what each node finds at them (spec/24-storage.md §13).
    *
    * @generated from enum value: WATCH_KIND_DATASTORE = 9;
    */

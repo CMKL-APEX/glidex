@@ -1,4 +1,4 @@
-//! The cluster PKI (spec/clustering.md §5.1, §12): one CA (P-256, 10 years)
+//! The cluster PKI (spec/14-clustering.md §5.1, §12): one CA (P-256, 10 years)
 //! whose key every server holds (D20); node certificates `CN=node:<id>`
 //! with the advertise address as SAN, valid one year.
 

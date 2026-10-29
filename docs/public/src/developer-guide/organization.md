@@ -86,7 +86,7 @@ from the operator's side.
 ## glidex-api: protos and generated code
 
 The proto files are the source of truth for every API type
-([`spec/grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md)
+([`spec/18-grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md)
 G-D3).
 
 ```text
@@ -258,9 +258,9 @@ holds what the installer puts on a host:
 ## Specs and docs
 
 - [`spec/`](https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md):
-  one file per area (`architecture.md`, `reconciliation.md`,
-  `storage.md`, `clustering.md`, `grpc.md`, `security.md`,
-  `tenancy.md`, …). Its README has a table of contents with each
+  one file per area (`00-architecture.md`, `12-reconciliation.md`,
+  `24-storage.md`, `14-clustering.md`, `18-grpc.md`, `11-security.md`,
+  `19-tenancy.md`, …). Its README has a table of contents with each
   file's scope and status (design, draft, implemented). Code cites them
   by path, so they are never moved or renamed.
 - `docs/public/`: this book. `docs/internal/`: the mdBook config that

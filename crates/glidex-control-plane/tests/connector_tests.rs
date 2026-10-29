@@ -1,4 +1,4 @@
-//! Directory connectors (spec/tenancy.md T1, §13–§14): the connector API
+//! Directory connectors (spec/19-tenancy.md T1, §13–§14): the connector API
 //! on REST, the Connect protocol and gRPC; who may manage them; secrets
 //! that never come back out; the D22 rules; and logins through an API
 //! connector (OIDC code and device flows against a mock IdP, PAM tokens).
@@ -234,7 +234,7 @@ impl H {
         v
     }
 
-    /// A `google` connector (spec/tenancy.md §5.1) against the mock, with
+    /// A `google` connector (spec/19-tenancy.md §5.1) against the mock, with
     /// its client secret set; `google` adds to its settings, `extra` to the
     /// connector.
     async fn google_connector(
@@ -1016,7 +1016,7 @@ async fn oidc_login_through_an_api_connector() {
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
-/// The web UI's step-up (spec/web-ui.md): `reauth=1` on a connector's
+/// The web UI's step-up (spec/07-web-ui.md): `reauth=1` on a connector's
 /// start sends the browser to a fresh login at the IdP.
 #[tokio::test]
 async fn a_step_up_through_a_connector_asks_the_idp_for_a_fresh_login() {
@@ -1504,7 +1504,7 @@ fn google_claims(mock: &idp::Mock, sub: &str, email: &str, hd: Option<&str>) -> 
 
 #[tokio::test]
 async fn google_workspace_logins_are_allowed_by_hd_not_by_the_email() {
-    // spec/tenancy.md D39: anyone can open a consumer Google account under
+    // spec/19-tenancy.md D39: anyone can open a consumer Google account under
     // a company's address; only `hd` says it is the company's Workspace.
     let mock = idp::start().await;
     let h = harness();
@@ -1743,7 +1743,7 @@ fn invite_token(link: &str) -> String {
 
 #[tokio::test]
 async fn invitations_let_one_known_person_in_once() {
-    // spec/tenancy.md D40, §6.1: a gated connector (consumer Google, jit
+    // spec/19-tenancy.md D40, §6.1: a gated connector (consumer Google, jit
     // off) lets in whoever takes an invitation for their verified address.
     let mock = idp::start().await;
     let h = harness();
@@ -1944,7 +1944,7 @@ async fn invitations_let_one_known_person_in_once() {
 
 #[tokio::test]
 async fn jumpcloud_groups_come_in_its_claim_and_its_emails_are_the_organizations() {
-    // spec/tenancy.md §5.1: JumpCloud's issuer and scopes are fixed; groups
+    // spec/19-tenancy.md §5.1: JumpCloud's issuer and scopes are fixed; groups
     // come in the claim its "Include group attribute" names (memberOf);
     // an email the token says nothing about counts as verified, one it
     // says is unverified doesn't.
@@ -2077,7 +2077,7 @@ async fn link_through_then<F: std::future::Future<Output = ()>>(
 
 #[tokio::test]
 async fn a_user_adds_and_removes_sign_in_methods() {
-    // spec/tenancy.md §6.2: a signed-in user adds a sign-in through a
+    // spec/19-tenancy.md §6.2: a signed-in user adds a sign-in through a
     // connector, beside the ones it has; it then reaches the same user.
     let mock = idp::start().await;
     let h = harness();
@@ -2226,7 +2226,7 @@ async fn a_user_adds_and_removes_sign_in_methods() {
 
 #[tokio::test]
 async fn deleting_a_user_takes_what_is_its_alone() {
-    // spec/tenancy.md §6.3: identities, sessions, personal tokens, teams,
+    // spec/19-tenancy.md §6.3: identities, sessions, personal tokens, teams,
     // role links and tenant memberships go with the user; never oneself,
     // nor the last directory or system administrator.
     let h = harness();
@@ -2346,7 +2346,7 @@ async fn deleting_a_user_takes_what_is_its_alone() {
 
 #[tokio::test]
 async fn a_new_tenant_invites_its_first_administrator() {
-    // spec/tenancy.md §11: a directory owner creates a tenant with its
+    // spec/19-tenancy.md §11: a directory owner creates a tenant with its
     // first tenant-admin invited; the invitation follows §6.1's rules, and
     // a create whose invitation can't be made makes no tenant.
     let mock = idp::start().await;
@@ -2433,7 +2433,7 @@ async fn a_new_tenant_invites_its_first_administrator() {
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
-/// spec/tenancy.md §8.3, D20: a provisioned connector's users and teams
+/// spec/19-tenancy.md §8.3, D20: a provisioned connector's users and teams
 /// are its own; deprovisioning revokes in one write; deleting the
 /// connector disables or detaches them. (SCIM itself is T3 task 4: the
 /// managed records are written to the store here.)
@@ -2687,7 +2687,7 @@ async fn managed_users_and_teams_belong_to_their_connector() {
     assert_eq!(d.disabled_reason, Some(DisabledReason::ConnectorDeleted));
 }
 
-/// spec/tenancy.md §8.1: SCIM tokens are a provisioned connector's, shown
+/// spec/19-tenancy.md §8.1: SCIM tokens are a provisioned connector's, shown
 /// once, step-up to make, and go with the connector.
 #[tokio::test]
 async fn scim_tokens_are_minted_for_a_provisioned_connector() {
@@ -2927,7 +2927,7 @@ async fn no_sign_in_is_added_through_a_provisioned_connector() {
     );
 }
 
-/// spec/tenancy.md §8.1, D41–D43, as JumpCloud sends it: users and groups
+/// spec/19-tenancy.md §8.1, D41–D43, as JumpCloud sends it: users and groups
 /// pushed, the first login lands on the provisioned user, deactivation
 /// revokes at once, removal keeps the records.
 #[tokio::test]
@@ -3529,7 +3529,7 @@ fn ggroup(id: &str, members: &[&str]) -> glidex_control_plane::directory::sync::
     }
 }
 
-/// spec/tenancy.md §8.2, D44–D46, with a fake directory: a pull brings in
+/// spec/19-tenancy.md §8.2, D44–D46, with a fake directory: a pull brings in
 /// the groups' members, logins reach them by subject, leaving disables,
 /// a run that would disable many waits for a confirmation, and a failing
 /// source changes nothing.
@@ -3771,7 +3771,7 @@ async fn a_pull_follows_the_directory_and_stops_before_removing_many() {
     h.app.auth.set_sync_source(None);
 }
 
-/// spec/tenancy.md §8.2, D47, against a mock of Google: the service
+/// spec/19-tenancy.md §8.2, D47, against a mock of Google: the service
 /// account's token (RS256, acting as the administrator, the two scopes),
 /// derived group membership across pages, users read one by one, retries
 /// on 503, and an error that changes nothing.
@@ -3998,7 +3998,7 @@ async fn federation_issuers_are_public_unless_allowed() {
     );
 }
 
-/// spec/tenancy.md §9, D49–D51: a tenant's federations, their checks, and
+/// spec/19-tenancy.md §9, D49–D51: a tenant's federations, their checks, and
 /// who may manage them.
 #[tokio::test]
 async fn federations_are_a_tenants_and_checked_when_made() {
@@ -4153,7 +4153,7 @@ fn workload_jwt(mock: &idp::Mock, extra: Value) -> String {
     idp::sign(c, "k1")
 }
 
-/// spec/tenancy.md §9, D48–D50: a workload's JWT for a short-lived token
+/// spec/19-tenancy.md §9, D48–D50: a workload's JWT for a short-lived token
 /// acting as one service account; every refusal looks the same; the
 /// token ends with its federation, rule and service account.
 #[tokio::test]
@@ -4367,7 +4367,7 @@ async fn a_workload_token_is_exchanged_once_for_its_service_account() {
     assert!(limited);
 }
 
-/// spec/tenancy.md D52, D53: a directory's issuer, its discovery document
+/// spec/19-tenancy.md D52, D53: a directory's issuer, its discovery document
 /// and JWKS (public), the first token fixing the issuer, and its keys
 /// listed and rotated on both transports.
 #[tokio::test]
@@ -4512,7 +4512,7 @@ fn query_of(location: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-/// spec/tenancy.md D54–D57: the code flow with PKCE for gxctl, through the
+/// spec/19-tenancy.md D54–D57: the code flow with PKCE for gxctl, through the
 /// browser session at this host; tokens for this cluster; refresh rotation
 /// and reuse; the device grant; a disabled user; revocation.
 #[tokio::test]
@@ -4788,7 +4788,7 @@ async fn the_directory_logs_gxctl_in_and_this_cluster_takes_its_tokens() {
     );
 }
 
-/// spec/tenancy.md D74: a hosted directory keeps its own audit. Its
+/// spec/19-tenancy.md D74: a hosted directory keeps its own audit. Its
 /// people's directory actions are written there and not to the cluster's;
 /// its directory admin reads it, by default; another directory's admin,
 /// the host's own people and its operator don't; and it goes with the
@@ -4919,7 +4919,7 @@ async fn a_hosted_directory_keeps_its_own_audit() {
     );
 }
 
-/// spec/tenancy.md D58: two directories on one host. Each administrator
+/// spec/19-tenancy.md D58: two directories on one host. Each administrator
 /// sees and changes only its own directory's users, teams, tenants and
 /// connectors; the other's records answer as missing; nobody becomes a
 /// member of the other directory's tenants.
@@ -5087,7 +5087,7 @@ async fn hosted_directories_dont_see_each_other() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
-/// spec/tenancy.md D59: the host's operator creates a directory with an
+/// spec/19-tenancy.md D59: the host's operator creates a directory with an
 /// invitation for its first administrator (a passkey sign-in, D60), sees
 /// it listed, and can delete it only while nobody uses it.
 #[tokio::test]
@@ -5216,7 +5216,7 @@ async fn the_operator_creates_and_deletes_directories() {
     );
 }
 
-/// spec/tenancy.md D61: a login reaches its directory by its email's
+/// spec/19-tenancy.md D61: a login reaches its directory by its email's
 /// domain or by `/login/<directory>`; an unknown one gets the host's own.
 #[tokio::test]
 async fn logins_find_their_directory_without_listing_them() {
@@ -5310,7 +5310,7 @@ async fn logins_find_their_directory_without_listing_them() {
     assert!(!names(&own).contains(&"acme-idp".to_string()), "{own}");
 }
 
-/// spec/tenancy.md D64: the operator offers an admission to a tenant of
+/// spec/19-tenancy.md D64: the operator offers an admission to a tenant of
 /// another directory; the token carries the cluster's API, its pinned
 /// certificate and a one-time secret (only its hash is kept).
 #[tokio::test]
@@ -5396,7 +5396,7 @@ async fn an_admission_is_offered_to_another_directorys_tenant() {
     assert!(l["offers"].as_array().is_none_or(|a| a.is_empty()), "{l}");
 }
 
-/// workload-identity.md §4.2, W4, W13 (WI0): a VM's identity token is signed
+/// 29-workload-identity.md §4.2, W4, W13 (WI0): a VM's identity token is signed
 /// with its directory's keys and verifies against the published JWKS with
 /// another JWT library; the first one fixes the directory's trust domain;
 /// a stopped VM has none; no API takes one as a bearer token.
@@ -5505,7 +5505,7 @@ async fn vm_identity_tokens_verify_against_the_directory_jwks() {
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
-/// workload-identity.md W13: a directory created with a trust domain keeps
+/// 29-workload-identity.md W13: a directory created with a trust domain keeps
 /// it for good; an invalid one is refused.
 #[tokio::test]
 async fn a_directory_keeps_the_trust_domain_it_was_created_with() {
@@ -5543,7 +5543,7 @@ fn vm_with_sa(name: &str, sa: Option<&str>) -> Value {
     v
 }
 
-/// workload-identity.md W5: giving a VM a service account needs
+/// 29-workload-identity.md W5: giving a VM a service account needs
 /// `useServiceAccount` (a project owner's right, not an editor's), a live
 /// service account, and one of the VM's own tenant; it can change and go
 /// away without a restart.
@@ -5682,7 +5682,7 @@ async fn giving_a_vm_a_service_account_needs_use_service_account() {
     assert_eq!(v["vm"]["service_account"], sa.as_str(), "{v}");
 }
 
-/// workload-identity.md W6, W8: a VM's glidex token acts as its service
+/// 29-workload-identity.md W6, W8: a VM's glidex token acts as its service
 /// account for 15 min, is audited, and ends with the service account.
 #[tokio::test]
 async fn a_vm_gets_glidex_tokens_for_its_service_account() {
@@ -5761,7 +5761,7 @@ async fn a_vm_gets_glidex_tokens_for_its_service_account() {
     assert_eq!(e.0, StatusCode::NOT_FOUND);
 }
 
-/// workload-identity.md §5: `<tenant>/vm` takes only a running VM's own
+/// 29-workload-identity.md §5: `<tenant>/vm` takes only a running VM's own
 /// identity token for this cluster; `vm` can't name a federation.
 #[tokio::test]
 async fn the_vm_exchange_takes_only_a_running_vms_identity_token() {
@@ -5846,7 +5846,7 @@ async fn the_vm_exchange_takes_only_a_running_vms_identity_token() {
     );
 }
 
-/// workload-identity.md W11: metad.sock answers glidex-metad's user only,
+/// 29-workload-identity.md W11: metad.sock answers glidex-metad's user only,
 /// and only for a peer address that is a VM port of this node.
 #[tokio::test]
 async fn metad_socket_answers_metad_alone_and_only_for_vm_ports() {

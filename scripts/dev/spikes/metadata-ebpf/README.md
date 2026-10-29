@@ -1,6 +1,6 @@
 # Spike: the metadata endpoint delivered by tc/eBPF (dev only)
 
-A prototype for spec/workload-identity.md WI1b-2 (§7.1, OVN and isolated
+A prototype for spec/29-workload-identity.md WI1b-2 (§7.1, OVN and isolated
 networks), kept for reference; nothing in glidex loads it.
 
 - `md.c`: `md_in` (tc ingress on a VM's port) rewrites a request for

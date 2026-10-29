@@ -1,6 +1,6 @@
-//! VMs (spec/reconciliation.md §7, §12) on the generated
+//! VMs (spec/12-reconciliation.md §7, §12) on the generated
 //! `glidex.vm.v1.VmServiceClient`, over the Connect protocol
-//! (spec/grpc.md §9.1). The live console is the `Console` bidi RPC (`console.rs`).
+//! (spec/18-grpc.md §9.1). The live console is the `Console` bidi RPC (`console.rs`).
 
 use crate::client::{ApiClient, RpcTransport};
 use crate::tenancy::{err, rpc_err, usage};
@@ -100,7 +100,7 @@ impl ApiClient {
 }
 
 /// How long lifecycle commands wait for the VM to get there, or `None`
-/// with `--no-wait` (spec/reconciliation.md §12.3).
+/// with `--no-wait` (spec/12-reconciliation.md §12.3).
 pub(crate) fn wait_secs(args: &[&str]) -> Option<u32> {
     (!has_flag(args, "--no-wait")).then_some(60)
 }
@@ -449,7 +449,7 @@ pub async fn start(client: &ApiClient, args: &[&str]) {
 }
 
 /// `place <name|id> [--node N]`: place a stopped or lost VM again
-/// (spec/storage.md S10).
+/// (spec/24-storage.md S10).
 pub async fn place(client: &ApiClient, args: &[&str]) {
     let Some(vm_id) = resolve(client, args, "Usage: place <name|id> [--node N]").await else {
         return;
@@ -658,7 +658,7 @@ pub async fn device(client: &ApiClient, attach: bool, args: &[&str]) {
 
 /// `create` (interactive).
 /// `a100:2, cx7` → pool requests (count 1 by default; `:switch` after the
-/// count keeps them under one PCIe switch, spec/host-topology.md §9).
+/// count keeps them under one PCIe switch, spec/22-host-topology.md §9).
 pub(crate) fn parse_device_requests(s: &str) -> Vec<DeviceRequest> {
     s.split(',')
         .map(str::trim)
@@ -678,7 +678,7 @@ pub(crate) fn parse_device_requests(s: &str) -> Vec<DeviceRequest> {
         .collect()
 }
 
-/// `4`, `4:a100`, `8:a100:nvlink` → a `gpus` request (spec/gpu-vms.md §3).
+/// `4`, `4:a100`, `8:a100:nvlink` → a `gpus` request (spec/27-gpu-vms.md §3).
 pub(crate) fn parse_gpus(s: &str) -> Result<Option<GpuRequest>, String> {
     let s = s.trim();
     if s.is_empty() {
@@ -800,7 +800,7 @@ pub async fn create(client: &ApiClient) {
     };
 
     // A disk image boots through UEFI firmware: a firmware image built for
-    // the hypervisor (spec images.md §7), or a host path (admins only).
+    // the hypervisor (spec 10-images.md §7), or a host path (admins only).
     let (firmware, firmware_path) = {
         let ty = match hypervisor {
             Hypervisor::HYPERVISOR_QEMU => "qemu",
@@ -854,8 +854,8 @@ pub async fn create(client: &ApiClient) {
     let firmware_boot = firmware.is_some() || firmware_path.is_some();
     let all_images = storage::list_images(client).await.unwrap_or_default();
 
-    // Boot disk: a managed image or disk first (spec images.md §10), for
-    // either boot mode (spec kernel-boot.md §6).
+    // Boot disk: a managed image or disk first (spec 10-images.md §10), for
+    // either boot mode (spec 23-kernel-boot.md §6).
     let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) =
         (String::new(), None, None, None);
     let mut choice;
@@ -924,7 +924,7 @@ pub async fn create(client: &ApiClient) {
     }
 
     // The kernel (kernel boot): a kernel image, the one extracted from the
-    // chosen image first (spec kernel-boot.md K3), or host files.
+    // chosen image first (spec 23-kernel-boot.md K3), or host files.
     let (mut kernel, mut kernel_image_path, mut initrd_path, mut kernel_from_disk) =
         (None, String::new(), None, None);
     let mut kernel_cmdline = None;
@@ -1010,7 +1010,7 @@ pub async fn create(client: &ApiClient) {
         }
     }
     // The generated seed (and so a credential) comes with firmware boot, a
-    // kernel image or a managed root disk (spec kernel-boot.md K4).
+    // kernel image or a managed root disk (spec 23-kernel-boot.md K4).
     let seeded = firmware_boot || kernel.is_some() || choice != "path";
     let data_disks: Vec<String> =
         prompt_optional("Data disks (optional, comma-separated disk names): ")
@@ -1174,7 +1174,7 @@ pub async fn create(client: &ApiClient) {
 /// `kernel <name|id> [--set <image>] [--follow on|off] [--extract]`: a
 /// kernel-boot VM's kernel image, the one it boots when following the
 /// guest's kernel, and changing them from the next start
-/// (spec/kernel-boot.md K6, K11, §10.5).
+/// (spec/23-kernel-boot.md K6, K11, §10.5).
 pub async fn kernel(client: &ApiClient, args: &[&str]) {
     let u = "Usage: kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]";
     let Some(vm_id) = resolve(client, args, u).await else {
@@ -1356,7 +1356,7 @@ fn service_account_label(
 
 /// `service-account <name|id> [--set <service account> | --none]`: the
 /// service account whose glidex tokens the VM's guest gets
-/// (spec/workload-identity.md W5); a change applies to its next token.
+/// (spec/29-workload-identity.md W5); a change applies to its next token.
 pub async fn service_account(client: &ApiClient, args: &[&str]) {
     let u = "Usage: service-account <name|id> [--set <service account name|id> | --none]";
     let Some(vm_id) = resolve(client, args, u).await else {

@@ -1,4 +1,4 @@
-//! The `shim.sock` protocol (spec/reconciliation.md §8.5): newline-
+//! The `shim.sock` protocol (spec/12-reconciliation.md §8.5): newline-
 //! delimited JSON, one request in flight per connection, `hello` first.
 
 use serde::{Deserialize, Serialize};

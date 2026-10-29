@@ -1,4 +1,4 @@
-//! The controllers (spec/reconciliation.md §9): level-triggered loops that
+//! The controllers (spec/12-reconciliation.md §9): level-triggered loops that
 //! observe the host and take the smallest step toward each object's spec.
 //!
 //! One [`queue::WorkQueue`] feeds `reconcile.workers` workers. Keys come
@@ -79,7 +79,7 @@ impl Settings {
 }
 
 impl VmManager {
-    /// Start the controllers of the roles this process runs (spec/clustering.md
+    /// Start the controllers of the roles this process runs (spec/14-clustering.md
     /// D4): the node role (workers, resync, exit watches) and the server role
     /// (cluster controllers). Idempotent.
     pub fn start_controllers(&self) {

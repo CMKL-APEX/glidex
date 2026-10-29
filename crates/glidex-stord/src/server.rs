@@ -21,7 +21,7 @@ pub struct Config {
     pub admin_group: String,
     /// Which ops each group may send.
     pub policy: auth::Policy,
-    /// The only volume groups stord acts on (spec/storage.md S17).
+    /// The only volume groups stord acts on (spec/24-storage.md S17).
     pub allowed_vgs: Vec<String>,
     /// Who gets the device nodes: the glidex user and group.
     pub owner: (u32, u32),

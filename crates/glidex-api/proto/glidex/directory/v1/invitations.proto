@@ -1,4 +1,4 @@
-// Invitations to the directory's tenants (spec/tenancy.md D40, §6.1): an
+// Invitations to the directory's tenants (spec/19-tenancy.md D40, §6.1): an
 // email address, a tenant role and one connector. The first login through
 // that connector that brings the invitation's secret, with a verified
 // email equal to the invited one, takes it, once, before it expires.

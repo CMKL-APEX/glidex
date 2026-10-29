@@ -1,5 +1,5 @@
-//! The VM console end to end (spec/rest-api.md "Console WebSocket",
-//! spec/grpc.md §9.1): the WebSocket the browser uses and the
+//! The VM console end to end (spec/06-rest-api.md "Console WebSocket",
+//! spec/18-grpc.md §9.1): the WebSocket the browser uses and the
 //! `VmService.Console` stream API clients use, against a fake shim on the
 //! VM's console socket. The shim side is what glidex-vm-shim does: on
 //! connect it replays the console log, then relays the guest's output, and

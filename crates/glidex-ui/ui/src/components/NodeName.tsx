@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useNodes } from "../nodes";
 import { useSession } from "../session";
 
-/** A node by name (spec/clustering-ui.md §3.2): a link to its page for
+/** A node by name (spec/16-clustering-ui.md §3.2): a link to its page for
  * those who may list nodes, "(this node)" for the one serving the UI. */
 export default function NodeName({ id, name, className = "" }: { id: string | null | undefined; name?: string | null; className?: string }) {
   const { host } = useSession();

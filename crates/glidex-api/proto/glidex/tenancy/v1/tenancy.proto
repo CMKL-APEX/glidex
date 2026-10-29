@@ -1,5 +1,5 @@
 // Tenants, their members and role bindings, and admissions to this
-// cluster (spec/tenancy.md §14, milestone T0).
+// cluster (spec/19-tenancy.md §14, milestone T0).
 syntax = "proto3";
 
 package glidex.tenancy.v1;
@@ -102,7 +102,7 @@ service TenantService {
       rest: "DELETE /tenants/{id}/bindings/{link}"
     };
   }
-  // The tenant's pools on this cluster (spec/host-topology.md §9.1a), with
+  // The tenant's pools on this cluster (spec/22-host-topology.md §9.1a), with
   // what its projects hold of each and what is free in its cluster pool.
   rpc ListDevicePools(ListDevicePoolsRequest) returns (ListDevicePoolsResponse) {
     option (glidex.api.v1.op) = {
@@ -119,7 +119,7 @@ service TenantService {
       rest: "PUT /tenants/{id}/device-pools"
     };
   }
-  // The clusters of other organizations the tenant uses (spec/tenancy.md D65).
+  // The clusters of other organizations the tenant uses (spec/19-tenancy.md D65).
   rpc ListTenantClusters(ListTenantClustersRequest) returns (ListTenantClustersResponse) {
     option (glidex.api.v1.op) = {
       action: "readTenantClusters"
@@ -169,7 +169,7 @@ service AdmissionService {
       rest: "DELETE /admissions/{tenant}"
     };
   }
-  // An admission offered to a tenant of another directory (spec/tenancy.md
+  // An admission offered to a tenant of another directory (spec/19-tenancy.md
   // D64): the token, shown once, lets that directory redeem it.
   rpc OfferAdmission(OfferAdmissionRequest) returns (OfferAdmissionResponse) {
     option (glidex.api.v1.op) = {
@@ -201,7 +201,7 @@ service AdmissionService {
     };
   }
   // How long a trusted directory's credentials stay good here after its
-  // last feed (spec/tenancy.md D13).
+  // last feed (spec/19-tenancy.md D13).
   rpc SetTrustedDirectory(SetTrustedDirectoryRequest) returns (SetTrustedDirectoryResponse) {
     option (glidex.api.v1.op) = {
       action: "manageAdmissions"
@@ -211,7 +211,7 @@ service AdmissionService {
   }
 }
 
-// Directories this host serves (spec/tenancy.md D27, D59): the host's
+// Directories this host serves (spec/19-tenancy.md D27, D59): the host's
 // operator creates and deletes them, and sees only that they exist; what
 // is inside one is its own administrators' business.
 service DirectoryService {
@@ -369,7 +369,7 @@ message CreateTenantRequest {
   string slug = 1;
   string display_name = 2 [json_name = "display_name"];
   optional bool operator = 3;
-  // Invite the tenant's first administrator (spec/tenancy.md §6.1, §11):
+  // Invite the tenant's first administrator (spec/19-tenancy.md §6.1, §11):
   // role.tenant-admin, through `connector`. The link comes back once.
   FirstAdmin first_admin = 4 [json_name = "first_admin"];
 }
@@ -505,7 +505,7 @@ message HostedDirectory {
   // Its issuer URL (D52).
   string issuer = 3;
   google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
-  // Its SPIFFE trust domain (workload-identity.md W13): the one chosen or
+  // Its SPIFFE trust domain (29-workload-identity.md W13): the one chosen or
   // fixed, else the default it would get, `<id>.<issuer host>`.
   string trust_domain = 5 [json_name = "trust_domain"];
 }
@@ -524,7 +524,7 @@ message CreateDirectoryRequest {
   string admin_email = 4 [json_name = "admin_email"];
   // How long the invitation lasts, in days (default 7).
   optional uint32 days = 5;
-  // Its SPIFFE trust domain, for good (workload-identity.md W13): a name
+  // Its SPIFFE trust domain, for good (29-workload-identity.md W13): a name
   // the organization owns. Absent: `<id>.<issuer host>`.
   optional string trust_domain = 6 [json_name = "trust_domain"];
 }
@@ -588,7 +588,7 @@ message TenantCluster {
   TenantClusterReport report = 5;
 }
 
-// A cluster's report of one tenant (spec/tenancy.md D70).
+// A cluster's report of one tenant (spec/19-tenancy.md D70).
 message TenantClusterReport {
   // When the directory received it.
   google.protobuf.Timestamp reported_at = 1 [json_name = "reported_at"];

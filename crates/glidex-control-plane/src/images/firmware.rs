@@ -1,4 +1,4 @@
-//! Built-in catalog of UEFI firmware (spec/images.md §4.1).
+//! Built-in catalog of UEFI firmware (spec/10-images.md §4.1).
 //!
 //! Firmware is pinned, unlike cloud images: one tested build is what a
 //! guest should boot, so each downloadable entry carries its digest

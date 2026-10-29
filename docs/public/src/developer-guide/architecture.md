@@ -114,9 +114,9 @@ and tests) the shim runs in its own session instead of a unit; the
 picture is otherwise the same.
 
 Design:
-[reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md)
+[12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md)
 §5, §8, and
-[architecture.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/architecture.md).
+[00-architecture.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/00-architecture.md).
 
 ## The request path
 
@@ -189,9 +189,9 @@ In a cluster every server answers the API. The gate decides per request:
   node's `Host` and runs it there over `:8842`
   ([`api/relay.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/relay.rs)).
 
-Design: [grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md),
-[security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md) §5, §7, §10,
-[clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) §6.4.
+Design: [18-grpc.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md),
+[11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md) §5, §7, §10,
+[14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) §6.4.
 Public reference: [API overview](../api/README.md).
 
 ## The data model
@@ -249,7 +249,7 @@ event. It never touches the host.
 (read, check, write) correct without running it on every replica, and
 lets servers on different versions apply the same entries. The details
 are in [Algorithms](algorithms.md) and
-[clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) §6.
+[14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) §6.
 
 **What's replicated and what stays on a host.** Every table of
 `glidex.db` is replicated except `raft_meta` (each replica's own
@@ -268,9 +268,9 @@ replicated:
   node-local datastores;
 - on agents, the outbox of status writes not yet acknowledged.
 
-Design: [data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/data-model.md),
-[reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md) §6,
-[clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) §6.
+Design: [03-data-model.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/03-data-model.md),
+[12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md) §6,
+[14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) §6.
 
 ## Reconciliation
 
@@ -345,7 +345,7 @@ stopped. At host shutdown, systemd stops each unit: the shim presses
 the guest's power button, waits the grace period, then stops the
 hypervisor.
 
-Design: [reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md) §9–§10, §13.
+Design: [12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md) §9–§10, §13.
 
 ## Clustering
 
@@ -414,9 +414,9 @@ sending host-only calls with `X-Glidex-Target-Node` (see
 [`glidex-ui/src/home.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-ui/src/home.rs),
 [`api/relay.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/relay.rs).
 
-Design: [clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md),
-[host-page.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-page.md),
-[clustering-ui.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering-ui.md).
+Design: [14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md),
+[28-host-page.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/28-host-page.md),
+[16-clustering-ui.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/16-clustering-ui.md).
 Operating it: [Clusters](../operator-guide/clusters.md).
 
 ## Subsystems
@@ -446,8 +446,8 @@ Code: [`glidex-netd`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glide
 [`glidex-ovn`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ovn),
 [`controller/network.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/network.rs),
 [`controller/ovn.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/ovn.rs).
-Design: [networking.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/networking.md),
-[clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md) §11.
+Design: [09-networking.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/09-networking.md),
+[14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) §11.
 Operating it: [Host networking](../operator-guide/host-networking.md),
 [Networks](../user-guide/networks.md).
 
@@ -477,8 +477,8 @@ Code: [`datastore/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex
 (`file.rs`, `lvm.rs`, `record.rs`, `probe.rs`, `manage.rs`),
 [`images/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/images),
 [`glidex-stord`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord).
-Design: [storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md),
-[images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md).
+Design: [24-storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md),
+[10-images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md).
 Operating it: [Datastores](../operator-guide/datastores.md),
 [Images and disks](../user-guide/images-and-disks.md).
 
@@ -503,7 +503,7 @@ node, the server that authorized the request relays to that node.
 
 Code: [`glidex-vm-shim/src/proxy.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-vm-shim/src/proxy.rs),
 [`api/vms.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/vms.rs).
-Design: [console.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/console.md).
+Design: [02-console.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/02-console.md).
 Using it: [Console](../user-guide/console.md).
 
 ### Images, firmware and kernel extraction
@@ -530,9 +530,9 @@ Using it: [Console](../user-guide/console.md).
   with the VM's guest credential
   ([`credentials.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/credentials.rs)).
 
-Design: [images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md),
-[kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md),
-[credentials.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/credentials.md).
+Design: [10-images.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md),
+[23-kernel-boot.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md),
+[08-credentials.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/08-credentials.md).
 Using it: [Kernel boot](../user-guide/kernel-boot.md).
 
 ### Hypervisors
@@ -544,7 +544,7 @@ config into the full command line the shim runs, and performs runtime
 operations (observe, pause/resume, VFIO hot-plug) over the hypervisor's
 socket with `glidex-hv-client`. Because everything is a path, a
 restarted control plane manages instances exactly as before. Design:
-[hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/hypervisors.md).
+[04-hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md).
 
 ### Devices
 
@@ -564,8 +564,8 @@ restarted control plane manages instances exactly as before. Design:
   (`tenant_device_pools`). Pools marked `prepare` are bound to
   `vfio-pci` on each node at start.
 
-Design: [host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md),
-[gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md).
+Design: [22-host-topology.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md),
+[27-gpu-vms.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md).
 Operating it: [PCI passthrough](../operator-guide/pci-passthrough.md),
 [Host resources](../operator-guide/host-resources.md).
 
@@ -592,10 +592,10 @@ allocate there; a cluster can trust another organization's directory
 (`trust.rs`, `directory/peer.rs`). Authorization is Cedar over
 principals, tenants, projects, hosts and resources.
 
-Design: [security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md),
-[tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md),
-[passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md),
-[gxctl-auth.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/gxctl-auth.md).
+Design: [11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md),
+[19-tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md),
+[25-passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md),
+[17-gxctl-auth.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/17-gxctl-auth.md).
 Operating it: [Authentication](../operator-guide/authentication.md),
 [Access control](../operator-guide/access-control.md),
 [Workload federation](../operator-guide/workload-federation.md).
@@ -616,7 +616,7 @@ billing-month percentiles. Usage is read through `UsageService` and
 
 Code: [`metering/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/metering)
 (`sampler.rs`, `sources.rs`, `net.rs`, `ledger.rs`, `rates.rs`, `retention.rs`, `query.rs`).
-Design: [metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md).
+Design: [13-metering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md).
 Using it: [Usage](../user-guide/usage.md).
 
 ## Life of a VM create

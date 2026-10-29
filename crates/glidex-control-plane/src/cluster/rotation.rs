@@ -1,4 +1,4 @@
-//! CA rotation and certificate renewal (spec/clustering.md §12.5).
+//! CA rotation and certificate renewal (spec/14-clustering.md §12.5).
 //!
 //! The state is one row of `ca_bundle`: the trust bundle every node installs,
 //! which CA signs now and which older ones are still trusted. A rotation is
@@ -169,7 +169,7 @@ impl Cluster {
         Ok(())
     }
 
-    /// Rotate the secrets key (spec/tenancy.md §13, leader): a new key to
+    /// Rotate the secrets key (spec/19-tenancy.md §13, leader): a new key to
     /// every other server with the current one as its previous, then here,
     /// then every data key re-wrapped in one write. Until that write each
     /// server opens the data keys with the previous key, so a rotation cut

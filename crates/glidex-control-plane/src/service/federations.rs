@@ -1,4 +1,4 @@
-//! Workload federations (spec/tenancy.md §9, D48–D51):
+//! Workload federations (spec/19-tenancy.md §9, D48–D51):
 //! `glidex.directory.v1.FederationService`. The exchange that uses them is
 //! `service::exchange`.
 

@@ -1,4 +1,4 @@
-//! The network controller (spec/reconciliation.md §10.3): keeps netd's
+//! The network controller (spec/12-reconciliation.md §10.3): keeps netd's
 //! records in line with the control plane's networks. netd reconciles the
 //! host (OVS, nftables, dnsmasq) from its own records; this re-creates a
 //! bridge netd lost, and reports what is missing. A lost NAT is re-created
@@ -166,7 +166,7 @@ impl VmManager {
                         }
                     }
                     // The host's API opened or closed to its guests
-                    // (spec/workload-identity.md §15).
+                    // (spec/29-workload-identity.md §15).
                     Some(n) if n.state.host_api_ports != self.host_api_ports(&net) => {
                         let ports = self.host_api_ports(&net);
                         let spec = NatSpec {
@@ -239,7 +239,7 @@ impl VmManager {
         }
     }
 
-    /// The `network.netd` finalizer (spec/reconciliation.md §6.3): netd's
+    /// The `network.netd` finalizer (spec/12-reconciliation.md §6.3): netd's
     /// NAT, then its bridge, for a network glidex created; then the record.
     /// A bridged network only drops its record (the bridge is the
     /// administrator's). Waits, with the reason in `Ready`, while netd is

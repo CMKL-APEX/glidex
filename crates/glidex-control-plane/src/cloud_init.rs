@@ -12,7 +12,7 @@
 //! Otherwise the guest user `cloud` gets no SSH keys and a locked password:
 //! there is no login. There are deliberately no host-wide defaults (the
 //! control-plane user's keys, a site password): one key or password would
-//! open VMs in every project (spec/security.md §6.2).
+//! open VMs in every project (spec/11-security.md §6.2).
 //!
 //! The seed holds a password hash, so the image is created mode 0600.
 
@@ -39,7 +39,7 @@ pub struct SeedConfig {
     /// MACs of the VM's glidex NICs, in order. Empty: DHCP on every `en*`.
     pub nic_macs: Vec<String>,
     /// Ask cloud-init to grow the root partition (a managed root disk with
-    /// `pending_growpart`, spec/images.md §6.4).
+    /// `pending_growpart`, spec/10-images.md §6.4).
     pub growpart: bool,
 }
 

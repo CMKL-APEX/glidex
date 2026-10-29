@@ -1,4 +1,4 @@
-//! Boot devices with netd already running (spec/gpu-vms.md §10): the
+//! Boot devices with netd already running (spec/27-gpu-vms.md §10): the
 //! installer's `--now`, through netd's own ops so netd keeps its records.
 //! At boot, before netd, [`crate::server::Netd::apply_boot_devices`] does
 //! the same directly.

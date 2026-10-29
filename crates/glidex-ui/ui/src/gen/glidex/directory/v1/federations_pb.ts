@@ -1,4 +1,4 @@
-// Workload federations (spec/tenancy.md §9, D48–D51): a tenant trusts a
+// Workload federations (spec/19-tenancy.md §9, D48–D51): a tenant trusts a
 // JWT issuer (GitHub Actions, GitLab CI, Kubernetes, …), and a token from
 // it whose claims match a rule is exchanged (`POST /auth/exchange`) for a
 // short-lived token acting as one of the tenant's service accounts.

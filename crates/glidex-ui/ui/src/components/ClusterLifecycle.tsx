@@ -17,7 +17,7 @@ function relative(at: string | undefined): string {
   return d > 0 ? `in ${d} day${d === 1 ? "" : "s"}` : `${-d} day${d === -1 ? "" : "s"} ago`;
 }
 
-/** A standalone host becomes a cluster of one (spec/clustering-ui.md §7.8). */
+/** A standalone host becomes a cluster of one (spec/16-clustering-ui.md §7.8). */
 export function InitCluster({ onDone }: { onDone: () => void }) {
   const { host, refresh } = useSession();
   const [open, setOpen] = useState(false);
@@ -71,7 +71,7 @@ export function InitCluster({ onDone }: { onDone: () => void }) {
 }
 
 /** The cluster CA, node certificates, rotation and the snapshot
- * (spec/clustering-ui.md §7.6–7.7). */
+ * (spec/16-clustering-ui.md §7.6–7.7). */
 export function ClusterCa({ status, nodes, onDone }: { status: ClusterStatus; nodes: NodeRecord[]; onDone: () => void }) {
   const { host } = useSession();
   const [rotating, setRotating] = useState(false);
@@ -177,7 +177,7 @@ export function ClusterCa({ status, nodes, onDone }: { status: ClusterStatus; no
   );
 }
 
-/** Ending this node's or the whole cluster's membership (spec/clustering-ui.md §7.5). */
+/** Ending this node's or the whole cluster's membership (spec/16-clustering-ui.md §7.5). */
 export function DangerZone({ status, onDone }: { status: ClusterStatus; onDone: () => void }) {
   const { host, refresh } = useSession();
   const dir = useNodes();

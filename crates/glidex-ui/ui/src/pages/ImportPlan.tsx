@@ -11,7 +11,7 @@ import { Badge, Card, ErrorBanner, PageHeader, errorMessage, inputClass, primary
 
 const empty: ImportMappings = { projects: {}, networks: {}, credentials: {}, over_quota: false };
 
-/** One import plan (spec/clustering-ui.md §7.4): what a host brings, the
+/** One import plan (spec/16-clustering-ui.md §7.4): what a host brings, the
  * conflicts, names for what clashes, a check, then approve or reject. */
 export default function ImportPlan() {
   const { plan = "" } = useParams<{ plan: string }>();

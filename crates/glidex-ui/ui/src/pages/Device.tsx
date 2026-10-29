@@ -4,7 +4,7 @@ import * as api from "../api";
 import { useSession } from "../session";
 import { Card, ErrorBanner, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton } from "../components/ui";
 
-/** `/device?directory=…&code=…` (spec/tenancy.md D54): approve a device
+/** `/device?directory=…&code=…` (spec/19-tenancy.md D54): approve a device
  * login, such as `gxctl auth login --directory`, as the signed-in user. */
 export default function Device() {
   const [params] = useSearchParams();

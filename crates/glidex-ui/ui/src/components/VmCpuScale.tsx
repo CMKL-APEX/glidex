@@ -13,7 +13,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
   );
   const [busy, setBusy] = useState(false);
   // An elastic Pylon guest boots with all max_vcpus and pylond parks the
-  // idle ones, so its vcpu_count is max_vcpus (spec/pylon.md P2).
+  // idle ones, so its vcpu_count is max_vcpus (spec/30-pylon.md P2).
   const pylon = vmHypervisor(vm) === "pylon";
   const [error, setError] = useState<string | null>(null);
 

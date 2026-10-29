@@ -1,4 +1,4 @@
-// Login, session and browser protections (spec/security.md §5.5, §5.6,
+// Login, session and browser protections (spec/11-security.md §5.5, §5.6,
 // §14 "UI e2e"): the login page, CSRF on writes, logout, console tickets,
 // and glidex-ui's Host allowlist and security headers.
 import { api, consoleText, createVm, del, expect, rawRequest, test, UI_SERVER_PORT, waitForRpc } from "../fixtures";

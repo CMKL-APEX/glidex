@@ -1,4 +1,4 @@
-//! WebAuthn, the parts a relying party checks (spec/passkeys.md §2): the
+//! WebAuthn, the parts a relying party checks (spec/25-passkeys.md §2): the
 //! client data, the authenticator data, the attested credential's COSE
 //! key, and assertion signatures. No attestation statement is trusted
 //! (P1). CBOR is decoded here, strictly and only as far as WebAuthn needs:
@@ -507,7 +507,7 @@ pub fn encode(v: &Cbor) -> Vec<u8> {
     out
 }
 
-/// A software authenticator for tests (spec/passkeys.md §5).
+/// A software authenticator for tests (spec/25-passkeys.md §5).
 #[cfg(test)]
 pub mod soft {
     use super::*;

@@ -1,5 +1,5 @@
-//! REST twins of `glidex.storage.v1` (spec/images.md §8,
-//! spec/credentials.md): the proto messages as JSON, path and query
+//! REST twins of `glidex.storage.v1` (spec/10-images.md §8,
+//! spec/08-credentials.md): the proto messages as JSON, path and query
 //! parameters merged in, and the same `service::storage` functions as the
 //! RPCs. Status codes say what the RPCs put in their answers (`202` for a
 //! write still under way, `204` once a deletion is done).
@@ -127,7 +127,7 @@ pub async fn delete_credential(
 #[derive(serde::Deserialize, Default)]
 pub struct ArchQuery {
     /// `x86_64` or `aarch64` (or `ARCH_…`); default: this host's
-    /// (spec/clustering.md §9.2.1).
+    /// (spec/14-clustering.md §9.2.1).
     #[serde(default)]
     arch: Option<String>,
 }
@@ -214,7 +214,7 @@ pub async fn extract_vm_kernel(
     ))
 }
 
-/// A deletion request the image controller finishes (spec/reconciliation.md
+/// A deletion request the image controller finishes (spec/12-reconciliation.md
 /// §6.3): `204` once the image is gone (normally at once, or with `?wait`
 /// when it went in time), else `202` with it.
 pub async fn delete_image(
@@ -252,7 +252,7 @@ pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
 }
 
 /// `POST /images/{id}/copies` `{node}`: keep a copy on a node ahead of need
-/// (spec/clustering.md §9.2.2).
+/// (spec/14-clustering.md §9.2.2).
 pub async fn add_image_copy(
     c: Caller,
     Path(id): Path<String>,
@@ -303,7 +303,7 @@ pub async fn get_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     Ok(Proto(StatusCode::OK, svc::get_disk(&c, req).await?))
 }
 
-/// The answer to a disk write (spec/reconciliation.md §12.3): at once with
+/// The answer to a disk write (spec/12-reconciliation.md §12.3): at once with
 /// `immediate` (`201` for a create, else `202`); with `?wait`, `ok` once
 /// the disk settled, `202` when the time ran out; `204` once it's gone.
 /// The body is `{disk, settled}` (every write's response has that shape).
@@ -402,7 +402,7 @@ pub async fn disk_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
     Ok(Proto(StatusCode::OK, svc::disk_events(&c, req).await?))
 }
 
-// ---- datastores (spec/storage.md §13) -------------------------------------
+// ---- datastores (spec/24-storage.md §13) -------------------------------------
 
 pub async fn list_datastores(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::ListDatastoresRequest::default();

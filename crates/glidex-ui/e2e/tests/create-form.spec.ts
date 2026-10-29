@@ -172,7 +172,7 @@ test("sizes an elastic Pylon VM at its max vCPUs", async ({ page }) => {
   await expect(vcpus).toHaveValue("2");
   await expect(vcpus).toBeEnabled();
 
-  // Pylon boots all max_vcpus (spec/pylon.md P2): the count follows max.
+  // Pylon boots all max_vcpus (spec/30-pylon.md P2): the count follows max.
   await field(page, "Hypervisor Backend").selectOption("pylon");
   await expect(field(page, "Max vCPUs")).toHaveValue("4");
   await expect(vcpus).toHaveValue("4");

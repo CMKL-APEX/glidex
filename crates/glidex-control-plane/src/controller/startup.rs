@@ -1,4 +1,4 @@
-//! Startup (spec/reconciliation.md §9.4): before any controller acts,
+//! Startup (spec/12-reconciliation.md §9.4): before any controller acts,
 //! observe every VM and adopt the instances that are still running, list
 //! orphans, and only then tell netd which VMs own ports.
 

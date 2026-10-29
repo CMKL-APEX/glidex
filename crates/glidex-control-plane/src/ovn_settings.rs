@@ -1,4 +1,4 @@
-//! OVN as a cluster setting (spec/clustering-ui.md §8a): whether the cluster
+//! OVN as a cluster setting (spec/16-clustering-ui.md §8a): whether the cluster
 //! runs its networks on OVN, and the cluster-wide OVN options, in the
 //! replicated `Meta` table, so every node follows one answer. What is per
 //! host (`bridge_mappings`) stays in each host's file.

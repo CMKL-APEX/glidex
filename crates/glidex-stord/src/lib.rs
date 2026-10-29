@@ -1,4 +1,4 @@
-//! glidex-stord: the privileged glidex storage helper (spec/storage.md
+//! glidex-stord: the privileged glidex storage helper (spec/24-storage.md
 //! §11.1, S17). It makes, activates and removes glidex's logical volumes
 //! in the volume groups the operator allows, hands their device nodes to
 //! the `glidex` user, and lets each VM's unit open exactly its own.

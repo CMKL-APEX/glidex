@@ -1,4 +1,4 @@
-//! The cluster family's nodes, imports and departures (spec/clustering.md
+//! The cluster family's nodes, imports and departures (spec/14-clustering.md
 //! §5, §7). A standalone host lists one node, `local`.
 
 use super::{Call, ServiceError, ServiceResult};
@@ -49,7 +49,7 @@ pub fn list(call: &Call, _req: pb::ListNodesRequest) -> ServiceResult<pb::ListNo
 }
 
 /// `GET /nodes/{id}/topology`: node `id`'s NUMA and PCIe topology, read
-/// on that node (spec/host-topology.md §3.2).
+/// on that node (spec/22-host-topology.md §3.2).
 pub async fn get_node_topology(
     call: &Call,
     req: pb::GetNodeTopologyRequest,
@@ -136,7 +136,7 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
         .collect()
 }
 
-/// `GET /pci-pools` (spec/host-topology.md §9.1): each pool's devices on
+/// `GET /pci-pools` (spec/22-host-topology.md §9.1): each pool's devices on
 /// each node it is on, whether ready, cordoned or held and by what VM,
 /// and how many are free. `?project=`: the pools that project may use,
 /// with free counts and no devices, for anyone who can read the project.
@@ -245,7 +245,7 @@ fn device_target(call: &Call, id: String, address: &str) -> ServiceResult<(Strin
     Ok((id, addr))
 }
 
-/// `POST /nodes/{id}/devices/{address}/prepare` (spec/host-topology.md
+/// `POST /nodes/{id}/devices/{address}/prepare` (spec/22-host-topology.md
 /// §5.3): its IOMMU group bound to vfio-pci on that node.
 pub async fn prepare_device(
     call: &Call,
@@ -275,7 +275,7 @@ pub async fn prepare_device(
     })
 }
 
-/// `POST /nodes/{id}/devices/{address}/sriov` (spec/host-topology.md
+/// `POST /nodes/{id}/devices/{address}/sriov` (spec/22-host-topology.md
 /// §10.1): set a PF's VF count on its node. Refused while a VM holds the
 /// PF or one of its VFs, as the change removes every VF.
 pub async fn set_sriov_vfs(
@@ -704,7 +704,7 @@ pub fn get_import(call: &Call, req: pb::GetImportRequest) -> ServiceResult<pb::G
     })
 }
 
-/// `GET /departures` (spec/clustering-ui.md §6): detaches, in progress or
+/// `GET /departures` (spec/16-clustering-ui.md §6): detaches, in progress or
 /// done, with their step.
 pub fn list_departures(
     call: &Call,
@@ -897,7 +897,7 @@ fn valid_mapping(physnet: &str, bridge: &str) -> Result<(), String> {
 }
 
 /// `PUT /nodes/{id}/ovn` (`configureNode` on the node's host): the node's
-/// `br-int` datapath (spec/clustering.md §11.6). The node applies it within
+/// `br-int` datapath (spec/14-clustering.md §11.6). The node applies it within
 /// its next OVN round; netd refuses to flip a `br-int` with VM ports on it.
 pub async fn put_node_ovn(
     call: &Call,
@@ -1078,7 +1078,7 @@ pub(crate) fn live_gateway_node<'a>(
 
 /// Whether `keys` (node ids or names) can carry an OVN gateway on `physnet`:
 /// each maps that physical network and wants `br-int` on the kernel datapath
-/// (spec/clustering.md §11.2, §13.2). The reason when not.
+/// (spec/14-clustering.md §11.2, §13.2). The reason when not.
 pub(crate) fn check_gateway_nodes(
     nodes: &[crate::node::Node],
     keys: &[String],
@@ -1104,7 +1104,7 @@ pub(crate) fn check_gateway_nodes(
 
 /// `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
 /// cluster): the node deletes the unrecorded image files it has reported
-/// (spec/clustering.md §9.2.3), at its next report.
+/// (spec/14-clustering.md §9.2.3), at its next report.
 pub fn delete_spare_image_files(
     call: &Call,
     req: pb::DeleteSpareImageFilesRequest,

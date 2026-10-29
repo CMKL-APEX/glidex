@@ -18,8 +18,8 @@ is not shown; the nested test checks the tunnels on the hosts.
 Found on the way: `POST /cluster/leave` was not host-local, so a
 follower forwarded it to the leader (and an agent's relay would have
 sent it to a server): the wrong host would have left. It now always runs
-on the host it was asked of. It extends [web-ui.md](web-ui.md) for
-the multi-host clusters of [clustering.md](clustering.md) (referred to as
+on the host it was asked of. It extends [07-web-ui.md](07-web-ui.md) for
+the multi-host clusters of [14-clustering.md](14-clustering.md) (referred to as
 "C§n" below). The REST endpoints it uses are in C§16 and `api/mod.rs`;
 where the UI needs something the API does not yet give, the server
 addition is listed with the milestone that needs it (§9).
@@ -113,7 +113,7 @@ name, or the first 8 characters of the id when the caller can't list
 nodes (`listNodes` denied) — see §9 `node_name` for the proper fix. The
 node serving the UI is marked "(this node)" (`node_id` of `GET /cluster/status`).
 
-A tombstone (clustering.md §5.3) keeps its name, and a host that joins
+A tombstone (14-clustering.md §5.3) keeps its name, and a host that joins
 again takes the same one, so the directory can hold several records of
 one name. `nodeLabel(node)` shows a tombstone as `<name> · <first 8 of
 id>` wherever tombstones are listed (the Cluster page's departed list,
@@ -126,7 +126,7 @@ live nodes only.
 `request()` in `api.ts`:
 
 - `503` with `leader_changed` on an idempotent request (GET, and PUT /
-  DELETE / POST endpoints listed as idempotent in rest-api.md): retry up
+  DELETE / POST endpoints listed as idempotent in 06-rest-api.md): retry up
   to 3 times with 250 ms, 500 ms, 1 s backoff.
 - `503 cluster_unavailable` (no quorum): no retry; a global banner
   "The cluster has no leader; changes are refused until a majority of
@@ -181,7 +181,7 @@ dialog runs when the action is used. Tokens never get `reauth`.
 
 ### 3.6 The UI on an agent
 
-> **Replaced for browsers** by [host-page.md](host-page.md): an agent's
+> **Replaced for browsers** by [28-host-page.md](28-host-page.md): an agent's
 > web UI redirects to a server (W5), and a server's UI acts on any node's
 > host (W2). The relay below stays on servers for agents on older builds
 > (W6).
@@ -235,7 +235,7 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
   list.
 - `gxctl` on an agent's API socket (peer uid) is not covered: a server
   can't verify a Unix uid of another host. `gxctl` users on agents log in
-  to a server (`gxctl auth login`, spec/gxctl-auth.md). This matches C D14:
+  to a server (`gxctl auth login`, spec/17-gxctl-auth.md). This matches C D14:
   break-glass through `api.sock` gives no cluster rights on an agent. An
   agent serves no `api.sock`; a host that becomes one (join, rejoin or an
   approved import, through its API) restarts its control plane into agent
@@ -247,7 +247,7 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
 
 ### 3.7 Live updates
 
-The UI's live stream (`GET /watch`, web-ui.md *Live stream*) gains kinds,
+The UI's live stream (`GET /watch`, 07-web-ui.md *Live stream*) gains kinds,
 each sent only to callers allowed to list it, with the same
 re-list-on-change rule as the existing kinds:
 
@@ -271,7 +271,7 @@ agent the stream is relayed like any request (§3.6).
 | `/cluster/nodes/:id` | `NodeDetail` (§5) |
 | `/cluster/imports/:plan` | `ImportPlan` (§7.4) |
 
-web-ui.md's route table gains these and the existing `/cluster` row
+07-web-ui.md's route table gains these and the existing `/cluster` row
 (missing today).
 
 ## 4. Cluster awareness in existing pages (U1)
@@ -306,7 +306,7 @@ and the post-create condition.
 
 ### 5.2 Node page
 
-> Now part of each node's Host page, `/hosts/:id` ([host-page.md](host-page.md) W1).
+> Now part of each node's Host page, `/hosts/:id` ([28-host-page.md](28-host-page.md) W1).
 
 `/cluster/nodes/:id`:
 
@@ -324,7 +324,7 @@ Each image row shows its copies: `n of m nodes`, and per node
 `ready` / `copying (p %)` / `failed (reason)`. Needs §9 `copies` on
 `GET /images`.
 
-In a cluster (clustering.md §9.2.1–3): every image shows its
+In a cluster (14-clustering.md §9.2.1–3): every image shows its
 architecture. The pull form offers the architecture (default: the
 nodes chosen, else the server's), *Copy to nodes* (only nodes of that
 architecture) and *Keep the server's copy*. An image offers *Copy to
@@ -509,7 +509,7 @@ there). Nodes report both in their status from now on.
 **Outdated OVN.** Each node in `GET /cluster/settings/ovn` also carries
 `outdated`: why it can't run the cluster's logical flows, when its
 `ovn-controller` is an older release than the cluster's ovn-northd (the
-newest OVN its servers with `ovn-central` report; installer.md, OVN). It
+newest OVN its servers with `ovn-central` report; 05-installer.md, OVN). It
 doesn't block the setting; it is shown on the Cluster page (in the OVN
 card, and as the node's badge while OVN is off), and the scheduler refuses
 that node for a VM with a NIC on a cluster network, with the same reason.
@@ -588,7 +588,7 @@ add uplink with "move the host's address", commit once the API answers,
 re-apply a held uplink, remove), and the Node page a node's physical
 networks. netd re-applies a migrated address at start with the gateway
 check and rolls back to the NIC's own address if it fails
-(networking.md §8.5). Through an agent's UI these run on the agent (§3.6;
+(09-networking.md §8.5). Through an agent's UI these run on the agent (§3.6;
 the server also passes `confirmUplink` when the caller holds it).
 
 Found while testing it end to end: agents served no UI socket after a
@@ -598,7 +598,7 @@ with one (`/ovs/bridges/{name}/uplinks`, `/nodes/{id}`, …). Both fixed.
 
 ## 8d. A project's own routers
 
-VPC routers (clustering.md §11.2a) give a project's NAT networks their
+VPC routers (14-clustering.md §11.2a) give a project's NAT networks their
 own way out instead of the shared edge. The UI:
 
 - **Project page, Routers card** (`readRouter`, shown while OVN is on):
@@ -659,7 +659,7 @@ with the router's address, not the shared edge's.
 
 | Milestone | Content | Done when |
 |---|---|---|
-| **U0** Shared pieces | §3.1–3.5, 3.7, 3.8: capability table entries, `POST /authz/allowed`, watch kinds, `useNodes`, 503 handling, `ConfirmDialog`, routes; web-ui.md route table | Unit tests for retry/backoff; `ui_capabilities.rs` passes with the new entries; `/authz/allowed` agrees with `/authz/check` item by item (property test); a policy change reaches an open page through the `policy` kind |
+| **U0** Shared pieces | §3.1–3.5, 3.7, 3.8: capability table entries, `POST /authz/allowed`, watch kinds, `useNodes`, 503 handling, `ConfirmDialog`, routes; 07-web-ui.md route table | Unit tests for retry/backoff; `ui_capabilities.rs` passes with the new entries; `/authz/allowed` agrees with `/authz/check` item by item (property test); a policy change reaches an open page through the `policy` kind |
 | **U1** Cluster awareness | §4 + `node_name` (§9) + the agent UI relay (§3.6) | Playwright: two-node mock shows nodes on VMs/disks/networks; nested e2e: log in to the UI on the agent (h2), see the VM there with its node, open its console; with the servers unreachable the agent's UI answers `503` and never authenticates locally |
 | **U2** Placement and capacity | §5 + preview, copies, usage by node (§9) | Create a VM on a chosen node; refusal reasons shown; image copies visible during a copy |
 | **U3** Cluster page and membership | §6, §7.1–7.4 (imports included, C§16) | Playwright with a mocked cluster for every dialog; nested e2e: drain, remove an empty agent, rejoin token shown once |

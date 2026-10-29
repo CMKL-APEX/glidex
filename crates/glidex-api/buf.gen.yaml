@@ -1,5 +1,5 @@
 # TypeScript messages and service descriptors for glidex-ui (Connect-ES,
-# spec/grpc.md §11), with types for their JSON form (`json_types`): the UI
+# spec/18-grpc.md §11), with types for their JSON form (`json_types`): the UI
 # works on the proto JSON its REST twins answer too. Run from this
 # directory after `bun install` in ../glidex-ui/ui: buf generate
 version: v2

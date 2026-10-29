@@ -13,7 +13,7 @@ const CHOICES: { value: BrIntDatapath; label: string; help: string }[] = [
   { value: "BR_INT_DATAPATH_NETDEV", label: "Userspace (netdev, DPDK)", help: "For vhost-user NICs on cluster networks. Needs DPDK; can't carry a gateway." },
 ];
 
-/** A node's br-int datapath (spec/clustering.md §11.6). The node switches
+/** A node's br-int datapath (spec/14-clustering.md §11.6). The node switches
  * within half a minute; netd refuses while VM ports sit on br-int. */
 export default function BrIntDialog({ node, onClose, onDone }: { node: NodeRecord; onClose: () => void; onDone: () => void }) {
   const [value, setValue] = useState<BrIntDatapath>(node.spec.br_int_datapath ?? "BR_INT_DATAPATH_AUTO");

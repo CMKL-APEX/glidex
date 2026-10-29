@@ -1,4 +1,4 @@
-//! Identity, session, token, policy and audit records (spec/security.md
+//! Identity, session, token, policy and audit records (spec/11-security.md
 //! §5, §6.1, §7.6, §10), in the control-plane database.
 //!
 //! Every table maps a string key to a JSON value, like the other stores.
@@ -30,7 +30,7 @@ const SITE_POLICY_VERSIONS: TableDefinition<&str, &[u8]> =
 /// `<unix millis, zero-padded>-<seq>` → audit entry.
 const AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
 /// `<directory>/<unix millis, zero-padded>-<seq>` → audit entry of a
-/// hosted directory (spec/tenancy.md D74).
+/// hosted directory (spec/19-tenancy.md D74).
 const DIRECTORY_AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("directory_audit");
 
 #[derive(Debug, Error)]
@@ -76,7 +76,7 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// The directory of a record from before T6 (spec/tenancy.md D58).
+/// The directory of a record from before T6 (spec/19-tenancy.md D58).
 pub fn local_directory() -> String {
     crate::tenants::LOCAL_DIRECTORY.to_string()
 }
@@ -84,7 +84,7 @@ pub fn local_directory() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
-    /// Its directory (spec/tenancy.md D58); `local` from before T6.
+    /// Its directory (spec/19-tenancy.md D58); `local` from before T6.
     #[serde(default = "local_directory")]
     pub directory_id: String,
     pub display_name: String,
@@ -94,7 +94,7 @@ pub struct User {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
     pub created_at: u64,
-    /// The connector that provisions it (spec/tenancy.md §8.3).
+    /// The connector that provisions it (spec/19-tenancy.md §8.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed: Option<Managed>,
     /// Its provisioned email (a managed user's; logins keep theirs on the identity).
@@ -105,7 +105,7 @@ pub struct User {
     pub disabled_reason: Option<DisabledReason>,
 }
 
-/// A user or team a connector provisions (spec/tenancy.md §8): its
+/// A user or team a connector provisions (spec/19-tenancy.md §8): its
 /// fields are the connector's (§8.3). Its SCIM `id` is its glidex id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Managed {
@@ -127,7 +127,7 @@ pub struct Managed {
     pub ssh_keys: Vec<String>,
 }
 
-/// A group a connector's IdP pushed over SCIM (spec/tenancy.md D43). Its
+/// A group a connector's IdP pushed over SCIM (spec/19-tenancy.md D43). Its
 /// members are user ids; with `group_mode: auto` it is also the team of
 /// the same id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +187,7 @@ impl Identity {
     }
 
     /// `unix` and `pam` identities are names on one host, not global
-    /// (spec/clustering.md D13).
+    /// (spec/14-clustering.md D13).
     pub fn is_host_local(&self) -> bool {
         self.provider == "unix" || self.provider == "pam"
     }
@@ -210,7 +210,7 @@ pub enum MemberSource {
     /// The file-defined connectors keep their names from before connectors.
     Pam,
     Oidc,
-    /// Synced by this connector (spec/tenancy.md D18).
+    /// Synced by this connector (spec/19-tenancy.md D18).
     Connector(String),
 }
 
@@ -272,7 +272,7 @@ pub struct Session {
     pub last_seen: u64,
     /// For step-up (`base.step-up`).
     pub authenticated_at: u64,
-    /// The login was multi-factor (`context.auth.mfa`, spec/tenancy.md §6).
+    /// The login was multi-factor (`context.auth.mfa`, spec/19-tenancy.md §6).
     #[serde(default)]
     pub mfa: bool,
     /// A trusted directory's login (D69): its chain, `sid`; the session
@@ -305,14 +305,14 @@ pub struct Token {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_from: Option<String>,
     /// Device the minting client claimed (`gxctl auth login`); display and
-    /// audit only, never checked (spec/gxctl-auth.md §7.2).
+    /// audit only, never checked (spec/17-gxctl-auth.md §7.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
     /// Client build that minted the token (`gxctl/<version>`); display and
     /// audit only, never checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
-    /// The clusters it is good on (spec/tenancy.md §7.4): cluster ids, or
+    /// The clusters it is good on (spec/19-tenancy.md §7.4): cluster ids, or
     /// `all`; empty: only where it was made. Fed to the others.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clusters: Vec<String>,
@@ -707,7 +707,7 @@ impl IdentityStore {
         })
     }
 
-    /// Run a SCIM request's writes (spec/tenancy.md §8.1) for `connector`
+    /// Run a SCIM request's writes (spec/19-tenancy.md §8.1) for `connector`
     /// in one write.
     pub fn scim<R, E: From<StoreError> + From<crate::store::StoreError>>(
         &self,
@@ -840,7 +840,7 @@ impl IdentityStore {
         Ok((users, groups))
     }
 
-    /// Delete user `id` and what is its alone, in one write (spec/tenancy.md
+    /// Delete user `id` and what is its alone, in one write (spec/19-tenancy.md
     /// §6.3): its identities, sessions, personal tokens, team memberships,
     /// role links and tenant memberships. Service-account tokens it made
     /// stay (they are their project's); audit entries and taken invitations

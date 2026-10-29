@@ -1,5 +1,5 @@
 // The directory's connectors: the IdPs and user sources its users log in
-// through (spec/tenancy.md §5, milestone T1).
+// through (spec/19-tenancy.md §5, milestone T1).
 syntax = "proto3";
 
 package glidex.directory.v1;
@@ -51,7 +51,7 @@ service ConnectorService {
       rest: "PUT /connectors/{id}/secrets/{field}"
     };
   }
-  // Run a pulled connector's sync now (spec/tenancy.md §8.2), and answer
+  // Run a pulled connector's sync now (spec/19-tenancy.md §8.2), and answer
   // how it went. `confirm` applies a run the safety stop blocked (D46),
   // which takes `confirmConnectorSync` too.
   rpc SyncConnector(SyncConnectorRequest) returns (SyncConnectorResponse) {
@@ -61,7 +61,7 @@ service ConnectorService {
       rest: "POST /connectors/{id}/sync"
     };
   }
-  // A provisioned connector's SCIM bearer tokens (spec/tenancy.md §8.1):
+  // A provisioned connector's SCIM bearer tokens (spec/19-tenancy.md §8.1):
   // names and lifetimes, never the tokens.
   rpc ListScimTokens(ListScimTokensRequest) returns (ListScimTokensResponse) {
     option (glidex.api.v1.op) = {
@@ -118,23 +118,23 @@ message Connector {
   // Longest personal token a login through it mints (default 30 days).
   optional uint32 token_max_days = 11 [json_name = "token_max_days"];
   // `none` (the default) or `scim`: the IdP pushes this connector's users
-  // and groups, and only those users log in (spec/tenancy.md §8.1, D41).
+  // and groups, and only those users log in (spec/19-tenancy.md §8.1, D41).
   // `oidc` and `jumpcloud` connectors can be provisioned.
   optional string provisioning = 20;
   // `mapped` (the default: `group_teams`) or `auto` (a team per
-  // provisioned group, spec/tenancy.md D43).
+  // provisioned group, spec/19-tenancy.md D43).
   optional string group_mode = 21 [json_name = "group_mode"];
   // With `provisioning: pull` (a Google Workspace connector): what the
-  // pull reads and how often (spec/tenancy.md §8.2).
+  // pull reads and how often (spec/19-tenancy.md §8.2).
   SyncSettings sync = 22;
   // The last pull's outcome. Output only.
   SyncStatus sync_status = 23 [json_name = "sync_status"];
   oneof settings {
     PamSettings pam = 12;
     OidcSettings oidc = 13;
-    // The `google` preset (spec/tenancy.md D39, §5.1).
+    // The `google` preset (spec/19-tenancy.md D39, §5.1).
     GoogleSettings google = 18;
-    // The `jumpcloud` preset (spec/tenancy.md §5.1).
+    // The `jumpcloud` preset (spec/19-tenancy.md §5.1).
     JumpcloudSettings jumpcloud = 19;
   }
   // Which secrets are set; never their values. Output only.
@@ -159,7 +159,7 @@ message OidcSettings {
   repeated string mfa_acr_values = 7 [json_name = "mfa_acr_values"];
 }
 
-// Which Google accounts a `google` connector serves (spec/tenancy.md D39).
+// Which Google accounts a `google` connector serves (spec/19-tenancy.md D39).
 enum GoogleAccounts {
   // Workspace.
   GOOGLE_ACCOUNTS_UNSPECIFIED = 0;
@@ -246,7 +246,7 @@ message UpdateConnectorResponse {
 
 message DeleteConnectorRequest {
   string id = 1;
-  // What becomes of the users and teams it provisions (spec/tenancy.md
+  // What becomes of the users and teams it provisions (spec/19-tenancy.md
   // §8.3): `disable` (the default: users are disabled as D20 says, with
   // `disabled_reason: connector_deleted`) or `detach` (they stay enabled
   // and become the directory's, and its memberships become manual). Either
@@ -327,7 +327,7 @@ message RevokeScimTokenRequest {
 
 message RevokeScimTokenResponse {}
 
-// A pull's settings (spec/tenancy.md §8.2, D44–D47).
+// A pull's settings (spec/19-tenancy.md §8.2, D44–D47).
 message SyncSettings {
   // Default 15, at least 5.
   optional uint32 interval_minutes = 1 [json_name = "interval_minutes"];

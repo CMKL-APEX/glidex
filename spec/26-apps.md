@@ -1,9 +1,9 @@
 # Managed applications
 
 Status: **draft** (proposal); nothing implemented. Builds on
-[workload-identity.md](workload-identity.md), which comes first, and
-extends [data-model.md](data-model.md), [security.md](security.md),
-[networking.md](networking.md) and [web-ui.md](web-ui.md). §13 lists the
+[29-workload-identity.md](29-workload-identity.md), which comes first, and
+extends [03-data-model.md](03-data-model.md), [11-security.md](11-security.md),
+[09-networking.md](09-networking.md) and [07-web-ui.md](07-web-ui.md). §13 lists the
 changes other documents need once this is accepted.
 
 Users ask for software installed **inside** glidex VMs and run for them:
@@ -43,8 +43,8 @@ applications as a **layer above it**:
   applications with out-of-process controllers (§6.4).
 - **Out:** object storage (backups go to an S3-compatible store the
   tenant brings, §8); a marketplace or billing per application
-  (instances' VMs are metered as VMs, metering.md); load balancers
-  (a networking.md item, which the Kubernetes app will use once it
+  (instances' VMs are metered as VMs, 13-metering.md); load balancers
+  (a 09-networking.md item, which the Kubernetes app will use once it
   exists).
 
 ## 2. Decisions
@@ -55,10 +55,10 @@ applications as a **layer above it**:
 | A2 | Instances are core resources | An application instance is an **`AppInstance`**: a generic, project-scoped core resource with an opaque `spec` and `status` (JSON), validated against its `App`'s JSON Schema. The core gives it what every resource has: Cedar, tenancy, audit, events and watch. | The CRD pattern: authorization, audit, quotas, the UI and gxctl work for every application without the apps service reimplementing them, and the core still knows nothing about what a spec means. |
 | A3 | Descriptors | Each application is an **`App`** record: name, versions, JSON Schema of the spec, UI hints, status fields, outputs, actions, the permissions its instances need, and a resource estimate (§5.1). The apps service registers its applications' descriptors; operators enable them per cluster. | The UI and gxctl render any application from data. |
 | A4 | Instance identity | Creating an instance creates a **service account owned by it** in its project, with the descriptor's permissions. The creator must hold those permissions (as when creating a token with roles), so an application never escalates. The apps service acts **as that service account**, through short-lived tokens it obtains by impersonation (A5); no instance secret is stored. | Every change an application makes is authorized, audited and quota-checked as that instance, within its project. |
-| A5 | The apps service's own identity | `glidex-apps` runs as its own Unix user and is identified on `api.sock` by `SO_PEERCRED` (security.md D5), like the web UI. Its only rights are writing instances' `status`, registering descriptors, and **`impersonateServiceAccount`** on service accounts **owned by an `AppInstance`**, for 15 min tokens. Off-host it authenticates with workload identity (workload-identity.md). | No long-lived secret anywhere; a compromised apps service reaches only applications' projects, as those instances. |
+| A5 | The apps service's own identity | `glidex-apps` runs as its own Unix user and is identified on `api.sock` by `SO_PEERCRED` (11-security.md D5), like the web UI. Its only rights are writing instances' `status`, registering descriptors, and **`impersonateServiceAccount`** on service accounts **owned by an `AppInstance`**, for 15 min tokens. Off-host it authenticates with workload identity (29-workload-identity.md). | No long-lived secret anywhere; a compromised apps service reaches only applications' projects, as those instances. |
 | A6 | Owners and protection | Resources an instance creates carry an **owner** (`{kind: AppInstance, id}`) and the label `glidex.io/app-instance`. Deleting the instance deletes what it owns (a finalizer). Changing or deleting an owned resource directly needs **`overrideManaged`**, which base policies give only to project administrators; the UI shows *Managed by …* and locks the controls. | Users see what belongs to an application and don't break it by hand; an administrator can still repair it. |
 | A7 | Guest configuration | Controllers configure guests with **`user_data`** (cloud-init, merged with the generated seed) and give guests **workload identity** for anything they must call. User-data never carries secrets. | Works with stock cloud images; no secret on a guest's disk or in a seed image. |
-| A8 | Secrets for people | Credentials an application must show its users (a database password, a first kubeconfig) are **sealed outputs** of the instance: stored sealed with the directory's data key (tenancy.md §13), shown only with **`readAppSecrets`**, every read audited. Where a guest system can trust the directory instead (Kubernetes' OIDC authentication, after T6), it does, and there is no secret to show. | Few secrets, each read on purpose and recorded. |
+| A8 | Secrets for people | Credentials an application must show its users (a database password, a first kubeconfig) are **sealed outputs** of the instance: stored sealed with the directory's data key (19-tenancy.md §13), shown only with **`readAppSecrets`**, every read audited. Where a guest system can trust the directory instead (Kubernetes' OIDC authentication, after T6), it does, and there is no secret to show. | Few secrets, each read on purpose and recorded. |
 | A9 | Quotas | An instance's VMs, disks and addresses count against its project's quotas like any others. The descriptor's estimate is checked before creating, so a create that can't fit is refused at once instead of failing halfway. | No new quota system. |
 | A10 | First applications | **Single-VM PostgreSQL** first (§8): small, and it exercises every part. Then **Kubernetes** (§9). | Prove the layer on something simple before the hard one. |
 | A11 | Kubernetes approach | A **Cluster API infrastructure provider** for glidex, run in a management cluster the apps service operates, with the kubeadm bootstrap and control-plane providers (§9). | Creation, upgrades, scaling and node repair come from the Kubernetes ecosystem's standard machinery (as OpenStack Magnum's Cluster API driver and Rancher do) instead of being rewritten here. Decided for now (§12); our own kubeadm controller stays the fallback if running a management cluster proves too costly. |
@@ -100,11 +100,11 @@ Each is generic and useful without applications.
 | Addition | What | Notes |
 |---|---|---|
 | **Labels and annotations** | `labels` (`map<string,string>`, selectable) and `annotations` (not selectable) on VMs, disks, networks and app instances; `label_selector` on their list calls and on `Watch`. Keys `prefix/name`; the `glidex.io/` prefix is reserved. | Today only cluster nodes have labels. |
-| **Owners** | `owner {kind, id}` on VMs, disks and networks; an owner finalizer deletes owned resources with their owner; `overrideManaged` (A6). | Generalizes the VM-owned root disk (images.md §7, `vm.owned-disk`). |
+| **Owners** | `owner {kind, id}` on VMs, disks and networks; an owner finalizer deletes owned resources with their owner; `overrideManaged` (A6). | Generalizes the VM-owned root disk (10-images.md §7, `vm.owned-disk`). |
 | **`user_data`** | A VM field (≤ 64 KiB) with cloud-init user-data, merged with the generated seed as a second MIME part, so credentials, growpart and networking still apply. Readable by whoever can read the VM: never a secret. | Today a custom seed needs a host path (`cloud_init_path`, `useHostPath`). |
 | **Fixed addresses** | `ipv4` on a VM's network attachment: an IPAM reservation of that address (refused if taken or outside the network). | Stable endpoints for databases and control planes. |
 | **Allowed addresses** | `allowed_addresses` on a NIC: extra addresses (and prefixes) the port may use, for in-guest failover (keepalived, kube-vip). OVN: port security's extra addresses; node networks: netd's filters. Needs `useNetwork` plus `assignAllowedAddress`. | A highly available endpoint without load balancers. |
-| **Disk hot-plug** | Attaching and detaching a data disk on a running VM takes effect at once. | Today it waits for the next start (rest-api.md); a Kubernetes storage driver needs it. |
+| **Disk hot-plug** | Attaching and detaching a data disk on a running VM takes effect at once. | Today it waits for the next start (06-rest-api.md); a Kubernetes storage driver needs it. |
 | **`App` and `AppInstance`** | The two resource kinds of §5, their API, Cedar actions (§5.3) and the `APP`/`APP_INSTANCE` watch kinds. | Opaque to the core beyond schema validation. |
 
 ## 5. Resources
@@ -144,7 +144,7 @@ Each is generic and useful without applications.
 - `format` values `glidex-network`, `glidex-image`, `glidex-credential`
   and `glidex-disk` make the UI offer a picker of the project's
   resources.
-- `permissions` are permission groups (security.md §7.2), scoped to the
+- `permissions` are permission groups (11-security.md §7.2), scoped to the
   instance's project.
 - An `App` is a cluster-wide record. `registerApp` (the apps service)
   creates and updates them; `enableApp` (operators) makes one available,
@@ -199,7 +199,7 @@ Each is generic and useful without applications.
 in `glidex-users`. It talks to `api.sock`, list-then-watches `APP_INSTANCE`
 (and, for each instance, its owned resources by label), and runs one
 controller loop per instance, level-triggered and idempotent like the
-core's controllers (reconciliation.md). Several copies may run; one holds
+core's controllers (12-reconciliation.md). Several copies may run; one holds
 each instance's lease.
 
 ### 6.2 Controllers
@@ -274,7 +274,7 @@ interfaces.
   lifecycle; load balancers once networking has them) and a CSI driver
   (glidex disks as persistent volumes, needs disk hot-plug), both
   authenticating with workload identity; pods kept from the metadata
-  endpoint (workload-identity.md §9).
+  endpoint (29-workload-identity.md §9).
 - **People** reach the API server with a kubeconfig shown as a sealed
   output; after T6, the API server trusts the directory as its OIDC
   issuer and people use their own login.
@@ -330,16 +330,16 @@ interfaces.
 
 ## 13. Changes to other specs (on acceptance)
 
-- **data-model.md:** labels, annotations and owners; `user_data`;
+- **03-data-model.md:** labels, annotations and owners; `user_data`;
   `ipv4` and `allowed_addresses` on NICs; `App`, `AppInstance`.
-- **security.md:** the actions of §5.3, `assignAllowedAddress`; the apps
+- **11-security.md:** the actions of §5.3, `assignAllowedAddress`; the apps
   service's principal.
-- **networking.md:** fixed addresses and allowed addresses on node and
+- **09-networking.md:** fixed addresses and allowed addresses on node and
   OVN networks.
-- **images.md / rest-api.md:** disk hot-plug on running VMs.
-- **web-ui.md:** the Apps routes and *Managed by*.
-- **cli.md:** `gxctl app`.
-- **workload-identity.md:** `glidex.owner` in tokens (§4.2).
+- **10-images.md / 06-rest-api.md:** disk hot-plug on running VMs.
+- **07-web-ui.md:** the Apps routes and *Managed by*.
+- **01-cli.md:** `gxctl app`.
+- **29-workload-identity.md:** `glidex.owner` in tokens (§4.2).
 
 ## 14. Milestones
 

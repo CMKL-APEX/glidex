@@ -1,6 +1,6 @@
 //! Host networking through glidex-netd and the host's PCI devices
-//! (spec/networking.md §8–§11) on the generated `glidex.host.v1` clients,
-//! over the Connect protocol (spec/grpc.md §9.1): `ovs …`, `bridges`,
+//! (spec/09-networking.md §8–§11) on the generated `glidex.host.v1` clients,
+//! over the Connect protocol (spec/18-grpc.md §9.1): `ovs …`, `bridges`,
 //! `uplinks`, `uplink-add`, `uplink-reapply`, `uplink-rm` and `pci`. These
 //! act on the host gxctl is connected to.
 
@@ -119,7 +119,7 @@ fn pci_details(dev: &PciDevice) -> Vec<String> {
 }
 
 /// `pci pools`: each pool with its devices per node, holders and what is
-/// free (spec/host-topology.md §9.1).
+/// free (spec/22-host-topology.md §9.1).
 async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     use glidex_api::proto::glidex::cluster::v1::ListPciPoolsRequest;
     let s = match crate::cluster::node_rpc(client).await {
@@ -601,7 +601,7 @@ async fn finish_uplink(client: &ApiClient, bridge: &str, u: &Uplink) {
 }
 
 /// `uplink-reapply <bridge> <name>`: a migration netd rolled back at start
-/// (spec/clustering-ui.md), set up again with the gateway check and commit.
+/// (spec/16-clustering-ui.md), set up again with the gateway check and commit.
 pub async fn uplink_reapply(client: &ApiClient, args: &[&str]) {
     let (Some(bridge), Some(name)) = (args.first(), args.get(1)) else {
         return usage("Usage: uplink-reapply <bridge> <name>");

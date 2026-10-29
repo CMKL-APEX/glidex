@@ -1,4 +1,4 @@
-//! SR-IOV virtual functions of a physical function (spec/host-topology.md
+//! SR-IOV virtual functions of a physical function (spec/22-host-topology.md
 //! §10.1): how many a PF can have and has, and setting that number through
 //! `sriov_numvfs`. Runs in glidex-netd (root).
 

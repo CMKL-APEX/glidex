@@ -181,10 +181,10 @@ Integration tests in `tests/cluster_tests.rs`:
 `hugepages_are_counted_per_node_and_fill_up`.
 
 **Spec.**
-- [clustering.md §9.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#91-scheduler)
-- [host-topology.md §8](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md#8-scheduler)
-- [host-topology.md §8a](https://github.com/CMKL-APEX/glidex/blob/main/spec/host-topology.md#8a-hugepages)
-- [gpu-vms.md §4](https://github.com/CMKL-APEX/glidex/blob/main/spec/gpu-vms.md#4-placement-aligned)
+- [14-clustering.md §9.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#91-scheduler)
+- [22-host-topology.md §8](https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md#8-scheduler)
+- [22-host-topology.md §8a](https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md#8a-hugepages)
+- [27-gpu-vms.md §4](https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md#4-placement-aligned)
 
 The code goes slightly beyond §9.1 in two ways: the score also includes the
 hugepage share, and placement also happens at VM create, not only on the
@@ -337,11 +337,11 @@ There are no pid files. A running VM is found again from:
 <!-- TODO(verify): no test pins on_host_boot (HostReboot Resume vs Stop) or restart_policy Never; behaviour above is from the code only. -->
 
 **Spec.**
-- [reconciliation.md §9.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#91-reconcile)
-- [§9.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#93-work-queue)
-- [§9.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#94-startup-order)
-- [§7.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#75-exit-handling)
-- [§8.7](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md#87-liveness-establishing-no-instance-d8)
+- [12-reconciliation.md §9.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md#91-reconcile)
+- [§9.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md#93-work-queue)
+- [§9.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md#94-startup-order)
+- [§7.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md#75-exit-handling)
+- [§8.7](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md#87-liveness-establishing-no-instance-d8)
 
 ## Replicated store and Raft
 
@@ -486,10 +486,10 @@ agent lists again.
   `a_silent_node_is_unreachable_not_gone`.
 
 **Spec.**
-- [clustering.md §6.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#62-raft-integration)
-- [§6.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#64-reads-writes-and-forwarding)
-- [§6.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#65-watch)
-- [§7.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#72-liveness)
+- [14-clustering.md §6.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#62-raft-integration)
+- [§6.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#64-reads-writes-and-forwarding)
+- [§6.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#65-watch)
+- [§7.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#72-liveness)
 
 ## Metering
 
@@ -601,10 +601,10 @@ Metering stops at usage. Glidex applies no prices.
 - `query.rs`: `month_buckets_in_a_whole_hour_zone`.
 
 **Spec.**
-- [metering.md §6](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#6-collection-algorithm)
-- [§8.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#84-billing-month)
-- [§8.5.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#851-95th-percentile-d15)
-- [clustering.md §13.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#131-node-local-accumulation-shipped-hours)
+- [13-metering.md §6](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#6-collection-algorithm)
+- [§8.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#84-billing-month)
+- [§8.5.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#851-95th-percentile-d15)
+- [14-clustering.md §13.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#131-node-local-accumulation-shipped-hours)
 
 ## Images and disks
 
@@ -686,10 +686,10 @@ root privileges are needed. Partition numbers don't matter; position does.
   `a_linked_disk_on_a_shared_datastore_overlays_the_datastores_copy`.
 
 **Spec.**
-- [images.md §5](https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md#5-download-pipeline)
-- [images.md §6.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/images.md#64-extend-root-partition)
-- [storage.md §11.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#111-design-s6-glidex-stord-and-lvm)
-- [clustering.md §9.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#92-images-and-disks)
+- [10-images.md §5](https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md#5-download-pipeline)
+- [10-images.md §6.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md#64-extend-root-partition)
+- [24-storage.md §11.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#111-design-s6-glidex-stord-and-lvm)
+- [14-clustering.md §9.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#92-images-and-disks)
 
 ## Kernel extraction
 
@@ -755,8 +755,8 @@ The kernel that boots is recorded in `status.disk_kernel`, not in the spec.
 `choice_fails_cleanly`.
 
 **Spec.**
-- [kernel-boot.md §10.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#104-choosing-the-kernel-and-its-command-line)
-- [§10.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#105-from-a-vms-own-disk)
+- [23-kernel-boot.md §10.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#104-choosing-the-kernel-and-its-command-line)
+- [§10.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#105-from-a-vms-own-disk)
 
 ## Disk move and volume locks
 
@@ -820,8 +820,8 @@ Moving a node-local disk to another node goes through a shared datastore.
   `a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywhere`.
 
 **Spec.**
-- [storage.md §8.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#83-moving-a-disk-between-datastores)
-- [storage.md §10](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md#10-exclusive-access)
+- [24-storage.md §8.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#83-moving-a-disk-between-datastores)
+- [24-storage.md §10](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#10-exclusive-access)
 
 ## Directory pull sync
 
@@ -869,7 +869,7 @@ run per connector at a time. A blocked run is retried on the next interval.
 - `tests/connector_tests.rs`:
   `a_pull_follows_the_directory_and_stops_before_removing_many`.
 
-**Spec.** [tenancy.md §8.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/tenancy.md#82-pull-sync)
+**Spec.** [19-tenancy.md §8.2](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md#82-pull-sync)
 
 ## Console log replay filter
 
@@ -902,7 +902,7 @@ when a client connects.
   `an_abandoned_string_does_not_swallow_what_follows`.
 - `proxy.rs`: `replay_leaves_out_the_guests_terminal_queries`.
 
-**Spec.** [console.md, log files](https://github.com/CMKL-APEX/glidex/blob/main/spec/console.md#log-files)
+**Spec.** [02-console.md, log files](https://github.com/CMKL-APEX/glidex/blob/main/spec/02-console.md#log-files)
 
 ## IPAM
 
@@ -947,7 +947,7 @@ locally administered, and stable per NIC (`glidex-ovs/src/names.rs`).
   `external_addresses_come_from_the_pool_once_each`.
 - `nat.rs`: `picks_first_free_subnet`.
 
-**Spec.** [clustering.md §11.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#114-ipam)
+**Spec.** [14-clustering.md §11.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#114-ipam)
 
 ## OVN northbound sync
 
@@ -977,7 +977,7 @@ Supporting details:
 `ports_and_networks_gone_from_the_plan_are_removed_and_foreign_rows_are_left`,
 `macs_are_stable_and_locally_administered`.
 
-**Spec.** [clustering.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#11-ovn-networks)
+**Spec.** [14-clustering.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#11-ovn-networks)
 
 ## Rate limiting
 
@@ -1009,8 +1009,8 @@ failures are not recorded while the global window is full.
 - `tests/passkey_tests.rs`: `sign_in_attempts_are_limited_by_the_real_client`.
 
 **Spec.**
-- [security.md §5.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/security.md#53-local-pam-glidex-authd)
-- [passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/passkeys.md)
+- [11-security.md §5.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md#53-local-pam-glidex-authd)
+- [25-passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md)
 
 ## CA rotation and certificate renewal
 
@@ -1060,7 +1060,7 @@ Rotation starts:
 
 <!-- TODO(verify): spec §12.5 says netd renews OVN certificates on rotation; not found in rotation.rs, glidex-netd or glidex-ovn. -->
 
-**Spec.** [clustering.md §12.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#125-ca-rotation)
+**Spec.** [14-clustering.md §12.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#125-ca-rotation)
 
 For measured costs of these paths, see
 [Performance and benchmarks](benchmarks.md).

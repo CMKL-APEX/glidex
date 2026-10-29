@@ -37,7 +37,7 @@ export default function Header() {
   }, [directoryReader, me.token]);
 
   const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
-  // A hosted directory keeps its own audit (spec/tenancy.md D74).
+  // A hosted directory keeps its own audit (spec/19-tenancy.md D74).
   const readsDirectoryAudit = host.readDirectoryAudit && isHostedDirectory(me.directory_id);
   const nav = [
     { to: "/", label: "VMs", show: true },

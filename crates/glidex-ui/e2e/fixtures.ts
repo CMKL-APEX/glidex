@@ -19,7 +19,7 @@ export const API = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8851}`;
 export const E2E_HOME = process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e";
 
 /** The firmware catalog entry each hypervisor's VMs boot through
- * (spec/images.md §4.1). */
+ * (spec/10-images.md §4.1). */
 export const FIRMWARE_KEY: Record<Hypervisor, string> = {
   cloudhypervisor: "cloudhv-edk2",
   qemu: "ovmf",
@@ -150,7 +150,7 @@ export async function api<T = any>(path: string, init?: { method?: string; body?
 export const del = (path: string) => api(path, { method: "DELETE" });
 
 /** Every VM, from `GET /vms` (the proto3 JSON shape of glidex.vm.v1: `{vms}`,
- * enums by their full names, spec/grpc.md §9.1). */
+ * enums by their full names, spec/18-grpc.md §9.1). */
 export async function listVms(): Promise<any[]> {
   return (await api<{ vms?: any[] }>("/vms")).vms ?? [];
 }
@@ -199,7 +199,7 @@ export async function bootPrerequisites(hypervisor: Hypervisor): Promise<string[
 /** Ready firmware images for `hypervisor`, newest first: what CreateVmForm
  * offers, and the first is what it preselects. */
 export async function firmwareImages(hypervisor: Hypervisor): Promise<any[]> {
-  // The storage routes answer in the proto3 JSON shape (spec/grpc.md §9.1).
+  // The storage routes answer in the proto3 JSON shape (spec/18-grpc.md §9.1).
   return ((await api<{ images?: any[] }>("/images")).images ?? [])
     .filter((i) => i.kind === "IMAGE_KIND_FIRMWARE" && i.hypervisor === PROTO_HYPERVISOR[hypervisor] && i.status?.state === "IMAGE_STATE_READY" && !i.deleting)
     .sort((a, b) => Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""));
@@ -231,7 +231,7 @@ export async function ensureFirmware(hypervisor: Hypervisor): Promise<any> {
   return img;
 }
 
-// ---- RPC mocks (the UI's calls are gRPC-Web, spec/grpc.md G-D8) ---------------
+// ---- RPC mocks (the UI's calls are gRPC-Web, spec/18-grpc.md G-D8) ---------------
 
 /** A gRPC-Web frame: flag byte, 4-byte big-endian length, payload. */
 function grpcWebFrame(flag: number, payload: Uint8Array): Uint8Array {

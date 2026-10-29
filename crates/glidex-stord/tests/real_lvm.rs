@@ -1,4 +1,4 @@
-//! Against a running glidex-stord and a real volume group (spec/storage.md
+//! Against a running glidex-stord and a real volume group (spec/24-storage.md
 //! §19, H4–H5). Ignored by default; run with
 //!
 //! ```text

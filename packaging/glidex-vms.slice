@@ -1,4 +1,4 @@
-# Where glidex-vm@<id>.service instances run (spec/reconciliation.md §13.1):
+# Where glidex-vm@<id>.service instances run (spec/12-reconciliation.md §13.1):
 # a place for site-wide resource controls over all VMs.
 [Unit]
 Description=glidex VMs

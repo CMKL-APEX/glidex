@@ -63,7 +63,7 @@ fn parse_qemu_version(output: &str) -> Option<(u32, u32)> {
 }
 
 /// The chardev option that makes QEMU reconnect to a socket after a second:
-/// `reconnect-ms` since 9.2, which deprecated `reconnect` (spec/storage.md
+/// `reconnect-ms` since 9.2, which deprecated `reconnect` (spec/24-storage.md
 /// §19, H8).
 fn reconnect_option(version: Option<(u32, u32)>) -> &'static str {
     match version {
@@ -142,7 +142,7 @@ impl QemuDisk {
             file["cache"] = serde_json::json!({"direct": true});
             file["aio"] = "native".into();
         }
-        // A block volume: this node's QEMU alone may open it (spec/storage.md
+        // A block volume: this node's QEMU alone may open it (spec/24-storage.md
         // §19, H6).
         if self.disk.shared || self.disk.block {
             file["locking"] = "on".into();
@@ -196,11 +196,11 @@ impl LaunchSpec<'_> {
         };
 
         let shared = needs_shared_memory(config) || config.hugepages;
-        // Bound to a host NUMA node (spec/host-topology.md §7.3), guest RAM
+        // Bound to a host NUMA node (spec/22-host-topology.md §7.3), guest RAM
         // is the memdev of the guest's one NUMA node instead of the
         // machine's memory backend.
         let numa = config.host_numa_node;
-        // `aligned` over several host NUMA nodes (spec/gpu-vms.md §5).
+        // `aligned` over several host NUMA nodes (spec/27-gpu-vms.md §5).
         let layout = super::guest_numa_layout(config);
         let multi = numa.is_none() && !layout.is_empty();
         let secure_boot = matches!(
@@ -375,7 +375,7 @@ impl LaunchSpec<'_> {
         }
 
         // `aligned`: a PCIe expander per guest NUMA node, a root port per
-        // device under it (spec/gpu-vms.md §5).
+        // device under it (spec/27-gpu-vms.md §5).
         if multi {
             for (i, (_, _, devices)) in layout.iter().enumerate() {
                 push(
@@ -435,7 +435,7 @@ impl LaunchSpec<'_> {
             format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)),
         );
         // The shim's PTY is QEMU's stdio; it carries whichever device the
-        // guest's console is on (spec/kernel-boot.md §5.2).
+        // guest's console is on (spec/23-kernel-boot.md §5.2).
         match ConsoleDevice::of(config) {
             ConsoleDevice::Serial => push(&mut args, "-serial", "stdio".into()),
             ConsoleDevice::Virtio => {
@@ -679,7 +679,7 @@ impl HypervisorDriver for QemuDriver {
     }
 }
 
-/// The kernel extractor's run (spec/kernel-boot.md §10.2), as
+/// The kernel extractor's run (spec/23-kernel-boot.md §10.2), as
 /// [`super::cloud_hypervisor::extractor_args`]: `-no-reboot`, so the
 /// appliance's power-off ends QEMU.
 pub(crate) fn extractor_args(
@@ -902,7 +902,7 @@ mod tests {
                 backing_files: false,
                 lock: None,
             },
-            // On a shared datastore (spec/storage.md §10).
+            // On a shared datastore (spec/24-storage.md §10).
             VolumeBinding::File {
                 path: "/disks/data.raw".into(),
                 format: DiskFormat::Raw,
@@ -1047,7 +1047,7 @@ mod tests {
         assert!(values(&args, "-device").contains(&"virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01,rx_queue_size=1024,tx_queue_size=1024,mq=on,vectors=6"));
     }
 
-    /// A hyperstor volume (spec/storage.md §11.2): a vhost-user-blk device on
+    /// A hyperstor volume (spec/24-storage.md §11.2): a vhost-user-blk device on
     /// the socket hyperstor-vhost serves, reconnecting if it restarts, with
     /// guest memory shared; it boots when it is the root.
     #[test]

@@ -1,4 +1,4 @@
-//! Network meters from bridge-port counters (spec/metering.md §5.4):
+//! Network meters from bridge-port counters (spec/13-metering.md §5.4):
 //! per VM NIC (`net.*`) and per network (`bridge.*`).
 
 use super::ledger::{Delta, Flag, MeteringError, Origin, Round, Subject, SubjectKind};
@@ -226,7 +226,7 @@ pub fn sample_nat(
     Ok(())
 }
 
-/// External traffic on OVN networks (spec/clustering.md §13.2–13.3), from
+/// External traffic on OVN networks (spec/14-clustering.md §13.2–13.3), from
 /// the conntrack counters of this node's router zones. A VM's address
 /// gives its NIC and network (the cluster IPAM). The counters here are
 /// whatever this node's gateways carry; the cluster ledger sums sources.

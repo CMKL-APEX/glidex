@@ -1,4 +1,4 @@
-//! Hypervisor drivers (spec/reconciliation.md §16).
+//! Hypervisor drivers (spec/12-reconciliation.md §16).
 //!
 //! A driver is stateless: it turns a VM's config into the command line the
 //! shim runs (`launch_args`, which carries the whole config, D9), and talks
@@ -43,7 +43,7 @@ impl HypervisorType {
 
     /// The kernel arguments a new kernel-boot VM of `arch` gets when it
     /// names none. The same for both backends: the serial port shows the
-    /// kernel from its first line (spec/kernel-boot.md K5). VMs created
+    /// kernel from its first line (spec/23-kernel-boot.md K5). VMs created
     /// before this keep the arguments they were stored with.
     pub fn default_kernel_args(&self, arch: Arch) -> String {
         default_kernel_args(arch)
@@ -94,7 +94,7 @@ pub fn default_kernel_args(arch: Arch) -> String {
 /// x86's `COMMAND_LINE_SIZE` (2048) less the terminating NUL.
 pub const MAX_KERNEL_ARGS_LEN: usize = 2047;
 
-/// Where the guest's console is (spec/kernel-boot.md §5.2): what the
+/// Where the guest's console is (spec/23-kernel-boot.md §5.2): what the
 /// shim's PTY is wired to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleDevice {
@@ -237,11 +237,11 @@ pub(crate) struct VmDisk {
     /// host file as its backing file and hand it to the guest.
     pub backing_files: bool,
     /// On a shared datastore: QEMU's image locking must be on, so another
-    /// node's QEMU can't open it (spec/storage.md §10).
+    /// node's QEMU can't open it (spec/24-storage.md §10).
     pub shared: bool,
-    /// A block device (an LVM volume, spec/storage.md §11.1), raw.
+    /// A block device (an LVM volume, spec/24-storage.md §11.1), raw.
     pub block: bool,
-    /// A vhost-user-blk socket (a hyperstor volume, spec/storage.md
+    /// A vhost-user-blk socket (a hyperstor volume, spec/24-storage.md
     /// §11.2): `path` is the socket the hypervisor connects to.
     pub vhost: bool,
 }
@@ -338,7 +338,7 @@ pub(crate) fn online_cpus() -> Vec<u32> {
 /// Whether the host has enough unreserved 2 MiB hugepages to back a guest
 /// of `mem_mib`, leaving 25% (at least 256 MiB) for what OVS-DPDK and
 /// other guests are about to touch. For VMs placed before the scheduler
-/// counted pages (spec/host-topology.md §8a.3).
+/// counted pages (spec/22-host-topology.md §8a.3).
 pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     let mem = mem_mib as u64;
     mem.is_multiple_of(2) && hugepages_spare_mib(2048, None) >= mem + (mem / 4).max(256)
@@ -399,7 +399,7 @@ pub fn check_command_line_path(field: &str, path: &str) -> Result<(), Hypervisor
     Ok(())
 }
 
-/// Admission rule for `kernel_args` (spec/kernel-boot.md K7): it is one
+/// Admission rule for `kernel_args` (spec/23-kernel-boot.md K7): it is one
 /// argv element, so only its length and control characters matter.
 pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
     if args.len() > MAX_KERNEL_ARGS_LEN {
@@ -416,7 +416,7 @@ pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
     Ok(())
 }
 
-/// An `aligned` VM's guest NUMA nodes (spec/gpu-vms.md §5): for each share
+/// An `aligned` VM's guest NUMA nodes (spec/27-gpu-vms.md §5): for each share
 /// of `config.host_numa`, its vCPU range (first, last) and the VFIO devices
 /// (as `config.vfio_devices` names them) on that host node.
 pub(crate) fn guest_numa_layout(config: &VmConfig) -> Vec<(u32, u32, Vec<String>)> {

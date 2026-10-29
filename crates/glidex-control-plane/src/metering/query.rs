@@ -1,4 +1,4 @@
-//! Reading usage back (spec/metering.md §8): buckets in a fixed-offset
+//! Reading usage back (spec/13-metering.md §8): buckets in a fixed-offset
 //! time zone, grouping, derived meters and presentation units.
 
 use super::ledger::{Flag, SubjectKind, UsageRecord, is_max_meter};
@@ -253,7 +253,7 @@ pub enum GroupKey {
     Disk,
     Nic,
     Network,
-    /// The node a subject was on (spec/clustering-ui.md §5.4).
+    /// The node a subject was on (spec/16-clustering-ui.md §5.4).
     Node,
 }
 
@@ -668,7 +668,7 @@ mod tests {
                 name: "web-1".into()
             }
         );
-        // Usage by node (spec/clustering-ui.md §5.4): any subject that says where it was.
+        // Usage by node (spec/16-clustering-ui.md §5.4): any subject that says where it was.
         let mut s = Subject::new(SubjectKind::Disk, "d1", "d1", Some("p".into()));
         assert_eq!(key_of(&s, GroupKey::Node), None);
         s.node = Some("n1".into());

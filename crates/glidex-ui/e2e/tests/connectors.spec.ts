@@ -1,4 +1,4 @@
-// The connector form's presets (spec/tenancy.md §5.1): Google (Workspace or
+// The connector form's presets (spec/19-tenancy.md §5.1): Google (Workspace or
 // gated consumer accounts, the device client) and JumpCloud, each with the
 // redirect URI to register. Nothing here logs in through them: the
 // connector tests do that against a mock IdP.
@@ -70,7 +70,7 @@ test("Google and JumpCloud connectors are made with their own fields", async ({ 
 });
 
 test("users show how they sign in", async ({ page }) => {
-  // spec/tenancy.md D17: one person through two connectors is two users;
+  // spec/19-tenancy.md D17: one person through two connectors is two users;
   // the lists say which way each signs in.
   await page.goto("/access");
   const users = page.locator("section", { has: page.getByRole("heading", { name: "Users" }) });
@@ -79,14 +79,14 @@ test("users show how they sign in", async ({ page }) => {
 });
 
 test("your account lists your sign-in methods and offers more", async ({ page }) => {
-  // spec/tenancy.md §6.2: a user may have several; the only one isn't removable.
+  // spec/19-tenancy.md §6.2: a user may have several; the only one isn't removable.
   const made = await api("/connectors", {
     method: "POST",
     body: { connector: { id: "e2e-add-sso", display_name: "E2E Add SSO", oidc: { issuer: "https://idp.example", client_id: "glidex" } } },
   });
   expect(made.connector?.id, JSON.stringify(made)).toBe("e2e-add-sso");
   try {
-    // The header's account menu leads there (spec/tenancy.md D71); its
+    // The header's account menu leads there (spec/19-tenancy.md D71); its
     // items exist only while it is open.
     await page.goto("/");
     await page.getByTitle("Your accounts").click();

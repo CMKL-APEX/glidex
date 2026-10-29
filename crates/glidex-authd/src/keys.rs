@@ -1,5 +1,5 @@
 //! A user's own SSH public keys (`~/.ssh/*.pub`), for prefilling guest
-//! login credentials (spec/security.md §5.3).
+//! login credentials (spec/11-security.md §5.3).
 //!
 //! authd runs as root, so the files are read in a fresh thread whose
 //! filesystem identity (`setfsuid`/`setfsgid`, per thread on Linux) is

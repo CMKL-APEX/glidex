@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CLUSTER_EVENT, clusterAvailability, type ClusterAvailability } from "../api";
 
-/** Shown while the cluster has no leader (spec/clustering-ui.md §3.3): the
+/** Shown while the cluster has no leader (spec/16-clustering-ui.md §3.3): the
  * API client saw `503 cluster_unavailable` and nothing has answered
  * normally since. */
 export default function ClusterBanner() {

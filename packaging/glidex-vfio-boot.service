@@ -1,6 +1,6 @@
 [Unit]
 Description=glidex boot devices (SR-IOV VF counts, vfio-pci bindings)
-Documentation=https://github.com/akkarit/glidex/blob/main/spec/gpu-vms.md
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/27-gpu-vms.md
 # Only with settings: glidex-install --vfio-devices / --sriov write them.
 ConditionPathExists=/etc/glidex/vfio-devices.json
 # vfio-pci is loaded from /etc/modules-load.d/glidex-vfio.conf.
@@ -14,7 +14,7 @@ Before=glidex-netd.service glidex-control-plane.service libvirtd.service virtqem
 Type=oneshot
 RemainAfterExit=yes
 # With netd not running yet this applies directly, recording what it binds
-# in netd's state (spec/gpu-vms.md §10).
+# in netd's state (spec/27-gpu-vms.md §10).
 ExecStart=/usr/local/bin/glidex-netd --boot-devices
 StateDirectory=glidex
 

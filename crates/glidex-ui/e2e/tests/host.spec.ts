@@ -1,5 +1,5 @@
 // A standalone host is one node (`local`): the Cluster page says so and
-// leads to its Host page, which a cluster node has too (spec/host-page.md
+// leads to its Host page, which a cluster node has too (spec/28-host-page.md
 // W1). In a (mocked) cluster, another node's host-only calls name it (W2).
 import { api, expect, rpcRoute, test } from "../fixtures";
 

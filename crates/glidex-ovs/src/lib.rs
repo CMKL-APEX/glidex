@@ -3,7 +3,7 @@
 //! This crate owns everything glidex does to the host network: installing
 //! Open vSwitch, bridges, VM ports (tap / vhost-user), and NAT networks.
 //! It depends on nothing else in glidex; `glidex-netd` wraps it in a root
-//! daemon (see `spec/networking.md`).
+//! daemon (see `spec/09-networking.md`).
 //!
 //! **Ownership invariant:** it only modifies or deletes objects it has
 //! tagged (`external_ids:glidex-owner=glidex` in OVSDB, the `inet glidex`

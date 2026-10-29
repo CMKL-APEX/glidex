@@ -1,6 +1,6 @@
-//! `tenant` and `admission` (spec/tenancy.md §15): the first commands on
+//! `tenant` and `admission` (spec/19-tenancy.md §15): the first commands on
 //! the generated RPC clients of `glidex-api`, over the Connect protocol
-//! (spec/grpc.md §10).
+//! (spec/18-grpc.md §10).
 
 use crate::client::{ApiClient, RpcTransport, parse_principal};
 use crate::{flag_value, has_flag, prompt};
@@ -303,7 +303,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(rpc_err(e)),
             }
         }
-        // Clusters of other organizations (spec/tenancy.md D65, D66).
+        // Clusters of other organizations (spec/19-tenancy.md D65, D66).
         "clusters" => {
             let Some(id) = id(1) else { return usage(u) };
             match svc
@@ -318,7 +318,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 Ok(r) => {
                     for c in &r.clusters {
                         println!("  {}  {:<20} {}", c.cluster_id.cyan(), c.name, c.api);
-                        // Its last report (spec/tenancy.md D70).
+                        // Its last report (spec/19-tenancy.md D70).
                         match c.report.as_option() {
                             Some(rep) => {
                                 let suspended = rep.status.as_known()
@@ -643,7 +643,7 @@ pub async fn admission(client: &ApiClient, args: &[&str]) {
     };
     let svc = AdmissionServiceClient::new(t.clone(), t.config());
     match args.first().copied().unwrap_or("list") {
-        // An admission for a tenant of another directory (spec/tenancy.md D64).
+        // An admission for a tenant of another directory (spec/19-tenancy.md D64).
         "offer" => {
             let (Some(tenant), Some(directory)) =
                 (args.get(1), crate::flag_value(args, "--directory"))

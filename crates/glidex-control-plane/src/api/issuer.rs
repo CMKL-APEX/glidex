@@ -1,4 +1,4 @@
-//! A directory's discovery document and JWKS (spec/tenancy.md D52, D53),
+//! A directory's discovery document and JWKS (spec/19-tenancy.md D52, D53),
 //! public: `/d/{dir}/.well-known/openid-configuration` and
 //! `/d/{dir}/jwks.json`. glidex-ui serves `/d/…` from here.
 
@@ -61,7 +61,7 @@ pub fn sign(
         .map_err(|e| internal(e.to_string()))
 }
 
-/// `dir`'s trust domain (workload-identity.md W13): the one it has, else
+/// `dir`'s trust domain (29-workload-identity.md W13): the one it has, else
 /// `<dir>.<issuer host>`. `None` while it has no issuer URL.
 pub fn trust_domain(
     auth: &crate::auth::AuthService,
@@ -75,7 +75,7 @@ pub fn trust_domain(
     crate::directory::workload::default_trust_domain(&iss, &dir.id)
 }
 
-/// A running VM as its tokens see it (workload-identity.md §4.2).
+/// A running VM as its tokens see it (29-workload-identity.md §4.2).
 #[derive(Debug, Clone)]
 pub struct ResolvedVm {
     /// Its tenant's directory, which signs its tokens.
@@ -124,8 +124,8 @@ pub async fn vm_identity(app: &super::App, vm_id: &str) -> Result<ResolvedVm, su
     })
 }
 
-/// A glidex token for `vm`'s service account (workload-identity.md W6): a
-/// federated token (tenancy.md D48) from origin `vm:<tenant>`, for 15 min,
+/// A glidex token for `vm`'s service account (29-workload-identity.md W6): a
+/// federated token (19-tenancy.md D48) from origin `vm:<tenant>`, for 15 min,
 /// never past the service account's expiry. The secret and its lifetime.
 /// `404 no_service_account` when the VM has none, or it is gone, expired,
 /// or not its tenant's.
@@ -219,7 +219,7 @@ pub fn vm_glidex_token(
 }
 
 /// An identity token for `id` addressed to `audience`, signed by `dir`
-/// (workload-identity.md §4.2): `ttl` seconds (§4.4: 10 min to 1 h, default
+/// (29-workload-identity.md §4.2): `ttl` seconds (§4.4: 10 min to 1 h, default
 /// 15 min). Its first one fixes the directory's trust domain (W13).
 pub fn sign_identity(
     app: &super::App,
@@ -255,7 +255,7 @@ pub fn sign_identity(
 }
 
 /// The claims of `jwt` if it is an identity token of directory `dir` for
-/// this cluster (workload-identity.md §5): typed `JWT`, signed by one of the
+/// this cluster (29-workload-identity.md §5): typed `JWT`, signed by one of the
 /// directory's published keys, its issuer, `aud` this cluster, unexpired.
 pub fn verify_identity(app: &super::App, dir: &str, jwt: &str) -> Result<Value, String> {
     use crate::directory::workload;

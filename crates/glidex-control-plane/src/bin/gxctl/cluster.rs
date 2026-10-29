@@ -1,6 +1,6 @@
-//! The cluster, its nodes and import plans (spec/clustering.md §5–§11) on
+//! The cluster, its nodes and import plans (spec/14-clustering.md §5–§11) on
 //! the generated `glidex.cluster.v1` clients, over the Connect protocol
-//! (spec/grpc.md §9.1): `cluster …` and `node …`. Init, join and leave act
+//! (spec/18-grpc.md §9.1): `cluster …` and `node …`. Init, join and leave act
 //! on the host gxctl is connected to (on an unclustered host: its local
 //! socket). `cluster snapshot` (a binary download) stays on REST.
 
@@ -425,7 +425,7 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 when(v.retire_at.as_option())
             );
         }
-        // A new key for the connector secrets' data keys (spec/tenancy.md §13).
+        // A new key for the connector secrets' data keys (spec/19-tenancy.md §13).
         Some("rotate-secrets-key") => {
             let v =
                 answer!(svc!(rpc(client)).rotate_secrets_key(RotateSecretsKeyRequest::default()));
@@ -626,7 +626,7 @@ async fn run_member_op(client: &ApiClient, op: MemberOp) {
     println!("{} {}", "OK".green(), out);
 }
 
-/// A PCI class code's word (spec/host-topology.md §3.3).
+/// A PCI class code's word (spec/22-host-topology.md §3.3).
 fn class_word(class: &str) -> &'static str {
     let c = class.trim_start_matches("0x");
     if c.starts_with("03") {

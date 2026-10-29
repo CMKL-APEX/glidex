@@ -1,4 +1,4 @@
-//! External-traffic counters on OVN networks (spec/clustering.md §13.2–13.3,
+//! External-traffic counters on OVN networks (spec/14-clustering.md §13.2–13.3,
 //! D22): conntrack accounting in each router's SNAT zone, on the gateway
 //! node. A connection SNATed for VM address A carries A's outbound bytes in
 //! its original direction and A's inbound bytes in the reply direction.

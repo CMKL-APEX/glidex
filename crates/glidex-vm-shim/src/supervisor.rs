@@ -1,4 +1,4 @@
-//! The shim's main loop (spec/reconciliation.md §8.3).
+//! The shim's main loop (spec/12-reconciliation.md §8.3).
 //!
 //! Launch: validate `launch.json`, write `instance.json`, start the console
 //! proxy, spawn the hypervisor on a fresh PTY (dying with the shim, D8),
@@ -106,7 +106,7 @@ pub fn run(args: Args) -> i32 {
         return EXIT_BAD_LAUNCH;
     }
     // Before anything opens a disk: a held lock means another node's
-    // hypervisor (or disk operation) has it (spec/storage.md S16).
+    // hypervisor (or disk operation) has it (spec/24-storage.md S16).
     for path in sup.launch.volume_locks.clone() {
         let why = match crate::util::try_lock_file(std::path::Path::new(&path)) {
             Ok(Some(f)) => {

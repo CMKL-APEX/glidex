@@ -1,5 +1,5 @@
 //! `glidex-metad [--listen ADDR:PORT] [--control-plane SOCKET]`: serve the
-//! metadata endpoint (spec/workload-identity.md W11). The defaults are
+//! metadata endpoint (spec/29-workload-identity.md W11). The defaults are
 //! `169.254.169.254:8775` (netd's DNAT target) and the control plane's
 //! `/run/glidex-cp/metad.sock`.
 

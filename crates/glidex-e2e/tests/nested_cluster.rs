@@ -1,5 +1,5 @@
 //! A two-node glidex cluster with OVN, nested in VMs of this host's glidex
-//! (spec/clustering.md §15, the part a single host can't show).
+//! (spec/14-clustering.md §15, the part a single host can't show).
 //!
 //! 1. This host's glidex (the "outer" one) makes two VMs, `h1` and `h2`.
 //! 2. glidex is installed into both from this workspace (`glidex-install
@@ -41,7 +41,7 @@ fn step(what: &str) {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
-/// proto3 JSON shape (spec/grpc.md §9.1).
+/// proto3 JSON shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -333,7 +333,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     let token = h1.check("gxctl cluster join-token --role agent 2>/dev/null");
     // Through the installer, as an agent host is set up for real: it must
     // leave the agent's web UI on, to send browsers to a server
-    // (spec/host-page.md W5).
+    // (spec/28-host-page.md W5).
     let root = workspace_root().display().to_string();
     let joined = h2.run_with_input(
         &format!(
@@ -382,7 +382,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         node_of(&format!("gxe2e-{tag}-h1")),
         node_of(&format!("gxe2e-{tag}-h2")),
     );
-    // The agent restarted into agent mode (spec/clustering-ui.md §3.6): its
+    // The agent restarted into agent mode (spec/16-clustering-ui.md §3.6): its
     // UI socket only, no API of its own; gxctl there says where to log in.
     wait_for(
         "h2 in agent mode (no api.sock)",
@@ -401,7 +401,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     );
     // h2 imported its firmware while standalone; the join left that file
     // unrecorded. It is the same pinned build as the cluster's, so h2
-    // adopts it as its copy, and reports nothing left over (clustering.md §9.2.3).
+    // adopts it as its copy, and reports nothing left over (14-clustering.md §9.2.3).
     wait_for_or(
         "h2's firmware adopted as the cluster's",
         Duration::from_secs(180),
@@ -434,7 +434,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         },
     );
 
-    // OVN is a cluster setting (spec/clustering-ui.md §8a): turned on through
+    // OVN is a cluster setting (spec/16-clustering-ui.md §8a): turned on through
     // the API, no config file and no restart; every node follows.
     step("inner: OVN turned on for the cluster through the API");
     let ovn = wait_for_or(
@@ -631,7 +631,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         );
     }
 
-    step("cluster views the UI uses, against real OVN (spec/clustering-ui.md §5, §8)");
+    step("cluster views the UI uses, against real OVN (spec/16-clustering-ui.md §5, §8)");
     let ovn = inner.ok("GET", "/cluster/ovn", None);
     assert_eq!(ovn["enabled"], true, "{ovn}");
     for db in ["nb", "sb"] {
@@ -710,7 +710,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     assert!(pv["pick"].is_string(), "{pv}");
 
     step(
-        "the agent's web UI sends browsers to the server's, which acts on the agent (spec/host-page.md)",
+        "the agent's web UI sends browsers to the server's, which acts on the agent (spec/28-host-page.md)",
     );
     let ui = check_agent_ui(
         &h1,
@@ -727,7 +727,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     );
     check_single_nic_uplink_survives_a_reboot(&h2, &n2, &ui);
 
-    // spec/clustering-ui.md §8a: the agent's uplink bridge as the physical
+    // spec/16-clustering-ui.md §8a: the agent's uplink bridge as the physical
     // network, the suggested shared edge taken as is, and a guest on the
     // other node reaching the LAN's router through it (Geneve, then SNAT on h2).
     step("the suggested shared edge carries a NAT network's traffic out");
@@ -802,7 +802,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     eprintln!("e2e-c: {line}");
     assert!(line.contains("GXE2E-PING-OK"), "through the edge: {line}");
 
-    // spec/clustering.md §11.2a: the suggestion also gave the edge a pool;
+    // spec/14-clustering.md §11.2a: the suggestion also gave the edge a pool;
     // a project's own router takes an address from it, and its network's
     // traffic leaves with that address, not the shared edge's.
     step("a project's own router carries its network out with its own address");
@@ -922,7 +922,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     let rlr = format!("gxr-{}", r["id"].as_str().unwrap());
     // A NAT network on the edge: its port moves to the router.
     // A new network's OVN objects are named after its id (`gx-<id>`,
-    // `gx-lrp-<id>`), not its name (spec/tenancy.md D24).
+    // `gx-lrp-<id>`), not its name (spec/19-tenancy.md D24).
     let p2 = inner.ok(
         "POST",
         &format!("/projects/{project}/networks"),
@@ -1015,7 +1015,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         (!nb(&format!("lrp-list {rlr}")).contains(&p3_lrp) && !dhcp_router()).then_some(())
     });
 
-    // spec/clustering.md §5.5: the agent is removed from the cluster's side,
+    // spec/14-clustering.md §5.5: the agent is removed from the cluster's side,
     // and its host leaves on its own (an agent has no API of its own, and
     // the servers refuse it once removed): standalone, local login, out of OVN.
     step("a removed agent leaves the cluster and is a standalone host again");
@@ -1033,7 +1033,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
             .is_empty()
             .then_some(())
     });
-    // Copies on chosen nodes (clustering.md §9.2.2): h1 lets its copy of the
+    // Copies on chosen nodes (14-clustering.md §9.2.2): h1 lets its copy of the
     // guest image go (h2 has one), then gets it back from h2.
     let images = inner.ok("GET", "/images", None);
     let guest_img = items(&images, "images")
@@ -1162,7 +1162,7 @@ fn ui_curl_csrf(
 }
 
 /// As `ui_curl_csrf`, for node `target`'s host (`X-Glidex-Target-Node`,
-/// spec/host-page.md W2).
+/// spec/28-host-page.md W2).
 #[allow(clippy::too_many_arguments)]
 fn ui_curl_on(
     jar: &std::path::Path,
@@ -1228,7 +1228,7 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// spec/host-page.md: h2's (the agent's) glidex-ui sends browsers to h1's
+/// spec/28-host-page.md: h2's (the agent's) glidex-ui sends browsers to h1's
 /// (the server's), at h2's Host page, and serves no API. The test's user,
 /// made a PAM user with a throwaway password on h1, logs in there; h1's
 /// UI runs host-only requests on h2 when they name it (W2).
@@ -1344,8 +1344,8 @@ fn check_agent_ui(
     (jar, base, csrf)
 }
 
-/// spec/clustering-ui.md (uplinks): from the server's UI, naming the agent
-/// (spec/host-page.md W2), put its only NIC on a bridge with its address,
+/// spec/16-clustering-ui.md (uplinks): from the server's UI, naming the agent
+/// (spec/28-host-page.md W2), put its only NIC on a bridge with its address,
 /// reboot it, and find it reachable with the address re-applied on the
 /// bridge (netd's start-up re-apply).
 fn check_single_nic_uplink_survives_a_reboot(

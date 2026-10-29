@@ -1,4 +1,4 @@
-// A project's VPC routers in the UI (spec/clustering.md §11.2a): the
+// A project's VPC routers in the UI (spec/14-clustering.md §11.2a): the
 // Routers card on the project page and the router choice in the network
 // form. The scratch control plane is standalone, so OVN, the routers and
 // two nodes are mocked; the project is real.

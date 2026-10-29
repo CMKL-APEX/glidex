@@ -1,4 +1,4 @@
-//! The datastore API's work on the manager (spec/storage.md §13).
+//! The datastore API's work on the manager (spec/24-storage.md §13).
 
 use super::record::{self, Datastore, DatastoreError, DriverSpec, NodeRow};
 use crate::state::{VmManager, VmManagerError};
@@ -35,7 +35,7 @@ pub struct NewDatastore {
     /// then name each node's volume group.
     pub lvm: Option<(String, String)>,
     /// `hyperstor`: its cluster API, pool and a `mgmt` token to enroll
-    /// with (spec/storage.md S20).
+    /// with (spec/24-storage.md S20).
     pub hyperstor: Option<NewHyperstor>,
 }
 
@@ -405,7 +405,7 @@ impl VmManager {
 }
 
 impl VmManager {
-    /// `POST /disks/{id}/move` (spec/storage.md §8.3): ask for disk `id` to
+    /// `POST /disks/{id}/move` (spec/24-storage.md §8.3): ask for disk `id` to
     /// go to `datastore`. One node, the mover, makes the move: the one that
     /// holds the file now and reaches the destination. A node-local
     /// destination is on the mover's node, so a disk moves between two
@@ -541,7 +541,7 @@ impl VmManager {
             disk.worker = Some(mover.clone());
         }
         // Onto or off block volumes the copy is standalone, and onto them
-        // raw (spec/storage.md §11.1).
+        // raw (spec/24-storage.md §11.1).
         let src_block = record::find(&db, &disk.datastore)?.is_some_and(|d| d.driver.is_block());
         let raw = dst.driver.is_block();
         disk.moving = Some(MoveSpec {

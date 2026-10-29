@@ -1,4 +1,4 @@
-//! The `hyperstor` driver (spec/storage.md §11.2): each disk is a volume of
+//! The `hyperstor` driver (spec/24-storage.md §11.2): each disk is a volume of
 //! a hyperstor cluster, served to its VM over vhost-user-blk by the node's
 //! `hyperstor-vhost`.
 //!
@@ -279,7 +279,7 @@ impl HyperstorDriver {
 
     /// Deletes this datastore's image volumes whose image `live` says is
     /// gone: those a disk's clone kept (in hyperstor's trash) when the
-    /// image went, once the clone is purged (spec/storage.md S24).
+    /// image went, once the clone is purged (spec/24-storage.md S24).
     /// Returns how many went.
     pub fn collect_image_volumes(&self, live: impl Fn(&str) -> bool) -> Result<usize, ImageError> {
         let suffix = format!(" on {}", self.datastore);
@@ -462,7 +462,7 @@ impl HyperstorDriver {
     }
 
     /// Removes a volume a creation left (it never held a disk's data) for
-    /// good, so that its id can be made again (spec/storage.md S25):
+    /// good, so that its id can be made again (spec/24-storage.md S25):
     /// deleted, it would stay in hyperstor's trash, and its id with it.
     fn discard(&self, id: &str) -> Result<(), ImageError> {
         self.delete(id)?;

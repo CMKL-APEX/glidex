@@ -1,4 +1,4 @@
-//! Invitations (spec/tenancy.md D40, §6.1): an email address invited to a
+//! Invitations (spec/19-tenancy.md D40, §6.1): an email address invited to a
 //! tenant, with a tenant role, through one connector. The invitation is a
 //! link with a secret; only the secret's SHA-256 is stored. The first
 //! login through that connector that brings the secret, with a verified

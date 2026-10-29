@@ -1,4 +1,4 @@
-// Usage page (spec/metering.md §12): tabs, filters and the CSV export.
+// Usage page (spec/13-metering.md §12): tabs, filters and the CSV export.
 import { api, expect, test } from "../fixtures";
 
 test("the Usage page shows each tab and exports CSV", async ({ page }) => {
@@ -24,7 +24,7 @@ test("the Usage page shows each tab and exports CSV", async ({ page }) => {
 });
 
 test("the usage API answers for the e2e user", async () => {
-  // The proto JSON shape (spec/grpc.md §9.1): no rows yet means no `rows`.
+  // The proto JSON shape (spec/18-grpc.md §9.1): no rows yet means no `rows`.
   const u = await api<{ rows?: unknown[]; timezone: string; granularity: string }>("/usage?granularity=month");
   expect(u.rows === undefined || Array.isArray(u.rows)).toBe(true);
   expect(u.timezone).toBeTruthy();

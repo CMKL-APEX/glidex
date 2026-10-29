@@ -1,5 +1,5 @@
 //! Per-port traffic counters of glidex bridges, for metering
-//! (spec/metering.md §5.4). Read-only: three `ovs-vsctl list` calls.
+//! (spec/13-metering.md §5.4). Read-only: three `ovs-vsctl list` calls.
 
 use crate::OvsError;
 use crate::exec::Exec;
