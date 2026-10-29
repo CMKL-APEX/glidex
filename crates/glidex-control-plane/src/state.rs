@@ -1123,6 +1123,49 @@ impl VmManager {
         }
     }
 
+    /// Lets go of this node's `hyperstor-vhost` holds on disks of datastore
+    /// `ds` whose VM isn't placed here (S26): left by a detach that failed,
+    /// or by a VM placed elsewhere while it was stopped. Blocks.
+    fn release_stale_holds(
+        &self,
+        driver: &crate::datastore::hyperstor::HyperstorDriver,
+        ds: &str,
+        me: &str,
+    ) {
+        use crate::datastore::hyperstor::{stale_here, volume_id};
+        let Ok(attached) = driver.attached_volumes() else {
+            return;
+        };
+        if attached.is_empty() {
+            return;
+        }
+        let vms = self.vms.blocking_read();
+        let disks: Vec<(String, Option<String>)> = self
+            .images
+            .list_disks()
+            .into_iter()
+            .filter(|d| d.datastore == ds)
+            .map(|d| {
+                let node = d
+                    .attached_to
+                    .as_ref()
+                    .and_then(|vm| vms.get(vm))
+                    .and_then(|vm| vm.status.placement.as_ref())
+                    .map(|p| p.node.clone());
+                (volume_id(&d), node)
+            })
+            .collect();
+        drop(vms);
+        for v in stale_here(&attached, &disks, me) {
+            match driver.detach_volume(&v) {
+                Ok(()) => {
+                    tracing::info!(volume = %v, "let go of a hold for a VM placed elsewhere (S26)")
+                }
+                Err(e) => tracing::warn!(volume = %v, "letting go of a stale hold: {}", e),
+            }
+        }
+    }
+
     /// Look at every datastore this node is on and say what it finds
     /// (`datastore_nodes`, spec/24-storage.md §4.1); drop its rows about the
     /// ones it is no longer on. Writes only what changed. Blocks.
@@ -1188,8 +1231,13 @@ impl VmManager {
                     &ds,
                     self.images.hyperstor_identity(&ds),
                 )
-                .expect("a hyperstor datastore");
-                crate::datastore::hyperstor::probe(&driver, map, now)
+                .expect("a hyperstor datastore")
+                .on_node(&me);
+                let row = crate::datastore::hyperstor::probe(&driver, map, now);
+                if row.reachable {
+                    self.release_stale_holds(&driver, &ds.id, &me);
+                }
+                row
             } else if ds.on_node(&me) {
                 probe::probe(&ds, &me, &cluster, may_claim, &root, now)
             } else {
