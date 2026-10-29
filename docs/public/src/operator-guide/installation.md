@@ -176,9 +176,15 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   the first two cores of the host for it, with their hyperthreads: no VM
   is placed on them, and `gxctl node topology` shows them as reserved
   for `pylon`. See [Host resources](host-resources.md).
-- **The `sched_ext` scheduler.** The service doesn't attach Pylon's
-  `scx_pylon` kernel scheduler (`pylond --enable-scx`). `scx_pylon`
-  also needs a kernel built with `sched_ext` (6.12 or later).
+- **The `sched_ext` scheduler.** On a kernel built with `sched_ext`
+  (6.12 or later), `pylond` attaches Pylon's `scx_pylon` kernel
+  scheduler when it starts, and falls back to its own core table if
+  that fails. This needs a `pylond` built from Pylon with
+  [CMKL-APEX/pylon#9](https://github.com/CMKL-APEX/pylon/pull/9); an
+  earlier one never attaches it from this service. `scx_pylon` then
+  schedules every task on the host, not only VMs, until `pylond` stops.
+  Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
+  (`enabled`, `pylon`). The service has no setting to keep it off.
 
 A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
 need `pylond` running to scale. Elastic VMs run on any host with Cloud
