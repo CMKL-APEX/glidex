@@ -20,6 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
+| GPU VMs | GV6 AMD on gpu-dev2 | `spec/gpu-amd` | Spec first (27-gpu-vms.md §2.3, G11–G13, Q8–Q11); then locked memory, the 64-bit window, the gpu-dev2 checks |
 
 ## Areas
 
@@ -29,7 +30,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
-| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3 | GV6 AMD on gpu-dev2 (designed); GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
