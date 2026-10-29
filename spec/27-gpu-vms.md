@@ -173,8 +173,11 @@ What this host shows that prism1 doesn't, and what it can't:
 - The VM keeps `gpus` and shows the expansion. `PATCH` of `gpus` runs
   the expansion again (stopped VMs only, like other sizing changes).
 - gxctl: `vm create train-1 --image … --gpus 4[:a100][:nvlink]`.
-- UI: a GPU count and a pool picker. The form shows the sizing that
-  follows, and where it will land from the placement preview.
+- UI: a **GPUs** section after the VM's size: a count per GPU pool,
+  and the node's own GPUs (display-class, assignable, not a fabric
+  switch) from its topology, ready ones tickable into `vfio_devices`,
+  others greyed with why. The form shows the sizing that follows, and
+  where it will land from the placement preview.
 
 ## 4. Placement: `aligned`
 

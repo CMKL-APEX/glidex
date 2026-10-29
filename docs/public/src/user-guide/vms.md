@@ -53,8 +53,9 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
 | **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
 | **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
-| **VFIO PCI Devices (optional)** | Host PCI devices to pass through. See [Devices](#pci-devices). |
-| **Device Pools (optional)** | How many devices to take from each pool your project may use. A GPU pool's count sizes the VM; see [GPUs](#gpus). |
+| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
+| **Device Pools (optional)** | How many devices to take from each other pool (NICs, NVMe…) your project may use. |
+| **VFIO PCI Devices (optional)** | Under **Advanced options**: other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
@@ -424,11 +425,20 @@ and sizes the VM.
 **gxctl:** `create` asks *GPUs* right after the name: `4`, `4:a100`.
 With GPUs, an empty vCPU or memory answer takes the pool's sizing.
 
-**Web UI:** in **Device Pools**, the count of the first GPU pool is
-sent as `gpus`, and fills in the vCPU and memory fields from the pool
-until you change them by hand. A GPU pool with **Under one PCIe
-switch** ticked is an ordinary pool request instead, without the NUMA
-alignment or the sizing.
+**Web UI:** the **GPUs** section, right after the VM's size:
+
+- **From a pool:** the count of the first GPU pool is sent as `gpus`,
+  and fills in the vCPU and memory fields from the pool until you change
+  them by hand. A GPU pool with **Under one PCIe switch** ticked is an
+  ordinary pool request instead, without the NUMA alignment or the
+  sizing.
+- **This node's GPUs:** each display-class device the node could pass
+  through, with its address, vendor, ids and NUMA node. A ticked one is
+  sent in `vfio_devices`. One not ready is greyed with the reason (for
+  example *not bound to vfio-pci (driver: amdgpu)*): an operator
+  prepares it on the node's page. Listing them needs a host role on
+  that node; without one, only pools are shown. These GPUs don't size
+  the VM.
 
 Refusals (`400 invalid_config`):
 
