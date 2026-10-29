@@ -1377,7 +1377,7 @@ impl ImageManager {
         if let Some(d) =
             crate::datastore::hyperstor::HyperstorDriver::of(&ds, self.hyperstor_identity(&ds))
         {
-            return Ok(Arc::new(d));
+            return Ok(Arc::new(d.on_node(&node)));
         }
         if let crate::datastore::record::DriverSpec::Lvm { thin_pool, .. } = &ds.driver {
             return Ok(Arc::new(crate::datastore::lvm::LvmDriver::new(

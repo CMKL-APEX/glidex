@@ -576,6 +576,16 @@ cluster's API, as a management identity of its own. A hyperstor volume
 is held by one node at a time: the node whose VM uses it holds its
 lease, and another node can't attach it meanwhile.
 
+A hold can outlive its VM there: the VM's node crashed, or a detach
+failed. Each node lets go, within a minute, of the volumes it holds for
+VMs placed elsewhere. And a VM starting on a node takes its disks from
+another node's `hyperstor-vhost` that still holds them, which cuts off
+only those volumes there; the node's other VMs carry on. A disk that a
+Glidex disk operation holds (`hyperstorctl`, on a server) is waited for:
+the VM shows `DiskBusy` until it ends. This needs hyperstor with
+per-volume fencing on every node; with an older `hyperstor-vhost`, a
+held disk is waited for as before.
+
 ### Prepare the nodes
 
 On each node that should run VMs from hyperstor disks:

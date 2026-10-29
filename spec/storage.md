@@ -92,9 +92,10 @@ later milestones (§11, §12).
 | S20 | **Glidex enrolls with a hyperstor cluster as a management identity of its own** (§11.2): the operator makes a single-use `mgmt` token (`hyperstorctl token create --role mgmt --name glidex`) and gives it to `datastore create`. The server that takes the request makes a key, joins with the token (TLS pinned to the root the token names) and seals the key with the cluster's secrets key; the record keeps the certificate. The leader renews it when a third of its life is left. | No hyperstor password or admin certificate passes through glidex, and the key never leaves it unsealed. The token is single-use and short-lived, as glidex's own join tokens are. hyperstor's audit log and access rules then see glidex as itself. |
 | S21 | **Disk bytes go through `hyperstorctl write-volume` and `read-volume`**, straight to the map service and the storage nodes, holding the volume's lease: filling an image's volume (zeros skipped) and the partition code's reads and writes (§11.2). For the partition code a volume is the path `hyperstor://<map>/<volume>`. | There is no block device to give `qemu-img` or `sgdisk`, and making one (ublk) needs root. Glidex already edits partitions through a shadow file (H7); only the region reads and writes change. Holding the lease means a volume a VM has attached is refused, not corrupted. |
 | S22 | **A hyperstor disk's worker is a server.** Its volume operations (create, clone, grow, delete) run where glidex's identity can be opened, whatever node its VM runs on; staging is the VM's node's, through its `hyperstor-vhost`, and needs no identity. | Agents don't hold the secrets key (tenancy.md §13). Staging talks only to the node's local `hyperstor-vhost`, which the node's own certificate lets in. |
-| S23 | **A VM's disks preempt their leases only when it was placed again after its node was forgotten as fenced** (`takeover_disks`, set by `place` for a `Lost` VM, cleared at the next launch). Every other attach waits for the holder. | hyperstor's preemption cuts the holder off (hyperstor D119): safe only when the operator has said the old node is fenced (S10, D8). A normal restart elsewhere finds the volume detached by the stop. |
+| S23 | **A VM's disks preempt their leases when it was placed again after its node was forgotten as fenced** (`takeover_disks`, set by `place` for a `Lost` VM, cleared at the next launch), **and when another node's `hyperstor-vhost` holds them as the VM starts (S26)**. Every other attach waits for the holder. | hyperstor's preemption cuts off that volume's lease only (hyperstor D150): the old node's other VMs go on. A normal restart elsewhere finds the volume detached by the stop. |
 | S24 | **Image volumes are named for their datastore, and the leader removes those whose image is gone.** `glidex image <image> on <datastore id>`; each probe round, the leader deletes this datastore's image volumes whose image no longer exists; one a clone still needs is left for the next round. | A deleted disk's volume goes to hyperstor's trash, where its clone still needs the image's snapshot, so deleting the image's volume with the image fails until the trash is purged. Naming them by datastore keeps two glidex clusters sharing a hyperstor pool from removing each other's. |
 | S25 | **A volume a failed creation left is discarded for good, not kept in hyperstor's trash** (open for review): the driver deletes it and purges it from the trash, and before making a volume it frees the id (a leftover under it deleted, a trashed one purged and waited for, up to 2 min). The image volume is converted before it is made, so it exists only while being written, holding its lease. Retrying an image volume is bounded. A disk a person deletes still goes to the trash. | hyperstor keeps a deleted volume's id taken until it is purged, and glidex's volume ids are derived from the disk's or image's: a failed fill, deleted, made every retry fail with "exists" (on a pilot cluster the image loop retried without pause, about 100 refused calls a second into hyperstor's audit log). A failed creation's volume never held a disk's data, so the trash protects nothing there. |
+| S26 | **A disk held by another node's `hyperstor-vhost` when its VM starts is a stale hold, and is preempted; each node lets go of the holds it finds for VMs placed elsewhere** (hyperstor D153): the driver names its node at every attach (`holder`), so a refused attach says who holds the volume. A VM starting here is recorded as running nowhere, so a hold labelled `vhost:<another node>` was left by a crash or a failed detach: it is preempted. A tool's hold (`hyperstorctl`, a disk operation on a server) is waited for. Each node's datastore probe (every minute) detaches the volumes its `hyperstor-vhost` holds for disks whose VM isn't placed on it; volumes glidex doesn't know are left alone. | Waiting for a hold nobody will release left the VM stuck (`DiskBusy` every 5 s) until an operator stepped in. A preemption now cuts off only that volume's lease (hyperstor D150), and a fenced old writer can't touch the disk. glidex knows a disk operation in progress only on the node running it, so the holder's label is what tells a stale VM hold from a tool's. The node's own clean-up covers a hold whose VM moved while the node was up, without a preemption. |
 
 ## 3. What changes, at a glance
 
@@ -1055,10 +1056,12 @@ node is lost reaches the same volume.
 **Staging** (the VM's node):
 - `attach_for_vm` asks `hyperstor-vhost`'s control socket
   (`/run/hyperstor/vhost/control.sock`, newline JSON) to attach the
-  volume with the disk's serial, `take: "preempt"` only for a VM placed
-  again from a fenced node (S23); it answers with the socket the
-  hypervisor opens. A volume held by another node is `Busy`, so the VM
-  waits.
+  volume with the disk's serial and this node's id (`holder`), `take:
+  "preempt"` for a VM placed again from a fenced node (S23); it answers
+  with the socket the hypervisor opens. A volume held by a tool is
+  `Busy`, so the VM waits; one held by another node's `hyperstor-vhost`
+  is preempted (S26). Each node's probe detaches what its
+  `hyperstor-vhost` holds for VMs placed elsewhere (S26).
 - `VolumeBinding::VhostUserBlk { socket, volume, map }`. Cloud
   Hypervisor gets `--disk vhost_user=on,socket=…,num_queues=1`; QEMU a
   `socket` chardev that reconnects (H8) and `vhost-user-blk-pci` with
@@ -1092,7 +1095,9 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
   Datastores page's *hyperstor cluster*. The answer shows the identity
   and its expiry, never the key or the token.
 - **Tests:** unit tests for the volume names, the control-socket client
-  (attach, preempt only when asked, held is busy, detach) and region
+  (attach naming the node, preempt when asked or for another node's
+  stale hold, a tool's hold is busy, detach, list) and the stale-hold
+  rules (S26), and region
   I/O through a stand-in `hyperstorctl`; hypervisor argument tests for
   vhost-user disks; ignored `hyperstor_root_disk_boots` and
   `qemu_hyperstor_root_disk_boots`, which enroll with a real cluster,
@@ -1105,7 +1110,9 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
 - **Not checked:** a multi-node glidex cluster (agents staging, a
   server as worker); `hyperstor-vhost` as a service with `--allow-uid`
   and `--group` for glidex under the systemd runner; renewal (the
-  certificates last longer than the tests).
+  certificates last longer than the tests); a stale hold preempted
+  between two real nodes, and a node's probe letting go of a hold
+  (S26: unit tests only).
 - **Failed creations (S25), found installing on a pilot host** against a
   three-member map service: `hyperstorctl --map` took one address
   (hyperstor I176), so the fill failed; the deleted image volume then
