@@ -428,6 +428,11 @@ impl Netd {
                     m.previous_driver = b.previous_driver.clone().or(m.previous_driver.take());
                 }
             }
+            // Already on vfio-pci now, so not resized again: keep the
+            // sizes release puts back.
+            if p.resized.is_empty() {
+                p.resized = before.resized;
+            }
         }
         self.store.put(DEVICES, &p.iommu_group.clone(), &p)?;
         tracing::info!(device = %address, group = %p.iommu_group, "prepared for passthrough");

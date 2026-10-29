@@ -1639,6 +1639,7 @@ fn devices_are_prepared_for_passthrough_and_released() {
         exec.link(&format!("/sys/bus/pci/devices/{bdf}/iommu_group"), "30");
         exec.link(&format!("/sys/kernel/iommu_groups/30/devices/{bdf}"), bdf);
     }
+    exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
     let p = netd
@@ -1693,6 +1694,7 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
     );
     exec.link(&format!("/sys/bus/pci/devices/{vf}/iommu_group"), "40");
     exec.link(&format!("/sys/kernel/iommu_groups/40/devices/{vf}"), vf);
+    exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
     netd.handle(Op::PrepareDevice { address: vf.into() }, &peer())
@@ -1747,6 +1749,7 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     );
     exec.link(&format!("/sys/bus/pci/devices/{gpu}/iommu_group"), "226");
     exec.link(&format!("/sys/kernel/iommu_groups/226/devices/{gpu}"), gpu);
+    exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     // A PF with one VF, in group 41.
     let pf = "/sys/bus/pci/devices/0000:61:00.0";
     exec.file(pf, "");
@@ -1837,6 +1840,7 @@ fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
             bdf,
         );
     }
+    exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     // A PF with 2 VFs, one of them on vfio-pci.
     let pf = "/sys/bus/pci/devices/0000:61:00.0";
     exec.file(pf, "");
