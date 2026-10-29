@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
-| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17, Q12; Q11 answered) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
+| GPU VMs | GV6 AMD on gpu-dev2 | #204 | Spec (27-gpu-vms.md §2.3, G11–G17; Q11 and Q12 answered) and the first gpu-dev2 checks (§12); then locked memory, the window, prepare's fixes |
 
 ## Areas
 
@@ -70,7 +70,7 @@ when asked; say here what you left.
 
 | Host | Role | Runs | For |
 |---|---|---|---|
-| gpu-dev2 | **Standalone** server since 2026-10-28, with Pylon (`--with-pylon`; `pylond` on; kernel 7.0 since 2026-10-29, with `scx_pylon` attached (`switch_all`) by a `pylond` with CMKL-APEX/pylon#9, installed by hand on 2026-10-29); OVN installed, off; the Tailscale certificate on. Found empty that day: the earlier cluster's state was gone. GV6 check (2026-10-29, by hand): a `glidex-vm@.service.d/50-memlock.conf` drop-in (`LimitMEMLOCK=infinity`); R9700 `03:00.0` on `vfio-pci` with BAR0 at 256 MiB until reboot; test VM `gpu-ch` and credential `gpucheck`. A VM with BAR0 at 32 GiB froze the host (power-cycled 08:50), and one with `scx_pylon` attached (09:20). For the check: `glidex-pylond.service.d/50-no-scx.conf` (`--no-scx`), kdump on (`USE_KDUMP=1`), `/etc/sysctl.d/90-glidex-gv6-debug.conf` (panic on lockups) | #200's branch (2026-10-28), now `main` at fd36a90 | UI e2e, Pylon, GPU passthrough |
+| gpu-dev2 | **Standalone** server since 2026-10-28, with Pylon (`--with-pylon`; `pylond` on; kernel 7.0 since 2026-10-29, with `scx_pylon` attached (`switch_all`) by a `pylond` with CMKL-APEX/pylon#9, installed by hand on 2026-10-29); OVN installed, off; the Tailscale certificate on. Found empty that day: the earlier cluster's state was gone. GV6 check (2026-10-29, by hand): a `glidex-vm@.service.d/50-memlock.conf` drop-in (`LimitMEMLOCK=infinity`); R9700 `03:00.0` on `vfio-pci` with BAR0 at 16 GiB until reboot; test VM `gpu-ch` and credential `gpucheck`. A VM with BAR0 at 32 GiB froze the host (power-cycled 08:50), and one with `scx_pylon` attached (09:20). For the check: `glidex-pylond.service.d/50-no-scx.conf` (`--no-scx`), kdump on (`USE_KDUMP=1`), `/etc/sysctl.d/90-glidex-gv6-debug.conf` (panic on lockups) | #200's branch (2026-10-28), now `main` at fd36a90 | UI e2e, Pylon, GPU passthrough |
 | prism1 | Was an agent of gpu-dev2's cluster, which is gone since gpu-dev2 was found empty (2026-10-28); not touched since. Rejoining takes a reinstall with `--join`; two sockets | #168's build (2026-10-22) | NUMA and passthrough (host topology) |
 | spark-1 | **Standalone** since 2026-10-22: its own directory, tenant `spark-lab` was admitted on gpu-dev2's cluster as another organization (T6 check); that admission went with gpu-dev2's state (2026-10-28), so the check needs it admitted again | #168's build (2026-10-22) | aarch64; the two-organization check. Rejoining the cluster takes a reinstall with `--join`, and the aarch64 images re-imported |
 

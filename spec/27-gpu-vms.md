@@ -524,6 +524,7 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 | 2026-10-29 | The same VM, installing `linux-firmware` in the guest, `scx_pylon` attached (`switch_all`) | **fail, host froze** during the download: `WARNING: kernel/sched/sched.h:1758` in `set_next_task_scx`, `put_prev_task_scx` and `update_curr_scx` (on an idle CPU and on an unrelated host task), then nothing; power-cycled. Reported as CMKL-APEX/pylon#15 |
 | 2026-10-29 | The same, `glidex-pylond --no-scx` (`scx_pylon` off), kdump and lockup panics on | **pass**: the host stayed up over the download and a guest reboot. `NOHZ tick-stop error: local softirq work is pending` still appeared 4 times, so it isn't `scx_pylon`'s. In the guest, `amdgpu` initialised: `Detected VRAM RAM=32624M, BAR=256M`, `/dev/kfd` and `/dev/dri/renderD128` |
 | 2026-10-29 | Q11: 10 stops and starts of that VM, alternating a hard stop and a graceful one (power button, 60 s), `scx_pylon` off | **pass**: each start, `vfio-pci` reset the GPU (FLR) and the guest's `amdgpu` initialised again with `/dev/kfd`, no `amdgpu` error in the guest, no new warning, AER or `vfio-pci` error on the host; the guest answered in 45–57 s |
+| 2026-10-29 | Q12: BAR0 resized to 16 GiB (`resource0_resize` 14, below the host's 32 GiB), the same VM started, then 3 stops and starts (hard, graceful, hard), `scx_pylon` off | **pass**: the host stayed up with no new warning, AER or `vfio-pci` error; each time the guest's `amdgpu` reported `Detected VRAM RAM=32624M, BAR=16384M`, initialised, and `/dev/kfd` was there. So the freeze at 32 GiB came from a window as large as the host's memory, not from a large window as such |
 
 ## 13. Open questions
 
@@ -549,9 +550,8 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 10. *Settled:* binding before `amdgpu` (G16).
 11. *Answered on gpu-dev2* (§12): FLR is enough to reset an R9700
     between VMs, over 10 hard and graceful stops and starts.
-12. Does a window below the host's memory (16 GiB on gpu-dev2) start as
-    safely as 256 MiB did, or was the freeze about the window's size
-    itself rather than its size against the host's memory (G17)?
+12. *Answered on gpu-dev2* (§12): a 16 GiB window, below the host's
+    32 GiB, starts and restarts as safely as 256 MiB (G17).
 
 
 ## 14. Implementation notes
