@@ -4739,6 +4739,8 @@ mod tests {
             "PrivateTmp=yes",
             "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv/glidex",
             "DeviceAllow=/dev/kvm rw",
+            // VFIO pins guest RAM (spec/27-gpu-vms.md G12).
+            "LimitMEMLOCK=infinity",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
         }

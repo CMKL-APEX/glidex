@@ -34,6 +34,8 @@ pub enum Program {
     Dnf,
     UpdateAlternatives,
     Getcap,
+    /// Loading `vfio-pci` before a device is bound to it (spec/27-gpu-vms.md G17).
+    Modprobe,
     Systemctl,
     Dnsmasq,
     Ping,
@@ -68,6 +70,7 @@ impl Program {
             Program::Dnf => "dnf",
             Program::UpdateAlternatives => "update-alternatives",
             Program::Getcap => "getcap",
+            Program::Modprobe => "modprobe",
             Program::Systemctl => "systemctl",
             Program::Dnsmasq => "dnsmasq",
             Program::Ping => "ping",

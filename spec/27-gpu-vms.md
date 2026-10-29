@@ -146,7 +146,7 @@ What this host shows that prism1 doesn't, and what it can't:
 | G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
 | G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
 | G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
-| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under (16 GiB for one R9700 on gpu-dev2, 8 GiB each for two). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name the size (`bar_mib`); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
+| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under, given the GPUs prepared before it (on gpu-dev2, 30.5 GiB: the first R9700 16 GiB, a second 8 GiB). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name the size (`bar_mib`); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
 
 ## 3. The request
 
@@ -657,3 +657,28 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     unit, the settings and the module file.
   - **Not done:** the reboot test on prism1 (scheduled with its owner).
     NVSwitches for a service VM come with GV5.
+
+- **GV6** (§2.3, §12):
+  - **Locked memory (G12).** `glidex-vm@.service` sets
+    `LimitMEMLOCK=infinity`; the installer's unit test checks it. A host
+    picks it up when `glidex-install` runs again.
+  - **`prepare` (G17).** `glidex_ovs::vfio::prepare`, which netd's
+    **Prepare**, pools with `prepare: true` and the boot binding all use:
+    - loads `vfio-pci` (`modprobe`) when `/sys/bus/pci/drivers/vfio-pci`
+      is missing, and errs if it is still missing, instead of leaving the
+      device with no driver;
+    - for a display-class function with a `resource<N>_resize`, keeps the
+      sum of its windows and those of the host's display functions on
+      `vfio-pci` below `MemTotal`: the largest supported size that fits,
+      written between the unbind and the probe. Refused (`409`) when no
+      size fits. A function already on `vfio-pci` is left as it is;
+    - records each resize in `Prepared.resized`; `release` writes the old
+      size back between the unbind and the probe. A group prepared again
+      keeps the first sizes.
+    - Unit tests on a gpu-dev2-shaped sysfs: 32 GiB → 16 GiB, a second
+      GPU → 8 GiB, the order of the writes, the restore, the refusal, a
+      device already on `vfio-pci`, and `modprobe`.
+  - **Not done:** a pool's own size (`bar_mib`); QEMU's 64-bit window
+    (G13); `nvlink` without a fabric (G11); the docs for an AMD pool and
+    guest image (G15); the reboot test. 16 GiB plus 8 GiB together hasn't
+    been run on gpu-dev2 (2 × 8 GiB has).

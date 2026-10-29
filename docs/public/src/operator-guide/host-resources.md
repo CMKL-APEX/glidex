@@ -387,9 +387,20 @@ In the web UI, the node's **Topology** card has **Prepare** and
 
 Preparing:
 
+- loads the `vfio-pci` module if it isn't loaded, and fails if it
+  can't be;
 - binds every function of the device's IOMMU group to `vfio-pci`.
   Bridges stay with the host;
-- remembers the drivers they had, for release;
+- makes a GPU's memory window (a resizable BAR, such as a Radeon's with
+  resizable BAR on) smaller when needed, so that the windows of all the
+  host's GPUs on `vfio-pci` add up to less than the host's memory. Each
+  gets the largest size that fits, given the GPUs prepared before it: on
+  a host with 32 GiB, a 32 GiB window becomes 16 GiB, and a second GPU's
+  8 GiB. A window as large as the host's memory froze a test host when
+  its VM started. The guest still reaches all of the GPU's memory
+  through the smaller window. A GPU already on `vfio-pci` keeps its
+  size, and a window that can't be made small enough is refused;
+- remembers the drivers they had, and the window sizes, for release;
 - writes `/etc/udev/rules.d/90-glidex-vfio-<group>.rules`, which gives
   `/dev/vfio/<group>` to the `glidex` group with mode `0660`, and
   applies it at once;
@@ -397,8 +408,9 @@ Preparing:
   routes), an OVS-DPDK uplink, or a device without an IOMMU group.
 
 The host's driver lets go of the devices: a GPU on `nvidia` stops being
-the host's. Release works with any function of the group, and refuses a
-device Glidex didn't prepare.
+the host's. Release works with any function of the group, puts a
+resized window back to its size, and refuses a device Glidex didn't
+prepare.
 
 Release refuses a group that a process has open, a VM's included
 (`IOMMU group 30 is in use by qemu-kvm-one (pid 37226)`), and so does
