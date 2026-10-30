@@ -1,4 +1,4 @@
-//! What a server gives its nodes (spec/clustering.md §6.5, §8, §12.3): a
+//! What a server gives its nodes (spec/14-clustering.md §6.5, §8, §12.3): a
 //! filtered copy of the store (`list`), the changes after a revision
 //! (`watch`), heartbeats, and the rules for the status writes a node may
 //! make. A node sees and changes only what is placed or bound on it.
@@ -157,11 +157,11 @@ const SHARED: [TableId; 8] = [
 
 /// Shared like `SHARED`, but only with nodes that know these tables
 /// (`DATASTORE_FEATURE_LEVEL`): an older agent can't read a write set that
-/// names a table it doesn't know (spec/clustering.md §6.6).
+/// names a table it doesn't know (spec/14-clustering.md §6.6).
 const SHARED_DATASTORES: [TableId; 2] = [TableId::Datastores, TableId::DatastoreNodes];
 
 /// Whether `node` acts on disk `d`: bound to it, or (a shared disk, bound
-/// to none) its worker (spec/storage.md S6).
+/// to none) its worker (spec/24-storage.md S6).
 fn disk_is_nodes(d: &Value, node: &str) -> bool {
     d["node"] == node || (d["node"].is_null() && d["worker"] == node)
 }
@@ -466,7 +466,7 @@ pub fn check_status_write(
                 _ => return Err(format!("events {key}: not a node's to write")),
             },
             // A kernel to extract on this node from the root disk of one of
-            // its VMs (spec/kernel-boot.md §10.5): created, never changed;
+            // its VMs (spec/23-kernel-boot.md §10.5): created, never changed;
             // the leader records how it went.
             (TableId::Images, op) => {
                 let Op::Put { value, .. } = op else {
@@ -515,7 +515,7 @@ pub fn check_status_write(
             (TableId::ImageCaches, _) => {
                 let whose = key.rsplit_once('/').map(|(_, n)| n).unwrap_or_default();
                 // A shared datastore's copy: any node that reaches it may say
-                // (spec/storage.md S9).
+                // (spec/24-storage.md S9).
                 if let Some(ds) = whose.strip_prefix(crate::controller::store_copies::DS_PREFIX) {
                     let reaches = get(TableId::DatastoreNodes, &format!("{ds}/{node}"))?
                         .is_some_and(|r| r["reachable"] == true);
@@ -670,7 +670,7 @@ fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> 
         }
     }
     // A move onto block volumes makes it raw, and nothing else changes the
-    // format (spec/storage.md §11.1).
+    // format (spec/24-storage.md §11.1).
     if new["format"] != cur["format"] && (m["raw"] != true || new["format"] != "raw") {
         return Err("only a move onto block volumes makes a disk raw".into());
     }
@@ -689,7 +689,7 @@ fn check_disk_status_only(cur: &Value, new: &Value, node: &str) -> Result<(), St
         "resize",
         "extend_root",
     ];
-    // A move's mover records it, or ends it (spec/storage.md §8.3).
+    // A move's mover records it, or ends it (spec/24-storage.md §8.3).
     let m = &cur["moving"];
     let mover = !m.is_null() && m["mover"] == node;
     if mover {
@@ -759,7 +759,7 @@ mod tests {
         }
     }
 
-    /// The mover records exactly the move it was asked for (spec/storage.md
+    /// The mover records exactly the move it was asked for (spec/24-storage.md
     /// §8.3): onto block volumes that makes the disk raw and full.
     #[test]
     fn a_mover_records_only_its_move() {
@@ -847,7 +847,7 @@ mod tests {
     }
 
     /// Datastores reach only nodes that know their tables, and a node
-    /// writes only its own row (spec/storage.md S2).
+    /// writes only its own row (spec/24-storage.md S2).
     #[test]
     fn datastores_go_to_nodes_that_know_them_and_rows_are_each_nodes_own() {
         let dir = tempfile::tempdir().unwrap();
@@ -915,7 +915,7 @@ mod tests {
     }
 
     /// A node creates the record of a kernel it extracts from one of its
-    /// VMs' disks, and nothing else in the catalog (spec/kernel-boot.md §10.5).
+    /// VMs' disks, and nothing else in the catalog (spec/23-kernel-boot.md §10.5).
     #[test]
     fn a_node_creates_only_kernels_it_extracts_from_its_disks() {
         let dir = tempfile::tempdir().unwrap();

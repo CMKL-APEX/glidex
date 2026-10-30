@@ -3,7 +3,7 @@ import { useNodes } from "../nodes";
 import { isTombstone } from "../types";
 import { Loading } from "../components/Loading";
 
-/** `/hosts` (spec/host-page.md W1): a standalone host's one page; in a
+/** `/hosts` (spec/28-host-page.md W1): a standalone host's one page; in a
  * cluster, the node list on the Cluster page. */
 export default function Hosts() {
   const dir = useNodes();

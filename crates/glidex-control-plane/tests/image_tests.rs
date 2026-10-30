@@ -1,4 +1,4 @@
-//! Images and disks through the REST API (spec/images.md §12).
+//! Images and disks through the REST API (spec/10-images.md §12).
 //!
 //! Images are served by a local HTTP server (ETag + Range support, plus a
 //! path that drops the connection part way), so these tests need no
@@ -214,12 +214,12 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1") };
     // Never download the kernel extractor here; extraction runs in the
-    // ignored functional tests (spec/kernel-boot.md §10).
+    // ignored functional tests (spec/23-kernel-boot.md §10).
     // SAFETY: as above.
     unsafe { std::env::set_var("GLIDEX_KERNEL_EXTRACTION", "off") };
     let manager = common::with_db_path(dir.join("test.db")).unwrap();
     // Disks are made, resized and extended by the disk controller
-    // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
+    // (spec/12-reconciliation.md §10.1); the tests wait for it with ?wait.
     manager.start_controllers();
     (create_router(manager.clone()), manager)
 }
@@ -311,7 +311,7 @@ fn num(v: &Value) -> u64 {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, writes), in the proto3 JSON
-/// shape (spec/grpc.md §9.1).
+/// shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -543,7 +543,7 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(d["origin"]["image"]["image_id"], img["id"], "{d}");
     let (_, detail) = request(&app, "GET", "/disks/web-root", None).await;
     let detail = disk_of(&detail);
-    // The overlay names its image relative to itself (spec/storage.md S8).
+    // The overlay names its image relative to itself (spec/24-storage.md S8).
     let backing = detail["info"]["backing_filename"].as_str().unwrap();
     assert!(backing.starts_with("../"), "{detail}");
     let linked_dir = PathBuf::from(d["path"].as_str().unwrap());
@@ -717,7 +717,7 @@ async fn checksum_mismatch_and_backing_file_fail() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// spec/reconciliation.md §7.6, §10.1: a disk may be created from an image
+/// spec/12-reconciliation.md §7.6, §10.1: a disk may be created from an image
 /// still downloading; it waits pending and is made once the image is.
 /// A disk whose file disappears is reported missing, never recreated.
 #[tokio::test]
@@ -1157,7 +1157,7 @@ async fn vms_create_attach_and_own_disks() {
 }
 
 /// Deleting an image is a request the image controller finishes
-/// (spec/reconciliation.md §6.3): a download in flight is cancelled and
+/// (spec/12-reconciliation.md §6.3): a download in flight is cancelled and
 /// its files removed; the name is free again.
 #[tokio::test]
 async fn deleting_an_image_cancels_its_download() {
@@ -1287,7 +1287,7 @@ async fn firmware_images() {
         None,
     )
     .await;
-    // Never started: gone at once (204, spec/grpc.md §9.1).
+    // Never started: gone at once (204, spec/18-grpc.md §9.1).
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = request(&app, "DELETE", "/images/ovmf-test?wait=30", None).await;
     assert!(status.is_success(), "{status}");
@@ -1340,7 +1340,7 @@ async fn ovmf_firmware_is_imported_from_the_host_package() {
 }
 
 /// Startup imports local firmware once: not again, and not after the
-/// admin deleted it (spec/images.md §4.1 "Auto-import").
+/// admin deleted it (spec/10-images.md §4.1 "Auto-import").
 #[tokio::test]
 async fn local_firmware_is_auto_imported_once() {
     use glidex_control_plane::images::AutoImport;
@@ -1603,7 +1603,7 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
     );
 }
 
-/// Kernel images (spec/kernel-boot.md K1): a URL download with its
+/// Kernel images (spec/23-kernel-boot.md K1): a URL download with its
 /// initramfs, checked digests and header, never a disk source.
 #[tokio::test]
 async fn kernel_images_are_downloaded_and_checked() {
@@ -1724,7 +1724,7 @@ async fn kernel_images_are_downloaded_and_checked() {
     assert!(!std::path::Path::new(path).exists() && !std::path::Path::new(&initrd).exists());
 }
 
-/// A kernel copied from host files (spec/kernel-boot.md §4.2): ready at
+/// A kernel copied from host files (spec/23-kernel-boot.md §4.2): ready at
 /// once, recorded as a host source, unverified.
 #[tokio::test]
 async fn kernel_images_from_host_files() {
@@ -1774,7 +1774,7 @@ async fn kernel_images_from_host_files() {
 /// An aarch64 kernel wrapped as Ubuntu ships it (a stub PE whose `.linux`
 /// is an EFI zboot of a gzip'd Image) is installed as the plain `Image`
 /// Cloud Hypervisor boots, with that file's size and digest; the host's
-/// file is left as it is (spec/kernel-boot.md K8).
+/// file is left as it is (spec/23-kernel-boot.md K8).
 #[tokio::test]
 async fn wrapped_arm64_kernels_are_installed_plain() {
     use std::io::Write;
@@ -1832,7 +1832,7 @@ async fn wrapped_arm64_kernels_are_installed_plain() {
     );
 }
 
-/// VMs boot kernel images (spec/kernel-boot.md K2): no firmware needed for
+/// VMs boot kernel images (spec/23-kernel-boot.md K2): no firmware needed for
 /// an image VM, the kernel's command line by default, a generated seed
 /// and so a credential, in-use protection, and a PATCH to another kernel.
 #[tokio::test]
@@ -2003,7 +2003,7 @@ async fn vms_boot_kernel_images() {
     assert_eq!(img["image"]["used_by_vms"], json!(["kb2"]), "{img}");
 }
 
-/// `kernel_from` and `with_kernel` (spec/kernel-boot.md §10, K10), on a
+/// `kernel_from` and `with_kernel` (spec/23-kernel-boot.md §10, K10), on a
 /// host where extraction is off: refused clearly, and a disk pull that
 /// asks for its kernel still pulls the disk.
 #[tokio::test]
@@ -2068,7 +2068,7 @@ async fn kernel_extraction_requests() {
     );
 }
 
-/// `kernel_from_disk` and `POST /vms/{id}/extract-kernel` (spec/kernel-boot.md
+/// `kernel_from_disk` and `POST /vms/{id}/extract-kernel` (spec/23-kernel-boot.md
 /// K11, §10.5) on a host where extraction is off: the admission rules, a
 /// manual `kernel` turning following off, and clear refusals.
 #[tokio::test]

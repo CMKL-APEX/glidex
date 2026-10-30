@@ -155,7 +155,7 @@ export class ApiRequestError extends Error {
   }
 }
 
-// ---- session plumbing (spec/security.md §5.5, §5.6) -------------------------
+// ---- session plumbing (spec/11-security.md §5.5, §5.6) -------------------------
 
 // The CSRF value and the 401 handlers are the kit's (crates/glidex-ui/kit,
 // csrfToken, setCsrf, sessionEnded, reauthenticate), shared with its
@@ -181,11 +181,11 @@ interface RequestOptions {
   /** Safe to send again after `503 leader_changed` (GET, PUT and DELETE are). */
   idempotent?: boolean;
   /** A host-only call for this node's host (`X-Glidex-Target-Node`,
-   * spec/host-page.md W2); unset: the host serving the UI. */
+   * spec/28-host-page.md W2); unset: the host serving the UI. */
   node?: string;
 }
 
-// ---- cluster availability (spec/clustering-ui.md §3.3) ------------------------
+// ---- cluster availability (spec/16-clustering-ui.md §3.3) ------------------------
 
 /** Dispatched on `window` when the cluster's availability as seen by the API
  * changes: `detail.available` false after `503 cluster_unavailable` (no
@@ -288,7 +288,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-// ---- RPCs (spec/grpc.md G-D8): Connect-ES over gRPC-Web ----------------------
+// ---- RPCs (spec/18-grpc.md G-D8): Connect-ES over gRPC-Web ----------------------
 
 /** Read with `local`: answered from this server's own copy when there is no
  * quorum (`X-Glidex-Consistency: local`). */
@@ -296,10 +296,10 @@ const LOCAL = createContextKey(false);
 /** Set by a call's interceptor when the answer carried a revision (it went
  * through the cluster). */
 const REVISION = createContextKey<{ seen: boolean }>({ seen: false });
-/** The node a host-only call is for (spec/host-page.md W2). */
+/** The node a host-only call is for (spec/28-host-page.md W2). */
 const TARGET = createContextKey<string | undefined>(undefined);
 
-/** The session's CSRF value on every RPC (all are POSTs, spec/grpc.md §6). */
+/** The session's CSRF value on every RPC (all are POSTs, spec/18-grpc.md §6). */
 const sessionHeaders: Interceptor = (next) => async (req) => {
   const csrf = csrfToken();
   if (csrf) req.header.set("X-Glidex-CSRF", csrf);
@@ -430,7 +430,7 @@ function finish<M extends DescMethodUnary>(
 
 /** Whether a method only reads (`glidex.api.v1.op` kind), by its name: the
  * operation option isn't kept in the generated code, and the API's reads
- * are named so (spec/grpc.md §4), but for a few (ReadAudit, Allowed, WhoAmI). */
+ * are named so (spec/18-grpc.md §4), but for a few (ReadAudit, Allowed, WhoAmI). */
 function isRead(m: DescMethodUnary): boolean {
   return /^(Get|List|Check|Validate|Simulate|Preview|Test|Read|Allowed$|WhoAmI$)/.test(m.name);
 }
@@ -459,7 +459,7 @@ export async function healthCheck(): Promise<HealthResponse> {
 }
 
 /** What the login page offers: the host's own directory's, or `directory`'s
- * for its `/login/<directory>` page (spec/tenancy.md D61). */
+ * for its `/login/<directory>` page (spec/19-tenancy.md D61). */
 export const authMethods = (directory?: string) =>
   request<AuthMethods>("GET", `/auth/methods${directory ? `?directory=${encodeURIComponent(directory)}` : ""}`, undefined, { quiet401: true });
 
@@ -468,7 +468,7 @@ export const discoverLogin = (hint: string) =>
   request<{ directory: string; connectors?: LoginConnector[] }>("POST", "/auth/discover", { hint }, { quiet401: true });
 
 /** REST, not `SystemService.WhoAmI`: every cookie-authenticated RPC needs
- * the CSRF value (spec/grpc.md §6), and this is where the session learns it
+ * the CSRF value (spec/18-grpc.md §6), and this is where the session learns it
  * (it is kept in memory only, so a fresh page load has none yet). */
 export async function whoami(): Promise<WhoAmI> {
   const w = await request<WhoAmI>("GET", "/auth/whoami", undefined, { quiet401: true });
@@ -482,7 +482,7 @@ export async function loginPam(username: string, password: string): Promise<WhoA
   return w;
 }
 
-// ---- passkeys (spec/passkeys.md) --------------------------------------------
+// ---- passkeys (spec/25-passkeys.md) --------------------------------------------
 // The ceremonies are REST: WebAuthn's own JSON, binary fields base64url.
 
 const fromB64url = (s: string): ArrayBuffer => {
@@ -554,7 +554,7 @@ export async function addPasskey(name: string): Promise<void> {
   });
 }
 
-/** A passkey invitation (spec/tenancy.md D60): the invitee's first
+/** A passkey invitation (spec/19-tenancy.md D60): the invitee's first
  * passkey, which signs them in. */
 export async function acceptPasskeyInvitation(invitation: string): Promise<WhoAmI> {
   const opts = await request<{ publicKey: any }>("POST", "/auth/invitation/passkey/start", { invitation }, { quiet401: true });
@@ -603,7 +603,7 @@ export const deletePasskey = (user: string, passkey: string) => rpc(UserService.
 
 /** Leave the page for the identity provider: connector `connector`, or
  *  the first OIDC connector. */
-/** Add a sign-in through `connector` to the signed-in user (spec/tenancy.md
+/** Add a sign-in through `connector` to the signed-in user (spec/19-tenancy.md
  *  §6.2): a recent login first (the re-auth dialog asks), then the IdP; it
  *  comes back to /account with `?linked=<id>` or `?link_error=<code>`. */
 export async function startLink(connector: string): Promise<void> {
@@ -615,7 +615,7 @@ export async function startLink(connector: string): Promise<void> {
 
 /** Remove one of a user's sign-in methods (`<provider>:<subject>`); never
  *  the last. `endSessions` (an administrator's): sign the user out too. */
-/** Delete a user and what is its alone (spec/tenancy.md §6.3); the counts
+/** Delete a user and what is its alone (spec/19-tenancy.md §6.3); the counts
  *  of what went with it. */
 export const deleteUser = (id: string) =>
   rpc(UserService.method.deleteUser, { id }).then((r) => ({
@@ -637,13 +637,13 @@ export function startOidc(returnTo: string, reauth = false, connector?: string) 
   window.location.assign(`${API_BASE}${path}?${q}`);
 }
 
-/** A login at trusted directory `id` (spec/tenancy.md D69). */
+/** A login at trusted directory `id` (spec/19-tenancy.md D69). */
 export function startTrustedLogin(id: string, returnTo: string) {
   const q = new URLSearchParams({ return_to: returnTo });
   window.location.assign(`${API_BASE}/auth/t/${encodeURIComponent(id)}/start?${q}`);
 }
 
-// ---- accounts in one browser (spec/tenancy.md D71) ----------------------------
+// ---- accounts in one browser (spec/19-tenancy.md D71) ----------------------------
 
 /** Tells the other tabs the account changed: they reload. */
 export const ACCOUNT_EVENT_KEY = "glidex.account-switched";
@@ -708,7 +708,7 @@ export async function checkAccess(checks: { action: string; resource: EntityRef 
   return checks.map((_, i) => !!r.results?.[i]?.allowed || !!r.results?.[i]?.reauth);
 }
 
-/** The actions allowed on each resource, in one call (spec/clustering-ui.md
+/** The actions allowed on each resource, in one call (spec/16-clustering-ui.md
  * §3.5): `result[i]` lists those of `actions` allowed on `resources[i]`. An
  * action that doesn't apply to a resource's type is left out. */
 export async function allowedActions(actions: string[], resources: EntityRef[]): Promise<string[][]> {
@@ -742,10 +742,10 @@ export const createVm = (req: CreateVmRequest) =>
 
 /** Lifecycle calls change the VM's desired state; `wait` holds the answer
  * until the controller got it there, or reports why it couldn't
- * (spec/reconciliation.md §12.3). */
+ * (spec/12-reconciliation.md §12.3). */
 const WAIT_SECS = 60;
 
-/** Place a stopped (or lost) VM on `node`, or where there is room (spec/storage.md S10). */
+/** Place a stopped (or lost) VM on `node`, or where there is room (spec/24-storage.md S10). */
 export const placeVm = (id: string, node?: string) =>
   rpc(VmService.method.placeVm, { id, node }).then((r) => r.vm as VmResponse);
 
@@ -765,7 +765,7 @@ export const pauseVm = (id: string) =>
   vmWrite(rpc(VmService.method.pauseVm, { id, wait_secs: WAIT_SECS }) as Promise<VmWriteResponse>);
 
 /** Another kernel image, and/or following the guest's kernel, from the
- * next start (spec/kernel-boot.md K6, K11). Setting `kernel` without
+ * next start (spec/23-kernel-boot.md K6, K11). Setting `kernel` without
  * `follow` turns following off. */
 export function setVmKernel(id: string, change: { kernel?: string; follow?: boolean }) {
   const vm = { kernel: change.kernel, kernel_from_disk: change.follow };
@@ -787,7 +787,7 @@ export function setVmCpuPolicy(
 }
 
 /** Give a VM a service account, or take it away (`null`); it applies to the
- * VM's next token, no restart (spec/workload-identity.md W5). */
+ * VM's next token, no restart (spec/29-workload-identity.md W5). */
 export const setVmServiceAccount = (id: string, serviceAccount: string | null) =>
   vmWrite(
     rpc(VmService.method.updateVm, {
@@ -935,7 +935,7 @@ export const acceptNetworkShare = (project: string, network: string) =>
 export const leaveNetworkShare = (project: string, network: string) =>
   rpc(NetworkShareService.method.leaveNetworkShare, { project, network }).then(none);
 
-// Host-only calls (spec/host-page.md W2): `node` names the host they are
+// Host-only calls (spec/28-host-page.md W2): `node` names the host they are
 // for; without it, the host serving the UI.
 const on = (node?: string): RequestOptions => (node ? { node } : {});
 
@@ -996,7 +996,7 @@ export const deleteSpareImageFiles = (node: string) =>
   rpc(NodeService.method.deleteSpareImageFiles, { id: node }).then((r) => r as { node?: string; files?: number; bytes?: U64 });
 /** `undefined` when gone, else the image its controller is still deleting. */
 export const deleteImage = (id: string) => rpc(ImageService.method.deleteImage, { id }).then((r) => r.image as ImageInfo | undefined);
-/** Download a failed image again (spec/reconciliation.md D19). */
+/** Download a failed image again (spec/12-reconciliation.md D19). */
 export const retryImage = (id: string) => rpc(ImageService.method.retryImage, { id }).then((r) => r.image as ImageInfo | undefined);
 export const imageEvents = (id: string) =>
   rpc(ImageService.method.listImageEvents, { id }).then((r) => (r.events ?? []) as StorageEvent[]);
@@ -1021,14 +1021,14 @@ export const createDatastore = ({ shared, lvm, hyperstor, ...req }: DatastoreInp
 export const updateDatastore = (id: string, req: DatastoreInput) =>
   rpc(DatastoreService.method.updateDatastore, { id, ...req, update_mask: maskOf(req) }).then((r) => r.datastore as Datastore);
 export const deleteDatastore = (id: string) => rpc(DatastoreService.method.deleteDatastore, { id }).then(() => undefined);
-/** Move a disk to another datastore, offline (spec/storage.md §8.3). */
+/** Move a disk to another datastore, offline (spec/24-storage.md §8.3). */
 export const moveDisk = (id: string, datastore: string, flatten?: boolean) =>
   diskWrite(rpc(DiskService.method.moveDisk, { id, datastore, flatten: flatten || undefined, wait_secs: WAIT_SECS }));
 export const listDisks = (project?: string | null) =>
   rpc(DiskService.method.listDisks, { project: project || undefined }).then((r) => (r.disks ?? []) as DiskInfo[]);
 /** By id, or by name (unique per tenant; a name two of the caller's tenants share answers 409 `ambiguous`). */
 export const getDisk = (id: string) => rpc(DiskService.method.getDisk, { id }).then((r) => r.disk as DiskInfo);
-// Disk writes are carried out by the disk controller (spec/reconciliation.md
+// Disk writes are carried out by the disk controller (spec/12-reconciliation.md
 // §10.1): wait for it, and show what is still pending if it isn't done.
 // They answer `{disk, settled}`; `{}` when it is gone meanwhile.
 const diskWrite = (p: Promise<unknown>) => p.then((r) => r as DiskWriteResponse);
@@ -1123,7 +1123,7 @@ export function readAudit(q: { project?: string; user?: string; since?: number; 
   }).then((r) => (r.entries ?? []) as AuditEntry[]);
 }
 
-// ---- usage (spec/metering.md §9) ---------------------------------------------
+// ---- usage (spec/13-metering.md §9) ---------------------------------------------
 
 export interface UsageQuery {
   project?: string;
@@ -1191,7 +1191,7 @@ export const getVmCompute = (id: string) =>
   rpc(MetricsService.method.getVmCompute, { id, query: { p95: true } }).then((r) => r as unknown as SeriesResponse);
 export const getVmStats = (id: string) => rpc(MetricsService.method.getVmStats, { id }).then((r) => r as unknown as VmStats);
 
-// ---- cluster (spec/clustering.md §5, §7; glidex.cluster.v1) ------------------
+// ---- cluster (spec/14-clustering.md §5, §7; glidex.cluster.v1) ------------------
 // The cluster, node, import and departure answers are in the proto3 JSON
 // shape (types.ts): lists and records are wrapped (`{nodes}`, `{node}`,
 // `{plans}`, `{plan}`, `{departures}`); requests send enums by full name.
@@ -1212,7 +1212,7 @@ export const clusterStatus = () => rpc(ClusterService.method.getClusterStatus, {
 /** The summary without the port checks (which connect to every node). */
 export const clusterSummary = () => rpc(ClusterService.method.getClusterStatus).then((r) => r as unknown as ClusterStatus);
 export const listNodes = () => rpc(NodeService.method.listNodes).then((r) => (r.nodes ?? []) as unknown as NodeRecord[]);
-/** N GPUs from a pool (spec/gpu-vms.md §3). */
+/** N GPUs from a pool (spec/27-gpu-vms.md §3). */
 export interface GpuRequest {
   count: number;
   pool?: string;
@@ -1229,25 +1229,25 @@ export interface PreviewRequest {
   node?: string;
   networks?: { network: string }[];
   vfio_devices?: string[];
-  /** Devices asked for by pool (spec/host-topology.md §9). */
+  /** Devices asked for by pool (spec/22-host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
-  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/27-gpu-vms.md §3). */
   gpus?: GpuRequest;
   data_disks?: string[];
-  /** The root disk's image: its architecture counts (spec/clustering.md §9.2.1). */
+  /** The root disk's image: its architecture counts (spec/14-clustering.md §9.2.1). */
   image?: string;
 }
-/** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
+/** Where a VM would go, node by node (spec/16-clustering-ui.md §5.1). */
 export const previewPlacement = (req: PreviewRequest) =>
   rpc(VmService.method.previewPlacement, req).then((r) => r as unknown as PlacementPreview);
 export const getNode = (id: string) => rpc(NodeService.method.getNode, { id }).then((r) => r.node as unknown as NodeRecord);
-/** A node's NUMA and PCIe topology, read on that node (spec/host-topology.md §3.2). */
+/** A node's NUMA and PCIe topology, read on that node (spec/22-host-topology.md §3.2). */
 export const getNodeTopology = (id: string) =>
   rpc(NodeService.method.getNodeTopology, { id }).then((r) => r.topology as unknown as HostTopology);
-/** The device pools a project may use and how many are free (spec/host-topology.md §9.1). */
+/** The device pools a project may use and how many are free (spec/22-host-topology.md §9.1). */
 export const listProjectPciPools = (project: string) =>
   rpc(NodeService.method.listPciPools, { project }).then((r) => (r.pools ?? []) as PciPoolJson[]);
-/** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/host-topology.md §5.3). */
+/** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/22-host-topology.md §5.3). */
 export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });
 export const releaseDevice = (id: string, address: string) => rpc(NodeService.method.releaseDevice, { id, address });
 /** Give a PF `vfs` SR-IOV virtual functions on its node (§10.1); 0 removes them. */
@@ -1255,14 +1255,14 @@ export const setSriovVfs = (id: string, address: string, vfs: number) => rpc(Nod
 /** No new VM gets a cordoned device (§5.4). */
 export const cordonDevice = (id: string, address: string) => rpc(NodeService.method.cordonDevice, { id, address });
 export const uncordonDevice = (id: string, address: string) => rpc(NodeService.method.uncordonDevice, { id, address });
-/** A node's br-int datapath (spec/clustering.md §11.6). */
+/** A node's br-int datapath (spec/14-clustering.md §11.6). */
 export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) =>
   rpc(NodeService.method.configureNodeOvn, { id, br_int_datapath }).then((r) => r as ConfigureNodeOvnResponse);
 /** A node's physical networks: physnet → bridge (replaces its own; the file's stay). */
 export const setNodeMappings = (id: string, bridge_mappings: Record<string, string>) =>
   rpc(NodeService.method.configureNodeOvn, { id, bridge_mappings, set_bridge_mappings: true }).then((r) => r as ConfigureNodeOvnResponse);
 
-// ---- membership (spec/clustering-ui.md §7) ---------------------------------------
+// ---- membership (spec/16-clustering-ui.md §7) ---------------------------------------
 
 export const createJoinToken = (req: { role: NodeRole; ttl_secs: number; allow_import: boolean }) =>
   rpc(ClusterService.method.createJoinToken, { ...req, ttl_secs: u64(req.ttl_secs) }).then((r) => r as unknown as IssuedToken);
@@ -1282,7 +1282,7 @@ export const listDepartures = () => rpc(NodeService.method.listDepartures).then(
 export const clusterOvn = () => rpc(ClusterService.method.getOvnOverview).then((r) => r as unknown as OvnOverview);
 export const clusterTunnels = () =>
   rpc(ClusterService.method.getOvnTunnels).then((r) => r as unknown as { enabled?: boolean; nodes?: NodeTunnels[] });
-/** A shared edge that should work for this cluster, from what nodes report (spec/clustering-ui.md §8a). */
+/** A shared edge that should work for this cluster, from what nodes report (spec/16-clustering-ui.md §8a). */
 export const getEdgeDefaults = () => rpc(ClusterService.method.getEdgeDefaults).then((r) => r as unknown as EdgeDefaults);
 export const getOvnSettings = () => rpc(ClusterService.method.getOvnSettings).then((r) => r as unknown as OvnSettingsView);
 /** Replaces the whole setting; only the request's fields are sent. */
@@ -1297,7 +1297,7 @@ export const putOvnSettings = (s: PutOvnSettings) =>
   } as PutOvnSettingsRequestJson).then((r) => r as unknown as OvnSettingsView);
 export const networkOvn = (id: string) => rpc(NetworkService.method.getNetworkOvn, { id }).then((r) => r as unknown as NetworkOvn);
 
-// ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
+// ---- cluster lifecycle (spec/16-clustering-ui.md §7.5–7.8) ---------------------------
 
 export const initCluster = (req: { advertise?: string; tunnel_ip?: string }) =>
   rpc(ClusterService.method.initCluster, { ...req, force: true }).then((r) => r as Record<string, unknown>);
@@ -1320,7 +1320,7 @@ export const drainNode = (id: string, drain: boolean) =>
     (r) => r as { node?: string; phase?: NodePhase; remaining?: { vms?: string[]; disks?: string[]; networks?: string[] } },
   );
 
-// ---- tenants and admissions (spec/tenancy.md §14) -----------------------------
+// ---- tenants and admissions (spec/19-tenancy.md §14) -----------------------------
 
 /** Every tenant the caller may read, over all pages. */
 export async function listTenants(): Promise<Tenant[]> {
@@ -1347,10 +1347,10 @@ export const suspendTenant = (id: string) => rpc(TenantService.method.suspendTen
 export const resumeTenant = (id: string) => rpc(TenantService.method.resumeTenant, { id }).then((r) => r as { tenant: Tenant });
 export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenant, { id }).then(none);
 
-// ---- invitations (spec/tenancy.md §6.1) -----------------------------------
+// ---- invitations (spec/19-tenancy.md §6.1) -----------------------------------
 
 export type Invitation = InvitationJson;
-// ---- workload federations (spec/tenancy.md §9) --------------------------------
+// ---- workload federations (spec/19-tenancy.md §9) --------------------------------
 
 /** A tenant's trust in a CI or workload issuer (glidex.directory.v1.Federation). */
 export type Federation = FederationJson & {
@@ -1385,11 +1385,11 @@ export const inspectInvitation = (invitation: string) =>
 export const startInvitedLogin = (connector: string, invitation: string) =>
   request<{ redirect: string }>("POST", `/auth/c/${encodeURIComponent(connector)}/start`, { invitation, return_to: "/" }, { quiet401: true });
 
-/** A tenant's shares of cluster device pools on this cluster (spec/host-topology.md §9.1a). */
+/** A tenant's shares of cluster device pools on this cluster (spec/22-host-topology.md §9.1a). */
 export type TenantDevicePool = TenantDevicePoolJson;
 
 /** Another organization's cluster the tenant uses, with its last report
- *  (spec/tenancy.md D65, D70). */
+ *  (spec/19-tenancy.md D65, D70). */
 export type TenantCluster = TenantClusterJson;
 export const listTenantClusters = (id: string) =>
   rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
@@ -1449,7 +1449,7 @@ export const setAdmission = (tenant: string, req: { cap?: TenantQuotas; suspende
   rpc(AdmissionService.method.setAdmission, { ...(req as SetAdmissionRequestJson), tenant }).then((r) => r.admission as Admission);
 export const removeAdmission = (tenant: string) => rpc(AdmissionService.method.removeAdmission, { tenant }).then(none);
 
-// ---- login connectors (spec/tenancy.md §5, §14) ------------------------------
+// ---- login connectors (spec/19-tenancy.md §5, §14) ------------------------------
 
 export const listConnectors = () => rpc(ConnectorService.method.listConnectors).then((r) => (r.connectors ?? []) as Connector[]);
 export const getConnector = (id: string) => rpc(ConnectorService.method.getConnector, { id }).then((r) => r.connector as Connector);
@@ -1460,7 +1460,7 @@ export const updateConnector = (id: string, connector: Partial<ConnectorInput>) 
   rpc(ConnectorService.method.updateConnector, { id, connector: connector as ConnectorJson, update_mask: maskOf(connector) }).then(
     (r) => r.connector as Connector,
   );
-/** A pulled connector's run now (spec/tenancy.md §8.2); `confirm` applies one the safety stop blocked. */
+/** A pulled connector's run now (spec/19-tenancy.md §8.2); `confirm` applies one the safety stop blocked. */
 export const syncConnector = (id: string, confirm = false) =>
   rpc(ConnectorService.method.syncConnector, confirm ? { id, confirm } : { id }).then((r) => (r.status ?? {}) as SyncStatus);
 export const listScimTokens = (id: string) =>
@@ -1483,7 +1483,7 @@ export const setConnectorSecret = (id: string, field: string, value: string) =>
 export const testConnector = (id: string) =>
   rpc(ConnectorService.method.testConnector, { id }).then((r) => (r.steps ?? []) as ConnectorTestStep[]);
 
-// ---- a directory's device logins (spec/tenancy.md D54) ------------------------
+// ---- a directory's device logins (spec/19-tenancy.md D54) ------------------------
 
 /** What a device login's user code is for (`404` when nothing waits for it). */
 export const inspectDeviceLogin = (directory: string, user_code: string) =>
@@ -1493,14 +1493,14 @@ export const inspectDeviceLogin = (directory: string, user_code: string) =>
 export const answerDeviceLogin = (directory: string, user_code: string, approve: boolean) =>
   request<{ approved: boolean }>("POST", `/d/${encodeURIComponent(directory)}/device/answer`, { user_code, approve });
 
-// ---- directories this host serves (spec/tenancy.md D59) ------------------------
+// ---- directories this host serves (spec/19-tenancy.md D59) ------------------------
 
 export interface HostedDirectory {
   id: string;
   name: string;
   issuer: string;
   created_at?: string;
-  /** Its SPIFFE trust domain (workload-identity.md W13). */
+  /** Its SPIFFE trust domain (29-workload-identity.md W13). */
   trust_domain?: string;
 }
 export const listDirectories = () => rpc(DirectoryService.method.listDirectories).then((r) => (r.directories ?? []) as HostedDirectory[]);

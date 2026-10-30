@@ -1,4 +1,4 @@
-//! The host family (spec/grpc.md §9, G3): this host's networking through
+//! The host family (spec/18-grpc.md §9, G3): this host's networking through
 //! glidex-netd, and its PCI devices. Every operation acts on the host that
 //! answers it; an agent's UI has a server authorize it on the agent's
 //! `Host` and run it there (`PreAuthorized`, api/relay.rs).
@@ -488,7 +488,7 @@ pub async fn ensure_uplink(
     req: pb::EnsureUplinkRequest,
 ) -> ServiceResult<pb::EnsureUplinkResponse> {
     call.set_target(format!("uplink:{}/{}", req.bridge, req.name));
-    // A confirmed uplink may move the host's IP: step-up (spec/security.md §7.1).
+    // A confirmed uplink may move the host's IP: step-up (spec/11-security.md §7.1).
     let action = if req.confirm {
         "confirmUplink"
     } else {
@@ -590,7 +590,7 @@ pub fn list_pci_devices(
     _req: pb::ListPciDevicesRequest,
 ) -> ServiceResult<pb::ListPciDevicesResponse> {
     host(call)?;
-    // Readiness from the tree (spec/host-topology.md §5.1).
+    // Readiness from the tree (spec/22-host-topology.md §5.1).
     let tree = call.manager().local_topology();
     let ready = |a: &str| tree.devices.iter().find(|d| d.address == a && d.assignable);
     Ok(pb::ListPciDevicesResponse {
@@ -618,15 +618,41 @@ pub fn list_pci_devices(
 }
 
 /// `GET /host/topology`: this host's NUMA and PCIe topology.
-pub fn get_host_topology(
+pub async fn get_host_topology(
     call: &Call,
     _req: pb::GetHostTopologyRequest,
 ) -> ServiceResult<pb::GetHostTopologyResponse> {
     host(call)?;
+    let m = call.manager();
+    let t = m.local_topology();
     Ok(pb::GetHostTopologyResponse {
-        topology: topology_pb(&call.manager().local_topology()).into(),
+        topology: with_taken(m, &m.local_node_id(), &t, topology_pb(&t))
+            .await
+            .into(),
         ..Default::default()
     })
+}
+
+/// `t`'s devices that VMs on `node` hold, or can't be given now, marked
+/// `taken`.
+pub(crate) async fn with_taken(
+    m: &crate::state::VmManager,
+    node: &str,
+    t: &crate::topology::TopologyTree,
+    mut out: pb::Topology,
+) -> pb::Topology {
+    let groups = t
+        .devices
+        .iter()
+        .filter_map(|d| Some((d.address.to_ascii_lowercase(), d.iommu_group.clone()?)))
+        .collect();
+    let taken = m
+        .devices_taken(node, &groups, t.devices.iter().map(|d| d.address.as_str()))
+        .await;
+    for d in &mut out.devices {
+        d.taken = taken.get(&d.address.to_ascii_lowercase()).cloned();
+    }
+    out
 }
 
 /// A topology tree in its proto form.

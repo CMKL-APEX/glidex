@@ -1,4 +1,4 @@
-//! `glidex-vm-shim`: the per-VM supervisor (spec/reconciliation.md §8).
+//! `glidex-vm-shim`: the per-VM supervisor (spec/12-reconciliation.md §8).
 //!
 //! The shim is the hypervisor's parent and owns its console (PTY master,
 //! console socket and log), so a VM keeps running while the control plane

@@ -16,7 +16,7 @@ type Op = "drain" | "remove" | "forget" | "purge" | "rejoin" | "promote" | "deta
 const asksForForce = (m: string) => m.includes("--force");
 
 /** Operations on one node, each shown only when allowed and when its phase
- * permits (spec/clustering-ui.md §7.2–7.3). */
+ * permits (spec/16-clustering-ui.md §7.2–7.3). */
 export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone: () => void }) {
   const dir = useNodes();
   const { host: caps } = useSession();

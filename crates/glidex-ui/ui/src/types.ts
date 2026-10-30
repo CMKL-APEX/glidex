@@ -1,13 +1,13 @@
 import type { ErrorJson } from "./gen/glidex/api/v1/errors_pb";
 
-// ---- VMs (glidex.vm.v1, spec/grpc.md §9.1) ---------------------------------
+// ---- VMs (glidex.vm.v1, spec/18-grpc.md §9.1) ---------------------------------
 //
 // The VM routes answer in the proto3 JSON shape (see the storage section
 // below for the rules): enums by their full names, 64-bit counters as
 // strings, timestamps RFC 3339, defaults left out. The helpers here read
 // them back in the short forms the pages show (`VM_STATE_RUNNING` → `running`).
 
-/** What a VM is doing, as the controller last saw it (spec/reconciliation.md §7.4), for display. */
+/** What a VM is doing, as the controller last saw it (spec/12-reconciliation.md §7.4), for display. */
 export type VmState =
   | "created"
   | "starting"
@@ -85,9 +85,9 @@ export interface VmResponse {
   stop_grace_secs?: number;
   conditions?: StorageCondition[];
   last_exit?: ExitRecord;
-  /** The node the VM is placed on (spec/clustering.md §9.1). */
+  /** The node the VM is placed on (spec/14-clustering.md §9.1). */
   node?: string;
-  /** That node's name (spec/clustering-ui.md §9). */
+  /** That node's name (spec/16-clustering-ui.md §9). */
   node_name?: string;
   vcpu_count: number;
   min_vcpus?: number;
@@ -97,18 +97,18 @@ export interface VmResponse {
   /** Read with `vmHypervisor`. */
   hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
-  /** Devices asked for by pool, and those the scheduler picked (spec/host-topology.md §9). */
+  /** Devices asked for by pool, and those the scheduler picked (spec/22-host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
   pool_devices?: { pool: string; address: string }[];
-  /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/gpu-vms.md §4). */
+  /** `aligned` over several host NUMA nodes: guest NUMA node i is numa[i] (spec/27-gpu-vms.md §4). */
   numa?: { node?: number; vcpus?: number; memory_mib?: number; devices?: string[] }[];
   credential?: string;
-  /** Its service account (a token id), for workload identity (spec/workload-identity.md W5). */
+  /** Its service account (a token id), for workload identity (spec/29-workload-identity.md W5). */
   service_account?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
   firmware?: string;
-  /** Kernel image id it boots directly (spec/kernel-boot.md §6). */
+  /** Kernel image id it boots directly (spec/23-kernel-boot.md §6). */
   kernel?: string;
   boot?: "BOOT_MODE_FIRMWARE" | "BOOT_MODE_KERNEL";
   /** Following the guest's kernel, and the kernel images extracted from its disk it boots, and booted before. */
@@ -160,7 +160,7 @@ export function nicNetworkLabel(nic: Pick<NicState, "network" | "network_name">)
 }
 
 // ---- networks (glidex.network.v1, proto JSON shape) -------------------------
-// Networks are keyed by id (spec/tenancy.md D24); enums are their full proto
+// Networks are keyed by id (spec/19-tenancy.md D24); enums are their full proto
 // names, timestamps RFC 3339, fields at their default left out.
 
 export type NetworkMode = "NETWORK_MODE_NAT" | "NETWORK_MODE_BRIDGED" | "NETWORK_MODE_ISOLATED";
@@ -194,7 +194,7 @@ export interface Network {
   /** UUID; paths, keys and VM NICs use it. */
   id: string;
   name: string;
-  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
+  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/14-clustering.md §11). */
   scope?: NetworkScope;
   node?: string;
   physnet?: string;
@@ -209,7 +209,7 @@ export interface Network {
   owns_bridge?: boolean;
   /** RFC 3339. */
   created_at?: string;
-  /** Project networks belong to a project (spec/security.md §6.2). */
+  /** Project networks belong to a project (spec/11-security.md §6.2). */
   project?: string;
   all_projects?: boolean;
   grants?: string[];
@@ -217,7 +217,7 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: ShareOffer[];
-  /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
+  /** What the network controller last saw in netd (spec/12-reconciliation.md §10.3). */
   phase?: NetworkPhase;
   conditions?: StorageCondition[];
   /** Deletion requested (RFC 3339); the network controller is removing it (from netd, then the record). */
@@ -253,7 +253,7 @@ export interface CreateNetworkRequest {
   all_projects?: boolean;
 }
 
-/** A project's VPC router (spec/clustering.md §11.2a). */
+/** A project's VPC router (spec/14-clustering.md §11.2a). */
 export interface RouterSpec {
   name: string;
   /** Reaches outside: an address from the edge's pool, SNAT. */
@@ -282,12 +282,12 @@ export interface CreateVmRequest {
   cpu_weight?: number;
   mem_size_mib: number;
   kernel_image_path: string;
-  /** Firmware image id/name (spec/images.md §7); default: the newest for the hypervisor. */
+  /** Firmware image id/name (spec/10-images.md §7); default: the newest for the hypervisor. */
   firmware?: string;
   /** Host path of UEFI firmware (admins only); prefer `firmware`. */
   firmware_path?: string;
   credential?: string;
-  /** A service account (token id) for its workload identity (spec/workload-identity.md W5). */
+  /** A service account (token id) for its workload identity (spec/29-workload-identity.md W5). */
   service_account?: string;
   networks?: { network: string }[];
   rootfs_path?: string;
@@ -301,25 +301,25 @@ export interface CreateVmRequest {
   /** Kernel image id/name to boot directly; host files instead with `kernel_image_path` (+ `initrd_path`). */
   kernel?: string;
   initrd_path?: string;
-  /** Boot the kernel the guest installs (spec/kernel-boot.md K11). */
+  /** Boot the kernel the guest installs (spec/23-kernel-boot.md K11). */
   kernel_from_disk?: boolean;
   hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
-  /** Devices asked for by pool; the scheduler picks them (spec/host-topology.md §9). */
+  /** Devices asked for by pool; the scheduler picks them (spec/22-host-topology.md §9). */
   devices?: { pool: string; count?: number; same_switch?: boolean }[];
-  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/gpu-vms.md §3). */
+  /** N GPUs from a pool: aligned NUMA placement, sizing from the pool (spec/27-gpu-vms.md §3). */
   gpus?: { count: number; pool?: string; nvlink?: boolean };
-  /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
+  /** Desired power state; default `stopped` (spec/12-reconciliation.md §7.4). */
   power?: ProtoPowerState;
   /** After a crash: restart (default) or leave it stopped. */
   restart_policy?: RestartPolicy;
   /** After a host reboot, if it should be running: start it again (default) or not. */
   on_host_boot?: HostBootPolicy;
-  /** Run on this node (id or name); default: the scheduler picks (spec/clustering.md §9.1). */
+  /** Run on this node (id or name); default: the scheduler picks (spec/14-clustering.md §9.1). */
   node?: string;
 }
 
-/** One node's answer to `POST /scheduler/preview` (spec/clustering-ui.md §5.1). */
+/** One node's answer to `POST /scheduler/preview` (spec/16-clustering-ui.md §5.1). */
 export interface NodeFit {
   id: string;
   name: string;
@@ -340,10 +340,10 @@ export interface PlacementPreview {
   nodes?: NodeFit[];
 }
 
-// ---- images and disks (spec/images.md) ------------------------------------
+// ---- images and disks (spec/10-images.md) ------------------------------------
 //
 // The storage routes (/credentials, /images, /disks) answer in the proto3
-// JSON shape of glidex.storage.v1 (spec/grpc.md §9.1): 64-bit numbers are
+// JSON shape of glidex.storage.v1 (spec/18-grpc.md §9.1): 64-bit numbers are
 // strings, enums their full names, timestamps RFC 3339, fields at their
 // default left out. The helpers below read them back for display.
 
@@ -477,7 +477,7 @@ export interface ImageCopy {
   bytes?: U64;
   error?: string;
   pinned?: boolean;
-  /** A shared datastore's copy (`node` empty): what linked disks there overlay (spec/storage.md S9). */
+  /** A shared datastore's copy (`node` empty): what linked disks there overlay (spec/24-storage.md S9). */
   datastore?: string;
   datastore_name?: string;
 }
@@ -507,7 +507,7 @@ export interface ImageInfo {
   kernel?: { release?: string; cmdline?: string; initrd?: { sha256?: string; size_bytes?: U64 } };
   /** The disk image a kernel image was extracted from. */
   for_image?: string;
-  /** Each node's copy (spec/clustering.md §9.2.2, spec/clustering-ui.md §5.3). */
+  /** Each node's copy (spec/14-clustering.md §9.2.2, spec/16-clustering-ui.md §5.3). */
   copies?: ImageCopy[];
   info?: ImgInfo;
   /** Deletion requested; the image controller is removing it. */
@@ -570,12 +570,12 @@ export interface PullImageRequest {
   /** With a QEMU firmware `url`: its UEFI variable-store template. */
   vars_url?: string;
   vars_sha256?: string;
-  /** In a cluster (spec/clustering.md §9.2.1–2): the architecture, nodes
+  /** In a cluster (spec/14-clustering.md §9.2.1–2): the architecture, nodes
    * that get a copy, and whether the server keeps its own. */
   arch?: Arch;
   nodes?: string[];
   keep_server_copy?: boolean;
-  /** A kernel image (spec/kernel-boot.md §4.2): its initramfs, command line,
+  /** A kernel image (spec/23-kernel-boot.md §4.2): its initramfs, command line,
    * or host files (admins); `kernel_from` extracts one from a disk image. */
   initrd_url?: string;
   initrd_sha256?: string;
@@ -647,7 +647,7 @@ export interface DiskInfo {
   size_bytes?: U64;
   origin?: DiskOrigin;
   attached_to?: string;
-  /** The node holding the disk's file (spec/clustering.md §9.2). */
+  /** The node holding the disk's file (spec/14-clustering.md §9.2). */
   node?: string;
   node_name?: string;
   pending_growpart?: boolean;
@@ -667,12 +667,12 @@ export interface DiskInfo {
   partition_table?: PartitionTable;
   extend_root?: "EXTEND_OUTCOME_GROWN" | "EXTEND_OUTCOME_ALREADY_FULL" | "EXTEND_OUTCOME_ON_BOOT" | "EXTEND_OUTCOME_SKIPPED";
   warnings?: string[];
-  /** The datastore holding it: an id, `local` for the built-in one (spec/storage.md §4.2). */
+  /** The datastore holding it: an id, `local` for the built-in one (spec/24-storage.md §4.2). */
   datastore?: string;
   /** On a shared datastore (no `node`): the node acting on it, its VM's when placed. */
   worker?: string;
   worker_name?: string;
-  /** A move asked for and not done yet: the datastore it goes to (spec/storage.md §8.3). */
+  /** A move asked for and not done yet: the datastore it goes to (spec/24-storage.md §8.3). */
   moving_to?: string;
 }
 
@@ -760,7 +760,7 @@ export interface CreateDiskRequest {
   datastore?: string;
 }
 
-/** What one node found at its path to a datastore (spec/storage.md §4.1). */
+/** What one node found at its path to a datastore (spec/24-storage.md §4.1). */
 export interface DatastoreNode {
   node: string;
   node_name?: string;
@@ -776,7 +776,7 @@ export interface DatastoreNode {
   warnings?: string[];
 }
 
-/** Where disks live (spec/storage.md §13); `local` is built in. */
+/** Where disks live (spec/24-storage.md §13); `local` is built in. */
 export interface Datastore {
   id: string;
   name: string;
@@ -863,7 +863,7 @@ export interface UpdateCredentialRequest {
   ssh_authorized_keys?: string[];
 }
 
-/** A REST error: `glidex.api.v1.Error` as JSON (spec/grpc.md §9.1), its
+/** A REST error: `glidex.api.v1.Error` as JSON (spec/18-grpc.md §9.1), its
  * `details` narrowed to the keys the pages read. RPC errors become the
  * same thing (`api.ts::rpcError`). */
 export type ApiError = Required<Pick<ErrorJson, "error" | "message">> & {
@@ -905,7 +905,7 @@ export function settled(vm: VmResponse): boolean {
   return vmActivity(vm) === null;
 }
 
-/** What the controller is still doing for a VM (spec/reconciliation.md
+/** What the controller is still doing for a VM (spec/12-reconciliation.md
  * §7.4), or `null` once it has converged. */
 export function vmActivity(vm: VmResponse): string | null {
   if (vm.deleting) return "Deleting";
@@ -930,7 +930,7 @@ export function generationBehind(vm: VmResponse): boolean {
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
-/** The VM's node stopped reporting (spec/clustering.md §7.2): its last
+/** The VM's node stopped reporting (spec/14-clustering.md §7.2): its last
  * known state is shown, but the VM may still be running. */
 export function nodeUnreachable(vm: VmResponse): boolean {
   return vm.conditions?.some((c) => c.kind === "Ready" && conditionStatus(c) === "Unknown" && c.reason === "NodeUnreachable") ?? false;
@@ -971,7 +971,7 @@ export function stateLabel(state: VmState): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 
-// ---- access control (spec/security.md §5–§7, §10, §13) ----------------------
+// ---- access control (spec/11-security.md §5–§7, §10, §13) ----------------------
 
 /** A Cedar entity reference, as the API serializes it. */
 export type EntityType =
@@ -1017,16 +1017,16 @@ export interface AuthMethods {
   disabled: boolean;
   /** The directory's enabled connectors (absent from older servers). */
   connectors?: LoginConnector[];
-  /** Passkeys are on (spec/passkeys.md), and their domain when set. */
+  /** Passkeys are on (spec/25-passkeys.md), and their domain when set. */
   passkeys?: boolean;
   passkeys_rp_id?: string | null;
-  /** The directory these methods sign in to (spec/tenancy.md D61). */
+  /** The directory these methods sign in to (spec/19-tenancy.md D61). */
   directory?: string;
   /** Other organizations' directories this cluster trusts (D69). */
   trusted_directories?: TrustedLogin[];
 }
 
-/** One of the browser's accounts (spec/tenancy.md D71). */
+/** One of the browser's accounts (spec/19-tenancy.md D71). */
 export interface BrowserAccount {
   directory: string;
   directory_name: string;
@@ -1037,7 +1037,7 @@ export interface BrowserAccount {
   active: boolean;
 }
 
-/** "Sign in with <host>": a trusted directory's login (spec/tenancy.md D69). */
+/** "Sign in with <host>": a trusted directory's login (spec/19-tenancy.md D69). */
 export interface TrustedLogin {
   /** Its records' id here, `trusted-<hash>`. */
   id: string;
@@ -1049,7 +1049,7 @@ export interface TrustedLogin {
 
 // The access routes (projects, bindings, users, teams, tokens, policies,
 // audit, capability checks, whoami) answer in the proto3 JSON shape of
-// glidex.access.v1 (spec/grpc.md §9.1): timestamps RFC 3339, enums by their
+// glidex.access.v1 (spec/18-grpc.md §9.1): timestamps RFC 3339, enums by their
 // full names, 64-bit numbers as strings, fields at their default left out.
 
 export interface Identity {
@@ -1071,7 +1071,7 @@ export interface User {
   created_at?: string;
   /** Sent by `GET /users`. */
   identities?: Identity[];
-  /** The connector that provisions it (spec/tenancy.md §8.3). */
+  /** The connector that provisions it (spec/19-tenancy.md §8.3). */
   managed_by?: string;
   external_id?: string;
   /** A managed user's email, from its connector. */
@@ -1114,8 +1114,8 @@ export interface WhoAmI {
 export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";
 
 /** Limits (glidex.tenancy.v1.Quotas): an absent one is unlimited. VPC routers,
- * and those with an external address, are spec/clustering.md §11.2a;
- * `devices` is a limit per device pool (spec/host-topology.md §9.3). */
+ * and those with an external address, are spec/14-clustering.md §11.2a;
+ * `devices` is a limit per device pool (spec/22-host-topology.md §9.3). */
 export type Quotas = Partial<Record<QuotaKey, number>> & { devices?: Record<string, number> };
 
 /** What a project uses; a count of zero is left out. */
@@ -1142,7 +1142,7 @@ export const QUOTA_LABELS: Record<QuotaKey, string> = {
 export interface Project {
   id: string;
   name: string;
-  /** The tenant owning it (spec/tenancy.md D1). */
+  /** The tenant owning it (spec/19-tenancy.md D1). */
   tenant_id?: string;
   description?: string;
   quotas?: Quotas;
@@ -1193,7 +1193,7 @@ export const HOST_ROLES = [
   "role.system-admin",
   "grant.host-paths",
 ] as const;
-/** System roles that can be given on one node's host (spec/clustering.md §12.2). */
+/** System roles that can be given on one node's host (spec/14-clustering.md §12.2). */
 export const PER_HOST_ROLES = ["role.auditor", "role.net-admin", "grant.host-paths"] as const;
 
 export function roleLabel(role: string): string {
@@ -1218,7 +1218,7 @@ export interface ApiToken {
   device?: string;
   client?: string;
   roles?: Binding[];
-  /** The clusters it works on (spec/tenancy.md §7.4); none: only here. */
+  /** The clusters it works on (spec/19-tenancy.md §7.4); none: only here. */
   clusters?: string[];
 }
 
@@ -1233,7 +1233,7 @@ export interface CreateTokenRequest {
   device?: string;
   client?: string;
   /** Clusters of other organizations it works on too, or `["all"]`
-   *  (spec/tenancy.md §7.4); none: only this cluster. */
+   *  (spec/19-tenancy.md §7.4); none: only this cluster. */
   clusters?: string[];
 }
 
@@ -1341,7 +1341,7 @@ export function formatTime(secs: number | undefined | null): string {
   return new Date(secs * 1000).toLocaleString();
 }
 
-// ---- usage (spec/metering.md §9; glidex.usage.v1, proto JSON shape) ---------
+// ---- usage (spec/13-metering.md §9; glidex.usage.v1, proto JSON shape) ---------
 // Fields at their default are left out (empty lists, maps and strings),
 // 64-bit numbers are strings, enums are their proto names.
 
@@ -1452,7 +1452,7 @@ export interface VmStats {
 // ---- the cluster, nodes, imports and departures (glidex.cluster.v1) -----------
 //
 // `/cluster/*`, `/nodes*`, `/imports*` and `/departures` answer in the proto3
-// JSON shape of glidex.cluster.v1 (spec/grpc.md §9.1): enums by their full
+// JSON shape of glidex.cluster.v1 (spec/18-grpc.md §9.1): enums by their full
 // names, times RFC 3339, 64-bit numbers as strings (read with `num`), fields at
 // their default left out. The helpers read them back in the words the pages
 // show (`NODE_PHASE_ACTIVE` → `Active`, `NODE_ROLE_SERVER` → `server`).
@@ -1503,7 +1503,7 @@ export interface NodeResources {
   hugepages?: Record<string, U64>;
 }
 
-/** A file in a node's image directory that no image record names (spec/clustering.md §9.2.3). */
+/** A file in a node's image directory that no image record names (spec/14-clustering.md §9.2.3). */
 export interface SpareFile {
   name: string;
   bytes?: U64;
@@ -1519,12 +1519,12 @@ export interface NodeRecord {
     role?: NodeRole;
     unschedulable?: boolean;
     labels?: Record<string, string>;
-    /** Absent: auto, `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
+    /** Absent: auto, `netdev` where DPDK runs, else `system` (spec/14-clustering.md §11.6). */
     br_int_datapath?: BrIntDatapath;
     /** physnet → bridge set through the API (the host's file may add more). */
     bridge_mappings?: Record<string, string>;
     drop_spare_files_before?: string;
-    /** PCI devices no new VM gets (spec/host-topology.md §5.4). */
+    /** PCI devices no new VM gets (spec/22-host-topology.md §5.4). */
     cordoned_devices?: string[];
   };
   status: {
@@ -1535,7 +1535,7 @@ export interface NodeRecord {
     raft_id?: U64;
     advertise?: string;
     tunnel_ip?: string;
-    /** A server's web UI address (spec/host-page.md W3). */
+    /** A server's web UI address (spec/28-host-page.md W3). */
     ui_url?: string;
     versions?: { glidex?: string; ovs?: string; ovn?: string };
     capacity?: NodeResources;
@@ -1551,7 +1551,7 @@ export interface NodeRecord {
       feature_level?: number;
       ovn_central?: boolean;
       bridge_addrs?: Record<string, { address: string; gateway?: string }>;
-      /** `x86_64` or `aarch64` (spec/clustering.md §9.2.1). */
+      /** `x86_64` or `aarch64` (spec/14-clustering.md §9.2.1). */
       arch?: string;
       spare_image_files?: SpareFile[];
     };
@@ -1615,7 +1615,7 @@ export interface ClusterStatus {
   role?: NodeRole;
   advertise?: string;
   /** The server that answered, when it isn't the node serving this UI
-   * (an agent relays its UI to a server, spec/clustering-ui.md §3.6). */
+   * (an agent relays its UI to a server, spec/16-clustering-ui.md §3.6). */
   served_by?: { node_id: string; name: string };
   feature_level?: number;
   ca_fingerprint?: string;
@@ -1709,7 +1709,7 @@ export interface ChassisRef {
   priority?: U64;
 }
 
-/** The shared edge of NAT cluster networks (spec/clustering.md §11.2). */
+/** The shared edge of NAT cluster networks (spec/14-clustering.md §11.2). */
 export interface OvnEdge {
   physnet?: string;
   external_cidr?: string;
@@ -1719,7 +1719,7 @@ export interface OvnEdge {
   gateway_nodes?: string[];
 }
 
-/** The cluster's OVN setting (spec/clustering-ui.md §8a). */
+/** The cluster's OVN setting (spec/16-clustering-ui.md §8a). */
 export interface OvnSettings {
   enabled?: boolean;
   underlay_mtu?: number;
@@ -1789,7 +1789,7 @@ export interface OvnChassis {
   nb_cfg_at?: string;
 }
 
-/** `GET /cluster/ovn` (spec/clustering-ui.md §8). */
+/** `GET /cluster/ovn` (spec/16-clustering-ui.md §8). */
 export interface OvnOverview {
   enabled?: boolean;
   servers?: number;
@@ -1821,7 +1821,7 @@ export interface Tunnel {
   peer?: NodeRef;
 }
 
-/** One node's tunnels (`GET /cluster/ovn/tunnels`, spec/clustering-ui.md §8b). */
+/** One node's tunnels (`GET /cluster/ovn/tunnels`, spec/16-clustering-ui.md §8b). */
 export interface NodeTunnels {
   node: string;
   node_name?: string;
@@ -1849,7 +1849,7 @@ export interface NetworkOvn {
   router?: { name: string; nat?: string[]; active_gateway?: NetworkOvnChassis; gateway_candidates?: NetworkOvnChassis[] };
 }
 
-/** A detach (`GET /departures`, clustering.md §5.8). */
+/** A detach (`GET /departures`, 14-clustering.md §5.8). */
 export interface Departure {
   plan: string;
   /** The node's id. */
@@ -1868,7 +1868,7 @@ export interface Departure {
   network_names?: Record<string, string>;
 }
 
-/** A join or rejoin token, shown once (spec/clustering-ui.md §2.3). */
+/** A join or rejoin token, shown once (spec/16-clustering-ui.md §2.3). */
 export interface IssuedToken {
   token: string;
   role?: NodeRole;
@@ -1883,7 +1883,7 @@ export interface IssuedToken {
 
 export type ImportSummaryKey = "vms" | "disks" | "images" | "networks" | "credentials" | "projects";
 
-/** An import plan (glidex.cluster.v1.ImportPlan) as `GET /imports` and the live stream send it (clustering.md §5.9). */
+/** An import plan (glidex.cluster.v1.ImportPlan) as `GET /imports` and the live stream send it (14-clustering.md §5.9). */
 export interface ImportPlanView {
   plan: string;
   /** Read with `importStateLabel`. */
@@ -1904,7 +1904,7 @@ export interface ImportPlanView {
   expires_at?: string;
 }
 
-// ---- tenants, admissions and login connectors (spec/tenancy.md §14) ----------
+// ---- tenants, admissions and login connectors (spec/19-tenancy.md §14) ----------
 // These are protobuf messages as JSON: snake_case names, enums by proto
 // name, timestamps RFC 3339, and an optional field that is false or unset
 // may be left out.
@@ -1977,7 +1977,7 @@ export interface OidcSettings {
   mfa_acr_values?: string[];
 }
 
-/** `google` settings (spec/tenancy.md D39, §5.1). */
+/** `google` settings (spec/19-tenancy.md D39, §5.1). */
 export interface GoogleSettings {
   /** Workspace by `hd`, or any account for invited and listed people. */
   accounts?: "GOOGLE_ACCOUNTS_WORKSPACE" | "GOOGLE_ACCOUNTS_ANY";
@@ -1989,7 +1989,7 @@ export interface GoogleSettings {
   redirect_uri?: string;
 }
 
-/** `jumpcloud` settings (spec/tenancy.md §5.1). */
+/** `jumpcloud` settings (spec/19-tenancy.md §5.1). */
 export interface JumpcloudSettings {
   client_id: string;
   /** The claim JumpCloud's "Include group attribute" names; default `memberOf`. */
@@ -2013,7 +2013,7 @@ export interface SecretStatus {
   updated_at?: string;
 }
 
-/** A login connector of the directory (spec/tenancy.md §5). Exactly one
+/** A login connector of the directory (spec/19-tenancy.md §5). Exactly one
  * of `pam` and `oidc` is set; `kind` says which. */
 export interface Connector {
   id: string;
@@ -2027,7 +2027,7 @@ export interface Connector {
   group_teams?: Record<string, string>;
   default_tenant?: string | null;
   token_max_days?: number | null;
-  /** `scim`: the IdP provisions its users and groups (spec/tenancy.md §8.1). */
+  /** `scim`: the IdP provisions its users and groups (spec/19-tenancy.md §8.1). */
   provisioning?: "none" | "scim" | "pull";
   group_mode?: "mapped" | "auto";
   /** `pull`: what it reads and how often. */
@@ -2166,7 +2166,7 @@ export interface BridgeRecord {
 
 export type XdpMode = "XDP_MODE_BEST_EFFORT" | "XDP_MODE_NATIVE" | "XDP_MODE_NATIVE_WITH_ZEROCOPY" | "XDP_MODE_GENERIC";
 
-/** How an uplink attaches the NIC (networking.md §8). */
+/** How an uplink attaches the NIC (09-networking.md §8). */
 export type UplinkKind =
   | { kind: "UPLINK_KIND_KERNEL"; ifname: string }
   | { kind: "UPLINK_KIND_AFXDP"; ifname: string; xdp_mode?: XdpMode; n_rxq?: number }
@@ -2215,7 +2215,7 @@ export interface PciDevice {
   sysfs_path: string;
 }
 
-// ---- host topology (spec/host-topology.md §3) ----------------------------------
+// ---- host topology (spec/22-host-topology.md §3) ----------------------------------
 
 export interface TopologyNumaNode {
   id?: number;
@@ -2241,10 +2241,12 @@ export interface PciFunction {
   sriov?: { total_vfs?: number; enabled_vfs?: number; vf_driver?: string; ready_vfs?: number };
   physfn?: string;
   assignable?: boolean;
-  /** Part of the host's NVLink fabric (an NVSwitch): shown, never given to a VM (spec/gpu-vms.md §7). */
+  /** Part of the host's NVLink fabric (an NVSwitch): shown, never given to a VM (spec/27-gpu-vms.md §7). */
   fabric?: boolean;
   ready?: boolean;
   not_ready?: string[];
+  /** Why a VM can't be given it now: a VM holds it or its IOMMU group, or it is cordoned. Unset: free. */
+  taken?: string;
   aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };
 }
 
@@ -2273,7 +2275,7 @@ export function cpuList(cpus: number[]): string {
   return out.join(",");
 }
 
-/** A PCI class code's word (spec/host-topology.md §3.3). */
+/** A PCI class code's word (spec/22-host-topology.md §3.3). */
 export function pciClassWord(cls = ""): string {
   const c = cls.replace(/^0x/, "");
   if (c.startsWith("03")) return "GPU";

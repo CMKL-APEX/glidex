@@ -1,4 +1,4 @@
-//! Datastores (spec/storage.md): where disks live, behind a driver.
+//! Datastores (spec/24-storage.md): where disks live, behind a driver.
 //!
 //! The built-in `local` datastore is each node's disk directory, through
 //! [`file::FileDriver`]; disk records that name no datastore are on it. It
@@ -18,7 +18,7 @@ use crate::images::qemu_img::DiskFormat;
 use crate::images::{Disk, ImageError};
 use std::path::Path;
 
-/// The built-in datastore: each node's disk directory (spec/storage.md S3).
+/// The built-in datastore: each node's disk directory (spec/24-storage.md S3).
 pub const LOCAL: &str = "local";
 
 /// What a hypervisor, or a disk tool, needs to open a volume.
@@ -32,12 +32,12 @@ pub enum VolumeBinding {
         /// files. Only ever set for disks glidex created.
         backing_files: bool,
         /// On a shared datastore: the file whose write lock says who has the
-        /// volume open (spec/storage.md S16).
+        /// volume open (spec/24-storage.md S16).
         lock: Option<String>,
     },
-    /// A raw block device, `/dev/<vg>/<lv>` (spec/storage.md §11.1).
+    /// A raw block device, `/dev/<vg>/<lv>` (spec/24-storage.md §11.1).
     Block { path: String },
-    /// A hyperstor volume (spec/storage.md §11.2): served to the VM over
+    /// A hyperstor volume (spec/24-storage.md §11.2): served to the VM over
     /// vhost-user-blk at `socket` once staged; to the partition code it is
     /// the path `hyperstor://<map>/<volume>`, read and written through
     /// `hyperstorctl` (`socket` is empty there).
@@ -91,7 +91,7 @@ impl VolumeBinding {
     }
 }
 
-/// What a driver can do (spec/storage.md §7).
+/// What a driver can do (spec/24-storage.md §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     /// Disks can be qcow2 overlays on an image in the same datastore.
@@ -117,7 +117,7 @@ pub enum VolumeSource<'a> {
 /// disk as it was.
 pub type Prepare<'a> = &'a mut dyn FnMut(&VolumeBinding) -> Result<(), ImageError>;
 
-/// A datastore's driver. Its methods follow CSI's (spec/storage.md §7, §12)
+/// A datastore's driver. Its methods follow CSI's (spec/24-storage.md §7, §12)
 /// so that a CSI adapter can be one more driver.
 pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     fn capabilities(&self) -> Caps;
@@ -140,7 +140,7 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
 
     /// Make `disk`'s volume a copy of `from` (another datastore's volume, of
     /// `from_format`), standalone with `flatten`; `prepare` runs on the copy, then
-    /// it becomes the disk's (spec/storage.md §8.3). Nothing is left
+    /// it becomes the disk's (spec/24-storage.md §8.3). Nothing is left
     /// behind if either fails.
     fn copy_in(
         &self,

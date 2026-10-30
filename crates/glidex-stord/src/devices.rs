@@ -1,4 +1,4 @@
-//! Which block devices each VM's unit may open (spec/storage.md S18): a
+//! Which block devices each VM's unit may open (spec/24-storage.md S18): a
 //! drop-in per VM, `glidex-vm@<id>.service.d/50-glidex-volumes.conf`,
 //! listing one `DeviceAllow=` each, added to the unit's own list. The
 //! drop-ins are under `/run`, so they are also all the state there is.

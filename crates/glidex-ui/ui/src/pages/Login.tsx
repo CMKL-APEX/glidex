@@ -23,7 +23,7 @@ export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; 
 }
 
 /** "Sign in with <organization>" for each directory of another
- *  organization this cluster trusts (spec/tenancy.md D69): its login page,
+ *  organization this cluster trusts (spec/19-tenancy.md D69): its login page,
  *  then back here. */
 export function TrustedButtons({ methods }: { methods: AuthMethods }) {
   const ds = methods.trusted_directories ?? [];
@@ -45,7 +45,7 @@ export function TrustedButtons({ methods }: { methods: AuthMethods }) {
   );
 }
 
-/** "Your email" (spec/tenancy.md D61): an organization whose sign-in this
+/** "Your email" (spec/19-tenancy.md D61): an organization whose sign-in this
  * host serves has its own login page; the email finds it. */
 function EmailRoute({ current }: { current: string }) {
   const [email, setEmail] = useState("");

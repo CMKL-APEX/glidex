@@ -4,7 +4,7 @@ import type { PlacementPreview } from "../types";
 import { num } from "../types";
 import { selectClass } from "./ui";
 
-/** Where a new VM runs (spec/clustering-ui.md §5.1): "Automatic" (the
+/** Where a new VM runs (spec/16-clustering-ui.md §5.1): "Automatic" (the
  * scheduler picks) or a node, each shown with what it has left, and why it
  * can't take the VM when it can't. Asks the scheduler again as the request
  * changes. */

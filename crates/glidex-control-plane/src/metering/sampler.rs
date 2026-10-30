@@ -1,4 +1,4 @@
-//! One sampling round over VMs and disks (spec/metering.md §5.1, §5.3,
+//! One sampling round over VMs and disks (spec/13-metering.md §5.1, §5.3,
 //! §5.6, §6.1): snapshots in, ledger observations out.
 
 use super::ledger::{Flag, MeteringError, Origin, Round, Subject, SubjectKind};
@@ -18,8 +18,8 @@ const VM_GAUGES: [&str; 5] = [
 
 const MIB: u64 = 1 << 20;
 
-/// `device.alloc.<pool>`: devices of a pool a VM holds (spec/metering.md
-/// §2, spec/host-topology.md §11).
+/// `device.alloc.<pool>`: devices of a pool a VM holds (spec/13-metering.md
+/// §2, spec/22-host-topology.md §11).
 pub const DEVICE_ALLOC: &str = "device.alloc.";
 
 /// Devices the VM holds of each pool it asks of or holds: what it was
@@ -122,6 +122,7 @@ fn sample_vm(
         for m in VM_GAUGES {
             round.gauge_end_at(&s, m, end)?;
         }
+        round.gauge_end_at(&s, "pylon.cores_allocated", end)?;
         for pool in pool_levels(vm).keys() {
             round.gauge_end_at(&s, &format!("{DEVICE_ALLOC}{pool}"), end)?;
         }
@@ -193,8 +194,49 @@ fn sample_vm(
             round.max(&s, "cpu.cores_peak", usec_per_s / 1000, now);
         }
     }
+
+    // Record Pylon real-time core allocation and residency metrics when available
+    let pylon_id = crate::hypervisor::pylon::pylon_vm_id_from_uuid(&vm.id);
+    if let Some(pstats) = host.pylon_stats(pylon_id) {
+        round.gauge_run(
+            &s,
+            "pylon.cores_allocated",
+            run,
+            launched,
+            pstats.current_cores as u64,
+            since,
+            now,
+            prev_end,
+        )?;
+        round.counter(
+            &s,
+            "pylon.core_usec",
+            &reset_key,
+            pstats.allocated_core_usec,
+            now,
+            Origin::ZeroAt(launched),
+        )?;
+        round.counter(
+            &s,
+            "pylon.cooperative_yields",
+            &reset_key,
+            pstats.cooperative_yields,
+            now,
+            Origin::ZeroAt(launched),
+        )?;
+        round.counter(
+            &s,
+            "pylon.forced_preemptions",
+            &reset_key,
+            pstats.forced_preemptions,
+            now,
+            Origin::ZeroAt(launched),
+        )?;
+        round.live(&s, "pylon_allocated_cores", pstats.current_cores as f64);
+        round.live(&s, "pylon_runnable_threads", pstats.runnable_threads as f64);
+    }
     // Hugepage-backed guest RAM is not in memory.current (§5.1). Whether
-    // it is hugepages: what the scheduler counted (spec/host-topology.md
+    // it is hugepages: what the scheduler counted (spec/22-host-topology.md
     // §8a.3), else what the VM asked for.
     let in_hugepages = vm
         .status
@@ -452,6 +494,7 @@ mod tests {
             proc_root: dir.path().join("proc"),
             cgroup_root: dir.path().join("cg"),
             sys_root: dir.path().join("sys"),
+            pylon_socket: dir.path().join("pylond.sock"),
         };
         (dir, l, host)
     }
@@ -751,5 +794,55 @@ mod tests {
         forget_gone(&mut r, &with, &BTreeSet::new());
         l.commit(r).unwrap();
         assert!(l.cursor_subjects(&[SubjectKind::Disk]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pylon_core_residency_and_allocation_meters() {
+        let (_dir, l, host) = setup();
+        let launched = T0 / 1000;
+        let v = vm("running", instance("i1", launched), serde_json::json!({}));
+        cgroup(&host, 1_000_000, 512 * MIB);
+
+        let pylon_id = crate::hypervisor::pylon::pylon_vm_id_from_uuid(&v.id);
+
+        let listener = std::os::unix::net::UnixListener::bind(&host.pylon_socket).unwrap();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = vec![0u8; 1024];
+                let _ = stream.read(&mut buf).unwrap();
+                let resp = serde_json::json!({
+                    "accepted": true,
+                    "vms": [{
+                        "vm_id": pylon_id,
+                        "current_cores": 3,
+                        "allocated_core_microseconds": 12_000_000,
+                        "cooperative_yields": 15,
+                        "forced_preemptions": 1,
+                        "runnable_threads": 2
+                    }]
+                });
+                let payload = serde_json::to_vec(&resp).unwrap();
+                stream.write_all(&payload).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let mut r = l.begin_round(T0 + 30_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 30_000).unwrap();
+        l.commit(r).unwrap();
+
+        let mut r2 = l.begin_round(T0 + 60_000).unwrap();
+        sample_vms(&mut r2, std::slice::from_ref(&v), &[], &host, T0 + 60_000).unwrap();
+        l.commit(r2).unwrap();
+
+        let _ = handle.join();
+
+        let t = totals(&l);
+        assert_eq!(t["pylon.core_usec"], 12_000_000);
+        assert_eq!(t["pylon.cooperative_yields"], 15);
+        assert_eq!(t["pylon.forced_preemptions"], 1);
+        assert_eq!(t["pylon.cores_allocated"], 3 * 60);
     }
 }

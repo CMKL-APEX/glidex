@@ -34,7 +34,7 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Clusters of other organizations its tenants use (spec/tenancy.md §7.4).
+  // Clusters of other organizations its tenants use (spec/19-tenancy.md §7.4).
   const [others, setOthers] = useState<{ id: string; name: string }[]>([]);
   const [also, setAlso] = useState<string[]>([]);
   useEffect(() => {

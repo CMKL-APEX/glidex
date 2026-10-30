@@ -42,17 +42,17 @@ pub trait NodeHandlers: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
-    /// This node's NUMA and PCIe topology (spec/host-topology.md §3.2), as
+    /// This node's NUMA and PCIe topology (spec/22-host-topology.md §3.2), as
     /// `TopologyTree` JSON.
     fn topology(&self) -> Option<serde_json::Value> {
         None
     }
-    /// `prepare` or `release` this node's PCI device (spec/host-topology.md
+    /// `prepare` or `release` this node's PCI device (spec/22-host-topology.md
     /// §5.3); an error is netd's (code, message).
     fn device_op(&self, _address: &str, _op: &str) -> Result<serde_json::Value, (String, String)> {
         Err(("unavailable".into(), "not available".into()))
     }
-    /// This node's OVN chassis and tunnels from its netd (spec/clustering-ui.md §8b).
+    /// This node's OVN chassis and tunnels from its netd (spec/16-clustering-ui.md §8b).
     fn ovn_status<'a>(
         &'a self,
     ) -> std::pin::Pin<
@@ -62,7 +62,7 @@ pub trait NodeHandlers: Send + Sync {
     }
 }
 
-/// The host's secrets key (spec/tenancy.md §13): the leader sends it to a
+/// The host's secrets key (spec/19-tenancy.md §13): the leader sends it to a
 /// new server with the CA key, and to every server when it rotates it,
 /// outside Raft.
 pub trait SecretsKey: Send + Sync {
@@ -80,7 +80,7 @@ pub trait SecretsKey: Send + Sync {
     fn rewrap(&self) -> Result<usize, String>;
     fn kek_id(&self) -> String;
     /// Seals `value` as `owner`'s `field` in the replicated store, under a
-    /// data key the KEK wraps (a hyperstor datastore's key, spec/storage.md
+    /// data key the KEK wraps (a hyperstor datastore's key, spec/24-storage.md
     /// S20).
     fn seal_value(&self, owner: &str, field: &str, value: &str) -> Result<(), String>;
     /// The value sealed as `owner`'s `field`, if any; `Err` where this
@@ -108,7 +108,7 @@ pub struct Cluster {
     /// The API router, served to forwarded requests; set once the app exists.
     pub(crate) api: OnceLock<axum::Router>,
     /// The API's app, for the metadata questions nodes ask the leader
-    /// (spec/workload-identity.md §15).
+    /// (spec/29-workload-identity.md §15).
     pub(crate) app: OnceLock<Arc<crate::api::App>>,
     stop: tokio::sync::watch::Sender<bool>,
     barrier: Arc<Barrier>,

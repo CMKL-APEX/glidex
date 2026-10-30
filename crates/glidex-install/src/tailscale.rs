@@ -1,4 +1,4 @@
-//! The web UI's Tailscale certificate (spec/tailscale-tls.md §4.6).
+//! The web UI's Tailscale certificate (spec/21-tailscale-tls.md §4.6).
 //!
 //! Opt-in. The choice is the flag, else the saved one, else a prompt
 //! (interactive runs on a node that reports certificate domains), else off.
@@ -21,7 +21,7 @@ const PERMIT: &str = "TS_PERMIT_CERT_UID";
 pub fn ui_dropin() -> String {
     format!(
         "# {} (--tailscale-cert): serve the node's Tailscale certificate\n\
-         # to its ts.net names (spec/tailscale-tls.md).\n\
+         # to its ts.net names (spec/21-tailscale-tls.md).\n\
          [Service]\nEnvironment=GLIDEX_UI_TLS_TAILSCALE=on\n",
         crate::PAM_MARKER
     )
@@ -30,7 +30,7 @@ pub fn ui_dropin() -> String {
 pub fn tailscaled_dropin() -> String {
     format!(
         "# {} (--tailscale-cert): lets glidex-ui fetch this node's\n\
-         # certificate (spec/tailscale-tls.md). TS_PERMIT_CERT_UID holds one user.\n\
+         # certificate (spec/21-tailscale-tls.md). TS_PERMIT_CERT_UID holds one user.\n\
          [Service]\nEnvironment={}={}\n",
         crate::PAM_MARKER,
         PERMIT,

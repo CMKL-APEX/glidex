@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared helpers for the D0 DPU bring-up scripts (spec/dpu.md §14, D0).
+# Shared helpers for the D0 DPU bring-up scripts (spec/31-dpu.md §14, D0).
 # Sourced, not run. No secrets live here: targets, keys and paths are
 # always arguments, and nothing is hardcoded to a particular DPU.
 #

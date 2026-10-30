@@ -47,7 +47,7 @@ same API, with types generated from the same protos.
 When to read which:
 
 - **Before you change behavior**, read the spec that owns it. A comment
-  such as `// spec/storage.md §8.3` or a decision number (`D6`, `G-D11`)
+  such as `// spec/24-storage.md §8.3` or a decision number (`D6`, `G-D11`)
   points at the reasoning you must keep or update.
 - **To learn what a feature does from the outside**, read this book's
   user and operator guides. They describe shipped behavior only.
@@ -73,10 +73,10 @@ RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
 3. Read [Repository and code organization](organization.md), then
    [Architecture](architecture.md).
 4. Read the specs' [README](https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md),
-   then [`spec/architecture.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/architecture.md)
-   and [`spec/reconciliation.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md):
+   then [`spec/00-architecture.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/00-architecture.md)
+   and [`spec/12-reconciliation.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md):
    desired state, the controllers and the shim.
-5. Read [`spec/grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/grpc.md)
+5. Read [`spec/18-grpc.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md)
    §2–§5 for how an API operation is declared once and served twice.
 6. Build and test: `cargo build`, then `cargo test` ([Contributing](contributing.md#tests)).
 7. Run a control plane and the UI from source and trace one request,

@@ -15,7 +15,7 @@ struct FileConfig {
     admin_group: Option<String>,
     run_dir: Option<PathBuf>,
     systemd_dir: Option<PathBuf>,
-    /// The volume groups glidex may use (spec/storage.md S17). None: none.
+    /// The volume groups glidex may use (spec/24-storage.md S17). None: none.
     allowed_vgs: Vec<String>,
     /// The user that gets the device nodes (default `glidex`).
     owner: Option<String>,

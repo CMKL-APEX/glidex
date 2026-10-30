@@ -1,4 +1,4 @@
-//! The `hyperstor` driver (spec/storage.md §11.2): each disk is a volume of
+//! The `hyperstor` driver (spec/24-storage.md §11.2): each disk is a volume of
 //! a hyperstor cluster, served to its VM over vhost-user-blk by the node's
 //! `hyperstor-vhost`.
 //!
@@ -64,6 +64,9 @@ pub struct HyperstorDriver {
     identity: Option<Identity>,
     vhost_dir: PathBuf,
     ctl: PathBuf,
+    /// This node's id, named to `hyperstor-vhost` at attach so its lease
+    /// says which node holds the volume (hyperstor D153).
+    node: String,
 }
 
 /// `hyperstor-vhost`'s directory on this node.
@@ -83,6 +86,54 @@ pub fn ctl_path() -> PathBuf {
 /// A disk's volume id: its UUID's 32 hex digits, or a hash of its id.
 pub fn volume_id(disk: &Disk) -> String {
     id_of(&disk.id, "glidex-disk:")
+}
+
+/// A refused `hyperstor-vhost` request: the error, and for `held` the
+/// label of the lease that holds the volume (hyperstor D153).
+#[derive(Debug)]
+struct VhostRefusal {
+    error: Box<ImageError>,
+    holder: Option<String>,
+}
+
+impl From<ImageError> for VhostRefusal {
+    fn from(error: ImageError) -> Self {
+        VhostRefusal {
+            error: Box::new(error),
+            holder: None,
+        }
+    }
+}
+
+/// Whether a hold labelled `holder` is another node's `hyperstor-vhost`
+/// (`vhost:<node>`), as a VM starting on node `me` finds a stale one
+/// (S26). A tool's (`hyperstorctl`), an unnamed service's (`vhost`) and
+/// this node's own are not.
+pub fn stale_hold(holder: &str, me: &str) -> bool {
+    holder
+        .strip_prefix("vhost:")
+        .is_some_and(|n| !n.is_empty() && n != me)
+}
+
+/// The volumes attached here (`attached`) that this node should let go
+/// (S26): each a glidex disk's (`disks`: volume and the node its VM is
+/// placed on, if any) whose VM isn't placed here. Volumes glidex doesn't
+/// know are left alone.
+pub fn stale_here(
+    attached: &[String],
+    disks: &[(String, Option<String>)],
+    me: &str,
+) -> Vec<String> {
+    attached
+        .iter()
+        .filter(|v| {
+            disks
+                .iter()
+                .find(|(d, _)| d == *v)
+                .is_some_and(|(_, node)| node.as_deref() != Some(me))
+        })
+        .cloned()
+        .collect()
 }
 
 /// An image's volume id, derived from the image's (one per datastore: the
@@ -255,7 +306,14 @@ impl HyperstorDriver {
             identity,
             vhost_dir: vhost_dir(),
             ctl: ctl_path(),
+            node: String::new(),
         }
+    }
+
+    /// The driver as node `node` uses it: its attaches name the node.
+    pub fn on_node(mut self, node: &str) -> Self {
+        self.node = node.to_string();
+        self
     }
 
     /// `ds`'s driver, if it is a hyperstor datastore.
@@ -279,7 +337,7 @@ impl HyperstorDriver {
 
     /// Deletes this datastore's image volumes whose image `live` says is
     /// gone: those a disk's clone kept (in hyperstor's trash) when the
-    /// image went, once the clone is purged (spec/storage.md S24).
+    /// image went, once the clone is purged (spec/24-storage.md S24).
     /// Returns how many went.
     pub fn collect_image_volumes(&self, live: impl Fn(&str) -> bool) -> Result<usize, ImageError> {
         let suffix = format!(" on {}", self.datastore);
@@ -462,7 +520,7 @@ impl HyperstorDriver {
     }
 
     /// Removes a volume a creation left (it never held a disk's data) for
-    /// good, so that its id can be made again (spec/storage.md S25):
+    /// good, so that its id can be made again (spec/24-storage.md S25):
     /// deleted, it would stay in hyperstor's trash, and its id with it.
     fn discard(&self, id: &str) -> Result<(), ImageError> {
         self.delete(id)?;
@@ -653,9 +711,18 @@ impl HyperstorDriver {
 
     /// One request to the node's `hyperstor-vhost` (hyperstor D117).
     fn vhost(&self, req: serde_json::Value) -> Result<serde_json::Value, ImageError> {
+        self.vhost_call(req).map_err(|e| *e.error)
+    }
+
+    /// [`Self::vhost`], keeping a `held` answer's holder: the label of the
+    /// lease that holds the volume (hyperstor D153).
+    fn vhost_call(&self, req: serde_json::Value) -> Result<serde_json::Value, VhostRefusal> {
         let path = self.vhost_dir.join("control.sock");
         let unavailable = |e: std::io::Error| {
-            ImageError::NotReady(format!("hyperstor-vhost ({}): {e}", path.display()))
+            VhostRefusal::from(ImageError::NotReady(format!(
+                "hyperstor-vhost ({}): {e}",
+                path.display()
+            )))
         };
         let mut s = std::os::unix::net::UnixStream::connect(&path).map_err(unavailable)?;
         s.set_read_timeout(Some(Duration::from_secs(60)))
@@ -670,11 +737,14 @@ impl HyperstorDriver {
         if let Some(e) = v.get("error") {
             let code = e["code"].as_str().unwrap_or("");
             let msg = format!("hyperstor-vhost: {}", e["message"].as_str().unwrap_or(""));
-            return Err(match code {
-                "held" => ImageError::Busy(msg),
-                "unavailable" => ImageError::NotReady(msg),
-                "not_found" => ImageError::Io(msg),
-                _ => ImageError::Io(msg),
+            return Err(VhostRefusal {
+                holder: (code == "held").then(|| e["holder"].as_str().unwrap_or("").to_string()),
+                error: Box::new(match code {
+                    "held" => ImageError::Busy(msg),
+                    "unavailable" => ImageError::NotReady(msg),
+                    "not_found" => ImageError::Io(msg),
+                    _ => ImageError::Io(msg),
+                }),
             });
         }
         Ok(v["ok"].clone())
@@ -683,19 +753,52 @@ impl HyperstorDriver {
     /// Attaches `disk`'s volume on this node, preempting its holder when
     /// `preempt` (a VM re-placed from a fenced node, S23).
     pub fn attach(&self, disk: &Disk, preempt: bool) -> Result<VolumeBinding, ImageError> {
+        self.attach_take(disk, if preempt { "preempt" } else { "attach" })
+            .map_err(|e| *e.error)
+    }
+
+    /// Attaches `disk`'s volume for a VM starting here, which glidex
+    /// records as running nowhere (S26): a hold by another node's
+    /// `hyperstor-vhost` is one left by a crash or a failed detach, and is
+    /// preempted, which cuts off that volume's lease only (hyperstor D150,
+    /// D153). A tool's hold (a disk operation on a server) is waited for.
+    pub fn attach_starting(&self, disk: &Disk, preempt: bool) -> Result<VolumeBinding, ImageError> {
+        if preempt {
+            return self.attach(disk, true);
+        }
+        match self.attach_take(disk, "attach") {
+            Err(VhostRefusal {
+                holder: Some(h), ..
+            }) if stale_hold(&h, &self.node) => {
+                tracing::warn!(
+                    disk = %disk.name,
+                    holder = %h,
+                    "a VM's disk is held by another node's hyperstor-vhost: preempting it (S26)"
+                );
+                self.attach(disk, true)
+            }
+            r => r.map_err(|e| *e.error),
+        }
+    }
+
+    fn attach_take(&self, disk: &Disk, take: &str) -> Result<VolumeBinding, VhostRefusal> {
         let volume = volume_id(disk);
-        let ok = self.vhost(serde_json::json!({
+        let mut args = serde_json::json!({
+            "volume": volume,
+            "serial": serial(disk),
+            "take": take,
+        });
+        if !self.node.is_empty() {
+            args["holder"] = self.node.clone().into();
+        }
+        let ok = self.vhost_call(serde_json::json!({
             "id": 1,
             "op": "attach",
-            "args": {
-                "volume": volume,
-                "serial": serial(disk),
-                "take": if preempt { "preempt" } else { "attach" },
-            },
+            "args": args,
         }))?;
-        let socket = ok["socket"]
-            .as_str()
-            .ok_or_else(|| ImageError::Io("hyperstor-vhost gave no socket".into()))?;
+        let socket = ok["socket"].as_str().ok_or_else(|| {
+            VhostRefusal::from(ImageError::Io("hyperstor-vhost gave no socket".into()))
+        })?;
         Ok(VolumeBinding::VhostUserBlk {
             socket: socket.to_string(),
             volume,
@@ -710,6 +813,33 @@ impl HyperstorDriver {
             "id": 1,
             "op": "detach",
             "args": { "volume": volume_id(disk) },
+        })) {
+            Ok(_) => Ok(()),
+            Err(ImageError::Io(m)) if m.contains("isn't attached") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The volumes attached to this node's `hyperstor-vhost`.
+    pub fn attached_volumes(&self) -> Result<Vec<String>, ImageError> {
+        let ok = self.vhost(serde_json::json!({"id": 1, "op": "list"}))?;
+        Ok(ok["disks"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|d| d["volume"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Detaches volume `volume` from this node; one not attached here is
+    /// fine.
+    pub fn detach_volume(&self, volume: &str) -> Result<(), ImageError> {
+        match self.vhost(serde_json::json!({
+            "id": 1,
+            "op": "detach",
+            "args": { "volume": volume },
         })) {
             Ok(_) => Ok(()),
             Err(ImageError::Io(m)) if m.contains("isn't attached") => Ok(()),
@@ -876,7 +1006,7 @@ impl StorageDriver for HyperstorDriver {
     }
 
     fn attach_for_vm(&self, disk: &Disk, preempt: bool) -> Result<VolumeBinding, ImageError> {
-        self.attach(disk, preempt)
+        self.attach_starting(disk, preempt)
     }
 
     fn unstage(&self, disk: &Disk) -> Result<(), ImageError> {
@@ -1145,9 +1275,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let seen = fake_vhost(tmp.path(), |r| match r["op"].as_str().unwrap() {
             "hello" => serde_json::json!({"id": 1, "ok": {"protocol": 1}}),
+            // Held by a tool: always.
             "attach" if r["args"]["volume"] == "00000000000000000000000000000bad" => {
-                serde_json::json!({"id": 1, "error": {"code": "held", "message": "attached by 1"}})
+                serde_json::json!({"id": 1, "error": {
+                    "code": "held", "message": "attached by 1", "holder": "hyperstorctl"}})
             }
+            // Held by another node's hyperstor-vhost, until preempted.
+            "attach"
+                if r["args"]["volume"] == "000000000000000000000000000000b0"
+                    && r["args"]["take"] == "attach" =>
+            {
+                serde_json::json!({"id": 1, "error": {
+                    "code": "held", "message": "attached by 2", "holder": "vhost:node-b"}})
+            }
+            "list" => serde_json::json!({"id": 1, "ok": {"disks": [
+                {"volume": "000000000000000000000000000000b0"},
+                {"volume": "ffff"},
+            ]}}),
             "attach" => serde_json::json!({"id": 1, "ok": {
                 "socket": format!("/run/hyperstor/vhost/{}.sock", r["args"]["volume"].as_str().unwrap()),
                 "size": 1}}),
@@ -1163,7 +1307,8 @@ mod tests {
             "ds".into(),
             None,
         )
-        .with_paths(tmp.path().to_path_buf(), PathBuf::from("/nonexistent"));
+        .with_paths(tmp.path().to_path_buf(), PathBuf::from("/nonexistent"))
+        .on_node("node-a");
         drv.vhost_answers().unwrap();
         let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
         let b = drv.stage(&d).unwrap();
@@ -1172,25 +1317,70 @@ mod tests {
             Some("/run/hyperstor/vhost/6f1c0d2e9a4b4c1d8e2f0123456789ab.sock")
         );
         drv.attach_for_vm(&d, true).unwrap();
-        // Held by another node: busy, not a failure of the disk.
+        // Held by a tool: busy, not a failure of the disk, even for a VM
+        // starting.
         let held = disk("00000000-0000-0000-0000-000000000bad");
         assert!(matches!(drv.stage(&held), Err(ImageError::Busy(_))));
+        assert!(matches!(
+            drv.attach_for_vm(&held, false),
+            Err(ImageError::Busy(_))
+        ));
+        // Held by another node's hyperstor-vhost: busy to stage, but a VM
+        // starting here preempts the stale hold (S26).
+        let stale = disk("00000000-0000-0000-0000-0000000000b0");
+        assert!(matches!(drv.stage(&stale), Err(ImageError::Busy(_))));
+        drv.attach_for_vm(&stale, false).unwrap();
         // Detaching one not attached here is fine.
         drv.unstage(&d).unwrap();
+        assert_eq!(
+            drv.attached_volumes().unwrap(),
+            ["000000000000000000000000000000b0", "ffff"]
+        );
         let reqs = seen.lock().unwrap();
         let takes: Vec<&str> = reqs
             .iter()
             .filter(|r| r["op"] == "attach")
             .map(|r| r["args"]["take"].as_str().unwrap())
             .collect();
-        assert_eq!(takes, ["attach", "preempt", "attach"]);
+        assert_eq!(
+            takes,
+            [
+                "attach", "preempt", "attach", "attach", "attach", "attach", "preempt"
+            ]
+        );
         assert_eq!(reqs[1]["args"]["serial"], "6f1c0d2e9a4b4c1d8e2f");
+        // Every attach names this node, for whoever finds the volume held.
+        assert!(
+            reqs.iter()
+                .filter(|r| r["op"] == "attach")
+                .all(|r| r["args"]["holder"] == "node-a")
+        );
         // Without hyperstor-vhost: not ready (the node can't run it now).
         let none = HyperstorDriver::new(vec![], "m:1".into(), 1, "ds".into(), None)
             .with_paths(tmp.path().join("absent"), PathBuf::from("/nonexistent"));
         assert!(matches!(none.stage(&d), Err(ImageError::NotReady(_))));
         // Without the identity (an agent): API calls aren't made.
         assert!(matches!(none.api_answers(), Err(ImageError::NotReady(_))));
+    }
+
+    /// Which holds are stale (S26): another node's hyperstor-vhost's for a
+    /// VM starting here; and, on the node holding them, those of disks
+    /// whose VM is placed elsewhere or nowhere.
+    #[test]
+    fn stale_holds_are_another_nodes_vhost_and_disks_placed_elsewhere() {
+        assert!(stale_hold("vhost:node-b", "node-a"));
+        assert!(!stale_hold("vhost:node-a", "node-a"), "this node's own");
+        assert!(!stale_hold("vhost", "node-a"), "unnamed");
+        assert!(!stale_hold("vhost:", "node-a"));
+        assert!(!stale_hold("hyperstorctl", "node-a"), "a tool's");
+        assert!(!stale_hold("", "node-a"));
+        let attached: Vec<String> = ["v1", "v2", "v3", "v4"].map(String::from).to_vec();
+        let disks = vec![
+            ("v1".to_string(), Some("node-a".to_string())),
+            ("v2".to_string(), Some("node-b".to_string())),
+            ("v3".to_string(), None),
+        ];
+        assert_eq!(stale_here(&attached, &disks, "node-a"), ["v2", "v3"]);
     }
 
     /// The partition code's reads and writes of a volume go to hyperstorctl

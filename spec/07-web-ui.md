@@ -1,0 +1,559 @@
+# Web UI
+
+Two crates cooperate to deliver the UI:
+
+- `crates/glidex-ui` (Rust bin) — serves the production build
+  (`bun run build` → `ui/dist`, or `GLIDEX_UI_DIR`) on
+  `GLIDEX_UI_LISTEN` over HTTPS (default every address, port 5173:
+  `https://<host>:5173`), with unknown paths
+  answered by `index.html` (client-side routes), and proxies `/api/*`
+  to the control plane, WebSocket upgrades included (see *Server*
+  below). `glidex-ui --dev` instead runs `bun run dev` inside
+  `crates/glidex-ui/ui/` (Vite HMR). No rendering happens here.
+- `crates/glidex-ui/ui` — the actual Vite + React + TypeScript app.
+
+The installer builds the UI, copies `dist` to
+`/usr/local/share/glidex/ui` and runs `glidex-ui.service` as the
+`glidex-ui` user (see [05-installer.md](05-installer.md)).
+
+## Server
+
+`glidex-ui` environment (spec/11-security.md §5.6):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GLIDEX_UI_DIR` | `crates/glidex-ui/ui/dist` | The built UI. |
+| `GLIDEX_UI_LISTEN` | `0.0.0.0:5173,[::]:5173` | Listen addresses, comma-separated. `[::]` is IPv6-only and skipped when the host has no IPv6. |
+| `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port; an address that appears after startup counts too) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
+| `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (11-security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
+| `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
+| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [21-tailscale-tls.md](21-tailscale-tls.md). |
+| `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
+| `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |
+| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, 11-security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
+
+Invariant: the upstream and its trusted certificates are chosen **per
+request**, not at startup. Why: under systemd the UI starts in the same
+second as the control plane, which creates `ui.sock` and its certificate
+only once it is ready (generating a certificate takes about half a
+second); choosing at startup sent the UI to TCP for good, without the
+certificate it should trust. A trusted file is re-read when its
+modification time or size changes.
+
+On every proxied request it replaces (never appends to) `X-Forwarded-For`
+(the TCP peer), `X-Forwarded-Proto` (`https`, or `http` with TLS `off`) and
+`X-Forwarded-Host` (the request's `Host`), and drops `Forwarded`. The
+control plane trusts these only from the `glidex-ui` peer on `ui.sock`;
+over TCP it goes by the browser's session cookie alone. `Origin`,
+`Cookie`, `X-Glidex-CSRF` and `Authorization` pass through untouched.
+
+Every response carries `Content-Security-Policy: default-src 'self';
+script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'
+data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';
+base-uri 'none'; form-action 'self'` (`'wasm-unsafe-eval'`: the
+console's ghostty-web terminal is WebAssembly; inline styles: React and
+the terminals set `style` attributes),
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+`X-Frame-Options: DENY`, and with a configured certificate (not a
+self-signed one, 11-security.md §5.1.1) `Strict-Transport-Security:
+max-age=31536000`; on connections served the Tailscale certificate,
+`max-age=86400`. A plain-HTTP request on the HTTPS port gets `308` to
+the `https://` URL.
+
+## Authentication flow
+
+1. `SessionProvider` (`session.tsx`) calls `GET /auth/methods` and
+   `GET /auth/whoami`. A `401` shows the login page instead of the app.
+2. The login page offers what `methods` says: a PAM form
+   (`POST /auth/login {method: "pam", username, password}`) and/or
+   **Sign in with SSO** (`location = /api/auth/oidc/start?return_to=<path>`;
+   the control plane redirects back with the session cookie). A page
+   opened as `/?next=/d/…` (a directory's authorize request that needed
+   a login, spec/19-tenancy.md D54) goes back to `next` once signed in.
+3. The `gx_session` cookie is `HttpOnly; SameSite=Strict`; the page never
+   sees it. The client keeps the session's `csrf` value (from `whoami` or
+   the login response) and sends it as `X-Glidex-CSRF` on every non-GET.
+4. `401 unauthenticated` from any call returns to the login page.
+   `401 reauth_required` (step-up, e.g. saving a policy) opens a
+   re-login dialog (PAM, or SSO with `reauth=1`) and retries the request
+   once. `403` messages are shown where the action was attempted.
+5. **Log out** in the header: `POST /auth/logout`.
+5a. **Accounts** (spec/19-tenancy.md D71). The header's name opens a menu
+   with the browser's accounts from `GET /auth/accounts`. It offers:
+   - switching to a signed-in account (`POST /auth/accounts/switch`,
+     then a reload);
+   - signing in again to a signed-out directory;
+   - **Add another account** (`POST /auth/accounts/add`, then the login
+     page);
+   - **Sign out of all**.
+
+   The Account page lists the same accounts, each with **Remove**. The
+   login page lists them as well, so a browser with no active session
+   can switch back.
+6. The header's project selector lists `GET /projects`; the choice is
+   saved with `PATCH /users/me {"default_project": id}`. Lists of VMs,
+   disks and credentials pass `?project=`, creates pass `project`, the
+   VM form only offers networks the project may use, and the pages
+   remount when the project changes.
+7. Buttons and pages the caller can't use are hidden after
+   `POST /authz/check {checks: [{action, resource: {type, id}}]}`
+   (e.g. `createVm` on the Project; `createProject`, `listUsers`,
+   `manageSystemBindings`, `readPolicy`, `writePolicy`, `readAudit` on
+   `{type: "Host"}`). The server still checks every request.
+
+## Stack
+
+- **Vite 6** dev server on `https://localhost:5173` (`server.https`
+  with the UI's self-signed certificate, which `glidex-ui --dev`
+  generates if needed and passes to Vite).
+- **React 19** with **react-router-dom 7** for client-side routing.
+- **TypeScript 5** (strict).
+- **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
+- **ghostty-web** (default) and **@xterm/xterm + @xterm/addon-fit** for
+  the VM console page, each loaded only when chosen.
+- **bun** is the package manager (the lockfile is `bun.lock`).
+
+## Dev-server proxy
+
+`ui/vite.config.ts` proxies everything under `/api` to the control
+plane on `https://localhost:8841` (or `GLIDEX_API_URL`), stripping the
+`/api` prefix, and verifies it against the control plane's published
+certificate (`tls.crt` in its run directory) or `GLIDEX_API_CA_CERT` —
+never `secure: false`. WebSocket upgrades are forwarded (`ws: true`)
+so `/api/vms/:id/console/ws` resolves to
+`wss://localhost:8841/vms/:id/console/ws`.
+
+Consequence: the frontend never has to know the server URL.
+Everything is same-origin from the browser's perspective.
+
+## Source layout
+
+The pieces hyperstor's management UI shares (hyperstor D97) live in
+`crates/glidex-ui/kit`, the `@glidex/ui-kit` package: `Modal`,
+`TokenReveal`, the PAM form and SSO buttons, the step-up dialog, and the
+session layer (whoami, login page, CSRF value, the 401 `reauth_required`
+→ log in again → retry flow). They take an `AuthApi` adapter, not
+`api.ts` and `types.ts`. The UI lists it as a bun workspace
+(`"workspaces": ["../kit"]`) and Tailwind's `content` includes it; its
+README has the interface. The files below with the same names wrap the
+kit's in glidex's types and text; passkeys, accounts, roles and the
+capability checks stay in glidex.
+
+```
+ui/src/
+├── App.tsx                 # SessionProvider + <Routes> for the pages
+├── main.tsx                # ReactDOM.createRoot entrypoint
+├── api.ts                  # Typed fetch wrappers: cookies, CSRF, 401 handling
+├── session.tsx             # whoami, project selection, host capabilities, useCan()
+├── live.tsx                # LiveProvider: one EventSource on /api/watch; useLive(), useLiveRefresh()
+├── hooks.ts                # useDirectory(): users and teams when listable
+├── types.ts                # API types and helpers
+├── index.css               # Tailwind entry
+├── components/
+│   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
+│   ├── Footer.tsx          # Build info: version tag (if any), git branch, commit
+│   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
+│   ├── ReauthDialog.tsx    # Step-up re-login, then retry (the kit's, with passkeys)
+│   ├── AddBindingForm.tsx  # Role + user/team picker for role links
+│   ├── ui.tsx              # Shared bits: cards, badges, binding table
+│   ├── Loading.tsx
+│   ├── Modal.tsx           # Re-exports the kit's
+│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, firmware image, boot disk source, credential picker, restart behaviour, start now)
+│   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
+│   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
+│   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
+└── pages/
+    ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
+    ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
+    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, Reconnect after it closes
+    ├── consoleTerminal.ts  # The two terminals (ghostty-web, xterm.js) behind one interface
+    ├── Credentials.tsx     # List / add / edit / delete guest logins
+    ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
+    ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
+    ├── Networking.tsx      # OVS status, bridges and uplinks, networks (09-networking.md §12)
+    ├── Login.tsx           # PAM form and/or Sign in with SSO
+    ├── Projects.tsx        # Projects with usage / quotas; create (system-admin)
+    ├── ProjectDetail.tsx   # Members, quotas, project networks, shares
+    ├── Access.tsx          # Users, teams, system roles (admins)
+    ├── Tokens.tsx          # Access tokens: create (secret shown once), revoke
+    ├── Policies.tsx        # Cedar policies; site-policy editor, validate, simulate, history
+    ├── Audit.tsx           # Audit log with project / user / since filters
+    └── NotFound.tsx
+```
+
+## Routes
+
+| Path | Component |
+|---|---|
+| `/` | `Dashboard` |
+| `/vms/:id` | `VmDetail` |
+| `/vms/:id/console` | `VmConsole` |
+| `/credentials` | `Credentials` |
+| `/images` | `Images` |
+| `/disks` | `Disks` |
+| `/datastores` | `Datastores` (shown with `readDatastore`) |
+| `/projects` | `Projects` |
+| `/projects/:id` | `ProjectDetail` |
+| `/access` | `Access` (shown with `listUsers`, `listTeams` or `readSystemBindings`) |
+| `/tokens` | `Tokens` |
+| `/policies` | `Policies` (shown with `readPolicy`) |
+| `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
+| `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
+| `/tenants` | `Tenants` (shown with `listTenants` or `createTenant`, or to members of a tenant; spec/19-tenancy.md §14) |
+| `/tenants/:id` | `TenantDetail`: rename, suspend, delete, members, tenant roles |
+| `/admissions` | `Admissions` (shown with `listAdmissions`): tenants admitted here and their caps |
+| `/connectors` | `Connectors` (shown with `listConnectors`): login connectors, write-only secrets, `test` |
+| `/cluster` | `Cluster` (shown with `readCluster`; spec/16-clustering-ui.md §6) |
+| `/hosts` | `Hosts` (shown with `listNodes`): a standalone host's page, else the Cluster page's node list (spec/28-host-page.md W1) |
+| `/hosts/:id` | `HostDetail` (spec/28-host-page.md W1, 16-clustering-ui.md §5.2); a **Topology** card (`readHostTopology` on the host): NUMA nodes with CPUs, memory, hugepages and devices with readiness, and the warnings (22-host-topology.md §4.3); **Networking**: Open vSwitch, bridges and uplinks of that node (`X-Glidex-Target-Node`, W2) |
+| `/cluster/nodes/:id` | Redirects to `/hosts/:id` |
+| `/device` | `Device`: approve or deny a directory's device login (`?directory=…&code=…`, spec/19-tenancy.md D54) |
+| `/directories` | `Directories` (shown with `listDirectories`, menu **Hosting**): the directories this host serves; **New directory** shows the first administrator's invitation link once; delete an unused one (spec/19-tenancy.md D59) |
+| `/login/:directory` | That directory's login page while signed out (`/auth/methods?directory=…`); signed in, `/` (D61) |
+| `/cluster/imports/:plan` | `ImportPlan` (spec/16-clustering-ui.md §7.4) |
+| `*` | `NotFound` |
+
+Without a session every path shows the login page, with a sign-in
+button per OIDC connector (`/api/auth/c/{id}/start`).
+
+## API client
+
+Cluster behaviour (spec/16-clustering-ui.md §3.3): an idempotent request
+answered `503 leader_changed` is sent again after 250 ms, 500 ms and
+1 s. `503 cluster_unavailable` raises the *no leader* banner
+(`ClusterBanner`, from the `glidex:cluster` window event); a read is
+then retried with `X-Glidex-Consistency: local` and the banner says
+what is shown may be out of date. A read that went through the cluster
+(it carries `X-Glidex-Revision`) or a successful write clears it;
+host-local reads and capability queries, which answer without a leader,
+don't.
+
+`ui/src/api.ts` sends every call through one `request()` helper:
+`credentials: "same-origin"`, `X-Glidex-CSRF` on non-GET requests, and
+the 401 handling above. Error bodies become `ApiRequestError`s
+(`status`, `code`, `details`, message `"<error>: <message>"`); non-JSON
+errors (a proxy's 502, a 421) are wrapped too. The base URL is
+hard-coded `/api` — the Vite proxy or glidex-ui forwards it.
+
+## VM state display
+
+VMs have a desired state and an observed one
+([12-reconciliation.md §7.4](12-reconciliation.md#74-defaults-and-api-projection)).
+`types.ts` mirrors that: `VmState` is `created | starting | running |
+paused | stopping | stopped | failed | unknown`, `PowerState` is
+`running | paused | stopped`, and `VmResponse` carries `desired_state`,
+`generation`, `observed_generation`, `restart_required`, `conditions`
+and `last_exit`.
+
+- **`vmActivity(vm)`**: what the controller is still doing, or `null`
+  once converged (`settled(vm)`): `Deleting` (`deleting`), `Starting`,
+  `Stopping`, `Pausing` or `Resuming` while the VM isn't where
+  `desired_state` says (`created` counts as `stopped`), `Applying
+  changes` while `observed_generation < generation`, and `Reconciling`
+  while `Ready` isn't true. `VmStateBadge` shows the state pill
+  (`<state> → <desired>` while moving) with a spinner and that text;
+  VmDetail adds an "In progress" box, and `notReadyReason(vm)` (`Ready`
+  reason and message) is shown under it. VmDetail also shows the restart
+  policies and the last exit (`describeExit`).
+- **Refreshing.** Dashboard and VmDetail re-fetch when a VM changes on
+  the live stream (below). Without the stream they re-fetch every 2 s
+  while any VM shown is not settled, and stop once everything is. A lifecycle call
+  waits for the controller (`?wait`), so the page also re-fetches 0.5 s
+  after sending it to show the progress meanwhile. A VM that disappears
+  while its page is open (deleted) says so instead of an error.
+- **Actions** (`VmActions`): Start is offered for `created`, `stopped`,
+  `paused`, and `failed` unless the VM is already meant to run; a VM
+  being deleted shows no actions. Delete asks for confirmation (a root
+  disk created with the VM goes with it). Stop is
+  offered while running or paused **or** whenever the desired state is
+  not `stopped`, so a VM stuck starting or crash-looping can be stopped.
+  `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
+  plus 20 s, at most 300) and delete; a failed reconcile comes back as
+  an `ApiRequestError` like any other.
+- **VmDetail** also shows "Configuration changes take effect at the next
+  start." while `restart_required`, and an **Events** list (newest
+  first, warnings highlighted) from `GET /vms/{id}/events`, refreshed
+  whenever the VM's state or observed generation changes.
+
+## Create VM form
+
+Besides the config, `CreateVmForm` sets the VM's policies
+([12-reconciliation.md §7.4](12-reconciliation.md#74-defaults-and-api-projection)):
+**If It Crashes** (`restart_policy`: restart with backoff, the default,
+or leave it stopped), **After a Host Reboot** (`on_host_boot`: start it
+again if it was running, the default, or leave it stopped), and **Start
+it now** (`power: "running"`; unchecked, the VM is created stopped).
+`onSubmit` returns a promise: a refused create keeps the form open,
+with what was typed and the error under it.
+
+For **Direct kernel boot** the form shares the boot disk block with
+firmware boot and replaces the firmware picker with a kernel choice
+(kernel image or host files) and *Follow the guest's kernel*; the VM
+detail page's `VmKernel` shows and changes the kernel
+([23-kernel-boot.md §7](23-kernel-boot.md#7-clients)).
+
+## Live stream
+
+`LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one
+`EventSource` on `/api/watch?kinds=…&project=<selected project>`
+([06-rest-api.md](06-rest-api.md#live-stream-get-watch)) for the whole app and
+keeps the latest copy of every VM, disk, image and network the user can
+see (`useLive()`), and the cluster kinds: nodes, import plans, the
+cluster summary and the policy marker (spec/16-clustering-ui.md §3.7). A
+change of the policy marker re-runs the session's capability checks
+(`refreshCapabilities`) and every `useAllowed` query. It is live once
+the snapshot has arrived (`synced`).
+When the server ends the stream (`expired`) or it errors, EventSource
+reconnects and the next snapshot replaces the maps.
+`useLiveRefresh(kinds, refresh)` re-runs a page's refresh (debounced
+300 ms) when an object of those kinds changes, and returns whether the
+stream is live. Dashboard and VmDetail follow `vm`, Disks `disk` and
+`vm`, Images `image`, `disk` and `vm` (firmware users), Networking `network`; each polls as
+before only while the stream isn't live (no EventSource, an old control
+plane, a buffering proxy, `503 too_many_watchers`).
+
+## Reconciliation activity
+
+Writes are carried out by the controllers after the API answers
+([12-reconciliation.md](12-reconciliation.md) D5), so the header's
+`Activity` shows whether any are still at work in the selected project:
+"Up to date", or a spinner with "N in progress" that opens a list (kind,
+name, what, linked to the object's page). It is built with `vmActivity`,
+`diskActivity` (`Waiting for its image`, `Creating`, `Resizing`,
+`Busy (op)`, `Deleting`, or a resize waiting for its VM to stop),
+`imageActivity` (deleting, downloading, verifying) and `networkActivity`
+(`Deleting`, or `Deleting (<Ready reason>)` such as
+`Deleting (NetdUnavailable)`). While the live stream is open it is
+computed from the stream's maps. Otherwise it polls `GET /vms`,
+`/disks`, `/images` and `/networks` every 3 s while something is in
+progress and every 15 s otherwise; a disk resize that only waits for
+its VM to stop, and a network deletion waiting on something (netd, say),
+count as idle for that. `api.ts` dispatches `glidex:changed` on
+`window` after every successful write to `/vms`, `/disks`, `/images` or
+`/networks`, and the polling indicator looks again half a second later.
+
+## Access-control pages
+
+- **Projects** — usage against each quota (`null` = unlimited); a
+  system-admin creates projects (optionally with an owner). The project
+  page shows its id (share offers name projects by id), quotas (editable
+  with `updateProject`), members (`GET/POST/DELETE /projects/{id}/bindings`,
+  roles viewer / operator / editor / owner = `role.*`; principals picked
+  from the user and team lists when the caller may list them, else typed
+  as ids; the table names each principal from the link's `principal_name`
+  when the lists can't be read), project networks (delete, offer to a project id, unshare /
+  withdraw; "Create a project network" links to the Networking page with
+  the project chosen, `/networking?new=<id>`) and networks shared with the
+  project (`GET /projects/{id}/network-shares`, accept, leave).
+- **Access** — users (identities, default project, disable / enable),
+  teams (create, delete, add / remove manual members; `pam` / `oidc`
+  memberships are shown but managed by the login sync), and system roles
+  (`/system/bindings`: auditor, image-admin, net-admin, system-admin,
+  `grant.host-paths`). In a cluster the table has a Scope column (the
+  whole cluster, or a host linking to its node page) and the form a Scope
+  select; on a host only auditor, net-admin and host paths are offered
+  (14-clustering.md §12.2). A node's page has a **Roles on this host** card
+  with the bindings on that host alone (`?node=`), to add and remove.
+- **Tokens** — the caller's tokens and the service accounts it may
+  manage. Create (name, expiry, optional narrowing roles; service accounts
+  of the selected project with `manageServiceTokens`) shows the secret
+  once, in a copy box with a warning; revoke.
+- **Policies** — every loaded policy with its source badge (base, role,
+  link, site, file) plus disabled site policies; text view. With
+  `writePolicy`, site policies open in a monospace editor: **Validate**
+  (`POST /authz/validate`), **Simulate** (`POST /authz/simulate` with the
+  draft as the candidate change and requests built from principal,
+  action and resource; current vs. candidate decision and determining
+  policies), **Save** (`PUT /authz/policies/{id}` with the current
+  version: `409 conflict`, `409 would_lock_out` and `422` validator
+  messages are shown), **Delete** (`?version=`), and **History**
+  (`/versions`, loadable into the editor).
+- **Usage** ([13-metering.md §12](13-metering.md#12-cli-and-ui)) —
+  Usage, Bandwidth and Disk I/O tabs over one billing month (`month=`).
+  The filters sit in one row: month, project (all projects for host
+  readers), and group by. Each tab is a table (totals in presentation
+  units; average, 30-second peak, p95 and billable p95), with a
+  `Download CSV` link to the same view's export.
+- **VM detail, Usage** (`components/VmUsage.tsx`) — tiles for the
+  current rates (`GET /vms/{id}/stats`, polled every 30 s), and the
+  last 24 h of network Mbps and disk IOPS with a dashed p95 line. Disk
+  latency gets its own small chart, never a second axis, or a "not
+  available" note on Cloud Hypervisor.
+- **Charts** (`components/TimeChart.tsx`) — plain SVG, no chart
+  library:
+  - one y axis and 2 px lines in categorical slots 1–2 of the
+    validated reference palette (blue, orange);
+  - a legend plus end labels, with text in text colours;
+  - breaks where the VM wasn't running;
+  - a crosshair tooltip, and a table view toggle.
+- **Audit** — `GET /audit` newest first, filtered by project, user and
+  since; a row expands to request id, determining policies and details.
+
+## Credentials page
+
+`pages/Credentials.tsx` lists `CredentialInfo` rows and opens `Modal`
+forms to add or edit. Passwords use `type="password"` inputs with a
+confirmation field and are sent once, in the create/update request; the
+UI never receives a hash, only `has_password`. SSH keys are edited as a
+textarea, one key per line. `CreateVmForm` shows a credential `<select>`
+only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
+
+## Images and disks pages
+
+`pages/Images.tsx` shows two catalogs, each entry with a Pull button:
+cloud images (`GET /images/catalog`) and UEFI firmware
+(`GET /images/firmware-catalog`, [10-images.md](10-images.md#41-firmware-catalog);
+an entry copied from a host package says Import (Imported once done), a
+Debian package entry says it is downloaded,
+and is disabled with the package to install when it isn't). Below, downloaded images in two
+tables: cloud images (with their linked disks) and firmware (with its
+hypervisor and the VMs booting through it; Delete is disabled while any
+do). Each has a progress bar while downloading; an image being deleted
+shows "Deleting…". It follows the live stream, or without
+it polls `GET /images` every 1.5 s while anything is downloading,
+verifying or being deleted. Delete doesn't wait (`204`, or `202` while
+the controller finishes); the page shows the progress.
+A failed image has **Retry** (`POST /images/{id}/retry`); the page
+looks again a second later, when the controller has restarted it.
+"Download from URL" opens a form for `{url, sha256?, name?}`, with a
+type (cloud image, or UEFI firmware for a chosen hypervisor: `kind:
+"firmware"`, `hypervisor`); QEMU firmware also takes an optional variable
+store URL and sha256 (`vars_url`, `vars_sha256`). The firmware table says
+whether a QEMU image has a variable store or is a single file.
+`pages/Networking.tsx` creates both kinds of network with one form.
+"Network for" picks a host network (with `createNetwork`) or one of the
+projects whose networks the caller manages (`createProjectNetwork`,
+checked per project). A project network offers NAT or isolated mode and
+tap or vhost-user ports, without bridge or VLAN, and is created with
+`POST /projects/{id}/networks`. For host admins the network table has a
+Project column (`host` for host networks); without host rights it lists
+the networks the selected project can use, with a Scope column
+(`project`, `shared by <project>` or `host`). Delete shows only for
+networks the caller may delete. The OVS status (`readOvsStatus`) and `/ovs/bridges` are host
+details (`host.read`): when they are refused, the page hides the status
+panel and still lists the networks, and a project owner without host
+rights creates and deletes its project's networks; netd's readiness is
+then checked by the server.
+`pages/Networking.tsx`'s Status column shows a network's phase, or
+"deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
+unreachable, a VM still on it); like image deletes, network deletes
+don't wait (`204` or `202`). Without the live stream the page polls
+every 3 s while a network is being deleted.
+`pages/Disks.tsx` lists disks with Resize / Extend root / Delete actions
+(Delete is disabled while the disk is attached), and clicking a name shows
+its partition table (`GET /disks/{id}`). A refused shrink shows
+`details.min_size_bytes`. `CreateVmForm`'s firmware-boot "Boot Disk"
+select offers a new disk from a ready image (with a root size), an
+unattached existing disk, or a file path. It defaults to the image option
+when one is ready. Its "UEFI Firmware" select lists the ready firmware
+images built for the chosen hypervisor, newest first (preselected, the
+server's default too), and follows a hypervisor change; with none it
+names the catalog entry to pull and the form won't submit. It sends
+`firmware` (the image id), never a host `firmware_path`. `VmDetail`
+shows the VM's firmware image by name (`GET /images/{id}`), and the
+Disks page's create form never offers a firmware image as contents.
+`pages/Datastores.tsx` (spec/24-storage.md §13) lists the datastores:
+- `local` is marked built in; the default for disks is marked as such;
+- for each, how many nodes reach it, the most free space on one, and
+  its disks;
+- clicking a name shows its paths and each node's row (reachable with
+  free/total, else its reason and message).
+
+With `manageDatastore` the page also offers:
+- **Add Datastore:** a kind (*Directory on each node*, *Shared
+  filesystem*, *LVM-thin on each node*), name, path (default
+  `/srv/glidex/<name>`) or for LVM the volume group and thin pool, the
+  nodes it is on and per-node paths (volume groups) in a cluster, the
+  default flag, and overcommit;
+- **Make default** (on `local`: clear the other's flag);
+- overcommit on or off;
+- **Delete**, disabled while disks are on it.
+
+It follows the `datastore` watch kind. On the VM page,
+`components/PlaceVm.tsx` offers "Place on another node" for a stopped VM
+("Place on a live node" for a Lost one) in a cluster to those with
+`placeVm`: a ready node, or "where there is room" (spec/24-storage.md §9). Once there is more than `local`,
+the Disks page shows a Datastore column, and its create form a Datastore
+select with the default chosen. Each disk then has a **Move** form (another
+datastore; for a linked disk, a Flatten box), disabled with Resize while
+the disk moves; its status shows "· moving".
+
+## Footer
+
+`components/Footer.tsx`, under every signed-in page, shows the build the
+UI came from: the version tag on the built commit (if any), the git
+branch and the commit (marked "(modified)" when built from a tree with
+uncommitted changes). `vite.config.ts` reads them from git at build (or
+dev-server start) time into `__GLIDEX_BUILD__`; `GLIDEX_BUILD_TAG`,
+`GLIDEX_BUILD_BRANCH` and `GLIDEX_BUILD_COMMIT` override them for builds
+without a checkout (CI also supplies `GITHUB_REF_NAME`). A detached HEAD
+shows no branch.
+
+## `VmConsole` contract
+
+The console page is the non-obvious component. It:
+
+1. Opens the chosen terminal (`consoleTerminal.ts`) in a ref'd container
+   and fits it. **ghostty-web** (Ghostty's terminal engine as
+   WebAssembly) is the default, **xterm.js** the alternative; the
+   choice is a select on the page, kept in `localStorage`
+   (`glidex.console.terminal`). Each library is loaded on demand;
+   ghostty-web's `.wasm` is fetched from `/assets` (its default `data:`
+   URL isn't allowed by `connect-src`). Both get the same options
+   (`convertEol`, font, theme) and Ctrl+Shift+C / Ctrl+Shift+V copy and
+   paste, so Ctrl+C stays `^C` for the guest.
+2. Gets a single-use ticket (`CreateConsoleTicket`, valid 30 s), then
+   opens `ws(s)://<location.host>/api/vms/:id/console/ws?ticket=<ticket>`
+   with `binaryType = "arraybuffer"`. A failed ticket request is shown
+   as the page's error.
+3. Maps:
+   - **WS → term**: `message` event → `term.write(Uint8Array)` for
+     binary frames, `term.write(string)` for text frames (used by
+     the server to surface a connect failure).
+   - **term → WS**: `term.onData(d => ws.send(TextEncoder.encode(d)))`.
+4. Tracks a `Status` enum (`connecting | connected | closed | error`)
+   for the status pill shown in the page header; on `closed` or `error`
+   a **Reconnect** button runs steps 2-3 again with a new ticket. When
+   the VM's node stopped reporting, the error says so.
+5. Fits the terminal on window resize. The size stays in the browser:
+   it isn't sent to the server ([02-console.md](02-console.md) "Known gaps").
+6. Exposes the terminal's text as `screenText()` on the container, for
+   the e2e suite (ghostty-web draws on a canvas).
+7. On unmount, disposes the input handler, detaches the socket's
+   handlers and closes it, and disposes the terminal. xterm 5.5's
+   `open()` queues a timer that reads the renderer, so xterm.js is taken
+   off the page at once and disposed on the next tick; disposing before
+   that timer runs (React StrictMode mounts twice in dev) throws
+   "reading 'dimensions'". `e2e/tests/console.spec.ts` covers this.
+
+See [02-console.md](02-console.md) for how the server side of that
+WebSocket is implemented.
+
+## End-to-end tests
+
+`crates/glidex-ui/e2e/` is a Playwright suite that drives this UI against
+a scratch control plane (authentication on), for both hypervisors: login
+and session handling, CSRF, console tickets, glidex-ui's Host check and
+headers, the access-control pages, the reconciliation activity indicator, the
+create form, a full VM lifecycle
+on a real guest (console login, pause/resume, Shut down) and the console
+page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
+
+## State management
+
+There is none beyond React's built-in hooks. Lists are fetched on
+mount and refreshed after mutations by re-calling the list
+endpoint, and again when the live stream reports a change (above);
+without the stream, pages and the activity indicator poll while
+something converges. The stream's maps (`LiveProvider`) are the only
+shared state: no global store, no query cache. If that becomes painful
+(polling, optimistic updates, cross-component invalidation) a
+lightweight option like TanStack Query is the natural upgrade.
+
+## Styling conventions
+
+Tailwind utility classes inline in JSX. No CSS-in-JS, no CSS
+modules. Page-level containers follow a common pattern
+(`max-w-* mx-auto p-* bg-white rounded-xl shadow-md border`) but
+there's no reusable "page shell" component — each page wires its
+own layout.

@@ -1,6 +1,6 @@
-//! The storage family on its RPCs and REST twins (spec/grpc.md §9.1,
+//! The storage family on its RPCs and REST twins (spec/18-grpc.md §9.1,
 //! G2): proto-shaped answers, the old request shape still read, and disk
-//! names unique per tenant (spec/tenancy.md D24).
+//! names unique per tenant (spec/19-tenancy.md D24).
 
 mod common;
 
@@ -308,7 +308,7 @@ async fn rest_answers_in_the_proto_shape_and_refuses_the_old_one() {
         .unwrap()
         .id;
 
-    // An old enum value is refused (spec/grpc.md G-D12).
+    // An old enum value is refused (spec/18-grpc.md G-D12).
     let (st, v) = h
         .rest(
             "POST",

@@ -1,4 +1,4 @@
-//! Raft over the store (glidex spec/clustering.md §6.2): the log, the state
+//! Raft over the store (glidex spec/14-clustering.md §6.2): the log, the state
 //! machine, the transport and a running member.
 
 // openraft's traits take its StorageError and RPCError, which are large.

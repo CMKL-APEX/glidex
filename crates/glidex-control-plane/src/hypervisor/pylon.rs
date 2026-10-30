@@ -26,18 +26,25 @@ pub fn pylon_shm_path(api_socket: &str) -> String {
     }
 }
 
+/// Derive a deterministic 64-bit VM ID for Pylon from a VM UUID string.
+pub fn pylon_vm_id_from_uuid(uuid_str: &str) -> u64 {
+    uuid::Uuid::parse_str(uuid_str)
+        .ok()
+        .map(|u| {
+            let (high, low) = u.as_u64_pair();
+            high ^ low
+        })
+        .filter(|&id| id != 0)
+        .unwrap_or(1)
+}
+
 /// Derive a deterministic 64-bit VM ID for Pylon from the VM directory or UUID.
 pub fn pylon_vm_id(api_socket: &str) -> u64 {
     let p = Path::new(api_socket);
     p.parent()
         .and_then(|d| d.file_name())
         .and_then(|s| s.to_str())
-        .and_then(|s| uuid::Uuid::parse_str(s).ok())
-        .map(|u| {
-            let (high, low) = u.as_u64_pair();
-            high ^ low
-        })
-        .filter(|&id| id != 0)
+        .map(pylon_vm_id_from_uuid)
         .unwrap_or(1)
 }
 

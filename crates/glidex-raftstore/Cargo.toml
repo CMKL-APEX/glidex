@@ -1,6 +1,6 @@
 [package]
 name = "glidex-raftstore"
-description = "A replicated ReDB store on openraft: write sets recorded from transactions, applied as bytes on every member (spec/clustering.md §6)"
+description = "A replicated ReDB store on openraft: write sets recorded from transactions, applied as bytes on every member (spec/14-clustering.md §6)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

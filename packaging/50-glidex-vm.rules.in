@@ -1,8 +1,8 @@
 // Rendered by glidex-install (@USER@ is filled in).
 // glidex: the control plane may start, stop and kill its own VM units
 // (glidex-vm@<uuid>.service) and kernel extraction jobs
-// (glidex-vm@extract-<image uuid>.service, spec/kernel-boot.md §10.2),
-// and nothing else (spec/reconciliation.md §13.2).
+// (glidex-vm@extract-<image uuid>.service, spec/23-kernel-boot.md §10.2),
+// and nothing else (spec/12-reconciliation.md §13.2).
 polkit.addRule(function (action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
       subject.user == "@USER@" &&

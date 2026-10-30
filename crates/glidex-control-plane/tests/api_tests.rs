@@ -31,7 +31,7 @@ async fn body_to_json(body: Body) -> Value {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
-/// proto3 JSON shape (spec/grpc.md §9.1).
+/// proto3 JSON shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -152,7 +152,7 @@ async fn test_create_vm_success() {
 
 /// A kernel VM that names no arguments gets the default for the
 /// architecture it runs on: its pinned node's, else this host's
-/// (spec/kernel-boot.md K5). aarch64's serial port is the PL011,
+/// (spec/23-kernel-boot.md K5). aarch64's serial port is the PL011,
 /// `ttyAMA0`.
 #[tokio::test]
 async fn kernel_args_default_to_the_nodes_serial_console() {
@@ -643,7 +643,7 @@ async fn send(
 }
 
 /// Stopping a stopped VM writes nothing: the spec already says stopped
-/// (spec/reconciliation.md §9.2).
+/// (spec/12-reconciliation.md §9.2).
 #[tokio::test]
 async fn test_stop_of_a_stopped_vm_is_a_no_op() {
     let (app, _temp_dir) = create_test_app();
@@ -881,7 +881,7 @@ async fn test_get_console_info_vm_not_running() {
     assert_eq!(body["vm_id"], vm_id);
     assert_eq!(body["available"], false);
     // The console is reached through the API; the private socket and log
-    // paths are not exposed (spec/security.md §9).
+    // paths are not exposed (spec/11-security.md §9).
     assert_eq!(body["websocket"], format!("/vms/{}/console/ws", vm_id));
     assert!(body.get("console_socket_path").is_none());
 }
@@ -1145,7 +1145,7 @@ async fn next_sse(body: &mut Body, buf: &mut String) -> (String, Value) {
     }
 }
 
-/// `GET /watch` (spec/reconciliation.md §12.6): a snapshot, `synced`,
+/// `GET /watch` (spec/12-reconciliation.md §12.6): a snapshot, `synced`,
 /// then changes as they happen.
 #[tokio::test]
 async fn test_watch_streams_changes() {
@@ -1216,7 +1216,7 @@ async fn test_watch_streams_changes() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// The cluster kinds of `GET /watch` (spec/clustering-ui.md §3.7): nodes and
+/// The cluster kinds of `GET /watch` (spec/16-clustering-ui.md §3.7): nodes and
 /// the policy marker come on request; a standalone host has no cluster
 /// summary or import plans to send.
 #[tokio::test]
@@ -1295,7 +1295,7 @@ async fn next_frame(body: &mut Body, buf: &mut Vec<u8>) -> Option<Value> {
     }
 }
 
-/// `glidex.watch.v1.WatchService.Watch` (spec/grpc.md G4): the same events
+/// `glidex.watch.v1.WatchService.Watch` (spec/18-grpc.md G4): the same events
 /// as `GET /watch`, as a server stream of `WatchResponse` messages.
 #[tokio::test]
 async fn test_watch_over_rpc_streams_the_same_events() {
@@ -1352,7 +1352,7 @@ async fn test_watch_over_rpc_streams_the_same_events() {
     assert!(e.get("vm").is_none(), "no object on delete: {e}");
 }
 
-// ---- nodes (spec/clustering.md C1) ------------------------------------------
+// ---- nodes (spec/14-clustering.md C1) ------------------------------------------
 
 async fn call(
     app: &axum::Router,
@@ -1419,7 +1419,7 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
     assert_eq!(vm_of(&vm)["node"], "local");
 }
 
-/// Kernel boot admission (spec/kernel-boot.md K0): one boot mode, an
+/// Kernel boot admission (spec/23-kernel-boot.md K0): one boot mode, an
 /// initrd only with a kernel, `kernel_args` limits at create and PATCH.
 #[tokio::test]
 async fn test_kernel_boot_admission() {

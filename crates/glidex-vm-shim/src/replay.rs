@@ -1,4 +1,4 @@
-//! What a console client is replayed (spec console.md "Log files").
+//! What a console client is replayed (spec 02-console.md "Log files").
 //!
 //! The log holds the guest's queries to its terminal: systemd probes a
 //! serial console's size (`CSI 6n`) and name (`DCS + q`) at each getty

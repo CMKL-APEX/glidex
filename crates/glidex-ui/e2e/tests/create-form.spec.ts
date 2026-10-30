@@ -163,6 +163,30 @@ test("offers only firmware built for the chosen hypervisor", async ({ page, hype
   expect(offered).toEqual(mine);
 });
 
+test("sizes an elastic Pylon VM at its max vCPUs", async ({ page }) => {
+  const vcpus = field(page, "vCPU Count");
+  const elastic = page.getByLabel("Elastic CPU scaling (min/max vCPUs, weight)");
+  await vcpus.fill("2");
+  await elastic.check();
+  // Not Pylon: the guest boots with vcpu_count, which stays the user's.
+  await expect(vcpus).toHaveValue("2");
+  await expect(vcpus).toBeEnabled();
+
+  // Pylon boots all max_vcpus (spec/30-pylon.md P2): the count follows max.
+  await field(page, "Hypervisor Backend").selectOption("pylon");
+  await expect(field(page, "Max vCPUs")).toHaveValue("4");
+  await expect(vcpus).toHaveValue("4");
+  await expect(vcpus).toBeDisabled();
+  await field(page, "Max vCPUs").fill("6");
+  await expect(vcpus).toHaveValue("6");
+
+  // Checked with Pylon already chosen.
+  await elastic.uncheck();
+  await expect(vcpus).toBeEnabled();
+  await elastic.check();
+  await expect(vcpus).toHaveValue("6");
+});
+
 test.afterEach(async ({ hypervisor }) => {
   const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
   // Wait: a VM that was started takes a moment to tear down, and the next

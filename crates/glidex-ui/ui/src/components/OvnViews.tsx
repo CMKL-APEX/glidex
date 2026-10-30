@@ -47,7 +47,7 @@ export function useOvnOverview(enabled: boolean, tick = 0): { ovn: OvnOverview |
   return { ovn, error };
 }
 
-/** The OVN databases, chassis and gateways (spec/clustering-ui.md §8). */
+/** The OVN databases, chassis and gateways (spec/16-clustering-ui.md §8). */
 export function OvnCard({ ovn, error, actions, nodes = [], children }: { ovn: OvnOverview | null; error: string | null; actions?: ReactNode; nodes?: { id: string; name: string }[]; children?: ReactNode }) {
   // The card (and its settings button) stays whatever OVN says right now.
   if (error) {
@@ -224,7 +224,7 @@ export function NetworkOvnDialog({ id, name, onClose }: { id: string; name: stri
   );
 }
 
-/** Each node's tunnels, gathered from the nodes (spec/clustering-ui.md §8b). */
+/** Each node's tunnels, gathered from the nodes (spec/16-clustering-ui.md §8b). */
 export function useTunnels(enabled: boolean, tick = 0): { nodes: NodeTunnels[] | null; error: string | null } {
   const [nodes, setNodes] = useState<NodeTunnels[] | null>(null);
   const [error, setError] = useState<string | null>(null);

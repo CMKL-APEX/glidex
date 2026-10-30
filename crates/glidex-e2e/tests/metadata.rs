@@ -1,4 +1,4 @@
-//! The metadata endpoint from inside a guest (spec/workload-identity.md W3,
+//! The metadata endpoint from inside a guest (spec/29-workload-identity.md W3,
 //! W6, §5, §7), on this host's glidex: it must be installed from this
 //! workspace (`glidex-metad`, netd's rules) and serve a NAT network.
 //!

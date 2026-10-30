@@ -1,6 +1,6 @@
 #!/bin/bash
 # D0: bring a DPU's runtime OVS-DOCA configuration to the state in
-# spec/dpu.md §9.3, as idempotent shell. This is the oracle `dpu_prepare`
+# spec/31-dpu.md §9.3, as idempotent shell. This is the oracle `dpu_prepare`
 # (D5) is later checked against; it is not what ships.
 #
 #   dpu-prepare.sh --ssh <user@dpu> --check                    # what would change (exit 3 if anything)

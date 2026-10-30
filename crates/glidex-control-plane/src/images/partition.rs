@@ -307,7 +307,7 @@ pub fn growable_root(table: &PartitionTable) -> Result<&Partition, ImageError> {
 /// Run `f` on a raw view of the disk. Raw disk files are passed through as
 /// is; qcow2 disks and block devices go through a shadow file (see module
 /// docs): `growpart` can't edit a device-mapper device that has no
-/// partition devices (spec/storage.md §19, H7).
+/// partition devices (spec/24-storage.md §19, H7).
 pub fn edit<T>(
     path: &Path,
     format: DiskFormat,

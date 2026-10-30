@@ -5,7 +5,7 @@ const apiPort = Number(process.env.E2E_API_PORT ?? 8851);
 const uiPort = Number(process.env.E2E_UI_PORT ?? 5174);
 
 // Specs that don't depend on a hypervisor.
-const uiSpecs = /(console|auth|access|credentials|activity|footer|usage|cluster|routers|image-copies|invitations|connectors|host|datastores|federation|passkeys|device-login|hosted-directories|accounts|trust)\.spec\.ts/;
+const uiSpecs = /(console|auth|access|credentials|activity|footer|usage|cluster|routers|image-copies|invitations|connectors|host|datastores|federation|passkeys|device-login|hosted-directories|accounts|trust|two-organizations)\.spec\.ts/;
 
 export default defineConfig<Options>({
   testDir: "./tests",
@@ -53,10 +53,21 @@ export default defineConfig<Options>({
       cwd: "../ui",
       url: `http://localhost:${uiPort}`,
       // Through the scratch control plane's ui.sock: the UI's RPCs are
-      // gRPC-Web, taken there only (spec/grpc.md §6).
+      // gRPC-Web, taken there only (spec/18-grpc.md §6).
       env: { GLIDEX_API_SOCKET: `${process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e"}/ui.sock` },
       reuseExistingServer: false,
       stdout: "ignore",
+    },
+    // Two more control planes, each with its web UI, for the
+    // two-organization spec: north (a cluster) and acme (a directory).
+    {
+      command: "bash scripts/start-peers.sh",
+      url: `https://localhost:${process.env.E2E_NORTH_UI_PORT ?? 5186}/`,
+      ignoreHTTPSErrors: true,
+      reuseExistingServer: false,
+      timeout: 600_000,
+      stdout: "ignore",
+      stderr: "pipe",
     },
     // The production server (built UI, Host allowlist, security headers).
     {

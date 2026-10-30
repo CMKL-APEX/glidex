@@ -1,8 +1,8 @@
-// Trust with other organizations on one host (spec/tenancy.md D64–D66,
+// Trust with other organizations on one host (spec/19-tenancy.md D64–D66,
 // D13): the Admissions page lists trusted directories (none here) and asks
 // for offers; the tenant page offers to accept one and refuses a token that
 // isn't one. The two-organization flow runs in the control
-// plane's trust tests and on real hosts (spec/idp-checks.md).
+// plane's trust tests and on real hosts (spec/20-idp-checks.md).
 import { expect, test } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /status of (400|403)/ });

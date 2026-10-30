@@ -1,4 +1,4 @@
-//! Node liveness on the leader (spec/clustering.md §7.2, D7, D8): a node that
+//! Node liveness on the leader (spec/14-clustering.md §7.2, D7, D8): a node that
 //! stops heartbeating becomes `Ready=Unknown/NodeUnreachable`, and so do its
 //! VMs. Nothing is stopped or moved. Only the transitions are written.
 

@@ -1,4 +1,4 @@
-// Options every glidex RPC and field may carry (spec/grpc.md §4, §5).
+// Options every glidex RPC and field may carry (spec/18-grpc.md §4, §5).
 // Read by build.rs only; no Rust code is generated for this file.
 syntax = "proto3";
 
@@ -7,7 +7,7 @@ package glidex.api.v1;
 import "google/protobuf/descriptor.proto";
 
 // How the cluster treats an operation: reads may be served by any
-// server after a read barrier, writes go to the leader (spec/grpc.md G-D6).
+// server after a read barrier, writes go to the leader (spec/18-grpc.md G-D6).
 enum Kind {
   KIND_UNSPECIFIED = 0;
   KIND_READ = 1;
@@ -16,7 +16,7 @@ enum Kind {
 
 // One API operation, whichever transport carries it.
 message Op {
-  // The Cedar action, or "public" / "authenticated" (spec/security.md §7.7).
+  // The Cedar action, or "public" / "authenticated" (spec/11-security.md §7.7).
   string action = 1;
   Kind kind = 2;
   // The REST twin, "<METHOD> <path>" as registered in api::routes, or empty.

@@ -1,6 +1,6 @@
 #!/bin/bash
 # D0: reinstall a DPU's operating system from a BFB over rshim, with a
-# generated bf.cfg, and record what happens (spec/dpu.md §9.4, §14 D0).
+# generated bf.cfg, and record what happens (spec/31-dpu.md §9.4, §14 D0).
 # DESTRUCTIVE: the DPU's root filesystem is replaced. Run on the host that
 # owns the DPU's rshim device. This is the reference the `dpu_reinit` job
 # (D5b) is later checked against; it is not what ships.
@@ -62,7 +62,7 @@ while [ $# -gt 0 ]; do
     --update-atf-uefi)  ATF=yes; shift ;;
     --ca-cert)          CACERT="${2:?}"; shift 2 ;;
     --agent-package)    AGENT="${2:?}"; shift 2 ;;
-    --clear-pw-expiry)  die "--clear-pw-expiry cannot work from bf.cfg: the account does not exist at hook time (spec/dpu.md §0 finding 23)" ;;
+    --clear-pw-expiry)  die "--clear-pw-expiry cannot work from bf.cfg: the account does not exist at hook time (spec/31-dpu.md §0 finding 23)" ;;
     --keep-password-login) KEEP_PW=1; shift ;;
     --wait-secs)        WAIT="${2:?}"; shift 2 ;;
     --timeout-secs)     TIMEOUT="${2:?}"; shift 2 ;;

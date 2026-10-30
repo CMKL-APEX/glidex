@@ -1,7 +1,7 @@
 // Vendored subset of googleapis google/rpc/error_details.proto
 // (https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto,
 // Apache-2.0): only ErrorInfo, so glidex errors carry the standard
-// gRPC rich-error detail (spec/grpc.md §7) that generic clients (grpcurl,
+// gRPC rich-error detail (spec/18-grpc.md §7) that generic clients (grpcurl,
 // Connect, Google client libraries) decode by its type name.
 //
 // Keep it wire-identical to upstream: package `google.rpc`, message name

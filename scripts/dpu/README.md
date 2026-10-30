@@ -1,6 +1,6 @@
 # D0: DPU bring-up scripts
 
-Operator-run tooling for milestone **D0** of [spec/dpu.md](../../spec/dpu.md)
+Operator-run tooling for milestone **D0** of [spec/31-dpu.md](../../spec/31-dpu.md)
 (§14). It proves the DPU preparation sequence (§9.3) and the BFB reinstall
 (§9.4) from a clean image **before** any Rust encodes them, answers the
 open questions the spec lists, and produces the raw command output that the
@@ -75,7 +75,7 @@ All commands take `--ssh <user@dpu>` (add `--ssh-key PATH` if needed) or
 
 ## What to record
 
-Put each result in spec/dpu.md §0 as a numbered finding and close or edit
+Put each result in spec/31-dpu.md §0 as a numbered finding and close or edit
 the matching open question in §15: durations (O15), which devices the BFB
 wrote and what `BOOT_MODE` reads (O16), where `authorized_keys` and units
 must go and whether key-only first login works (O14, O17), whether

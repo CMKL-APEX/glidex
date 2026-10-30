@@ -1,5 +1,5 @@
 //! Against a real `ovsdb-server` with the OVN northbound schema, over SSL with
-//! certificates from the cluster PKI (spec/clustering.md §11.1, §12.1).
+//! certificates from the cluster PKI (spec/14-clustering.md §11.1, §12.1).
 //! Ignored: it needs `ovsdb-server`, `ovsdb-tool` and `ovn-nbctl`
 //! (`cargo test -p glidex-control-plane --test real_ovn -- --ignored`).
 //! It starts its own database in a temporary directory and stops it after.

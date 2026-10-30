@@ -1,4 +1,4 @@
-//! Browser sessions (glidex spec/security.md §5.5): a 256-bit random id of
+//! Browser sessions (glidex spec/11-security.md §5.5): a 256-bit random id of
 //! which only the SHA-256 is stored, a CSRF value for cookie-authenticated
 //! writes, and an idle and an absolute timeout. The application stores
 //! the session record; these are the rules it applies to one.

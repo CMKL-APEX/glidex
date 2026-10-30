@@ -19,7 +19,7 @@ import {
 import { useSession } from "../session";
 import { useDirectory } from "../hooks";
 
-/** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`). */
+/** The secret field each kind has (spec/06-rest-api.md: `oidc`: `client_secret`). */
 const SECRET_FIELD: Record<Connector["kind"], string | null> = {
   pam: null,
   oidc: "client_secret",
@@ -32,7 +32,7 @@ const secretFields = (c: Connector): string[] => {
   const main = SECRET_FIELD[c.kind];
   const out = main ? [main] : [];
   if (c.kind === "google" && c.google?.device_client_id) out.push("device_client_secret");
-  // A pull's service account (spec/tenancy.md D47).
+  // A pull's service account (spec/19-tenancy.md D47).
   if (c.provisioning === "pull") out.push("service_account_key");
   return out;
 };
@@ -141,7 +141,7 @@ function formState(c?: Connector): FormState {
 }
 
 /** How a kind can be provisioned: SCIM for OIDC and JumpCloud, a pull for
- * Google Workspace (spec/tenancy.md §8). */
+ * Google Workspace (spec/19-tenancy.md §8). */
 function provisioningChoices(f: FormState): FormState["provisioning"][] {
   if (f.kind === "oidc" || f.kind === "jumpcloud") return ["none", "scim"];
   if (f.kind === "google" && f.google_accounts === "workspace") return ["none", "pull"];
@@ -636,7 +636,7 @@ function SecretForm({ connector, field, onDone, onCancel }: { connector: Connect
   );
 }
 
-/** A pulled connector's last run (spec/tenancy.md §8.2). */
+/** A pulled connector's last run (spec/19-tenancy.md §8.2). */
 function SyncLine({ status }: { status?: SyncStatus | null }) {
   if (!status) return <div className="text-gray-400">not run yet</div>;
   const ch = status.changes ?? {};
@@ -665,7 +665,7 @@ function SyncLine({ status }: { status?: SyncStatus | null }) {
   }
 }
 
-/** A provisioned connector's SCIM endpoint and tokens (spec/tenancy.md §8.1). */
+/** A provisioned connector's SCIM endpoint and tokens (spec/19-tenancy.md §8.1). */
 function ScimTokens({ connector, manage }: { connector: Connector; manage: boolean }) {
   const [tokens, setTokens] = useState<ScimToken[] | null>(null);
   const [path, setPath] = useState(`/scim/v2/c/${connector.id}`);

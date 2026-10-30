@@ -8,7 +8,7 @@ import { LoadingCard } from "../components/Loading";
 import { Card, ErrorBanner, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton } from "../components/ui";
 import { formatTimestamp } from "../types";
 
-/** The directories this host serves (spec/tenancy.md D27, D59): the
+/** The directories this host serves (spec/19-tenancy.md D27, D59): the
  * operator creates one for an organization and sends its first
  * administrator the invitation; what is inside is theirs. */
 export default function Directories() {

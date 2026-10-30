@@ -42,8 +42,9 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | Field | What it is |
 |---|---|
 | **VM Name** | The VM's name in the project. |
-| **Hypervisor Backend** | Cloud Hypervisor (the default) or QEMU. Fixed once created. |
-| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 512 MiB. |
+| **Hypervisor Backend** | Cloud Hypervisor (the default), QEMU or Pylon. Fixed once created. |
+| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 512 MiB. On Pylon with **Elastic CPU scaling**, the vCPU count is the maximum and can't be edited. |
+| **Elastic CPU scaling** | Min vCPUs, max vCPUs and weight. See [Elastic CPU](#elastic-cpu). |
 | **Placement** | Clusters only: **Automatic**, or a node. See [Placement on a cluster](#placement-on-a-cluster). |
 | **Boot Mode** | **UEFI firmware (distro cloud image)** or **Direct kernel boot**. |
 | **UEFI Firmware** | The firmware image to boot through; the newest one for the hypervisor is preselected. |
@@ -52,8 +53,9 @@ On the **VMs** page, click **+ Create VM** and fill in the form:
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
 | **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
 | **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
-| **VFIO PCI Devices (optional)** | Host PCI devices to pass through. See [Devices](#pci-devices). |
-| **Device Pools (optional)** | How many devices to take from each pool your project may use. A GPU pool's count sizes the VM; see [GPUs](#gpus). |
+| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
+| **Device Pools (optional)** | How many devices to take from each other pool (NICs, NVMe…) your project may use. |
+| **VFIO PCI Devices (optional)** | Under **Advanced options**: other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
@@ -86,7 +88,8 @@ VM name: web-1
 GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional):
 vCPU count [1]: 2
 Memory (MiB) [512]: 2048
-Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
+Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor):
+Configure elastic CPU scaling (min/max vCPUs, weight)? [y/N] [n]:
 UEFI firmware [cloudhv-edk2, 'kernel' for direct kernel boot, or a host path] [cloudhv-edk2]:
 Boot disk from [image/disk/path] [image]:
 Image (ubuntu-26.04) [ubuntu-26.04]:
@@ -135,9 +138,11 @@ fixed list take their full names, as in the table below
 |---|---|---|
 | Name | `name` | Unique in the project. The generated cloud-init seed makes it the guest's hostname. |
 | Project | `project` | Id or name; default: your default project. |
-| vCPUs | `vcpu_count` | At least 1. Changeable; applies at the next start. |
+| vCPUs | `vcpu_count` | At least 1. Changeable; applies at the next start, or live within an elastic VM's range. On an elastic Pylon VM it is always `max_vcpus`. See [Elastic CPU](#elastic-cpu). |
+| Elastic vCPUs | `min_vcpus`, `max_vcpus` | `min_vcpus` ≤ `vcpu_count` ≤ `max_vcpus`. Absent: both are `vcpu_count` (a fixed size). See [Elastic CPU](#elastic-cpu). |
+| CPU weight | `cpu_weight` | 1 to 10000, default 100: the VM's share of contended host CPU. |
 | Memory | `mem_size_mib` | In MiB, at least 1. Changeable; applies at the next start. |
-| Hypervisor | `hypervisor` | `HYPERVISOR_CLOUD_HYPERVISOR` (default) or `HYPERVISOR_QEMU`. Fixed. |
+| Hypervisor | `hypervisor` | `HYPERVISOR_CLOUD_HYPERVISOR` (default), `HYPERVISOR_QEMU` or `HYPERVISOR_PYLON`. Fixed. |
 | Boot disk | `image`, `root_disk` or `rootfs_path` | Exactly one. Fixed. See below. |
 | Root disk size | `root_disk_size_gib` | With `image` only. Default: the image's size, at least 10 GiB. |
 | Firmware | `firmware` | A firmware image (name or id). Fixed. |
@@ -420,11 +425,22 @@ and sizes the VM.
 **gxctl:** `create` asks *GPUs* right after the name: `4`, `4:a100`.
 With GPUs, an empty vCPU or memory answer takes the pool's sizing.
 
-**Web UI:** in **Device Pools**, the count of the first GPU pool is
-sent as `gpus`, and fills in the vCPU and memory fields from the pool
-until you change them by hand. A GPU pool with **Under one PCIe
-switch** ticked is an ordinary pool request instead, without the NUMA
-alignment or the sizing.
+**Web UI:** the **GPUs** section, right after the VM's size:
+
+- **From a pool:** the count of the first GPU pool is sent as `gpus`,
+  and fills in the vCPU and memory fields from the pool until you change
+  them by hand. A GPU pool with **Under one PCIe switch** ticked is an
+  ordinary pool request instead, without the NUMA alignment or the
+  sizing.
+- **This node's GPUs:** each display-class device the node could pass
+  through, with its address, vendor, ids and NUMA node. A ticked one is
+  sent in `vfio_devices`. One not ready is greyed with the reason (for
+  example *not bound to vfio-pci (driver: amdgpu)*): an operator
+  prepares it on the node's page. One another VM holds is greyed with
+  its name (*PCI device 0000:43:00.0 is used by VM gpu-a*), whatever
+  project that VM is in; a stopped VM keeps its GPUs. Listing them needs a host role on
+  that node; without one, only pools are shown. These GPUs don't size
+  the VM.
 
 Refusals (`400 invalid_config`):
 
@@ -436,7 +452,7 @@ Refusals (`400 invalid_config`):
 | `gpus: this project may use no GPU pool` | No `pool` given, and no GPU pool is granted to the project. |
 | `gpus: give vcpu_count and mem_size_mib, or set per_device on pool a100` | The pool has no per-device sizing. |
 | `gpus and devices both ask pool a100` | Ask the pool in one place. |
-| `gpus: NVLink needs a fabric …` | `"nvlink": true` (`4:a100:nvlink` in gxctl). NVLink between passed-through GPUs isn't available yet. |
+| `gpus: NVLink needs a fabric …, and pool … has none` | `"nvlink": true` (`4:a100:nvlink` in gxctl). NVLink between passed-through GPUs isn't available yet; leave `nvlink` out, and it is `false`. |
 
 A pool the project may not use is refused as with `devices`
 (`403 forbidden`), and so are quotas.
@@ -536,8 +552,10 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 `networks` and `data_disks` replace the whole list. The hypervisor, the
 boot disk, the firmware and host paths can't be changed.
 
-The web UI and `gxctl` have no edit form; `gxctl` changes PCI devices
-only (`attach-device`, `detach-device`).
+The web UI and `gxctl` have no edit form for most settings. Both change
+the vCPUs and the elastic range (**Scale CPU / Elasticity** on the VM's
+page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), and `gxctl`
+changes PCI devices (`attach-device`, `detach-device`).
 
 A change to vCPUs, memory, kernel arguments, the credential, hugepages,
 policies, device pool requests, networks or data disks of a running VM
@@ -740,6 +758,76 @@ host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
 <!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; the MMIO apertures aren't sized yet (spec GV1 not done). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+
+## Elastic CPU
+
+An elastic VM has a range of vCPUs instead of a fixed count:
+
+| Field | Meaning |
+|---|---|
+| `min_vcpus` | The fewest vCPUs it runs on. At least 1; 0 on Pylon, where an idle guest can park all of them. |
+| `max_vcpus` | The most it can have. At most 64 on Pylon. |
+| `cpu_weight` | 1 to 10000, default 100: its share of host CPU when VMs compete (cgroup `cpu.weight`; on Pylon also `pylond`'s priority). |
+
+A VM is elastic when `min_vcpus` is less than `max_vcpus`. Without them
+it has a fixed size, `vcpu_count`. A VM with dedicated CPUs can't be
+elastic.
+
+How the range is used depends on the hypervisor:
+
+- **Pylon.** The guest boots with all `max_vcpus` and keeps them.
+  `pylond`, the host's core arbiter, parks the vCPUs the guest doesn't
+  need and wakes them on demand, between `min_vcpus` and `max_vcpus`,
+  in microseconds and without CPU hotplug. So an elastic Pylon VM's
+  `vcpu_count` is always its `max_vcpus`: Glidex sets it, and the web UI
+  and `gxctl` show it so. `lscpu` in the guest shows `max_vcpus` CPUs.
+- **Cloud Hypervisor and QEMU.** The guest boots with `vcpu_count`
+  vCPUs online and room for `max_vcpus`. Change `vcpu_count` within the
+  range and Glidex adds or removes vCPUs while the VM runs (CPU
+  hotplug); nothing changes the count on its own.
+
+### Make a VM elastic
+
+In the web UI, tick **Elastic CPU scaling** in the create form and set
+**Min vCPUs**, **Max vCPUs** and **Weight**. On Pylon, **vCPU Count**
+follows **Max vCPUs**.
+
+For a VM that exists, click **Scale CPU / Elasticity** under its vCPU
+count. Tick **Elastic CPU scaling** to give a fixed-size VM the range 1
+to its vCPU count, then change it; untick it to give the VM a fixed size
+again. On Pylon the dialog shows the vCPUs the guest has.
+
+With `gxctl`, `create` asks whether to configure elastic CPU scaling
+(the default is yes on Pylon), and `scale` changes a VM:
+
+```
+gxctl> scale web-1 --min 1 --max 8 --weight 200
+gxctl> scale web-1 --vcpus 4
+```
+
+With the API, set `min_vcpus`, `max_vcpus` and `cpu_weight` at create
+or in a [change](#change-a-vm). To make an elastic Pylon VM fixed again,
+set `min_vcpus` and `max_vcpus` to the same count as `vcpu_count`: a
+change of `vcpu_count` alone keeps it elastic, and its count goes back
+to `max_vcpus`.
+
+### When a change applies
+
+| Change | Pylon | Cloud Hypervisor, QEMU |
+|---|---|---|
+| `vcpu_count` within the range | (Always `max_vcpus`.) | At once, on a running VM. |
+| `min_vcpus`, lower `max_vcpus` | At once. | At the next start. |
+| Raise `max_vcpus` | At the next start: the guest keeps the vCPUs it booted with. | At the next start. |
+| `cpu_weight` | At once for `pylond`; the cgroup weight at the next start. | At the next start; the VM isn't marked for a restart. |
+
+A change that waits for the next start sets `restart_required`, and the
+web UI says **Configuration changes take effect at the next start**,
+except where the table says otherwise. A change that applies at once but
+can't yet, because the VM is paused, sets the `VcpuResizePending`
+condition until it runs.
+
+Quotas count `vcpu_count`, so an elastic Pylon VM counts its
+`max_vcpus`.
 
 ## Placement on a cluster
 

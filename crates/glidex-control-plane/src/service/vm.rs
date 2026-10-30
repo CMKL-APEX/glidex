@@ -1,5 +1,5 @@
-//! `glidex.vm.v1` (spec/reconciliation.md §7, §12): VMs. Creating one is a
-//! compound request (spec/security.md §7.4): every disk, credential,
+//! `glidex.vm.v1` (spec/12-reconciliation.md §7, §12): VMs. Creating one is a
+//! compound request (spec/11-security.md §7.4): every disk, credential,
 //! network, PCI device and host path it names is checked on its own.
 //! Writes change the desired state and return at once, or with `wait`,
 //! once the VM controller acted (§12.3). The REST twins in `api/vms.rs`
@@ -163,7 +163,7 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
 
 /// A VM as the API shows it, without the caller's view (its node's name,
 /// OVN addresses): for error details. The runtime paths stay private
-/// (spec/security.md §9).
+/// (spec/11-security.md §9).
 pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
     let config = vm.config();
     pb::Vm {
@@ -290,7 +290,7 @@ fn device_requests_of(rs: &[pb::DeviceRequest]) -> Vec<m::DeviceRequest> {
 }
 
 /// Requests naming a tenant pool of the project's tenant become requests
-/// of its cluster pool, remembering the tenant pool (spec/host-topology.md
+/// of its cluster pool, remembering the tenant pool (spec/22-host-topology.md
 /// §9.1a). The project must be one of the tenant pool's, and the tenant
 /// still granted the cluster pool; its `max` is checked with the quotas.
 fn resolve_tenant_pools(
@@ -356,7 +356,7 @@ fn resolve_tenant_pools(
     Ok(())
 }
 
-/// What a `gpus` request comes to (spec/gpu-vms.md §3): its pool resolved,
+/// What a `gpus` request comes to (spec/27-gpu-vms.md §3): its pool resolved,
 /// and the sizing the pool gives per device, for fields the VM leaves out.
 struct GpuExpansion {
     request: m::GpuRequest,
@@ -373,12 +373,6 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
     let bad = |msg: String| ServiceError::new(StatusCode::BAD_REQUEST, "invalid_config", msg);
     if g.count == 0 {
         return Err(bad("gpus: count must be at least 1".into()));
-    }
-    if g.nvlink == Some(true) {
-        return Err(bad(
-            "gpus: NVLink needs a fabric (Fabric Manager, spec/gpu-vms.md §7), which this cluster doesn't have yet"
-                .into(),
-        ));
     }
     let cluster = call.manager().pci_pools();
     let tenant = call
@@ -444,12 +438,19 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
             }
         }
     };
+    // No pool has a fabric until GV5: an absent `nvlink` is `false`
+    // (spec/27-gpu-vms.md G11), and `true` can't be met.
+    if g.nvlink == Some(true) {
+        return Err(bad(format!(
+            "gpus: NVLink needs a fabric (Fabric Manager, spec/27-gpu-vms.md §7), and pool {name} has none"
+        )));
+    }
     let per = base.per_device.as_ref();
     Ok(GpuExpansion {
         request: m::GpuRequest {
             count: g.count,
             pool: name,
-            nvlink: g.nvlink,
+            nvlink: Some(false),
         },
         vcpus: per.map(|d| d.vcpus * g.count),
         memory_mib: per.map(|d| d.memory_mib * g.count),
@@ -526,7 +527,7 @@ fn apply_gpus(
 }
 
 /// Each requested pool exists, and the caller may use it for `project`
-/// (`usePciPool`, spec/host-topology.md §9).
+/// (`usePciPool`, spec/22-host-topology.md §9).
 fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceResult<()> {
     let pools = call.manager().pci_pools();
     let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.to_string()))];
@@ -579,7 +580,7 @@ pub fn vm_pb(call: &Call, vm: &Vm) -> pb::Vm {
 
 // ---- answers to writes ----------------------------------------------------
 
-/// Where a VM write left the VM (spec/reconciliation.md §12.3).
+/// Where a VM write left the VM (spec/12-reconciliation.md §12.3).
 pub enum VmReply {
     /// Not waited for: the VM as written.
     Now(pb::Vm),
@@ -696,7 +697,7 @@ pub async fn vm_events(
     })
 }
 
-/// Where a VM would go (spec/clustering-ui.md §5.1). Whoever may create a
+/// Where a VM would go (spec/16-clustering-ui.md §5.1). Whoever may create a
 /// VM in the project may see where it would fit.
 pub async fn preview_placement(
     call: &Call,
@@ -785,7 +786,7 @@ pub async fn preview_placement(
 
 // ---- create ---------------------------------------------------------------
 
-/// Whether a create request names a host path (spec/security.md §7.4).
+/// Whether a create request names a host path (spec/11-security.md §7.4).
 /// Firmware is a managed image (`firmware`) like the disks; a
 /// `firmware_path` is a host path like any other.
 fn names_host_path(req: &pb::CreateVmRequest) -> bool {
@@ -910,7 +911,7 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         credential: req.credential,
         service_account: req.service_account,
         rootfs_path: m::expand_tilde(req.rootfs_path),
-        // The manager fills in the default (spec/kernel-boot.md K7): a
+        // The manager fills in the default (spec/23-kernel-boot.md K7): a
         // kernel image's command line, else the default for the
         // architecture the VM runs on.
         kernel_args: req.kernel_args.unwrap_or_default(),
@@ -985,7 +986,7 @@ pub async fn start_vm(call: &Call, req: pb::StartVmRequest) -> ServiceResult<VmR
     .await
 }
 
-/// `POST /vms/{id}/place` (spec/storage.md S10).
+/// `POST /vms/{id}/place` (spec/24-storage.md S10).
 pub async fn place_vm(call: &Call, req: pb::PlaceVmRequest) -> ServiceResult<pb::PlaceVmResponse> {
     let (vm, _, _) = visible_vm(call, &req.id).await?;
     let vm = call
@@ -1154,7 +1155,7 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
     Ok(p)
 }
 
-/// Giving a VM of `project` service account `sa` (workload-identity.md
+/// Giving a VM of `project` service account `sa` (29-workload-identity.md
 /// W5): a live service account, and `useServiceAccount` on its project,
 /// which base policy keeps in the VM's tenant.
 fn check_service_account(
@@ -1504,7 +1505,7 @@ fn vm_node(vm: &Vm) -> Option<String> {
         .or_else(|| vm.spec.node.clone())
 }
 
-/// Where the project may use every one of `devices` (spec/host-topology.md
+/// Where the project may use every one of `devices` (spec/22-host-topology.md
 /// §8.5): of the nodes that report them all (`fixed`: the node the VM is
 /// on or pinned to; a standalone host: itself), those where `usePciDevice`
 /// allows each. `None` when that is all of them, so the scheduler needs no
@@ -1659,7 +1660,7 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> ConsoleIo f
 
 /// The console of VM `id` if the caller may open it: they may read the VM
 /// (else not found), and a browser session (PAM, OIDC) needs a fresh
-/// single-use `ticket` (spec/security.md §5.6). Tokens and the API socket
+/// single-use `ticket` (spec/11-security.md §5.6). Tokens and the API socket
 /// don't.
 pub async fn console_target(
     call: &Call,
@@ -1709,7 +1710,7 @@ pub async fn console_connect(
     }
 }
 
-/// `POST /vms/{id}/extract-kernel` (spec/kernel-boot.md §10.5): the VM's
+/// `POST /vms/{id}/extract-kernel` (spec/23-kernel-boot.md §10.5): the VM's
 /// own change (`updateVm`), extracting the kernel on its root disk as a
 /// kernel image it owns.
 pub async fn extract_vm_kernel(

@@ -1,4 +1,4 @@
-//! `gxctl`: interactive CLI for the glidex control plane (spec/cli.md).
+//! `gxctl`: interactive CLI for the glidex control plane (spec/01-cli.md).
 
 // Doc comments on the clap types are `--help` text, printed verbatim:
 // `<uid>` and bare URLs there are meant for the terminal, not rustdoc.
@@ -73,7 +73,7 @@ struct Cli {
     command: Vec<String>,
 }
 
-/// Pick the transport (spec/cli.md "Transport") under gxctl-auth.md §3's
+/// Pick the transport (spec/01-cli.md "Transport") under 17-gxctl-auth.md §3's
 /// ladder: a profile — from `--profile`/`GLIDEX_PROFILE` or the file's
 /// `current` — decides target, trust and credential; with none, today's
 /// behaviour exactly: `--url` → TCP, else `--socket`/`GLIDEX_SOCKET`/the
@@ -105,7 +105,7 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
             match client::select_socket(cli.socket.clone(), &candidates, client::is_socket) {
                 Some(p) => ApiClient::unix(p),
                 // A UI socket but no API socket: a cluster agent, which has
-                // no API of its own (spec/clustering-ui.md §3.6).
+                // no API of its own (spec/16-clustering-ui.md §3.6).
                 None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => {
                     return Err(client::AGENT_HINT.into());
                 }
@@ -357,7 +357,7 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
         || o["deletion_requested_at"].is_u64()
         || o["deletion_requested_at"].is_string();
     let mut what = match kind {
-        // The proto shape (spec/grpc.md §9.1): `VM_STATE_*`, `POWER_STATE_*`.
+        // The proto shape (spec/18-grpc.md §9.1): `VM_STATE_*`, `POWER_STATE_*`.
         "vm" => {
             let word = |v: &serde_json::Value, prefix: &str| {
                 v.as_str()
@@ -368,7 +368,7 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
             vm::plain_state(&state, &desired)
         }
         "disk" => o["status"].as_str().unwrap_or("?").to_string(),
-        // The proto shape (spec/grpc.md §9.1): `IMAGE_STATE_*`, 64-bit
+        // The proto shape (spec/18-grpc.md §9.1): `IMAGE_STATE_*`, 64-bit
         // numbers as strings.
         "image" => {
             let n = |v: &serde_json::Value| {
@@ -429,7 +429,7 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
     (name, what)
 }
 
-/// `watch [kinds]` (spec/reconciliation.md §12.6): print changes to what
+/// `watch [kinds]` (spec/12-reconciliation.md §12.6): print changes to what
 /// the caller can see until Ctrl-C, over `glidex.watch.v1.WatchService.Watch`.
 /// Reconnects when the server ends a stream, printing only what changed
 /// meanwhile.
@@ -580,7 +580,7 @@ fn chrono_now() -> String {
 }
 
 /// After a `DELETE …?wait`: gone (no body), or still being deleted by its
-/// controller (spec/reconciliation.md §6.3), with the reason it waits.
+/// controller (spec/12-reconciliation.md §6.3), with the reason it waits.
 fn print_help() {
     println!("{}", "Available commands:".bold());
     println!("  {}              - List all VMs", "list".cyan());
@@ -834,7 +834,7 @@ fn print_help() {
     println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
     println!(
         "  {} - Audit log",
-        "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan()
+        "audit [--project P | --directory D] [--since <unix-ms>] [--limit N] [--user U]".cyan()
     );
     println!(
         "  {} - Resource usage (default: this billing month by project)",
@@ -2366,7 +2366,7 @@ mod tests {
     }
 
     /// The generated connectrpc clients over gxctl's own connection
-    /// (spec/grpc.md §10): the Connect protocol on api.sock.
+    /// (spec/18-grpc.md §10): the Connect protocol on api.sock.
     #[tokio::test]
     async fn rpc_clients_over_the_unix_socket() {
         use glidex_api::proto::glidex::tenancy::v1::*;

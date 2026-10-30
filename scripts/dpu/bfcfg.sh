@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generates the bf.cfg that dpu-reinit.sh hands to bfb-install (spec/dpu.md §9.4.1).
+# Generates the bf.cfg that dpu-reinit.sh hands to bfb-install (spec/31-dpu.md §9.4.1).
 # Sourced, not run. Reads: FW ATF TARGET OSUSER PUBLINE KEEP_PW CACERT AGENT.
 # Writes the configuration to stdout. It contains public values only: no password,
 # token or private key. Kept separate so test-hook.sh can exercise the hook offline.

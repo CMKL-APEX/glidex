@@ -1,12 +1,12 @@
-//! VM routes: the REST twins of `glidex.vm.v1` (spec/grpc.md §9.1), the
+//! VM routes: the REST twins of `glidex.vm.v1` (spec/18-grpc.md §9.1), the
 //! proto messages as JSON with path, query and header parameters merged
 //! in, on the same `service::vm` functions as the RPCs; the console
-//! WebSocket (spec/console.md), which stays one until G4; the stored
+//! WebSocket (spec/02-console.md), which stays one until G4; the stored
 //! record (`?view=full`); and `/system/reconcile`.
 //!
 //! Writes change the VM's desired state and return at once (`202`), or,
 //! with `?wait=<secs>`, once the VM controller has acted on them
-//! (spec/reconciliation.md §12.3).
+//! (spec/12-reconciliation.md §12.3).
 
 use super::{ApiErr, Caller, Proto, err, proto_body, proto_no_content, vm_entities};
 use crate::authz::{Ent, EntitySet};
@@ -111,7 +111,7 @@ pub async fn list(c: Caller, Query(q): Query<ProjectFilter>) -> Result<impl Into
     Ok(Proto(StatusCode::OK, svc::list_vms(&c, req).await?))
 }
 
-/// `POST /scheduler/preview` (spec/clustering-ui.md §5.1): where a VM would
+/// `POST /scheduler/preview` (spec/16-clustering-ui.md §5.1): where a VM would
 /// go, node by node, before it is created.
 pub async fn preview(c: Caller, Json(v): Json<Value>) -> Result<Response, ApiErr> {
     let req: pb::PreviewPlacementRequest = body(v)?;
@@ -125,7 +125,7 @@ pub async fn create(
 ) -> Result<Response, ApiErr> {
     // proto3 has no required fields; the REST body says which are missing
     // (`422`, as before the port). A `0` sent is validated like any value.
-    // With `gpus`, the sizing may come from the pool (spec/gpu-vms.md §3).
+    // With `gpus`, the sizing may come from the pool (spec/27-gpu-vms.md §3).
     let gpus = v.get("gpus").is_some_and(|g| !g.is_null());
     let missing: Vec<&str> = ["name", "vcpu_count", "mem_size_mib"]
         .into_iter()
@@ -161,7 +161,7 @@ pub async fn get_one(
         let (vm, _, _) = visible_vm(&c, &id).await?;
         // The stored record carries host paths (disk files, kernel, seed in
         // the private runtime directory), PIDs and the boot id, which the
-        // flat view leaves out: host readers only (spec/security.md §9).
+        // flat view leaves out: host readers only (spec/11-security.md §9).
         // It is the store's own format, not an API message.
         c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
         return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
@@ -426,7 +426,7 @@ pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
 
 /// Node `node`'s PCI device `bdf` as an entity, with the projects and
 /// tenants granted it in the config: grants for that address on every
-/// node, or on this one by id or name (spec/host-topology.md §8.5).
+/// node, or on this one by id or name (spec/22-host-topology.md §8.5).
 pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
     let name = c

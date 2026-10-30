@@ -1,4 +1,4 @@
-//! External-traffic counters for NAT networks (spec/metering.md §5.5):
+//! External-traffic counters for NAT networks (spec/13-metering.md §5.5):
 //! the `inet glidex_meter` table, separate from the NAT table so that
 //! rebuilding `inet glidex` never resets them.
 //!

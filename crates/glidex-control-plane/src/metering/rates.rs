@@ -1,4 +1,4 @@
-//! 95th percentiles over 5-minute slots (spec/metering.md §8.5.1, §8.6,
+//! 95th percentiles over 5-minute slots (spec/13-metering.md §8.5.1, §8.6,
 //! D15, D16): series per group, summed slot by slot, nearest rank.
 
 use super::ledger::{SLOT_MS, SLOTS_PER_HOUR, SlotRow, SubjectKind};

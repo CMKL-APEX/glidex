@@ -1,4 +1,4 @@
-// Invitations (spec/tenancy.md §6.1): made on the tenant's page, the link
+// Invitations (spec/19-tenancy.md §6.1): made on the tenant's page, the link
 // shown once; the link's page works signed out, says what it is for and
 // starts the login through its connector. The login itself needs an IdP,
 // which the connector tests cover against a mock.
@@ -61,7 +61,7 @@ test("an invitation is made on the tenant page and its link opens signed out", a
 });
 
 test("a new tenant invites its first administrator", async ({ page }) => {
-  // spec/tenancy.md §11: the link comes back once, with the tenant.
+  // spec/19-tenancy.md §11: the link comes back once, with the tenant.
   await api("/connectors", {
     method: "POST",
     body: { connector: { id: CONNECTOR, display_name: "E2E SSO", oidc: { issuer: "https://idp.example", client_id: "glidex" } } },

@@ -1,4 +1,4 @@
-//! RPCs next to REST (spec/grpc.md G0): the System service over the
+//! RPCs next to REST (spec/18-grpc.md G0): the System service over the
 //! Connect protocol, gRPC and gRPC-Web, through the same router, layers
 //! and service functions as REST, with the per-listener protocol and
 //! credential rules of §6 and the error mapping of §7.

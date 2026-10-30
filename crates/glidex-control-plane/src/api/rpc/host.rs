@@ -146,6 +146,6 @@ impl TopologyService for Svc {
         ctx: RequestContext,
         req: ServiceRequest<'_, GetHostTopologyRequest>,
     ) -> ServiceResult<GetHostTopologyResponse> {
-        op!(self, ctx, req, svc::get_host_topology)
+        op_async!(self, ctx, req, svc::get_host_topology)
     }
 }

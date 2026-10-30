@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# spec/clustering.md §17 C0: every change to the control-plane database goes
+# spec/14-clustering.md §17 C0: every change to the control-plane database goes
 # through `Db::begin` / `Db::write` (crates/glidex-control-plane/src/store/),
 # so every write has a write set that a replicated store can propose.
 # glidex-netd's own database is host-local and is not covered, nor is the

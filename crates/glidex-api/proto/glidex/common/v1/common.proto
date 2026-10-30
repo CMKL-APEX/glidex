@@ -1,4 +1,4 @@
-// Types several families share (spec/grpc.md §9).
+// Types several families share (spec/18-grpc.md §9).
 syntax = "proto3";
 
 package glidex.common.v1;
@@ -26,7 +26,7 @@ enum ConditionStatus {
   CONDITION_STATUS_UNKNOWN = 3;
 }
 
-// One condition of an object's status (spec/reconciliation.md §6.2).
+// One condition of an object's status (spec/12-reconciliation.md §6.2).
 message Condition {
   // `Ready`, …
   string kind = 1;
@@ -42,7 +42,7 @@ enum EventKind {
   EVENT_KIND_WARNING = 2;
 }
 
-// One entry of an object's event ring (spec/reconciliation.md §6.4).
+// One entry of an object's event ring (spec/12-reconciliation.md §6.4).
 message Event {
   google.protobuf.Timestamp at = 1;
   // `api:<principal>`, `controller`, `guest`, `systemd` or `host`.

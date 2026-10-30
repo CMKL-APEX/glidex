@@ -47,13 +47,13 @@ threads) during the measurements.
 | API read latency, `GET /health` | p50 1.6 ms, p95 1.8 ms | measured | 2026-10-22 | `curl` over the local Unix socket, n = 300, measurement host |
 | API read latency, `GET /vms` | p50 3.3 ms, p95 4.5 ms | measured | 2026-10-22 | as above, 1 VM |
 | API read latency, `GET /images` | p50 7.0 ms, p95 7.5 ms | measured | 2026-10-22 | as above, 8 images, 7.6 kB response |
-| Metering sampling round, 200 VMs | 39 ms (budget 15 s) | [metering.md §15.6](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#156-m3-host-side-io-time-zones-tuning), [#13](https://github.com/CMKL-APEX/glidex/pull/13) | 2026-10-05 to 2026-10-07 | `metering/bench.rs`, 200 VMs, 2 NICs and 2 disks each; hardware not recorded |
+| Metering sampling round, 200 VMs | 39 ms (budget 15 s) | [13-metering.md §15.6](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#156-m3-host-side-io-time-zones-tuning), [#13](https://github.com/CMKL-APEX/glidex/pull/13) | 2026-10-05 to 2026-10-07 | `metering/bench.rs`, 200 VMs, 2 NICs and 2 disks each; hardware not recorded |
 | Usage query, one project, one month | 146 ms (target 200 ms) | as above | as above | as above, a month of 5-minute slots |
-| Metering history per VM | about 12 MB at steady state | [metering.md §15.6](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#156-m3-host-side-io-time-zones-tuning) | 2026-10-05 | default retention, derived from the measured row sizes |
-| Kernel extraction, one image | 1.7–1.8 s (Cloud Hypervisor), 2.2 s (QEMU) | [kernel-boot.md §3, F-K9](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#3-verified-facts) | reported 2026-10-20 | the Debian appliance, four distros; hardware not recorded |
-| Pull, extract, boot and log in | 61–121 s per image | [kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#11-testing), [#90](https://github.com/CMKL-APEX/glidex/pull/90) | 2026-10-19 | whole ignored test, fresh data directory, network download included |
+| Metering history per VM | about 12 MB at steady state | [13-metering.md §15.6](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#156-m3-host-side-io-time-zones-tuning) | 2026-10-05 | default retention, derived from the measured row sizes |
+| Kernel extraction, one image | 1.7–1.8 s (Cloud Hypervisor), 2.2 s (QEMU) | [23-kernel-boot.md §3, F-K9](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#3-verified-facts) | reported 2026-10-20 | the Debian appliance, four distros; hardware not recorded |
+| Pull, extract, boot and log in | 61–121 s per image | [23-kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#11-testing), [#90](https://github.com/CMKL-APEX/glidex/pull/90) | 2026-10-19 | whole ignored test, fresh data directory, network download included |
 | UI first page load | 666 kB, 197 kB gzip, 169 kB brotli | measured | 2026-10-22 | installed UI bundle: `index.html`, entry, `react` and `rpc` chunks, CSS |
-| Cluster scale | designed for 50 hosts, 2,000 VMs | [clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#41-scale-envelope) | design estimate | **not measured**: the scale run is still to do |
+| Cluster scale | designed for 50 hosts, 2,000 VMs | [14-clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#41-scale-envelope) | design estimate | **not measured**: the scale run is still to do |
 | CI `build` job (build and all tests) | median 33.5 min (18.9–36.2) | GitHub Actions, workflow `Rust` | 2026-10-21 to 2026-10-22 | 26 successful runs on `main`, GitHub-hosted `ubuntu-26.04` runner |
 | Workspace test count | 1,066 passed, 243 ignored | CI log of one run | 2026-10-22 | `GLIDEX_CHECK_WRITE_SETS=1 cargo test` |
 
@@ -88,9 +88,9 @@ boot:
 
 | Test | Time | What it covers | Source |
 |---|---|---|---|
-| `kernel_boot_with_initrd` and `qemu_` twin | about 62–63 s | Ubuntu 24.04 kernel and initrd, boot to systemd on two console devices, both backends | [kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#11-testing), [#77](https://github.com/CMKL-APEX/glidex/pull/77) (2026-10-19) |
+| `kernel_boot_with_initrd` and `qemu_` twin | about 62–63 s | Ubuntu 24.04 kernel and initrd, boot to systemd on two console devices, both backends | [23-kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#11-testing), [#77](https://github.com/CMKL-APEX/glidex/pull/77) (2026-10-19) |
 | `kernel_image_boot_with_generated_cloud_init` and `qemu_` twin | 68 s | Ubuntu 26.04 as a kernel image, generated seed, credential, login, `sudo`, clean power-off | [#88](https://github.com/CMKL-APEX/glidex/pull/88) (merged 2026-10-20) |
-| `guest_kernel_updates_are_followed` | 146 s | two boots, an `update-initramfs` in the guest, re-extraction, a third boot | [kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#11-testing), [#99](https://github.com/CMKL-APEX/glidex/pull/99) (2026-10-20) |
+| `guest_kernel_updates_are_followed` | 146 s | two boots, an `update-initramfs` in the guest, re-extraction, a third boot | [23-kernel-boot.md §11](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#11-testing), [#99](https://github.com/CMKL-APEX/glidex/pull/99) (2026-10-20) |
 
 Hardware for these runs was not recorded.
 
@@ -99,10 +99,10 @@ measurements):
 
 | Default | Value | Source |
 |---|---|---|
-| Graceful stop before force | 60 s; `gxctl stop` waits max(60, grace + 20) s, at most 300 s | [cli.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/cli.md) |
-| Crash restart back-off | 10 s × 2^n, capped at 300 s; reset after 600 s running | [reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/reconciliation.md) |
-| Resync of every object | every 30 s (`reconcile.resync_secs`) | [clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#41-scale-envelope) |
-| Kernel extractor VM | killed after 120 s; 1 vCPU, 1 GiB | [kernel-boot.md §10](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#10-the-extractor) |
+| Graceful stop before force | 60 s; `gxctl stop` waits max(60, grace + 20) s, at most 300 s | [01-cli.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/01-cli.md) |
+| Crash restart back-off | 10 s × 2^n, capped at 300 s; reset after 600 s running | [12-reconciliation.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md) |
+| Resync of every object | every 30 s (`reconcile.resync_secs`) | [14-clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#41-scale-envelope) |
+| Kernel extractor VM | killed after 120 s; 1 vCPU, 1 GiB | [23-kernel-boot.md §10](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#10-the-extractor) |
 
 ## Storage
 
@@ -110,10 +110,10 @@ There is no storage throughput benchmark. What has been measured:
 
 | Figure | Value | Source | Conditions |
 |---|---|---|---|
-| Metered disk IOPS at a fixed `fio` rate | 499.997 IOPS and 2.048 MB/s for `fio` 4k randread at 500 IOPS | [metering.md §15.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#155-m2-disk-io-exit-snapshot-percentiles-roll-ups-ui), [#12](https://github.com/CMKL-APEX/glidex/pull/12) | 2026-10-05, QEMU guest; accuracy check, not peak |
+| Metered disk IOPS at a fixed `fio` rate | 499.997 IOPS and 2.048 MB/s for `fio` 4k randread at 500 IOPS | [13-metering.md §15.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#155-m2-disk-io-exit-snapshot-percentiles-roll-ups-ui), [#12](https://github.com/CMKL-APEX/glidex/pull/12) | 2026-10-05, QEMU guest; accuracy check, not peak |
 | Read latency at that rate | 0.087 ms on the host side; `fio` in the guest saw 0.154 ms | as above | as above |
 | Mixed rate | `fio` randrw 700/300 IOPS metered as 700.0 / 300.4 | as above | Cloud Hypervisor guest |
-| LVM-thin boot test | a cloud image boots from a linked volume grown to 6 GiB | [storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/storage.md), [#119](https://github.com/CMKL-APEX/glidex/pull/119) | loop-device volume group; pass/fail only, no timing |
+| LVM-thin boot test | a cloud image boots from a linked volume grown to 6 GiB | [24-storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md), [#119](https://github.com/CMKL-APEX/glidex/pull/119) | loop-device volume group; pass/fail only, no timing |
 
 Disk moves between datastores (S5) and placement of stopped VMs (S4)
 have tests but no recorded timings.
@@ -124,23 +124,23 @@ There is no network throughput benchmark. The OVS-DPDK tuning (PMD
 placement, userspace TSO, queue count, 1024-descriptor rings,
 hugepage-backed guests) was set from host testing, but no Gbit/s
 figure is recorded. See
-[networking.md, findings from host testing](https://github.com/CMKL-APEX/glidex/blob/main/spec/networking.md#findings-from-host-testing).
+[09-networking.md, findings from host testing](https://github.com/CMKL-APEX/glidex/blob/main/spec/09-networking.md#findings-from-host-testing).
 
 | Figure | Value | Source | Conditions |
 |---|---|---|---|
-| Metered VM-to-VM rate at a fixed `iperf` rate | 105.047 Mbps, both ends (iperf reported 105 Mbit/s) | [metering.md §15.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#155-m2-disk-io-exit-snapshot-percentiles-roll-ups-ui) | 2026-10-05, one Cloud Hypervisor and one QEMU guest; accuracy check |
-| Metered bytes, 200 MiB VM to VM | sender +200.27 MiB, receiver +200.26 MiB, bridge +200.45 MiB | [metering.md §15.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#154-m1-core-ledger-vm-and-network-metering-usage-api) | 2026-10-05 |
-| OVS-DPDK shared mempool | about 600 MB at MTU 1500; a second, about 2.5 GB, at MTU 9000 | [networking.md, finding 9](https://github.com/CMKL-APEX/glidex/blob/main/spec/networking.md#findings-from-host-testing) | sizing from host testing; the installer reserves 6144 hugepages (capped at a third of RAM) |
+| Metered VM-to-VM rate at a fixed `iperf` rate | 105.047 Mbps, both ends (iperf reported 105 Mbit/s) | [13-metering.md §15.5](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#155-m2-disk-io-exit-snapshot-percentiles-roll-ups-ui) | 2026-10-05, one Cloud Hypervisor and one QEMU guest; accuracy check |
+| Metered bytes, 200 MiB VM to VM | sender +200.27 MiB, receiver +200.26 MiB, bridge +200.45 MiB | [13-metering.md §15.4](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#154-m1-core-ledger-vm-and-network-metering-usage-api) | 2026-10-05 |
+| OVS-DPDK shared mempool | about 600 MB at MTU 1500; a second, about 2.5 GB, at MTU 9000 | [09-networking.md, finding 9](https://github.com/CMKL-APEX/glidex/blob/main/spec/09-networking.md#findings-from-host-testing) | sizing from host testing; the installer reserves 6144 hugepages (capped at a third of RAM) |
 | Nested two-node OVN cluster test | passed in 670 s | [#38](https://github.com/CMKL-APEX/glidex/pull/38) | 2026-10-17; whole test, including installing Glidex into two VMs |
 
 ## Cluster scale and Raft
 
 The scale envelope in
-[clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#41-scale-envelope)
+[14-clustering.md §4.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#41-scale-envelope)
 is a **design estimate**, built from the measured metering sizes and
 typical NVMe and LAN latencies. The scale run that would measure it (a
 synthetic 2,000 VMs on 50 simulated nodes) is listed as not done in
-[clustering.md §20](https://github.com/CMKL-APEX/glidex/blob/main/spec/clustering.md#20-implementation-notes).
+[14-clustering.md §20](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md#20-implementation-notes).
 
 | Dimension | Designed for | Ceiling (estimate) | Limited by |
 |---|---|---|---|
@@ -166,7 +166,7 @@ Measured in tests rather than at scale:
 ## Metering
 
 From
-[metering.md §15.6–§15.7](https://github.com/CMKL-APEX/glidex/blob/main/spec/metering.md#156-m3-host-side-io-time-zones-tuning)
+[13-metering.md §15.6–§15.7](https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md#156-m3-host-side-io-time-zones-tuning)
 and [#13](https://github.com/CMKL-APEX/glidex/pull/13) (2026-10-07).
 The load test is `metering/bench.rs`: 200 VMs in 10 projects, 2 NICs
 and 2 disks each, 10 networks, a month of history with every 5-minute
@@ -195,7 +195,7 @@ control-plane restart.
 ## Images and kernel extraction
 
 From
-[kernel-boot.md §3](https://github.com/CMKL-APEX/glidex/blob/main/spec/kernel-boot.md#3-verified-facts)
+[23-kernel-boot.md §3](https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md#3-verified-facts)
 and [#82](https://github.com/CMKL-APEX/glidex/pull/82),
 [#90](https://github.com/CMKL-APEX/glidex/pull/90). Hardware not
 recorded.
@@ -243,7 +243,7 @@ lazy-loading pages. It has grown with the pages added since.
 
 TLS: the first Tailscale certificate issuance took about 40 s inside
 one request, and `tailscaled` was back to `Running` 6 s after a restart
-([tailscale-tls.md §9](https://github.com/CMKL-APEX/glidex/blob/main/spec/tailscale-tls.md#9-testing),
+([21-tailscale-tls.md §9](https://github.com/CMKL-APEX/glidex/blob/main/spec/21-tailscale-tls.md#9-testing),
 2026-10-18).
 
 ## Build and CI

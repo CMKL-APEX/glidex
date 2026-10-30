@@ -305,7 +305,7 @@ pub fn ensure_ip_forward(exec: &dyn Exec) -> Result<bool, OvsError> {
 /// up and the kernel gives it an IPv6 link-local address.
 ///
 /// `metadata_ports` are the indexes of VM ports on NAT bridges: the
-/// metadata endpoint's rules (spec/workload-identity.md §7.1,
+/// metadata endpoint's rules (spec/29-workload-identity.md §7.1,
 /// [`crate::metadata`]).
 pub fn nft_script(nats: &[NatState], isolated: &[&str], metadata_ports: &[u16]) -> String {
     let mut s = format!("table inet {t}\ndelete table inet {t}\n", t = NFT_TABLE);
@@ -572,7 +572,7 @@ pub fn iptables_input_rules(nats: &[NatState]) -> Vec<Vec<String>> {
             .to_vec(),
         );
         // A VM port's marked metadata request, after its DNAT to metad
-        // (spec/workload-identity.md §7.1).
+        // (spec/29-workload-identity.md §7.1).
         let md = crate::metadata::ADDRESS.to_string();
         let port = crate::metadata::LISTEN_PORT.to_string();
         let mark = format!(
@@ -980,7 +980,7 @@ table inet glidex {
     fn nft_input_chain_for_one_network() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         let script = nft_script(&[a], &[], &[1, 2]);
-        // The metadata endpoint's peer addresses (spec/workload-identity.md §7.1).
+        // The metadata endpoint's peer addresses (spec/29-workload-identity.md §7.1).
         assert!(
             script.contains("  map metadata_peer {\n    type mark : ipv4_addr\n    elements = { 0x6d000001 : 169.254.192.1, 0x6d000002 : 169.254.192.2 }\n  }\n"),
             "{script}"

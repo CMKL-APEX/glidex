@@ -1,4 +1,4 @@
-# /etc/pam.d/glidex: PAM service used by glidex-authd (security.md §5.3).
+# /etc/pam.d/glidex: PAM service used by glidex-authd (11-security.md §5.3).
 # Managed by glidex-install; delete this line to keep local edits.
 # Debian/Ubuntu; the installer writes "auth include system-auth" and
 # "account include system-auth" on Fedora/RHEL instead.

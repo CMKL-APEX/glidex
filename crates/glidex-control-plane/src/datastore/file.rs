@@ -1,5 +1,5 @@
 //! The file driver: volumes are qcow2 or raw files named by disk id in one
-//! directory (spec/images.md §2). Every change is made on a dot-file
+//! directory (spec/10-images.md §2). Every change is made on a dot-file
 //! temporary in the same directory and renamed into place, so a crash
 //! leaves either the old file or the new one.
 
@@ -105,7 +105,7 @@ impl StorageDriver for FileDriver {
             } => {
                 // Named relative to this directory, where the overlay
                 // lives, so it never depends on where that is mounted
-                // (spec/storage.md S8).
+                // (spec/24-storage.md S8).
                 let backing = crate::paths::relative_to(path, &self.dir)
                     .unwrap_or_else(|| path.to_path_buf());
                 qemu_img::create(tmp.path(), disk.format, size, Some(&backing))?

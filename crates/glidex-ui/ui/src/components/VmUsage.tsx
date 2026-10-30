@@ -29,7 +29,7 @@ function Tile({ label, value, unit }: { label: string; value: number | null | un
   );
 }
 
-/** VM detail "Usage" card (spec/metering.md §12): current rates and the
+/** VM detail "Usage" card (spec/13-metering.md §12): current rates and the
  * last 24 h of CPU, memory, bandwidth and disk I/O with their 95th
  * percentiles. */
 export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor: string }) {

@@ -1,4 +1,4 @@
-//! The VM controller (spec/reconciliation.md §9.1).
+//! The VM controller (spec/12-reconciliation.md §9.1).
 //!
 //! Each round observes the VM's instance (liveness §8.7, `instance.json`,
 //! the hypervisor), records what it saw, and takes the next step toward
@@ -170,7 +170,7 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
 const RECONCILED_STAMP_SECS: u64 = 600;
 
 /// The port a NIC gets: on its network's bridge, or, on a cluster network,
-/// on `br-int` as the logical port OVN knows (spec/clustering.md §11.3, §11.5).
+/// on `br-int` as the logical port OVN knows (spec/14-clustering.md §11.3, §11.5).
 fn port_spec(
     vm_id: &str,
     net: &crate::network::Network,
@@ -219,7 +219,7 @@ fn device_errors_now(devices: &[String]) -> std::collections::BTreeMap<String, u
         .collect()
 }
 
-/// What is wrong with a running VM's VFIO devices (spec/host-topology.md
+/// What is wrong with a running VM's VFIO devices (spec/22-host-topology.md
 /// §5.4): gone from the bus, or uncorrectable AER errors since its launch.
 /// `exists` and `errors` read the host (sysfs), as parameters for tests.
 fn device_problems(
@@ -320,7 +320,7 @@ impl VmManager {
         let Some(cur) = vms.get(id).cloned() else {
             return Ok(None);
         };
-        // spec/clustering.md §4.1: a round that observes nothing new writes
+        // spec/14-clustering.md §4.1: a round that observes nothing new writes
         // nothing, so `last_reconciled_at` is left out of the comparison and
         // stamped only with another change, or at most every 10 minutes.
         let now = crate::tenancy::now();
@@ -412,7 +412,7 @@ impl VmManager {
         let Some(vm) = self.vm(id).await else {
             return Ok(None);
         };
-        // Another node's VM: that node's controller owns it (spec/clustering.md §8.1).
+        // Another node's VM: that node's controller owns it (spec/14-clustering.md §8.1).
         if !self.is_local(&vm) {
             return Ok(None);
         }
@@ -611,7 +611,7 @@ impl VmManager {
     ) -> Next {
         let now = crate::tenancy::now();
         // When it really exited (the shim's record), not when we noticed:
-        // metering ends allocation there (spec/metering.md §6.4).
+        // metering ends allocation there (spec/13-metering.md §6.4).
         let mut exited_at = now;
         let mut usage = None;
         let (cause, code, signal, message) = if inst.boot_id != boot {
@@ -821,7 +821,7 @@ impl VmManager {
     }
 
     /// Lets go of what staging held for `vm_id`'s disks `ids` (a hyperstor
-    /// volume's lease, spec/storage.md §11.2); returns those that couldn't
+    /// volume's lease, spec/24-storage.md §11.2); returns those that couldn't
     /// be, to try again.
     pub(crate) async fn unstage_disks(&self, vm_id: &str, ids: &[String]) -> Vec<String> {
         let images = self.images.clone();
@@ -908,7 +908,7 @@ impl VmManager {
         }
         clear_cond(&mut st.conditions, "CrashLoopBackOff");
 
-        // A kernel the guest installed (spec/kernel-boot.md §10.5): extract
+        // A kernel the guest installed (spec/23-kernel-boot.md §10.5): extract
         // it first, so the bindings below use what this records.
         let followed: Vm;
         let vm = if vm.config().kernel_from_disk || st.disk_kernel.is_some() {
@@ -1183,7 +1183,7 @@ impl VmManager {
 
         // 5.2 the ports: record each in status before attaching it (D16).
         config.nic_bindings = self.attach_ports(vm, st).await.map_err(before_intent)?;
-        // Guest RAM in the pages the scheduler counted (spec/host-topology.md
+        // Guest RAM in the pages the scheduler counted (spec/22-host-topology.md
         // §8a.3), checked against what is free now.
         match vm.status.placement.as_ref().and_then(|p| p.page_kib) {
             Some(kib) => {
@@ -1232,7 +1232,7 @@ impl VmManager {
             }
         }
 
-        // Where it runs (spec/host-topology.md §7): its RAM bound to its
+        // Where it runs (spec/22-host-topology.md §7): its RAM bound to its
         // NUMA node; dedicated vCPUs each on a CPU it holds, every thread
         // on those; a shared VM on what dedicated VMs leave, once any are
         // here. A placement that no longer holds fails the start.
@@ -1249,7 +1249,7 @@ impl VmManager {
             .as_ref()
             .map(|p| p.numa.clone())
             .unwrap_or_default();
-        // The devices picked for its pool requests (spec/host-topology.md §9).
+        // The devices picked for its pool requests (spec/22-host-topology.md §9).
         for d in vm
             .status
             .placement
@@ -1302,7 +1302,7 @@ impl VmManager {
         };
         let settings = self.settings();
         // Shared disks' locks: the shim takes them before the hypervisor
-        // starts (spec/storage.md S16).
+        // starts (spec/24-storage.md S16).
         let volume_locks = config
             .root_disk_binding
             .iter()
@@ -1746,7 +1746,7 @@ impl VmManager {
             inst.vfio_devices = held;
         }
 
-        // 7b. vCPU resize / live elasticity drift (spec/pylon.md §4.3)
+        // 7b. vCPU resize / live elasticity drift (spec/30-pylon.md §4.3)
         // Pylon boots with all max_vcpus in the MADT and arbitrates cores cooperatively
         // via pylond without ACPI hot-unplug.
         if vm.hypervisor() == HypervisorType::Pylon {
@@ -1941,7 +1941,7 @@ impl VmManager {
     }
 
     /// A running shared VM follows the CPUs dedicated VMs leave free on its
-    /// node (spec/host-topology.md §8.1): the shim moves its threads when
+    /// node (spec/22-host-topology.md §8.1): the shim moves its threads when
     /// that set changes, back to every online CPU once no dedicated VM is
     /// left. Dedicated VMs keep the CPUs they launched on.
     async fn cpu_drift(&self, vm: &Vm, st: &mut VmStatus, events: &mut Vec<Event>) {
@@ -2265,7 +2265,7 @@ mod tests {
         );
     }
 
-    /// spec/clustering.md §4.1 / C0: an idle VM causes no store write across
+    /// spec/14-clustering.md §4.1 / C0: an idle VM causes no store write across
     /// ten resync rounds.
     #[tokio::test]
     async fn an_unchanged_status_writes_nothing() {

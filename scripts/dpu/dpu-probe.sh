@@ -1,5 +1,5 @@
 #!/bin/bash
-# D0: collect the spec/dpu.md §9.2 capability fields from a DPU (and, with
+# D0: collect the spec/31-dpu.md §9.2 capability fields from a DPU (and, with
 # --host, the host side) as one JSON document on stdout. Read-only.
 #
 #   dpu-probe.sh --ssh <user@dpu> [--host] [--fixtures DIR] [--rshim rshim0]

@@ -2,7 +2,7 @@ import { TokenReveal as SecretReveal } from "@glidex/ui-kit";
 import type { IssuedToken } from "../types";
 import { num } from "../types";
 
-/** A join or rejoin token, shown once (spec/clustering-ui.md §2.3): masked
+/** A join or rejoin token, shown once (spec/16-clustering-ui.md §2.3): masked
  * until asked, copied to the clipboard on request, never put in a URL,
  * storage or a command line. The commands read it from a file. The caller
  * drops the token when the dialog closes. */

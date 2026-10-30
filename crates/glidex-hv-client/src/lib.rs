@@ -1,7 +1,7 @@
 //! Blocking clients for the hypervisors' own control sockets: Cloud
 //! Hypervisor's HTTP API and QEMU's QMP. Shared by `glidex-vm-shim` (power
 //! button, kill, launch health check) and the control plane (observe,
-//! pause/resume, hot-plug); see spec/reconciliation.md §5.2, §16.
+//! pause/resume, hot-plug); see spec/12-reconciliation.md §5.2, §16.
 //!
 //! Every call opens its own connection, so the shim and the control plane
 //! never hold one open for long, and a restarted control plane reconnects
@@ -40,7 +40,7 @@ pub enum GuestState {
 }
 
 /// The guest's state and the ids of the devices it has (VFIO ids are
-/// `vfio_…`, `_vfio_…` from guests launched before; spec hypervisors.md).
+/// `vfio_…`, `_vfio_…` from guests launched before; spec 04-hypervisors.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
     pub guest: GuestState,

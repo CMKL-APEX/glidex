@@ -1,6 +1,6 @@
 [Unit]
 Description=glidex storage helper (LVM volumes, device access)
-Documentation=https://github.com/akkarit/glidex/blob/main/spec/storage.md
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/24-storage.md
 After=lvm2-monitor.service systemd-udevd.service
 Before=glidex-control-plane.service
 
@@ -13,10 +13,10 @@ RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=2
 # stord acts only on the volume groups in /etc/glidex/stord.json
-# (allowed_vgs) and only on volumes named gx-d-*/gx-i-* (spec/storage.md
+# (allowed_vgs) and only on volumes named gx-d-*/gx-i-* (spec/24-storage.md
 # S17). It writes LVM's metadata backups and locks, and the VM units'
 # drop-ins; nothing else. Checked with LVM-thin on a loop device
-# (spec/storage.md §19, H4-H5).
+# (spec/24-storage.md §19, H4-H5).
 ProtectSystem=strict
 ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system
 ProtectHome=yes

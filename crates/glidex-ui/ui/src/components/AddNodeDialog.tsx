@@ -13,7 +13,7 @@ const TTLS: [number, string][] = [
   [7 * 86400, "7 days"],
 ];
 
-/** A join token for a new node (spec/clustering-ui.md §7.1). */
+/** A join token for a new node (spec/16-clustering-ui.md §7.1). */
 export default function AddNodeDialog({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<"agent" | "server">("agent");
   const [ttl, setTtl] = useState(3600);

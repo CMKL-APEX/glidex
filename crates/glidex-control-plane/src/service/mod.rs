@@ -1,4 +1,4 @@
-//! Transport-neutral operations (spec/tenancy.md §12.1, spec/grpc.md
+//! Transport-neutral operations (spec/19-tenancy.md §12.1, spec/18-grpc.md
 //! G-D1).
 //!
 //! Each operation is one function here. It makes every decision: Cedar

@@ -1,5 +1,5 @@
 //! Requests between a directory and a cluster of different organizations
-//! (spec/tenancy.md D63). No CA is shared, so:
+//! (spec/19-tenancy.md D63). No CA is shared, so:
 //!
 //! - each request carries a **signed assertion** (`Authorization:
 //!   GlidexPeer <JWT>`): ES256, at most 60 s, single use by `jti`, signed

@@ -1,6 +1,6 @@
 [Unit]
 Description=glidex network helper (Open vSwitch, NAT, VM ports)
-Documentation=https://github.com/akkarit/glidex/blob/main/spec/networking.md
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/09-networking.md
 # Open vSwitch must be up first; whichever of these exists is used
 # (Debian/Ubuntu, Fedora, or glidex's source build). Missing ones are ignored.
 Wants=network-online.target openvswitch-switch.service openvswitch.service glidex-ovs-vswitchd.service

@@ -1,5 +1,5 @@
-//! A directory as a token issuer (spec/tenancy.md D52, D53;
-//! workload-identity.md §4.1).
+//! A directory as a token issuer (spec/19-tenancy.md D52, D53;
+//! 29-workload-identity.md §4.1).
 //!
 //! Each directory signs with ES256 keys of its own, `kid` =
 //! `<directory>:<n>`. The private key is sealed with the directory's data

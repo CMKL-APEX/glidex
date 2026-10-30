@@ -1,4 +1,4 @@
-//! Raft over an in-process mesh with fault injection (spec/clustering.md §15).
+//! Raft over an in-process mesh with fault injection (spec/14-clustering.md §15).
 
 use glidex_raftstore::store::{StoreError, definition};
 use glidex_raftstore::testing::{Test, TestCluster, TestOrigin, TestTable};

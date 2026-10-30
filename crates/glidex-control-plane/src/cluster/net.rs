@@ -1,4 +1,4 @@
-//! Mutual TLS between nodes on :8842 (spec/clustering.md §4, §12): a server
+//! Mutual TLS between nodes on :8842 (spec/14-clustering.md §4, §12): a server
 //! that asks every client for a certificate from the cluster CA, and a client
 //! that trusts only that CA. Raft, forwarding, watch and relays all run over
 //! it.
@@ -221,7 +221,7 @@ pub struct Reply {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
-    /// HTTP/2 trailers, where native gRPC carries its status (spec/grpc.md §8).
+    /// HTTP/2 trailers, where native gRPC carries its status (spec/18-grpc.md §8).
     pub trailers: Option<HeaderMap>,
 }
 

@@ -1,5 +1,5 @@
 #!/bin/busybox sh
-# glidex kernel extractor (spec/kernel-boot.md §10.3): /init of the
+# glidex kernel extractor (spec/23-kernel-boot.md §10.3): /init of the
 # extractor appliance. Mounts every partition of the image on /dev/vda
 # read-only and writes its kernels, initramfs files and boot configs to
 # /dev/vdb as one stream:

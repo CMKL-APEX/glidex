@@ -1,56 +1,58 @@
 # Summary
 
 <!-- Table of contents for the internal book (docs/internal/book.toml).
-     A new spec needs an entry here and in README.md. -->
+     A new spec takes the next number (README.md) and needs an entry
+     here and in README.md. -->
 
 [Overview](README.md)
 [Progress](progress.md)
 
 # Core
 
-- [Architecture](architecture.md)
-- [Data model](data-model.md)
-- [Reconciliation](reconciliation.md)
-- [Hypervisors](hypervisors.md)
-- [Pylon and CPU elasticity](pylon.md)
-- [Direct kernel boot](kernel-boot.md)
-- [Images and disks](images.md)
-- [Datastores](storage.md)
-- [Credentials](credentials.md)
-- [Console](console.md)
-- [Metering](metering.md)
+- [Architecture](00-architecture.md)
+- [Data model](03-data-model.md)
+- [Reconciliation](12-reconciliation.md)
+- [Hypervisors](04-hypervisors.md)
+- [Pylon and CPU elasticity](30-pylon.md)
+- [Direct kernel boot](23-kernel-boot.md)
+- [Images and disks](10-images.md)
+- [Datastores](24-storage.md)
+- [Credentials](08-credentials.md)
+- [Console](02-console.md)
+- [Metering](13-metering.md)
 
 # Networking
 
-- [Networking](networking.md)
+- [Networking](09-networking.md)
+- [DPU integration](31-dpu.md)
 
 # APIs and clients
 
-- [REST API](rest-api.md)
-- [RPC API](grpc.md)
-- [CLI](cli.md)
-- [gxctl auth](gxctl-auth.md)
-- [Web UI](web-ui.md)
+- [REST API](06-rest-api.md)
+- [RPC API](18-grpc.md)
+- [CLI](01-cli.md)
+- [gxctl auth](17-gxctl-auth.md)
+- [Web UI](07-web-ui.md)
 
 # Security and tenancy
 
-- [Security](security.md)
-- [Tailscale certificates](tailscale-tls.md)
-- [Tenancy](tenancy.md)
-- [Workload identity](workload-identity.md)
-- [Managed applications](apps.md)
-- [Passkeys](passkeys.md)
-- [Real-IdP checks](idp-checks.md)
+- [Security](11-security.md)
+- [Tailscale certificates](21-tailscale-tls.md)
+- [Tenancy](19-tenancy.md)
+- [Workload identity](29-workload-identity.md)
+- [Managed applications](26-apps.md)
+- [Passkeys](25-passkeys.md)
+- [Real-IdP checks](20-idp-checks.md)
 
 # Clusters
 
-- [Clustering](clustering.md)
-- [Clustering UI](clustering-ui.md)
-- [Host page and the UI on agents](host-page.md)
-- [Host topology](host-topology.md)
-- [GPU VMs](gpu-vms.md)
-- [Cluster runbook](cluster-runbook.md)
+- [Clustering](14-clustering.md)
+- [Clustering UI](16-clustering-ui.md)
+- [Host page and the UI on agents](28-host-page.md)
+- [Host topology](22-host-topology.md)
+- [GPU VMs](27-gpu-vms.md)
+- [Cluster runbook](15-cluster-runbook.md)
 
 # Installation
 
-- [Installer](installer.md)
+- [Installer](05-installer.md)

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
-import type { VmResponse } from "../types";
+import { vmHypervisor, type VmResponse } from "../types";
 
 export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
@@ -12,6 +12,9 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
     vm.min_vcpus !== undefined && vm.max_vcpus !== undefined && vm.min_vcpus < vm.max_vcpus,
   );
   const [busy, setBusy] = useState(false);
+  // An elastic Pylon guest boots with all max_vcpus and pylond parks the
+  // idle ones, so its vcpu_count is max_vcpus (spec/30-pylon.md P2).
+  const pylon = vmHypervisor(vm) === "pylon";
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,13 +31,17 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
     try {
       if (isElastic) {
         await api.setVmCpuPolicy(vm.id, {
+          ...(pylon && { vcpu_count: Number(maxVcpus) }),
           min_vcpus: Number(minVcpus),
           max_vcpus: Number(maxVcpus),
           cpu_weight: Number(weight),
         });
       } else {
+        // On Pylon a VM left with min < max stays elastic and its vcpu_count
+        // goes back to max_vcpus: pin both to the fixed size.
         await api.setVmCpuPolicy(vm.id, {
           vcpu_count: Number(vcpus),
+          ...(pylon && { min_vcpus: Number(vcpus), max_vcpus: Number(vcpus) }),
           cpu_weight: Number(weight),
         });
       }
@@ -71,7 +78,15 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
           <input
             type="checkbox"
             checked={isElastic}
-            onChange={(e) => setIsElastic(e.target.checked)}
+            onChange={(e) => {
+              setIsElastic(e.target.checked);
+              // A fixed-size VM has min = max: start from 1..vcpu_count,
+              // which a running guest can take without a restart.
+              if (e.target.checked && minVcpus >= maxVcpus) {
+                setMinVcpus(1);
+                setMaxVcpus(vcpus);
+              }
+            }}
             className="rounded text-sky-600"
           />
           Elastic CPU scaling (pylond microsecond elasticity)
@@ -102,6 +117,11 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
               className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
             />
           </div>
+          {pylon && (
+            <div className="col-span-2 text-xs text-gray-500">
+              vCPUs in the guest: {maxVcpus} (pylond keeps {minVcpus}–{maxVcpus} active)
+            </div>
+          )}
         </div>
       ) : (
         <div className="mb-2">

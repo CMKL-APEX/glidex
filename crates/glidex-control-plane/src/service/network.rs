@@ -1,6 +1,6 @@
-//! The network family (spec/grpc.md §9, G3): networks, their grants and
+//! The network family (spec/18-grpc.md §9, G3): networks, their grants and
 //! shares, and VPC routers. Networks are keyed by id; a name resolves
-//! among the networks the caller can see (spec/tenancy.md D24).
+//! among the networks the caller can see (spec/19-tenancy.md D24).
 
 use super::{Call, ServiceError, ServiceResult};
 use crate::api::add_network;
@@ -369,7 +369,7 @@ pub async fn delete_network(
     let mut es = EntitySet::new();
     let e = add_network(&mut es, &n);
     match &n.project {
-        // A project's owner deletes its own networks (spec/security.md §6.2).
+        // A project's owner deletes its own networks (spec/11-security.md §6.2).
         Some(_) => call.require_action("deleteProjectNetwork", e, es, &[])?,
         None => call.require(e, es)?,
     }
@@ -583,7 +583,7 @@ pub async fn set_network_router(
     })
 }
 
-// ---- sharing project networks (spec/security.md §6.2.1) -------------------
+// ---- sharing project networks (spec/11-security.md §6.2.1) -------------------
 
 pub fn offer_share(
     call: &Call,
@@ -763,7 +763,7 @@ pub async fn leave_share(
     Ok(Default::default())
 }
 
-// ---- VPC routers (spec/clustering.md §11.2a) ------------------------------
+// ---- VPC routers (spec/14-clustering.md §11.2a) ------------------------------
 
 fn router_project(call: &Call, project: &str) -> ServiceResult<String> {
     let project = call.target_project(Some(project))?;

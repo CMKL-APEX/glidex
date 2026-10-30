@@ -1,4 +1,4 @@
-//! VM instances from the control plane's side (spec/reconciliation.md §8):
+//! VM instances from the control plane's side (spec/12-reconciliation.md §8):
 //! where the shim runs ([`runner`]) and whether an instance is live
 //! ([`liveness`]).
 

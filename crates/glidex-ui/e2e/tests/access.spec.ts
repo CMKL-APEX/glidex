@@ -1,4 +1,4 @@
-// The access-control pages (spec/security.md §15 S6) as a system-admin:
+// The access-control pages (spec/11-security.md §15 S6) as a system-admin:
 // projects with members and quotas, tokens, site policies with validate,
 // simulate and save, and the audit log. No VM is booted.
 import { api, del, expect, test } from "../fixtures";

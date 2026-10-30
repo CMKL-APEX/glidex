@@ -38,7 +38,7 @@ const showClaims = (m?: Record<string, string>) =>
     .map(([k, v]) => `${k}=${v}`)
     .join(", ");
 
-/** A tenant's workload federations (spec/tenancy.md §9): CI jobs trade
+/** A tenant's workload federations (spec/19-tenancy.md §9): CI jobs trade
  * their own OIDC token for a short-lived one acting as a service account. */
 export default function FederationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
   const { projects } = useSession();

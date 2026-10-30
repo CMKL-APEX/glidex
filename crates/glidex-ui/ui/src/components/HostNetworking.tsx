@@ -194,7 +194,7 @@ function InstallDialog({
 }
 
 
-/** A host's Open vSwitch, install and bridges (spec/host-page.md W1), on
+/** A host's Open vSwitch, install and bridges (spec/28-host-page.md W1), on
  * `node` through the server serving the UI (W2). Hidden without the right
  * to read the host's OVS status. */
 export default function HostNetworking({ node, host }: { node: string; host: EntityRef }) {

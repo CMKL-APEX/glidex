@@ -1,7 +1,7 @@
 # Rendered by glidex-install (@USER@, @HOME@, @BIN@, @GROUPS@ are filled in).
 # One instance per running VM, started only by the control plane over D-Bus
 # (polkit rule 50-glidex-vm.rules). Never enabled: relaunching VMs after a
-# host reboot is the control plane's job (spec/reconciliation.md D10, §13.1).
+# host reboot is the control plane's job (spec/12-reconciliation.md D10, §13.1).
 [Unit]
 Description=glidex VM %i
 Documentation=https://github.com/CMKL-APEX/glidex
@@ -28,14 +28,18 @@ TimeoutStopSec=330
 # Restarting is the VM controller's decision, never systemd's.
 Restart=no
 Slice=glidex-vms.slice
-# Per-VM CPU, memory and I/O for metering (spec/metering.md §5.1). Set
+# Per-VM CPU, memory and I/O for metering (spec/13-metering.md §5.1). Set
 # here, not on the slice: on the slice it only enables the controllers
 # in the slice's parent. CPU usage needs no setting on cgroup v2.
 IOAccounting=yes
 MemoryAccounting=yes
 UMask=0077
+# VFIO pins all guest RAM, counted against RLIMIT_MEMLOCK (8 MiB for
+# services), or a passthrough VM fails its DMA map (spec/27-gpu-vms.md
+# G12). The VM's memory stays bounded by its size and the slice.
+LimitMEMLOCK=infinity
 
-# The hypervisor sandbox (spec/security.md §9). No NoNewPrivileges= nor
+# The hypervisor sandbox (spec/11-security.md §9). No NoNewPrivileges= nor
 # anything implying it for a non-root unit: cloud-hypervisor's cap_net_admin
 # file capability (tap devices) would be ignored.
 #  - /dev is closed except for what VMs use: KVM, VFIO passthrough (the
@@ -49,7 +53,7 @@ ProtectSystem=strict
 ProtectHome=yes
 # The service home (disks, images, firmware and its variable stores), this
 # VM's runtime directory (sockets, console log), vhost-user sockets in
-# glidex-netd's directory, and registered datastores (spec/storage.md S11).
+# glidex-netd's directory, and registered datastores (spec/24-storage.md S11).
 ReadWritePaths=@HOME@ /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv/glidex
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw

@@ -1,4 +1,4 @@
-// The VM page's kernel panel (spec/kernel-boot.md §7): no kernel image is
+// The VM page's kernel panel (spec/23-kernel-boot.md §7): no kernel image is
 // needed, the VM is shown as booting one.
 import { createVm, del, expect, listVms, rpcFetch, rpcRoute, test } from "../fixtures";
 

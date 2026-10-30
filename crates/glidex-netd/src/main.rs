@@ -112,7 +112,7 @@ fn main() {
     }
 
     // `--boot-devices [FILE]`: apply the boot settings (VF counts,
-    // vfio-pci bindings) and exit (spec/gpu-vms.md §10). netd running: its
+    // vfio-pci bindings) and exit (spec/27-gpu-vms.md §10). netd running: its
     // ops, as the installer's `--now`; else directly, as
     // glidex-vfio-boot.service does before netd starts.
     if let Some(i) = std::env::args().position(|a| a == "--boot-devices") {

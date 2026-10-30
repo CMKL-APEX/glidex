@@ -1,5 +1,5 @@
 //! Read-only views of the OVN databases for the web UI
-//! (spec/clustering-ui.md §8): who serves the databases and which of them
+//! (spec/16-clustering-ui.md §8): who serves the databases and which of them
 //! leads, the chassis, and one cluster network's ports and router. Nothing
 //! here writes.
 

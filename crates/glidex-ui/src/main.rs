@@ -1,4 +1,4 @@
-//! glidex-ui: the web UI (spec/web-ui.md, spec/security.md §5.6).
+//! glidex-ui: the web UI (spec/07-web-ui.md, spec/11-security.md §5.6).
 //!
 //! - `glidex-ui` serves the built UI (`bun run build` → `ui/dist`, or
 //!   `GLIDEX_UI_DIR`) over HTTPS on `GLIDEX_UI_LISTEN` (default every
@@ -22,7 +22,7 @@
 //! self-signed certificate. `GLIDEX_UI_TLS=off` serves plain HTTP, only on
 //! loopback addresses. `GLIDEX_UI_TLS_TAILSCALE=on` also serves the node's
 //! Tailscale certificate to its ts.net names (`tailscale`,
-//! spec/tailscale-tls.md).
+//! spec/21-tailscale-tls.md).
 
 mod home;
 mod tailscale;
@@ -192,10 +192,10 @@ struct HostPolicy {
     local_ips: bool,
     /// The ts.net names a Tailscale certificate is held for, allowed
     /// with either list: the UI holds a certificate for them, so they are
-    /// this host's (spec/tailscale-tls.md §4.3).
+    /// this host's (spec/21-tailscale-tls.md §4.3).
     tailscale: Option<Arc<tailscale::Held>>,
     /// What the control plane last said about this UI: on a server, more
-    /// names to accept (`cluster.ui_url`, spec/host-page.md W4); on an
+    /// names to accept (`cluster.ui_url`, spec/28-host-page.md W4); on an
     /// agent, where browsers go (W5).
     home: Arc<home::Home>,
 }
@@ -240,7 +240,7 @@ async fn host_check(State(policy): State<Arc<HostPolicy>>, req: Request, next: N
 const HSTS_CONFIGURED: &str = "max-age=31536000";
 /// HSTS on a connection served the Tailscale certificate: one day while
 /// the feature is new, since it covers the control plane's port of that
-/// name too (spec/tailscale-tls.md §4.4).
+/// name too (spec/21-tailscale-tls.md §4.4).
 const HSTS_TAILSCALE: &str = "max-age=86400";
 
 /// `hsts`: the `Strict-Transport-Security` value, if any.
@@ -306,7 +306,7 @@ struct UpstreamSpec {
 ///   `https://127.0.0.1:8841`;
 /// - `GLIDEX_API_SOCKET` alone (the packaged unit): that socket only. Until
 ///   it exists requests get `502`; they never fall back to TCP, which is a
-///   different trust path (spec/security.md §5.6);
+///   different trust path (spec/11-security.md §5.6);
 /// - `GLIDEX_API_URL` alone: that URL only, skipping the default socket, so
 ///   a development UI can point at a scratch control plane on a host that
 ///   also runs glidex;
@@ -693,7 +693,7 @@ fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
     Router::new()
         .route("/api", any(proxy_api))
         .route("/api/{*rest}", any(proxy_api))
-        // The directories' issuers (spec/tenancy.md D52): discovery, keys.
+        // The directories' issuers (spec/19-tenancy.md D52): discovery, keys.
         .route("/d/{*rest}", any(proxy_api))
         // A missing asset is a 404, never index.html: it would be cached as the asset.
         .nest_service("/assets", assets)
@@ -940,7 +940,7 @@ async fn accept_loop(
     }
 }
 
-/// The address this UI reports (spec/host-page.md W3): its Tailscale name
+/// The address this UI reports (spec/28-host-page.md W3): its Tailscale name
 /// when it holds that certificate, else the first name `GLIDEX_UI_HOSTS`
 /// lists, else the host's FQDN; with its port.
 fn own_url(
@@ -1032,7 +1032,7 @@ async fn serve() -> Result<(), String> {
         return Err("GLIDEX_UI_TLS_TAILSCALE=on needs TLS (GLIDEX_UI_TLS is off)".into());
     }
     let cert = if tls_on { Some(ui_cert()?) } else { None };
-    // Re-read when the files change (spec/tailscale-tls.md §4.1).
+    // Re-read when the files change (spec/21-tailscale-tls.md §4.1).
     let files = match &cert {
         Some(c) => Some(glidex_tls::FileCert::load(&c.cert, &c.key)?),
         None => None,
@@ -1047,7 +1047,7 @@ async fn serve() -> Result<(), String> {
         None => None,
     };
     // The node's Tailscale certificates, fetched in the background once
-    // the listeners are up (spec/tailscale-tls.md §4.2).
+    // the listeners are up (spec/21-tailscale-tls.md §4.2).
     let tailscale = match (&resolver, tailscale_on) {
         (Some(r), true) => Some(tailscale::Tailscale::new(
             env("GLIDEX_UI_TAILSCALE_SOCKET")
@@ -1082,7 +1082,7 @@ async fn serve() -> Result<(), String> {
     )?;
     let upstream = Upstream::new(spec, env("GLIDEX_API_CA_CERT"))?;
     let describe = upstream.describe();
-    // spec/host-page.md §3: report this UI's address; learn where it belongs.
+    // spec/28-host-page.md §3: report this UI's address; learn where it belongs.
     if tls_on {
         let port = listen.first().map_or(PORT, SocketAddr::port);
         let fqdn = glidex_tls::LocalNames::discover().dns.into_iter().next();
@@ -1176,7 +1176,7 @@ async fn shutdown_signal() {
 
 /// Vite with hot reload, over HTTPS with the UI's certificate (configured
 /// or self-signed), proxying to the control plane it verifies against the
-/// published certificate (spec/web-ui.md).
+/// published certificate (spec/07-web-ui.md).
 async fn run_dev_server() {
     let ui_path = ui_dir();
     tracing::info!("Starting UI dev server from {}", ui_path.display());
@@ -1211,7 +1211,7 @@ async fn run_dev_server() {
         cmd.env("GLIDEX_API_CA_CERT", p);
     }
     // The UI's RPCs are gRPC-Web, which the control plane takes on its UI
-    // socket only (spec/grpc.md §6): the dev proxy goes there when it can.
+    // socket only (spec/18-grpc.md §6): the dev proxy goes there when it can.
     // The control plane admits only its `ui_user` there; for a dev server
     // run as yourself, set `ui_user` to your user in control-plane.json.
     let socket = env("GLIDEX_API_SOCKET").unwrap_or_else(|| DEFAULT_API_SOCKET.to_string());
@@ -1890,7 +1890,7 @@ mod tests {
         assert!(out.contains("upstream path=/vms"), "{out}");
     }
 
-    /// The Tailscale certificate end to end (spec/tailscale-tls.md §4):
+    /// The Tailscale certificate end to end (spec/21-tailscale-tls.md §4):
     /// fetched from a fake `tailscaled`, served for its ts.net name only,
     /// that name allowed as `Host` once held, and one-day HSTS on exactly
     /// the connections that got it.

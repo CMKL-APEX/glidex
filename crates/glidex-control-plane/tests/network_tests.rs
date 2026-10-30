@@ -29,7 +29,7 @@ struct Harness {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, writes), in the proto3 JSON
-/// shape (spec/grpc.md §9.1).
+/// shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -333,7 +333,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
 
     // The firmware path doesn't exist, so the launch fails after the port
-    // was attached (spec/reconciliation.md §9.1 step 5).
+    // was attached (spec/12-reconciliation.md §9.1 step 5).
     let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
     assert!(
         status.is_server_error() || status.is_client_error(),
@@ -431,7 +431,7 @@ async fn ovs_status_and_bridges() {
     assert_eq!(body["error"], "invalid_network");
 }
 
-/// spec/reconciliation.md §10.3: the network controller checks netd's
+/// spec/12-reconciliation.md §10.3: the network controller checks netd's
 /// records and reports the network's phase.
 #[tokio::test(flavor = "multi_thread")]
 async fn network_controller_reports_the_phase() {
@@ -478,7 +478,7 @@ async fn network_controller_reports_the_phase() {
 }
 
 /// An isolated network's bridge is marked isolated in netd, which fences
-/// it off from the host (spec/security.md §8.4); bridges recorded before
+/// it off from the host (spec/11-security.md §8.4); bridges recorded before
 /// the flag existed are marked by the network controller.
 #[tokio::test(flavor = "multi_thread")]
 async fn isolated_networks_are_fenced_by_netd() {
@@ -642,7 +642,7 @@ async fn netd_errors_map_to_rest() {
     assert_eq!(status, StatusCode::CREATED);
 }
 
-/// Project networks, quotas and two-sided sharing (spec/security.md §6.2).
+/// Project networks, quotas and two-sided sharing (spec/11-security.md §6.2).
 #[tokio::test(flavor = "multi_thread")]
 async fn project_networks_and_sharing() {
     let h = harness(true);
@@ -875,7 +875,7 @@ async fn project_networks_and_sharing() {
 }
 
 /// Deleting a network is a request the network controller finishes
-/// (spec/reconciliation.md §6.3, §10.3): with netd away it waits, says
+/// (spec/12-reconciliation.md §6.3, §10.3): with netd away it waits, says
 /// why, and keeps the network from new VMs; once netd is back, netd's NAT
 /// and bridge go, then the record.
 #[tokio::test(flavor = "multi_thread")]
@@ -953,7 +953,7 @@ async fn network_deletion_waits_for_netd() {
     manager.stop_controllers().await;
 }
 
-/// Host networks granted to a whole tenant (spec/tenancy.md D25), and
+/// Host networks granted to a whole tenant (spec/19-tenancy.md D25), and
 /// project networks shared only within their tenant.
 #[tokio::test(flavor = "multi_thread")]
 async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
@@ -1069,7 +1069,7 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     );
 }
 
-/// D24 (spec/tenancy.md): networks are keyed by id; a project network's
+/// D24 (spec/19-tenancy.md): networks are keyed by id; a project network's
 /// name is unique in its tenant, a host network's on the cluster. A name
 /// several networks have is ambiguous where both are in view; a VM's NIC
 /// names its network by id, with the name beside it; the RPC transport
@@ -1221,7 +1221,7 @@ async fn next_frame(body: &mut Body, buf: &mut Vec<u8>) -> Option<Value> {
     }
 }
 
-/// `glidex.watch.v1.WatchService.WatchEvents` (spec/grpc.md G4): an
+/// `glidex.watch.v1.WatchService.WatchEvents` (spec/18-grpc.md G4): an
 /// object's events as a stream, the ones it has, `synced`, then new ones
 /// as they happen.
 #[tokio::test(flavor = "multi_thread")]
@@ -1300,7 +1300,7 @@ async fn a_networks_events_stream_as_they_happen() {
     );
 }
 
-/// spec/workload-identity.md §15: a node NAT network's guests may be given
+/// spec/29-workload-identity.md §15: a node NAT network's guests may be given
 /// this host's API; netd opens its ports for that bridge only, and closes
 /// them again. An isolated network's can't.
 #[tokio::test(flavor = "multi_thread")]

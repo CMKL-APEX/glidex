@@ -68,7 +68,7 @@ pub struct ExitInfo {
     /// For `LaunchFailed`: what the hypervisor printed.
     #[serde(default)]
     pub message: Option<String>,
-    /// Final counters for metering (spec/metering.md D12).
+    /// Final counters for metering (spec/13-metering.md D12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ExitUsage>,
 }

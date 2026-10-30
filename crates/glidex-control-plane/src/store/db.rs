@@ -1,4 +1,4 @@
-//! glidex's schema for the replicated store (spec/clustering.md §6.1): the
+//! glidex's schema for the replicated store (spec/14-clustering.md §6.1): the
 //! tables of `glidex.db` and who writes. The store itself, its write path and
 //! its Raft integration are in `glidex-raftstore`; the names below are
 //! glidex's instances of its types.
@@ -83,33 +83,33 @@ tables! {
     IpamReservations = 35 => "ipam_reservations",
     Routers = 36 => "routers",
     IpamExternal = 37 => "ipam_external",
-    // Tenants, directories and admissions (spec/tenancy.md §4).
+    // Tenants, directories and admissions (spec/19-tenancy.md §4).
     Directories = 38 => "directories",
     Tenants = 39 => "tenants",
     Admissions = 40 => "admissions",
     TenantMembers = 41 => "tenant_members",
-    // Directory connectors and their sealed secrets (spec/tenancy.md §5, §13).
+    // Directory connectors and their sealed secrets (spec/19-tenancy.md §5, §13).
     Connectors = 42 => "connectors",
     ConnectorSecrets = 43 => "connector_secrets",
     DirectoryKeys = 44 => "directory_keys",
-    // Invitations to tenants (spec/tenancy.md §6.1).
+    // Invitations to tenants (spec/19-tenancy.md §6.1).
     Invitations = 45 => "invitations",
-    // SCIM bearer tokens, by hash (spec/tenancy.md §8.1).
+    // SCIM bearer tokens, by hash (spec/19-tenancy.md §8.1).
     ScimTokens = 46 => "scim_tokens",
-    // Groups an IdP pushed over SCIM (spec/tenancy.md D43).
+    // Groups an IdP pushed over SCIM (spec/19-tenancy.md D43).
     ScimGroups = 47 => "scim_groups",
-    // Each pulled connector's last run (spec/tenancy.md §8.2).
+    // Each pulled connector's last run (spec/19-tenancy.md §8.2).
     ConnectorSync = 48 => "connector_sync",
-    // Datastores and what each node finds at them (spec/storage.md §4.1).
+    // Datastores and what each node finds at them (spec/24-storage.md §4.1).
     Datastores = 49 => "datastores",
     DatastoreNodes = 50 => "datastore_nodes",
-    // Tenants' shares of cluster device pools (spec/host-topology.md §9.1a).
+    // Tenants' shares of cluster device pools (spec/22-host-topology.md §9.1a).
     TenantDevicePools = 51 => "tenant_device_pools",
-    // Workload federations (spec/tenancy.md §9).
+    // Workload federations (spec/19-tenancy.md §9).
     Federations = 52 => "federations",
     // The tokens exchanges gave, and the workload tokens they used (§9, D48).
     FederatedTokens = 53 => "federated_tokens",
-    // Passkeys and users' WebAuthn handles (spec/passkeys.md).
+    // Passkeys and users' WebAuthn handles (spec/25-passkeys.md).
     Passkeys = 54 => "passkeys",
     // Each directory's token signing keys, the private half sealed (D53).
     SigningKeys = 55 => "signing_keys",
@@ -127,9 +127,11 @@ tables! {
     FeedState = 61 => "feed_state",
     // The directory's chains ended in the last 12 h, for feeds (D67).
     EndedSids = 62 => "ended_sids",
+    // Each hosted directory's own audit, keyed by directory (D74).
+    DirectoryAudit = 63 => "directory_audit",
 }
 
-/// Whose a table's records are (spec/tenancy.md §4): a directory's (they
+/// Whose a table's records are (spec/19-tenancy.md §4): a directory's (they
 /// follow the organization), this cluster's (they follow the hardware), or
 /// both (role links: on a tenant or project, the directory's; on the
 /// cluster or a host, the cluster's).
@@ -148,7 +150,7 @@ impl TableId {
             | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
             | Invitations | ScimTokens | ScimGroups | ConnectorSync | Federations
             | FederatedTokens | Passkeys | SigningKeys | RefreshTokens | TrustedClusters
-            | EndedSids => Scope::Directory,
+            | EndedSids | DirectoryAudit => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }
@@ -184,7 +186,7 @@ pub enum Origin {
 
 impl Origin {
     /// Writes a node makes about its own work, which a server that isn't
-    /// the leader sends to the leader (spec/clustering.md §8.3). The
+    /// the leader sends to the leader (spec/14-clustering.md §8.3). The
     /// leader decides what the node may write (`check_status_write`).
     pub fn is_node_status(self) -> bool {
         matches!(self, Origin::Controller | Origin::Images | Origin::Network)

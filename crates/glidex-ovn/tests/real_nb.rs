@@ -1,4 +1,4 @@
-//! Against a real northbound database (spec/clustering.md §15). Ignored: it
+//! Against a real northbound database (spec/14-clustering.md §15). Ignored: it
 //! needs `ovn-nbctl` and a database, e.g. a throwaway OVN on this host:
 //!
 //! ```text

@@ -1,6 +1,6 @@
 //! Networks (host and project networks, grants, shares) and host
-//! networking through glidex-netd (spec/networking.md §11,
-//! spec/security.md §6.2, §8).
+//! networking through glidex-netd (spec/09-networking.md §11,
+//! spec/11-security.md §6.2, §8).
 
 use super::{ApiErr, Caller, Proto, proto_body, proto_no_content};
 use crate::service::host;
@@ -44,7 +44,7 @@ pub async fn get_network(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
     Ok(Proto(StatusCode::OK, svc::get_network(&c, req)?))
 }
 
-/// `GET /networks/{id}/ovn` (spec/clustering-ui.md §8): a cluster network
+/// `GET /networks/{id}/ovn` (spec/16-clustering-ui.md §8): a cluster network
 /// as OVN has it. Whoever may see the network may see this.
 pub async fn network_ovn(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::GetNetworkOvnRequest {
@@ -74,7 +74,7 @@ pub async fn create_network(c: Caller, Json(v): Json<Value>) -> Result<impl Into
 }
 
 /// A deletion request the network controller finishes (spec/
-/// reconciliation.md §6.3): `204` once the network is gone (at once, or
+/// 12-reconciliation.md §6.3): `204` once the network is gone (at once, or
 /// within `?wait`), else `202` with it (netd unreachable, say).
 pub async fn delete_network(
     c: Caller,
@@ -193,7 +193,7 @@ pub async fn delete_router(
     Ok(proto_no_content())
 }
 
-/// `202` whether or not the target exists (spec/security.md §6.2.1).
+/// `202` whether or not the target exists (spec/11-security.md §6.2.1).
 pub async fn offer_share(
     c: Caller,
     Path(id): Path<String>,
@@ -384,7 +384,7 @@ pub async fn delete_uplink(
 pub async fn host_topology(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(
         StatusCode::OK,
-        host::get_host_topology(&c, Default::default())?,
+        host::get_host_topology(&c, Default::default()).await?,
     ))
 }
 

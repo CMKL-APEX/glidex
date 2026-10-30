@@ -1,5 +1,5 @@
 //! The metadata endpoint's datapath on node NAT networks
-//! (spec/workload-identity.md §7.1, W11).
+//! (spec/29-workload-identity.md §7.1, W11).
 //!
 //! A guest asks `169.254.169.254:80`. Its VM port's OpenFlow rule marks
 //! the packet with that port's index ([`mark`]); netd's `inet glidex`

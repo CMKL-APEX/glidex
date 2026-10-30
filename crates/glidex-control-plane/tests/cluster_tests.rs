@@ -1,5 +1,5 @@
 //! Three control planes on one machine, each with its own directory and
-//! ports, joined over real mutual TLS (spec/clustering.md §17 C2): writes
+//! ports, joined over real mutual TLS (spec/14-clustering.md §17 C2): writes
 //! through any of them reach the leader, reads see them, and killing the
 //! leader doesn't stop the cluster.
 //!
@@ -27,7 +27,7 @@ struct Cp {
     manager: Arc<VmManager>,
     router: axum::Router,
     addr: SocketAddr,
-    /// Holds this control plane's secrets key (spec/tenancy.md §13), for
+    /// Holds this control plane's secrets key (spec/19-tenancy.md §13), for
     /// the tests that need one (`with_secrets`).
     secrets: Option<Arc<glidex_control_plane::auth::AuthService>>,
     _dir: tempfile::TempDir,
@@ -222,7 +222,7 @@ fn image_copies(v: &Value) -> Vec<Value> {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, ...), in the
-/// proto3 JSON shape (spec/grpc.md §9.1).
+/// proto3 JSON shape (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -449,7 +449,7 @@ async fn three_control_planes_survive_losing_the_leader() {
     }
 }
 
-/// Servers heartbeat the leader like any node (spec/clustering.md §7.2):
+/// Servers heartbeat the leader like any node (spec/14-clustering.md §7.2):
 /// past the grace, the followers are still Ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn servers_stay_ready_past_the_grace() {
@@ -473,7 +473,7 @@ async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
     let leader = leader_index(&cps, &[0, 1]).await;
     let follower = 1 - leader;
     // Every RPC is a POST: the operation's kind (READ), not the method,
-    // keeps it on the follower (spec/grpc.md G-D6). Forwarded, it would
+    // keeps it on the follower (spec/18-grpc.md G-D6). Forwarded, it would
     // report the leader's node id.
     let (s, v) = call(
         &cps[follower],
@@ -507,7 +507,7 @@ async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
 }
 
 /// Every server ends up with the cluster's secrets key, so any of them can
-/// open the connector secrets in the replicated store (spec/tenancy.md §13).
+/// open the connector secrets in the replicated store (spec/19-tenancy.md §13).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_new_server_receives_the_secrets_key() {
     let _one = serial().await;
@@ -528,7 +528,7 @@ async fn a_new_server_receives_the_secrets_key() {
 }
 
 /// A gRPC write sent to a follower is forwarded to the leader, and the
-/// leader's status comes back in the HTTP/2 trailers (spec/grpc.md §8).
+/// leader's status comes back in the HTTP/2 trailers (spec/18-grpc.md §8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
     use buffa::Message;
@@ -1269,7 +1269,7 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
-/// spec/clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
+/// spec/14-clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
 /// file a node already has adopted instead of copied, the rest reported and
 /// deleted on request, and images of another architecture kept off nodes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -1659,7 +1659,7 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
             })
     })
     .await;
-    // The image says where its copies are (spec/clustering-ui.md §5.3).
+    // The image says where its copies are (spec/16-clustering-ui.md §5.3).
     let (s, v) = call(&server, "GET", &format!("/images/{img_id}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let copies = image_copies(&v);
@@ -1675,7 +1675,7 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
 
 /// A server that isn't the leader does a node's work too: its image
 /// copies, disks and VM status are written through the leader, as an
-/// agent's are (spec/clustering.md §8.3).
+/// agent's are (spec/14-clustering.md §8.3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_follower_server_writes_its_status_through_the_leader() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -1769,7 +1769,7 @@ async fn a_follower_server_writes_its_status_through_the_leader() {
 
 /// A VM boots through its node's own copy of a firmware image, not the
 /// path on the server that created it (each test node has its own image
-/// directory), and waits for that copy (spec/storage.md §15).
+/// directory), and waits for that copy (spec/24-storage.md §15).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -1895,7 +1895,7 @@ async fn server_and_agent() -> (Cp, Cp) {
 }
 
 /// Shrinking or extending the root of a disk on another node is checked
-/// there, not by reading a file the server doesn't have (spec/storage.md
+/// there, not by reading a file the server doesn't have (spec/24-storage.md
 /// §8.2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn disk_edits_are_checked_on_the_disks_node() {
@@ -1978,7 +1978,7 @@ async fn disk_edits_are_checked_on_the_disks_node() {
 
 /// A datastore on some nodes, at each one's own path: each node says what
 /// it finds there through the leader, and a VM whose disk is on it goes to
-/// a node that reaches it (spec/storage.md S2, S14).
+/// a node that reaches it (spec/24-storage.md S2, S14).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_disk_on_a_datastore_goes_where_the_datastore_is() {
     let _one = serial().await;
@@ -2045,7 +2045,7 @@ async fn a_disk_on_a_datastore_goes_where_the_datastore_is() {
     .await;
 }
 
-/// A shared datastore (spec/storage.md S3): claimed by one node and found
+/// A shared datastore (spec/24-storage.md S3): claimed by one node and found
 /// by the other through its marker; a disk on it is bound to no node, made
 /// by its worker, and its worker follows the VM that uses it (S6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -2131,7 +2131,7 @@ async fn a_shared_datastore_serves_every_node_and_its_disks_follow_their_vm() {
 /// A linked disk on a shared datastore, made by a node that doesn't have
 /// the image (the agent, the only node on the datastore): it brings the
 /// image into the datastore from the server, and the disk overlays that
-/// copy (spec/storage.md S8, S9).
+/// copy (spec/24-storage.md S8, S9).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -2258,7 +2258,7 @@ async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
 
 /// A VM whose disks are on a shared datastore is placed again: when
 /// stopped, on another node; when its node is forgotten (Lost), on one that
-/// is left. One with a node-local disk can't go (spec/storage.md S10).
+/// is left. One with a node-local disk can't go (spec/24-storage.md S10).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     let _one = serial().await;
@@ -2405,7 +2405,7 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     );
 }
 
-/// The datastore root of this test process (spec/storage.md S11), set once.
+/// The datastore root of this test process (spec/24-storage.md S11), set once.
 fn datastore_root() -> &'static std::path::Path {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
@@ -2517,7 +2517,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     assert_eq!(placed.len(), 3, "{placed:?}");
     assert!(placed.values().all(|n| *n == 2), "{placed:?}");
 
-    // The preview (spec/clustering-ui.md §5.1) answers for every node, the
+    // The preview (spec/16-clustering-ui.md §5.1) answers for every node, the
     // scheduler's choice first, and agrees with where a VM then goes.
     let (s, pv) = call(
         &server,
@@ -2705,7 +2705,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
 }
 
 /// Three identical hosts with a GPU at the same address, a second function
-/// in its IOMMU group (spec/host-topology.md §8.4).
+/// in its IOMMU group (spec/22-host-topology.md §8.4).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
     let _one = serial().await;
@@ -2818,6 +2818,28 @@ async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
 
     // Pinned to a node: the group's other function is refused there.
     let agent1 = agents[0].manager.local_node_id();
+    // What the node's topology marks taken: the same claims.
+    let groups = [("0000:41:00.0", "31"), ("0000:41:00.1", "31")]
+        .into_iter()
+        .map(|(a, g)| (a.to_string(), g.to_string()))
+        .collect();
+    let taken = server
+        .manager
+        .devices_taken(
+            &agent1,
+            &groups,
+            ["0000:41:00.0", "0000:41:00.1", "0000:42:00.0"],
+        )
+        .await;
+    assert!(
+        taken["0000:41:00.0"].starts_with("PCI device 0000:41:00.0 is used by VM gpu"),
+        "{taken:?}"
+    );
+    assert!(
+        taken["0000:41:00.1"].contains("shares IOMMU group 31 with 0000:41:00.0"),
+        "{taken:?}"
+    );
+    assert!(!taken.contains_key("0000:42:00.0"), "{taken:?}");
     let mut b = with("audio", "/sys/bus/pci/devices/0000:41:00.1");
     b["node"] = json!("agent1");
     let (s, e) = call(&server, "POST", "/vms", Some(b), &[]).await;
@@ -2859,7 +2881,7 @@ async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
     );
 }
 
-/// Three nodes with 2 GiB of 2M hugepages each (spec/host-topology.md §8a).
+/// Three nodes with 2 GiB of 2M hugepages each (spec/22-host-topology.md §8a).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn hugepages_are_counted_per_node_and_fill_up() {
     let _one = serial().await;
@@ -2994,7 +3016,7 @@ async fn hugepages_are_counted_per_node_and_fill_up() {
     );
 }
 
-/// spec/host-topology.md §3.2: a server reads an agent's topology on the
+/// spec/22-host-topology.md §3.2: a server reads an agent's topology on the
 /// agent, over the cluster's node API.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_server_reads_a_nodes_topology_on_that_node() {
@@ -3228,7 +3250,7 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    // OVN knows a network by its id (spec/tenancy.md D24).
+    // OVN knows a network by its id (spec/19-tenancy.md D24).
     let id_of = |n: &serde_json::Value| n["network"]["id"].as_str().unwrap().to_string();
     let p1 = id_of(&n);
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
@@ -3764,7 +3786,7 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     assert_eq!(st["raft"]["state"], "RAFT_STATE_LEADER", "{st}");
     assert!(num(&st["raft"]["term"]) >= 1, "{st}");
     assert!(st["raft"]["id"].is_string(), "a uint64 is a string: {st}");
-    // The CA's expiry and each node's certificate (spec/clustering-ui.md §7.6).
+    // The CA's expiry and each node's certificate (spec/16-clustering-ui.md §7.6).
     assert!(is_time(&st["ca"]["not_after"]), "{st}");
     // Every node reports ready once it has sent its first report.
     wait_for("every node to report ready", || async {
@@ -4023,7 +4045,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     }
     let n = node_json(&server, "agent1").await;
     assert_eq!(n["status"]["phase"], "NODE_PHASE_DEPARTED", "{n}");
-    // The detaches are listed with their state (spec/clustering-ui.md §6).
+    // The detaches are listed with their state (spec/16-clustering-ui.md §6).
     let (s, deps) = call(&server, "GET", "/departures", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{deps}");
     let deps = deps["departures"].as_array().cloned().unwrap_or_default();
@@ -4528,7 +4550,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
             .any(|p| p.as_str().unwrap().contains("exists with another id")),
         "{plan}"
     );
-    // One plan's view says what it brings, for the mapping editor (spec/clustering-ui.md §7.4).
+    // One plan's view says what it brings, for the mapping editor (spec/16-clustering-ui.md §7.4).
     let (s, one) = call(&b, "GET", &format!("/imports/{pid}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{one}");
     assert_eq!(one["plan"]["plan"], pid.as_str(), "{one}");
@@ -4769,7 +4791,7 @@ async fn via_ui_with(
     )
 }
 
-/// spec/host-page.md: a server publishes its UI's address, which reaches
+/// spec/28-host-page.md: a server publishes its UI's address, which reaches
 /// the agent; the agent's UI points browsers there and serves no API; a
 /// server's UI runs host-only requests on the node they name (W2), and
 /// still takes what older agents relay (W6), never a principal they claim.
@@ -5072,7 +5094,7 @@ async fn a_standalone_ui_targets_only_itself_and_publishes_a_custom_address() {
     );
 }
 
-/// spec/clustering-ui.md §8a: OVN as a cluster setting. Enabling is refused
+/// spec/16-clustering-ui.md §8a: OVN as a cluster setting. Enabling is refused
 /// while a node lacks OVN, reaches an agent without a restart, and can't be
 /// undone while a cluster network exists; a cluster enabled by its file is
 /// moved to the setting by the leader.
@@ -5281,7 +5303,7 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
     assert_eq!(v["settings"]["updated_by"], "file", "{v}");
 }
 
-/// spec/clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
+/// spec/14-clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
 /// gateway nodes must map the edge's physical network and run br-int on the
 /// kernel datapath, and the API says which step is missing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -5449,7 +5471,7 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     assert_eq!(v["error"], "dpdk_not_running", "{v}");
 }
 
-/// Rotating the secrets key (spec/tenancy.md §13): every server takes the
+/// Rotating the secrets key (spec/19-tenancy.md §13): every server takes the
 /// new key, the data keys are re-wrapped once, and every server still
 /// opens the secrets.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -5534,7 +5556,7 @@ async fn the_secrets_key_rotates_on_every_server() {
     assert!(cluster(&cps[other]).rotate_secrets_key().await.is_err());
 }
 
-/// Moving a disk (spec/storage.md §8.3): an agent's node-local disk goes to
+/// Moving a disk (spec/24-storage.md §8.3): an agent's node-local disk goes to
 /// a shared datastore, copied by the agent, and its VM can then be placed
 /// on the server; a datastore the agent doesn't reach is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -5677,7 +5699,7 @@ async fn a_node_local_disk_moves_to_a_shared_datastore_and_its_vm_can_go_anywher
 
 /// A kernel of an architecture the leader can't run is extracted on a node
 /// of that architecture with a copy of the disk image, which reports it in
-/// its cache row; the leader records it (spec/kernel-boot.md §10.2). A
+/// its cache row; the leader records it (spec/23-kernel-boot.md §10.2). A
 /// failed run there fails the image, and a retry runs it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_kernel_is_extracted_on_a_node_of_its_architecture() {
@@ -5890,7 +5912,7 @@ async fn call_with_ready_node(
     }
 }
 
-/// The extractor appliance, standing in (spec/kernel-boot.md §10.3): it
+/// The extractor appliance, standing in (spec/23-kernel-boot.md §10.3): it
 /// writes a stream with a kernel for `arch`, its initrd and a grub.cfg, or
 /// fails while `fail` is set.
 fn fake_extractor(
@@ -5928,7 +5950,7 @@ fn fake_extractor(
 
 /// A VM on an agent with `kernel_from_disk` gets its kernel from its root
 /// disk there: the agent creates the kernel image, extracts it and reports
-/// it, and the leader records it (spec/kernel-boot.md §10.2, §10.5). The
+/// it, and the leader records it (spec/23-kernel-boot.md §10.2, §10.5). The
 /// server asks the disk's node for `extract-kernel` too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
@@ -6099,7 +6121,7 @@ async fn a_kernel_is_extracted_from_a_disk_on_its_node() {
     );
 }
 
-/// spec/workload-identity.md §15 (WI1b-2): an agent can't sign or record,
+/// spec/29-workload-identity.md §15 (WI1b-2): an agent can't sign or record,
 /// so its metad answers come from the leader, asked as the agent (its
 /// certificate on :8842); the leader answers only about a VM placed on the
 /// asking node.

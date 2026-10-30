@@ -1,4 +1,4 @@
-//! Directories, tenants and admissions (spec/tenancy.md §4, T0).
+//! Directories, tenants and admissions (spec/19-tenancy.md §4, T0).
 //!
 //! A host is a cluster that hosts one directory, `local`. Tenant `admin`
 //! owns the directory and operates the cluster; tenant `default` holds the
@@ -22,7 +22,7 @@ const DIRECTORIES: TableDefinition<&str, &[u8]> = TableDefinition::new("director
 const TENANTS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenants");
 const ADMISSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("admissions");
 const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_members");
-/// Tenant pools on this cluster, by `<tenant>/<name>` (spec/host-topology.md §9.1a).
+/// Tenant pools on this cluster, by `<tenant>/<name>` (spec/22-host-topology.md §9.1a).
 const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
 const OFFERS: TableDefinition<&str, &[u8]> = TableDefinition::new("admission_offers");
@@ -86,7 +86,7 @@ pub struct Directory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
     /// Its SPIFFE trust domain, chosen at creation or fixed when it first
-    /// issued a workload token (workload-identity.md W13).
+    /// issued a workload token (29-workload-identity.md W13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_domain: Option<String>,
 }
@@ -130,7 +130,7 @@ pub struct Admission {
 }
 
 /// A tenant's share of a cluster device pool, split among some of its
-/// projects (spec/host-topology.md §9.1a, H17).
+/// projects (spec/22-host-topology.md §9.1a, H17).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TenantPool {
     pub tenant_id: String,
@@ -155,7 +155,7 @@ pub struct Member {
 }
 
 /// [`TenantStore::add_member`] inside another store's write (a SCIM
-/// request, spec/tenancy.md §8.1). A tenant that isn't there is skipped.
+/// request, spec/19-tenancy.md §8.1). A tenant that isn't there is skipped.
 pub(crate) fn add_member_in(
     tx: &crate::store::Tx<'_>,
     tenant: &str,
@@ -211,7 +211,7 @@ pub fn unlimited() -> Quotas {
     }
 }
 
-/// An admission offered to a tenant of another directory (spec/tenancy.md
+/// An admission offered to a tenant of another directory (spec/19-tenancy.md
 /// D64): its token is shown once; only its secret's hash is kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
@@ -282,7 +282,7 @@ pub struct TenantStore {
 
 impl TenantStore {
     /// Open the tables and make sure the local directory, its owner and
-    /// the default tenant exist (spec/tenancy.md §16 steps 1-2). A node
+    /// the default tenant exist (spec/19-tenancy.md §16 steps 1-2). A node
     /// that can't write leaves it to the leader.
     pub fn new(db: Arc<Db>) -> Result<Self, TenantError> {
         let store = Self { db };
@@ -591,7 +591,7 @@ impl TenantStore {
     }
 
     /// Fix `id`'s trust domain to `td` unless it already has one, which
-    /// never changes (workload-identity.md W13). The directory as it is now.
+    /// never changes (29-workload-identity.md W13). The directory as it is now.
     pub fn set_trust_domain(&self, id: &str, td: &str) -> Result<Directory, TenantError> {
         let mut d = self
             .get_directory(id)?
@@ -705,7 +705,7 @@ impl TenantStore {
             .collect())
     }
 
-    // ---- writes (through the service layer, spec/tenancy.md §14.1) -----
+    // ---- writes (through the service layer, spec/19-tenancy.md §14.1) -----
 
     pub fn create(
         &self,

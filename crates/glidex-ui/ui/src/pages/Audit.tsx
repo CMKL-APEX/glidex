@@ -3,7 +3,7 @@ import * as api from "../api";
 import type { AuditEntry } from "../types";
 import { LoadingCard } from "../components/Loading";
 import { Badge, ErrorBanner, PageHeader, errorMessage, primaryButton } from "../components/ui";
-import { useSession } from "../session";
+import { isHostedDirectory, useSession } from "../session";
 import { useDirectory } from "../hooks";
 
 const filterClass = "mt-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white";
@@ -15,10 +15,12 @@ function resultKind(r: string): string {
 }
 
 export default function Audit() {
-  const { host, projects, project: selected, projectName } = useSession();
+  const { me, host, projects, project: selected, projectName } = useSession();
   const [dir] = useDirectory();
-  // Without readAudit, only a project's own entries (project owners).
-  const [project, setProject] = useState<string>(host.readAudit ? "" : (selected ?? ""));
+  // A hosted directory's readers see its own audit, all of it (D74).
+  const all = host.readAudit || (host.readDirectoryAudit && isHostedDirectory(me.directory_id));
+  // Otherwise only a project's own entries (project owners).
+  const [project, setProject] = useState<string>(all ? "" : (selected ?? ""));
   const [user, setUser] = useState("");
   const [since, setSince] = useState("");
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
@@ -62,7 +64,7 @@ export default function Audit() {
             Project
           </label>
           <select id="audit-project" className={filterClass} value={project} onChange={(e) => setProject(e.target.value)}>
-            {host.readAudit && <option value="">All</option>}
+            {all && <option value="">All</option>}
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}

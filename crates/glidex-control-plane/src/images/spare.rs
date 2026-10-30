@@ -1,7 +1,7 @@
-//! Spare files (spec/clustering.md §9.2.3): files in a node's image
+//! Spare files (spec/14-clustering.md §9.2.3): files in a node's image
 //! directory that no image record names. A host that joined a cluster, or
 //! a node that held an image the cluster later gains, has them. They are
-//! never deleted on their own (images.md §2); a node adopts one that
+//! never deleted on their own (10-images.md §2); a node adopts one that
 //! matches a ready image (size and SHA-256), and reports the rest.
 
 use super::{ImageKind, ImageManager};

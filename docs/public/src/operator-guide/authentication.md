@@ -819,6 +819,15 @@ directory nobody uses yet; one with users, sign-in providers or projects
 stays until its administrators remove them. The host's own directory,
 `local`, stays.
 
+Each hosted directory keeps its own **audit log**: its people's
+sign-ins and what they change in the directory (users, teams, tenants,
+connectors, tokens), and what its connectors' SCIM and sync do. Its
+directory administrators and auditors read it on the **Audit** page, or
+with `gxctl audit --directory acme`; you don't. What its people do with
+this cluster's projects is also in the cluster's audit, as anyone's is.
+It is kept as long as the cluster's (`audit.retention_days`), and goes
+when the directory is deleted.
+
 ## Workload federation (CI without stored tokens)
 
 A CI job usually needs a service account's token to deploy. With

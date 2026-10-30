@@ -17,7 +17,7 @@ interface DeviceOps {
 
 /** One device a VM could be given: what it is, where it sits, whether it
  * is ready for passthrough (and if not, why), its errors, and what a host
- * administrator can do with it (spec/host-topology.md §5.3–5.4). */
+ * administrator can do with it (spec/22-host-topology.md §5.3–5.4). */
 function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
   const cordoned = ops.cordoned.has(d.address);
   const errors = num(d.aer?.nonfatal) + num(d.aer?.fatal);
@@ -36,6 +36,7 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
         </span>
         {d.ready ? <Badge kind="ok">ready</Badge> : <Badge kind="warn">not ready</Badge>}
         {cordoned && <Badge kind="denied">cordoned</Badge>}
+        {d.taken && !cordoned && <span title={d.taken}><Badge kind="warn">in use</Badge></span>}
         {errors > 0 && <Badge kind="denied">{errors} PCIe errors</Badge>}
         {ops.manage && (
           <span className="ml-auto flex gap-2">
@@ -67,7 +68,7 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
 }
 
 /** A node's NUMA nodes with their CPUs, memory, hugepages and devices
- * (spec/host-topology.md §4.3), read on the node itself. */
+ * (spec/22-host-topology.md §4.3), read on the node itself. */
 export default function TopologyCard({ node, cordoned, manage, onChanged }: { node: string; cordoned: string[]; manage: boolean; onChanged: () => void }) {
   const [t, setT] = useState<HostTopology | null>(null);
   const [error, setError] = useState<string | null>(null);

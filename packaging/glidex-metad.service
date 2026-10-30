@@ -7,7 +7,7 @@ After=network-online.target glidex-netd.service glidex-control-plane.service
 [Service]
 Type=simple
 # Its own user: the control plane takes requests on metad.sock from it
-# alone (spec/workload-identity.md W11). It holds no key and sees no
+# alone (spec/29-workload-identity.md W11). It holds no key and sees no
 # secret but the short-lived tokens it hands a guest.
 User=glidex-metad
 Group=glidex-metad

@@ -1,4 +1,4 @@
-//! Joining the host to OVN (spec/clustering.md §11.3): the chassis settings
+//! Joining the host to OVN (spec/14-clustering.md §11.3): the chassis settings
 //! in `Open_vSwitch`, `br-int`, the certificates and `ovn-controller`. The
 //! logical network (switches, routers, ports) is the control plane's, written
 //! to the OVN northbound database; netd only makes this host a chassis and
@@ -65,7 +65,7 @@ pub struct OvnStatus {
     pub datapath: Option<String>,
     pub ports: Vec<OvnPort>,
     /// The Geneve tunnels `ovn-controller` made to the other chassis
-    /// (spec/clustering-ui.md §8b).
+    /// (spec/16-clustering-ui.md §8b).
     #[serde(default)]
     pub tunnels: Vec<Tunnel>,
 }

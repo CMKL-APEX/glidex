@@ -1,4 +1,4 @@
-//! Per-disk block counters (spec/metering.md §5.2): Cloud Hypervisor's
+//! Per-disk block counters (spec/13-metering.md §5.2): Cloud Hypervisor's
 //! `GET /vm.counters` and QEMU's `query-blockstats`. Both are cumulative
 //! from the instance's launch.
 

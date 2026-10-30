@@ -1,4 +1,4 @@
-//! The disk controller (spec/reconciliation.md §10.1): makes pending
+//! The disk controller (spec/12-reconciliation.md §10.1): makes pending
 //! disks once their image is ready, applies resizes and extend-root
 //! requests while no instance has the disk open, notices missing files,
 //! clears an on-boot root grow once the guest ran it, and finishes
@@ -32,7 +32,7 @@ impl VmManager {
         Ok(())
     }
 
-    /// Who should act on shared disk `d` (spec/storage.md S6, §8.1): its VM's
+    /// Who should act on shared disk `d` (spec/24-storage.md S6, §8.1): its VM's
     /// node while placed; else its worker while that node is ready and
     /// reaches the datastore; else a ready node that does, this one first.
     /// `None`: no node reaches it now.
@@ -110,7 +110,7 @@ impl VmManager {
             return Ok(None);
         }
 
-        // Deletion: record first, then the file (images.md §6.5).
+        // Deletion: record first, then the file (10-images.md §6.5).
         if disk.deletion_requested_at.is_some() {
             if let Some(vm) = Self::disk_claimed_by(&*self.vms.read().await, &disk.id, None) {
                 let mut d = disk;
@@ -138,7 +138,7 @@ impl VmManager {
             return Ok(None);
         }
 
-        // A move to another datastore, by its mover (spec/storage.md §8.3).
+        // A move to another datastore, by its mover (spec/24-storage.md §8.3).
         if let Some(spec) = disk.moving.clone()
             && disk.phase == DiskPhase::Ready
         {

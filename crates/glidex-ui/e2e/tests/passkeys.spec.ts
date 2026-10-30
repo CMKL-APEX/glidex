@@ -1,4 +1,4 @@
-// Passkeys (spec/passkeys.md §5): one added on the Account page with
+// Passkeys (spec/25-passkeys.md §5): one added on the Account page with
 // Chromium's virtual authenticator, then a sign-in with it from the
 // login page, without a user name.
 import { api, del, expect, test } from "../fixtures";

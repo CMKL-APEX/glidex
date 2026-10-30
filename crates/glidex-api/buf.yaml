@@ -1,4 +1,4 @@
-# buf lint / breaking for the glidex API (spec/grpc.md G-D9).
+# buf lint / breaking for the glidex API (spec/18-grpc.md G-D9).
 version: v2
 modules:
   - path: proto

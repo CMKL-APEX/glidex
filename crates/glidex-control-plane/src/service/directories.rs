@@ -1,4 +1,4 @@
-//! The directories a host serves (spec/tenancy.md D27, D59):
+//! The directories a host serves (spec/19-tenancy.md D27, D59):
 //! `glidex.tenancy.v1.DirectoryService`, for the host's operator. It sees
 //! that a directory exists, never what is inside it.
 
@@ -180,6 +180,10 @@ pub fn delete_directory(
     a.tenants.delete_directory(&req.id).map_err(tenant_error)?;
     a.connectors
         .forget_directory_keys(&req.id)
+        .map_err(|e| internal(e.to_string()))?;
+    // Its own audit goes with it (D74); the cluster's keeps what was done here.
+    a.store
+        .remove_directory_audit(&req.id)
         .map_err(|e| internal(e.to_string()))?;
     Ok(pb::DeleteDirectoryResponse::default())
 }

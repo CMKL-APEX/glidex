@@ -1,4 +1,4 @@
-//! Daily upkeep (spec/metering.md §7.3, §8.5.1): final monthly
+//! Daily upkeep (spec/13-metering.md §7.3, §8.5.1): final monthly
 //! percentiles, hourly → daily roll-up, and expiry.
 
 use super::ledger::{Ledger, MeteringError, SlotRow, SubjectKind};

@@ -1,4 +1,4 @@
-//! The `google` preset (spec/tenancy.md D39, §5.1): Google Workspace,
+//! The `google` preset (spec/19-tenancy.md D39, §5.1): Google Workspace,
 //! allowed by the ID token's `hd` claim, and consumer Google accounts for
 //! people the directory already knows.
 //!

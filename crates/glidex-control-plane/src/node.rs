@@ -1,4 +1,4 @@
-//! Nodes (spec/clustering.md §7.1): the hosts a cluster schedules onto. A
+//! Nodes (spec/14-clustering.md §7.1): the hosts a cluster schedules onto. A
 //! standalone host is a cluster of one, with one implicit node `local`.
 
 use crate::store::{Db, Meta, Origin, StoreError, TableId};
@@ -59,7 +59,7 @@ pub struct NodeSpec {
     pub unschedulable: bool,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
-    /// The datapath of this node's `br-int` (spec/clustering.md §11.6):
+    /// The datapath of this node's `br-int` (spec/14-clustering.md §11.6):
     /// `auto` (the default) is `netdev` where DPDK runs, else `system`.
     #[serde(default, skip_serializing_if = "BrIntDatapath::is_auto")]
     pub br_int_datapath: BrIntDatapath,
@@ -69,11 +69,11 @@ pub struct NodeSpec {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bridge_mappings: BTreeMap<String, String>,
     /// Delete the unrecorded image files the node reported that are older
-    /// than this (seconds; spec/clustering.md §9.2.3). The node applies
+    /// than this (seconds; spec/14-clustering.md §9.2.3). The node applies
     /// each value once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_spare_files_before: Option<u64>,
-    /// PCI devices (addresses) no new VM gets (spec/host-topology.md
+    /// PCI devices (addresses) no new VM gets (spec/22-host-topology.md
     /// §5.4); the VM holding one keeps it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub cordoned_devices: std::collections::BTreeSet<String>,
@@ -140,7 +140,7 @@ impl NodePhase {
 pub struct Resources {
     pub cpus: u32,
     /// In `allocatable`, without the hugepage pool: a hugepage is counted
-    /// once, as a hugepage (spec/host-topology.md §8a.2).
+    /// once, as a hugepage (spec/22-host-topology.md §8a.2).
     pub memory_mib: u64,
     /// Hugepages by page size in KiB: the pool in `capacity`; in
     /// `allocatable`, less what OVS-DPDK takes.
@@ -203,23 +203,23 @@ pub struct NodeFeatures {
     #[serde(default)]
     pub feature_level: u32,
     /// OVN's central part (`ovn-northd`) is installed: this server can hold
-    /// OVN's databases (spec/clustering-ui.md §8a).
+    /// OVN's databases (spec/16-clustering-ui.md §8a).
     #[serde(default)]
     pub ovn_central: bool,
     /// The host address an uplink moved onto each bridge, and the default
     /// gateway through it: what the shared edge's defaults are made from
-    /// (spec/clustering-ui.md §8a).
+    /// (spec/16-clustering-ui.md §8a).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bridge_addrs: BTreeMap<String, BridgeAddr>,
-    /// `x86_64` or `aarch64` (spec/clustering.md §9.2.1); empty from a
+    /// `x86_64` or `aarch64` (spec/14-clustering.md §9.2.1); empty from a
     /// node of an older version, which counts as matching anything.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub arch: String,
     /// Files in the node's image directory that no image record names
-    /// (spec/clustering.md §9.2.3).
+    /// (spec/14-clustering.md §9.2.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spare_image_files: Vec<crate::images::spare::SpareFile>,
-    /// Whether glidex-pylond daemon is running on this node (spec/pylon.md §8.1).
+    /// Whether glidex-pylond daemon is running on this node (spec/30-pylon.md §8.1).
     #[serde(default)]
     pub pylond: bool,
 }
@@ -241,7 +241,7 @@ pub struct BridgeAddr {
 
 /// What this build supports. A new write-set format, schema migration or
 /// table raises it, and is used only once the cluster's level (the minimum
-/// over its servers) has reached it. 2: datastores (spec/storage.md S2).
+/// over its servers) has reached it. 2: datastores (spec/24-storage.md S2).
 pub const FEATURE_LEVEL: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,7 +272,7 @@ pub struct NodeStatus {
     pub advertise: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_ip: Option<IpAddr>,
-    /// A server's web UI address (spec/host-page.md W3); agents publish none.
+    /// A server's web UI address (spec/28-host-page.md W3); agents publish none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_url: Option<String>,
     #[serde(default)]
@@ -288,12 +288,12 @@ pub struct NodeStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pci_devices: Vec<String>,
     /// The IOMMU group of each PCI function that is not a bridge: a VFIO
-    /// device claims its group (spec/host-topology.md §8.4). Empty from a
+    /// device claims its group (spec/22-host-topology.md §8.4). Empty from a
     /// node of an older version, or a host without an IOMMU.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pci_groups: BTreeMap<String, String>,
     /// NUMA nodes, cores, memory and hugepages per node, reserved CPUs and
-    /// devices' NUMA nodes (spec/host-topology.md §3.1); `None` from a node
+    /// devices' NUMA nodes (spec/22-host-topology.md §3.1); `None` from a node
     /// of an older version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<crate::topology::TopologySummary>,
@@ -405,7 +405,7 @@ pub fn cluster_northd_ovn(nodes: &[Node]) -> Option<String> {
 
 /// Why `n` can't run the logical flows of an ovn-northd of version `northd`:
 /// its ovn-controller is an older release, whose tables stop short of
-/// northd's pipeline (spec/installer.md, OVN). `None` when it can.
+/// northd's pipeline (spec/05-installer.md, OVN). `None` when it can.
 pub fn ovn_outdated(n: &Node, northd: Option<&str>) -> Option<String> {
     let (want, have) = (
         northd.and_then(ovn_series)?,
@@ -562,7 +562,7 @@ pub struct SelfProbe {
     pub topology: Option<crate::topology::TopologySummary>,
     /// `ovn-controller`'s version, when OVN is installed.
     pub ovn_version: Option<String>,
-    /// This server's web UI address (spec/host-page.md W3).
+    /// This server's web UI address (spec/28-host-page.md W3).
     pub ui_url: Option<String>,
 }
 

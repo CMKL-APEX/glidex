@@ -138,7 +138,12 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=vfio
 ls -l /dev/vfio/
 ```
 
-<!-- TODO(verify): confirm this rule is enough on its own (no memlock limit needed in glidex-vm@.service) for both hypervisors. -->
+The VM's unit also lets the hypervisor lock all of the VM's memory
+(`LimitMEMLOCK=infinity`): VFIO pins the guest's RAM so the device can
+reach it. Without it, Cloud Hypervisor stops at `Failed to DMA map VFIO
+device … Out of memory`. A unit installed by an older Glidex lacks the
+line: run `glidex-install` again. The VM's memory is still bounded by its
+size.
 
 ## Find devices
 
@@ -275,6 +280,13 @@ What happens:
 The guest sees the device on its PCI bus; install the guest driver
 there as on bare metal.
 
+GPUs have large memory windows (BARs), up to the size of their memory.
+QEMU's guest has room for 32 GiB of them by default; when a QEMU VM's
+devices need more, Glidex gives the guest a 64-bit PCI window that holds
+them (`-global q35-pcihost.pci-hole64-size=`), sized from the devices it
+has when it starts. A device added to a running QEMU VM must fit what is
+left: if it doesn't, stop and start the VM.
+
 ## In a cluster
 
 Devices are per host. The scheduler places a VM with `vfio_devices`
@@ -338,7 +350,7 @@ On an NVSwitch board (HGX A100, say), the node page's **Topology** card
 lists the NVSwitches under **NVLink fabric**: their driver, IOMMU group
 and NUMA node. `gxctl node topology <node>` prints them too. They are
 never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
-a service VM (spec/gpu-vms.md). Today glidex VMs on such a board get
+a service VM (spec/27-gpu-vms.md). Today glidex VMs on such a board get
 their GPUs without NVLink between them.
 
 ## SR-IOV virtual functions

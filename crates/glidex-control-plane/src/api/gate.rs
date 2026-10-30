@@ -1,4 +1,4 @@
-//! Reads and writes in a cluster (spec/clustering.md §6.4).
+//! Reads and writes in a cluster (spec/14-clustering.md §6.4).
 //!
 //! A server that takes a request has already authenticated it. A write on a
 //! follower is forwarded, whole, to the leader over :8842 with the
@@ -127,7 +127,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         return next.run(req).await;
     }
     // An RPC is always a POST: its operation says whether it reads or
-    // writes (spec/grpc.md G-D6). Streams are reads served here.
+    // writes (spec/18-grpc.md G-D6). Streams are reads served here.
     let read = match glidex_api::operation(&path) {
         Some(op) => op.kind == glidex_api::Kind::Read || op.streaming,
         None => is_safe(req.method()),

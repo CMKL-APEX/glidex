@@ -1,4 +1,4 @@
-//! Clustering (spec/clustering.md): a replicated control plane (Raft) and,
+//! Clustering (spec/14-clustering.md): a replicated control plane (Raft) and,
 //! later, cluster networks (OVN).
 
 pub mod config;

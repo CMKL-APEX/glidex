@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { healthCheck, listTenants } from "../api";
-import { useSession } from "../session";
+import { isHostedDirectory, useSession } from "../session";
 import Activity from "./Activity";
 import { AccountMenu } from "./Accounts";
 
@@ -37,6 +37,8 @@ export default function Header() {
   }, [directoryReader, me.token]);
 
   const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
+  // A hosted directory keeps its own audit (spec/19-tenancy.md D74).
+  const readsDirectoryAudit = host.readDirectoryAudit && isHostedDirectory(me.directory_id);
   const nav = [
     { to: "/", label: "VMs", show: true },
     { to: "/images", label: "Images", show: true },
@@ -54,7 +56,7 @@ export default function Header() {
     },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
-    { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
+    { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject || readsDirectoryAudit },
     { to: "/cluster", label: "Cluster", show: host.readCluster },
     { to: "/admissions", label: "Admissions", show: host.listAdmissions },
     { to: "/directories", label: "Hosting", show: host.listDirectories },

@@ -1,4 +1,4 @@
-//! A host's NUMA topology as the scheduler needs it (spec/host-topology.md
+//! A host's NUMA topology as the scheduler needs it (spec/22-host-topology.md
 //! §3.1): NUMA nodes with their cores, memory and hugepages, the CPUs no VM
 //! gets, and the NUMA node of each device a VM could be given. It goes in
 //! the node's replicated status, so it stays small: no PCIe tree here.
@@ -183,7 +183,7 @@ impl TopologySummary {
     }
 
     /// Reserve the host cores for pylond (Plane 1 control thread on Core 0 and
-    /// Plane 2 polling engine on Core 1 / first sibling-free core; spec/pylon.md §2 P8 & §8.2).
+    /// Plane 2 polling engine on Core 1 / first sibling-free core; spec/30-pylon.md §2 P8 & §8.2).
     pub fn reserve_pylon_cores(&mut self) {
         let mut pylon_cpus = Vec::new();
         let mut cores_reserved = 0;
@@ -371,7 +371,7 @@ pub fn read() -> Option<TopologySummary> {
     ))
 }
 
-// ---- the full tree (spec/host-topology.md §3.2, §5) -------------------------
+// ---- the full tree (spec/22-host-topology.md §3.2, §5) -------------------------
 
 /// What a PCI function is in the PCIe tree. Told from the bridges' places
 /// (sysfs paths), not the PCIe capability, which needs root to read: a
@@ -409,7 +409,7 @@ impl PcieLink {
     }
 }
 
-/// AER error counts since boot (spec/host-topology.md §5.4).
+/// AER error counts since boot (spec/22-host-topology.md §5.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AerCounts {
     pub correctable: u64,
@@ -497,7 +497,7 @@ pub struct PciFunction {
     pub assignable: bool,
     /// Part of the host's NVLink fabric: an NVIDIA NVSwitch. Never given to
     /// a tenant VM; Fabric Manager, on the host or in a service VM, owns it
-    /// (spec/gpu-vms.md §7, §11).
+    /// (spec/27-gpu-vms.md §7, §11).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fabric: bool,
     /// For an assignable device: ready for passthrough (§5.1), else why not.

@@ -1,5 +1,5 @@
 // The project page's Members table for a caller without host rights
-// (spec/web-ui.md): principals show their names, from the links
+// (spec/07-web-ui.md): principals show their names, from the links
 // themselves, although the caller can't list users.
 import { api, del, expect, test } from "../fixtures";
 

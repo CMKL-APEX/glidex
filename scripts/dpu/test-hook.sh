@@ -11,7 +11,7 @@
 # It holds the image's default credential: keep it out of git, logs and chat.
 # The temp copy lives under TMPDIR and is removed on exit.
 #
-# What is checked (spec/dpu.md section 9.4.1), in both modes (secure and
+# What is checked (spec/31-dpu.md section 9.4.1), in both modes (secure and
 # --keep-password-login):
 #   - the shipped user-data is not modified at all (the image's `ubuntu`
 #     account is left alone);

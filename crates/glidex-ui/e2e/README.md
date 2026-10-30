@@ -23,7 +23,7 @@ runs the suite with that group as your primary group for that run only
 
 The script installs the UI's and the suite's dependencies and
 Playwright's Chromium (into `~/.cache/ms-playwright`) when missing,
-refuses to start if `:8851` / `:5174` / `:5175` are taken, and passes everything
+refuses to start if `:8851` / `:5174` / `:5175` (or the peers' `:8861`, `:5186`, `:8862`, `:5187`) are taken, and passes everything
 after `--` to `playwright test`. Without the script:
 
 ```bash
@@ -33,7 +33,7 @@ GLIDEX_TEST_IMAGE=~/images/resolute-server-cloudimg-amd64.img bun run test   # o
 
 ## What runs
 
-Playwright starts three servers (`playwright.config.ts`, `webServer`):
+Playwright starts four servers (`playwright.config.ts`, `webServer`):
 
 - `scripts/start-control-plane.sh` builds and runs the branch's
   `glidex-control-plane` on `127.0.0.1:8851` (`E2E_API_PORT`) with
@@ -51,6 +51,15 @@ Playwright starts three servers (`playwright.config.ts`, `webServer`):
   `glidex-ui` on `127.0.0.1:5175` (`E2E_UI_SERVER_PORT`) in front of the
   scratch control plane over TCP, for the Host allowlist, security
   headers, CSP and the console through its WebSocket proxy.
+- `scripts/start-peers.sh`: two more control planes for
+  `two-organizations.spec.ts`, under `/tmp/glidex-ui-e2e-peers`
+  (`GLIDEX_E2E_PEERS_HOME`): **north**, a cluster (API `:8861`, web UI
+  `https://localhost:5186`), and **acme**, another organization's
+  directory (API `:8862`, web UI `https://127.0.0.1:5187`). Both serve
+  HTTPS with self-signed certificates, as trust between organizations
+  needs, and the two web UIs are on different host names so their
+  session cookies stay apart. They don't use glidex-netd. The test user
+  is the break-glass admin on each `api.sock`.
 
 **Signing in.** The `setup` project (`tests/auth.setup.ts`) runs first:
 over `api.sock` it gives the test user's glidex user `role.system-admin`
@@ -80,7 +89,7 @@ delete `ui-ch` / `ui-qemu` networks.
 | `ui` | `console.spec.ts`: the console page opens and closes without errors (xterm teardown regression) | nothing beyond the servers |
 | | `auth.spec.ts`: the login page without a session, `401` from the API, the signed-in header, the CSRF header on writes (and `403 csrf_failed` without it), logout, the console through a single-use ticket (dev server and glidex-ui) and refused without one, `421` for a foreign `Host` and the security headers from glidex-ui, the built app under its CSP | nothing beyond the servers |
 | | `access.spec.ts`: projects (create, add/remove a member, quotas, delete), tokens (secret shown once, revoke), site policies (validate, simulate, save, `409` on a stale version, history, delete), the audit log | nothing beyond the servers |
-| | `cluster.spec.ts`: cluster operations against a mocked two-node cluster (spec/clustering-ui.md §11): the Cluster page, removing a node (typed name, `--force` offered only after the server asks, the request bodies), a join token shown once and in no storage or URL, an import checked before it can be approved, a retried leader change and the no-leader banner with local reads | nothing beyond the servers |
+| | `cluster.spec.ts`: cluster operations against a mocked two-node cluster (spec/16-clustering-ui.md §11): the Cluster page, removing a node (typed name, `--force` offered only after the server asks, the request bodies), a join token shown once and in no storage or URL, an import checked before it can be approved, a retried leader change and the no-leader banner with local reads | nothing beyond the servers |
 | | `datastores.spec.ts`: the built-in `local`, adding a directory datastore under the scratch root (`GLIDEX_DATASTORE_ROOT`, set by `start-control-plane.sh`), the node finding it, making it the default for disks, and the disk form choosing it | nothing beyond the servers |
 | `cloudhypervisor`, `qemu` | `create-form.spec.ts`: boot mode, default firmware per hypervisor, credential and network pickers, the request the form sends | nothing beyond the servers |
 | | `vm-lifecycle.spec.ts`: credential and network created on their pages, VM created with firmware boot, started (NIC address shown), console login checked against that address, pause/resume, **Shut down** (clean guest poweroff), delete | KVM, the hypervisor (and OVMF for QEMU), glidex-netd with full access, OVS, `GLIDEX_TEST_IMAGE` |

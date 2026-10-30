@@ -1,4 +1,4 @@
-//! Tenants, operators and admission on one host (spec/tenancy.md T0,
+//! Tenants, operators and admission on one host (spec/19-tenancy.md T0,
 //! §17): the tenant API on REST, the Connect protocol and gRPC; the
 //! tenant, operator and directory boundaries; admission and caps; the
 //! host-link boundary; and the migration of a pre-tenancy database.
@@ -196,7 +196,7 @@ impl H {
 }
 
 /// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
-/// (spec/grpc.md §9.1).
+/// (spec/18-grpc.md §9.1).
 fn vm_of(v: &Value) -> &Value {
     assert!(v["vm"].is_object(), "not a VM answer: {v}");
     &v["vm"]
@@ -458,7 +458,7 @@ async fn host_roles_need_the_operator_and_reach_only_its_cluster() {
     assert_eq!(s, StatusCode::OK);
 }
 
-/// spec/clustering.md §12.2: a host role can be given on one node's host.
+/// spec/14-clustering.md §12.2: a host role can be given on one node's host.
 #[tokio::test]
 async fn a_host_role_on_one_node_covers_that_node_only() {
     use glidex_control_plane::node::{Node, NodeStore};
@@ -1179,7 +1179,10 @@ async fn a_browser_holds_accounts_in_several_directories() {
     br.call(&h, "POST", "/auth/accounts/add", None, true).await;
     br.login(&h, &alice);
     let bob_session = br.accounts.clone().unwrap();
-    assert!(bob_session.contains("s:"), "{bob_session}");
+    assert!(
+        bob_session.contains("s:"),
+        "the accounts cookie names a session"
+    );
     let (s, _) = br
         .call(&h, "POST", "/auth/accounts/logout-all", None, true)
         .await;
