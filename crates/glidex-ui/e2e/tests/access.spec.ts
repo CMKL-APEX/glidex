@@ -103,7 +103,8 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await expect(sim.getByText("allow").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText(/Saved as version 1/)).toBeVisible();
+  // Slow in a debug build: see the delete below.
+  await expect(page.getByText(/Saved as version 1/)).toBeVisible({ timeout: 30_000 });
   const listing = await api("/authz/policies");
   expect((listing.site ?? []).map((s: any) => s.id)).toContain(id);
 
@@ -126,6 +127,9 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await page.getByRole("button", { name: "Load into editor" }).click();
 
   await page.getByRole("button", { name: "Delete" }).click();
+  // A policy write checks the whole policy set against the schema, twice
+  // for a delete: seconds in a debug build. The page clears once it is done.
+  await expect(page.getByText("Choose a policy to view it")).toBeVisible({ timeout: 30_000 });
   await expect.poll(async () => ((await api("/authz/policies")).site ?? []).map((s: any) => s.id)).not.toContain(id);
 });
 
