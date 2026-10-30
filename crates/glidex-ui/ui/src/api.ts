@@ -801,6 +801,10 @@ export const setVmServiceAccount = (id: string, serviceAccount: string | null) =
 export const listServiceAccounts = (project: string) =>
   listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
+/** Detach a data disk; on a running VM at its next start (spec/06-rest-api.md). */
+export const detachVmDisk = (id: string, disk: string) =>
+  vmWrite(rpc(VmService.method.detachDisk, { id, disk }) as Promise<VmWriteResponse>);
+
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
 export const extractVmKernel = (id: string) =>
   rpc(ImageService.method.extractVmKernel, { id }).then((r) => r.image as ImageInfo);

@@ -88,7 +88,7 @@ impl ImageManager {
         let format = match (req.format, block) {
             (Some(DiskFormat::Qcow2), true) => {
                 return Err(ImageError::invalid_disk(
-                    "disks on an lvm datastore are raw volumes; leave format out",
+                    "disks on a block datastore (lvm, hyperstor) are raw volumes; leave format out",
                 ));
             }
             (_, true) => DiskFormat::Raw,

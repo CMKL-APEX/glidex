@@ -20,6 +20,9 @@ const GIB = 1024 * 1024 * 1024;
 const CLONE_MODE: Record<"linked" | "full", CloneMode> = { linked: "CLONE_MODE_LINKED", full: "CLONE_MODE_FULL" };
 const DISK_FORMAT: Record<"qcow2" | "raw", DiskFormat> = { qcow2: "DISK_FORMAT_QCOW2", raw: "DISK_FORMAT_RAW" };
 
+/** A block datastore's disks are raw volumes, and linked ones thin snapshots (spec/24-storage.md S19). */
+const isBlock = (d?: Datastore) => d?.driver === "DATASTORE_DRIVER_LVM" || d?.driver === "DATASTORE_DRIVER_HYPERSTOR";
+
 function errorText(e: unknown): string {
   if (e instanceof ApiRequestError && e.details?.min_size_bytes) {
     return `${e.message} (minimum ${formatBytes(e.details.min_size_bytes)})`;
@@ -78,6 +81,8 @@ function CreateDiskForm({
   const [datastore, setDatastore] = useState(datastores.find((d) => d.default_for_disks)?.id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // On a block datastore the format is left out: it can only be raw.
+  const block = isBlock(datastores.find((d) => d.id === datastore));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -90,7 +95,7 @@ function CreateDiskForm({
         image: image || undefined,
         size_gib: size ? Number(size) : undefined,
         clone: image ? CLONE_MODE[clone] : undefined,
-        format: DISK_FORMAT[format],
+        format: block ? undefined : DISK_FORMAT[format],
         datastore: datastore || undefined,
       });
       onDone(d.disk);
@@ -133,24 +138,38 @@ function CreateDiskForm({
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700">Format</label>
-          <select
-            className={`${inputClass} bg-white`}
-            value={format}
-            onChange={(e) => {
-              const f = e.target.value as "qcow2" | "raw";
-              setFormat(f);
-              if (f === "raw") setClone("full");
-            }}
-          >
-            <option value="qcow2">qcow2</option>
-            <option value="raw">raw</option>
-          </select>
+          {block ? (
+            <p className="mt-1 px-3 py-2 text-sm text-gray-600" title="Disks on an LVM-thin or hyperstor datastore are raw volumes">
+              raw (block volume)
+            </p>
+          ) : (
+            <select
+              className={`${inputClass} bg-white`}
+              value={format}
+              onChange={(e) => {
+                const f = e.target.value as "qcow2" | "raw";
+                setFormat(f);
+                if (f === "raw") setClone("full");
+              }}
+            >
+              <option value="qcow2">qcow2</option>
+              <option value="raw">raw</option>
+            </select>
+          )}
         </div>
       </div>
       {datastores.length > 1 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Datastore</label>
-          <select className={`${inputClass} bg-white`} value={datastore} onChange={(e) => setDatastore(e.target.value)}>
+          <select
+            className={`${inputClass} bg-white`}
+            value={datastore}
+            onChange={(e) => {
+              setDatastore(e.target.value);
+              // A raw file can't be a linked overlay.
+              if (format === "raw" && !isBlock(datastores.find((d) => d.id === e.target.value))) setClone("full");
+            }}
+          >
             {datastores.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -164,8 +183,8 @@ function CreateDiskForm({
         <div>
           <label className="block text-sm font-medium text-gray-700">Clone</label>
           <select className={`${inputClass} bg-white`} value={clone} onChange={(e) => setClone(e.target.value as "linked" | "full")}>
-            <option value="linked" disabled={format === "raw"}>
-              Linked (thin overlay; the image must stay)
+            <option value="linked" disabled={format === "raw" && !block}>
+              {block ? "Linked (thin snapshot; the image must stay)" : "Linked (thin overlay; the image must stay)"}
             </option>
             <option value="full">Full copy</option>
           </select>
