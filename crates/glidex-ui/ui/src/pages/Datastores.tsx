@@ -221,12 +221,10 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
         <span>New disks go here unless they name a datastore</span>
       </label>
-      {!hyperstor && (
-        <label className="flex items-center space-x-2 text-sm">
-          <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
-          <span>Overcommit: disks may promise more than the free space (thin files)</span>
-        </label>
-      )}
+      <label className="flex items-center space-x-2 text-sm">
+        <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
+        <span>Overcommit: disks may promise more than the free space (thin {hyperstor ? "volumes" : "files"})</span>
+      </label>
       <div className="flex justify-end space-x-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg" onClick={onCancel}>
           Cancel

@@ -620,8 +620,9 @@ gxctl datastore create hs1 --hyperstor 10.0.0.5:8850,10.0.0.6:8850 --pool 1 --to
   server that takes the request: it makes a key, gets a certificate for
   the identity the token names, and keeps the key sealed with the
   cluster's secrets key. The token is used up and isn't kept.
-- `--nodes` and `--default` work as for a directory. `--no-overcommit`
-  is refused: hyperstor doesn't report its free space to Glidex yet.
+- `--nodes`, `--default` and `--no-overcommit` work as for a directory.
+  With `--no-overcommit`, a disk larger than the pool's free space is
+  refused (`507 insufficient_storage`).
 
 **Web UI:** **Datastores**, **Add Datastore**, *hyperstor cluster*: the
 **Name**, the **Cluster API** addresses, the **Pool** and the **Token**.
@@ -636,8 +637,15 @@ third of its life is left.
 
 Each node reports whether its `hyperstor-vhost` answers
 (`VhostUnavailable` otherwise), and each server whether the cluster's
-API answers with Glidex's identity (`ApiUnavailable`). Free and total
-space are shown as 0.
+API answers with Glidex's identity (`ApiUnavailable`).
+
+Free and total space are the pool's, as hyperstor reports them: usable
+space, after its copies or erasure coding. Servers read them from the
+cluster's API; other nodes show 0, and so does a server whose hyperstor
+doesn't report space yet (before hyperstor's D156, or while one of the
+pool's devices is yet to report). `gxctl datastore list` shows the most
+any node reports. Pools of one hyperstor cluster that share devices each
+count the same free space.
 
 ### What is different from a directory
 

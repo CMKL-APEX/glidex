@@ -364,6 +364,52 @@ impl HyperstorDriver {
         Ok(gone)
     }
 
+    /// TLS as glidex's identity.
+    fn tls(&self) -> Result<std::sync::Arc<connectrpc::rustls::ClientConfig>, ImageError> {
+        let id = self.identity.as_ref().ok_or_else(|| {
+            ImageError::NotReady(
+                "hyperstor volumes are managed from glidex's servers, which hold its identity"
+                    .into(),
+            )
+        })?;
+        let tls = hyperstor_pki::client_config(&id.cert, &id.key, &id.root)
+            .map_err(|e| ImageError::Io(format!("hyperstor identity: {e}")))?;
+        Ok(std::sync::Arc::new(tls))
+    }
+
+    /// The pool's usable total and free bytes (hyperstor D156), from the
+    /// first address whose member knows them: only the map service's leader
+    /// hears the devices' reports. `None` when none does (an older hyperstor,
+    /// or a device yet to report).
+    pub fn space(&self) -> Result<Option<(u64, u64)>, ImageError> {
+        let tls = self.tls()?;
+        block_on(async {
+            let (mut answered, mut last) = (false, None);
+            for a in &self.api {
+                let Ok(uri) = format!("https://{a}").parse::<http::Uri>() else {
+                    continue;
+                };
+                let client = hyperstor_api::ClusterServiceClient::new(
+                    connectrpc::client::HttpClient::with_tls(tls.clone()),
+                    connectrpc::client::ClientConfig::new(uri).with_default_timeout(API_TIMEOUT),
+                );
+                match client.get_status(pb::GetStatusRequest::default()).await {
+                    Ok(s) => {
+                        answered = true;
+                        if let Some(space) = pool_space(&s.into_owned().pools, self.pool) {
+                            return Ok(Some(space));
+                        }
+                    }
+                    Err(e) => last = Some(e),
+                }
+            }
+            match last {
+                Some(e) if !answered => Err(api_err(e)),
+                _ => Ok(None),
+            }
+        })
+    }
+
     /// Calls the cluster API through each address in turn while one is
     /// unreachable.
     fn call<T, F, Fut>(&self, f: F) -> Result<T, ImageError>
@@ -395,15 +441,7 @@ impl HyperstorDriver {
         F: Fn(C) -> Fut + Sync,
         Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send,
     {
-        let id = self.identity.as_ref().ok_or_else(|| {
-            ImageError::NotReady(
-                "hyperstor volumes are managed from glidex's servers, which hold its identity"
-                    .into(),
-            )
-        })?;
-        let tls = hyperstor_pki::client_config(&id.cert, &id.key, &id.root)
-            .map_err(|e| ImageError::Io(format!("hyperstor identity: {e}")))?;
-        let tls = std::sync::Arc::new(tls);
+        let tls = self.tls()?;
         block_on(async {
             let mut last = None;
             for a in &self.api {
@@ -1172,10 +1210,18 @@ pub fn renew(api: &[String], id: &Identity) -> Result<Option<Enrolled>, String> 
     })
 }
 
+/// `pool`'s usable total and free bytes in a status answer, when the member
+/// that gave it knows them (hyperstor D156).
+fn pool_space(pools: &[pb::Pool], pool: u32) -> Option<(u64, u64)> {
+    let p = pools.iter().find(|p| p.id == pool)?;
+    Some((p.total_bytes?, p.free_bytes?))
+}
+
 /// What this node finds of a hyperstor datastore (§4.1): its
 /// `hyperstor-vhost` answers (`VhostUnavailable` if not), and, on a server,
-/// the cluster API answers to glidex's identity (`ApiUnavailable`).
-/// hyperstor reports no free space yet: the sizes are 0 (S22).
+/// the cluster API answers to glidex's identity (`ApiUnavailable`) and
+/// gives the pool's space (S27). Other nodes, and a cluster that doesn't
+/// report it, show 0.
 pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::NodeRow {
     let mut row = super::record::NodeRow {
         reachable: true,
@@ -1195,6 +1241,14 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
         row.reachable = false;
         row.reason = "ApiUnavailable".into();
         row.message = e.to_string();
+        return row;
+    }
+    if driver.has_identity() {
+        match driver.space() {
+            Ok(Some((total, free))) => (row.total_bytes, row.free_bytes) = (total, free),
+            Ok(None) => {}
+            Err(e) => tracing::debug!("hyperstor pool space: {e}"),
+        }
     }
     row
 }
@@ -1243,6 +1297,25 @@ mod tests {
         };
         assert_eq!(b.path().to_str().unwrap(), format!("hyperstor://m:1/{odd}"));
         assert_eq!(b.vhost_socket(), None, "not staged");
+    }
+
+    #[test]
+    fn pool_space_is_the_pools_when_the_member_knows_it() {
+        let pool = |id, space: Option<(u64, u64)>| pb::Pool {
+            id,
+            total_bytes: space.map(|s| s.0),
+            free_bytes: space.map(|s| s.1),
+            ..Default::default()
+        };
+        let pools = [
+            pool(0, Some((9, 9))),
+            pool(1, Some((100, 40))),
+            pool(2, None),
+        ];
+        assert_eq!(pool_space(&pools, 1), Some((100, 40)));
+        // Not the leader, or a device yet to report.
+        assert_eq!(pool_space(&pools, 2), None);
+        assert_eq!(pool_space(&pools, 3), None, "no such pool");
     }
 
     /// A stand-in hyperstor-vhost: answers each request line with what
