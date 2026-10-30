@@ -20,6 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Datastores | S26 stale hyperstor holds | `feat/hyperstor-stale-holds` | A disk held by another node's `hyperstor-vhost` when its VM starts is preempted; nodes let go of holds for VMs placed elsewhere. Needs hyperstor's per-volume fencing (D150, D153) |
+| Datastores | S27 hyperstor pool space | `feat/storage-hyperstor-space` | Servers read the pool's usable space from hyperstor's `GetStatus` (hyperstor D156); `--no-overcommit` accepted on hyperstor datastores |
 | Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
 
 ## Areas

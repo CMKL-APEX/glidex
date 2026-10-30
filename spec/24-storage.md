@@ -20,7 +20,7 @@ host checks H8–H9 are open for the owner's review. Implemented:
 - S8, `hyperstor` datastores: volumes of a hyperstor cluster, served to
   VMs over vhost-user-blk (§11.2).
 
-S7 is still design. Decision S25 is open for review too. The milestones are S0–S8
+S7 is still design. Decisions S25 and S27 are open for review too. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
 are applied (§18).
@@ -96,6 +96,7 @@ later milestones (§11, §12).
 | S24 | **Image volumes are named for their datastore, and the leader removes those whose image is gone.** `glidex image <image> on <datastore id>`; each probe round, the leader deletes this datastore's image volumes whose image no longer exists; one a clone still needs is left for the next round. | A deleted disk's volume goes to hyperstor's trash, where its clone still needs the image's snapshot, so deleting the image's volume with the image fails until the trash is purged. Naming them by datastore keeps two glidex clusters sharing a hyperstor pool from removing each other's. |
 | S25 | **A volume a failed creation left is discarded for good, not kept in hyperstor's trash** (open for review): the driver deletes it and purges it from the trash, and before making a volume it frees the id (a leftover under it deleted, a trashed one purged and waited for, up to 2 min). The image volume is converted before it is made, so it exists only while being written, holding its lease. Retrying an image volume is bounded. A disk a person deletes still goes to the trash. | hyperstor keeps a deleted volume's id taken until it is purged, and glidex's volume ids are derived from the disk's or image's: a failed fill, deleted, made every retry fail with "exists" (on a pilot cluster the image loop retried without pause, about 100 refused calls a second into hyperstor's audit log). A failed creation's volume never held a disk's data, so the trash protects nothing there. |
 | S26 | **A disk held by another node's `hyperstor-vhost` when its VM starts is a stale hold, and is preempted; each node lets go of the holds it finds for VMs placed elsewhere** (hyperstor D153): the driver names its node at every attach (`holder`), so a refused attach says who holds the volume. A VM starting here is recorded as running nowhere, so a hold labelled `vhost:<another node>` was left by a crash or a failed detach: it is preempted. A tool's hold (`hyperstorctl`, a disk operation on a server) is waited for. Each node's datastore probe (every minute) detaches the volumes its `hyperstor-vhost` holds for disks whose VM isn't placed on it; volumes glidex doesn't know are left alone. | Waiting for a hold nobody will release left the VM stuck (`DiskBusy` every 5 s) until an operator stepped in. A preemption now cuts off only that volume's lease (hyperstor D150), and a fenced old writer can't touch the disk. glidex knows a disk operation in progress only on the node running it, so the holder's label is what tells a stale VM hold from a tool's. The node's own clean-up covers a hold whose VM moved while the node was up, without a preemption. |
+| S27 | **A hyperstor datastore's space is its pool's, as hyperstor reports it, and it may refuse to overcommit** (hyperstor D156; open for review): each server's probe asks the cluster API's `GetStatus` for the pool's usable `total_bytes` and `free_bytes`, trying each address until one gives them, since only the map service's leader hears the devices' reports. Agents, and a server whose cluster doesn't report them (hyperstor before D156, or a device yet to report), show 0. `overcommit: false` is accepted, and disk creation checks it against the most free space any node reports, as for any shared datastore (§5.2). | Only servers hold glidex's identity (S22), and a shared datastore's free space is the most any reachable node reports, so the servers' figures are enough. The pool's space is after its copies or erasure coding, which is what a disk takes. Pools that share devices each count the same free bytes (hyperstor D156), so refusing to overcommit protects against glidex's own disks, not against other users of the devices. |
 
 ## 3. What changes, at a glance
 
@@ -521,7 +522,7 @@ The scheduler's `Request` (`state.rs:678`) gains each volume's
 
 **Score:** prefer nodes with free space on node-local datastores of unbound volumes. A shared datastore scores the same on every node.
 
-**Capacity:** disk create is refused with `507 insufficient_storage` when the target datastore's free space minus the not-yet-created disks recorded there is below the new size, unless `overcommit: true` is set on the datastore. Creating a disk works out the free space for a shared datastore from any reachable node (they agree, §4.1). For a node-local one it uses the node it binds to, or the best node when it is unbound.
+**Capacity:** disk create is refused with `507 insufficient_storage` when the target datastore's free space minus the not-yet-created disks recorded there is below the new size, unless `overcommit: true` is set on the datastore. Creating a disk works out the free space for a shared datastore from the reachable node with the most (they agree, §4.1, except that a hyperstor datastore's agents report 0: S27). For a node-local one it uses the node it binds to, or the best node when it is unbound.
 
 ### 5.3 Host paths
 
@@ -1076,8 +1077,11 @@ node is lost reaches the same volume.
 
 **Probe.** Each node: `hyperstor-vhost` answers `hello`
 (`VhostUnavailable` otherwise). Each server also: the API answers with
-the identity (`ApiUnavailable`). Sizes are 0: hyperstor reports no free
-space to glidex yet, so `overcommit: false` is refused at creation.
+the identity (`ApiUnavailable`), and gives the pool's usable total and
+free bytes (S27), from the first address whose member knows them. Sizes
+are 0 on agents, and on servers when hyperstor doesn't report them (before
+hyperstor D156, or while a device is yet to report). `overcommit: false`
+is accepted and checked against them.
 
 **Images on hyperstor** use the image volume, not a copy of the image
 file: `Datastore::holds_image_files` is true only for `shared-dir`

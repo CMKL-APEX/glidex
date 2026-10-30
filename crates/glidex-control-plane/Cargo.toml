@@ -67,8 +67,8 @@ glidex-api = { path = "../glidex-api" }
 # The hyperstor datastore driver (spec/24-storage.md §11.2): hyperstor's
 # cluster API client and its certificate helpers, from hyperstor's
 # repository, pinned (as hyperstor pins glidex's crates).
-hyperstor-api = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "be587343892cdcb16bb74a28cb801e226de92873", features = ["client"] }
-hyperstor-pki = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "be587343892cdcb16bb74a28cb801e226de92873" }
+hyperstor-api = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "bd0ed2073a4207184977d39d9dbc9d23b3d76745", features = ["client"] }
+hyperstor-pki = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "bd0ed2073a4207184977d39d9dbc9d23b3d76745" }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "axum", "client", "client-tls"] }
 connectrpc-health = "=0.9.0"
 # Server reflection on api.sock (spec/18-grpc.md §3), for grpcurl and buf curl.
