@@ -135,6 +135,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
 
     await test.step("delete it", async () => {
       await page.getByRole("button", { name: "Delete" }).click();
+      // It boots a file on the host: no disk of its own goes with it.
+      await page.getByRole("dialog").getByRole("button", { name: "Delete VM", exact: true }).click();
       await expect(page).toHaveURL(/\/$/);
       await expect.poll(vm).toBeUndefined();
     });

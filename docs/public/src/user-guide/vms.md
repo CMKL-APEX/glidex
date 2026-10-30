@@ -584,7 +584,9 @@ gxctl> delete my-vm --keep-disk     # keep the root disk created for it
 Deleting stops the VM if it runs, releases its NICs and their
 addresses, and detaches its disks. A root disk created for the VM from
 an image is deleted with it, unless you keep it (`--keep-disk`,
-`?keep_disk=true`). Other disks are only detached.
+`?keep_disk=true`, or **Keep disk** in the web UI's delete dialog, which
+names the disks that go and those that stay). Other disks are only
+detached.
 
 ## States and events
 

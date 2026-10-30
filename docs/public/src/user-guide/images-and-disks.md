@@ -273,9 +273,10 @@ A disk is attached to one VM at a time.
   ```
 
   On a running VM it takes effect the next time the VM starts.
-  `DELETE /vms/<vm-id>/disks/<disk>` detaches it.
+  `DELETE /vms/<vm-id>/disks/<disk>` detaches it, as does **Detach** next
+  to the disk on the VM's page in the web UI; the disk and its data stay.
 
-<!-- TODO(verify): neither gxctl nor the web UI has an attach/detach command for a data disk on an existing VM; only POST/DELETE /vms/{id}/disks. Update this section if one is added. -->
+<!-- TODO(verify): gxctl has no attach/detach command for a data disk on an existing VM, and the web UI only detaches. Update this section if one is added. -->
 
 ### Growing and shrinking
 
@@ -325,7 +326,9 @@ gxctl disk rm data1
 It asks for confirmation; the disk's data is gone afterwards. A disk
 attached to a VM can't be deleted: detach it or delete the VM first. A
 root disk that was created along with a VM is deleted with the VM,
-unless you delete the VM with `--keep-disk`.
+unless you delete the VM with `--keep-disk` (in the web UI, **Keep disk**
+in the delete dialog). The VM's page lists its disks and marks that one
+*deleted with the VM*.
 
 ### Where a disk lives
 
@@ -361,9 +364,9 @@ there. What differs:
 
 - **Always raw.** Leave the format out (`gxctl disk create` does) and the
   disk is raw; asking for qcow2 is refused (`400 invalid_disk`, *disks on
-  an lvm datastore are raw volumes; leave format out*). In the web UI,
-  set **Format** to `raw`; the form then offers only **Full copy**, so
-  make a linked disk with `gxctl` or the API.
+  a block datastore (lvm, hyperstor) are raw volumes; leave format out*).
+  In the web UI, the form shows **Format** as raw on such a datastore,
+  and offers both **Linked** and **Full copy**.
 - **Linked or full.** A linked disk (the default with `gxctl`) is a thin
   snapshot of the image on that node: quick to make, and small until
   the guest writes. A full disk is an independent copy. Either way the
