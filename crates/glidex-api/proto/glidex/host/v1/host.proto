@@ -516,6 +516,10 @@ message PciFunction {
   // Part of the host's NVLink fabric (an NVSwitch): never a tenant VM's;
   // Fabric Manager owns it (spec/27-gpu-vms.md §7).
   bool fabric = 19;
+  // Why a VM can't be given it now: a VM holds it, a device in its IOMMU
+  // group is held, or it is cordoned (spec/22-host-topology.md §8.4).
+  // Unset: free.
+  optional string taken = 20;
 }
 
 message AerCounts {

@@ -2245,6 +2245,8 @@ export interface PciFunction {
   fabric?: boolean;
   ready?: boolean;
   not_ready?: string[];
+  /** Why a VM can't be given it now: a VM holds it or its IOMMU group, or it is cordoned. Unset: free. */
+  taken?: string;
   aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };
 }
 

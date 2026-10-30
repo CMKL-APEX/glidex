@@ -2709,16 +2709,7 @@ impl VmManager {
         if devices.is_empty() {
             return Ok(());
         }
-        let standalone = self.cluster().is_none();
-        let mut claimed = BTreeMap::new();
-        for vm in vms.values().filter(|v| Some(v.id.as_str()) != except) {
-            let here = standalone || vm.status.placement.as_ref().is_some_and(|p| p.node == node);
-            if here {
-                for d in Self::devices_held(vm) {
-                    claimed.insert(crate::scheduler::pci_address(d), vm.name.clone());
-                }
-            }
-        }
+        let claimed = self.claimed_on(vms, node, except);
         // A node that reports no groups: claims are by address only.
         let rec = self.nodes.get(node).ok().flatten();
         let cordoned = rec
@@ -2745,6 +2736,59 @@ impl VmManager {
             }
         }
         Ok(())
+    }
+
+    /// The PCI devices VMs on `node` hold, but `except`'s: address → the
+    /// VM's name. On a standalone host every VM is the node's.
+    fn claimed_on(
+        &self,
+        vms: &HashMap<String, Vm>,
+        node: &str,
+        except: Option<&str>,
+    ) -> BTreeMap<String, String> {
+        let standalone = self.cluster().is_none();
+        let mut claimed = BTreeMap::new();
+        for vm in vms.values().filter(|v| Some(v.id.as_str()) != except) {
+            let here = standalone || vm.status.placement.as_ref().is_some_and(|p| p.node == node);
+            if here {
+                for d in Self::devices_held(vm) {
+                    claimed.insert(crate::scheduler::pci_address(d), vm.name.clone());
+                }
+            }
+        }
+        claimed
+    }
+
+    /// Why each of `devices` on `node` can't be given to a VM now, by the
+    /// rule a create or start applies (spec/22-host-topology.md §8.4):
+    /// address → reason; a free device isn't in it. `groups` are the
+    /// devices' IOMMU groups, from the node's topology.
+    pub async fn devices_taken<'a>(
+        &self,
+        node: &str,
+        groups: &BTreeMap<String, String>,
+        devices: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeMap<String, String> {
+        let claimed = self.claimed_on(&*self.vms.read().await, node, None);
+        let cordoned = self
+            .nodes
+            .get(node)
+            .ok()
+            .flatten()
+            .map(|n| n.spec.cordoned_devices)
+            .unwrap_or_default();
+        devices
+            .into_iter()
+            .filter_map(|d| {
+                let addr = crate::scheduler::pci_address(d);
+                let why = crate::scheduler::device_taken(groups, &claimed, d).or_else(|| {
+                    cordoned
+                        .contains(&addr)
+                        .then(|| format!("PCI device {addr} is cordoned"))
+                })?;
+                Some((addr, why))
+            })
+            .collect()
     }
 
     /// A disk a VM of `project` may claim: exists, in that project,

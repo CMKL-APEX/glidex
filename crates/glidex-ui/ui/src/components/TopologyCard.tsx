@@ -36,6 +36,7 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
         </span>
         {d.ready ? <Badge kind="ok">ready</Badge> : <Badge kind="warn">not ready</Badge>}
         {cordoned && <Badge kind="denied">cordoned</Badge>}
+        {d.taken && !cordoned && <span title={d.taken}><Badge kind="warn">in use</Badge></span>}
         {errors > 0 && <Badge kind="denied">{errors} PCIe errors</Badge>}
         {ops.manage && (
           <span className="ml-auto flex gap-2">

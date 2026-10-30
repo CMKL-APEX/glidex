@@ -7,6 +7,7 @@ import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwar
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
+import GpuPicker, { sysfsPath } from "./GpuPicker";
 
 type BootMode = "firmware" | "kernel";
 /** Where a kernel-boot VM's kernel comes from (spec/23-kernel-boot.md §6). */
@@ -63,6 +64,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [rootfsPath, setRootfsPath] = useState("");
   const [kernelArgs, setKernelArgs] = useState("");
   const [vfioDevices, setVfioDevices] = useState("");
+  /** GPUs picked on the node (addresses), passed through with `vfioDevices`. */
+  const [pickedGpus, setPickedGpus] = useState<string[]>([]);
   const [pools, setPools] = useState<PciPoolJson[]>([]);
   /** Devices asked of each pool, and whether under one PCIe switch. */
   const [poolAsks, setPoolAsks] = useState<Record<string, { count: number; sameSwitch: boolean }>>({});
@@ -252,16 +255,26 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     .map(([pool, a]) => ({ pool, count: a.count, same_switch: a.sameSwitch && a.count > 1 ? true : undefined }));
   const askPool = (pool: string, change: Partial<{ count: number; sameSwitch: boolean }>) =>
     setPoolAsks((cur) => ({ ...cur, [pool]: { ...(cur[pool] ?? { count: 0, sameSwitch: false }), ...change } }));
+  // GPU pools go in the GPUs section; the rest under Device Pools.
+  const gpuPools = pools.filter((p) => p.class === "gpu");
+  const otherPools = pools.filter((p) => p.class !== "gpu");
+  // Whose GPUs are listed: this host's, or in a cluster the node chosen.
+  const gpuNode = nodes.clustered ? node || null : (nodes.self ?? "local");
+  // The picked GPUs and the paths typed under Advanced, each once.
+  const vfioPaths = [
+    ...new Set([
+      ...pickedGpus.map(sysfsPath),
+      ...vfioDevices
+        .split(",")
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0),
+    ]),
+  ];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setSubmitError(null);
-
-    const devices = vfioDevices
-      .split(",")
-      .map((d) => d.trim())
-      .filter((d) => d.length > 0);
 
     try {
       await onSubmit({
@@ -286,7 +299,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         root_disk: rootSource === "disk" ? rootDisk : undefined,
         hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
         kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
-        vfio_devices: devices.length > 0 ? devices : undefined,
+        vfio_devices: vfioPaths.length > 0 ? vfioPaths : undefined,
         devices: poolRequests.length > 0 ? poolRequests : undefined,
         gpus,
         power: startNow ? "POWER_STATE_RUNNING" : undefined,
@@ -462,6 +475,16 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           </div>
         )}
       </div>
+
+      <GpuPicker
+        pools={gpuPools}
+        asks={poolAsks}
+        onAsk={askPool}
+        sizesVm={!sizedByHand}
+        node={gpuNode}
+        picked={pickedGpus}
+        onPick={setPickedGpus}
+      />
 
       <div>
         <label className="block text-sm font-medium text-gray-700">
@@ -651,13 +674,13 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         </div>
       )}
 
-      {pools.length > 0 && (
+      {otherPools.length > 0 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">
             Device Pools (optional)
           </label>
           <div className="mt-1 space-y-2">
-            {pools.map((p) => {
+            {otherPools.map((p) => {
               const name = p.name ?? "";
               const ask = poolAsks[name] ?? { count: 0, sameSwitch: false };
               return (
@@ -699,9 +722,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           </div>
           <p className="mt-1 text-xs text-gray-500">
             How many devices to take from each pool; the scheduler picks which,
-            near each other and the VM&apos;s memory. GPUs place the VM on their NUMA
-            nodes, with its vCPUs and memory split between them
-            {gpuPool?.per_device_vcpus && !sizedByHand ? ", and size it from the pool" : ""}.
+            near each other and the VM&apos;s memory. GPUs are under GPUs above.
           </p>
         </div>
       )}
@@ -714,10 +735,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             mem_size_mib: memSizeMib,
             hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
             networks: selectedNetworks.map((network) => ({ network })),
-            vfio_devices: vfioDevices
-              .split(",")
-              .map((d) => d.trim())
-              .filter((d) => d.length > 0),
+            vfio_devices: vfioPaths,
             devices: poolRequests.length > 0 ? poolRequests : undefined,
             gpus,
             image: rootSource === "image" && image ? image : undefined,
@@ -948,7 +966,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               onChange={(e) => setVfioDevices(e.target.value)}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Comma-separated VFIO device paths for GPU passthrough
+              Comma-separated sysfs paths of other devices to pass through; pick GPUs under GPUs above
             </p>
           </div>
 

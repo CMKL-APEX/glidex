@@ -2818,6 +2818,28 @@ async fn vfio_devices_are_claimed_per_node_and_by_iommu_group() {
 
     // Pinned to a node: the group's other function is refused there.
     let agent1 = agents[0].manager.local_node_id();
+    // What the node's topology marks taken: the same claims.
+    let groups = [("0000:41:00.0", "31"), ("0000:41:00.1", "31")]
+        .into_iter()
+        .map(|(a, g)| (a.to_string(), g.to_string()))
+        .collect();
+    let taken = server
+        .manager
+        .devices_taken(
+            &agent1,
+            &groups,
+            ["0000:41:00.0", "0000:41:00.1", "0000:42:00.0"],
+        )
+        .await;
+    assert!(
+        taken["0000:41:00.0"].starts_with("PCI device 0000:41:00.0 is used by VM gpu"),
+        "{taken:?}"
+    );
+    assert!(
+        taken["0000:41:00.1"].contains("shares IOMMU group 31 with 0000:41:00.0"),
+        "{taken:?}"
+    );
+    assert!(!taken.contains_key("0000:42:00.0"), "{taken:?}");
     let mut b = with("audio", "/sys/bus/pci/devices/0000:41:00.1");
     b["node"] = json!("agent1");
     let (s, e) = call(&server, "POST", "/vms", Some(b), &[]).await;

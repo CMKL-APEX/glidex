@@ -44,7 +44,7 @@ the reserved CPUs, and the warnings.
 | CPUs, cores | The NUMA node's CPUs, grouped by core (hyperthreads of one core together). |
 | Memory | The node's memory, without its hugepage pool. |
 | Hugepages | Pages per size on that NUMA node, less what OVS-DPDK takes there. |
-| Devices | The devices a VM could be given: GPUs, NICs, NVMe drives, accelerators, and anything bound to `vfio-pci`. Each with its class, ids, driver, IOMMU group, readiness and, with `--devices`, its root port, the PCIe switch above it, its link speed and width, SR-IOV VFs and PCIe error counts. |
+| Devices | The devices a VM could be given: GPUs, NICs, NVMe drives, accelerators, and anything bound to `vfio-pci`. Each with its class, ids, driver, IOMMU group, readiness, whether it is taken (a VM on the node holds it or its IOMMU group, or it is cordoned: **in use** on the card) and, with `--devices`, its root port, the PCIe switch above it, its link speed and width, SR-IOV VFs and PCIe error counts. |
 | Reserved CPUs | CPUs no VM gets: OVS-DPDK's PMD and lcore CPUs, the two cores `pylond` uses on a [Pylon](installation.md#pylon) host, and `cluster.node_reserved.cpu_list`. |
 
 Reading a node's topology needs a host role (`auditor`, `net-admin` or
