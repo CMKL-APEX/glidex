@@ -275,6 +275,8 @@ A disk is attached to one VM at a time.
   On a running VM it takes effect the next time the VM starts.
   `DELETE /vms/<vm-id>/disks/<disk>` detaches it, as does **Detach** next
   to the disk on the VM's page in the web UI; the disk and its data stay.
+  A disk detached from a running VM stays attached to it until the VM
+  stops (or is deleted), and can be deleted from then on.
 
 <!-- TODO(verify): gxctl has no attach/detach command for a data disk on an existing VM, and the web UI only detaches. Update this section if one is added. -->
 
@@ -327,8 +329,9 @@ It asks for confirmation; the disk's data is gone afterwards. A disk
 attached to a VM can't be deleted: detach it or delete the VM first. A
 root disk that was created along with a VM is deleted with the VM,
 unless you delete the VM with `--keep-disk` (in the web UI, **Keep disk**
-in the delete dialog). The VM's page lists its disks and marks that one
-*deleted with the VM*.
+in the delete dialog); a kept disk is then like any other and can be
+deleted. The VM's page lists its disks and marks that one *deleted with
+the VM*.
 
 ### Where a disk lives
 

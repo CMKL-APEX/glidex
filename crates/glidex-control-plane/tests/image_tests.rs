@@ -1146,6 +1146,18 @@ async fn vms_create_attach_and_own_disks() {
     let d = disk_of(&d);
     assert!(d.is_object(), "{d}");
     assert!(d["attached_to"].is_null(), "{d}");
+    assert!(d["owner"].is_null(), "no longer its VM's: {d}");
+    // Once it is made (the VM was deleted while it was being made).
+    let mut tries = 0;
+    let (status, err) = loop {
+        let (status, err) = request(&app, "DELETE", &format!("/disks/{vm3_root}"), None).await;
+        tries += 1;
+        if status != StatusCode::CONFLICT || tries == 60 {
+            break (status, err);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(status, StatusCode::NO_CONTENT, "{err}");
 
     // Deleting the image-built VM deletes its owned root disk.
     let root_path = PathBuf::from(root["path"].as_str().unwrap());

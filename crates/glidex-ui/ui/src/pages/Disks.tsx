@@ -489,8 +489,8 @@ export default function Disks() {
                     )}
                     <button
                       className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-40"
-                      disabled={!!d.attached_to || !!d.owner || !!d.deleting}
-                      title={d.attached_to || d.owner ? "Detach it or delete the VM first" : ""}
+                      disabled={!!d.attached_to || !!d.deleting}
+                      title={d.attached_to ? "Detach it or delete the VM first" : ""}
                       onClick={() => confirm(`Delete disk ${d.name} and its data?`) && act(() => api.deleteDisk(d.id))}
                     >
                       Delete

@@ -762,10 +762,13 @@ impl VmManager {
 
         self.write_status(&vm.id, vm.generation, st, events).await?;
         // Disks the spec no longer references lose their claim with the
-        // instance (D11): the disk controller releases them.
+        // instance (D11). Released here: on a cluster the disk's worker
+        // may be another node, which hears nothing of this exit.
         for d in &inst.disks {
-            self.queue
-                .add(crate::controller::queue::Key::Disk(d.clone()));
+            if let Ok(mut disk) = self.images.get_disk(d) {
+                self.release_if_unclaimed(&mut disk).await?;
+            }
+            self.queue.add(Key::Disk(d.clone()));
         }
         if let Some((actor, reason, msg)) = stop {
             self.stop_spec_after_exit(&vm.id, vm.generation, actor, reason, msg)
@@ -2158,6 +2161,10 @@ impl VmManager {
             if let Some(i) = &vm.status.instance {
                 ids.extend(i.disks.iter());
             }
+            // A disk detached while running keeps its claim after the
+            // instance is gone too, until the disk controller next sees it.
+            let claimed = self.attached_disk_ids(&vm.id);
+            ids.extend(claimed.iter());
             ids.sort();
             ids.dedup();
             for id in ids {
@@ -2172,6 +2179,10 @@ impl VmManager {
                 {
                     owned = Some(d);
                 } else {
+                    // A kept root disk outlives its VM: it is no one's now.
+                    if d.owner.as_deref() == Some(vm.id.as_str()) {
+                        d.owner = None;
+                    }
                     detach.push(d);
                 }
             }
@@ -2300,6 +2311,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.revision(), before + 1);
+    }
+
+    /// A disk detached while its VM ran keeps the VM's claim (D11); if the
+    /// VM is deleted before anything releases it, the deletion does.
+    #[tokio::test]
+    async fn deleting_a_vm_releases_disks_detached_while_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "", "firmware_path": "/f.fd"
+        }))
+        .unwrap();
+        let vm = manager.create_vm("gone".into(), config).await.unwrap();
+        let disk = |id: &str, owner: Option<&str>| -> crate::images::Disk {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "format": "raw", "size_bytes": 1 << 20,
+                "origin": {"kind": "blank"}, "created_at": 0,
+                "attached_to": vm.id, "owner": owner,
+            }))
+            .unwrap()
+        };
+        // In no spec of the VM: one detached while it ran, one a root disk
+        // it was made with and keeps (keep_disk).
+        manager.images.put_disk(&disk("detached", None)).unwrap();
+        manager
+            .images
+            .put_disk(&disk("kept", Some(&vm.id)))
+            .unwrap();
+        assert!(manager.delete_vm(&vm.id).await.unwrap());
+        for id in ["detached", "kept"] {
+            let d = manager.images.get_disk(id).unwrap();
+            assert_eq!((d.attached_to, d.owner), (None, None), "{id}");
+        }
     }
 
     #[test]
