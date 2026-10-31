@@ -534,6 +534,17 @@ needs these:
   allows its own scripts only. A script a proxy injects into the page,
   such as Cloudflare's Web Analytics beacon, is blocked and logged in the
   browser's console; turn the injection off in the proxy instead.
+- **The proxy's caching.** The UI marks its `/assets/` files immutable
+  (their names change with their contents) and everything else, errors
+  included, `no-cache`. A proxy that sets its own browser cache time
+  instead (Cloudflare's *Browser Cache TTL*) can keep a `404` in browsers
+  for hours, such as one served while a server was being upgraded. Set
+  it to respect the origin's headers.
+- **No affinity needed.** Any server can take any request: a server
+  forwards writes to the leader with the page's `Origin` and, for account
+  changes and passkeys, its cookies, and the leader issues and redeems
+  console tickets, so the ticket and the console's WebSocket may reach
+  different servers.
 
 ## Rolling upgrades
 
