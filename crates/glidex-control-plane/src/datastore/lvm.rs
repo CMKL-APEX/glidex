@@ -68,9 +68,12 @@ impl LvmDriver {
         Self { vg, pool, socket }
     }
 
+    /// stord runs LVM commands: off the worker on a Tokio runtime's.
     fn call<T: serde::de::DeserializeOwned>(&self, op: Op) -> Result<T, ImageError> {
-        let mut c = Client::connect(&self.socket).map_err(stord_err)?;
-        c.call(op).map_err(stord_err)
+        glidex_raftstore::wait::blocking(|| {
+            let mut c = Client::connect(&self.socket).map_err(stord_err)?;
+            c.call(op).map_err(stord_err)
+        })
     }
 
     fn volumes(&self) -> Result<Vec<Volume>, ImageError> {
@@ -373,11 +376,13 @@ pub fn allow_devices(vm_id: &str, devices: Vec<String>) -> Result<(), ImageError
     if devices.is_empty() && !socket.exists() {
         return Ok(());
     }
-    let mut c = Client::connect(&socket).map_err(stord_err)?;
-    c.call::<serde_json::Value>(Op::AllowDevices {
-        vm_id: vm_id.to_string(),
-        devices,
+    glidex_raftstore::wait::blocking(|| {
+        let mut c = Client::connect(&socket).map_err(stord_err)?;
+        c.call::<serde_json::Value>(Op::AllowDevices {
+            vm_id: vm_id.to_string(),
+            devices,
+        })
+        .map(|_| ())
+        .map_err(stord_err)
     })
-    .map(|_| ())
-    .map_err(stord_err)
 }
