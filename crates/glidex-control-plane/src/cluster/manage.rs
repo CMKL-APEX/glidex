@@ -116,6 +116,29 @@ pub fn rekey_node(
                 false
             })?;
         }
+        // What the node found about each datastore, under its new id: the
+        // same host, and no member would ever rewrite the old key.
+        {
+            let mut t = tx
+                .open_table(TableId::DatastoreNodes.definition())
+                .map_err(other)?;
+            let suffix = format!("/{from}");
+            let mut moved = Vec::new();
+            for r in t.iter().map_err(other)? {
+                let (k, v) = r.map_err(other)?;
+                if let Some(ds) = k.value().strip_suffix(&suffix) {
+                    moved.push((
+                        k.value().to_string(),
+                        format!("{ds}/{to}"),
+                        v.value().to_vec(),
+                    ));
+                }
+            }
+            for (old, new, v) in moved {
+                t.remove(old.as_str()).map_err(other)?;
+                t.insert(new.as_str(), v.as_slice()).map_err(other)?;
+            }
+        }
         let mut nodes = tx.open_table(TableId::Nodes.definition()).map_err(other)?;
         nodes.remove(from).map_err(other)?;
         if let Some(n) = new_node {
@@ -1324,5 +1347,31 @@ async fn report_after_joining(manager: &Arc<VmManager>) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!("reporting this node after joining: {}", e),
         Err(e) => tracing::warn!("reporting this node after joining: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datastore::record::{self, NodeRow};
+
+    /// A standalone host forming a cluster takes its datastore rows along:
+    /// left under `local`, no member rewrote them, and every datastore
+    /// counted one node too many.
+    #[test]
+    fn rekeying_a_node_moves_its_datastore_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("g.db")).unwrap();
+        let row = NodeRow {
+            reachable: true,
+            free_bytes: 7,
+            ..Default::default()
+        };
+        record::put_row(&db, "ds1", crate::node::LOCAL_NODE, Some(&row)).unwrap();
+        record::put_row(&db, "ds1", "other", Some(&row)).unwrap();
+        rekey_node(&db, crate::node::LOCAL_NODE, "n1", None).unwrap();
+        let rows = record::rows(&db, "ds1").unwrap();
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["n1", "other"]);
+        assert_eq!(rows["n1"].free_bytes, 7);
     }
 }

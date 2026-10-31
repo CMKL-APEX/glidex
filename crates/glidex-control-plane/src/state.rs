@@ -1201,8 +1201,25 @@ impl VmManager {
                 .map(|n| n.meta.id)
                 .collect(),
         };
+        // The leader drops rows no member writes any more (spec/24-storage.md
+        // §4.1): they made a datastore count, and add up, nodes it hasn't.
+        let members: std::collections::HashSet<String> = match self.cluster() {
+            Some(c) if c.is_leader() => self
+                .nodes()
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| !n.status.phase.is_tombstone())
+                .map(|n| n.meta.id)
+                .collect(),
+            _ => Default::default(),
+        };
         for ds in all {
             let rows = record::rows(&db, &ds.id).unwrap_or_default();
+            for node in record::stale_row_nodes(&rows, &members) {
+                tracing::info!(datastore = %ds.name, node, "dropping the row of a node not in the cluster");
+                let _ = record::put_row(&db, &ds.id, node, None);
+            }
             let old = rows.get(&me).cloned();
             // One node claims a new shared directory: the first of its ready
             // nodes, and only while none reaches it (probe::claim).
