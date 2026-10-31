@@ -19,7 +19,6 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Security | Decision 20: the client address behind a tunnel | `feat/ui-client-ip-header` | `GLIDEX_UI_CLIENT_IP_HEADER` (`CF-Connecting-IP`), trusted from loopback only; docs for running behind a load balancer or tunnel |
 
 ## Areas
 
