@@ -45,12 +45,18 @@ async function mock(page: Page): Promise<Seen> {
       disks: [
         disk("d-root", "vm1-root", { attached_to: VM, owner: VM, datastore: "hs" }),
         disk("d-data", "data1", { attached_to: VM, datastore: "hs" }),
+        // The root disk of a VM since deleted with keep_disk.
+        disk("d-kept", "kept1", { owner: "22222222-2222-4222-8222-222222222222", datastore: "hs" }),
       ],
     }),
   );
   await rpcRoute(page, `${STORAGE}.DiskService/CreateDisk`, (req) => {
     seen.push({ procedure: "CreateDisk", body: req });
     return ok({ disk: disk("d-new", req.name, { datastore: "hs" }), settled: true });
+  });
+  await rpcRoute(page, `${STORAGE}.DiskService/DeleteDisk`, (req) => {
+    seen.push({ procedure: "DeleteDisk", body: req });
+    return ok({});
   });
   await rpcRoute(page, "glidex.vm.v1.VmService/ListVms", () =>
     ok({ vms: [{ id: VM, name: "vm1", project: "p", state: "VM_STATE_STOPPED", root_disk: "d-root", data_disks: ["d-data"] }] }),
@@ -89,4 +95,13 @@ test("deleting a VM names the disks it takes, and can keep its root disk", async
   await dialog.getByRole("checkbox", { name: "Keep disk vm1-root" }).check();
   await dialog.getByRole("button", { name: "Delete VM", exact: true }).click();
   await expect.poll(() => seen.find((s) => s.procedure === "DeleteVm")?.body).toMatchObject({ id: VM, keep_disk: true });
+});
+
+test("a disk no VM claims can be deleted, whoever it was made for", async ({ page }) => {
+  const seen = await mock(page);
+  await page.goto("/disks");
+  const row = (name: string) => page.getByRole("row").filter({ hasText: name });
+  await expect(row("vm1-root").getByRole("button", { name: "Delete" })).toBeDisabled();
+  await row("kept1").getByRole("button", { name: "Delete" }).click();
+  await expect.poll(() => seen.find((s) => s.procedure === "DeleteDisk")?.body).toMatchObject({ id: "d-kept" });
 });
