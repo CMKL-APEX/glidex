@@ -465,12 +465,15 @@ impl Netd {
         }
     }
 
-    /// Blocking call on the full socket. Call from `spawn_blocking` or code
-    /// that already blocks (the VM lifecycle does).
+    /// Blocking call on the full socket, up to its op's timeout. On a Tokio
+    /// worker it waits in `block_in_place`: a worker blocked outright can
+    /// leave no thread driving the runtime's I/O for that long.
     pub fn call<T: DeserializeOwned>(&self, op: Op) -> Result<T, NetError> {
         let timeout = Self::timeout(&op);
-        let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
-        Ok(client.call(op, timeout)?)
+        glidex_raftstore::wait::blocking(|| {
+            let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
+            Ok(client.call(op, timeout)?)
+        })
     }
 
     /// As `call`, telling netd whom the request is for (logged by netd
@@ -481,8 +484,10 @@ impl Netd {
         on_behalf_of: &OnBehalfOf,
     ) -> Result<T, NetError> {
         let timeout = Self::timeout(&op);
-        let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
-        Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
+        glidex_raftstore::wait::blocking(|| {
+            let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
+            Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
+        })
     }
 
     /// The identity of netd's full socket (device, inode): it changes when
@@ -495,7 +500,12 @@ impl Netd {
     }
 
     /// Host status: full socket if we're allowed, else the status socket.
+    /// Up to 30 s: off the worker on a Tokio runtime's, as [`Self::call`].
     pub fn probe(&self) -> (NetdAccess, Result<serde_json::Value, NetError>) {
+        glidex_raftstore::wait::blocking(|| self.probe_now())
+    }
+
+    fn probe_now(&self) -> (NetdAccess, Result<serde_json::Value, NetError>) {
         match Client::connect(&self.run_dir.join(FULL_SOCKET_NAME)) {
             Ok(mut c) => (
                 NetdAccess::Full,
@@ -583,6 +593,63 @@ mod tests {
         for r in results {
             assert_eq!(r, Ok(true), "a network write hung or failed");
         }
+    }
+
+    /// A slow netd answer on a one-worker runtime: the call waits off the
+    /// worker, so the runtime's timer (and in production its I/O) keeps
+    /// running meanwhile. Blocked outright, the timer fires only after netd
+    /// answers.
+    #[test]
+    fn a_slow_netd_call_leaves_the_runtime_running() {
+        use std::io::{BufRead, Write};
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(dir.path().join(FULL_SOCKET_NAME)).unwrap();
+        // A netd that greets at once and answers the request after 500 ms.
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+            let mut id = || {
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"].clone()
+            };
+            let hello = serde_json::json!({
+                "protocol": glidex_netd::proto::PROTOCOL_VERSION,
+                "netd_version": "test",
+            });
+            writeln!(s, "{}", serde_json::json!({ "id": id(), "ok": hello })).unwrap();
+            let id = id();
+            std::thread::sleep(Duration::from_millis(500));
+            writeln!(s, "{}", serde_json::json!({ "id": id, "ok": [] })).unwrap();
+        });
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let netd = Netd::new(dir.path());
+        let (done, rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let timer = done.clone();
+        rt.spawn(async move {
+            let r = netd.call::<serde_json::Value>(Op::ListBridges);
+            let _ = done.send(("netd", started.elapsed(), r.is_ok()));
+        });
+        rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = timer.send(("timer", started.elapsed(), true));
+        });
+        let first = rx.recv_timeout(Duration::from_secs(10));
+        let second = rx.recv_timeout(Duration::from_secs(10));
+        rt.shutdown_background();
+        let (first, second) = (first.unwrap(), second.unwrap());
+        assert_eq!(
+            first.0, "timer",
+            "the timer waited for netd: {first:?}, {second:?}"
+        );
+        assert!(second.2, "the netd call failed: {second:?}");
     }
 
     #[test]

@@ -258,18 +258,22 @@ fn run_ctl(ctl: &Path, args: &[&str]) -> Result<(), ImageError> {
 }
 
 /// Runs `f` on a runtime of its own, on a thread of its own: the driver's
-/// methods block, and may be called from inside another runtime.
+/// methods block, and may be called from inside another runtime. A Tokio
+/// worker waits for it in `block_in_place` (up to the API's timeout per
+/// address), so the worker's runtime keeps driving its I/O.
 fn block_on<T: Send>(f: impl std::future::Future<Output = T> + Send) -> T {
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime")
-                .block_on(f)
+    glidex_raftstore::wait::blocking(|| {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a runtime")
+                    .block_on(f)
+            })
+            .join()
+            .expect("the API call's thread")
         })
-        .join()
-        .expect("the API call's thread")
     })
 }
 
@@ -755,6 +759,11 @@ impl HyperstorDriver {
     /// [`Self::vhost`], keeping a `held` answer's holder: the label of the
     /// lease that holds the volume (hyperstor D153).
     fn vhost_call(&self, req: serde_json::Value) -> Result<serde_json::Value, VhostRefusal> {
+        // Up to a minute: off the worker on a Tokio runtime's.
+        glidex_raftstore::wait::blocking(|| self.vhost_call_now(req))
+    }
+
+    fn vhost_call_now(&self, req: serde_json::Value) -> Result<serde_json::Value, VhostRefusal> {
         let path = self.vhost_dir.join("control.sock");
         let unavailable = |e: std::io::Error| {
             VhostRefusal::from(ImageError::NotReady(format!(
