@@ -1141,23 +1141,30 @@ async fn vms_create_attach_and_own_disks() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    // At once, or once a create already running on its disk ends (S29).
+    assert!(
+        [StatusCode::NO_CONTENT, StatusCode::ACCEPTED].contains(&status),
+        "{status}"
+    );
+    assert!(
+        gone(&app, &format!("/vms/{}", id_of(&vm3))).await,
+        "vm3 went"
+    );
     let (_, d) = request(&app, "GET", &format!("/disks/{vm3_root}"), None).await;
     let d = disk_of(&d);
     assert!(d.is_object(), "{d}");
     assert!(d["attached_to"].is_null(), "{d}");
     assert!(d["owner"].is_null(), "no longer its VM's: {d}");
-    // Once it is made (the VM was deleted while it was being made).
-    let mut tries = 0;
-    let (status, err) = loop {
-        let (status, err) = request(&app, "DELETE", &format!("/disks/{vm3_root}"), None).await;
-        tries += 1;
-        if status != StatusCode::CONFLICT || tries == 60 {
-            break (status, err);
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    };
-    assert_eq!(status, StatusCode::NO_CONTENT, "{err}");
+    // Deleted while it may still be being made: taken either way (S29).
+    let (status, err) = request(&app, "DELETE", &format!("/disks/{vm3_root}"), None).await;
+    assert!(
+        [StatusCode::NO_CONTENT, StatusCode::ACCEPTED].contains(&status),
+        "{status} {err}"
+    );
+    assert!(
+        gone(&app, &format!("/disks/{vm3_root}")).await,
+        "the kept disk went"
+    );
 
     // Deleting the image-built VM deletes its owned root disk.
     let root_path = PathBuf::from(root["path"].as_str().unwrap());
@@ -1171,6 +1178,98 @@ async fn vms_create_attach_and_own_disks() {
 /// Deleting an image is a request the image controller finishes
 /// (spec/12-reconciliation.md §6.3): a download in flight is cancelled and
 /// its files removed; the name is free again.
+/// Whether `path` answers 404 within 30 s.
+async fn gone(app: &Router, path: &str) -> bool {
+    for _ in 0..150 {
+        let (status, _) = request(app, "GET", path, None).await;
+        if status == StatusCode::NOT_FOUND {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
+}
+
+/// A VM, or a disk, whose disk is still being made can be deleted
+/// (spec/24-storage.md S29): the request is taken while the create runs,
+/// no new attempt starts, and both go once the running one ends. Before,
+/// a create that kept failing kept the disk busy, and every delete was
+/// refused with "busy (create)".
+#[tokio::test]
+async fn deleting_while_a_disk_is_being_made() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+    // Holds `id`'s create mark, as a create that keeps failing does.
+    let hold = |id: String| {
+        let images = manager.images().clone();
+        async move {
+            for _ in 0..300 {
+                if let Ok(g) = images.begin(&id, "create") {
+                    return g;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("disk {id} stayed busy");
+        }
+    };
+
+    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
+        "name": "p1", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let vm_id = id_of(&vm);
+    let root_id = vm_of(&vm)["root_disk"].as_str().unwrap().to_string();
+    let busy = hold(root_id.clone()).await;
+    let (status, v) = request(&app, "DELETE", &format!("/vms/{vm_id}"), None).await;
+    assert!(
+        status.is_success(),
+        "taken while the create runs: {status} {v}"
+    );
+    // Still there while the create runs: the disk would be written back.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let (status, _) = request(&app, "GET", &format!("/disks/{root_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    drop(busy);
+    assert!(gone(&app, &format!("/vms/{vm_id}")).await, "the VM went");
+    assert!(
+        gone(&app, &format!("/disks/{root_id}")).await,
+        "its disk went"
+    );
+
+    // A disk on its own: the same.
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({
+            "name": "d1", "size_gib": 1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{d}");
+    let disk_id = disk_of(&d)["id"].as_str().unwrap().to_string();
+    let busy = hold(disk_id.clone()).await;
+    let (status, v) = request(&app, "DELETE", &format!("/disks/{disk_id}"), None).await;
+    assert!(
+        status.is_success(),
+        "taken while the create runs: {status} {v}"
+    );
+    let (status, _) = request(&app, "GET", &format!("/disks/{disk_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "kept until the create ends");
+    drop(busy);
+    assert!(
+        gone(&app, &format!("/disks/{disk_id}")).await,
+        "the disk went"
+    );
+}
+
 #[tokio::test]
 async fn deleting_an_image_cancels_its_download() {
     if !tools_present() {

@@ -2949,7 +2949,8 @@ async fn root_disk_e2e(hypervisor: &str, image_env: &str, datastore: Value) {
                     .args(args),
             )
         };
-        let vol = glidex_control_plane::datastore::hyperstor::image_volume_id(&img_id);
+        let ds_id = v["datastore"]["id"].as_str().unwrap();
+        let vol = glidex_control_plane::datastore::hyperstor::image_volume_id(&img_id, ds_id);
         hs(&[
             "create-volume",
             "--size",

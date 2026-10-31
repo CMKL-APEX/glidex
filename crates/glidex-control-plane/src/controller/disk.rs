@@ -295,6 +295,15 @@ impl VmManager {
                 return Ok(Some(Duration::from_secs(if stuck { 30 } else { 3 })));
             }
         }
+        // Its VM is being deleted: no new attempt; the VM's deletion waits
+        // for one already running, then deletes the disk (S29).
+        {
+            let vms = self.vms.read().await;
+            let vm = Self::disk_claimed_by(&vms, &disk.id, None).and_then(|id| vms.get(&id));
+            if vm.is_some_and(|vm| vm.deletion_requested_at.is_some()) {
+                return Ok(None);
+            }
+        }
         let guard = match self.images.begin(&disk.id, "create") {
             Ok(g) => g,
             Err(_) => return Ok(Some(Duration::from_secs(1))),

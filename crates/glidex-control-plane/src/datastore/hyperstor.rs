@@ -138,8 +138,38 @@ pub fn stale_here(
 
 /// An image's volume id, derived from the image's (one per datastore: the
 /// datastore is another cluster, or another pool).
-pub fn image_volume_id(image_id: &str) -> String {
+pub fn image_volume_id(image_id: &str, datastore: &str) -> String {
+    hyperstor_pki::sha256_hex(format!("glidex-image:{image_id}:on:{datastore}").as_bytes())[..32]
+        .to_string()
+}
+
+/// The id image volumes had before they were per datastore: one per image,
+/// so two datastores on one hyperstor cluster wanted the same id, and the
+/// second, listing only its own pool, retried "exists" for ever.
+fn legacy_image_volume_id(image_id: &str) -> String {
     hyperstor_pki::sha256_hex(format!("glidex-image:{image_id}").as_bytes())[..32].to_string()
+}
+
+/// Which id `image_id`'s volume on `datastore` has, from the volumes of its
+/// pool (`(id, name)`): one made before ids were per datastore, named for
+/// this datastore, is kept (its disks are clones of it); else the
+/// datastore's own (spec/24-storage.md S28).
+fn pick_image_volume_id<'a>(
+    image_id: &str,
+    datastore: &str,
+    listed: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> String {
+    let legacy = legacy_image_volume_id(image_id);
+    let name = image_volume_name(image_id, datastore);
+    if listed.into_iter().any(|(id, n)| id == legacy && n == name) {
+        legacy
+    } else {
+        image_volume_id(image_id, datastore)
+    }
+}
+
+fn image_volume_name(image_id: &str, datastore: &str) -> String {
+    format!("glidex image {image_id} on {datastore}")
 }
 
 /// `id` as a volume id: a UUID as it is, anything else hashed under
@@ -336,7 +366,17 @@ impl HyperstorDriver {
 
     /// What image `image_id`'s volume is called.
     fn image_volume_name(&self, image_id: &str) -> String {
-        format!("glidex image {image_id} on {}", self.datastore)
+        image_volume_name(image_id, &self.datastore)
+    }
+
+    /// The id `image_id`'s volume has on this datastore ([`pick_image_volume_id`]).
+    fn image_volume_of(&self, image_id: &str) -> Result<String, ImageError> {
+        let vols = self.volumes()?;
+        Ok(pick_image_volume_id(
+            image_id,
+            &self.datastore,
+            vols.iter().map(|v| (v.id.as_str(), v.name.as_str())),
+        ))
     }
 
     /// Deletes this datastore's image volumes whose image `live` says is
@@ -355,7 +395,9 @@ impl HyperstorDriver {
                 continue;
             };
             // One being purged is on its way already.
-            if live(image) || v.id != image_volume_id(image) || v.state != "active" {
+            let ours = v.id == image_volume_id(image, &self.datastore)
+                || v.id == legacy_image_volume_id(image);
+            if live(image) || !ours || v.state != "active" {
                 continue;
             }
             match self.delete(&v.id) {
@@ -673,7 +715,7 @@ impl HyperstorDriver {
         file: &Path,
         size: u64,
     ) -> Result<(String, u64), ImageError> {
-        let id = image_volume_id(image_id);
+        let id = self.image_volume_of(image_id)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(30 * 60);
         // Each round makes progress or waits; a few rounds of another
         // worker's volume coming and going, and it's that worker's error.
@@ -739,7 +781,7 @@ impl HyperstorDriver {
     /// Delete image `image_id`'s volume (its golden snapshot with it); one
     /// gone already is fine, one that disks still clone from is refused.
     pub fn delete_image_volume(&self, image_id: &str) -> Result<(), ImageError> {
-        self.delete(&image_volume_id(image_id))
+        self.delete(&self.image_volume_of(image_id)?)
     }
 
     /// The binding the partition code works on, for `id`.
@@ -1281,6 +1323,29 @@ mod tests {
         d
     }
 
+    /// Two datastores on one hyperstor cluster each have their own image
+    /// volume; one made before ids were per datastore stays its maker's.
+    #[test]
+    fn image_volumes_are_per_datastore_and_old_ones_stay() {
+        let (a, b) = ("ds-a", "ds-b");
+        assert_ne!(image_volume_id("img", a), image_volume_id("img", b));
+        assert_ne!(image_volume_id("img", a), legacy_image_volume_id("img"));
+        // None yet: each datastore's own.
+        assert_eq!(
+            pick_image_volume_id("img", a, []),
+            image_volume_id("img", a)
+        );
+        // ds-a made one under the old id: ds-a keeps it, ds-b makes its own.
+        let old = legacy_image_volume_id("img");
+        let name = image_volume_name("img", a);
+        let listed = [(old.as_str(), name.as_str())];
+        assert_eq!(pick_image_volume_id("img", a, listed), old);
+        assert_eq!(
+            pick_image_volume_id("img", b, listed),
+            image_volume_id("img", b)
+        );
+    }
+
     #[test]
     fn volumes_are_named_from_disks_and_images() {
         let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
@@ -1290,8 +1355,11 @@ mod tests {
         let odd = volume_id(&disk("legacy-disk"));
         assert_eq!(odd.len(), 32);
         assert_eq!(odd, volume_id(&disk("legacy-disk")));
-        assert_ne!(image_volume_id("img-1"), image_volume_id("img-2"));
-        assert_eq!(image_volume_id("img-1").len(), 32);
+        assert_ne!(
+            image_volume_id("img-1", "ds"),
+            image_volume_id("img-2", "ds")
+        );
+        assert_eq!(image_volume_id("img-1", "ds").len(), 32);
         let p = tool_path("10.0.0.5:8849,10.0.0.6:8849", &odd);
         assert_eq!(
             parse_tool_path(Path::new(&p)),
