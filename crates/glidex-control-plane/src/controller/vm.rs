@@ -518,8 +518,12 @@ impl VmManager {
         // ---- 2. deletion -----------------------------------------------------
         let deleting = vm.deletion_requested_at.is_some();
         if deleting && !live {
-            self.finalize_deletion(&vm).await?;
-            return Ok(None);
+            return match self.finalize_deletion(&vm).await {
+                Ok(()) => Ok(None),
+                // A disk's create is still running; it starts no other.
+                Err(VmManagerError::Image(ImageError::Busy(_))) => Ok(Some(Duration::from_secs(2))),
+                Err(e) => Err(e),
+            };
         }
 
         let desired = if deleting {
@@ -2149,6 +2153,23 @@ impl VmManager {
                     "VM {}'s disks couldn't be detached yet: {}",
                     vm.name,
                     left.join(", ")
+                ))
+                .into());
+            }
+        }
+        // A create still running on one of its disks would write the disk
+        // back after it went: wait for it (spec/24-storage.md S29).
+        if has(FINALIZER_DISKS) {
+            let c = vm.config();
+            if let Some(id) = c
+                .root_disk
+                .iter()
+                .chain(c.data_disks.iter())
+                .find(|id| self.images.busy_op(id) == Some("create"))
+            {
+                return Err(ImageError::Busy(format!(
+                    "VM {}'s disk {id} is still being created; deleted once that attempt ends",
+                    vm.name
                 ))
                 .into());
             }

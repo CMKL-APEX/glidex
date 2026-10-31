@@ -3475,7 +3475,11 @@ impl VmManager {
                 .iter()
                 .chain(cur.config().data_disks.iter())
             {
-                if let Some(op) = self.images.busy_op(id) {
+                // A create is let finish: its VM's deletion stops new attempts
+                // and waits for it (spec/24-storage.md S29).
+                if let Some(op) = self.images.busy_op(id)
+                    && op != "create"
+                {
                     return Err(ImageError::Busy(format!("disk {} is busy ({})", id, op)).into());
                 }
             }
@@ -3511,8 +3515,12 @@ impl VmManager {
                 .await
                 .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
             if seen.liveness == crate::instance::Liveness::Dead {
-                self.finalize_deletion(&vm).await?;
-                return Ok(true);
+                match self.finalize_deletion(&vm).await {
+                    Ok(()) => return Ok(true),
+                    // A disk's create is still running: the controller finishes.
+                    Err(VmManagerError::Image(ImageError::Busy(_))) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         self.queue.add(Key::Vm(vm.id.clone()));
@@ -4251,7 +4259,11 @@ impl VmManager {
                 ))
                 .into());
             }
-            if let Some(op) = self.images.busy_op(&disk.id) {
+            // A create is let finish, then the disk controller deletes the
+            // disk instead of trying again (spec/24-storage.md S29).
+            if let Some(op) = self.images.busy_op(&disk.id)
+                && op != "create"
+            {
                 return Err(
                     ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into(),
                 );
