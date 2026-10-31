@@ -2056,10 +2056,16 @@ impl AuthService {
 
     /// Consume a ticket for `vm_id` held by `p`.
     pub fn redeem_ticket(&self, p: &Principal, vm_id: &str, ticket: &str) -> bool {
+        self.redeem_ticket_of(&p.cedar(), vm_id, ticket)
+    }
+
+    /// The same, for a principal another server names (a cluster's
+    /// tickets are the leader's: spec/11-security.md decision 21).
+    pub fn redeem_ticket_of(&self, principal: &Ent, vm_id: &str, ticket: &str) -> bool {
         let now = store::now();
         let mut tickets = self.tickets.lock().unwrap();
         match tickets.remove(&sha256_hex(ticket.as_bytes())) {
-            Some(t) => t.expires > now && t.vm_id == vm_id && t.principal == p.cedar(),
+            Some(t) => t.expires > now && t.vm_id == vm_id && t.principal == *principal,
             None => false,
         }
     }

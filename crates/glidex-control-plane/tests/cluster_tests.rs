@@ -589,6 +589,52 @@ async fn account_changes_through_a_follower_reach_the_leader_with_their_cookies(
     assert!(headers.get("set-cookie").is_some(), "{headers:?}");
 }
 
+/// A console ticket is the leader's: another server redeems it there,
+/// once, and only for the principal and VM it was issued for
+/// (spec/11-security.md decision 21). Behind a load balancer the ticket
+/// and the WebSocket may reach different servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn console_tickets_are_the_leaders_and_redeemed_once_from_any_server() {
+    let _one = serial().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    let auths: Vec<_> = cps
+        .iter()
+        .map(|cp| {
+            let auth = glidex_control_plane::auth::AuthService::disabled_with(
+                cp.manager.database(),
+                Config::default(),
+            )
+            .unwrap();
+            cp.manager
+                .set_api_app(Arc::new(glidex_control_plane::api::App {
+                    manager: cp.manager.clone(),
+                    auth: auth.clone(),
+                }));
+            auth
+        })
+        .collect();
+    let p = glidex_control_plane::auth::Principal::system();
+    let other = glidex_control_plane::authz::Ent::User("someone-else".into());
+    let redeem = |who: &glidex_control_plane::authz::Ent, vm: &str, t: &str| {
+        let c = cluster(&cps[follower]);
+        let (who, vm, t) = (who.clone(), vm.to_string(), t.to_string());
+        async move { c.redeem_console_ticket(&who, &vm, &t).await.unwrap() }
+    };
+
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&other, "vm-1", &t).await, "another principal's");
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&p.cedar(), "vm-2", &t).await, "another VM's");
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(redeem(&p.cedar(), "vm-1", &t).await);
+    assert!(!redeem(&p.cedar(), "vm-1", &t).await, "used once");
+    // A ticket the follower kept itself isn't the leader's.
+    let t = auths[follower].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&p.cedar(), "vm-1", &t).await);
+}
+
 /// A gRPC write sent to a follower is forwarded to the leader, and the
 /// leader's status comes back in the HTTP/2 trailers (spec/18-grpc.md §8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]

@@ -60,6 +60,17 @@ fn browser_cookies(path: &str) -> bool {
         || path.starts_with("/auth/invitation/passkey/")
 }
 
+/// Console tickets are the leader's, which redeems them for whichever
+/// server takes the WebSocket (spec/11-security.md decision 21): issue them
+/// there, though asking for one changes nothing.
+fn is_console_ticket(path: &str) -> bool {
+    path == "/glidex.vm.v1.VmService/CreateConsoleTicket"
+        || path
+            .strip_prefix("/vms/")
+            .and_then(|r| r.strip_suffix("/console/ticket"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// Routes that need no cluster at all.
 fn needs_no_barrier(path: &str) -> bool {
     path == "/health" || path == "/auth/methods" || path == "/auth/server-info"
@@ -139,7 +150,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
     let read = match glidex_api::operation(&path) {
         Some(op) => op.kind == glidex_api::Kind::Read || op.streaming,
         None => is_safe(req.method()),
-    };
+    } && !is_console_ticket(&path);
     if read {
         if needs_no_barrier(&path) {
             return next.run(req).await;
@@ -327,4 +338,21 @@ async fn forward(
         }
     }
     unavailable("cluster_unavailable", "the cluster has no leader right now")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_tickets_are_asked_of_the_leader() {
+        assert!(is_console_ticket("/vms/abc/console/ticket"));
+        assert!(is_console_ticket(
+            "/glidex.vm.v1.VmService/CreateConsoleTicket"
+        ));
+        assert!(!is_console_ticket("/vms/abc/console/ws"));
+        assert!(!is_console_ticket("/vms//console/ticket"));
+        assert!(!is_console_ticket("/vms/a/b/console/ticket"));
+        assert!(!is_console_ticket("/glidex.vm.v1.VmService/GetConsoleLog"));
+    }
 }

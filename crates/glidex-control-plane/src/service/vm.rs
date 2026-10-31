@@ -1673,9 +1673,12 @@ pub async fn console_target(
     let (e, es) = vm_entities(&vm);
     call.require_visible("readVm", e, es, "VM")?;
     use crate::auth::Method;
-    if matches!(call.p.method, Method::Pam | Method::Oidc | Method::Passkey)
-        && !ticket.is_some_and(|t| call.auth().redeem_ticket(&call.p, &vm.id, t))
-    {
+    let browser = matches!(call.p.method, Method::Pam | Method::Oidc | Method::Passkey);
+    let redeemed = match ticket {
+        Some(t) if browser => redeem_ticket(call, &vm.id, t).await?,
+        _ => false,
+    };
+    if browser && !redeemed {
         return Err(ServiceError::new(
             StatusCode::FORBIDDEN,
             "ticket_required",
@@ -1686,6 +1689,21 @@ pub async fn console_target(
         Some(addr) => ConsoleTarget::Remote { addr, vm: vm.id },
         None => ConsoleTarget::Local(vm.paths().console_socket),
     })
+}
+
+/// Use up a console ticket. A cluster's tickets are the leader's, which
+/// issued it wherever the browser asked (spec/11-security.md decision 21);
+/// on any other server the leader redeems it.
+async fn redeem_ticket(call: &Call, vm: &str, ticket: &str) -> ServiceResult<bool> {
+    match call.manager().cluster() {
+        Some(c) if c.node.is_some() && !c.is_leader() => c
+            .redeem_console_ticket(&call.p.cedar(), vm, ticket)
+            .await
+            .map_err(|e| {
+                ServiceError::new(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable", e)
+            }),
+        _ => Ok(call.auth().redeem_ticket(&call.p, vm, ticket)),
+    }
 }
 
 /// Connect to the console a target names.
