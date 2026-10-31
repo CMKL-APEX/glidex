@@ -514,8 +514,10 @@ needs these:
 - **Sign-ins per server.** A password (PAM) sign-in belongs to the server
   that checked it: the same Unix account on two servers is two sign-in
   methods, and a sign-in on a server where the account isn't linked yet
-  makes a new user without roles. Link each server's sign-in to the user
-  once, or give the roles to each user.
+  makes a new user without roles. Link the account on every server to
+  its user once (`gxctl user link alice pam alice --all-nodes`; see
+  [Linking a sign-in](authentication.md#linking-a-sign-in-to-a-user)),
+  or give the roles to each user.
 - **The browser's address.** A tunnel daemon on the server (Cloudflare's
   `cloudflared`) connects to the UI from `127.0.0.1`. Set
   `GLIDEX_UI_CLIENT_IP_HEADER` to the header it puts the browser's

@@ -957,5 +957,24 @@ gxctl whoami          # method, teams, roles
 gxctl user list       # every user and their identities
 ```
 
+### Linking a sign-in to a user
+
+A password (PAM) sign-in, and a user on a host's socket (`unix`), is an
+account on one node: `pam:alice@<node id>`. The first sign-in on a node
+where it isn't linked yet makes a new user with no roles. In a cluster
+whose servers share account names, as behind a load balancer, link the
+account on every node to its user once:
+
+```bash
+gxctl user link alice pam alice --all-nodes    # pam:alice@<each node>
+gxctl user link alice unix alice --all-nodes   # the same for gxctl on the socket
+gxctl user link alice pam alice@prism2         # one node, by name or id
+gxctl user unlink alice pam:alice@<node id>
+```
+
+The user is an id, or a name exactly one user has. A sign-in already
+linked to another user is refused: remove that user, or unlink it there,
+first. Linking needs `manageUsers` on the directory.
+
 The audit log records every login, write and denied request (see
 [Access control](access-control.md#audit-log)).

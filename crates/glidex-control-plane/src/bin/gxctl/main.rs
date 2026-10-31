@@ -824,8 +824,8 @@ fn print_help() {
         "system-binding list [--node N] | add <role> <principal> [--node N] | remove <id>".cyan()
     );
     println!(
-        "  {}         - Users and their identities",
-        "user list".cyan()
+        "  {} - Users and their sign-ins; link one, on a node or every node",
+        "user list | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>".cyan()
     );
     println!(
         "  {} - Teams",
@@ -1222,7 +1222,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ),
     ("binding", &["list", "add", "remove"]),
     ("system-binding", &["list", "add", "remove"]),
-    ("user", &["list"]),
+    ("user", &["list", "link", "unlink"]),
     (
         "team",
         &["list", "create", "delete", "add-member", "remove-member"],
