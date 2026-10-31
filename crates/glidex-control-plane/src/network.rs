@@ -277,7 +277,7 @@ impl NetworkStore {
 
     /// Remove a record (its network is gone everywhere).
     pub fn remove(&self, id: &str) -> Result<(), NetError> {
-        let _w = self.write.lock().unwrap();
+        let _w = glidex_raftstore::wait::lock(&self.write).unwrap();
         self.db.write(
             crate::store::Origin::Network,
             |tx| -> Result<(), NetError> {
@@ -291,7 +291,7 @@ impl NetworkStore {
     }
 
     pub fn insert(&self, net: &Network) -> Result<(), NetError> {
-        let _w = self.write.lock().unwrap();
+        let _w = glidex_raftstore::wait::lock(&self.write).unwrap();
         self.write_record(net)
     }
 
@@ -320,7 +320,7 @@ impl NetworkStore {
     /// undo a deletion: a network no longer recorded stays gone, and a
     /// requested deletion is kept.
     pub fn put(&self, net: &Network) -> Result<(), NetError> {
-        let _w = self.write.lock().unwrap();
+        let _w = glidex_raftstore::wait::lock(&self.write).unwrap();
         let Some(current) = self.get(&net.id)? else {
             return Ok(());
         };
@@ -345,7 +345,7 @@ impl NetworkStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), NetError> {
-        let _w = self.write.lock().unwrap();
+        let _w = glidex_raftstore::wait::lock(&self.write).unwrap();
         let txn = self
             .db
             .begin(crate::store::Origin::Network)
@@ -531,6 +531,57 @@ mod tests {
             scope: None,
             physnet: None,
             router: None,
+        }
+    }
+
+    /// Commits once the runtime's timer fires, as Raft's commit waits on
+    /// its network.
+    struct OnTimer(tokio::runtime::Handle);
+
+    impl glidex_raftstore::store::Replicator<crate::store::Glidex> for OnTimer {
+        fn propose(
+            &self,
+            db: &crate::store::Db,
+            ws: glidex_raftstore::store::WriteSet<crate::store::Glidex>,
+        ) -> Result<u64, glidex_raftstore::store::StoreError> {
+            let nap = tokio::time::sleep(std::time::Duration::from_millis(50));
+            glidex_raftstore::raft::wait_on(&self.0, nap);
+            let rev = db.revision() + 1;
+            db.apply(&ws, rev, |_| Ok(()))?;
+            Ok(rev)
+        }
+    }
+
+    /// Two network writes at once on a one-worker runtime. The store's own
+    /// lock is held across the commit, so the second write waits for it off
+    /// the worker; blocked outright, it stops the timer the commit waits on
+    /// and neither finishes (prism2's and prism1's hangs, one lock earlier).
+    #[test]
+    fn concurrent_network_writes_leave_the_runtime_running() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(crate::store::Db::create(dir.path().join("g.db")).unwrap());
+        db.set_replicator(Arc::new(OnTimer(rt.handle().clone())));
+        let store = Arc::new(NetworkStore::new(db).unwrap());
+        let (done, rx) = std::sync::mpsc::channel();
+        for name in ["a", "b"] {
+            let (store, done) = (store.clone(), done.clone());
+            rt.spawn(async move {
+                let net = req(name, NetworkMode::Nat).to_network().unwrap();
+                let _ = done.send(store.insert(&net).is_ok());
+            });
+        }
+        let results: Vec<_> = (0..2)
+            .map(|_| rx.recv_timeout(std::time::Duration::from_secs(10)))
+            .collect();
+        // Dropping a hung runtime would wait on its blocked threads.
+        rt.shutdown_background();
+        for r in results {
+            assert_eq!(r, Ok(true), "a network write hung or failed");
         }
     }
 
