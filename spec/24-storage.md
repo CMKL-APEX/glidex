@@ -222,6 +222,10 @@ pub struct Datastore {
 - **Rows are written** only when something but the time changed:
   free space counts only when it moved by more than 1 % of the total.
 - **Rows are dropped** when the node leaves the datastore's `nodes`.
+  A standalone host forming a cluster moves its rows from `local` to
+  its node id (`rekey_node`), and the leader, each probe round, drops
+  the rows of nodes that aren't the cluster's (departed ones, and a
+  `local` left from before this was done).
 - **When nodes probe:** every 60 s, when a datastore is written (in a
   cluster, `cache_sync`), and right after create and update.
 - **Row writes are status writes** (spec/14-clustering.md §8.3). The leader
