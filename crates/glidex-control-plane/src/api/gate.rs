@@ -205,6 +205,27 @@ async fn forward(
             headers.push((name, v.to_string()));
         }
     }
+    // The browser's account list lives in its cookies, and a change to it
+    // must come from a page (`accounts::same_origin`): the leader needs both.
+    if parts.uri.path().starts_with("/auth/accounts") {
+        if let Some(v) = parts
+            .headers
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+        {
+            headers.push(("origin", v.to_string()));
+        }
+        // HTTP/2 may split cookies over several headers; HTTP/1.1 takes one.
+        let cookies: Vec<&str> = parts
+            .headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        if !cookies.is_empty() {
+            headers.push(("cookie", cookies.join("; ")));
+        }
+    }
     if let Some(p) = parts
         .extensions
         .get::<Principal>()
