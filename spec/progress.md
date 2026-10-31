@@ -19,7 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Datastores | S27 follow-up | #218 | The Datastores page shows a datastore's free space of its total, "—" where no node knows its size (hyperstor agents). UI only |
+| Clustering | Fix: a write waiting for the store's lane hung the control plane (prism2, 2026-10-31) | `fix/raftstore-blocking-wait` | The wait goes through `block_in_place`, so the runtime keeps driving the I/O the lane's holder waits on |
 
 ## Areas
 

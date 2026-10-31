@@ -342,10 +342,13 @@ impl<S: Schema> Tx<'_, S> {
             let f = f.ok_or(StoreError::NotLeader { leader: None })?;
             let index = f.status_write(&ws)?;
             // Read your writes: the caller's next step reads this store.
+            // The revision arrives over the runtime's I/O: wait off the worker.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while db.revision() < index && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            blocking(|| {
+                while db.revision() < index && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            });
             return Ok(());
         }
         if let Some(m) = mirror {
@@ -372,6 +375,17 @@ impl<S: Schema> Tx<'_, S> {
             }
         }
         Ok(())
+    }
+}
+
+/// Run `f`, which may wait a long time, without holding up a Tokio
+/// worker: in `block_in_place` on a multi-thread runtime's worker, directly
+/// anywhere else (a plain thread, `spawn_blocking`, a current-thread runtime).
+fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 
@@ -596,8 +610,22 @@ impl<S: Schema> Db<S> {
     /// Run `f` while no write is in progress or can start: for copying the
     /// database file.
     pub fn quiesce<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
+        let _lane = self.take_lane();
         f()
+    }
+
+    /// Wait for the write lane. Its holder may be waiting on the runtime's
+    /// I/O (Raft's round trip), so on a runtime worker the wait goes through
+    /// `block_in_place`: a worker blocked outright can leave no thread to
+    /// drive that I/O, and then neither write ever finishes.
+    fn take_lane(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.lane.try_lock() {
+            Ok(lane) => lane,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                blocking(|| self.lane.lock().unwrap_or_else(|p| p.into_inner()))
+            }
+        }
     }
 
     /// Switch to replicated writes.
@@ -615,7 +643,7 @@ impl<S: Schema> Db<S> {
     /// Start a write: the transaction records its write set, and holds the
     /// write lane until committed or dropped.
     pub fn begin(&self, origin: S::Origin) -> Result<Tx<'_, S>, StoreError> {
-        let lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
+        let lane = self.take_lane();
         let replicator = match &*self.mode.lock().unwrap() {
             Mode::Replicated(r) => Some(r.clone()),
             Mode::Stopped => return Err(StoreError::NotLeader { leader: None }),
@@ -981,6 +1009,54 @@ mod tests {
         let replayed = Db::<Test>::replay(dir.path().join("b.db"), &db.journal()).unwrap();
         assert_eq!(db.dump().unwrap(), replayed.dump().unwrap());
         assert_eq!(replayed.revision(), 2);
+    }
+
+    /// Commits once the runtime's timer fires, as Raft's commit waits on
+    /// its network.
+    struct OnTimer(tokio::runtime::Handle);
+
+    impl Replicator<Test> for OnTimer {
+        fn propose(&self, db: &Db<Test>, ws: WriteSet<Test>) -> Result<u64, StoreError> {
+            let wait = tokio::time::sleep(std::time::Duration::from_millis(50));
+            crate::raft::wait_on(&self.0, wait);
+            let rev = db.revision() + 1;
+            db.apply(&ws, rev, |_| Ok(()))?;
+            Ok(rev)
+        }
+    }
+
+    /// A write waiting for the lane mustn't block its worker outright: with
+    /// the only worker blocked, nothing drives the timer (in production,
+    /// the I/O) that the lane's holder waits on, and neither finishes.
+    #[test]
+    fn a_write_waiting_for_the_lane_leaves_the_runtime_running() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::<Test>::create(dir.path().join("a.db")).unwrap());
+        db.set_replicator(Arc::new(OnTimer(rt.handle().clone())));
+        let (done, rx) = std::sync::mpsc::channel();
+        for i in 0..2 {
+            let (db, done) = (db.clone(), done.clone());
+            rt.spawn(async move {
+                let r = db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                    put(tx, TestTable::Data, &format!("k{i}"), b"v");
+                    Ok(())
+                });
+                let _ = done.send(r.is_ok());
+            });
+        }
+        let results: Vec<_> = (0..2)
+            .map(|_| rx.recv_timeout(std::time::Duration::from_secs(10)))
+            .collect();
+        // Dropping a hung runtime would wait on its blocked threads.
+        rt.shutdown_background();
+        for r in results {
+            assert_eq!(r, Ok(true), "a write hung or failed");
+        }
     }
 
     #[test]
