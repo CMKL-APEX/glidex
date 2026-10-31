@@ -1,0 +1,1044 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Virtual machines - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-ef487c04.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/user-guide/vms.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="virtual-machines"><a class="header" href="#virtual-machines">Virtual machines</a></h1>
+<p>A VM belongs to one project. You create it stopped (or ask for it to
+start at once), then start, pause, stop and delete it. Each of these
+changes the VM’s <em>desired state</em>; the control plane then works until
+the VM gets there. See <a href="../concepts.html#virtual-machines">Concepts</a> for
+the model.</p>
+<p>In the web UI, the <strong>VMs</strong> page lists the VMs of the selected project.
+Click a VM for its details, actions, usage and events.</p>
+<p>In <code>gxctl</code>, commands take a VM’s name or id. Names are unique within a
+project; use <code>--project &lt;p&gt;</code> (or <code>project use &lt;p&gt;</code>) when the same name
+exists in two projects you can see.</p>
+<pre><code>gxctl&gt; list                       # the VMs: id, name, project, state, node, vCPUs, memory, hypervisor
+gxctl&gt; get my-vm                  # one VM: state, last exit, NICs and their addresses
+</code></pre>
+<h2 id="before-you-start"><a class="header" href="#before-you-start">Before you start</a></h2>
+<p>A VM that boots a cloud image needs:</p>
+<ul>
+<li>an <strong>image</strong> (or an existing disk made from one), and a <strong>firmware
+image</strong> for the hypervisor. See <a href="images-and-disks.html">Images and disks</a>;</li>
+<li>a <strong>guest credential</strong>, or the VM has no way to log in. See
+<a href="credentials.html">Guest credentials</a>;</li>
+<li>a <strong>network</strong> your project may use, or the VM has no NIC. See
+<a href="networks.html">Networks</a>.</li>
+</ul>
+<p>You need the <code>editor</code> role in the project to create, change and delete
+VMs, and <code>operator</code> to start, stop and pause them and to open their
+consoles. See <a href="projects.html">Projects</a>.</p>
+<h2 id="create-a-vm"><a class="header" href="#create-a-vm">Create a VM</a></h2>
+<h3 id="web-ui"><a class="header" href="#web-ui">Web UI</a></h3>
+<p>On the <strong>VMs</strong> page, click <strong>+ Create VM</strong> and fill in the form:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>What it is</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>VM Name</strong></td><td>The VM’s name in the project.</td></tr>
+<tr><td><strong>Hypervisor Backend</strong></td><td>Cloud Hypervisor (the default), QEMU or Pylon. Fixed once created.</td></tr>
+<tr><td><strong>vCPU Count</strong>, <strong>Memory (MiB)</strong></td><td>Defaults 1 vCPU and 512 MiB. On Pylon with <strong>Elastic CPU scaling</strong>, the vCPU count is the maximum and can’t be edited.</td></tr>
+<tr><td><strong>Elastic CPU scaling</strong></td><td>Min vCPUs, max vCPUs and weight. See <a href="#elastic-cpu">Elastic CPU</a>.</td></tr>
+<tr><td><strong>Placement</strong></td><td>Clusters only: <strong>Automatic</strong>, or a node. See <a href="#placement-on-a-cluster">Placement on a cluster</a>.</td></tr>
+<tr><td><strong>Boot Mode</strong></td><td><strong>UEFI firmware (distro cloud image)</strong> or <strong>Direct kernel boot</strong>.</td></tr>
+<tr><td><strong>UEFI Firmware</strong></td><td>The firmware image to boot through; the newest one for the hypervisor is preselected.</td></tr>
+<tr><td><strong>Boot Disk</strong></td><td><strong>New disk from an image</strong>, <strong>Existing disk</strong> (an unattached disk of the project), or <strong>Disk image file path</strong>.</td></tr>
+<tr><td><strong>Image</strong>, <strong>Root disk (GiB)</strong></td><td>For a new disk from an image: a linked disk is created for this VM, its root partition extended, and deleted with the VM.</td></tr>
+<tr><td><strong>Login Credential</strong></td><td>A credential of the project, provisioned by cloud-init on first boot; or none.</td></tr>
+<tr><td><strong>Service Account</strong></td><td>Optional: the identity software in the VM gets glidex tokens for. See <a href="#workload-identity">Workload identity</a>.</td></tr>
+<tr><td><strong>Networks</strong></td><td>One NIC per ticked network, in that order. A network named <code>default</code> is ticked for you.</td></tr>
+<tr><td><strong>GPUs (optional)</strong></td><td>Right after the size. A count from each GPU pool your project may use (it sizes the VM; see <a href="#gpus">GPUs</a>), and the node’s own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others say why not. In a cluster, the node’s GPUs appear once a node is chosen under <strong>Placement</strong>.</td></tr>
+<tr><td><strong>Device Pools (optional)</strong></td><td>How many devices to take from each other pool (NICs, NVMe…) your project may use.</td></tr>
+<tr><td><strong>VFIO PCI Devices (optional)</strong></td><td>Under <strong>Advanced options</strong>: other host PCI devices to pass through, by path. See <a href="#pci-devices">Devices</a>.</td></tr>
+<tr><td><strong>If It Crashes</strong></td><td><strong>Restart it (with backoff)</strong> or <strong>Leave it stopped</strong>.</td></tr>
+<tr><td><strong>After a Host Reboot</strong></td><td><strong>Start it again if it was running</strong> or <strong>Leave it stopped</strong>.</td></tr>
+<tr><td><strong>Start it now</strong></td><td>Start the VM as soon as it is created.</td></tr>
+</tbody>
+</table>
+</div>
+<p>With <strong>Direct kernel boot</strong>, the form asks for a <strong>Kernel</strong> instead of
+<strong>UEFI Firmware</strong>: a kernel image (the one taken from the chosen image
+comes first and is the only one preselected; <strong>Extract it from the
+image</strong> makes it if there is none. Another image’s kernel usually won’t
+boot this one: its initramfs waits for that image’s root disk),
+or, for administrators, <strong>Kernel files on the host</strong> (kernel and
+initramfs paths, see <a href="#host-paths">Host paths</a>). <strong>Kernel Arguments</strong>
+default to the kernel image’s own command line. <strong>Follow the guest’s
+kernel</strong> boots the kernel the guest installs (see
+<a href="kernel-boot.html">Kernel boot</a>). The boot disk and login credential work
+as with firmware.</p>
+<p>On the VM’s page, <strong>Kernel</strong> shows the kernel image (and, when following
+the guest, the kernel it boots and the one before), lets you pick
+another one with <strong>Use from the next start</strong>, and <strong>Extract from its
+disk now</strong> while the VM is stopped.</p>
+<h3 id="gxctl"><a class="header" href="#gxctl">gxctl</a></h3>
+<p><code>create</code> asks for each setting in turn; press Enter to take the default
+in brackets.</p>
+<pre><code>gxctl&gt; create
+VM name: web-1
+GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional):
+vCPU count [1]: 2
+Memory (MiB) [512]: 2048
+Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor):
+Configure elastic CPU scaling (min/max vCPUs, weight)? [y/N] [n]:
+UEFI firmware [cloudhv-edk2, 'kernel' for direct kernel boot, or a host path] [cloudhv-edk2]:
+Boot disk from [image/disk/path] [image]:
+Image (ubuntu-26.04) [ubuntu-26.04]:
+Root disk size in GiB [10]: 20
+Data disks (optional, comma-separated disk names):
+cloud-init seed image (optional, default: auto-generated):
+Login credential (one of: alice; 'none' for no login) [alice]:
+Networks (comma-separated; available: default, lab; 'none' for no NIC) [default]:
+VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
+Device pools (comma-separated pool[:count], e.g. a100:2; optional):
+</code></pre>
+<p>For a direct kernel boot, answer <code>kernel</code> at the firmware prompt: gxctl
+then asks for a kernel image (the one from the boot image is the
+default), whether to follow the guest’s kernel, and offers the kernel’s
+command line as the default arguments. Later, <code>kernel web-1</code> shows the
+VM’s kernel; <code>kernel web-1 --set &lt;image&gt;</code> and <code>--follow on|off</code> change
+it from the next start, and <code>--extract</code> takes the kernel on its disk.</p>
+<p>The VM is created stopped; start it with <code>start web-1</code>. <code>gxctl create</code>
+doesn’t ask for a node, a restart policy or a host-boot policy: they
+take their defaults (use the web UI or the API to set them).</p>
+<h3 id="api"><a class="header" href="#api">API</a></h3>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms -d '{
+    "name": "web-1", "vcpu_count": 2, "mem_size_mib": 2048,
+    "image": "ubuntu-26.04", "root_disk_size_gib": 20,
+    "credential": "alice", "networks": [{"network": "lab"}],
+    "power": "POWER_STATE_RUNNING"
+  }'
+</code></pre>
+<p><code>name</code>, <code>vcpu_count</code> and <code>mem_size_mib</code> are required (with <code>gpus</code>, only
+<code>name</code>: see <a href="#gpus">GPUs</a>). Values from a
+fixed list take their full names, as in the table below
+(<code>POWER_STATE_RUNNING</code>, not <code>running</code>); a short name is refused with
+<code>422</code> (see <a href="../api/rest.html#proto-json">Proto JSON</a>). See
+<a href="../api/rest.html#vms">REST API</a> for every field.</p>
+<h2 id="vm-settings"><a class="header" href="#vm-settings">VM settings</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>API field</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Name</td><td><code>name</code></td><td>Unique in the project. The generated cloud-init seed makes it the guest’s hostname.</td></tr>
+<tr><td>Project</td><td><code>project</code></td><td>Id or name; default: your default project.</td></tr>
+<tr><td>vCPUs</td><td><code>vcpu_count</code></td><td>At least 1. Changeable; applies at the next start, or live within an elastic VM’s range. On an elastic Pylon VM it is always <code>max_vcpus</code>. See <a href="#elastic-cpu">Elastic CPU</a>.</td></tr>
+<tr><td>Elastic vCPUs</td><td><code>min_vcpus</code>, <code>max_vcpus</code></td><td><code>min_vcpus</code> ≤ <code>vcpu_count</code> ≤ <code>max_vcpus</code>. Absent: both are <code>vcpu_count</code> (a fixed size). See <a href="#elastic-cpu">Elastic CPU</a>.</td></tr>
+<tr><td>CPU weight</td><td><code>cpu_weight</code></td><td>1 to 10000, default 100: the VM’s share of contended host CPU.</td></tr>
+<tr><td>Memory</td><td><code>mem_size_mib</code></td><td>In MiB, at least 1. Changeable; applies at the next start.</td></tr>
+<tr><td>Hypervisor</td><td><code>hypervisor</code></td><td><code>HYPERVISOR_CLOUD_HYPERVISOR</code> (default), <code>HYPERVISOR_QEMU</code> or <code>HYPERVISOR_PYLON</code>. Fixed.</td></tr>
+<tr><td>Boot disk</td><td><code>image</code>, <code>root_disk</code> or <code>rootfs_path</code></td><td>Exactly one. Fixed. See below.</td></tr>
+<tr><td>Root disk size</td><td><code>root_disk_size_gib</code></td><td>With <code>image</code> only. Default: the image’s size, at least 10 GiB.</td></tr>
+<tr><td>Firmware</td><td><code>firmware</code></td><td>A firmware image (name or id). Fixed.</td></tr>
+<tr><td>Kernel boot</td><td><code>kernel</code>, or <code>kernel_image_path</code> and <code>initrd_path</code>; <code>kernel_args</code></td><td>Instead of firmware (not both). A kernel image (<code>kernel</code>) can be changed and applies at the next start; host paths are fixed; arguments changeable.</td></tr>
+<tr><td>Follow the guest’s kernel</td><td><code>kernel_from_disk</code></td><td>With <code>kernel</code> and <code>image</code> or <code>root_disk</code>: boot the kernel the guest installed. See <a href="kernel-boot.html#following-the-guests-kernel">Following the guest’s kernel</a>. Changeable; applies at the next start.</td></tr>
+<tr><td>Generate seed</td><td><code>generate_seed</code></td><td>Overrides whether Glidex generates the cloud-init seed; not with <code>cloud_init_path</code>. Fixed.</td></tr>
+<tr><td>Credential</td><td><code>credential</code></td><td>A credential of the project. Needs the generated cloud-init seed: firmware boot, or kernel boot of a kernel image or a managed root disk, without <code>cloud_init_path</code>.</td></tr>
+<tr><td>Networks</td><td><code>networks</code></td><td>Up to 8 NICs, in order. Changeable; applies at the next start.</td></tr>
+<tr><td>Data disks</td><td><code>data_disks</code></td><td>Disks of the project, attached after the boot disk. Changeable; applies at the next start.</td></tr>
+<tr><td>PCI devices</td><td><code>vfio_devices</code></td><td>Changeable while the VM runs.</td></tr>
+<tr><td>Restart policy</td><td><code>restart_policy</code></td><td><code>RESTART_POLICY_ON_FAILURE</code> (default) or <code>RESTART_POLICY_NEVER</code>. Changeable.</td></tr>
+<tr><td>On host boot</td><td><code>on_host_boot</code></td><td><code>HOST_BOOT_POLICY_RESUME</code> (default) or <code>HOST_BOOT_POLICY_STOP</code>. Changeable.</td></tr>
+<tr><td>Stop grace</td><td><code>stop_grace_secs</code></td><td>Seconds a stop waits after the power button; 0 (default) stops at once; at most 300. Changeable.</td></tr>
+<tr><td>Initial power</td><td><code>power</code></td><td><code>POWER_STATE_STOPPED</code> (default), <code>POWER_STATE_RUNNING</code> or <code>POWER_STATE_PAUSED</code>.</td></tr>
+<tr><td>Node</td><td><code>node</code></td><td>Clusters: pin the VM to a node (name or id). Fixed, except by <a href="#placement-on-a-cluster">placing the VM again</a>.</td></tr>
+<tr><td>Hugepages</td><td><code>hugepages</code></td><td>Back guest memory with hugepages. Changeable; applies at the next start.</td></tr>
+<tr><td>Hugepage size</td><td><code>hugepage_size</code></td><td><code>2M</code> or <code>1G</code>, with <code>hugepages</code>; the memory must be a whole number of pages. Default: the host’s default size (usually 2M). Changeable; applies at the next start.</td></tr>
+<tr><td>NUMA policy</td><td><code>numa_policy</code></td><td><code>NUMA_POLICY_NONE</code> (default), <code>NUMA_POLICY_PREFERRED</code> or <code>NUMA_POLICY_STRICT</code>: keep the VM’s memory, CPUs and PCI devices on one host NUMA node; <code>NUMA_POLICY_ALIGNED</code>: across exactly its devices’ NUMA nodes. See <a href="#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a>. Changeable; applies at the next start.</td></tr>
+<tr><td>GPUs</td><td><code>gpus</code></td><td><code>{"count": 4, "pool": "a100"}</code>: that many GPUs, NUMA-aligned, the VM sized from the pool unless you size it. See <a href="#gpus">GPUs</a>. Fixed: change <code>devices</code> and the sizing instead.</td></tr>
+<tr><td>Device pools</td><td><code>devices</code></td><td><code>[{"pool": "a100", "count": 1, "same_switch": false}]</code>: devices the scheduler picks from a pool your project may use; shown as <code>pool_devices</code>. See <a href="#devices-from-a-pool">Devices from a pool</a>. Changeable; applies at the next start.</td></tr>
+<tr><td>CPU policy</td><td><code>cpu_policy</code></td><td><code>CPU_POLICY_SHARED</code> (default) or <code>CPU_POLICY_DEDICATED</code>: each vCPU on a host CPU of its own. Changeable; applies at the next start.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="boot-disk"><a class="header" href="#boot-disk">Boot disk</a></h3>
+<p>Give exactly one of:</p>
+<ul>
+<li><code>image</code>: Glidex creates a linked root disk from the image for this VM
+(named <code>&lt;vm&gt;-root</code>) on the default
+<a href="../operator-guide/datastores.html">datastore</a>, grows it to
+<code>root_disk_size_gib</code>, and extends the guest’s root partition at first
+boot. The disk belongs to the VM and is deleted with it, unless you
+delete with <code>--keep-disk</code>. To put it on another datastore, create the
+disk first (<code>gxctl disk create … --datastore</code>) and give it as
+<code>root_disk</code>.</li>
+<li><code>root_disk</code>: an existing, unattached disk of the project (name or
+id). It is not deleted with the VM.</li>
+<li><code>rootfs_path</code>: a disk image file on the host, used as is.</li>
+</ul>
+<p>The image (or the root disk’s image) and the firmware must be for the
+same CPU architecture.</p>
+<h3 id="firmware-or-kernel-boot"><a class="header" href="#firmware-or-kernel-boot">Firmware or kernel boot</a></h3>
+<p>A VM with an <code>image</code> or <code>root_disk</code> boots through UEFI firmware: the
+newest firmware image for its hypervisor (and architecture), unless you
+name one with <code>firmware</code>. If there is none, the create fails and tells
+you which one to pull (<code>cloudhv-edk2</code> for Cloud Hypervisor, <code>ovmf</code> for
+QEMU).</p>
+<p>For a direct kernel boot, name a kernel image with <code>kernel</code> instead.
+The VM then needs no firmware image, gets the kernel image’s command line
+as its default <code>kernel_args</code>, and works with <code>image</code>, <code>root_disk</code> and a
+login credential exactly like a firmware boot: glidex generates the same
+cloud-init seed. A kernel image comes from a URL (<code>POST /images</code> with
+<code>"kind": "IMAGE_KIND_KERNEL"</code>, <code>initrd_url</code> and <code>cmdline</code>), or an
+administrator copies one from host files (<code>kernel_path</code>, <code>initrd_path</code>).
+It should be the kernel the cloud image was built with: its modules are
+on the image’s disk.</p>
+<p><strong>Following the guest’s kernel.</strong> With <code>"kernel_from_disk": true</code> (a
+VM booting a kernel image from a managed disk), glidex takes the kernel
+out of the VM’s disk again before a start whenever the disk changed, so
+a kernel the guest installed (<code>apt upgrade</code>) boots next time. The VM
+shows <code>booted_kernel</code> and <code>previous_kernel</code>; if extraction fails, it
+boots the kernel it has and says so (<code>KernelExtracted</code>). To go back,
+set <code>kernel</code> (to the <code>previous_kernel</code>, say), which turns following off.
+<code>POST /vms/&lt;id&gt;/extract-kernel</code> does one extraction on demand, for a
+stopped VM, as a new kernel image you can then set as <code>kernel</code>.</p>
+<p>An administrator can also give host paths: <code>kernel_image_path</code> (and a
+root filesystem in <code>rootfs_path</code>), plus <code>initrd_path</code> if the kernel
+needs an initramfs (distro kernels do). With host paths, or a kernel
+image without a command line, the default kernel arguments are
+<code>console=ttyS0 root=/dev/vda reboot=k panic=1</code> on both hypervisors. The
+console is on the serial port, unless the last <code>console=</code> in the
+arguments names <code>hvc…</code> (such as <code>hvc0</code>), which selects the virtio
+console. A distro cloud image needs its own root, e.g.
+<code>console=ttyS0 root=LABEL=cloudimg-rootfs ro</code> for Ubuntu. See
+<a href="kernel-boot.html">Kernel boot</a> for kernel images, the command line, the
+console and following the guest’s kernel.</p>
+<h3 id="host-paths"><a class="header" href="#host-paths">Host paths</a></h3>
+<p><code>rootfs_path</code>, <code>kernel_image_path</code>, <code>initrd_path</code>, <code>cloud_init_path</code>
+and <code>firmware_path</code> name files on the host. Using them needs the
+<code>system-admin</code> role, and the files must be readable by the service
+user the control plane runs as. Most users should use images, disks and
+firmware images instead. A path under <code>/tmp</code> or <code>/var/tmp</code> is refused:
+VMs have a private <code>/tmp</code>.</p>
+<h3 id="credential-and-cloud-init"><a class="header" href="#credential-and-cloud-init">Credential and cloud-init</a></h3>
+<p>Without <code>cloud_init_path</code>, Glidex generates a cloud-init seed for a VM
+that boots through firmware, or that boots a kernel image or from
+<code>image</code> or <code>root_disk</code> (<a href="kernel-boot.html">kernel boot</a>): its hostname, the root partition grow, and,
+if you name a <code>credential</code>, that user with its password and SSH keys.
+cloud-init applies it on the VM’s first boot. Without a credential the
+guest has no login. See <a href="credentials.html">Guest credentials</a>.</p>
+<p><code>cloud_init_path</code> replaces the generated seed with your own (a host
+path, see above); a <code>credential</code> can’t be combined with it.</p>
+<h3 id="workload-identity"><a class="header" href="#workload-identity">Workload identity</a></h3>
+<p>Software in a VM can prove which VM it is, and act as a <strong>service
+account</strong>, without any secret stored in the guest. It asks the metadata
+endpoint at <code>169.254.169.254</code>, which only answers from inside the VM,
+with the header <code>Metadata-Flavor: Glidex</code>:</p>
+<pre><code class="language-bash">H='Metadata-Flavor: Glidex'
+curl -s -H "$H" http://169.254.169.254/v1/instance          # which VM this is
+curl -s -H "$H" 'http://169.254.169.254/v1/identity?audience=sts.amazonaws.com'
+curl -s -H "$H" http://169.254.169.254/v1/glidex/token      # needs a service account
+</code></pre>
+<ul>
+<li><strong>Identity tokens</strong> are short-lived JWTs (15 minutes; ask for 10 to 60
+with <code>&amp;ttl=&lt;seconds&gt;</code>) for the audience you name, signed by your
+directory. Their subject is the VM’s SPIFFE ID,
+<code>spiffe://&lt;trust domain&gt;/tenant/&lt;t&gt;/project/&lt;p&gt;/vm/&lt;id&gt;</code>. Outside
+services that trust your directory’s issuer (AWS, Vault, Kubernetes, or
+glidex itself) can verify them against its published keys.</li>
+<li><strong>Glidex tokens</strong> act as the VM’s <strong>service account</strong>, for 15 minutes,
+with that account’s roles. Give a VM one in the create form, on its
+page, with <code>gxctl service-account &lt;vm&gt; --set &lt;account&gt;</code>, or with
+<code>"service_account"</code> in <code>POST /vms</code>. That needs the right to manage the
+account’s project’s service tokens (project owners), and needs no
+restart: the next token is for the new account. The endpoint hands out
+the same token until 80% of its life has passed, then a fresh one, so
+ask again whenever you need one.</li>
+<li>An identity token addressed to your cluster can also be exchanged for a
+glidex token at <code>POST /auth/exchange</code> with <code>federation=&lt;tenant&gt;/vm</code>.</li>
+<li>Every process in the guest can ask, as on any cloud. Requests through a
+proxy in the guest (<code>Forwarded</code>, <code>X-Forwarded-For</code>) are refused.</li>
+</ul>
+<p>The endpoint serves VMs on single-host NAT networks, on any node of a
+cluster; OVN networks and isolated or bridged networks come later. A NAT
+network’s guests reach the host’s own API only if the network allows it
+(<a href="networks.html#the-host-from-a-nat-network">The host from a NAT network</a>).</p>
+<h3 id="networks"><a class="header" href="#networks">Networks</a></h3>
+<p>Each entry of <code>networks</code> adds one NIC, in order (at most 8):</p>
+<pre><code class="language-json">"networks": [
+  {"network": "lab"},
+  {"network": "storage", "mac": "02:00:00:00:10:01", "queue_pairs": 2}
+]
+</code></pre>
+<p><code>network</code> is a network’s name or id that your project may use. <code>mac</code> is
+optional: by default each NIC gets a stable MAC derived from the VM’s
+id. <code>queue_pairs</code> (1 to 8) is optional. The address each NIC got shows
+in the VM’s details. See <a href="networks.html">Networks</a>.</p>
+<h3 id="data-disks"><a class="header" href="#data-disks">Data disks</a></h3>
+<p><code>data_disks</code> lists disks of the project (names or ids), attached in
+order after the boot disk. A disk is attached to one VM at a time.</p>
+<p>To attach or detach a disk later:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms/&lt;id&gt;/disks -d '{"disk": "data-1"}'
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
+  -X DELETE https://host.example.org:8841/vms/&lt;id&gt;/disks/data-1
+</code></pre>
+<p>On a running VM the change applies at the next start. See
+<a href="images-and-disks.html">Images and disks</a>.</p>
+<h3 id="pci-devices"><a class="header" href="#pci-devices">PCI devices</a></h3>
+<p><code>vfio_devices</code> passes host PCI devices (a GPU, a NIC) through to the
+guest. Give each as <code>/sys/bus/pci/devices/0000:41:00.0</code> or the bare
+address <code>0000:41:00.0</code>. Using one needs a grant from an administrator.
+See <a href="../operator-guide/pci-passthrough.html">PCI passthrough</a>.</p>
+<p>A device is used by one VM at a time on its host, and it takes its
+IOMMU group with it (devices that the host can only pass through
+together). Asking for a device another VM on the host holds is refused
+with <code>409 conflict</code>:</p>
+<ul>
+<li><code>PCI device 0000:41:00.0 is used by VM other-vm</code>: that VM has it, or
+its running instance still does.</li>
+<li><code>PCI device 0000:41:00.1 shares IOMMU group 31 with 0000:41:00.0, used by VM other-vm</code>: another device of the group is that VM’s. A VM that
+already holds a device of the group may add the others.</li>
+</ul>
+<pre><code>gxctl&gt; pci                                          # host PCI devices
+gxctl&gt; attach-device my-vm /sys/bus/pci/devices/0000:41:00.0
+gxctl&gt; detach-device my-vm /sys/bus/pci/devices/0000:41:00.0
+</code></pre>
+<p>On a running VM, devices are hot-plugged. On a paused VM, the change
+waits until it runs again.</p>
+<h4 id="devices-from-a-pool"><a class="header" href="#devices-from-a-pool">Devices from a pool</a></h4>
+<p>Instead of naming devices, ask for a number of them from a <strong>device
+pool</strong> your project may use; Glidex picks which. To see the pools and
+how many devices are free:</p>
+<pre><code>gxctl&gt; pci pools --project lab        # pool, class, free
+</code></pre>
+<p>In the web UI’s create form, <strong>Device Pools (optional)</strong> lists them with
+their free counts: set how many devices to take from each, and tick
+<strong>Under one PCIe switch</strong> to keep several together (for GPUs that talk
+to each other). <code>gxctl create</code> asks for them as <code>a100:2</code> or
+<code>a100:2:switch</code>. Over the API:</p>
+<pre><code class="language-json">"devices": [{"pool": "a100", "count": 2, "same_switch": true}]
+</code></pre>
+<p>The picked devices are on the NUMA node of the VM’s other devices when
+they can be, and show as <code>pool_devices</code> (<code>gxctl get &lt;vm&gt;</code> and the
+VM’s page list each request with what it got). The VM gets them at its
+next start and keeps them until the request changes or the VM is
+deleted. Asking needs a grant for the pool:</p>
+<ul>
+<li><code>no device pool a100</code> (<code>400</code>): no such pool for this project.</li>
+<li><code>forbidden</code> (<code>403</code>): the project may not use the pool.</li>
+<li><code>quota_exceeded</code> with resource <code>devices.a100</code>: the project’s quota
+for the pool is used up (see <a href="projects.html#quotas">Quotas</a>).
+<code>tenant_quota_exceeded</code> with <code>tenant_pool.&lt;name&gt;</code>: a tenant pool’s
+maximum is reached.</li>
+<li><code>pool a100: 1 of 2 free</code>: not enough free devices. On a cluster the
+VM waits for them; on a single host it is refused (<code>409</code>).</li>
+</ul>
+<p>A pool your tenant set up for some of its projects (a <strong>tenant pool</strong>)
+is asked for by its own name; the VM shows the cluster pool it draws
+from and <code>tenant_pool</code>. Devices from pools are metered
+(<code>device.alloc.&lt;pool&gt;</code>, see <a href="usage.html">Usage</a>).</p>
+<h4 id="gpus"><a class="header" href="#gpus">GPUs</a></h4>
+<p>For GPUs there’s a shorter way: ask for a count, and the pool places
+and sizes the VM.</p>
+<pre><code class="language-json">{"name": "train-1", "image": "ubuntu-24.04", "credential": "alice",
+ "gpus": {"count": 4, "pool": "a100"}}
+</code></pre>
+<p><code>gpus</code> is filled in when the VM is created:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>From <code>gpus</code></th><th>When you give it yourself</th></tr>
+</thead>
+<tbody>
+<tr><td><code>devices</code></td><td><code>{"pool": "a100", "count": 4}</code></td><td>Refused if <code>devices</code> asks the same pool.</td></tr>
+<tr><td><code>numa_policy</code></td><td><code>NUMA_POLICY_ALIGNED</code> (see <a href="#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a>)</td><td>Yours is kept.</td></tr>
+<tr><td><code>vcpu_count</code>, <code>mem_size_mib</code></td><td>The pool’s per-device vCPUs and memory, times the count</td><td>Yours are kept.</td></tr>
+<tr><td><code>hugepages</code>, <code>cpu_policy</code></td><td>The pool’s, when the operator set them</td><td>Yours are kept.</td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li><strong>The pool:</strong> a cluster pool or a tenant pool by name. Without
+<code>pool</code>, the project’s only GPU pool is used.</li>
+<li><strong>Sizing:</strong> what each GPU brings is set by the operator. The web UI
+shows it next to the pool (<em>14 vCPUs and 56 GiB each</em>), and
+<code>GET /pci-pools?project=&lt;p&gt;</code> as <code>per_device_vcpus</code> and
+<code>per_device_memory_mib</code>. A pool without it needs <code>vcpu_count</code> and
+<code>mem_size_mib</code>.</li>
+<li><strong>Quotas and metering</strong> are those of the pool’s devices
+(<code>devices.a100</code>, <code>device.alloc.a100</code>).</li>
+<li><strong>On the VM:</strong> it keeps <code>gpus</code> and shows what it came to: <code>devices</code>
+and <code>pool_devices</code>, the policies, the sizing, and for GPUs on several
+NUMA nodes each node’s share (<code>numa</code>). <code>gxctl get &lt;vm&gt;</code> prints
+<code>GPUs: 4 from a100</code> and a <code>NUMA &lt;i&gt;:</code> line per guest NUMA node; the
+VM’s page shows <strong>NUMA layout</strong>.</li>
+<li><strong>Changing it:</strong> <code>gpus</code> can’t be changed (<code>PATCH</code> refuses it). Change
+<code>devices</code>, <code>vcpu_count</code> and <code>mem_size_mib</code> instead; they apply at
+the next start.</li>
+<li><strong>Placement preview:</strong> <code>POST /scheduler/preview</code> takes <code>gpus</code> too,
+and shows each node’s split.</li>
+</ul>
+<p><strong>gxctl:</strong> <code>create</code> asks <em>GPUs</em> right after the name: <code>4</code>, <code>4:a100</code>.
+With GPUs, an empty vCPU or memory answer takes the pool’s sizing.</p>
+<p><strong>Web UI:</strong> the <strong>GPUs</strong> section, right after the VM’s size:</p>
+<ul>
+<li><strong>From a pool:</strong> the count of the first GPU pool is sent as <code>gpus</code>,
+and fills in the vCPU and memory fields from the pool until you change
+them by hand. A GPU pool with <strong>Under one PCIe switch</strong> ticked is an
+ordinary pool request instead, without the NUMA alignment or the
+sizing.</li>
+<li><strong>This node’s GPUs:</strong> each display-class device the node could pass
+through, with its address, vendor, ids and NUMA node. A ticked one is
+sent in <code>vfio_devices</code>. One not ready is greyed with the reason (for
+example <em>not bound to vfio-pci (driver: amdgpu)</em>): an operator
+prepares it on the node’s page. One another VM holds is greyed with
+its name (<em>PCI device 0000:43:00.0 is used by VM gpu-a</em>), whatever
+project that VM is in; a stopped VM keeps its GPUs. Listing them needs a host role on
+that node; without one, only pools are shown. These GPUs don’t size
+the VM.</li>
+</ul>
+<p>Refusals (<code>400 invalid_config</code>):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Message</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>gpus: count must be at least 1</code></td><td>A count of 0.</td></tr>
+<tr><td><code>gpus: no device pool h100</code></td><td>No such pool for this project.</td></tr>
+<tr><td><code>gpus: name the pool, one of a100, t4</code></td><td>The project may use several GPU pools.</td></tr>
+<tr><td><code>gpus: this project may use no GPU pool</code></td><td>No <code>pool</code> given, and no GPU pool is granted to the project.</td></tr>
+<tr><td><code>gpus: give vcpu_count and mem_size_mib, or set per_device on pool a100</code></td><td>The pool has no per-device sizing.</td></tr>
+<tr><td><code>gpus and devices both ask pool a100</code></td><td>Ask the pool in one place.</td></tr>
+<tr><td><code>gpus: NVLink needs a fabric …, and pool … has none</code></td><td><code>"nvlink": true</code> (<code>4:a100:nvlink</code> in gxctl). NVLink between passed-through GPUs isn’t available yet; leave <code>nvlink</code> out, and it is <code>false</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A pool the project may not use is refused as with <code>devices</code>
+(<code>403 forbidden</code>), and so are quotas.</p>
+<h2 id="lifecycle"><a class="header" href="#lifecycle">Lifecycle</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Web UI</th><th>gxctl</th><th>API</th></tr>
+</thead>
+<tbody>
+<tr><td>Start</td><td><strong>Start</strong></td><td><code>start &lt;vm&gt;</code></td><td><code>POST /vms/{id}/start</code></td></tr>
+<tr><td>Resume a paused VM</td><td><strong>Resume</strong></td><td><code>start &lt;vm&gt;</code></td><td><code>POST /vms/{id}/start</code></td></tr>
+<tr><td>Pause</td><td><strong>Pause</strong></td><td><code>pause &lt;vm&gt;</code></td><td><code>POST /vms/{id}/pause</code></td></tr>
+<tr><td>Graceful stop</td><td><strong>Shut down</strong></td><td><code>stop &lt;vm&gt; --graceful [secs]</code></td><td><code>POST /vms/{id}/stop?graceful_timeout_secs=60</code></td></tr>
+<tr><td>Immediate stop</td><td><strong>Stop</strong></td><td><code>stop &lt;vm&gt;</code></td><td><code>POST /vms/{id}/stop</code></td></tr>
+<tr><td>Delete</td><td><strong>Delete</strong></td><td><code>delete &lt;vm&gt; [--keep-disk]</code></td><td><code>DELETE /vms/{id}</code></td></tr>
+<tr><td>Place a stopped or lost VM on another node (<code>system-admin</code>)</td><td><strong>Place on another node</strong></td><td><code>place &lt;vm&gt; [--node N]</code></td><td><code>POST /vms/{id}/place</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>gxctl</code> waits up to 60 seconds for the VM to get there (longer for a
+graceful stop) and prints the state it reached; <code>--no-wait</code> returns at
+once. If the VM isn’t there yet, it says what it is waiting for. The
+web UI follows the VM and shows <strong>In progress</strong> until it gets there.
+The API returns at once (<code>202</code>), or, with <code>?wait=&lt;secs&gt;</code> (at most 300),
+once the VM got there. See
+<a href="../api/rest.html#waiting-for-the-controller">Waiting for the controller</a>.</p>
+<p>Starting a stopped VM counts against the project’s running-VM quota.</p>
+<h3 id="stop"><a class="header" href="#stop">Stop</a></h3>
+<p>A <strong>graceful</strong> stop presses the guest’s power button, waits for the
+guest to shut down, and stops the VM hard if it is still running after
+the timeout:</p>
+<pre><code>gxctl&gt; stop my-vm --graceful          # wait up to 60 s
+gxctl&gt; stop my-vm --graceful 120      # wait up to 120 s (at most 300)
+</code></pre>
+<p>The web UI’s <strong>Shut down</strong> waits 60 seconds. <strong>Stop</strong> and <code>stop</code> without
+<code>--graceful</code> stop the VM like pulling the plug.</p>
+<p>The timeout you give is kept as the VM’s stop grace (<code>stop_grace_secs</code>)
+and used again by later stops that don’t give one, including stops from
+the web UI’s <strong>Stop</strong> button. Pass <code>--graceful 0</code> (or
+<code>graceful_timeout_secs=0</code>) for an immediate stop after a graceful one.</p>
+<!-- TODO(verify): a stop without a grace reuses the stored stop_grace_secs; confirm this is intended rather than a bug before publishing. -->
+<h3 id="pause-and-resume"><a class="header" href="#pause-and-resume">Pause and resume</a></h3>
+<p>A paused VM keeps its memory but gets no CPU time. <strong>Resume</strong> in the web
+UI, or <code>start</code> in <code>gxctl</code>, runs it again.</p>
+<h3 id="restart"><a class="header" href="#restart">Restart</a></h3>
+<p>There is no restart action: stop the VM, then start it. A reboot from
+inside the guest restarts the guest and the VM stays running.</p>
+<!-- TODO(verify): guest-initiated reboot behaviour on both hypervisors (QEMU runs without -no-reboot; Cloud Hypervisor reboot handling). -->
+<h3 id="when-the-vm-stops-on-its-own"><a class="header" href="#when-the-vm-stops-on-its-own">When the VM stops on its own</a></h3>
+<ul>
+<li><strong>The guest powers off</strong> (for example <code>poweroff</code> inside it): the
+desired state becomes stopped, and the VM stays stopped whatever its
+restart policy.</li>
+<li><strong>The hypervisor crashes</strong>: with the restart policy <strong>on failure</strong>, the
+VM is started again after 10 seconds, doubling with each crash in a
+row up to 5 minutes; after 10 minutes of running the count starts
+over. With <strong>never</strong>, the desired state becomes stopped.</li>
+<li><strong>It fails to launch</strong>: the VM is <code>failed</code> and Glidex retries with a
+growing delay. Its details and events say why.</li>
+<li><strong>The host reboots</strong>: with the host-boot policy <strong>resume</strong>, a VM
+that was running is started again; with <strong>stop</strong>, it stays stopped.</li>
+</ul>
+<p>Change these policies with the API:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/&lt;id&gt; \
+  -d '{"change": {"restart_policy": "RESTART_POLICY_NEVER"}, "update_mask": "restart_policy"}'
+</code></pre>
+<h3 id="change-a-vm"><a class="header" href="#change-a-vm">Change a VM</a></h3>
+<p>Change vCPUs, memory, networks, data disks, PCI devices, device pool
+requests, kernel arguments, the kernel image and following it (<code>kernel</code>,
+<code>kernel_from_disk</code>), the credential, hugepages and the policies
+with
+<code>PATCH /vms/{id}</code>. The body has two fields: <code>change</code> holds the new
+values, and <code>update_mask</code> lists the fields to change (comma-separated;
+without it, the fields present in <code>change</code> are changed). Settings
+outside <code>change</code> are refused:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/&lt;id&gt; \
+  -d '{"change": {"vcpu_count": 4, "mem_size_mib": 8192}, "update_mask": "vcpu_count,mem_size_mib"}'
+</code></pre>
+<p><code>networks</code> and <code>data_disks</code> replace the whole list. The hypervisor, the
+boot disk, the firmware and host paths can’t be changed.</p>
+<p>The web UI and <code>gxctl</code> have no edit form for most settings. Both change
+the vCPUs and the elastic range (<strong>Scale CPU / Elasticity</strong> on the VM’s
+page, <code>gxctl scale</code>; see <a href="#elastic-cpu">Elastic CPU</a>), and <code>gxctl</code>
+changes PCI devices (<code>attach-device</code>, <code>detach-device</code>).</p>
+<p>A change to vCPUs, memory, kernel arguments, the credential, hugepages,
+policies, device pool requests, networks or data disks of a running VM
+takes effect at the next start:
+the web UI says <strong>Configuration changes take effect at the next start</strong>,
+and the API sets <code>restart_required</code>. Stop and start the VM to apply it.
+A new credential doesn’t change logins in a guest that already booted
+(cloud-init runs once).</p>
+<p>Pass the VM’s <code>resource_version</code> in an <code>If-Match</code> header to refuse the
+change (<code>409</code>) if someone else changed the VM since you read it.</p>
+<p>A change to vCPUs, memory, hugepages, policies, devices or networks of a
+VM that already has a node is fitted again on that node: its hugepages,
+NUMA node, dedicated CPUs and pool devices are picked again. If it no
+longer fits there, the change is refused with <code>409</code> and the reason, for
+example <code>node agent1: not enough 2M hugepages (1024 of 2048 MiB taken)</code>.</p>
+<h3 id="delete"><a class="header" href="#delete">Delete</a></h3>
+<pre><code>gxctl&gt; delete my-vm                 # asks for confirmation
+gxctl&gt; delete my-vm --keep-disk     # keep the root disk created for it
+</code></pre>
+<p>Deleting stops the VM if it runs, releases its NICs and their
+addresses, and detaches its disks. A root disk created for the VM from
+an image is deleted with it, unless you keep it (<code>--keep-disk</code>,
+<code>?keep_disk=true</code>, or <strong>Keep disk</strong> in the web UI’s delete dialog, which
+names the disks that go and those that stay). Other disks are only
+detached.</p>
+<h2 id="states-and-events"><a class="header" href="#states-and-events">States and events</a></h2>
+<p>The state shows where the VM is; while it is on its way to its desired
+state, <code>gxctl</code> and the web UI show both, for example <code>stopped → running</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>created</code></td><td>Never started.</td></tr>
+<tr><td><code>starting</code></td><td>Being provisioned or launched.</td></tr>
+<tr><td><code>running</code></td><td>The guest runs.</td></tr>
+<tr><td><code>paused</code></td><td>The guest is paused.</td></tr>
+<tr><td><code>stopping</code></td><td>A stop is in progress.</td></tr>
+<tr><td><code>stopped</code></td><td>Not running.</td></tr>
+<tr><td><code>failed</code></td><td>It failed to launch, or crashed and waits to be restarted.</td></tr>
+<tr><td><code>unknown</code></td><td>The control plane can’t tell, for example because the VM’s node stopped reporting.</td></tr>
+</tbody>
+</table>
+</div>
+<p>In the API, states are <code>VM_STATE_RUNNING</code> and so on, and the desired
+state is <code>desired_state</code>. The VM’s <code>conditions</code> say what is in the way
+(the <code>Ready</code> condition), and <code>last_exit</code> says how the last run ended:
+stopped on request, stopped by the host, guest powered off, crashed (with
+its exit code or signal), failed to launch, host rebooted, or lost.</p>
+<p>On a cluster, a VM that boots through a firmware image, or boots a
+kernel image, needs that image’s copy on its node. Until the node has
+fetched it, the VM waits with the condition <code>DisksReady</code> <code>False</code>
+(<em>firmware &lt;name&gt; has not been copied to this node yet</em>, or
+<em>kernel &lt;name&gt; has not been copied to this node yet</em>), and carries
+on by itself once the copy is there.</p>
+<p>A VM also doesn’t start while one of its disks is being moved to
+another datastore (<code>DisksReady</code> <code>False</code>, reason <code>DiskNotReady</code>: <em>disk …
+is moving to datastore …</em>), or while another node holds the lock of a
+disk on a shared datastore (reason <code>DiskBusy</code>: <em>disk … is in use
+elsewhere (… is locked)</em>). See
+<a href="../operator-guide/datastores.html#volume-locks">Volume locks</a>.</p>
+<p>Each VM keeps a list of events: created, spec changes, launches, exits,
+restarts, warnings such as a lost network port.</p>
+<pre><code>gxctl&gt; events my-vm           # time, who, reason, message
+</code></pre>
+<p>In the web UI they are under <strong>Events</strong> on the VM’s page, where new
+ones appear as they happen. With the API, <code>GET /vms/{id}/events</code>.</p>
+<p>To follow every VM, disk, image and network of your projects as they
+change:</p>
+<pre><code>gxctl&gt; watch                  # Ctrl-C stops
+gxctl&gt; watch vms
+</code></pre>
+<h2 id="hugepages"><a class="header" href="#hugepages">Hugepages</a></h2>
+<p><code>hugepages: true</code> backs the guest’s memory with hugepages, which can
+make memory-heavy guests faster. <code>hugepage_size</code> picks <code>2M</code> or <code>1G</code>
+(default: the host’s default size, usually 2M); the memory must be a
+whole number of pages. Set them over the API (<code>POST /vms</code> or
+<code>PATCH /vms/{id}</code> with <code>update_mask</code> <code>hugepages,hugepage_size</code>):</p>
+<pre><code class="language-json">{"name": "db", "vcpu_count": 8, "mem_size_mib": 32768, "hugepages": true, "hugepage_size": "1G", "...": "..."}
+</code></pre>
+<p>The VM takes its memory from the host’s hugepages, which the
+administrator reserves. They are counted per node and size and never
+overcommitted, and a VM holds them while it exists, running or not. If
+there aren’t enough, the VM waits for a node (on a cluster) with a
+reason like <code>not enough 1G hugepages (30720 of 32768 MiB taken)</code>, or
+its start fails with the counts.</p>
+<p>A VM with a vhost-user NIC gets 2M hugepages without asking when the
+host has them to spare, and ordinary memory otherwise. The VM’s
+<code>page_kib</code> says what it got: 4 for ordinary memory, else the page size
+in KiB.</p>
+<h2 id="numa-and-dedicated-cpus"><a class="header" href="#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a></h2>
+<p>On a host with several NUMA nodes (sockets, or parts of one), a VM runs
+faster when its memory, its vCPUs and its PCI devices (a GPU, a NIC) are
+on the same node. Two settings ask for that:</p>
+<ul>
+<li><code>numa_policy</code>:
+<ul>
+<li><code>NUMA_POLICY_PREFERRED</code> puts the VM’s memory on one NUMA node: the
+one with its PCI devices, else the one with the most room. When no
+node has room, the VM goes anywhere on the host, and its
+<code>NumaAligned</code> condition is <code>False</code>.</li>
+<li><code>NUMA_POLICY_STRICT</code> refuses a host where that isn’t possible: PCI
+devices on two NUMA nodes, a device whose firmware gives no NUMA
+node, or no node with the memory (and CPUs) left. On a cluster the
+VM waits for a node; on a single host the create is refused (<code>409</code>).</li>
+<li><code>NUMA_POLICY_ALIGNED</code> is for VMs whose devices are on more than one
+NUMA node, say 4 GPUs on a host with 2 per node; <a href="#gpus">GPUs</a> ask
+for it. The VM spans exactly its devices’ NUMA nodes. Its vCPUs and
+memory are split between them by their device counts: 4 GPUs on
+nodes 5 and 7 with 16 vCPUs and 128 GiB give 8 vCPUs and 64 GiB on
+each (an uneven split gives the remainder to the first nodes).
+<ul>
+<li>Devices picked from a pool fill as few NUMA nodes as can hold them,
+so 2 GPUs go to one node when one has 2 free.</li>
+<li>Each node’s share must fit that node’s free memory, hugepages and
+(dedicated) CPUs, or the host is refused, naming the node.</li>
+<li>With devices on one node only, it is like <code>STRICT</code>. With no
+devices, it is like <code>PREFERRED</code>.</li>
+<li>Every device needs a NUMA node, even on a host with one NUMA node.
+If the firmware gives none, ask for <code>NUMA_POLICY_PREFERRED</code>
+yourself (it wins over what <code>gpus</code> sets).</li>
+<li>The VM shows its split as <code>numa</code> (one entry per guest node: host
+node, vCPUs, memory, devices), and the web UI shows it as <strong>NUMA
+layout</strong>.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><code>cpu_policy: CPU_POLICY_DEDICATED</code> gives each vCPU a host CPU of its
+own, which no other VM uses. It implies <code>NUMA_POLICY_PREFERRED</code>. By
+default a dedicated VM takes whole cores: both hyperthreads of a core,
+so vCPUs 0 and 1 share a core and an odd count leaves a thread idle.
+The first core of each NUMA node stays with the host, and so do
+OVS-DPDK’s CPUs. Shared VMs then run only on the CPUs dedicated VMs
+leave free, and running ones are moved when that changes.</li>
+</ul>
+<p>A VM with shared vCPUs and a NUMA policy has its memory on the node but
+its vCPUs anywhere on the host, so no node’s CPUs sit idle.</p>
+<p>Set them over the API, at creation or with <code>PATCH /vms/{id}</code>
+(<code>update_mask</code> <code>numa_policy,cpu_policy</code>); the web UI and <code>gxctl</code> don’t
+have them yet, except through <a href="#gpus">GPUs</a>, which set
+<code>NUMA_POLICY_ALIGNED</code>:</p>
+<pre><code class="language-json">{"name": "train", "vcpu_count": 16, "mem_size_mib": 65536,
+ "numa_policy": "NUMA_POLICY_STRICT", "cpu_policy": "CPU_POLICY_DEDICATED",
+ "devices": [{"pool": "a100", "count": 2}], "...": "..."}
+</code></pre>
+<p>The VM shows where it went: <code>numa_node</code>, and for dedicated vCPUs <code>cpus</code>
+(vCPU <em>i</em> on <code>cpus[i]</code>), in <code>GET /vms/{id}</code> and the scheduler preview.
+A change to its vCPUs, memory, policies, devices or networks picks
+again on the same host, and applies when it next starts.</p>
+<p>When a VM can’t be placed this way, the reason says why:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>NUMA node 1: not enough memory (… of … MiB taken)</code></td><td>That NUMA node is full.</td></tr>
+<tr><td><code>NUMA node 0: not enough free CPUs (8 dedicated vCPUs, 6 CPUs free)</code></td><td>Too few CPUs left for dedicated vCPUs.</td></tr>
+<tr><td><code>its PCI devices are on NUMA nodes 0 and 1</code></td><td>A strict VM’s devices are split.</td></tr>
+<tr><td><code>PCI device … has no NUMA node</code></td><td>A strict or aligned VM’s device has no NUMA node.</td></tr>
+<tr><td><code>its devices are on 2 NUMA nodes, so it needs at least 2 vCPUs</code></td><td>An aligned VM needs a vCPU on each of its nodes.</td></tr>
+<tr><td><code>NUMA nodes 5 and 7 would back its memory with different page sizes</code></td><td>An aligned VM’s nodes would back its memory with different page sizes. Give it <code>hugepages</code> with a <code>hugepage_size</code> each of its nodes has.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A <code>PREFERRED</code> VM that didn’t fit on one NUMA node runs anyway, with its
+<code>NumaAligned</code> condition <code>False</code>.</p>
+<h3 id="what-the-guest-sees"><a class="header" href="#what-the-guest-sees">What the guest sees</a></h3>
+<p>A VM aligned over several NUMA nodes sees one guest NUMA node per host
+node, in the order of <code>numa</code>:</p>
+<ul>
+<li>guest node <em>i</em> has its share of vCPUs (numbered in order: node 0’s
+first) and of memory, bound to host node <code>numa[i].node</code>;</li>
+<li>each guest node has its own PCI root with the devices of its host
+node, so the guest sees which GPU is near which vCPUs and memory
+(<code>numactl -H</code>, <code>nvidia-smi topo -m</code>). Virtio disks and NICs stay on
+the main PCI root;</li>
+<li>with dedicated CPUs, vCPU <em>i</em> runs on host CPU <code>cpus[i]</code>, on its
+node. Shared vCPUs float over the host, as for one node.</li>
+</ul>
+<p>The distances between guest NUMA nodes are the hypervisor’s defaults,
+not the host’s, and a GPU and a NIC that share a PCIe switch on the
+host don’t share one in the guest. Both hypervisors lay the guest out
+this way.</p>
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; the MMIO apertures aren't sized yet (spec GV1 not done). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<h2 id="elastic-cpu"><a class="header" href="#elastic-cpu">Elastic CPU</a></h2>
+<p>An elastic VM has a range of vCPUs instead of a fixed count:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>min_vcpus</code></td><td>The fewest vCPUs it runs on. At least 1; 0 on Pylon, where an idle guest can park all of them.</td></tr>
+<tr><td><code>max_vcpus</code></td><td>The most it can have. At most 64 on Pylon.</td></tr>
+<tr><td><code>cpu_weight</code></td><td>1 to 10000, default 100: its share of host CPU when VMs compete (cgroup <code>cpu.weight</code>; on Pylon also <code>pylond</code>’s priority).</td></tr>
+</tbody>
+</table>
+</div>
+<p>A VM is elastic when <code>min_vcpus</code> is less than <code>max_vcpus</code>. Without them
+it has a fixed size, <code>vcpu_count</code>. A VM with dedicated CPUs can’t be
+elastic.</p>
+<p>How the range is used depends on the hypervisor:</p>
+<ul>
+<li><strong>Pylon.</strong> The guest boots with all <code>max_vcpus</code> and keeps them.
+<code>pylond</code>, the host’s core arbiter, parks the vCPUs the guest doesn’t
+need and wakes them on demand, between <code>min_vcpus</code> and <code>max_vcpus</code>,
+in microseconds and without CPU hotplug. So an elastic Pylon VM’s
+<code>vcpu_count</code> is always its <code>max_vcpus</code>: Glidex sets it, and the web UI
+and <code>gxctl</code> show it so. <code>lscpu</code> in the guest shows <code>max_vcpus</code> CPUs.</li>
+<li><strong>Cloud Hypervisor and QEMU.</strong> The guest boots with <code>vcpu_count</code>
+vCPUs online and room for <code>max_vcpus</code>. Change <code>vcpu_count</code> within the
+range and Glidex adds or removes vCPUs while the VM runs (CPU
+hotplug); nothing changes the count on its own.</li>
+</ul>
+<h3 id="make-a-vm-elastic"><a class="header" href="#make-a-vm-elastic">Make a VM elastic</a></h3>
+<p>In the web UI, tick <strong>Elastic CPU scaling</strong> in the create form and set
+<strong>Min vCPUs</strong>, <strong>Max vCPUs</strong> and <strong>Weight</strong>. On Pylon, <strong>vCPU Count</strong>
+follows <strong>Max vCPUs</strong>.</p>
+<p>For a VM that exists, click <strong>Scale CPU / Elasticity</strong> under its vCPU
+count. Tick <strong>Elastic CPU scaling</strong> to give a fixed-size VM the range 1
+to its vCPU count, then change it; untick it to give the VM a fixed size
+again. On Pylon the dialog shows the vCPUs the guest has.</p>
+<p>With <code>gxctl</code>, <code>create</code> asks whether to configure elastic CPU scaling
+(the default is yes on Pylon), and <code>scale</code> changes a VM:</p>
+<pre><code>gxctl&gt; scale web-1 --min 1 --max 8 --weight 200
+gxctl&gt; scale web-1 --vcpus 4
+</code></pre>
+<p>With the API, set <code>min_vcpus</code>, <code>max_vcpus</code> and <code>cpu_weight</code> at create
+or in a <a href="#change-a-vm">change</a>. To make an elastic Pylon VM fixed again,
+set <code>min_vcpus</code> and <code>max_vcpus</code> to the same count as <code>vcpu_count</code>: a
+change of <code>vcpu_count</code> alone keeps it elastic, and its count goes back
+to <code>max_vcpus</code>.</p>
+<h3 id="when-a-change-applies"><a class="header" href="#when-a-change-applies">When a change applies</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Change</th><th>Pylon</th><th>Cloud Hypervisor, QEMU</th></tr>
+</thead>
+<tbody>
+<tr><td><code>vcpu_count</code> within the range</td><td>(Always <code>max_vcpus</code>.)</td><td>At once, on a running VM.</td></tr>
+<tr><td><code>min_vcpus</code>, lower <code>max_vcpus</code></td><td>At once.</td><td>At the next start.</td></tr>
+<tr><td>Raise <code>max_vcpus</code></td><td>At the next start: the guest keeps the vCPUs it booted with.</td><td>At the next start.</td></tr>
+<tr><td><code>cpu_weight</code></td><td>At once for <code>pylond</code>; the cgroup weight at the next start.</td><td>At the next start; the VM isn’t marked for a restart.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A change that waits for the next start sets <code>restart_required</code>, and the
+web UI says <strong>Configuration changes take effect at the next start</strong>,
+except where the table says otherwise. A change that applies at once but
+can’t yet, because the VM is paused, sets the <code>VcpuResizePending</code>
+condition until it runs.</p>
+<p>Quotas count <code>vcpu_count</code>, so an elastic Pylon VM counts its
+<code>max_vcpus</code>.</p>
+<h2 id="placement-on-a-cluster"><a class="header" href="#placement-on-a-cluster">Placement on a cluster</a></h2>
+<p>On a cluster, the scheduler picks the node for a new VM when it is
+created. It considers only nodes that are active, ready and not
+draining, that have the hypervisor, enough vCPUs and memory left, the
+PCI devices, hugepages and physical networks the VM needs, and that hold
+its disks and node networks, or reach the datastores its disks are on.
+Of those, it prefers the least loaded.</p>
+<p>Hugepages are counted on their own: a VM with <code>hugepages</code> needs that
+much left of the node’s hugepages of its size (see
+<a href="#hugepages">Hugepages</a>). A VM with a NUMA or CPU policy needs a NUMA
+node with room (see
+<a href="#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a>), and a VM asking
+for devices from a pool needs a node with enough free devices of it.</p>
+<p>PCI devices are claimed per node: nodes with a device at the same
+address each take one VM with it. A node where another VM holds the
+device, or a device of its IOMMU group, is skipped. If every such node’s
+device is taken, the VM waits, and the reason names the VM holding it.
+A VM pinned to a node where its device is taken is refused instead.
+Nodes where a device is cordoned by an administrator, or where your
+project has no grant for it, are skipped too (<code>PCI device … is cordoned</code>, <code>its PCI devices are not granted to the project on this node</code>).</p>
+<p>A VM stays on its node: Glidex doesn’t move it, and doesn’t restart it
+elsewhere if the node fails. If no node can take the VM, it is still
+created and waits for one; its page says <strong>Waiting for a node</strong> with
+each node’s reason.</p>
+<p>A VM whose disks are on shared datastores (see
+<a href="images-and-disks.html#where-a-disk-lives">Where a disk lives</a>) can be
+placed on another node by an administrator (<code>system-admin</code>): when it is
+stopped, or when its node was lost and forgotten. On the VM’s page it is
+<strong>Place on another node</strong> (<strong>Place on a live node</strong> for a lost VM), with
+a node or <strong>Where there is room</strong>; with gxctl, <code>gxctl place &lt;vm&gt; [--node N]</code>; over the API, <code>POST /vms/{id}/place</code> with an optional <code>node</code>. A
+VM with a disk on a node’s own storage can go only to that node, and
+nowhere once the node is lost; a VM with a host-path root, PCI devices
+or a node network can’t move.</p>
+<p>With a node, the VM is pinned there; without one, its old pin goes.
+Start it again afterwards. A QEMU VM’s UEFI variables stay on the old
+node: it starts with fresh ones from its firmware. See <a href="../operator-guide/datastores.html#placing-a-stopped-or-lost-vm-again">Placing a
+stopped or lost VM
+again</a>
+for what is refused.</p>
+<p>In the web UI’s create form, <strong>Placement</strong> shows <strong>Automatic (now:
+&lt;node&gt;)</strong> and each node with its free vCPUs and memory, or why it
+can’t take the VM. Pick a node to pin the VM there. With the API, set
+<code>node</code> when you create the VM. To ask the scheduler without creating
+anything:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/scheduler/preview \
+  -d '{"vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "HYPERVISOR_QEMU"}'
+</code></pre>
+<p>The answer has the node it would pick (<code>pick</code>) and every node’s fit
+(<code>nodes</code>, with <code>refused</code> when it can’t take the VM).</p>
+<p>The VM’s node shows in <code>gxctl list</code> and on its page. If the node stops
+reporting, the page shows the VM’s last known state; the VM may still be
+running there.</p>
+<p>See <a href="../operator-guide/clusters.html">Clusters</a> for nodes and draining.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../user-guide/credentials.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../user-guide/kernel-boot.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../user-guide/credentials.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../user-guide/kernel-boot.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

@@ -1,0 +1,1145 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Authentication - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-ef487c04.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/authentication.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="authentication"><a class="header" href="#authentication">Authentication</a></h1>
+<p>Every request to the control plane is authenticated, on every listener.
+How depends on where it comes from:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Client</th><th>How it is identified</th></tr>
+</thead>
+<tbody>
+<tr><td><code>gxctl</code> on the host, on <code>/run/glidex-cp/api.sock</code></td><td>The caller’s Unix account, from the socket. No login.</td></tr>
+<tr><td>Web UI</td><td>A browser session, after a login with a local password, single sign-on or a <a href="#passkeys">passkey</a>.</td></tr>
+<tr><td><code>gxctl</code> from another machine, scripts, API clients</td><td>An access token (<code>Authorization: Bearer …</code>).</td></tr>
+<tr><td>CI jobs and other workloads</td><td>A short-lived token, exchanged for the workload’s own signed token through a <a href="workload-federation.html">workload federation</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>What an authenticated user may then do is decided by roles and policies:
+see <a href="access-control.html">Access control</a>.</p>
+<h2 id="the-local-socket"><a class="header" href="#the-local-socket">The local socket</a></h2>
+<p>The control plane listens on <code>/run/glidex-cp/api.sock</code>. It reads the
+caller’s user id from the socket itself and looks up their groups on
+every request:</p>
+<ul>
+<li>members of <code>glidex-users</code> (<code>users_group</code>) are let in as themselves;</li>
+<li>root and members of <code>glidex-admin</code> (<code>admin_group</code>) are break-glass
+administrators: they may do anything, whatever the roles and site
+policies say;</li>
+<li>everyone else is refused.</li>
+</ul>
+<p>A local user gets a Glidex user the first time they use the socket. Their
+Unix groups count as teams named <code>unix:&lt;group&gt;</code> for requests on the
+socket, so a role can be given to a whole Unix group (see <a href="access-control.html#teams">Access
+control</a>).</p>
+<p>Adding someone to a group takes effect on their next request:</p>
+<pre><code class="language-bash">sudo usermod -aG glidex-users alice
+</code></pre>
+<p><code>/run/glidex-cp/ui.sock</code> is the web UI’s: only the <code>glidex-ui</code> user may
+use it, and it carries the browser’s session, never rights of its own.</p>
+<h2 id="local-accounts"><a class="header" href="#local-accounts">Local accounts</a></h2>
+<p>People in <code>glidex-users</code> can log in to the web UI with their Unix user
+name and password. The control plane doesn’t read passwords itself: it
+asks <code>glidex-authd</code>, a small root helper that checks them with PAM.</p>
+<ul>
+<li><code>glidex-authd.socket</code> listens on <code>/run/glidex-authd/auth.sock</code>;
+systemd starts <code>glidex-authd.service</code> on the first login.</li>
+<li>It answers only the <code>glidex</code> user (the control plane).</li>
+<li>It uses the PAM service <code>/etc/pam.d/glidex</code>, which includes the
+system’s normal authentication and account checks (<code>common-auth</code> and
+<code>common-account</code> on Debian and Ubuntu, <code>system-auth</code> elsewhere).</li>
+<li>Every failure is answered after a fixed delay, and repeated failures
+are rate-limited per user and overall.</li>
+</ul>
+<p>The installer manages <code>/etc/pam.d/glidex</code> while it contains the line
+<code>Managed by glidex-install</code>. Delete that line to keep your own edits;
+later installs and the uninstaller then leave the file alone. PAM stacks
+that need network access from the helper itself (LDAP or RADIUS without
+<code>sssd</code>) or setuid helpers are not supported.</p>
+<h3 id="who-may-log-in"><a class="header" href="#who-may-log-in">Who may log in</a></h3>
+<p>Two lists must both allow a user, and should match:</p>
+<ul>
+<li><code>allowed_groups</code> in <code>/etc/glidex/authd.json</code> (the helper’s own);</li>
+<li><code>auth.pam.allowed_groups</code> in <code>/etc/glidex/control-plane.json</code>.</li>
+</ul>
+<p>Both default to <code>["glidex-users"]</code>. To let a second group log in:</p>
+<pre><code class="language-json">{ "service_user": "glidex", "allowed_groups": ["glidex-users", "lab"] }
+</code></pre>
+<pre><code class="language-json">{ "auth": { "pam": { "allowed_groups": ["glidex-users", "lab"] } } }
+</code></pre>
+<pre><code class="language-bash">sudo systemctl restart glidex-authd.service glidex-control-plane
+</code></pre>
+<p><code>/etc/glidex/authd.json</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>service_user</code></td><td><code>"glidex"</code></td><td>The only user allowed to ask.</td></tr>
+<tr><td><code>allowed_groups</code></td><td><code>["glidex-users"]</code></td><td>A user must be in one of these groups.</td></tr>
+<tr><td><code>failure_delay_ms</code></td><td><code>1000</code></td><td>Delay before every failure answer.</td></tr>
+<tr><td><code>max_connections</code></td><td><code>8</code></td><td>Connections served at once.</td></tr>
+<tr><td><code>allow_root</code></td><td><code>false</code></td><td>Also answer root. For debugging only; leave it off.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The rest of the PAM settings are in <code>auth.pam</code> (see
+<a href="configuration.html#auth">Configuration</a>): <code>enabled</code> turns password logins
+off, <code>jit: false</code> stops new users from being created at their first
+login, and <code>group_teams</code> maps Unix groups to Glidex teams, updated at
+every login.</p>
+<p>A user’s local account and their password logins are the same Glidex
+user. In a cluster, local accounts are per node (<code>alice</code> on one node is
+not <code>alice</code> on another) unless <code>cluster.shared_local_accounts</code> is set.</p>
+<h2 id="single-sign-on-oidc"><a class="header" href="#single-sign-on-oidc">Single sign-on (OIDC)</a></h2>
+<p>Glidex logs users in through any OpenID Connect provider, with the
+authorization code flow (PKCE) in the browser and the device
+authorization grant for <code>gxctl</code>.</p>
+<ol>
+<li>
+<p>Register Glidex with the provider as a confidential web client:</p>
+<ul>
+<li>redirect URI: <code>https://&lt;ui-host&gt;:5173/api/auth/oidc/callback</code>, with
+the name users type to reach the web UI;</li>
+<li>grant types: authorization code, and device code if <code>gxctl</code> users
+should log in with it;</li>
+<li>make the provider put the user’s groups in the ID token (a <code>groups</code>
+claim) if you use <code>required_groups</code> or <code>group_teams</code>.</li>
+</ul>
+</li>
+<li>
+<p>Put the client secret in a root-only file and hand it to the service
+as a credential:</p>
+<pre><code class="language-bash">sudo install -m 0600 /dev/null /etc/glidex/oidc-client-secret
+sudoedit /etc/glidex/oidc-client-secret       # paste the secret
+sudo systemctl edit glidex-control-plane
+</code></pre>
+<pre><code class="language-ini">[Service]
+LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
+</code></pre>
+</li>
+<li>
+<p>Configure <code>auth.oidc</code> in <code>/etc/glidex/control-plane.json</code>:</p>
+<pre><code class="language-json">{
+  "auth": {
+    "oidc": {
+      "enabled": true,
+      "issuer": "https://idp.example.org",
+      "client_id": "glidex",
+      "redirect_uri": "https://glidex.example.org:5173/api/auth/oidc/callback",
+      "required_groups": ["glidex-users"],
+      "group_teams": { "lab-staff": "staff" }
+    }
+  }
+}
+</code></pre>
+</li>
+<li>
+<p>Restart: <code>sudo systemctl restart glidex-control-plane</code>. The login page
+now has a <strong>Sign in with Single sign-on</strong> button.</p>
+</li>
+</ol>
+<p>Set <code>redirect_uri</code> explicitly: by default it is built from the first of
+<code>auth.allowed_origins</code>, which, when that list is empty, is the host’s
+own name. The web UI needs no <code>allowed_origins</code> entry for the name
+users reach it by; <a href="configuration.html#web-ui"><code>GLIDEX_UI_HOSTS</code></a> decides
+which names it answers. The issuer must be an <code>https://</code> URL; the
+control plane fetches its discovery document and keys from it, so it
+needs outbound HTTPS to the provider.</p>
+<p>Who gets in:</p>
+<ul>
+<li><code>required_groups</code>: only members of one of these groups (from
+<code>groups_claim</code>). Empty lets in everyone the provider authenticates for
+this client, so set it, or restrict the client at the provider.</li>
+<li><code>allowed_domains</code>: only users whose email is in one of these domains.</li>
+<li><code>jit: false</code>: only people who already have a Glidex user.</li>
+</ul>
+<p><code>group_teams</code> maps provider groups to Glidex teams, which must exist
+(<code>gxctl team create staff</code>); memberships are updated at every login.
+Users are identified by the provider’s issuer and subject, never by
+email or name.</p>
+<p>From another machine:</p>
+<pre><code class="language-bash">gxctl --url https://glidex.example.org:8841 login --oidc
+</code></pre>
+<p><code>gxctl</code> prints a code and a URL to open in a browser, then saves a token
+valid for one day.</p>
+<h2 id="login-connectors"><a class="header" href="#login-connectors">Login connectors</a></h2>
+<p>Each way to log in is a <em>login connector</em>. <code>auth.pam</code> and <code>auth.oidc</code>
+above appear as the connectors <code>file-pam</code> and <code>file-oidc</code>; they can only
+be changed in the file. Directory administrators can add more, from the
+web UI (<strong>Directory</strong> page, <strong>Connectors</strong> tab, <strong>+ Add Connector</strong>) or
+with <code>gxctl connector</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Kind</th><th>For</th></tr>
+</thead>
+<tbody>
+<tr><td><code>pam</code></td><td>Local accounts of the host.</td></tr>
+<tr><td><code>oidc</code></td><td>Any OpenID Connect provider.</td></tr>
+<tr><td><code>google</code></td><td>Google Workspace, or personal Google accounts (see <a href="#google">Google</a>).</td></tr>
+<tr><td><code>jumpcloud</code></td><td>JumpCloud SSO (see <a href="#jumpcloud">JumpCloud</a>).</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>google</code> and <code>jumpcloud</code> are OIDC with the provider’s endpoints and
+rules built in: you give a client id and secret, not an issuer.</p>
+<pre><code class="language-bash">gxctl connector add oidc corp --issuer https://login.example.com \
+  --client-id glidex --name "Example Corp" --require-group glidex-users \
+  --team lab-staff=staff
+gxctl connector secret set corp                 # hidden prompt
+gxctl connector secret set corp --from-file /path/to/secret
+gxctl connector test corp
+gxctl connector list
+</code></pre>
+<ul>
+<li>Each <code>oidc</code>, <code>google</code> and <code>jumpcloud</code> connector gets its own <strong>Sign
+in with &lt;name&gt;</strong> button on the login page, and its own redirect URI:
+<code>https://&lt;ui-host&gt;:5173/api/auth/c/&lt;id&gt;/callback</code>. The web UI’s
+connector form shows it, on the address you opened the UI with.</li>
+<li>Secrets are read from a hidden prompt, standard input or a file, never
+the command line, and are never shown again. In the web UI, each
+secret field has its own <strong>Set secret</strong> button. They are stored encrypted
+with the host’s secrets key (<code>secrets.kek</code> beside the database, or the
+<code>secrets-kek</code> credential); back that key up with the database.</li>
+<li><code>--mfa</code> admits only logins the provider reports as multi-factor (<code>amr</code>
+contains <code>mfa</code>, or <code>acr</code> is one of the <code>--mfa-acr</code> values).</li>
+<li><code>--token-max-days N</code> caps the tokens a login through the connector
+mints (default 30 days).</li>
+<li><code>--jit</code> / <code>--no-jit</code>, <code>--require-group</code>, <code>--team GROUP=TEAM</code> and
+<code>--domain</code> work as in the file settings.</li>
+<li><code>--default-tenant &lt;t&gt;</code> makes new users members of tenant <code>&lt;t&gt;</code>. If
+that is the <code>admin</code> tenant or another operator tenant, a connector that creates users must also
+have <code>--require-group</code>.</li>
+<li><code>--provisioning scim</code> and <code>--group-mode mapped|auto</code> let the IdP
+create and remove the connector’s users (<code>oidc</code> and <code>jumpcloud</code> only);
+see <a href="#provisioning-with-scim">Provisioning with SCIM</a>.
+<code>--provisioning pull</code> makes Glidex read them from Google Workspace
+instead (<code>google</code> only); see <a href="#directory-sync-from-google-workspace">Directory sync from Google
+Workspace</a>.</li>
+<li>Changing a connector needs a recent login (see <a href="#sessions-and-re-authentication">Sessions and
+re-authentication</a>).</li>
+</ul>
+<p>Run <code>gxctl connector</code> without arguments for every option.</p>
+<h3 id="google"><a class="header" href="#google">Google</a></h3>
+<p>A <code>google</code> connector logs in Google accounts. In the Google Cloud
+console, create an OAuth client of type <em>Web application</em> with the
+connector’s redirect URI. For <code>gxctl login --oidc</code>, create a second
+client of type <em>TVs and Limited Input devices</em>: Google only allows
+device logins through that type.</p>
+<pre><code class="language-bash"># Google Workspace: accounts of these domains.
+gxctl connector add google gws --client-id &lt;web-client-id&gt; --domain example.org \
+  --device-client-id &lt;tv-client-id&gt; --name "Example (Google)"
+gxctl connector secret set gws client_secret            # hidden prompt
+gxctl connector secret set gws device_client_secret
+gxctl connector test gws
+</code></pre>
+<p>In the web UI, choose <strong>Kind</strong> <em>Google</em>, then <strong>Google accounts</strong>:
+<em>Google Workspace (by domain)</em> or <em>Any Google account (invited or listed
+people)</em>. The web client and the device client each have their own
+<strong>Set secret</strong> button.</p>
+<ul>
+<li><strong>Workspace</strong> (the default) allows the accounts of the <code>--domain</code>
+domains. It checks the Workspace the account belongs to, never the
+email address: anyone can open a personal Google account under any
+address. Set the OAuth consent screen’s user type to <em>Internal</em> as
+well, so only the Workspace’s accounts can use the client. Public mail
+domains (<code>gmail.com</code>, <code>googlemail.com</code>) can’t be Workspace domains.</li>
+<li>Logins must come with a verified email address.</li>
+<li>Google doesn’t report whether a login used a second factor. If the
+Workspace enforces 2-step verification, <code>--trust-2sv</code> makes its logins
+count as multi-factor. The <code>admin</code> tenant and operator tenants only
+take a Workspace connector with <code>--trust-2sv</code>.</li>
+<li><strong><code>--consumer</code></strong> allows personal Google accounts too, but only for
+people you already know: an <a href="#invitations">invitation</a>, an address in
+<code>--allow-email</code>, or a Google account already linked to a Glidex user.
+With <code>--jit</code> (create users at their first login) it must also have
+<code>--allow-email</code>; without <code>--jit</code>, the default for connectors made with
+<code>gxctl</code>, new people get in by invitation only.
+A personal account can’t join the <code>admin</code> tenant or an operator tenant.</li>
+<li>Without a device client, <code>gxctl auth login --oidc</code> through the
+connector fails with <code>device_flow_unsupported</code>. <code>connector test</code>
+reports whether device logins are set up.</li>
+<li>Google sends no groups at login, so <code>--require-group</code> doesn’t apply,
+and <code>--team</code> only does with a <a href="#directory-sync-from-google-workspace">directory
+sync</a>, which reads the groups
+from Google. Otherwise give people roles in Glidex.</li>
+</ul>
+<h4 id="directory-sync-from-google-workspace"><a class="header" href="#directory-sync-from-google-workspace">Directory sync from Google Workspace</a></h4>
+<p>A Workspace <code>google</code> connector can <strong>pull</strong> its users from Google: the
+members of the Google groups you name, nested groups included, get
+Glidex users ahead of their first login, and nobody else logs in
+through it. Glidex reads the directory every 15 minutes, and on demand.
+It is the Google Workspace counterpart of <a href="#provisioning-with-scim">SCIM</a>:
+Google can’t push users to Glidex, so Glidex reads them instead.</p>
+<p>Glidex reads the directory as a Google Cloud <strong>service account</strong> with
+<strong>domain-wide delegation</strong>, read-only:</p>
+<ol>
+<li>
+<p>In the Google Cloud console, in a project of your organization:
+enable the <strong>Admin SDK API</strong>, create a service account (it needs no
+roles in the project), and create a <strong>JSON key</strong> for it. Keep the
+key file safe; it goes only into Glidex’s secret, below.</p>
+</li>
+<li>
+<p>In the Google Admin console, <strong>Security → Access and data control →
+API controls → Domain-wide delegation → Add new</strong>: the service
+account’s <strong>client ID</strong> (the number on its page, not its email), and
+exactly these two scopes:</p>
+<pre><code class="language-text">https://www.googleapis.com/auth/admin.directory.user.readonly
+https://www.googleapis.com/auth/admin.directory.group.readonly
+</code></pre>
+</li>
+<li>
+<p>Pick the <strong>administrator</strong> it acts as: a super administrator, or a
+delegated administrator who may read users and groups.</p>
+</li>
+<li>
+<p>Switch the connector to the pull, and set the key:</p>
+<pre><code class="language-bash">gxctl connector update gws --no-jit --provisioning pull --group-mode auto \
+  --sync-admin admin@example.org --sync-group glidex-users@example.org
+gxctl connector secret set gws service_account_key --from-file &lt;service-account-key.json&gt;
+gxctl connector test gws      # the key, the token, and each group
+gxctl connector sync gws
+</code></pre>
+<p>Give the key with <code>--from-file</code>: it is several lines long, and the
+hidden prompt reads one. In the web UI: the connector’s form,
+<strong>Provisioning</strong> <em>Directory sync</em>, <strong>Save</strong>, then <strong>Set service
+account key</strong> (choose the JSON file, or paste it). Either way, delete
+the key file afterwards: Glidex keeps the key encrypted and never
+shows it, not even in the form.</p>
+</li>
+<li>
+<p>Let the control plane reach Google: it needs outbound HTTPS to
+<code>oauth2.googleapis.com</code> and <code>admin.googleapis.com</code>. In a cluster, the
+runs happen on the leader, so every server node needs it. Unlike
+SCIM, nothing has to reach Glidex from outside.</p>
+</li>
+</ol>
+<p>The settings, as <code>gxctl</code> flags and in the form (<strong>Directory sync</strong>):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Form</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--sync-admin EMAIL</code></td><td><strong>Administrator to act as</strong></td><td>The Workspace administrator of step 3.</td></tr>
+<tr><td><code>--sync-group GROUP</code> (repeat it)</td><td><strong>Groups</strong></td><td>1 to 50 group emails. Their members, nested groups’ members included, are who gets in.</td></tr>
+<tr><td><code>--sync-interval MIN</code></td><td><strong>Every (minutes)</strong></td><td>Minutes between runs: 15 by default, at least 5.</td></tr>
+<tr><td><code>--sync-max-disable PCT</code></td><td><strong>Stop above (%)</strong></td><td>The <a href="#the-safety-stop">safety stop</a>: 10 by default, 1 to 100.</td></tr>
+<tr><td><code>--ssh-keys-field SCHEMA.FIELD</code></td><td><strong>SSH key field</strong></td><td>Optional: where the users’ <a href="#ssh-keys-from-google">SSH keys</a> are.</td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li>A pull needs a Workspace connector (<em>Google Workspace (by domain)</em>,
+not <code>--consumer</code>) with <code>--no-jit</code>; the web UI turns JIT off for you.</li>
+<li>Any of the <code>--sync-…</code> flags sets them all: repeat the ones you keep
+when you change one, or edit them in the web UI.</li>
+<li><code>--group-mode auto</code> makes each named group a Glidex team, named after
+the group. With <code>mapped</code> (the default), <code>--team GROUP=TEAM</code> puts a
+group’s members in an existing team, by the group’s email or name. In
+the form, this is <strong>Groups</strong>, <em>A team per IdP group</em> or <em>Mapped to
+teams below</em>. Only the named groups become teams; members of a nested
+group count as members of the group that holds it. A group you stop
+naming leaves its team behind, as a group deleted at a SCIM IdP does
+(see <a href="access-control.html#teams">Teams</a>).</li>
+<li><code>--default-tenant &lt;t&gt;</code> makes new users members of tenant <code>&lt;t&gt;</code>.</li>
+<li><code>connector test</code> checks the key is set, that the service account gets
+a token as the administrator, and that it can read each group.</li>
+</ul>
+<!-- TODO(verify): gxctl can't clear a connector's sync settings, so `gxctl connector update <id> --provisioning none` on a pulled connector is refused ("sync settings are for provisioning pull"); the web UI's form clears them. Document how to stop a pull with gxctl once fixed. -->
+<p>To stop pulling, set <strong>Provisioning</strong> back to <em>None</em> in the web UI’s
+connector form, or delete the connector (below).</p>
+<h5 id="what-a-run-does"><a class="header" href="#what-a-run-does">What a run does</a></h5>
+<p>A run reads the groups’ members and those users from Google first, then
+compares them with the connector’s users and teams, then applies the
+difference:</p>
+<ul>
+<li><strong>New members</strong> get a Glidex user, managed by the connector, and join
+<code>--default-tenant</code>. Someone already suspended in Google gets none.</li>
+<li><strong>First login.</strong> It is matched to the pulled user by Google’s account
+id (the subject of Google’s login), never by email address. Someone
+the pull didn’t bring in is refused (<code>login_not_allowed</code>).
+Invitations can’t be taken through the connector, and nobody can add
+it to their account as a sign-in method. <code>--mfa</code> and <code>--trust-2sv</code>
+still apply.</li>
+<li><strong>Changes</strong> in Google (name, primary email) reach Glidex at the next
+run.</li>
+<li><strong>Leaving.</strong> Someone suspended or archived in Google, deleted there,
+or no longer in any of the groups is disabled in Glidex: their
+sessions end, their personal tokens are revoked, and they leave the
+teams the pull put them in. The user stays managed by the connector.</li>
+<li><strong>Coming back.</strong> Once they are active and in a group again, the next
+run enables the user. Not if an administrator disabled it in Glidex:
+then only an administrator enables it again.</li>
+<li><strong>Users who logged in before the pull</strong> through the same connector
+are adopted: the pull takes over the user they already have, with its
+roles, rather than making a second one. So are users who added the
+connector as a sign-in method before Glidex refused that; the audit
+log’s <code>oidc-link</code> entries show who did, and removing that sign-in
+method before the next run keeps their account out of the pull.</li>
+<li><strong>What Google owns.</strong> A pulled user’s name, email and whether it is
+enabled are Google’s, and the pulled teams’ names and memberships
+too: see <a href="access-control.html#users-an-idp-manages">Users an IdP
+manages</a>.</li>
+<li>Every change a run applies is in the audit log, done by
+<code>system:sync:&lt;connector-id&gt;</code> (the action <code>syncConnector</code>); a run that
+changed nothing isn’t recorded.</li>
+</ul>
+<p>A disabled connector isn’t pulled on schedule. Deleting the connector disables its
+users, unless <code>gxctl connector remove gws --detach-users</code> (or the choice
+in the web UI) keeps them, as for SCIM.</p>
+<h5 id="the-safety-stop"><a class="header" href="#the-safety-stop">The safety stop</a></h5>
+<p>A run that would disable more than <code>--sync-max-disable</code> percent of the
+connector’s users changes nothing at all, and shows as <strong>blocked</strong>,
+listing who it would disable. Up to 5 can always be disabled. It guards
+against a group renamed, emptied or deleted by mistake, which would
+otherwise read as “everyone left”.</p>
+<ul>
+<li>If a group was changed by mistake, fix it in Google. The next run
+(or <strong>Sync now</strong>) sees it and applies normally.</li>
+<li>If the change is right, apply it: <code>gxctl connector sync gws --confirm</code>, or <strong>Review blocked sync</strong> in the web UI, which lists the
+users first. This reads Google again and applies what it finds then,
+without the stop, once. It needs a recent login (see <a href="#sessions-and-re-authentication">Sessions and
+re-authentication</a>).</li>
+</ul>
+<p>An error from Google, or an answer Glidex can’t read, changes nothing
+either: the run shows as <strong>failed</strong>, with Google’s message, and the
+next one tries again. Glidex retries Google’s <code>429</code> and <code>5xx</code> answers a
+few times within a run; any other error ends it.</p>
+<h5 id="watching-the-runs"><a class="header" href="#watching-the-runs">Watching the runs</a></h5>
+<p><code>gxctl connector show gws</code> prints the pull’s settings and the last run;
+the <strong>Connectors</strong> tab shows it under each pulled connector:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ok</code> (<em>synced</em>)</td><td>Applied. How many users were created, adopted, updated, disabled and enabled.</td></tr>
+<tr><td><code>FAILED</code> (<em>failed</em>)</td><td>Google’s error, or a missing or unreadable key. Nothing changed.</td></tr>
+<tr><td><code>BLOCKED</code> (<em>blocked</em>)</td><td>The safety stop: who it would disable. Nothing changed.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Sync now</strong> (or <code>gxctl connector sync gws</code>) runs one at once and shows
+its result; if a run of that connector is already going, it is refused
+with <code>409 sync_running</code>. <code>directory-auditor</code> sees the status;
+running a sync takes <code>directory-admin</code>.</p>
+<h5 id="ssh-keys-from-google"><a class="header" href="#ssh-keys-from-google">SSH keys from Google</a></h5>
+<p>With <code>--ssh-keys-field &lt;schema&gt;.&lt;field&gt;</code>, each run also reads the users’
+SSH public keys from a Workspace custom attribute:</p>
+<ol>
+<li>In the Google Admin console, add a custom attribute for users (a
+category, which is the schema, and a field in it), of type text,
+multi-valued.</li>
+<li>Put one OpenSSH public key per value (<code>ssh-ed25519 AAAA… alice@laptop</code>) on the users who need it.</li>
+<li>Set <code>--ssh-keys-field &lt;schema&gt;.&lt;field&gt;</code> (in the form, <strong>SSH key
+field</strong>), for example <code>glidex.ssh_keys</code>.</li>
+</ol>
+<!-- TODO(verify): how the Admin console's custom attribute category and field names map to the Directory API's schema and field names (spaces, case); the docs assume they are the same. -->
+<ul>
+<li>Only public keys are kept: OpenSSH keys of a known type, without
+repeats, at most 32 per user. Anything else, such as a private key
+pasted by mistake, is dropped.</li>
+<li>Each run replaces the user’s keys with what Google holds.</li>
+<li>The keys go into a VM only through a guest credential: when the user
+has no local account on the host, the web UI’s <strong>Add Credential</strong> form
+fills them in (see <a href="../user-guide/credentials.html#adding-a-credential">Guest
+credentials</a>).
+Removing a key in Google doesn’t remove it from credentials or VMs
+that already have it.</li>
+<li>Whoever can edit the attribute in Google decides which keys a user
+is offered: keep it to administrators.</li>
+</ul>
+<h3 id="jumpcloud"><a class="header" href="#jumpcloud">JumpCloud</a></h3>
+<p>A <code>jumpcloud</code> connector logs in JumpCloud users. In JumpCloud, add an
+SSO application with OIDC:</p>
+<ul>
+<li><strong>Redirect URIs:</strong> the connector’s redirect URI,
+<code>https://&lt;ui-host&gt;:5173/api/auth/c/&lt;id&gt;/callback</code>.</li>
+<li><strong>Login URL</strong> (where JumpCloud’s user portal sends people):
+<code>https://&lt;ui-host&gt;:5173/api/auth/c/&lt;id&gt;/start</code>.</li>
+<li><strong>Client Authentication Type:</strong> <em>Client Secret Basic</em>. Glidex sends
+its client secret that way, the OpenID Connect default; with <em>Client
+Secret Post</em> JumpCloud refuses the login (<code>invalid_client</code>).</li>
+<li><em>Include group attribute</em>, if logins should carry the user’s groups,
+and the user groups allowed to use the application.</li>
+</ul>
+<pre><code class="language-bash">gxctl connector add jumpcloud jc --client-id &lt;client-id&gt; --groups-claim memberOf \
+  --require-group glidex-users --team lab-staff=staff
+gxctl connector secret set jc
+</code></pre>
+<ul>
+<li><code>--groups-claim</code> is the name set under <em>Include group attribute</em>
+(<code>memberOf</code> by default); <code>--require-group</code> and <code>--team</code> read it.</li>
+<li><code>--allow-email</code> limits which addresses get a new account with <code>--jit</code>.</li>
+<li>JumpCloud’s addresses are set by your organization’s administrators,
+so an address the login doesn’t mark as unverified counts as verified
+(for <code>--allow-email</code> and invitations).</li>
+</ul>
+<p>In the web UI, choose <strong>Kind</strong> <em>JumpCloud</em>; the form shows the redirect
+URI and the Login URL to enter in JumpCloud.</p>
+<h3 id="provisioning-with-scim"><a class="header" href="#provisioning-with-scim">Provisioning with SCIM</a></h3>
+<p>A JumpCloud or OIDC connector can be <strong>provisioned</strong>: the IdP creates,
+updates and removes its users and groups in glidex over SCIM 2.0, ahead
+of their logins. Then only people the IdP provisions can log in, and
+deactivating someone in the IdP takes their access away at once.</p>
+<ol>
+<li>
+<p>Switch the connector to SCIM. It stops creating users at login:</p>
+<pre><code class="language-bash">gxctl connector update jc --no-jit --provisioning scim --group-mode auto
+</code></pre>
+<p><code>--group-mode auto</code> makes a glidex team per IdP group. The default,
+<code>mapped</code>, fills existing teams named by <code>--team GROUP=TEAM</code>. In the
+web UI, these are <strong>Provisioning</strong> and <strong>Groups</strong> in the connector’s
+form.</p>
+</li>
+<li>
+<p>Make a token for the IdP. It is shown once:</p>
+<pre><code class="language-bash">gxctl connector scim-token create jc --name jumpcloud
+</code></pre>
+<p>Or use the connector’s <strong>SCIM</strong> button on the <strong>Connectors</strong> tab,
+which also shows the endpoint URL. A token lasts 180 days by default
+(<code>--days</code>, at most 365). A connector can have five at once, so make
+the next one before the old one expires, then revoke the old one:</p>
+<pre><code class="language-bash">gxctl connector scim-token list jc              # ids, names, expiry; never the tokens
+gxctl connector scim-token revoke jc &lt;token-id&gt;
+</code></pre>
+<p>The token is a password for the connector’s users: whoever holds it
+can create users and put them in teams. Paste it straight into the
+IdP, keep any copy in a secret manager, never in shell history,
+scripts or tickets, and revoke a token that may have been exposed.
+Making and revoking tokens needs a recent login; a connector that
+isn’t <code>--provisioning scim</code> refuses them (<code>409 not_provisioned</code>).
+Expired tokens stay listed for 30 days.</p>
+</li>
+<li>
+<p>Make the endpoint reachable from the IdP (see below).</p>
+</li>
+<li>
+<p>In JumpCloud, open the application’s <strong>Identity Management</strong>, choose
+<strong>SCIM 2.0</strong>, and enter:</p>
+<ul>
+<li><strong>Base URL:</strong> the endpoint, for example
+<code>https://&lt;name&gt;.&lt;tailnet&gt;.ts.net/api/scim/v2/c/jc</code>;</li>
+<li><strong>Token key:</strong> the <code>gxs_…</code> token.</li>
+</ul>
+<p><strong>Test connection</strong>, then <strong>Activate</strong>. Users bound to the
+application are pushed, and so are its user groups, as glidex groups.</p>
+</li>
+</ol>
+<p>What happens then:</p>
+<ul>
+<li><strong>First login.</strong> It is matched to the provisioned user by the IdP’s
+id or, as for JumpCloud (which sends none), by the verified email
+address. Somebody the IdP didn’t provision is refused. The
+connector’s <code>--require-group</code> and <code>--mfa</code> still apply; invitations
+can’t be taken through it, nobody can add it to their account as a
+sign-in method, and teams aren’t synced at login: the IdP pushes them.</li>
+<li><strong>Deactivating</strong> someone in the IdP disables the glidex user: their
+sessions end, their tokens are revoked, and they leave the teams the
+IdP put them in.</li>
+<li><strong>Removing</strong> someone from the application disables the user and
+detaches it from the IdP. Its records and role links stay; delete the
+user from the <strong>Directory</strong> page if it should go.</li>
+<li><strong>What the IdP owns.</strong> A provisioned user’s name, email and whether
+it is enabled are the IdP’s: the web UI says <em>managed by JumpCloud</em>,
+and glidex refuses edits to them. An administrator can still
+<strong>disable</strong> one at once, without waiting for the IdP; the IdP can’t
+undo that.</li>
+<li><strong>Users who logged in before SCIM</strong> (with JIT) are adopted when the
+IdP pushes them by the same email address: they aren’t made twice.</li>
+<li>Deleting the connector disables its users, unless <code>gxctl connector remove jc --detach-users</code> (or the choice in the web UI) keeps them as
+the directory’s own.</li>
+</ul>
+<h4 id="making-the-endpoint-reachable"><a class="header" href="#making-the-endpoint-reachable">Making the endpoint reachable</a></h4>
+<p>The IdP calls glidex from its own servers, so the endpoint has to be
+reachable from the internet; glidex doesn’t open anything itself. It
+lives on the API (<code>/scim/v2/c/&lt;id&gt;</code>) and on the web UI under <code>/api</code>.
+Use a reverse proxy, or a tunnel that publishes only that path.</p>
+<p>With <strong>Tailscale Funnel</strong>: Funnel listens on ports <strong>443, 8443 and
+10000 only</strong>, and the web UI is on 5173. So publish 443 and forward it
+to the web UI, and publish the SCIM path alone, so the rest of the web
+UI stays on the tailnet:</p>
+<pre><code class="language-bash">sudo tailscale funnel --bg --set-path=/api/scim/v2/ \
+  https://&lt;name&gt;.&lt;tailnet&gt;.ts.net:5173/api/scim/v2/
+tailscale funnel status
+</code></pre>
+<ul>
+<li>The IdP’s URL then has no port:
+<code>https://&lt;name&gt;.&lt;tailnet&gt;.ts.net/api/scim/v2/c/&lt;id&gt;</code>.</li>
+<li>Funnel needs HTTPS certificates and the <code>funnel</code> node attribute in
+the tailnet’s policy, and isn’t part of every Tailscale plan (not
+Starter). Without it, use a reverse proxy, or another tunnel that can
+publish one path (Cloudflare Tunnel’s ingress rules can).</li>
+<li>If the web UI doesn’t use the Tailscale certificate (<code>installation.md</code>,
+<code>--tailscale-cert</code>), forward to
+<code>https+insecure://127.0.0.1:5173/api/scim/v2/</code> instead.</li>
+<li>Turn it off with <code>sudo tailscale funnel --https=443 --set-path=/api/scim/v2/ off</code>.</li>
+</ul>
+<p>Only the SCIM token opens the endpoint: any other request gets <code>401</code>.
+A disabled connector, or one that isn’t <code>--provisioning scim</code>, answers
+<code>403</code>. It answers at most 20 requests a second per connector. What the
+endpoint supports is in the <a href="../api/rest.html#scim-20-for-identity-providers">REST API</a>.</p>
+<h2 id="invitations"><a class="header" href="#invitations">Invitations</a></h2>
+<p>An invitation lets one person into a tenant, with a role, through one
+connector, even when the connector doesn’t create users (<code>--no-jit</code>):
+the usual way to let in people with personal Google accounts.</p>
+<pre><code class="language-bash">gxctl invite create web bob@example.org --connector google-personal --role member
+gxctl invite list web
+gxctl invite revoke &lt;id&gt;
+</code></pre>
+<ul>
+<li><strong>Who invites.</strong> Tenant administrators, to their own tenant; directory
+administrators, to any tenant. Giving a tenant role with it needs the
+right to give that role.</li>
+<li><strong>The link.</strong> <code>create</code> prints a link, once:
+<code>https://&lt;ui-host&gt;:5173/invite/&lt;id&gt;#&lt;secret&gt;</code>. It can’t be shown again;
+if it is lost, revoke the invitation and make another. Send it the way
+you would send a password, to the invited person only.</li>
+<li><strong>Who can take it.</strong> The first login through that connector, with that
+verified email address, that brings the link. It is taken once; another
+account, or the same address without the link, can’t use it. The
+connector’s own rules still apply: through a Workspace <code>google</code>
+connector, the account must still be in one of its domains.</li>
+<li><strong>Lifetime.</strong> 7 days, or <code>--days N</code> (1 to 30). <code>invite list</code> shows each
+invitation as <code>open</code>, <code>taken</code> or <code>expired</code>; taken and expired ones stay
+listed for 30 days. <code>revoke</code> deletes an invitation.</li>
+<li><code>--role</code> is <code>member</code> (the default: membership only),
+<code>role.tenant-admin</code> or <code>role.tenant-auditor</code>.</li>
+<li><code>--connector</code> is an enabled <code>oidc</code>, <code>google</code> or <code>jumpcloud</code> connector,
+not one <a href="#provisioning-with-scim">provisioned by SCIM</a> or by a
+<a href="#directory-sync-from-google-workspace">directory sync</a>: its users
+come from the IdP, and an invitation can’t be taken through it.
+Invitations into the <code>admin</code> tenant or an operator tenant go only
+through a connector that requires MFA and is allowed there.</li>
+</ul>
+<p>In the web UI, a tenant’s page has an <strong>Invitations</strong> card: the list,
+<strong>Invite</strong> (email, role, connector), and the link shown once with
+<strong>Copy</strong>. A tenant’s first administrator can be invited when the tenant
+is created (see <a href="access-control.html#tenants-and-admissions">Tenants and
+admissions</a>).</p>
+<h3 id="accepting-an-invitation"><a class="header" href="#accepting-an-invitation">Accepting an invitation</a></h3>
+<p>The invited person opens the link. The page says which tenant and role
+it is for, and which address and connector to sign in with; <strong>Sign in
+with &lt;connector&gt;</strong> takes them to the provider. When they come back
+signed in with that address, they are a member of the tenant with the
+role. If they already have a Glidex user with that sign-in, the
+invitation adds to it.</p>
+<p>A link that was used, revoked or has expired says so: ask for a new one.
+A login that can’t take the invitation is refused like any other login
+(<code>login_not_allowed</code>).</p>
+<h2 id="access-tokens"><a class="header" href="#access-tokens">Access tokens</a></h2>
+<p>Tokens are for <code>gxctl</code> on other machines, scripts and API clients. A
+token is shown once, when it is made; Glidex keeps only a hash of it.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Kind</th><th>Acts as</th><th>Made with</th></tr>
+</thead>
+<tbody>
+<tr><td>Personal</td><td>Its owner. Never more than the owner may do; roles given to the token narrow it further.</td><td><code>gxctl token create &lt;name&gt;</code>, the web UI’s <strong>Tokens</strong> page</td></tr>
+<tr><td>Service account</td><td>Only the project roles it was given, in one project.</td><td><code>gxctl token create &lt;name&gt; --service-account --project &lt;p&gt; --role editor</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-bash">gxctl token create ci --days 30 --service-account --project web --role operator
+gxctl token list
+gxctl token revoke &lt;id&gt;
+</code></pre>
+<ul>
+<li>A token lives <code>auth.tokens.default_days</code> (90) unless <code>--days</code> says
+otherwise, and at most <code>auth.tokens.max_days</code> (365).</li>
+<li><code>gxctl login --oidc</code> gets a token valid for one day; <code>gxctl auth login --pam-user &lt;user&gt;</code> one capped by its connector (30 days by default).</li>
+<li>Clients send it as <code>Authorization: Bearer &lt;token&gt;</code>; <code>gxctl</code> reads it
+from <code>GLIDEX_TOKEN</code> or the file <code>gxctl login --token</code> saved
+(<code>~/.config/glidex/token</code>, mode 0600).</li>
+<li>A disabled user’s personal tokens stop working; a deleted user’s are
+deleted (see <a href="access-control.html#removing-people">Removing people</a>).</li>
+</ul>
+<p>Store tokens in a secret manager or a mode 0600 file, not in shell
+history or scripts. Revoke a token you no longer need, and any token
+that may have been exposed. <code>gxctl token list</code> shows when each was last
+used.</p>
+<h2 id="passkeys"><a class="header" href="#passkeys">Passkeys</a></h2>
+<p>Users can sign in with a <strong>passkey</strong>: their device’s fingerprint, face or
+PIN (or a security key) instead of a password. A passkey is one more
+sign-in method of the same user; it counts as multi-factor, and it can
+answer the re-authentication a sensitive action asks for.</p>
+<ul>
+<li>Each user adds their own on the <strong>Account</strong> page (<strong>Add a passkey</strong>),
+after a recent sign-in. Nobody, administrators included, can add a
+passkey to someone else’s account; administrators can remove one.
+A user has at most 10.</li>
+<li>The login page then offers <strong>Sign in with a passkey</strong>, with no user
+name to type.</li>
+<li>A user keeps another sign-in method, or a second passkey: glidex
+refuses to remove the method that would leave a single passkey as the
+only way in, so losing one device isn’t a lock-out.</li>
+</ul>
+<p>The user’s side is in <a href="../user-guide/logging-in.html#passkeys">Logging in</a>.</p>
+<p>Passkeys are on by default. They need the web UI on <code>https</code> (or a
+browser on the host itself at <code>http://localhost</code>); a browser shows no
+passkey prompt on a plain <code>http</code> page.</p>
+<h3 id="the-passkeys-domain"><a class="header" href="#the-passkeys-domain">The passkeys’ domain</a></h3>
+<p>Passkeys belong to a domain. Set it to the domain your web UI’s names
+share, so that a passkey made on one name works on the others (and on a
+cluster’s other servers):</p>
+<pre><code class="language-json">{
+  "auth": {
+    "passkeys": { "rp_id": "example.com" }
+  }
+}
+</code></pre>
+<p>in <code>/etc/glidex/control-plane.json</code> (here for a web UI at
+<code>https://glidex.example.com:5173</code>; on a tailnet, the tailnet’s
+<code>&lt;tailnet&gt;.ts.net</code>). The web UI’s name must be that domain or a name
+under it; a page elsewhere gets an error instead of the browser’s prompt.
+Without it, each web UI name has its own passkeys, and the Account page
+says so. Changing <code>rp_id</code> later makes existing passkeys stop working:
+their users add new ones.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>auth.passkeys.enabled</code></td><td><code>true</code></td><td><code>false</code> turns passkeys off: the login page and Account page no longer offer them.</td></tr>
+<tr><td><code>auth.passkeys.rp_id</code></td><td>unset</td><td>The passkeys’ domain. Unset: the name of the web UI each request came through.</td></tr>
+<tr><td><code>auth.passkeys.rp_name</code></td><td><code>"glidex"</code></td><td>The site name the browser shows in its passkey prompt.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Restart the control plane after changing them. In a cluster, set the
+same values on every server.</p>
+<h3 id="passkeys-and-other-sign-in-methods"><a class="header" href="#passkeys-and-other-sign-in-methods">Passkeys and other sign-in methods</a></h3>
+<ul>
+<li>A passkey belongs to a Glidex user, not to a Unix account or an IdP
+account. A passkey sign-in doesn’t ask PAM or the IdP: taking someone
+out of <code>glidex-users</code>, or deactivating them at an IdP that doesn’t
+provision Glidex users, doesn’t stop their passkeys. To keep someone
+out, <strong>Disable</strong> their user (see <a href="access-control.html#removing-people">Removing
+people</a>), or remove their passkeys.</li>
+<li>A disabled user can’t sign in with a passkey.</li>
+<li>Deleting a user deletes their passkeys.</li>
+<li>In <strong>Users &amp; roles</strong>, a user’s passkeys are among their sign-in
+methods, labelled <em>Passkey</em>; <strong>Remove</strong> deletes one.</li>
+<li><code>gxctl</code> doesn’t sign in with passkeys; it keeps tokens, PAM and OIDC.</li>
+</ul>
+<h3 id="a-lost-passkey"><a class="header" href="#a-lost-passkey">A lost passkey</a></h3>
+<p>A user who loses a device signs in another way (a password, single
+sign-on or their second passkey), opens <strong>Account</strong>, and removes the
+lost passkey under <strong>Passkeys</strong>. An administrator can remove it for them
+in <strong>Users &amp; roles</strong>. A user whose only sign-in methods are two passkeys
+adds a new passkey first: removing one of the two would leave a single
+passkey, which is refused (<code>409 last_identity</code>).</p>
+<p>A user who has lost every way in (both their passkeys, say) can’t add a
+new one, and nobody else can add one for them. An administrator gives
+them a way back in by linking another sign-in method to their user over the API
+(<code>POST /users/{id}/identities</code>, needs <code>directory-admin</code>), such as their
+local account; they then sign in with it and add a new passkey.</p>
+<!-- TODO(verify): the provider and subject a PAM or OIDC identity takes in POST /users/{id}/identities (valid providers: pam, unix, oidc:<issuer>; connector sign-ins can't be linked this way). Name the exact body before documenting it further. -->
+<h2 id="hosting-other-organizations-directories"><a class="header" href="#hosting-other-organizations-directories">Hosting other organizations’ directories</a></h2>
+<p>A host can keep the users and sign-in of other organizations, each in a
+directory of its own: its people, teams, tenants, sign-in providers,
+tokens and signing keys, with an issuer of its own at
+<code>&lt;web UI&gt;/d/&lt;directory&gt;</code>. Nobody in one directory sees or touches
+another’s records, and you, the host’s operator, see only that a
+directory exists, not what is in it.</p>
+<p>Create one on the web UI’s <strong>Hosting</strong> page, or with gxctl:</p>
+<pre><code class="language-bash">gxctl directory create acme --name "Acme Corp" --admin-email it@acme.example
+</code></pre>
+<p>Add <code>--trust-domain acme.example</code> to name the directory’s <strong>trust
+domain</strong>, the name its VMs’ workload identities carry (a domain the
+organization owns). Without it the directory gets <code>&lt;id&gt;.&lt;this host&gt;</code>.
+Either way it can’t change once the directory has issued a workload
+identity token.</p>
+<p>It prints an invitation link, once. Send it to that person: they open
+it, create a passkey on their device, and are the directory’s first
+administrator. From there they add their organization’s sign-in
+provider (OIDC, Google, JumpCloud), invite their colleagues and make
+tenants, as you do in yours.</p>
+<p>Their people sign in at <code>https://&lt;web UI&gt;/login/acme</code>, or on the plain
+login page by typing their email: once their sign-in provider lists
+their email domain (<code>allowed_domains</code>), the page sends them to their
+directory’s sign-in. The login page never lists the directories a host
+serves.</p>
+<p>Their tenants use this host’s cluster only when you admit them, as any
+tenant (<code>gxctl admission set</code>). <code>gxctl directory delete acme</code> removes a
+directory nobody uses yet; one with users, sign-in providers or projects
+stays until its administrators remove them. The host’s own directory,
+<code>local</code>, stays.</p>
+<p>Each hosted directory keeps its own <strong>audit log</strong>: its people’s
+sign-ins and what they change in the directory (users, teams, tenants,
+connectors, tokens), and what its connectors’ SCIM and sync do. Its
+directory administrators and auditors read it on the <strong>Audit</strong> page, or
+with <code>gxctl audit --directory acme</code>; you don’t. What its people do with
+this cluster’s projects is also in the cluster’s audit, as anyone’s is.
+It is kept as long as the cluster’s (<code>audit.retention_days</code>), and goes
+when the directory is deleted.</p>
+<h2 id="workload-federation-ci-without-stored-tokens"><a class="header" href="#workload-federation-ci-without-stored-tokens">Workload federation (CI without stored tokens)</a></h2>
+<p>A CI job usually needs a service account’s token to deploy. With
+<strong>workload federation</strong> it needs none: the job asks its CI platform for
+an OIDC token (GitHub Actions, GitLab CI and Kubernetes give one to every
+job), and trades it at glidex for a short-lived token that acts as a
+service account of the tenant. Nothing secret is stored in the CI system.</p>
+<ul>
+<li>A tenant trusts an <strong>issuer</strong> and an <strong>audience</strong>, with <strong>rules</strong>:
+each rule names exact claim values (the repository, and usually the
+branch or environment) and the service account a matching job acts
+as. The first rule that matches wins; there are no wildcards.</li>
+<li>The token glidex gives lasts the rule’s lifetime (15 minutes by
+default, at most an hour), isn’t renewable, and has exactly the
+service account’s roles. Each CI token is exchanged once.</li>
+<li>Disabling or deleting the federation, changing the rule, or revoking
+the service account ends the tokens it gave at once.</li>
+<li>Tenant administrators manage their tenant’s federations on the
+tenant’s page (<strong>Workload federation</strong>) or with <code>gxctl federation</code>;
+making one needs a recent login.</li>
+</ul>
+<pre><code class="language-bash"># A service account with the roles the job needs, in one of the tenant's projects:
+gxctl token create deployer --service-account --project web --role operator
+gxctl federation add acme github --issuer https://token.actions.githubusercontent.com \
+  --audience glidex --match repository=acme/infra --match ref=refs/heads/main \
+  --service-account &lt;token id&gt;
+</code></pre>
+<p>The job exchanges its token at <code>POST /api/auth/exchange</code> (RFC 8693),
+naming the federation as <code>&lt;tenant slug&gt;/&lt;federation id&gt;</code>, and gets
+<code>{access_token, expires_in}</code>. A refused exchange always answers
+<code>invalid_grant</code>; why is in the audit log (<code>system:federation:&lt;id&gt;</code>).</p>
+<p><strong>GitHub Actions:</strong></p>
+<pre><code class="language-yaml">permissions:
+  id-token: write          # lets the job ask GitHub for an OIDC token
+steps:
+  - name: glidex token
+    run: |
+      JWT=$(curl -sfH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&amp;audience=glidex" | jq -r .value)
+      TOKEN=$(curl -sf https://glidex.example.com/api/auth/exchange \
+        -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+        -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+        -d federation=acme/github -d subject_token="$JWT" | jq -r .access_token)
+      echo "::add-mask::$TOKEN"
+      echo "GLIDEX_TOKEN=$TOKEN" &gt;&gt; "$GITHUB_ENV"
+  - run: curl -sf -H "Authorization: Bearer $GLIDEX_TOKEN" https://glidex.example.com/api/vms
+</code></pre>
+<p>Rules for GitHub match <code>repository</code>, <code>ref</code> and <code>environment</code> (or the
+whole <code>sub</code>, such as <code>repo:acme/infra:environment:production</code>).</p>
+<p><strong>GitLab CI</strong> (issuer <code>https://gitlab.com</code>, or your instance’s URL):</p>
+<pre><code class="language-yaml">deploy:
+  id_tokens:
+    GLIDEX_JWT:
+      aud: glidex
+  script:
+    - &gt;
+      TOKEN=$(curl -sf https://glidex.example.com/api/auth/exchange
+      -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+      -d subject_token_type=urn:ietf:params:oauth:token-type:jwt
+      -d federation=acme/gitlab -d subject_token="$GLIDEX_JWT" | jq -r .access_token)
+</code></pre>
+<p>Rules for GitLab match <code>project_path</code> and <code>ref</code> (or <code>environment</code>).</p>
+<p><strong>Kubernetes:</strong> use the cluster’s service account issuer (its
+discovery must be reachable by glidex, for example published with
+<code>--service-account-issuer</code> and <code>--service-account-jwks-uri</code>), a
+projected token with audience <code>glidex</code>, and rules on <code>sub</code>
+(<code>system:serviceaccount:&lt;namespace&gt;:&lt;name&gt;</code>).</p>
+<p><strong>Issuers on your own network.</strong> Glidex reads an issuer’s discovery and
+keys only from public addresses: an issuer whose host resolves only to
+loopback, private, link-local or unique-local addresses (a self-hosted
+GitLab on the LAN, an internal Kubernetes API) is refused with
+<code>issuer_unreachable</code> (<em>has no public address</em>). To trust one, set
+<code>auth.federation.allow_private_issuers</code> to <code>true</code> in
+<code>/etc/glidex/control-plane.json</code> and restart the control plane. That
+lets every tenant administrator point a federation at internal
+addresses, so turn it on only when you need it.</p>
+<p>Every field, limit, issuer requirement and error is on the
+<a href="workload-federation.html">Workload federation</a> page.</p>
+<h2 id="sessions-and-re-authentication"><a class="header" href="#sessions-and-re-authentication">Sessions and re-authentication</a></h2>
+<p>A web UI login starts a session, kept in a cookie. It ends after
+<code>auth.session.idle_minutes</code> (30) without a request, or
+<code>auth.session.absolute_hours</code> (12) after login, whichever comes first,
+or when the user signs out.</p>
+<p>Some actions need a login in the last 10 minutes:</p>
+<ul>
+<li>writing site policies;</li>
+<li>adding, changing or removing login connectors, their secrets and
+their SCIM tokens, and applying a <a href="#the-safety-stop">blocked directory
+sync</a>;</li>
+<li>managing admissions and deleting tenants;</li>
+<li>adding, changing and removing <a href="workload-federation.html">workload federations</a>;</li>
+<li>host network changes that can cut the host off (installing Open
+vSwitch, DPDK, committing or removing uplinks, deleting bridges);</li>
+<li>cluster membership and recovery (joining, join tokens, removing nodes,
+CA and secrets key rotation, OVN settings).</li>
+</ul>
+<p>In the web UI, such an action opens a “This action needs a recent login”
+dialog; after signing in again the request goes through. <strong>Confirm with
+a passkey</strong> there counts as a fresh login. A user who
+signs in with single sign-on picks their provider there, and is asked
+to sign in at it again even if it still has a session (Glidex sends
+<code>prompt=login</code> and <code>max_age=0</code>). On the local
+socket a request always counts as fresh. A personal token acting only
+as its owner never does: run those actions from the web UI, from the
+host’s socket, or with a token that has its own roles.</p>
+<h2 id="who-is-logged-in"><a class="header" href="#who-is-logged-in">Who is logged in</a></h2>
+<pre><code class="language-bash">gxctl whoami          # method, teams, roles
+gxctl user list       # every user and their identities
+</code></pre>
+<h3 id="linking-a-sign-in-to-a-user"><a class="header" href="#linking-a-sign-in-to-a-user">Linking a sign-in to a user</a></h3>
+<p>A password (PAM) sign-in, and a user on a host’s socket (<code>unix</code>), is an
+account on one node: <code>pam:alice@&lt;node id&gt;</code>. The first sign-in on a node
+where it isn’t linked yet makes a new user with no roles. In a cluster
+whose servers share account names, as behind a load balancer, link the
+account on every node to its user once:</p>
+<pre><code class="language-bash">gxctl user link alice pam alice --all-nodes    # pam:alice@&lt;each node&gt;
+gxctl user link alice unix alice --all-nodes   # the same for gxctl on the socket
+gxctl user link alice pam alice@prism2         # one node, by name or id
+gxctl user unlink alice pam:alice@&lt;node id&gt;
+</code></pre>
+<p>The user is an id, or a name exactly one user has. A sign-in already
+linked to another user is refused: remove that user, or unlink it there,
+first. Linking needs <code>manageUsers</code> on the directory.</p>
+<p>The audit log records every login, write and denied request (see
+<a href="access-control.html#audit-log">Access control</a>).</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/tls.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/access-control.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/tls.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/access-control.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

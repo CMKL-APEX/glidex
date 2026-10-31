@@ -1,0 +1,953 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Architecture - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-ef487c04.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/developer-guide/architecture.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
+<p>This page is a map of Glidex for contributors: which processes run,
+how a request travels through them, where state lives and how it turns
+into running VMs. Each section names the crates and modules involved and
+links to the design spec with the details. For why things are built this
+way, see <a href="design-decisions.html">Design decisions and trade-offs</a>; for the
+algorithms (scheduling, reconciliation, Raft write sets, metering), see
+<a href="algorithms.html">Algorithms</a>; for the repository layout, see
+<a href="organization.html">Repository and code organization</a>.</p>
+<p>Source paths below are relative to the repository root and link to
+<code>main</code>. The design specs live in
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md"><code>spec/</code></a>.</p>
+<h2 id="the-big-picture"><a class="header" href="#the-big-picture">The big picture</a></h2>
+<p>Glidex is a set of ordinary Linux processes. Nothing is containerized.
+The work is split by privilege: the control plane runs as an
+unprivileged user, and each thing that needs root is a small helper
+daemon with a narrow protocol on a Unix socket.</p>
+<pre><code class="language-text">   Browser                         gxctl
+      │ HTTPS :5173                  │ api.sock (peer uid)  or  HTTPS :8841 (token)
+      ▼                              │
+ ┌──────────────┐  ui.sock           │
+ │  glidex-ui   │────────────┐       │
+ │ (glidex-ui)  │            ▼       ▼
+ └──────────────┘   ┌──────────────────────────────────────────────┐   :8842 mTLS
+                    │  glidex-control-plane      (user glidex)     │◀──────────▶ other nodes
+                    │  REST + RPC API · auth · Cedar · store       │
+                    │  controllers · scheduler · hypervisor drivers│
+                    └──┬──────────┬───────────┬───────────┬────────┘
+          netd.sock    │ stord.sock│ auth.sock │ D-Bus     │ shim.sock, api.sock,
+                       ▼          ▼           ▼ (polkit)  │ console.sock (per VM)
+              ┌────────────┐ ┌───────────┐ ┌───────────┐  │
+              │glidex-netd │ │glidex-    │ │glidex-    │  │
+              │  (root)    │ │stord(root)│ │authd(root)│  │
+              └─────┬──────┘ └─────┬─────┘ └─────┬─────┘  │
+                    ▼              ▼             ▼        ▼
+             OVS, nftables,    LVM-thin        PAM    ┌───────────────────────────────┐
+             dnsmasq, OVN      volumes                │ glidex-vm@&lt;id&gt;.service        │
+             chassis, VFIO                            │ (user glidex, glidex-vms.slice)│
+                                                      │  glidex-vm-shim ── PTY,       │
+                                                      │   │  console.sock, console.log│
+                                                      │   └─ cloud-hypervisor / qemu  │
+                                                      └───────────────────────────────┘
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Process</th><th>Runs as</th><th>Crate</th><th>Job</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex-control-plane</code></td><td><code>glidex</code> (<code>glidex-control-plane.service</code>)</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane"><code>glidex-control-plane</code></a></td><td>API, authentication, authorization, the store, controllers, scheduler, cluster membership</td></tr>
+<tr><td><code>glidex-netd</code></td><td>root (<code>glidex-netd.service</code>)</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-netd"><code>glidex-netd</code></a>, on the <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ovs"><code>glidex-ovs</code></a> library</td><td>Everything privileged on the host network: OVS bridges and uplinks, NAT (nftables + dnsmasq), VM ports, joining OVN, binding devices to <code>vfio-pci</code></td></tr>
+<tr><td><code>glidex-stord</code></td><td>root (<code>glidex-stord.service</code>)</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord"><code>glidex-stord</code></a></td><td>Makes, activates and removes LVM-thin volumes in the volume groups the operator allows, and hands each device to the <code>glidex</code> user</td></tr>
+<tr><td><code>glidex-authd</code></td><td>root, socket-activated (<code>glidex-authd.socket</code>)</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-authd"><code>glidex-authd</code></a></td><td>Checks local users’ passwords with PAM; one operation, <code>authenticate</code></td></tr>
+<tr><td><code>glidex-vm-shim</code></td><td><code>glidex</code>, one <code>glidex-vm@&lt;id&gt;.service</code> per running VM</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-vm-shim"><code>glidex-vm-shim</code></a></td><td>Parent of one hypervisor; owns its PTY, console socket and console log; records how it exited</td></tr>
+<tr><td><code>cloud-hypervisor</code>, <code>qemu-system-*</code></td><td>child of the shim</td><td>upstream</td><td>The VM itself</td></tr>
+<tr><td><code>glidex-ui</code></td><td><code>glidex-ui</code> (<code>glidex-ui.service</code>)</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ui"><code>glidex-ui</code></a></td><td>Serves the React UI over HTTPS and proxies <code>/api/*</code> (WebSocket upgrades included) to the control plane’s <code>ui.sock</code></td></tr>
+<tr><td><code>gxctl</code></td><td>the user</td><td><code>crates/glidex-control-plane/src/bin/gxctl</code></td><td>CLI on the generated RPC clients</td></tr>
+<tr><td><code>glidex-install</code></td><td>root, once</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-install"><code>glidex-install</code></a></td><td>Installs binaries, users, units and the polkit rule; creates or joins a cluster</td></tr>
+</tbody>
+</table>
+</div>
+<p>Units are in
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/packaging"><code>packaging/</code></a>.
+<code>glidex-vfio-boot.service</code> is a one-shot (<code>glidex-netd --boot-devices</code>)
+that sets SR-IOV VF counts and <code>vfio-pci</code> bindings at boot, before netd
+and the control plane start.</p>
+<h3 id="sockets-and-ports"><a class="header" href="#sockets-and-ports">Sockets and ports</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Endpoint</th><th>Served by</th><th>Used by</th></tr>
+</thead>
+<tbody>
+<tr><td>TCP <code>:8841</code> (HTTPS, every address by default)</td><td>control plane</td><td>gxctl with a token, the UI’s TCP fallback, other API clients</td></tr>
+<tr><td><code>/run/glidex-cp/api.sock</code></td><td>control plane</td><td>gxctl on the host; the caller is identified by its peer uid</td></tr>
+<tr><td><code>/run/glidex-cp/ui.sock</code></td><td>control plane</td><td><code>glidex-ui</code> only (checked by peer uid)</td></tr>
+<tr><td>TCP <code>:8842</code> (HTTPS, mutual TLS with the cluster CA)</td><td>control plane, in a cluster</td><td>other nodes: Raft, forwarded writes, watch, heartbeats, status writes, console and stats relays</td></tr>
+<tr><td>TCP <code>:5173</code> (HTTPS)</td><td><code>glidex-ui</code></td><td>browsers</td></tr>
+<tr><td><code>/run/glidex/netd.sock</code>, <code>netd-ro.sock</code>, <code>netd-admin.sock</code></td><td>netd</td><td>control plane (full); anyone (status only); the admin group</td></tr>
+<tr><td><code>/run/glidex-stord/stord.sock</code>, <code>stord-admin.sock</code></td><td>stord</td><td>control plane; the admin group</td></tr>
+<tr><td><code>/run/glidex-authd/auth.sock</code></td><td>authd</td><td>control plane</td></tr>
+<tr><td><code>/run/glidex-cp/vms/&lt;id&gt;/{shim.sock, api.sock, console.sock}</code></td><td>shim, hypervisor, shim</td><td>control plane only</td></tr>
+<tr><td>system D-Bus</td><td>systemd</td><td>control plane starts and stops <code>glidex-vm@&lt;id&gt;</code> units (allowed by the polkit rule <code>50-glidex-vm.rules</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Socket and port numbers are configurable; these are the defaults. The
+helpers’ protocols are newline-delimited JSON; the clients live in the
+helper crates (<code>glidex_netd::client</code>, <code>glidex_stord::client</code>,
+<code>glidex_authd::client</code>) so the control plane and the daemon share one
+definition.</p>
+<h3 id="why-vms-survive-control-plane-restarts"><a class="header" href="#why-vms-survive-control-plane-restarts">Why VMs survive control-plane restarts</a></h3>
+<p>The control plane never spawns a hypervisor and never holds a PTY. For
+each VM it starts a <code>glidex-vm@&lt;id&gt;</code> unit through systemd. The unit runs
+<code>glidex-vm-shim</code>, which starts the hypervisor as its child, in the
+unit’s own cgroup. The control plane reaches a running VM only through
+files and sockets in the VM’s runtime directory,
+<code>/run/glidex-cp/vms/&lt;id&gt;/</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>File</th><th>Written by</th><th>Content</th></tr>
+</thead>
+<tbody>
+<tr><td><code>launch.json</code></td><td>control plane</td><td>Everything the shim needs: the hypervisor command line (the whole VM config, built by the hypervisor driver), paths, grace periods</td></tr>
+<tr><td><code>instance.json</code></td><td>shim</td><td>What the shim reports: phase, pids with start times, boot id, exit record</td></tr>
+<tr><td><code>shim.sock</code></td><td>shim</td><td><code>status</code>, <code>stop</code>, <code>kill</code>, <code>release</code></td></tr>
+<tr><td><code>api.sock</code></td><td>hypervisor</td><td>Cloud Hypervisor’s HTTP API or QEMU’s QMP, reached with <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-hv-client"><code>glidex-hv-client</code></a></td></tr>
+<tr><td><code>console.sock</code>, <code>console.log</code></td><td>shim</td><td>The serial console and its log</td></tr>
+</tbody>
+</table>
+</div>
+<p>So stopping, crashing or upgrading the control plane (or netd, whose
+VM ports and vhost-user sockets also outlive it) leaves guests running.
+On the next start it observes every VM and adopts the live instances
+before acting on any (see <a href="#reconciliation">Reconciliation</a>). The
+runtime directory survives because the unit sets
+<code>RuntimeDirectoryPreserve=yes</code>. With the <code>detached</code> runner (development
+and tests) the shim runs in its own session instead of a unit; the
+picture is otherwise the same.</p>
+<p>Design:
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md">12-reconciliation.md</a>
+§5, §8, and
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/00-architecture.md">00-architecture.md</a>.</p>
+<h2 id="the-request-path"><a class="header" href="#the-request-path">The request path</a></h2>
+<p>Every API request, REST or RPC, goes through the same layers of one
+axum router (<code>api::router</code> in
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/mod.rs"><code>api/mod.rs</code></a>).</p>
+<pre><code class="language-text"> listener (serve.rs)        tags the request: Tcp | Api | Ui | Cluster | Relay,
+   │                        peer uid (Unix sockets) or client address (TCP)
+   ▼
+ relay::ui_relay            glidex-ui's self-report; X-Glidex-Target-Node for host-only
+   │                        calls; on an agent, ui.sock answers 421 use_a_server
+   ▼
+ authenticate               Origin/CSRF checks, then a Principal from: peer uid (api.sock),
+   │                        session cookie, gxt_ token or directory access token (TCP, ui.sock),
+   │                        X-Glidex-Principal (a server forwarding over :8842)
+   ▼
+ gate::cluster_gate         cluster only: write on a follower → forward to the leader;
+   │                        read → ReadIndex barrier, unless X-Glidex-Consistency: local
+   ▼
+ ┌─────────────────────────────┬──────────────────────────────────┐
+ │ REST route (api/*.rs)       │ RPC (api/rpc/*.rs, connectrpc)   │
+ │ per-route Cedar action,     │ operation from glidex_api::      │
+ │ audit_layer, remote_host    │ OPERATIONS, per-listener rules,  │
+ │ decode JSON → proto message │ audit; gRPC, gRPC-Web, Connect   │
+ └──────────────┬──────────────┴──────────────┬───────────────────┘
+                └──────────────┬──────────────┘
+                               ▼
+               service::&lt;family&gt;::&lt;operation&gt;(call, request)
+               Cedar checks, not-found vs forbidden, quotas, names, store write
+                               ▼
+               VmManager (state.rs) / other stores → Db::write
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Step</th><th>Where</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Listeners</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/serve.rs"><code>serve.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-tls"><code>glidex-tls</code></a></td><td>TCP is HTTPS unless TLS is off, which only loopback listeners allow. The Unix sockets tag each request with the peer’s uid from <code>SO_PEERCRED</code></td></tr>
+<tr><td>Authentication</td><td><code>authenticate</code> in <code>api/mod.rs</code>, <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/auth"><code>auth/</code></a></td><td>Every request gets a <code>Principal</code>. Credentials accepted depend on the listener: cookies only through <code>glidex-ui</code>, peer uid only on <code>api.sock</code></td></tr>
+<tr><td>Authorization</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/authz.rs"><code>authz.rs</code></a> (Glidex’s <code>Model</code> over the engine in <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-auth/src/cedar.rs"><code>glidex-auth</code></a>), policies in <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/policies"><code>crates/glidex-control-plane/policies/</code></a></td><td>Cedar. The policy set is the shipped base policies and role templates, one template link per role assignment, and enabled site policies, validated against the schema and swapped atomically. A decision allows only if Cedar allows and no policy errored</td></tr>
+<tr><td>Operation table</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-api/src/lib.rs"><code>glidex-api</code></a></td><td>Each RPC in <code>proto/</code> carries a <code>glidex.api.v1.op</code> option: its Cedar action, <code>READ</code> or <code>WRITE</code>, and its REST twin. <code>build.rs</code> turns them into <code>OPERATIONS</code>. Tests check that every RPC and REST route maps to a Cedar action in the schema and that twins agree</td></tr>
+<tr><td>Service layer</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/service"><code>service/</code></a></td><td>One transport-neutral function per operation makes every decision. REST handlers in <code>api/</code> and RPC adapters in <code>api/rpc/</code> only decode, call it and encode, so the two transports can’t drift</td></tr>
+<tr><td>Audit</td><td><code>audit_layer</code> / <code>write_audit</code> in <code>api/mod.rs</code>; RPCs in <code>api/rpc/mod.rs</code></td><td>Every write, every denied request and reads a handler marks, into the <code>audit</code> table. Logins are audited by their handlers</td></tr>
+<tr><td>Cluster gate</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/gate.rs"><code>api/gate.rs</code></a></td><td>See below</td></tr>
+</tbody>
+</table>
+</div>
+<p>REST bodies are the proto3 JSON form of the same messages the RPCs use,
+so there is one type system. Some endpoints are HTTP by nature and stay
+REST only: OIDC and OAuth endpoints, SCIM, the console WebSocket, CSV
+exports, <code>/health</code>.</p>
+<h3 id="cluster-forwarding-and-consistent-reads"><a class="header" href="#cluster-forwarding-and-consistent-reads">Cluster forwarding and consistent reads</a></h3>
+<p>In a cluster every server answers the API. The gate decides per request:</p>
+<ul>
+<li><strong>Writes</strong> (a non-safe HTTP method, or an operation of kind <code>WRITE</code>)
+on a follower are forwarded whole to the leader over <code>:8842</code>, with
+the already-authenticated principal in <code>X-Glidex-Principal</code>. The
+leader trusts that header only on a connection with a server
+certificate, and runs authorization itself.</li>
+<li><strong>Reads</strong> wait for a ReadIndex barrier (batched round trip to the
+leader), so a read on any server sees every write committed before
+it arrived. Without quorum they fail with <code>503 cluster_unavailable</code>,
+unless the client asks for a stale read with
+<code>X-Glidex-Consistency: local</code> (<code>gxctl --stale</code>). Answers carry
+<code>X-Glidex-Revision</code>, the Raft index of the last applied entry.</li>
+<li><strong>Host-only</strong> routes (<code>/ovs</code>, <code>/pci-devices</code>, <code>/system/…</code>, the
+<code>glidex.host.v1</code> services, <code>cluster init/join/leave</code>) act on the host
+that receives them and are never forwarded. With
+<code>X-Glidex-Target-Node</code>, a server authorizes the route’s action on that
+node’s <code>Host</code> and runs it there over <code>:8842</code>
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/relay.rs"><code>api/relay.rs</code></a>).</li>
+</ul>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md">18-grpc.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md">11-security.md</a> §5, §7, §10,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a> §6.4.
+Public reference: <a href="../api/README.html">API overview</a>.</p>
+<h2 id="the-data-model"><a class="header" href="#the-data-model">The data model</a></h2>
+<h3 id="spec-and-status"><a class="header" href="#spec-and-status">Spec and status</a></h3>
+<p>Managed objects (VMs, disks, images, networks, nodes, routers) are
+envelopes of <code>meta</code>, <code>spec</code> and <code>status</code>, the Kubernetes pattern:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Part</th><th>Holds</th><th>Written by</th></tr>
+</thead>
+<tbody>
+<tr><td><code>meta</code></td><td>id, name, project, <code>generation</code> (+1 on every spec change), <code>resource_version</code> (+1 on every write), deletion request, finalizers</td><td>API</td></tr>
+<tr><td><code>spec</code></td><td>Desired state: what the user asked for (<code>power: running</code>, vCPUs, disks, networks)</td><td>API, inside admission</td></tr>
+<tr><td><code>status</code></td><td>Observed state: phase, conditions (<code>Ready</code>, <code>Scheduled</code>, <code>DisksReady</code>, …), <code>observed_generation</code>, placement, the live instance, NICs, last exit</td><td>Controllers only (and the scheduler for placement)</td></tr>
+</tbody>
+</table>
+</div>
+<p>The API records the spec before it answers, then returns <code>202</code>, or, with
+<code>wait</code>, once the controller has acted. An object has converged when
+<code>observed_generation == generation</code> and <code>Ready=True</code>. Controllers write
+<code>observed_generation</code> as the generation they <em>read</em>, so a spec change
+made during a reconcile is never undone and is picked up next round.
+Types are in
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/models.rs"><code>models.rs</code></a>.</p>
+<h3 id="the-store"><a class="header" href="#the-store">The store</a></h3>
+<p>All control-plane state is one <a href="https://github.com/cberner/redb">redb</a>
+database, <code>glidex.db</code> under the service user’s home
+(<code>/var/lib/glidex-control-plane/.glidex/</code>). Every change goes through
+<code>Db::write</code>: a transaction that records each <code>put</code> and <code>delete</code> as a
+<strong>write set</strong>. The store and its Raft integration are the
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-raftstore"><code>glidex-raftstore</code></a>
+crate; glidex’s schema (the <code>TableId</code> list, each table’s scope, and the
+write <code>Origin</code>s) is
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/store/db.rs"><code>store/db.rs</code></a>.
+<code>TableId</code> is append-only: a table can be retired, its id never reused.</p>
+<p><code>VmManager</code>
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/state.rs"><code>state.rs</code></a>)
+keeps an in-memory cache of every VM. Admission (validation, quotas,
+disk and device claims, name uniqueness) runs under that cache’s write
+lock and ends in one store commit with the spec, the claims and an
+event. It never touches the host.</p>
+<h3 id="standalone-and-replicated"><a class="header" href="#standalone-and-replicated">Standalone and replicated</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Standalone host</th><th>Cluster</th></tr>
+</thead>
+<tbody>
+<tr><td>Store</td><td>Local redb, writes commit directly</td><td>Same file, replicated with Raft (<code>openraft</code>) among the servers</td></tr>
+<tr><td>Who writes</td><td>the one process</td><td>the leader, on one serialized write lane</td></tr>
+<tr><td>What travels</td><td>—</td><td>The write set, as a Raft log entry. A write runs once on the leader against its applied state; every member applies the same bytes</td></tr>
+<tr><td>Reads</td><td>local</td><td>local replica after a ReadIndex barrier (or stale on request)</td></tr>
+<tr><td>Agents</td><td>—</td><td>A filtered cache of the store: only what is placed or bound on them, fed by list and watch from a server</td></tr>
+</tbody>
+</table>
+</div>
+<p>“The leader computes, everyone applies bytes” is what keeps admission
+(read, check, write) correct without running it on every replica, and
+lets servers on different versions apply the same entries. The details
+are in <a href="algorithms.html">Algorithms</a> and
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a> §6.</p>
+<p><strong>What’s replicated and what stays on a host.</strong> Every table of
+<code>glidex.db</code> is replicated except <code>raft_meta</code> (each replica’s own
+<code>last_applied</code> and membership). Each table also has a <strong>scope</strong>:
+directory tables (users, teams, projects, credentials, connectors,
+tokens, …) follow the organization; cluster tables (VMs, disks, images,
+networks, nodes, datastores, metering, …) follow the hardware. Auth
+tables replicate to servers only. These stay on each host and are never
+replicated:</p>
+<ul>
+<li>the Raft log and the cluster identity (node certificate and key, CA)
+in the control plane’s state directory;</li>
+<li>configuration files in <code>/etc/glidex/</code>;</li>
+<li>netd’s own state database and stord’s configuration;</li>
+<li>VM runtime directories, console logs, and disk and image files on
+node-local datastores;</li>
+<li>on agents, the outbox of status writes not yet acknowledged.</li>
+</ul>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/03-data-model.md">03-data-model.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md">12-reconciliation.md</a> §6,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a> §6.</p>
+<h2 id="reconciliation"><a class="header" href="#reconciliation">Reconciliation</a></h2>
+<p>Controllers are level-triggered loops: each round observes the host,
+records what it saw in <code>status</code>, and takes the smallest step toward the
+spec. Every step is idempotent and safe to interrupt, so a crash at any
+point is finished or undone by the next round.</p>
+<pre><code class="language-text"> API spec write ──┐
+ exit watch (pidfd per shim and hypervisor) ──┤
+ store change (cache_sync, list/watch) ──┤──▶ WorkQueue ──▶ N workers ──▶ reconcile_&lt;kind&gt;(id)
+ resync every reconcile.resync_secs ──┤      (dedup by     (reconcile.     observe → act → write status
+ netd restart (re-sync ports) ──┘            kind, id)      workers)
+</code></pre>
+<p>One deduplicating queue
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/queue.rs"><code>controller/queue.rs</code></a>)
+feeds the workers: a key is processed by one worker at a time, failures
+back off per key, and the periodic resync means a missed event only
+delays convergence.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Controller</th><th>Module</th><th>Runs on</th><th>Does</th></tr>
+</thead>
+<tbody>
+<tr><td>VM</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/vm.rs"><code>controller/vm.rs</code></a></td><td>the VM’s node</td><td>Observe the instance; finish exits and deletions; stop (with escalation); launch; pause/resume and VFIO hot-plug drift; derive phase and conditions</td></tr>
+<tr><td>Disk</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/disk.rs"><code>controller/disk.rs</code></a></td><td>the disk’s node, or its worker on a shared datastore</td><td>Make pending disks once their image is ready, resize, extend the root partition, notice missing files, finish deletions</td></tr>
+<tr><td>Image</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/image.rs"><code>controller/image.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/image_cache.rs"><code>image_cache.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/store_copies.rs"><code>store_copies.rs</code></a></td><td>every node that needs a copy</td><td>Supervise downloads; per-node copies; copies inside shared datastores</td></tr>
+<tr><td>Node network</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/network.rs"><code>controller/network.rs</code></a></td><td>the network’s node</td><td>Keep netd’s records in line with the control plane’s networks</td></tr>
+<tr><td>Cluster network (OVN)</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/ovn.rs"><code>controller/ovn.rs</code></a></td><td>leader (NB database); every node (chassis); servers (OVN central)</td><td>Keep OVN’s northbound database equal to networks, IPAM and placements</td></tr>
+<tr><td>Scheduler</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/scheduler.rs"><code>scheduler.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/placement.rs"><code>controller/placement.rs</code></a></td><td>leader</td><td>Place VMs that have no node yet</td></tr>
+<tr><td>Node lifecycle</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/lifecycle.rs"><code>cluster/lifecycle.rs</code></a></td><td>leader</td><td>Mark nodes that stop heartbeating, and their VMs, <code>Ready=Unknown</code></td></tr>
+<tr><td>Datastore probe</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/datastore/probe.rs"><code>datastore/probe.rs</code></a></td><td>every node</td><td>Report what the node finds at each datastore, every minute</td></tr>
+<tr><td>Metering</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/metering"><code>metering/</code></a></td><td>every node; ledger close on the leader</td><td>Sample usage into the hourly ledger</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>VmManager::start_controllers</code>
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/mod.rs"><code>controller/mod.rs</code></a>)
+starts the <strong>node role</strong> tasks (workers, resync, datastore probe, device
+pool preparation, self-report, OVN chassis) and, on servers, the
+<strong>server role</strong> tasks (scheduler pass, cluster network controller). The
+leader-only loops do nothing on a follower.</p>
+<h3 id="startup-and-adoption"><a class="header" href="#startup-and-adoption">Startup and adoption</a></h3>
+<p><code>main.rs</code> loads the configuration, opens the store, and calls
+<code>VmManager::initialize</code>
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/startup.rs"><code>controller/startup.rs</code></a>)
+before any controller acts or any listener opens:</p>
+<ol>
+<li>Observe every VM. A live instance that matches <code>status.instance</code> is
+adopted as it is (event <code>Adopted</code>); one only <code>instance.json</code> knows of
+is adopted from it (<code>AdoptedUnrecorded</code>).</li>
+<li>List units and runtime directories with no VM record as orphans.
+They are reported (<code>GET /system/reconcile</code>), never touched.</li>
+<li>Only then tell netd which VMs own ports, so it never drops a port of
+a VM that is still running.</li>
+<li>Start the controllers, then the listeners.</li>
+</ol>
+<p><strong>Invariant:</strong> at most one hypervisor instance per VM. Before a launch,
+the controller must positively establish that no instance is live (unit
+state, recorded pids with their start times, sockets). If it can’t
+tell, the VM is <code>Unknown</code> and nothing is launched.</p>
+<h3 id="host-boot"><a class="header" href="#host-boot">Host boot</a></h3>
+<p><code>glidex-vm@</code> units are never enabled: relaunching VMs after a reboot is
+the control plane’s decision. The shim records the host’s boot id; a
+recorded instance from an earlier boot is an exit with cause
+<code>HostReboot</code>. The VM’s <code>on_host_boot</code> policy (<code>resume</code> by default, or
+<code>stop</code>, with a site default in <code>reconcile.on_host_boot</code>) then decides
+whether the controller launches it again or sets its desired power to
+stopped. At host shutdown, systemd stops each unit: the shim presses
+the guest’s power button, waits the grace period, then stops the
+hypervisor.</p>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md">12-reconciliation.md</a> §9–§10, §13.</p>
+<h2 id="clustering"><a class="header" href="#clustering">Clustering</a></h2>
+<pre><code class="language-text">              gxctl / UI / API clients   (HTTPS :8841 to any server)
+       ┌──────────────────┬───────────────────┬──────────────────┐
+       ▼                  ▼                   ▼
+ ┌────────────┐     ┌────────────┐     ┌────────────┐
+ │ server     │◀───▶│ server     │◀───▶│ server     │   Raft, forwarding,
+ │ API · Raft │     │ (leader)   │     │ API · Raft │   relays on :8842 (mTLS)
+ │ node role  │     │ node role  │     │ node role  │
+ │ netd · OVS │     │ netd · OVS │     │ netd · OVS │
+ └─────┬──────┘     └─────┬──────┘     └─────┬──────┘
+       │      OVN overlay (Geneve) for cluster networks
+       └────────────┬───────────────┬────────┘
+              ┌─────┴─────┐   ┌─────┴─────┐
+              │ agent     │   │ agent     │   node role only: list/watch,
+              │ netd · OVS│   │ netd · OVS│   heartbeats and status writes
+              └───────────┘   └───────────┘   to a server on :8842
+</code></pre>
+<p><strong>One binary, two roles.</strong> Every host runs the <strong>node role</strong> (VM, disk,
+image and node-network controllers, metering sampler, netd sync).
+<strong>Servers</strong> also run the <strong>server role</strong>: the API, a Raft member, and
+the cluster controllers, which act only while the server is leader. A
+standalone host is both roles with a local store and one implicit node,
+<code>local</code>. Roles are <code>node::Roles</code>
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/node.rs"><code>node.rs</code></a>).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Topic</th><th>How</th><th>Code</th></tr>
+</thead>
+<tbody>
+<tr><td>Node API</td><td><code>:8842</code>: Raft (<code>/raft/*</code>), join and rejoin, read index, list and watch, heartbeats, status writes, ledger shipping, image file copies, console/stats relays, host-only relays; anything else is a forwarded API request</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/server.rs"><code>cluster/server.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/net.rs"><code>cluster/net.rs</code></a></td></tr>
+<tr><td>PKI</td><td>One cluster CA whose key every server holds; node certificates name the node and its advertise address. The CA can be rotated, and is when a server leaves</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/pki.rs"><code>cluster/pki.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/rotation.rs"><code>cluster/rotation.rs</code></a></td></tr>
+<tr><td>Joining</td><td><code>gxctl cluster init</code> makes a one-voter cluster; hosts join with a single-use join token (only its hash is stored) and get a certificate</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/manage.rs"><code>cluster/manage.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/tokens.rs"><code>cluster/tokens.rs</code></a></td></tr>
+<tr><td>Node lifecycle</td><td>Phases <code>Active</code>, <code>Draining</code>, <code>Departing</code>, <code>Departed</code>, <code>Removed</code>, <code>Forgotten</code>. Remove an empty node, forget a lost one, rejoin as the same node, detach with its VMs, import a standalone host’s VMs</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/membership.rs"><code>cluster/membership.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/departure.rs"><code>cluster/departure.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/import.rs"><code>cluster/import.rs</code></a></td></tr>
+<tr><td>Liveness</td><td>Nodes heartbeat every 5 s; the leader keeps liveness in memory and writes only transitions. A silent node and its VMs become <code>Ready=Unknown</code>; nothing is stopped or moved</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/lifecycle.rs"><code>cluster/lifecycle.rs</code></a></td></tr>
+<tr><td>Agents</td><td>A cache of the store fed by list and watch; status writes go to the leader, queued in an outbox while it is out of reach. Cut off from every server, an agent keeps running VMs but launches and deletes nothing</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/agent.rs"><code>cluster/agent.rs</code></a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/sync.rs"><code>cluster/sync.rs</code></a></td></tr>
+<tr><td>Status writes</td><td>A node sends the status it computed with the <code>resource_version</code> it read; the leader checks the object is placed or bound on that node (<code>check_status_write</code>) and writes it</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/sync.rs"><code>cluster/sync.rs</code></a></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="where-the-scheduler-fits"><a class="header" href="#where-the-scheduler-fits">Where the scheduler fits</a></h3>
+<p>The scheduler is called inside VM admission: in a cluster, <code>create_vm_with</code>
+asks <code>scheduler::pick_node</code> for a node and writes the placement in the
+same commit as the VM. If no node fits, the VM is created with
+<code>Scheduled=False/Unschedulable</code> and the reason for each node, and the
+leader’s placement pass (<code>place_pending</code>, every few seconds) tries again
+as nodes and capacity change. Placement is decided once and then sticks;
+an administrator can place a stopped or lost VM again. Filters (capacity,
+hugepages, NUMA and CPU policy, hypervisor, devices, disks’ datastores,
+networks, architecture) and scoring are described in
+<a href="algorithms.html">Algorithms</a>.</p>
+<h3 id="agents-the-ui-and-host-pages"><a class="header" href="#agents-the-ui-and-host-pages">Agents, the UI and host pages</a></h3>
+<p>An agent serves <strong>no API</strong>: auth tables replicate to servers only, so
+an agent has no users, sessions or tokens. It removes its <code>api.sock</code>
+(gxctl logs in to a server instead) and its <code>ui.sock</code> answers API
+requests with <code>421 use_a_server</code>. Its <code>glidex-ui</code> reports itself to the
+control plane (<code>PUT /ui/self</code>) and learns which server’s UI to send
+browsers to: a <code>GET</code> is redirected (<code>307</code>) to that server, <code>/</code> to the
+agent’s own <strong>Host page</strong> (<code>/hosts/&lt;node&gt;</code>). Servers publish their UI
+address in their node record (<code>cluster.ui_url</code>, else what their
+<code>glidex-ui</code> reports). Host pages work from any server for any node by
+sending host-only calls with <code>X-Glidex-Target-Node</code> (see
+<a href="#cluster-forwarding-and-consistent-reads">the request path</a>). Code:
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-ui/src/home.rs"><code>glidex-ui/src/home.rs</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/relay.rs"><code>api/relay.rs</code></a>.</p>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/28-host-page.md">28-host-page.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/16-clustering-ui.md">16-clustering-ui.md</a>.
+Operating it: <a href="../operator-guide/clusters.html">Clusters</a>.</p>
+<h2 id="subsystems"><a class="header" href="#subsystems">Subsystems</a></h2>
+<h3 id="networking"><a class="header" href="#networking">Networking</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Node networks (one host)</th><th>Cluster networks</th></tr>
+</thead>
+<tbody>
+<tr><td>Datapath</td><td>An OVS bridge per network on the host</td><td>OVN logical switches over Geneve, VM ports on <code>br-int</code></td></tr>
+<tr><td>Who writes it</td><td>netd, from its own records, using <code>glidex-ovs</code></td><td>The leader writes OVN’s northbound database through <code>glidex-ovn</code> (<code>ovn-nbctl</code>); netd makes each host an OVN chassis (and runs OVN central on servers)</td></tr>
+<tr><td>NAT and DHCP</td><td>nftables NAT and a dnsmasq per NAT network, supervised by netd</td><td>OVN routers: a shared HA edge router <code>gx-edge</code>, or per-project VPC routers <code>gxr-&lt;id&gt;</code>, each SNATing on a gateway chassis group</td></tr>
+<tr><td>Addresses</td><td>dnsmasq leases</td><td>Cluster IPAM in the store (<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/ipam.rs"><code>ipam.rs</code></a>), written into OVN port addresses</td></tr>
+</tbody>
+</table>
+</div>
+<p>Flow: the control plane’s network records
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/network.rs"><code>network.rs</code></a>)
+are the source of truth. The VM controller asks netd to attach each NIC
+(<code>attach_vm_port</code>: a tap or vhost-user port on the right bridge) before
+the launch and records it in <code>status.nics</code> first. netd reconciles the
+host from its own state database on start; the control plane re-sends
+the set of VMs that own ports whenever netd restarts. Provider networks
+map to physical networks through each host’s bridge mappings. Everything
+glidex creates in OVSDB, nftables and OVN is tagged, and only tagged
+objects are ever changed or deleted.</p>
+<p>Code: <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-netd"><code>glidex-netd</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ovs"><code>glidex-ovs</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ovn"><code>glidex-ovn</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/network.rs"><code>controller/network.rs</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/ovn.rs"><code>controller/ovn.rs</code></a>.
+Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/09-networking.md">09-networking.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a> §11.
+Operating it: <a href="../operator-guide/host-networking.html">Host networking</a>,
+<a href="../user-guide/networks.html">Networks</a>.</p>
+<h3 id="storage"><a class="header" href="#storage">Storage</a></h3>
+<p>A <strong>datastore</strong> is where disks live. Its record is cluster-wide; each
+node reports what it finds at it. Disks are reached through a driver
+that hands back a <strong>volume binding</strong>: a file (qcow2 or raw) or a raw
+block device.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Driver</th><th>Topology</th><th>Volumes</th><th>Privileged part</th></tr>
+</thead>
+<tbody>
+<tr><td><code>dir</code> (the built-in <code>local</code> is one)</td><td>node-local</td><td>files named by disk id in a directory on each node</td><td>none</td></tr>
+<tr><td><code>shared-dir</code></td><td>shared (NFS, CephFS, … mounted by the operator)</td><td>files every reaching node sees; one <strong>worker</strong> node acts on each disk; a file lock records who has a volume open</td><td>none</td></tr>
+<tr><td><code>lvm</code></td><td>node-local</td><td>LVM-thin volumes <code>gx-d-&lt;disk-id&gt;</code>; linked disks are thin snapshots of an image volume <code>gx-i-&lt;image-id&gt;</code></td><td><code>glidex-stord</code> creates, activates and removes volumes and hands the device to the <code>glidex</code> user</td></tr>
+</tbody>
+</table>
+</div>
+<p>A node-local disk binds to a node at creation or at its VM’s first
+placement, and pins that VM’s placement; a disk on a shared datastore
+binds to none, so its VM may run on any node that reaches the
+datastore. <strong>Images</strong> have one catalog record and a verified copy per
+node that needs one (<code>image_caches/&lt;image&gt;/&lt;node&gt;</code>), fetched from a node
+that already has it and checked against the digest; a shared datastore
+holding linked disks gets its own copy (<code>…/ds:&lt;datastore&gt;</code>). Disks can
+move between datastores.</p>
+<p>Code: <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/datastore"><code>datastore/</code></a>
+(<code>file.rs</code>, <code>lvm.rs</code>, <code>record.rs</code>, <code>probe.rs</code>, <code>manage.rs</code>),
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/images"><code>images/</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord"><code>glidex-stord</code></a>.
+Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md">24-storage.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md">10-images.md</a>.
+Operating it: <a href="../operator-guide/datastores.html">Datastores</a>,
+<a href="../user-guide/images-and-disks.html">Images and disks</a>.</p>
+<h3 id="console"><a class="header" href="#console">Console</a></h3>
+<pre><code class="language-text"> browser ─WebSocket─▶ glidex-ui ─ui.sock─▶ control plane ──▶ console.sock ◀── shim proxy thread ── PTY ── guest ttyS0/hvc0
+ gxctl ──VmService.Console (bidi RPC)──────▶     │                                  └──▶ console.log (rotated)
+                                                 └─(VM on another node)─ :8842 /cluster/v1/vms/{id}/console ─▶ that node
+</code></pre>
+<p>Each VM has one serial console on a PTY whose master the shim holds. A
+proxy thread in the shim owns the PTY, the console socket and the log:
+it fans output out to any number of clients and is the log’s only
+writer. New clients get the log replayed first (minus the terminal
+queries a guest leaves in it), and the listener outlives the PTY, so a
+dead guest’s last output is still visible. The browser gets a
+short-lived single-use ticket (<code>CreateConsoleTicket</code>), then opens
+<code>/vms/{id}/console/ws</code>; <code>api/vms.rs::console_ws</code> and the RPC share
+<code>service::vm::console_target</code>/<code>console_connect</code>. For a VM on another
+node, the server that authorized the request relays to that node.</p>
+<p>Code: <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-vm-shim/src/proxy.rs"><code>glidex-vm-shim/src/proxy.rs</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/vms.rs"><code>api/vms.rs</code></a>.
+Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/02-console.md">02-console.md</a>.
+Using it: <a href="../user-guide/console.html">Console</a>.</p>
+<h3 id="images-firmware-and-kernel-extraction"><a class="header" href="#images-firmware-and-kernel-extraction">Images, firmware and kernel extraction</a></h3>
+<ul>
+<li><strong>Cloud images</strong> come from a built-in catalog or a URL. The download
+pipeline streams to a temporary file while hashing, verifies the
+digest and image header, converts raw to qcow2, makes the file
+read-only and renames it into place
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/images/download.rs"><code>images/download.rs</code></a>).</li>
+<li><strong>Firmware</strong> (EDK2 for Cloud Hypervisor, OVMF for QEMU) is pinned
+and imported as firmware images
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/images/firmware.rs"><code>images/firmware.rs</code></a>).</li>
+<li><strong>Kernel images</strong> (kernel, initramfs, command line) for direct kernel
+boot can be extracted from a cloud image. The image’s filesystems are
+only ever read inside a short-lived <strong>extractor VM</strong>: a pinned kernel
+with an initramfs glidex builds boots with the image attached
+read-only and writes the boot files to a raw disk, which the host
+parses as a checked stream. The run goes through the same runner and
+unit sandbox as a VM
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/images/extractor.rs"><code>images/extractor.rs</code></a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/controller/extract.rs"><code>controller/extract.rs</code></a>).</li>
+<li>Firmware-booted guests get a NoCloud seed built per launch
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cloud_init.rs"><code>cloud_init.rs</code></a>)
+with the VM’s guest credential
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/credentials.rs"><code>credentials.rs</code></a>).</li>
+</ul>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md">10-images.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md">23-kernel-boot.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/08-credentials.md">08-credentials.md</a>.
+Using it: <a href="../user-guide/kernel-boot.html">Kernel boot</a>.</p>
+<h3 id="hypervisors"><a class="header" href="#hypervisors">Hypervisors</a></h3>
+<p>Hypervisor drivers
+(<a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/hypervisor"><code>hypervisor/</code></a>:
+<code>cloud_hypervisor.rs</code>, <code>qemu.rs</code>) are stateless. A driver turns a VM’s
+config into the full command line the shim runs, and performs runtime
+operations (observe, pause/resume, VFIO hot-plug) over the hypervisor’s
+socket with <code>glidex-hv-client</code>. Because everything is a path, a
+restarted control plane manages instances exactly as before. Design:
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md">04-hypervisors.md</a>.</p>
+<h3 id="devices"><a class="header" href="#devices">Devices</a></h3>
+<ul>
+<li><strong>PCI and VFIO</strong>: the control plane scans sysfs read-only
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/pci.rs"><code>pci.rs</code></a>);
+binding a device to <code>vfio-pci</code> (and SR-IOV VFs) is netd’s job, at
+boot through <code>glidex-vfio-boot.service</code> or on demand. VM units may
+open only the device nodes VMs use.</li>
+<li><strong>Topology</strong>: each node’s NUMA nodes, CPUs, per-node memory and
+hugepages, and the NUMA node of each device, as a small summary in
+the node’s replicated status
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/topology.rs"><code>topology.rs</code></a>);
+the full PCIe tree on request. The scheduler uses it for NUMA and
+dedicated-CPU policies.</li>
+<li><strong>Pools</strong>: <code>pci.pools</code> in the configuration groups devices (GPUs,
+NICs) that VMs ask for by count; tenants get shares of them
+(<code>tenant_device_pools</code>). Pools marked <code>prepare</code> are bound to
+<code>vfio-pci</code> on each node at start.</li>
+</ul>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md">22-host-topology.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md">27-gpu-vms.md</a>.
+Operating it: <a href="../operator-guide/pci-passthrough.html">PCI passthrough</a>,
+<a href="../operator-guide/host-resources.html">Host resources</a>.</p>
+<h3 id="identity"><a class="header" href="#identity">Identity</a></h3>
+<p>Every request ends in a <code>Principal</code>, and every login, whatever the
+source, ends in one external identity that <code>AuthService</code> maps to a
+user.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Source</th><th>How</th><th>Code</th></tr>
+</thead>
+<tbody>
+<tr><td>Local socket</td><td><code>api.sock</code> peer uid → a <code>unix:</code> identity</td><td><code>auth/mod.rs</code></td></tr>
+<tr><td>Local accounts</td><td>The <code>pam</code> connector sends the password to <code>glidex-authd</code>, which runs PAM as root and answers yes or no</td><td><a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-authd"><code>glidex-authd</code></a>, <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/directory"><code>directory/</code></a></td></tr>
+<tr><td>OIDC connectors</td><td>Authorization code flow with PKCE against any OIDC provider, or a preset (Google, JumpCloud); gxctl uses the device grant</td><td><code>directory/oidc.rs</code> (Glidex’s adapter over <a href="https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-auth/src/oidc.rs"><code>glidex-auth</code>’s OIDC</a>), <code>directory/presets/</code></td></tr>
+<tr><td>Directory as provider</td><td>Each directory is itself an OpenID provider with its own signing keys and JWKS; its access tokens are accepted as bearer tokens</td><td><code>directory/issuer.rs</code>, <code>directory/op.rs</code>, <code>api/op.rs</code></td></tr>
+<tr><td>Provisioning</td><td>SCIM 2.0 endpoints (<code>/scim/v2/c/{id}/…</code>) for an IdP to push users and groups; pull sync reads them from the IdP’s directory on the leader</td><td><code>directory/scim.rs</code>, <code>api/scim.rs</code>, <code>directory/sync.rs</code></td></tr>
+<tr><td>Passkeys</td><td>WebAuthn registration and sign-in; a passkey is one of a user’s identities</td><td><code>auth/passkeys.rs</code>, <code>auth/webauthn.rs</code>, <code>api/passkeys.rs</code></td></tr>
+<tr><td>Workload federation</td><td>A tenant trusts an external JWT issuer (CI systems, Kubernetes); <code>POST /auth/exchange</code> (RFC 8693) swaps a matching token for a short-lived token of a service account</td><td><code>directory/federation.rs</code>, <code>directory/exchange.rs</code></td></tr>
+<tr><td>Tokens</td><td>Browser sessions (cookie); personal and service-account tokens (<code>gxt_…</code>), stored only as hashes</td><td><code>auth/store.rs</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Tenancy sits on top: <strong>directories</strong> hold users, teams and connectors;
+<strong>tenants</strong> own projects and need an <strong>admission</strong> on a cluster to
+allocate there; a cluster can trust another organization’s directory
+(<code>trust.rs</code>, <code>directory/peer.rs</code>). Authorization is Cedar over
+principals, tenants, projects, hosts and resources.</p>
+<p>Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md">11-security.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md">19-tenancy.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md">25-passkeys.md</a>,
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/17-gxctl-auth.md">17-gxctl-auth.md</a>.
+Operating it: <a href="../operator-guide/authentication.html">Authentication</a>,
+<a href="../operator-guide/access-control.html">Access control</a>,
+<a href="../operator-guide/workload-federation.html">Workload federation</a>.</p>
+<h3 id="metering"><a class="header" href="#metering">Metering</a></h3>
+<p>Each node samples its VMs and disks every <code>metering.sample_secs</code>: CPU
+and memory from each VM unit’s cgroup (the unit turns on accounting),
+disk I/O from the hypervisor’s counters, network traffic from OVS bridge
+ports, external traffic from NAT counters (conntrack accounting on OVN
+gateways), stored size from the volumes. A ledger turns readings into
+hourly usage rows exactly once: deltas and the cursors that produced
+them commit in one transaction. In a cluster each node accumulates
+locally and ships closed hours to the leader (<code>/cluster/v1/ledger</code>),
+which merges them and rolls up daily totals, 5-minute rate series and
+billing-month percentiles. Usage is read through <code>UsageService</code> and
+<code>MetricsService</code> (<code>/usage</code>, <code>/vms/{id}/stats</code>).</p>
+<p>Code: <a href="https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/metering"><code>metering/</code></a>
+(<code>sampler.rs</code>, <code>sources.rs</code>, <code>net.rs</code>, <code>ledger.rs</code>, <code>rates.rs</code>, <code>retention.rs</code>, <code>query.rs</code>).
+Design: <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md">13-metering.md</a>.
+Using it: <a href="../user-guide/usage.html">Usage</a>.</p>
+<h2 id="life-of-a-vm-create"><a class="header" href="#life-of-a-vm-create">Life of a VM create</a></h2>
+<p>A user creates a VM from an image and starts it. Below, a three-server
+cluster with the VM placed on an agent; on a standalone host the
+forwarding, Raft and watch steps fall away and everything happens in one
+process.</p>
+<pre><code class="language-text"> UI / gxctl        server A          leader B             agent C               shim / hypervisor
+ (follower)
+   │ CreateVm ────▶ authenticate
+   │                gate: write ───▶ authenticate (fwd principal)
+   │                                 service::vm::create_vm: Cedar checks
+   │                                 VmManager::create_vm_with: admission,
+   │                                 scheduler::pick_node → C
+   │                                 Db::write: VM + disk + event + IPAM
+   │                                 ── Raft ──▶ A, others apply
+   │ ◀── 202 / wait ───────────────  audit
+   │                                    ── watch :8842 ──▶ cache applies
+   │                                                       disk ctrl: image copy,
+   │                                                       make root disk
+   │                                                       VM ctrl: seed, netd ports,
+   │                                                       launch.json, status.instance,
+   │                                                       start glidex-vm@&lt;id&gt; ──▶ shim: instance.json,
+   │                                                                                 spawn hypervisor,
+   │                                                                                 READY
+   │                                                       observe: Running ◀───────
+   │                                    ◀─ status-write ── 
+   │ ◀── watch event / wait answers ── (leader writes status; replicated)
+</code></pre>
+<ol>
+<li><strong>Client.</strong> The web UI calls <code>VmService.CreateVm</code> over gRPC-Web
+(<code>createVm</code> in <code>crates/glidex-ui/ui/src/api.ts</code>); <code>glidex-ui</code> proxies
+<code>/api/*</code> to the control plane’s <code>ui.sock</code>. <code>gxctl</code>’s <code>create</code> command calls
+the same RPC through its generated client
+(<code>src/bin/gxctl/vm.rs</code>) over <code>api.sock</code> or HTTPS <code>:8841</code>. A REST
+client would <code>POST /vms</code> with the same message as JSON.</li>
+<li><strong>Listener and authentication.</strong> <code>serve.rs</code> tags the request with its
+listener and peer; <code>api::authenticate</code> resolves the principal (the
+session cookie, the peer uid, or a token).</li>
+<li><strong>Cluster gate.</strong> <code>CreateVm</code> is a <code>WRITE</code> in the operation table, so
+on a follower <code>gate::cluster_gate</code> forwards it to the leader over
+<code>:8842</code> with the principal attached. The leader runs the rest.</li>
+<li><strong>RPC adapter.</strong> <code>api/rpc/mod.rs</code> finds the operation (action
+<code>createVm</code>) and builds the <code>Call</code>; <code>api/rpc/vm.rs</code> calls
+<code>service::vm::create_vm</code>.</li>
+<li><strong>Service.</strong> <code>create_vm</code> checks Cedar for the compound request:
+<code>createVm</code> on the project, then <code>useDisk</code>, <code>useCredential</code>,
+<code>attachNetwork</code>/<code>useNetwork</code>, <code>readImage</code>, <code>useHostPath</code> and device
+pools for everything the request names, and that the project’s
+tenant is admitted here. It builds the <code>VmConfig</code> and calls
+<code>VmManager::create_vm_with</code>.</li>
+<li><strong>Admission and placement.</strong> Under the VM cache’s write lock,
+<code>state.rs</code> validates, checks quotas and claims, plans the root disk
+on the default datastore, and places the VM: on a standalone host
+on <code>local</code>, in a cluster with <code>scheduler::pick_node</code>. Disks bind to
+the chosen node (unless shared). One <code>Commit</code> writes the VM
+(<code>spec.power</code> as requested, <code>stopped</code> by default), its disks, the
+<code>Created</code> event and IPAM reservations.</li>
+<li><strong>Store.</strong> <code>Db::write</code> commits locally on a standalone host; in a
+cluster the leader proposes the write set to Raft and returns once it
+is committed and applied. The audit entry is written; the call
+answers at once, or with <code>wait</code> once the VM converges
+(<code>service::vm::respond</code> → <code>wait_converged</code>).</li>
+<li><strong>Reaching the node.</strong> Servers see the change through the store’s
+subscription (<code>VmManager::cache_sync</code>); the agent through its watch
+(<code>cluster/agent.rs</code>), which applies it to its cache. Both queue the
+disk and the VM on the local work queue; only the node the VM is
+placed on acts (<code>VmManager::is_local</code>).</li>
+<li><strong>Disk.</strong> The disk controller makes sure the node has a verified copy
+of the image (<code>controller/image_cache.rs</code>), then has the datastore
+driver create the root disk (a qcow2 overlay, or an LVM-thin snapshot
+through stord). Its status write goes to the leader
+(<code>/cluster/v1/status-write</code>).</li>
+<li><strong>Start.</strong> Once the spec says <code>running</code> (in the request, or after a
+later <code>StartVm</code>), <code>controller/vm.rs</code> waits for <code>DisksReady</code> and
+<code>NetworkReady</code>, establishes that no instance is live, then:
+regenerates the cloud-init seed; for each NIC records it in
+<code>status.nics</code> and asks netd to attach the port; writes
+<code>launch.json</code> with the driver’s command line; records the intent in
+<code>status.instance</code> (instance id, boot id, generation); and asks the
+runner (<code>instance/runner.rs</code>) to start <code>glidex-vm@&lt;id&gt;</code> over D-Bus.</li>
+<li><strong>Shim.</strong> <code>glidex-vm-shim</code> validates <code>launch.json</code>, writes
+<code>instance.json</code>, starts the console proxy, spawns the hypervisor on a
+fresh PTY, waits for its API socket, binds <code>shim.sock</code> and tells
+systemd it is ready (<code>supervisor.rs</code>). The control plane opens a
+<code>pidfd</code> exit watch on the shim and the hypervisor.</li>
+<li><strong>Status back.</strong> The next round observes the guest through the
+hypervisor socket (Cloud Hypervisor <code>vm.info</code>, QEMU <code>query-status</code>),
+sets phase <code>Running</code>, <code>Ready=True</code> and <code>observed_generation</code>, and
+sends the status to the leader, which checks and commits it. The
+change replicates; watchers (<code>WatchService.Watch</code>, used by the UI’s
+<code>live.tsx</code>, and <code>GET /watch</code>) get a <code>modified</code> event, and a waiting
+call answers <code>200</code> with the VM.</li>
+</ol>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
+<ul>
+<li><a href="design-decisions.html">Design decisions and trade-offs</a></li>
+<li><a href="algorithms.html">Algorithms</a></li>
+<li><a href="organization.html">Repository and code organization</a></li>
+<li><a href="../concepts.html">Concepts</a> for the user-facing vocabulary</li>
+<li>The design specs index:
+<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md">spec/README.md</a></li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/organization.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/design-decisions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/organization.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/design-decisions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

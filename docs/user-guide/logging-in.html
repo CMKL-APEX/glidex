@@ -1,0 +1,621 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Logging in - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-ef487c04.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/user-guide/logging-in.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="logging-in"><a class="header" href="#logging-in">Logging in</a></h1>
+<p>How you prove who you are depends on where you connect from:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>From</th><th>How</th></tr>
+</thead>
+<tbody>
+<tr><td>The web UI</td><td>Your account’s password (PAM), single sign-on (OIDC, Google, JumpCloud) or a passkey, whichever the site enables</td></tr>
+<tr><td><code>gxctl</code> on a Glidex host</td><td>Nothing: the local socket knows your Unix account</td></tr>
+<tr><td><code>gxctl</code> on another machine</td><td><code>gxctl auth login</code> once; it saves a token in a login profile</td></tr>
+<tr><td>Scripts and the API</td><td>An API token, sent as <code>Authorization: Bearer &lt;token&gt;</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Which login methods exist, and who may log in, is set by the operator
+(see <a href="../operator-guide/authentication.html">Authentication</a>).</p>
+<h2 id="the-web-ui"><a class="header" href="#the-web-ui">The web UI</a></h2>
+<p>Open <code>https://&lt;host&gt;:5173</code> (<code>gxctl ui</code> prints the address it knows). The
+sign-in page shows what the site enables:</p>
+<ul>
+<li><strong>Username</strong> and <strong>Password</strong>, then <strong>Sign in</strong>: a local account of the
+host, or of the site’s PAM setup. By default the account must be in the
+<code>glidex-users</code> group.</li>
+<li><strong>Sign in with &lt;provider&gt;</strong> (or <strong>Sign in with SSO</strong>): your
+organisation’s single sign-on, one button per provider the site
+offers, such as its Google Workspace or JumpCloud.</li>
+<li><strong>Sign in with a passkey</strong>: a passkey you added earlier (see
+<a href="#passkeys">Passkeys</a>). There is no user name to type.</li>
+</ul>
+<p>If the page says <em>No login method is enabled on this host</em>, ask an
+administrator, or use <code>gxctl</code> on the host.</p>
+<p>Some single sign-on providers create your Glidex account for you ahead
+of time (<em>provisioning</em>): the identity provider pushes it over SCIM, or
+Glidex reads it from your organisation’s Google Workspace (a <em>directory
+sync</em>). Through such a provider:</p>
+<ul>
+<li>only people it provisioned can sign in; anyone else is refused
+(<code>login_not_allowed</code>), even with an invitation. With a directory sync,
+that is the members of the Google groups your operator chose;</li>
+<li>your first sign-in is matched to the account it made, by your
+provider’s id or, over SCIM, your verified email address;</li>
+<li>your name and email come from the provider, and if the provider
+deactivates you, you can’t sign in until it reactivates you. With a
+directory sync, being suspended in Google or taken out of the groups
+counts as deactivated. An administrator may also disable you in
+Glidex; then only an administrator can enable you again.</li>
+</ul>
+<p>A directory sync reads Google every 15 minutes unless the operator chose
+otherwise, so after you are added to a group (or come back), it can take
+that long before you can sign in.</p>
+<p>In a cluster, open a server’s web UI. Opening an agent’s sends you to a
+server’s, at that agent’s Host page; sign in there.</p>
+<p>The first time, your browser may warn that the certificate is not
+trusted: the host made its own. Compare the SHA-256 fingerprint the
+browser shows with the one your operator gives you before you accept it
+(see <a href="../operator-guide/tls.html">TLS</a>). If the host is on a Tailscale
+tailnet and your operator turned on its Tailscale certificate, open the
+UI at its <code>https://&lt;node&gt;.&lt;tailnet&gt;.ts.net:5173</code> address instead: the
+browser trusts that one, with no warning (see
+<a href="../operator-guide/tls.html#tailscale-certificates">Tailscale certificates</a>).</p>
+<p>A browser session ends after 30 minutes without activity and after 12
+hours at most, unless the operator changed these. <strong>Log out</strong>, in the
+header, ends it now. Some actions (changing policies, host networking or
+the cluster) need a recent login: the UI then asks you to sign in again
+(<em>Confirm it’s you</em>) and retries the action. <strong>Confirm with a passkey</strong>
+answers it too.</p>
+<p>The header also shows who you are and the project you are working in;
+see <a href="projects.html#choosing-a-project">Projects</a>.</p>
+<h3 id="invitations"><a class="header" href="#invitations">Invitations</a></h3>
+<p>An administrator may let you in with an invitation: a link of the form
+<code>https://&lt;host&gt;:5173/invite/&lt;id&gt;#&lt;secret&gt;</code>. Open it in your browser. The
+page says which tenant and role it is for, and which address and
+provider to sign in with; <strong>Sign in with &lt;provider&gt;</strong> takes you
+there. Sign in with that address: another account doesn’t take the
+invitation.</p>
+<ul>
+<li>A link works once, for one person, and expires (after 7 days unless
+the administrator chose otherwise).</li>
+<li>Keep it to yourself until you have used it: it works like a password.</li>
+<li>If the page says the invitation was already used, revoked or has
+expired, ask for a new one.</li>
+</ul>
+<h3 id="your-account"><a class="header" href="#your-account">Your account</a></h3>
+<p>Click your name in the header and choose <strong>Account settings</strong> for
+<strong>Your account</strong>. Its <strong>Sign-in
+methods</strong> card lists the ways you can sign in as yourself, for example a
+local password and a Google account; each gives the same roles.</p>
+<ul>
+<li>Under <em>Add a way to sign in</em>, pick one of the site’s single sign-on
+providers and sign in there; it is added to you. This needs a recent
+login. A provider that provisions its users, by SCIM or a directory
+sync, can’t be added: its sign-ins belong to the accounts it manages.</li>
+<li><strong>Remove</strong> takes one away. You can’t remove your last one.</li>
+</ul>
+<p>Signing in a second way without adding it first makes a second, separate
+user. If a sign-in already belongs to another user, an administrator
+must remove it from that user before you can add it.</p>
+<h3 id="passkeys"><a class="header" href="#passkeys">Passkeys</a></h3>
+<p>A passkey lets you sign in with your device’s fingerprint, face or PIN,
+or a security key, instead of a password. When the site has passkeys
+on, <strong>Your account</strong> has a <strong>Passkeys</strong> card; it says so if your browser
+can’t make passkeys.</p>
+<p>To add one:</p>
+<ol>
+<li>Sign in another way, and open <strong>Your account</strong>.</li>
+<li>Under <strong>Passkeys</strong>, type a <strong>Name</strong> (such as <em>work laptop</em>) and click
+<strong>Add a passkey</strong>. If your login isn’t recent, the UI asks you to
+sign in again first.</li>
+<li>Confirm in your browser’s or device’s prompt.</li>
+</ol>
+<p>The card lists your passkeys with when each was made and last used, and
+<em>synced</em> for one your device keeps in sync across your devices. It also
+appears as <em>Passkey</em> under <strong>Sign-in methods</strong>. <strong>Rename</strong> changes its
+name; <strong>Remove</strong> deletes it. You can have up to 10.</p>
+<p>To sign in, click <strong>Sign in with a passkey</strong> on the login page and pick
+the passkey in your browser’s prompt. Closing the prompt just cancels.</p>
+<ul>
+<li>Keep another sign-in method, or a second passkey. You can’t remove the
+one that would leave a single passkey as your only way in.</li>
+<li>If the card says passkeys made here work under this page’s name only,
+a passkey you add works only at that address of the web UI. Open the
+UI at the same address to use it.</li>
+<li>If you lose a device, sign in another way and remove its passkey. If
+you have no way left to sign in, ask an administrator.</li>
+<li><code>gxctl</code> doesn’t use passkeys; use a password, single sign-on or a
+token there.</li>
+</ul>
+<h3 id="your-organizations-sign-in"><a class="header" href="#your-organizations-sign-in">Your organization’s sign-in</a></h3>
+<p>A host can serve the sign-in of several organizations, each its own
+<em>directory</em> with its own people. Type your work email under <em>Signing in
+with your organization?</em> on the sign-in page: it takes you to your
+organization’s page, which offers only its ways to sign in. Your
+administrator can also give you that page’s address,
+<code>https://&lt;host&gt;:5173/login/&lt;directory&gt;</code>.</p>
+<p>A cluster can also admit a tenant of another organization, whose people
+sign in at their own organization’s Glidex. Its sign-in page then has a
+<strong>Sign in with &lt;tenant&gt;</strong> button for each such organization (with
+<em>at &lt;host&gt;</em> under it). It takes you to your organization’s sign-in
+and brings you back signed in to the cluster. Signing out there signs
+you out of the cluster too, within a minute. Logging out of the cluster
+signs you out of the cluster only: you stay signed in at your
+organization.</p>
+<h3 id="several-accounts-in-one-browser"><a class="header" href="#several-accounts-in-one-browser">Several accounts in one browser</a></h3>
+<p>If you have accounts in several directories (say, at your university
+and at a research partner), your browser can stay signed in to all of
+them and switch between them. Click your name in the header:</p>
+<ul>
+<li><strong>Switch to</strong> lists your other accounts. Click one to use it; the page
+starts over as that account, in every open tab.</li>
+<li><strong>Add another account</strong> keeps the one you’re using and opens the
+sign-in page. Sign in to another directory; both are then in the list.</li>
+<li><strong>Sign out of all accounts</strong> signs out every one and empties the list.</li>
+</ul>
+<p><strong>Log out</strong> signs out only the account you’re using. Its directory stays
+in the list, marked <em>signed out</em>, and so does one whose session ended:
+click it to sign in there again. Under <strong>Account settings</strong>, <em>Your
+accounts in this browser</em> lists them all; <strong>Remove</strong> signs one out and
+takes it off the list. The sign-in page lists them too, so you can
+switch back without signing in again.</p>
+<p>You can hold up to 5 accounts, one per directory: signing in to a
+directory you already have replaces that account. The list is kept only
+in your browser: nobody else sees it, and the host keeps no record of
+which accounts you hold together. Each account keeps its own session
+limits, and switching is not a new sign-in, so an action that needs a
+recent login may still ask you to sign in again. On a computer you
+share, use <strong>Sign out of all accounts</strong> when you’re done.</p>
+<h2 id="gxctl-on-a-glidex-host"><a class="header" href="#gxctl-on-a-glidex-host">gxctl on a Glidex host</a></h2>
+<p>On a host that runs the control plane, <code>gxctl</code> talks to its Unix socket
+(<code>/run/glidex-cp/api.sock</code>) and the control plane identifies you by your
+Unix account. There is no login and no token:</p>
+<pre><code class="language-bash">gxctl whoami
+</code></pre>
+<p>You need to be in the <code>glidex-users</code> group (log out and back in after
+being added). Members of <code>glidex-admin</code> are administrators.</p>
+<p><code>--socket &lt;path&gt;</code> (or <code>GLIDEX_SOCKET</code>) picks another socket. On a cluster
+<em>agent</em> node there is no local API: log in to a server node from there
+as from any other machine (<code>gxctl auth login --url https://&lt;server&gt;:8841 …</code>, which runs on the agent itself).</p>
+<h2 id="gxctl-from-another-machine"><a class="header" href="#gxctl-from-another-machine">gxctl from another machine</a></h2>
+<p><code>gxctl auth login</code> connects to a control plane over HTTPS, checks its
+certificate, gets you a token and saves the lot as a named <em>login
+profile</em> in <code>~/.config/glidex/config.json</code> (mode 0600). Later commands
+use the current profile without asking again.</p>
+<p>Pick a profile name and a way to prove who you are:</p>
+<pre><code class="language-bash"># Your account's password (asked for, never on the command line)
+gxctl auth login --url https://host.example.org:8841 --profile lab --pam-user alice
+
+# Single sign-on: open the link it prints and enter the code
+gxctl auth login --url https://host.example.org:8841 --profile lab --oidc
+
+# An API token you already have (typed hidden, or piped)
+gxctl auth login --url https://host.example.org:8841 --profile ci --token &lt; token.txt
+
+# Your directory: approve the login in the web UI, however you sign in there
+gxctl auth login --url https://host.example.org:8841 --profile lab --directory
+</code></pre>
+<p>With <code>--directory</code>, gxctl prints a link to the web UI’s <strong>Device login</strong>
+page and a code. Open it, sign in the way you usually do (password,
+single sign-on, a passkey), check that the code matches, and approve.
+gxctl then holds no long-lived token: it keeps a <em>refresh token</em> for
+your directory and asks it for a short-lived access token for this
+cluster (one hour by default) whenever the one it holds is about to
+expire. The refresh token lasts while you keep using it (30 days unused
+at most; 30 to 90 days in all, as the operator’s sign-in providers
+allow), and ends when you or an administrator end your sessions, when
+your account is disabled, or at <code>gxctl auth logout</code>.</p>
+<ul>
+<li><code>--connector &lt;id&gt;</code> picks one of several sign-in providers. A Google
+provider works with <code>--oidc</code> only if the operator set it up for
+device logins; otherwise it answers <code>device_flow_unsupported</code>.</li>
+<li><code>--name &lt;name&gt;</code> names the token it creates (default <code>gxctl@&lt;profile&gt;</code>),
+so you can tell your machines apart in <code>gxctl token list</code>.</li>
+<li><code>--directory [id]</code> logs in at one of the host’s directories (<code>local</code>,
+the default, until a host serves several).</li>
+<li><code>--days N</code> asks for a shorter or longer <code>--pam-user</code> token, within the
+site’s limit (30 days unless the operator changed it). An <code>--oidc</code> login
+gets a token valid for one day.</li>
+<li>For a cluster, repeat <code>--url</code> with several server nodes; <code>gxctl</code> tries
+them in turn.</li>
+<li>Without <code>--profile</code>, <code>--url</code> refreshes the profile that already points
+at that host; for a new host add <code>--save</code> to name the profile after it:
+a host name’s first label (<code>gpu-dev2.example.net</code> gives <code>gpu-dev2</code>),
+or a whole IP address with dashes (<code>192.0.2.10</code> gives <code>192-0-2-10</code>).</li>
+</ul>
+<p>The first profile you create becomes the current one; <code>--use</code> makes a
+later one current. Run the same <code>auth login --profile lab</code> again when its
+token expires.</p>
+<h3 id="certificates-and-fingerprint-pinning"><a class="header" href="#certificates-and-fingerprint-pinning">Certificates and fingerprint pinning</a></h3>
+<p><code>gxctl</code> verifies the control plane’s certificate. A certificate from a
+CA your machine trusts just works. A self-signed one (the default) is
+not trusted, and <code>auth login</code> shows its fingerprint:</p>
+<pre><code class="language-text">the certificate of host.example.org is not trusted by this system:
+  SHA-256 AB:CD:…   (the control plane prints this line at startup)
+  reported by the server as its own: it matches what we are being handed (…)
+Trust this exact certificate for profile 'lab'? [y/N]:
+</code></pre>
+<p>Compare the fingerprint with the one your operator gave you through
+another channel, then answer <code>y</code>. The profile <em>pins</em> that certificate:
+from then on <code>gxctl</code> accepts exactly it for this profile, and refuses to
+connect if it changes. If the line says the two do not match, stop and
+ask the operator: something between you and the host is presenting its
+own certificate.</p>
+<p>Without a terminal (CI), there is no prompt; give the fingerprint up
+front:</p>
+<pre><code class="language-bash">gxctl auth login --url https://host.example.org:8841 --profile ci \
+  --pin sha256/&lt;fingerprint&gt; --token &lt; token.txt
+</code></pre>
+<p>When the operator legitimately replaces the certificate (for example
+after rotating a cluster’s CA), confirm the new fingerprint with them and
+re-pin:</p>
+<pre><code class="language-bash">gxctl auth login --profile lab --pin sha256/&lt;new fingerprint&gt; --rebind
+</code></pre>
+<p><code>--rebind</code> is also what lets a profile log in to a machine that now
+answers for a different cluster than the one it first saw; without it
+<code>gxctl</code> refuses.</p>
+<p><code>gxctl auth trust list</code> shows a profile’s pins and extra CAs.</p>
+<!-- TODO(verify): `auth trust fetch` and `auth trust remove <pin>|--all` are documented in gxctl's usage text, but auth_trust reads its subcommand from the wrong argument index, so only `list` works today. Add them here once fixed. -->
+<p>Instead of a profile, a one-off <code>--url</code> connection trusts a self-signed
+certificate through <code>GLIDEX_CA_CERT</code>, the path of a PEM copy of the
+host’s certificate that your operator provides.</p>
+<h3 id="a-cluster-of-another-organization"><a class="header" href="#a-cluster-of-another-organization">A cluster of another organization</a></h3>
+<p>If your tenant uses a cluster run by another organization, log in to it
+with your own directory’s account: first make a profile for your
+directory’s host (as above, <code>--directory</code>), then one for the cluster,
+reaching your directory through that first profile:</p>
+<pre><code class="language-bash">gxctl auth login --profile acme --url https://id.acme.example:8841 --directory local
+gxctl auth login --profile north --url https://north.example.org:8841 --directory local --via acme
+</code></pre>
+<p>The second login asks you to approve it at your directory, like the
+first. The <code>north</code> profile then holds a login of its own at your
+directory, and gets access tokens for the north cluster only; its
+refreshes and <code>auth logout --revoke</code> go to your directory through
+<code>acme</code>’s connection and certificate.</p>
+<h3 id="managing-profiles"><a class="header" href="#managing-profiles">Managing profiles</a></h3>
+<pre><code class="language-bash">gxctl auth status             # the profile in use: target, cluster, trust, token
+gxctl auth profiles --all     # every profile; * marks the current one
+gxctl auth use lab            # make 'lab' current
+gxctl --profile ci list       # use another profile for one command
+gxctl auth logout             # forget this profile's token (target and pins stay)
+gxctl auth logout --revoke    # revoke it on the server first, then forget it
+gxctl auth profiles remove lab
+</code></pre>
+<p><code>auth profiles remove &lt;name&gt;</code> deletes a profile from the file. It refuses
+one that still holds a token, since the token stays valid on the server:
+run <code>gxctl auth logout --profile &lt;name&gt; --revoke</code> first, or add
+<code>--forget-token</code> to drop it unrevoked (revoke it later from <strong>Tokens</strong> or
+<code>gxctl token revoke</code>). Removing the current profile leaves none current;
+pick another with <code>gxctl --profile &lt;other&gt; auth use &lt;other&gt;</code>.</p>
+<p><code>GLIDEX_PROFILE</code> does what <code>--profile</code> does. <code>--url</code> on a command
+overrides the target for that run but keeps the profile’s trust; the
+profile’s token is only sent if the URL points at one of the profile’s
+own hosts.</p>
+<p>Once the profile file holds any profile, <code>gxctl</code> uses profiles instead of
+the local socket. To reach the local socket on a host where you also
+keep profiles, run it with the file switched off:</p>
+<pre><code class="language-bash">GLIDEX_CONFIG= gxctl whoami
+</code></pre>
+<p><code>GLIDEX_CONFIG=&lt;path&gt;</code> reads profiles from another file.</p>
+<!-- TODO(verify): after `gxctl auth use -` (clear the current profile) every gxctl invocation fails with "no current profile; choose one with --profile", including `auth use`; recover with `gxctl --profile <name> auth use <name>`. Check whether this is intended before documenting `auth use -`. -->
+<h3 id="older-single-token-login"><a class="header" href="#older-single-token-login">Older single-token login</a></h3>
+<p><code>gxctl --url https://host.example.org:8841 login --oidc</code> (or
+<code>login --token</code>) still works when you have no profiles: it saves one
+token in <code>~/.config/glidex/token</code> and <code>gxctl --url …</code> sends it.
+<code>logout [--revoke]</code> removes it. Profiles are the better choice: they
+remember the target and pin its certificate.</p>
+<p><code>GLIDEX_TOKEN</code>, when set, is sent instead of any saved token.</p>
+<h2 id="api-tokens"><a class="header" href="#api-tokens">API tokens</a></h2>
+<p>An API token lets a script, CI job or another tool act through the API.
+There are two kinds:</p>
+<ul>
+<li><strong>Personal</strong>: acts as you, and can never do more than you can. Give it
+roles to narrow it further (only <code>viewer</code> in project <code>lab</code>, say); without
+roles it can do everything you can.</li>
+<li><strong>Service account</strong>: belongs to a project, not a person, so it keeps
+working when people leave. It can only do what its roles in that
+project allow; without roles it can do nothing. Creating one needs the
+project’s <code>owner</code> role.</li>
+</ul>
+<p>Tokens expire: after 90 days unless you ask otherwise, at most 365
+(the operator sets both). The secret is shown once, when you create
+the token; Glidex keeps only a hash of it.</p>
+<h3 id="web-ui"><a class="header" href="#web-ui">Web UI</a></h3>
+<p><strong>Tokens</strong> in the header (shown when you are signed in with an account,
+not with a token):</p>
+<ol>
+<li><strong>+ Create Token</strong>.</li>
+<li>Enter a <strong>Name</strong> and <strong>Expires in (days)</strong>. For a service account,
+choose <strong>Kind</strong>: <em>Service account of &lt;project&gt;</em> (offered if you own
+the selected project).</li>
+<li><strong>+ Add role</strong> for each role, and pick its project, or leave none.</li>
+<li><strong>Create Token</strong>, then <strong>Copy</strong> the token and store it in a secret
+manager or a file only you can read. It is not shown again.</li>
+</ol>
+<p>The table lists your tokens with their roles, expiry and when they were
+last used; <strong>Revoke</strong> ends one immediately.</p>
+<h3 id="gxctl"><a class="header" href="#gxctl">gxctl</a></h3>
+<pre><code class="language-bash">gxctl token create laptop --days 30                                 # personal, all your rights
+gxctl token create readonly --role viewer@lab                       # personal, narrowed
+gxctl token create ci --service-account --project lab --role editor # service account
+gxctl token list
+gxctl token revoke &lt;token-id&gt;
+</code></pre>
+<p><code>--role ROLE[@PROJECT]</code> repeats; roles are <code>viewer</code>, <code>operator</code>,
+<code>editor</code>, <code>owner</code> (see <a href="projects.html#roles">Roles</a>). A service account’s
+roles apply in its own project; without <code>--project</code> it goes into the
+project selected with <code>--project</code> or your default project.</p>
+<p>A token works only on the cluster where you make it. If your tenant also
+uses clusters of other organizations, <code>--cluster &lt;cluster-id&gt;</code> (repeat
+it) lets the token work on those as well, and <code>--all-clusters</code> on every
+cluster your tenant uses (<code>gxctl tenant clusters &lt;tenant&gt;</code> lists them).
+Those clusters receive the token’s hash with their next update from your
+directory, within a minute; revoking it reaches them the same way. Ask
+for as few as you need: a cluster that can check a token could also
+replay it to the others it lists.</p>
+<h3 id="using-a-token"><a class="header" href="#using-a-token">Using a token</a></h3>
+<pre><code class="language-bash">export GLIDEX_TOKEN=&lt;token&gt;
+gxctl --url https://host.example.org:8841 whoami
+
+curl --cacert host.crt -H "Authorization: Bearer $GLIDEX_TOKEN" \
+  https://host.example.org:8841/auth/whoami
+</code></pre>
+<p>Or store it in a profile: <code>gxctl auth login --profile ci --token</code>. The
+REST calls are <code>GET /tokens</code>, <code>POST /tokens</code> and <code>DELETE /tokens/{id}</code>
+(<a href="../api/rest.html">REST API</a>).</p>
+<p>If a token leaks, revoke it at once and create a new one.</p>
+<h2 id="who-am-i"><a class="header" href="#who-am-i">Who am I?</a></h2>
+<p><code>gxctl whoami</code> (or <code>gxctl auth whoami</code>) shows how the control plane sees
+you:</p>
+<pre><code class="language-text">  User:     alice (&lt;user-id&gt;)
+  Method:   token via https://host.example.org:8841
+  Token:    gxctl@lab (&lt;token-id&gt;)
+  Teams:    -
+  Host roles: -
+  Default project: lab (&lt;project-id&gt;)
+  Project roles:
+    lab                  role.editor    via user:&lt;user-id&gt;
+</code></pre>
+<p><code>Method</code> is <code>peer</code> on the local socket and <code>token</code> whenever a token is
+sent (as <code>gxctl</code> does from a profile); a web UI session is <code>pam</code>, <code>oidc</code>
+or <code>passkey</code>. The user id is what others need to add
+you to a project. Over the API: <code>GET /auth/whoami</code>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../user-guide/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../user-guide/projects.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../user-guide/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../user-guide/projects.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
