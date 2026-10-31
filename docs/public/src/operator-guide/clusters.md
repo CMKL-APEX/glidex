@@ -498,6 +498,43 @@ servers until they are upgraded. If users sign in with passkeys under
 more than one of these names, set their domain as well (see
 [Passkeys](authentication.md#the-passkeys-domain)).
 
+### Behind a load balancer or tunnel
+
+Besides `cluster.ui_url`, a load balancer in front of several servers
+needs these:
+
+- **The same build on every server.** The UI's page names its script
+  files by a hash of their contents, so a page from one server can't load
+  its scripts from a server with another build (`404` on
+  `/assets/index-….js`). Two hosts building the same commit can still
+  produce different files. Build once and install that build everywhere
+  (`glidex-install --prebuilt` from a workspace holding it), and turn on
+  session affinity by cookie in the load balancer, which also covers a
+  rolling upgrade.
+- **Sign-ins per server.** A password (PAM) sign-in belongs to the server
+  that checked it: the same Unix account on two servers is two sign-in
+  methods, and a sign-in on a server where the account isn't linked yet
+  makes a new user without roles. Link each server's sign-in to the user
+  once, or give the roles to each user.
+- **The browser's address.** A tunnel daemon on the server (Cloudflare's
+  `cloudflared`) connects to the UI from `127.0.0.1`. Set
+  `GLIDEX_UI_CLIENT_IP_HEADER` to the header it puts the browser's
+  address in, so the audit log and per-client rate limits see users, not
+  the tunnel:
+
+  ```ini
+  # sudo systemctl edit glidex-ui
+  [Service]
+  Environment=GLIDEX_UI_CLIENT_IP_HEADER=CF-Connecting-IP
+  ```
+
+  The header counts only on connections from the host itself, so a
+  browser can't choose its own address with it.
+- **Scripts the load balancer adds.** The UI's Content-Security-Policy
+  allows its own scripts only. A script a proxy injects into the page,
+  such as Cloudflare's Web Analytics beacon, is blocked and logged in the
+  browser's console; turn the injection off in the proxy instead.
+
 ## Rolling upgrades
 
 Upgrade one node at a time: agents first, then servers. On each host,

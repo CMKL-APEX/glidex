@@ -330,6 +330,7 @@ configuration.
 | `GLIDEX_UI_TLS_CERT` | a self-signed certificate | PEM certificate chain. |
 | `GLIDEX_UI_TLS_KEY` | the `ui-tls-key` credential | PEM private key. Prefer the credential. |
 | `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate to its ts.net names ([TLS](tls.md#tailscale-certificates)). |
+| `GLIDEX_UI_CLIENT_IP_HEADER` | unset | A header that carries the browser's address, such as `CF-Connecting-IP`, trusted only on connections from this host itself (a tunnel such as `cloudflared` running here). Set it when a tunnel on the host connects to the UI, or every user's address is `127.0.0.1` in the audit log and shares one rate limit. See [Behind a load balancer or tunnel](clusters.md#behind-a-load-balancer-or-tunnel). |
 | `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | `tailscaled`'s local API socket. |
 | `GLIDEX_UI_DIR` | `/usr/local/share/glidex/ui` (unit) | The built UI. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket, used when it exists. |
