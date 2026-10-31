@@ -1163,7 +1163,7 @@ impl ImageManager {
             match table {
                 TableId::Images => {
                     let rec = raw.and_then(|b| serde_json::from_slice::<Image>(&b).ok());
-                    let mut m = self.images.write().unwrap();
+                    let mut m = glidex_raftstore::wait::write(&self.images).unwrap();
                     match rec {
                         Some(r) => {
                             m.insert(k.clone(), r);
@@ -1193,7 +1193,7 @@ impl ImageManager {
     /// Reload every record (after a snapshot install).
     pub fn reload_all(&self) {
         if let Ok(m) = self.load(IMAGES_TABLE) {
-            *self.images.write().unwrap() = m;
+            *glidex_raftstore::wait::write(&self.images).unwrap() = m;
         }
         if let Ok(m) = self.load(DISKS_TABLE) {
             *self.disks.write().unwrap() = m;
@@ -1207,7 +1207,11 @@ impl ImageManager {
     pub fn initialize(self: &Arc<Self>, held_elsewhere: impl Fn(&Image) -> bool) {
         let mut resume = Vec::new();
         let mut known = std::collections::HashSet::new();
-        let images: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
+        let images: Vec<Image> = glidex_raftstore::wait::read(&self.images)
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
         for mut img in images {
             known.extend(self.image_files(&img).into_iter().map(|(_, p)| p));
             known.insert(self.part_path(&img.id));
@@ -1453,7 +1457,7 @@ impl ImageManager {
 
     /// Record a new image.
     fn insert_image(&self, img: &Image) -> Result<(), ImageError> {
-        let mut cache = self.images.write().unwrap();
+        let mut cache = glidex_raftstore::wait::write(&self.images).unwrap();
         self.write_image(img)?;
         cache.insert(img.id.clone(), img.clone());
         drop(cache);
@@ -1465,7 +1469,7 @@ impl ImageManager {
     /// no longer recorded stays gone (the write is dropped), and a
     /// requested deletion is kept.
     pub fn put_image(&self, img: &Image) -> Result<(), ImageError> {
-        let mut cache = self.images.write().unwrap();
+        let mut cache = glidex_raftstore::wait::write(&self.images).unwrap();
         let Some(current) = cache.get(&img.id) else {
             return Ok(());
         };
@@ -1493,7 +1497,7 @@ impl ImageManager {
     /// Update the cached record only (download progress between persists),
     /// under the same rules as `put_image`.
     fn cache_image(&self, img: &Image) {
-        let mut cache = self.images.write().unwrap();
+        let mut cache = glidex_raftstore::wait::write(&self.images).unwrap();
         if let Some(current) = cache.get(&img.id) {
             let mut img = img.clone();
             img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
@@ -1503,7 +1507,7 @@ impl ImageManager {
     }
 
     fn remove_image_record(&self, id: &str) -> Result<(), ImageError> {
-        let mut cache = self.images.write().unwrap();
+        let mut cache = glidex_raftstore::wait::write(&self.images).unwrap();
         let txn = self
             .db
             .begin(crate::store::Origin::Images)
@@ -1559,14 +1563,18 @@ impl ImageManager {
     // ---- lookup ------------------------------------------------------------
 
     pub fn list_images(&self) -> Vec<Image> {
-        let mut v: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
+        let mut v: Vec<Image> = glidex_raftstore::wait::read(&self.images)
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
         v.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.name.cmp(&b.name)));
         v
     }
 
     /// By id, then by name.
     pub fn get_image(&self, key: &str) -> Result<Image, ImageError> {
-        let images = self.images.read().unwrap();
+        let images = glidex_raftstore::wait::read(&self.images).unwrap();
         images
             .get(key)
             .or_else(|| images.values().find(|i| i.name == key))
@@ -1809,7 +1817,7 @@ impl ImageManager {
         let Some(arch) = arch.or_else(Arch::host) else {
             return Vec::new();
         };
-        let images = self.images.read().unwrap();
+        let images = glidex_raftstore::wait::read(&self.images).unwrap();
         catalog::for_arch(arch)
             .map(|(e, img)| CatalogItem {
                 key: e.key.to_string(),
@@ -1831,7 +1839,7 @@ impl ImageManager {
         let Some(arch) = arch.or_else(Arch::host) else {
             return Vec::new();
         };
-        let images = self.images.read().unwrap();
+        let images = glidex_raftstore::wait::read(&self.images).unwrap();
         firmware::FIRMWARE_CATALOG
             .iter()
             .filter(|e| e.supports(arch))

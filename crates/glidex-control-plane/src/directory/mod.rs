@@ -869,7 +869,7 @@ impl ConnectorStore {
     // ---- secrets --------------------------------------------------------
 
     fn data_key(&self, directory: &str) -> Result<Zeroizing<Vec<u8>>, ConnectorError> {
-        let kek = self.kek.read().unwrap();
+        let kek = glidex_raftstore::wait::read(&self.kek).unwrap();
         let wrapped = match self.get_raw::<secrets::WrappedKey>(KEYS, directory)? {
             Some(w) => w,
             None => {
@@ -1001,7 +1001,12 @@ impl ConnectorStore {
 
     /// The KEK, for the leader to send to a new server (never logged).
     pub fn kek_bytes(&self) -> Zeroizing<Vec<u8>> {
-        Zeroizing::new(self.kek.read().unwrap().bytes().to_vec())
+        Zeroizing::new(
+            glidex_raftstore::wait::read(&self.kek)
+                .unwrap()
+                .bytes()
+                .to_vec(),
+        )
     }
 
     /// The KEK before the current one, while a rotation re-wraps.
@@ -1017,20 +1022,24 @@ impl ConnectorStore {
     /// new server, or every server when the leader rotates). The data keys
     /// in the replicated store are wrapped by one of them.
     pub fn install_kek(&self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), ConnectorError> {
-        self.kek.write().unwrap().install(bytes, previous)?;
+        glidex_raftstore::wait::write(&self.kek)
+            .unwrap()
+            .install(bytes, previous)?;
         Ok(())
     }
 
     /// Whether the KEK is a systemd credential, which only its operator
     /// rotates (on every server).
     pub fn kek_is_credential(&self) -> bool {
-        self.kek.read().unwrap().is_credential()
+        glidex_raftstore::wait::read(&self.kek)
+            .unwrap()
+            .is_credential()
     }
 
     /// Wrap every directory's data key with the current KEK (the last step
     /// of a rotation), in one write. Returns how many changed.
     pub fn rewrap_data_keys(&self) -> Result<usize, ConnectorError> {
-        let kek = self.kek.read().unwrap();
+        let kek = glidex_raftstore::wait::read(&self.kek).unwrap();
         let id = kek.id();
         let mut changed = Vec::new();
         for (k, w) in self.read_all::<secrets::WrappedKey>(KEYS)? {
@@ -1053,7 +1062,7 @@ impl ConnectorStore {
     }
 
     pub fn kek_id(&self) -> String {
-        self.kek.read().unwrap().id()
+        glidex_raftstore::wait::read(&self.kek).unwrap().id()
     }
 }
 

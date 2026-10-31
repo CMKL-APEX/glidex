@@ -344,7 +344,7 @@ impl<S: Schema> Tx<'_, S> {
             // Read your writes: the caller's next step reads this store.
             // The revision arrives over the runtime's I/O: wait off the worker.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            blocking(|| {
+            crate::wait::blocking(|| {
                 while db.revision() < index && std::time::Instant::now() < deadline {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -375,17 +375,6 @@ impl<S: Schema> Tx<'_, S> {
             }
         }
         Ok(())
-    }
-}
-
-/// Run `f`, which may wait a long time, without holding up a Tokio
-/// worker: in `block_in_place` on a multi-thread runtime's worker, directly
-/// anywhere else (a plain thread, `spawn_blocking`, a current-thread runtime).
-fn blocking<R>(f: impl FnOnce() -> R) -> R {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    match Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
-        _ => f(),
     }
 }
 
@@ -619,13 +608,7 @@ impl<S: Schema> Db<S> {
     /// `block_in_place`: a worker blocked outright can leave no thread to
     /// drive that I/O, and then neither write ever finishes.
     fn take_lane(&self) -> std::sync::MutexGuard<'_, ()> {
-        match self.lane.try_lock() {
-            Ok(lane) => lane,
-            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                blocking(|| self.lane.lock().unwrap_or_else(|p| p.into_inner()))
-            }
-        }
+        crate::wait::lock(&self.lane).unwrap_or_else(|p| p.into_inner())
     }
 
     /// Switch to replicated writes.
