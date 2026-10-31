@@ -52,6 +52,14 @@ const RPC_RESPONSE_HEADERS: &[&str] = &[
     "connect-content-encoding",
 ];
 
+/// Routes whose handlers read the browser's own cookies, not a session:
+/// the account list and passkey ceremonies, which the leader runs.
+fn browser_cookies(path: &str) -> bool {
+    path.starts_with("/auth/accounts")
+        || path.starts_with("/auth/passkeys/")
+        || path.starts_with("/auth/invitation/passkey/")
+}
+
 /// Routes that need no cluster at all.
 fn needs_no_barrier(path: &str) -> bool {
     path == "/health" || path == "/auth/methods" || path == "/auth/server-info"
@@ -205,16 +213,17 @@ async fn forward(
             headers.push((name, v.to_string()));
         }
     }
-    // The browser's account list lives in its cookies, and a change to it
-    // must come from a page (`accounts::same_origin`): the leader needs both.
-    if parts.uri.path().starts_with("/auth/accounts") {
-        if let Some(v) = parts
-            .headers
-            .get(header::ORIGIN)
-            .and_then(|v| v.to_str().ok())
-        {
-            headers.push(("origin", v.to_string()));
-        }
+    // The page's origin: the leader skips its Origin check for a forwarded
+    // request, but an account change and a passkey ceremony read it.
+    if let Some(v) = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        headers.push(("origin", v.to_string()));
+    }
+    // A browser's account list and passkey ceremonies live in its cookies.
+    if browser_cookies(parts.uri.path()) {
         // HTTP/2 may split cookies over several headers; HTTP/1.1 takes one.
         let cookies: Vec<&str> = parts
             .headers

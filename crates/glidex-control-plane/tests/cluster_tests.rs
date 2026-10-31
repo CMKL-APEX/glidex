@@ -527,10 +527,10 @@ async fn a_new_server_receives_the_secrets_key() {
     assert_eq!(disk, *secrets(0).connectors.kek_bytes());
 }
 
-/// The browser's account list (`/auth/accounts…`) works through a
-/// follower's UI as on the leader's: the forward carries the `Origin` it
-/// requires and the cookies it reads (a load balancer sends browsers to
-/// any server).
+/// The browser's account list (`/auth/accounts…`) and passkey ceremonies
+/// work through a follower's UI as on the leader's: the forward carries
+/// the `Origin` they require and the cookies they read (a load balancer
+/// sends browsers to any server).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn account_changes_through_a_follower_reach_the_leader_with_their_cookies() {
     let _one = serial().await;
@@ -573,6 +573,20 @@ async fn account_changes_through_a_follower_reach_the_leader_with_their_cookies(
             .any(|c| c.to_str().unwrap().starts_with("gx_accounts=")),
         "{headers:?}"
     );
+
+    // A passkey ceremony needs the page's origin too: its challenge names it.
+    let router = ui_router(&cps[follower], None);
+    let (s, headers, options) = via_ui_with(
+        &router,
+        "POST",
+        "/auth/passkeys/login/start",
+        &browser,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{options}");
+    assert_eq!(options["publicKey"]["rpId"], "glidex.test", "{options}");
+    assert!(headers.get("set-cookie").is_some(), "{headers:?}");
 }
 
 /// A gRPC write sent to a follower is forwarded to the leader, and the
