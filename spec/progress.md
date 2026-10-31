@@ -19,17 +19,16 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Datastores | S26 stale hyperstor holds | `feat/hyperstor-stale-holds` | A disk held by another node's `hyperstor-vhost` when its VM starts is preempted; nodes let go of holds for VMs placed elsewhere. Needs hyperstor's per-volume fencing (D150, D153) |
-| Tenancy and directories | T6 leftovers | #192, #193, `feat/t6-two-org-e2e` | Cluster logout ends the directory's chain (D72), changed UI address re-registered (D73); audit per directory (D74); the two-control-plane UI e2e. The board's *Built* row moves when they merge |
+| Datastores | S27 follow-up | #218 | The Datastores page shows a datastore's free space of its total, "—" where no node knows its size (hyperstor agents). UI only |
 
 ## Areas
 
 | Area | Spec | Built | Next | Status in the spec |
 |---|---|---|---|---|
-| Tenancy and directories | [19-tenancy.md](19-tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
+| Tenancy and directories | [19-tenancy.md](19-tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`); T6's leftovers: cluster logout ends the directory's chain and a changed UI address is re-registered (D72, D73, #192), audit per hosted directory (D74, #193), the two-organization UI e2e (#194) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
-| Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177); hyperstor pools' space and `--no-overcommit` on them (S27, #213; S27 open for review) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
+| Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177); S26 stale hyperstor holds preempted (#203); hyperstor pools' space and `--no-overcommit` on them (S27, #213; S27 open for review) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
 | GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211); the create form's GPUs section, with GPUs other VMs hold greyed (#210) | GV6's reboot test, docs (G15) and a pool's `bar_mib`; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
