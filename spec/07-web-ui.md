@@ -167,7 +167,7 @@ ui/src/
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
-    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, Reconnect after it closes
+    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, reconnects by itself after a drop, Reconnect after it closes
     ├── consoleTerminal.ts  # The two terminals (ghostty-web, xterm.js) behind one interface
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress

@@ -727,6 +727,13 @@ stream over HTTP/2, for API clients and gxctl; 18-grpc.md §9.1.)
      `Message::Binary`.
    - `Message::Binary` / `Message::Text` from the client → written to
      the console. Close / error / `None` from the client ends the loop.
+   - Every 30 s, a `Message::Ping` (browsers answer it themselves). A
+     quiet console sends nothing for minutes, and a proxy in front of
+     the UI closes an idle WebSocket without a close frame (Cloudflare
+     after 100 s; the browser sees code 1006).
+4. When the console ends (the shim hangs up), sends `Message::Close`, so
+   a client tells the console ending (1005) from the connection
+   dropping (1006).
 
 ### Client expectations
 
@@ -742,6 +749,9 @@ stream over HTTP/2, for API clients and gxctl; 18-grpc.md §9.1.)
   carried, 02-console.md "Known gaps").
 - A ticket is used up by the connect: each new connection, a reconnect
   included, needs a new one.
+- The UI reconnects by itself after a drop (code 1006), up to five times
+  in a row, with a new ticket each time; after a close frame it waits
+  for **Reconnect**.
 
 ### Replay-on-connect behavior
 
