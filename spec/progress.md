@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Tenancy and directories | T8 (19-tenancy.md D75–D77): verified addresses and `allowed_emails` on `oidc` connectors, pre-added users | `spec/tenancy-domain-connector`, then `feat/tenancy-*` | Spec first; three code PRs |
 
 ## Areas
 
