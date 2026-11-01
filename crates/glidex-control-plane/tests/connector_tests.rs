@@ -636,6 +636,14 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// Alice's ID token claims without a nonce: `login_with` adds the login's.
+fn alice_claims(mock: &idp::Mock) -> Value {
+    json!({
+        "iss": mock.base, "aud": "glidex", "sub": "user-123", "exp": now() + 300, "iat": now(),
+        "email": "alice@example.org", "name": "Alice", "groups": ["lab-staff"],
+    })
+}
+
 fn claims(mock: &idp::Mock, nonce: &str) -> Value {
     json!({
         "iss": mock.base, "aud": "glidex", "sub": "user-123", "exp": now() + 300, "iat": now(),
@@ -1084,7 +1092,7 @@ async fn an_oidc_domain_rule_needs_a_verified_address() {
         assert_eq!(v["connector"]["oidc"]["trust_email"], trust, "{v}");
     }
     let with = |verified: Option<Value>| {
-        let mut c = claims(&mock, "");
+        let mut c = alice_claims(&mock);
         if let Some(v) = verified {
             c["email_verified"] = v;
         }
