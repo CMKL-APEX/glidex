@@ -53,11 +53,33 @@ const RPC_RESPONSE_HEADERS: &[&str] = &[
 ];
 
 /// Routes whose handlers read the browser's own cookies, not a session:
-/// the account list and passkey ceremonies, which the leader runs.
+/// the account list, passkey ceremonies and logins through an IdP, which
+/// the leader runs.
 fn browser_cookies(path: &str) -> bool {
     path.starts_with("/auth/accounts")
         || path.starts_with("/auth/passkeys/")
         || path.starts_with("/auth/invitation/passkey/")
+        || is_idp_login(path)
+}
+
+/// A browser login through an IdP keeps its state (the `state`, nonce and
+/// PKCE verifier) in memory on the server that starts it, and the IdP sends
+/// the browser back to whichever server the load balancer picks: the
+/// leader runs both ends, as it does passkey ceremonies. The starts by
+/// POST (an invitation's, adding a sign-in) go there as writes already.
+fn is_idp_login(path: &str) -> bool {
+    if matches!(path, "/auth/oidc/start" | "/auth/oidc/callback") {
+        return true;
+    }
+    let one = |prefix: &str| {
+        path.strip_prefix(prefix)
+            .and_then(|r| {
+                r.strip_suffix("/start")
+                    .or_else(|| r.strip_suffix("/callback"))
+            })
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    };
+    one("/auth/c/") || one("/auth/t/")
 }
 
 /// Console tickets are the leader's, which redeems them for whichever
@@ -150,7 +172,8 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
     let read = match glidex_api::operation(&path) {
         Some(op) => op.kind == glidex_api::Kind::Read || op.streaming,
         None => is_safe(req.method()),
-    } && !is_console_ticket(&path);
+    } && !is_console_ticket(&path)
+        && !is_idp_login(&path);
     if read {
         if needs_no_barrier(&path) {
             return next.run(req).await;
@@ -343,6 +366,30 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idp_logins_run_on_the_leader() {
+        for p in [
+            "/auth/oidc/start",
+            "/auth/oidc/callback",
+            "/auth/c/gsuite/start",
+            "/auth/c/gsuite/callback",
+            "/auth/t/acme/start",
+            "/auth/t/acme/callback",
+        ] {
+            assert!(is_idp_login(p), "{p}");
+            assert!(browser_cookies(p), "{p}");
+        }
+        for p in [
+            "/auth/c//callback",
+            "/auth/c/a/b/callback",
+            "/auth/c/gsuite/device",
+            "/auth/link/c/gsuite/start",
+            "/auth/methods",
+        ] {
+            assert!(!is_idp_login(p), "{p}");
+        }
+    }
 
     #[test]
     fn console_tickets_are_asked_of_the_leader() {
