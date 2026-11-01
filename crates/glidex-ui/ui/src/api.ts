@@ -801,6 +801,16 @@ export const setVmServiceAccount = (id: string, serviceAccount: string | null) =
 export const listServiceAccounts = (project: string) =>
   listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
+/** Change a VM's memory; on a running VM from its next start. */
+export function setVmMemory(id: string, mib: number) {
+  const vm = { mem_size_mib: mib };
+  return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
+}
+
+/** Attach a data disk (id or name); on a running VM from its next start. */
+export const attachVmDisk = (id: string, disk: string) =>
+  vmWrite(rpc(VmService.method.attachDisk, { id, disk }) as Promise<VmWriteResponse>);
+
 /** Detach a data disk; on a running VM at its next start (spec/06-rest-api.md). */
 export const detachVmDisk = (id: string, disk: string) =>
   vmWrite(rpc(VmService.method.detachDisk, { id, disk }) as Promise<VmWriteResponse>);

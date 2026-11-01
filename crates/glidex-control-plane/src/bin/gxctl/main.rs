@@ -616,6 +616,18 @@ fn print_help() {
         "scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]".cyan()
     );
     println!(
+        "  {} - Show or change a VM's memory (MiB, or with G); from the next start",
+        "memory <name|id> [<size>]".cyan()
+    );
+    println!(
+        "  {} - Attach a data disk to a VM; on a running VM from the next start",
+        "attach-disk <name|id> <disk>".cyan()
+    );
+    println!(
+        "  {} - Detach a data disk (kept); on a running VM at the next start",
+        "detach-disk <name|id> <disk>".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -1048,6 +1060,9 @@ const COMMANDS: &[&str] = &[
     "cluster",
     "attach-device",
     "detach-device",
+    "attach-disk",
+    "detach-disk",
+    "memory",
     "credentials",
     "creds",
     "credential-add",
@@ -1463,6 +1478,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "kernel" => vm::kernel(client, &parts[1..]).await,
         "service-account" => vm::service_account(client, &parts[1..]).await,
         "scale" => vm::scale(client, &parts[1..]).await,
+        "memory" => vm::memory(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
@@ -1506,6 +1522,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "attach-device" => vm::device(client, true, &parts[1..]).await,
         "detach-device" => vm::device(client, false, &parts[1..]).await,
+        "attach-disk" => vm::disk(client, true, &parts[1..]).await,
+        "detach-disk" => vm::disk(client, false, &parts[1..]).await,
 
         "credentials" | "creds" => storage::credentials(client).await,
 
