@@ -19,13 +19,12 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Tenancy and directories | T8 (19-tenancy.md D75–D77): verified addresses and `allowed_emails` on `oidc` connectors, pre-added users | `spec/tenancy-domain-connector`, then `feat/tenancy-*` | Spec first; three code PRs |
 
 ## Areas
 
 | Area | Spec | Built | Next | Status in the spec |
 |---|---|---|---|---|
-| Tenancy and directories | [19-tenancy.md](19-tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`); T6's leftovers: cluster logout ends the directory's chain and a changed UI address is re-registered (D72, D73, #192), audit per hosted directory (D74, #193), the two-organization UI e2e (#194) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
+| Tenancy and directories | [19-tenancy.md](19-tenancy.md) | T0–T6 (T6 through task 8b, #168; T5 kind `jwt`); T6's leftovers: cluster logout ends the directory's chain and a changed UI address is re-registered (D72, D73, #192), audit per hosted directory (D74, #193), the two-organization UI e2e (#194); T8 verified addresses, `allowed_emails` on `oidc` and pre-added users (D75–D77, #243, #244 and this PR) | T6b directory standby, T7 fleets, T2b Entra and GitHub, T4b LDAP/Graph/GitHub sync: all **not scheduled** | §23 Implementation status |
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177); S26 stale hyperstor holds preempted (#203); hyperstor pools' space and `--no-overcommit` on them (S27, #213; S27 open for review); full hyperstor pools refuse new disks (S30, open for review) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |

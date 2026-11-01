@@ -513,6 +513,7 @@ pub async fn invite_finish(
         managed: None,
         email: Some(inv.email.clone()),
         disabled_reason: None,
+        pending_login: None,
     };
     a.store
         .put_user(&user)

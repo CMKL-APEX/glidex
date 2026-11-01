@@ -774,11 +774,21 @@ pub async fn user(client: &ApiClient, args: &[&str]) {
                             .iter()
                             .map(|i| format!("{}:{}", i.provider, i.subject))
                             .collect();
+                        let waiting = match &u.pending_connector {
+                            Some(c) => format!(
+                                "not signed in yet: {} through {c}",
+                                u.email.as_deref().unwrap_or("-")
+                            )
+                            .yellow()
+                            .to_string(),
+                            None => String::new(),
+                        };
                         println!(
-                            "  {:<38} {:<20} {}{}",
+                            "  {:<38} {:<20} {}{}{}",
                             u.id.cyan(),
                             u.display_name,
                             ids.join(", "),
+                            waiting,
                             if u.disabled == Some(true) {
                                 " (disabled)".red().to_string()
                             } else {
@@ -790,13 +800,50 @@ pub async fn user(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(rpc_err(e)),
             }
         }
+        "add" => user_add(client, &args[1..]).await,
         "link" => user_link(client, &args[1..]).await,
         "unlink" => user_unlink(client, &args[1..]).await,
         _ => usage(USER_USAGE),
     }
 }
 
-const USER_USAGE: &str = "Usage: user list | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>";
+const USER_USAGE: &str = "Usage: user list | add <email> --tenant T --connector C [--role R] [--name N] | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>";
+
+/// `user add`: pre-add someone by email (spec/19-tenancy.md D77); their
+/// first login through the connector with that verified address takes it.
+async fn user_add(client: &ApiClient, args: &[&str]) {
+    let (Some(email), Some(tenant), Some(connector)) = (
+        args.first().filter(|a| !a.starts_with("--")),
+        flag_value(args, "--tenant"),
+        flag_value(args, "--connector"),
+    ) else {
+        return usage(USER_USAGE);
+    };
+    let svc = svc!(client, UserServiceClient);
+    let req = CreateUserRequest {
+        display_name: flag_value(args, "--name").unwrap_or("").into(),
+        pending: PendingUser {
+            email: email.to_string(),
+            connector: connector.into(),
+            tenant: tenant.into(),
+            role: flag_value(args, "--role").unwrap_or("").into(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    match svc.create_user(req).await {
+        Ok(r) => {
+            let u = r.into_owned().user;
+            println!(
+                "Added {} ({}): their first sign-in through {connector} as {email} takes the account.",
+                u.display_name,
+                u.id.cyan()
+            );
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
 
 /// A user's id from an id, or from a display name exactly one user has
 /// (names repeat: the same account name signs in on several servers).

@@ -222,7 +222,8 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `token list`, `tokens` | Your API tokens |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | Create a token; the secret is printed once |
 | `token revoke <id>` | Revoke a token |
-| `user list`, `users` | Users and their identities. Deleting a user is in the web UI or the API only |
+| `user list`, `users` | Users and their identities; a pre-added user shows *not signed in yet*. Deleting a user is in the web UI or the API only |
+| `user add <email> --tenant T --connector C [--role R] [--name N]` | Add someone by email before they sign in: their first sign-in through `C` with that verified address takes the account (role `member` by default) |
 | `team list \| create <name> \| delete <team>` | Teams |
 | `team add-member <team> <user-id>`, `remove-member <team> <user-id>` | Team membership |
 | `policy list \| show <id>` | Site Cedar policies |

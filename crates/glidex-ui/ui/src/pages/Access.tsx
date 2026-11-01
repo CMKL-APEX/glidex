@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import * as api from "../api";
-import type { Team } from "../types";
-import { formatTimestamp } from "../types";
+import type { Team, Tenant } from "../types";
+import { TENANT_ROLES, formatTimestamp, isOidcKind } from "../types";
 import { Loading } from "../components/Loading";
 import ConfirmDialog from "../components/ConfirmDialog";
 import SystemRoles from "../components/SystemRoles";
@@ -127,6 +127,107 @@ function disabledWhy(r: string | undefined): string {
   }
 }
 
+/** Pre-add someone by email (spec/19-tenancy.md D77, §6.3): the account and
+ *  its tenant role exist now; their first sign-in through the connector
+ *  with that verified address takes it. */
+function AddUser({ onAdded, onError }: { onAdded: (email: string) => void; onError: (m: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenant, setTenant] = useState("");
+  const [role, setRole] = useState("member");
+  const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);
+  const [connector, setConnector] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    api
+      .listTenants()
+      .then((ts) => {
+        setTenants(ts);
+        setTenant((cur) => cur || ts.find((t) => t.slug === "default")?.id || ts[0]?.id || "");
+      })
+      .catch((e) => onError(errorMessage(e)));
+    api
+      .authMethods()
+      .then((m) => {
+        const cs = (m.connectors ?? []).filter((c) => isOidcKind(c.kind)).map((c) => ({ id: c.id, label: c.display_name || c.id }));
+        setConnectors(cs);
+        setConnector((cur) => cur || cs[0]?.id || "");
+      })
+      .catch(() => setConnectors([]));
+  }, [open, onError]);
+
+  if (!open) {
+    return (
+      <button className={`mt-4 ${primaryButton}`} onClick={() => setOpen(true)}>
+        Add user
+      </button>
+    );
+  }
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.preaddUser({ email: email.trim(), connector, tenant, role });
+      onAdded(email.trim());
+      setEmail("");
+      setOpen(false);
+    } catch (err) {
+      onError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const field = "px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white";
+  return (
+    <form className="mt-4 space-y-2" onSubmit={submit} aria-label="Add user">
+      <div className="flex flex-wrap items-end gap-2">
+        <input
+          aria-label="Email"
+          type="email"
+          className={field}
+          placeholder="name@example.org"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <select aria-label="Tenant" className={field} value={tenant} onChange={(e) => setTenant(e.target.value)}>
+          {tenants.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.display_name || t.slug}
+            </option>
+          ))}
+        </select>
+        <select aria-label="Role" className={field} value={role} onChange={(e) => setRole(e.target.value)}>
+          {["member", ...TENANT_ROLES].map((r) => (
+            <option key={r} value={r}>
+              {r === "member" ? "member (no tenant role)" : r}
+            </option>
+          ))}
+        </select>
+        <select aria-label="Sign in with" className={field} value={connector} onChange={(e) => setConnector(e.target.value)}>
+          {connectors.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <button type="submit" className={primaryButton} disabled={busy || !connector || !tenant}>
+          Add
+        </button>
+        <button type="button" className={secondaryButton} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+      <p className="text-xs text-gray-500">
+        Their first sign-in through that connector with this verified address takes the account, even when the connector
+        doesn't create users. Nothing is sent to them: tell them to sign in.
+      </p>
+    </form>
+  );
+}
+
 export default function Access() {
   const { host, projects, projectName, me } = useSession();
   const [dir, reloadDir] = useDirectory();
@@ -192,6 +293,12 @@ export default function Access() {
                       <code className="text-xs text-gray-400 font-mono">{u.id}</code>
                     </td>
                     <td className="py-2 text-xs font-mono text-gray-600">
+                      {u.pending_connector && (
+                        <div>
+                          <span className="font-sans text-gray-700">{connectors[u.pending_connector] ?? u.pending_connector}</span>{" "}
+                          <span className="text-gray-400">{u.email}</span>
+                        </div>
+                      )}
                       {(u.identities ?? []).map((i) => {
                         const key = `${i.provider}:${i.subject}`;
                         const label = signInLabel(i.provider, connectors, i.subject, nodes);
@@ -248,6 +355,11 @@ export default function Access() {
                       ) : (
                         <Badge kind="ok">active</Badge>
                       )}
+                      {u.pending_connector && (
+                        <span className="ml-2" title={`${u.email ?? ""} signs in through ${connectors[u.pending_connector] ?? u.pending_connector}`}>
+                          <Badge kind="muted">not signed in yet</Badge>
+                        </span>
+                      )}
                       {u.managed_by && (
                         <span className="ml-2" title="Its name, email and whether it is enabled come from the IdP">
                           <Badge kind="muted">managed by {connectors[u.managed_by] ?? u.managed_by}</Badge>
@@ -275,6 +387,15 @@ export default function Access() {
                 ))}
               </tbody>
             </table>
+          )}
+          {host.manageUsers && (
+            <AddUser
+              onAdded={(email) => {
+                setNotice(`Added ${email}. Their first sign-in takes the account.`);
+                reloadDir();
+              }}
+              onError={setError}
+            />
           )}
         </Card>
       )}

@@ -141,6 +141,7 @@ impl Principal {
                 managed: None,
                 email: None,
                 disabled_reason: None,
+                pending_login: None,
             }),
             token: None,
             token_narrowed: false,
@@ -1593,11 +1594,21 @@ impl AuthService {
             ),
             None => None,
         };
+        // D77: a user pre-added for this connector and verified address
+        // takes the identity, with or without JIT.
+        let preadded = match (existed, &invited, id.email.as_deref()) {
+            (false, None, Some(e)) if id.email_verified => {
+                self.store
+                    .take_pending_login(&c.directory_id, &c.id, &provider, &id.subject, e)?
+            }
+            _ => None,
+        };
         // A connector with an allowlist gives new accounts to those
         // verified addresses only (D39); an invitation is its own way in.
         let allowed = c.allowed_emails();
         if !existed
             && invited.is_none()
+            && preadded.is_none()
             && !allowed.is_empty()
             && !(id.email_verified
                 && id
@@ -1609,17 +1620,22 @@ impl AuthService {
                 "this address may not get an account through this connector".into(),
             ));
         }
-        let user = self
-            .store
-            .user_for_identity_in(
-                &c.directory_id,
-                &provider,
-                &id.subject,
-                &id.display_name,
-                id.email.clone(),
-                c.jit || invited.is_some(),
-            )?
-            .ok_or_else(|| AuthError::NotAllowed("no glidex account for this identity".into()))?;
+        let user = match &preadded {
+            Some(u) => u.clone(),
+            None => self
+                .store
+                .user_for_identity_in(
+                    &c.directory_id,
+                    &provider,
+                    &id.subject,
+                    &id.display_name,
+                    id.email.clone(),
+                    c.jit || invited.is_some(),
+                )?
+                .ok_or_else(|| {
+                    AuthError::NotAllowed("no glidex account for this identity".into())
+                })?,
+        };
         if user.disabled {
             return Err(AuthError::NotAllowed("this account is disabled".into()));
         }
@@ -1649,7 +1665,11 @@ impl AuthService {
             .collect();
         self.store
             .sync_memberships(&user.id, c.member_source(), &teams)?;
-        if !existed && let Some(t) = &c.default_tenant {
+        // A pre-added user has the tenant its administrator gave it.
+        if !existed
+            && preadded.is_none()
+            && let Some(t) = &c.default_tenant
+        {
             self.tenants
                 .add_member(
                     t,

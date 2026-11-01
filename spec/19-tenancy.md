@@ -151,7 +151,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D74 | Audit per directory | A hosted directory's audit is its own (D27): entries whose principal is that directory's (or a system actor acting for it: its OIDC endpoints, its connectors' SCIM and sync, its tenants' federations) are kept in `directory_audit` (directory scope, keyed `<directory>/<time>-<seq>`), and in the cluster's `audit` only when they name a project of this cluster. Its directory auditors and administrators read it (`readDirectoryAudit` on its `Directory`; `ReadAudit` with `directory`, theirs by default); nobody else does, the host's operator included. It follows the cluster's retention and goes when the directory is deleted. `local` and trusted directories' replicas keep the cluster's audit. | Each organization's record of who did what stays its own, as its users and connectors do (D58); what happened to this cluster's resources stays in the cluster's audit for its operator. |
 | D75 | Verified addresses on `oidc` connectors | An `oidc` connector's login rules that read the email (`allowed_domains`, `allowed_emails`, invitations, pre-added users) need a **verified** one: `email_verified: true` in the token, or, with the connector's `trust_email: true` ("the IdP verifies its users' addresses", off by default), no `email_verified` claim at all. `email_verified: false` is always believed. A token without a verified email is refused at a connector with `allowed_domains`, as an email outside them is. | Some IdPs let a user type any address into their profile; a domain or address rule on an address nobody checked lets anyone in. Others (Entra ID) never send the claim, because the organization assigns its users' addresses: the operator says so for that connector, as the `jumpcloud` preset does for JumpCloud. |
 | D76 | An allowlist on `oidc` connectors | `oidc` connectors get `allowed_emails`, as `google` and `jumpcloud` have (D39): with it, JIT creates accounts for those verified addresses only. `allowed_domains` still gates every login through the connector; `allowed_emails` gates which logins may create an account. | "Anyone at our domain, but only these people get an account" without SCIM or invitations. |
-| D77 | Pre-added users | A directory administrator adds a user **by email** before they ever sign in: email, tenant, role and connector (`CreateUser` with `pending`). The user is created at once (display name the address's local part, `email` set), with its tenant membership and role, and a **pending login** `{connector, email}`. The first login through that connector whose verified email (D75) equals it, and that has no identity yet, binds its identity to that user and clears the pending login, even with `jit: false`. One pending login per connector and address in a directory; the address must pass the connector's `allowed_domains`. Connectors as for invitations (§6.1): `oidc` and `google`, not provisioned ones, and into the owner's or an operator's tenant only through one that requires MFA (D22). Removing is what it is for any user: disable, or delete. | The directory's administrators decide who is in from the Access page, with no link to send. Taking an account by verified email alone is what `allowed_emails` with JIT already allows; here the administrator also fixes the tenant and role. An invitation (D40) stays the way in for an address the administrator doesn't want to bind ahead, or for a person who may sign in with another address. |
+| D77 | Pre-added users | A directory administrator adds a user **by email** before they ever sign in: email, tenant, role and connector (`CreateUser` with `pending`). The user is created at once (display name the address's local part, `email` set), with its tenant membership and role, and a **pending login** `{connector, email}`. The first login through that connector whose verified email (D75) equals it, and that has no identity yet, binds its identity to that user and clears the pending login, even with `jit: false`. One pending login per connector and address in a directory; the address must pass the connector's `allowed_domains`. Connectors as for invitations (§6.1): an enabled OIDC kind (`oidc`, `google`, `jumpcloud`), not a provisioned one, and into the owner's or an operator's tenant only through one that requires MFA (D22). Removing is what it is for any user: disable, or delete. | The directory's administrators decide who is in from the Access page, with no link to send. Taking an account by verified email alone is what `allowed_emails` with JIT already allows; here the administrator also fixes the tenant and role. An invitation (D40) stays the way in for an address the administrator doesn't want to bind ahead, or for a person who may sign in with another address. |
 
 ## 3. Threat model additions
 
@@ -418,25 +418,31 @@ Without linking, one person signing in two ways is two users.
 
 - **Adding.** `CreateUser {display_name?, pending: {email, connector,
   tenant, role}}` (`POST /users`): `manageUsers` on the directory,
-  `manageTenantMembers` on the tenant, and `manageTenantBindings` unless
-  the role is `member` (as `CreateInvitation`). It writes the `User`
-  (`email`, `pending_login {connector, email}`, lower case), its tenant
-  membership (`added_by: "preadd:<admin>"`) and the role link in one
-  write. Refused: a provisioned or disabled connector, a kind other than
-  `oidc` or `google` (`422 connector_not_allowed`); an address outside
-  the connector's `allowed_domains` (`422 email_not_allowed`); a pending
-  login for that connector and address already (`409 already_exists`);
-  D22's tenants through a connector without `require_mfa`.
+  `readTenant`, `manageTenantMembers` on the tenant, and
+  `manageTenantBindings` unless the role is `member` (as
+  `CreateInvitation`). It writes the `User` (`email`, `pending_login
+  {connector, email}`, lower case), then its tenant membership
+  (`added_by: "preadd:<admin>"`) and the role link; if those fail, the
+  user is removed again. Refused: not an address, `identities` given, a
+  connector that is unknown, disabled, not an OIDC kind, or one D22
+  doesn't allow into the owner's or an operator's tenant (`400
+  invalid`, as for invitations); a provisioned connector (`422
+  connector_not_allowed`); an address outside the connector's
+  `allowed_domains` (`422 email_not_allowed`); a pending login for that
+  connector and address already (`409 already_exists`); a tenant the
+  caller can't see (`404`).
 - **Signing in.** In the common path (§6 step 2), for an identity the
   directory doesn't have yet and no invitation: a user of the connector's
   directory with `pending_login` equal to `{connector, verified email}`
-  gets the identity (`put_identity`), and its `pending_login` is cleared,
-  in one write. A disabled pre-added user is refused like any disabled
+  gets the identity, and its `pending_login` is cleared, in one write
+  (`IdentityStore::take_pending_login`). It skips the allowlist and the
+  connector's `default_tenant`: its administrator gave it its tenant. A disabled pre-added user is refused like any disabled
   user. `required_groups` and `require_mfa` still apply.
 - **Showing.** Users with a `pending_login` are listed with
   *not signed in yet* and the connector. `UpdateUser` can't set
   `pending_login`; deleting the user removes it with the user.
-- **gxctl.** `gxctl user add <email> --tenant T [--role R] --connector C`.
+- **gxctl.** `gxctl user add <email> --tenant T --connector C [--role R] [--name N]`;
+  `user list` shows *not signed in yet*.
 - **Web UI.** The Access page's **Add user** (email, tenant, role,
   connector), for `host.manageUsers`.
 
@@ -1657,7 +1663,7 @@ one PR each, in order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started.
-T8 (D75–D77): tasks 1 and 2 (D75, D76) are implemented; task 3 is not started.
+T8 (D75–D77) is implemented.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -2092,4 +2098,6 @@ T8, verified addresses and pre-added users:
 | Tests | `glidex-auth` `allowed_domains_need_a_verified_address`; `connector_tests::an_oidc_domain_rule_needs_a_verified_address`; UI e2e `connectors.spec.ts` "an OIDC connector takes its email domains, an allowlist, and trusts its IdP's addresses" |
 | D76: `allowed_emails` on `oidc` connectors | `directory::OidcSettings.allowed_emails` (checked at create and update: addresses, inside `allowed_domains`), `Connector::allowed_emails` for `Kind::Oidc` (the JIT gate in `AuthService::external_login_invited` reads it); proto `OidcSettings.allowed_emails`; gxctl `connector add oidc --allow-email`; the connector form's **Allowed emails** |
 | Tests (D76) | `connector_tests::an_oidc_allowlist_picks_who_gets_an_account`; UI e2e `connectors.spec.ts` (the same OIDC test) |
-| Not yet | D77 (pre-added users) |
+| D77: pre-added users (§6.3) | `auth::store::User.pending_login` (`PendingLogin`), `IdentityStore::take_pending_login`; `AuthService::external_login_invited` (binds before the allowlist and JIT); `service::access::create_user` → `preadd_user` (`invitations::may_give_role`, `usable_connector`); proto `CreateUserRequest.pending` (`PendingUser`), `User.pending_connector`; gxctl `user add`, `user list`; the Access page's **Add user** and *not signed in yet* |
+| Tests (D77) | `connector_tests::a_pre_added_user_is_taken_by_its_first_verified_login` (role there before the login; refused twice, outside the domains, not an address, with identities, an unknown or provisioned connector; unverified, another connector and another subject take nothing; taken once, JIT off); UI e2e `access.spec.ts` "users: add one by email before they sign in" |
+| Not yet | the real check on the prism cluster with a Google Workspace connector |
