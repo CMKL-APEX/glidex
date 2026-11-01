@@ -546,16 +546,37 @@ pub async fn console_ws(
     })
 }
 
+/// How often an open console pings the browser. A quiet console (an idle
+/// login prompt) sends nothing for minutes, and proxies in front of the UI
+/// close idle WebSockets without a close frame (Cloudflare after 100 s; the
+/// browser sees code 1006). Browsers answer pings themselves.
+const CONSOLE_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The same, over any byte stream (a local socket, or a node relay).
 pub(crate) async fn bridge_stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: WebSocket,
+    stream: S,
+) {
+    bridge_stream_every(ws, stream, CONSOLE_KEEPALIVE).await
+}
+
+async fn bridge_stream_every<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     mut ws: WebSocket,
     stream: S,
+    keepalive: std::time::Duration,
 ) {
     let (mut unix_rx, mut unix_tx) = tokio::io::split(stream);
     let mut buf = [0u8; 4096];
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + keepalive, keepalive);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if ws.send(Message::Ping(Default::default())).await.is_err() {
+                    break;
+                }
+            }
             read = unix_rx.read(&mut buf) => {
                 match read {
                     Ok(0) => break,
@@ -586,6 +607,10 @@ pub(crate) async fn bridge_stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrit
             }
         }
     }
+    // Say it ended: a close frame tells the browser this was the console
+    // going away (the shim hung up), not the connection dropping (1006),
+    // which the UI reconnects after.
+    let _ = ws.send(Message::Close(None)).await;
 }
 
 #[derive(Debug, serde::Deserialize, Default)]
@@ -721,6 +746,41 @@ pub async fn detach_disk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A console with nothing to say still pings the browser, so a proxy
+    /// in between doesn't take it for idle and cut it.
+    #[tokio::test]
+    async fn a_quiet_console_pings_the_browser() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as Tm;
+
+        let app = axum::Router::new().route(
+            "/ws",
+            axum::routing::get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|socket| async move {
+                    // The guest side stays open and silent.
+                    let (console, _guest) = tokio::io::duplex(64);
+                    bridge_stream_every(socket, console, std::time::Duration::from_millis(50)).await
+                })
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://{addr}/ws"), tcp)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+                .await
+                .expect("a ping within 5 s")
+                .unwrap()
+                .unwrap();
+            assert!(matches!(m, Tm::Ping(_)), "got {m:?}");
+        }
+    }
 
     #[test]
     fn bdf_validation() {
