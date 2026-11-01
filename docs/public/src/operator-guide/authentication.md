@@ -163,7 +163,12 @@ Who gets in:
 - `required_groups`: only members of one of these groups (from
   `groups_claim`). Empty lets in everyone the provider authenticates for
   this client, so set it, or restrict the client at the provider.
-- `allowed_domains`: only users whose email is in one of these domains.
+- `allowed_domains`: only users whose email is in one of these domains,
+  and verified: the ID token says `email_verified: true`. Some providers,
+  such as Microsoft Entra ID, never send `email_verified`, because the
+  organization assigns its users' addresses; for those, set
+  `trust_email: true` and a token that doesn't say counts as verified.
+  A token that says `email_verified: false` is refused either way.
 - `jit: false`: only people who already have a Glidex user.
 
 `group_teams` maps provider groups to Glidex teams, which must exist
@@ -221,8 +226,11 @@ gxctl connector list
   contains `mfa`, or `acr` is one of the `--mfa-acr` values).
 - `--token-max-days N` caps the tokens a login through the connector
   mints (default 30 days).
-- `--jit` / `--no-jit`, `--require-group`, `--team GROUP=TEAM` and
-  `--domain` work as in the file settings.
+- `--jit` / `--no-jit`, `--require-group`, `--team GROUP=TEAM`,
+  `--domain` and `--trust-email` work as in the file settings
+  (`allowed_domains`, `trust_email`). In the web UI's connector form they
+  are **Allowed email domains** and **The IdP verifies its users'
+  addresses**.
 - `--default-tenant <t>` makes new users members of tenant `<t>`. If
   that is the `admin` tenant or another operator tenant, a connector that creates users must also
   have `--require-group`.

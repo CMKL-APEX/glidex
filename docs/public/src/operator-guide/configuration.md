@@ -81,7 +81,8 @@ sudo systemctl restart glidex-control-plane
 | `scopes` | array of strings | `["openid", "profile", "email", "groups"]` | Scopes requested. |
 | `groups_claim` | string | `"groups"` | ID token claim that lists the user's groups. |
 | `jit` | bool | `true` | Create the Glidex user on their first login. |
-| `allowed_domains` | array of strings | `[]` | If set, only these email domains may log in. |
+| `allowed_domains` | array of strings | `[]` | If set, only verified addresses in these email domains may log in. |
+| `trust_email` | bool | `false` | The provider verifies its users' addresses: a token without `email_verified` counts as verified. |
 | `required_groups` | array of strings | `[]` | If set, only members of one of these groups may log in. |
 | `group_teams` | object | `{}` | Provider group → team name; memberships are updated at every login. |
 | `redirect_uri` | URL | first allowed origin + `/api/auth/oidc/callback` | Where the provider sends the browser back. Register exactly this URL with the provider. |

@@ -58,6 +58,7 @@ pub fn to_pb(call: &Call, c: &Connector) -> ServiceResult<pb::Connector> {
                 allowed_domains: s.allowed_domains,
                 redirect_uri: s.redirect_uri,
                 mfa_acr_values: s.mfa_acr_values,
+                trust_email: Some(s.trust_email),
                 ..Default::default()
             }))
         }
@@ -158,6 +159,7 @@ fn settings_json(s: &Settings) -> (Kind, serde_json::Value) {
                 "groups_claim": if o.groups_claim.is_empty() { "groups".to_string() } else { o.groups_claim.clone() },
                 "allowed_domains": o.allowed_domains,
                 "mfa_acr_values": o.mfa_acr_values,
+                "trust_email": o.trust_email.unwrap_or(false),
             });
             if let Some(r) = &o.redirect_uri {
                 v["redirect_uri"] = serde_json::json!(r);

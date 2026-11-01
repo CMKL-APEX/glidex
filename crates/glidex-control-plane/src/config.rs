@@ -296,6 +296,8 @@ pub struct OidcConfig {
     pub groups_claim: String,
     pub jit: bool,
     pub allowed_domains: Vec<String>,
+    /// The IdP verifies its users' addresses (19-tenancy.md D75).
+    pub trust_email: bool,
     pub required_groups: Vec<String>,
     /// IdP group → team name.
     pub group_teams: HashMap<String, String>,
@@ -316,6 +318,7 @@ impl Default for OidcConfig {
             groups_claim: "groups".into(),
             jit: true,
             allowed_domains: Vec::new(),
+            trust_email: false,
             required_groups: Vec::new(),
             group_teams: HashMap::new(),
             redirect_uri: None,
