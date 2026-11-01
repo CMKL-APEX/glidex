@@ -161,6 +161,9 @@ message OidcSettings {
   // `email_verified` counts as verified (spec/19-tenancy.md D75).
   // `email_verified: false` is believed either way.
   optional bool trust_email = 8 [json_name = "trust_email"];
+  // With `jit`, only these verified addresses get a new account
+  // (spec/19-tenancy.md D76); `allowed_domains` still gates every login.
+  repeated string allowed_emails = 9 [json_name = "allowed_emails"];
 }
 
 // Which Google accounts a `google` connector serves (spec/19-tenancy.md D39).

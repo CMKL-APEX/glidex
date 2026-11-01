@@ -1657,7 +1657,7 @@ one PR each, in order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started.
-T8 (D75–D77): task 1 (D75) is implemented; tasks 2 and 3 are not started.
+T8 (D75–D77): tasks 1 and 2 (D75, D76) are implemented; task 3 is not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -2089,5 +2089,7 @@ T8, verified addresses and pre-added users:
 | Spec | Code |
 |---|---|
 | D75: an `oidc` connector's email rules need a verified address; `trust_email` | `glidex_auth::oidc::ClientConfig.trust_email`, `OidcState::identity` (`email_verified` from the preset, the claim, or `trust_email` when there is none; `allowed_domains` on a verified address only); `directory::OidcSettings.trust_email`, `config::OidcConfig.trust_email`; proto `OidcSettings.trust_email`; gxctl `connector add oidc --trust-email`; the connector form's checkbox |
-| Tests | `glidex-auth` `allowed_domains_need_a_verified_address`; `connector_tests::an_oidc_domain_rule_needs_a_verified_address`; UI e2e `connectors.spec.ts` "an OIDC connector takes its email domains and trusts its IdP's addresses" |
-| Not yet | D76 (`allowed_emails` on `oidc`), D77 (pre-added users) |
+| Tests | `glidex-auth` `allowed_domains_need_a_verified_address`; `connector_tests::an_oidc_domain_rule_needs_a_verified_address`; UI e2e `connectors.spec.ts` "an OIDC connector takes its email domains, an allowlist, and trusts its IdP's addresses" |
+| D76: `allowed_emails` on `oidc` connectors | `directory::OidcSettings.allowed_emails` (checked at create and update: addresses, inside `allowed_domains`), `Connector::allowed_emails` for `Kind::Oidc` (the JIT gate in `AuthService::external_login_invited` reads it); proto `OidcSettings.allowed_emails`; gxctl `connector add oidc --allow-email`; the connector form's **Allowed emails** |
+| Tests (D76) | `connector_tests::an_oidc_allowlist_picks_who_gets_an_account`; UI e2e `connectors.spec.ts` (the same OIDC test) |
+| Not yet | D77 (pre-added users) |

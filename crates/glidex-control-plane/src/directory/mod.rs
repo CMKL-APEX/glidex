@@ -166,6 +166,9 @@ pub struct OidcSettings {
     /// `email_verified` counts as verified (19-tenancy.md D75).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub trust_email: bool,
+    /// With `jit`, only these verified addresses get a new account (D76).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_emails: Vec<String>,
     /// Where the IdP sends the browser back; default
     /// `<first allowed origin>/api/auth/c/<id>/callback`.
     #[serde(default)]
@@ -426,6 +429,7 @@ impl Connector {
                         groups_claim: default_groups_claim(),
                         allowed_domains: Vec::new(),
                         trust_email: false,
+                        allowed_emails: Vec::new(),
                         redirect_uri: g.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -447,6 +451,7 @@ impl Connector {
                         groups_claim: j.groups_claim().to_string(),
                         allowed_domains: Vec::new(),
                         trust_email: false,
+                        allowed_emails: Vec::new(),
                         redirect_uri: j.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -489,6 +494,7 @@ impl Connector {
     /// when not empty.
     pub fn allowed_emails(&self) -> Vec<String> {
         match self.kind {
+            Kind::Oidc => self.oidc().map(|o| o.allowed_emails).unwrap_or_default(),
             Kind::Google => self.google().map(|g| g.allowed_emails).unwrap_or_default(),
             Kind::Jumpcloud => self
                 .jumpcloud()
@@ -571,6 +577,24 @@ impl Connector {
                 }
                 if !s.scopes.iter().any(|x| x == "openid") {
                     return Err(ConnectorError::Invalid("scopes must include openid".into()));
+                }
+                // An address the domains refuse could never log in.
+                for e in &s.allowed_emails {
+                    let Some((_, domain)) = e.rsplit_once('@') else {
+                        return Err(ConnectorError::Invalid(format!(
+                            "{e:?} is not an email address"
+                        )));
+                    };
+                    if !s.allowed_domains.is_empty()
+                        && !s
+                            .allowed_domains
+                            .iter()
+                            .any(|d| d.eq_ignore_ascii_case(domain))
+                    {
+                        return Err(ConnectorError::Invalid(format!(
+                            "{e:?} is outside allowed_domains"
+                        )));
+                    }
                 }
             }
             Kind::Google => {
