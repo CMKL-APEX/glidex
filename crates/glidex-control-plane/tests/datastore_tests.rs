@@ -358,6 +358,46 @@ async fn a_datastore_that_doesnt_overcommit_refuses_what_doesnt_fit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_full_datastore_refuses_new_disks() {
+    // A hyperstor pool past its full ratio (S30): its probe marks the row
+    // full, and new disks are refused even where the datastore overcommits.
+    let h = harness();
+    let t = h.admin("root");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "brim", "path": place("brim")})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["datastore"]["id"].as_str().unwrap().to_string();
+    h.probed("brim", &t).await;
+    let db = h.app.manager.database();
+    let rows = glidex_control_plane::datastore::record::rows(&db, &id).unwrap();
+    let (node, row) = rows.into_iter().next().unwrap();
+    let mut full = row.clone();
+    full.full = true;
+    full.warnings =
+        vec!["hyperstor pool 3 is full: new disks are refused until space is freed".into()];
+    glidex_control_plane::datastore::record::put_row(&db, &id, &node, Some(&full)).unwrap();
+    let disk = json!({"project": h.project(), "name": "more", "size_gib": 1, "datastore": "brim"});
+    let (s, v) = h.rest("POST", "/disks", Some(disk.clone()), &t).await;
+    assert_eq!(s, StatusCode::INSUFFICIENT_STORAGE, "{v}");
+    assert_eq!(v["error"], "insufficient_storage", "{v}");
+    let m = v["message"].as_str().unwrap();
+    assert!(
+        m.contains("datastore brim is full") && m.contains("pool 3"),
+        "{v}"
+    );
+    // Space freed: the next probe clears it, and the disk goes.
+    glidex_control_plane::datastore::record::put_row(&db, &id, &node, Some(&row)).unwrap();
+    let (s, v) = h.rest("POST", "/disks", Some(disk), &t).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn only_administrators_manage_datastores() {
     let h = harness();
     let admin = h.admin("root");

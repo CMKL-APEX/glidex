@@ -20,7 +20,7 @@ host checks H8–H9 are open for the owner's review. Implemented:
 - S8, `hyperstor` datastores: volumes of a hyperstor cluster, served to
   VMs over vhost-user-blk (§11.2).
 
-S7 is still design. Decisions S25 and S27 are open for review too. The milestones are S0–S8
+S7 is still design. Decisions S25, S27 and S30 are open for review too. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
 are applied (§18).
@@ -99,6 +99,7 @@ later milestones (§11, §12).
 | S27 | **A hyperstor datastore's space is its pool's, as hyperstor reports it, and it may refuse to overcommit** (hyperstor D156; open for review): each server's probe asks the cluster API's `GetStatus` for the pool's usable `total_bytes` and `free_bytes`, trying each address until one gives them, since only the map service's leader hears the devices' reports. Agents, and a server whose cluster doesn't report them (hyperstor before D156, or a device yet to report), show 0. `overcommit: false` is accepted, and disk creation checks it against the most free space any node reports, as for any shared datastore (§5.2). | Only servers hold glidex's identity (S22), and a shared datastore's free space is the most any reachable node reports, so the servers' figures are enough. The pool's space is after its copies or erasure coding, which is what a disk takes. Pools that share devices each count the same free bytes (hyperstor D156), so refusing to overcommit protects against glidex's own disks, not against other users of the devices. |
 | S28 | **An image volume's id is derived from the image and its datastore**, not the image alone: `glidex-image:<image>:on:<datastore id>`. A volume made before, under the image-only id and named for this datastore (S24), stays that datastore's, so its disks (clones of it) are untouched; another datastore makes its own. | hyperstor's volume ids are unique across its cluster, while the driver lists one pool's volumes. A second datastore on the same hyperstor cluster (`hs-cache`, pool 2, beside `hs`, pool 1, on the prism cluster) didn't see the first's image volume, was refused "exists" when making its own, took that for another worker making it, and retried for ever: its disk stayed `Creating`. The spec already said one image volume per image and datastore. |
 | S29 | **Deleting a VM, or a disk, while the disk's create runs is taken, not refused**: a disk delete records `deletion_requested_at`, and the disk controller deletes the disk once the running attempt ends instead of starting another; a VM delete is recorded, its disks start no new create attempt, and its deletion waits for the running one (`DiskBusy`, every 2 s), then deletes its owned root disk as before. Other operations (resize, move, extend) still refuse with `409`. | A create that keeps failing holds the disk's busy mark almost all the time (each attempt starts as the last ends), so every delete was refused with `busy (create)` and the VM and its disk could not be cancelled. Deleting under a running create would let its result write the disk back, so the deletion waits for the attempt, which is bounded. |
+| S30 | **A hyperstor datastore whose pool is full refuses new disks** (open for review): the servers' probe reads the pool's `fullness` (hyperstor D27) with its space; while it is `full`, the node's row is marked `full` with a warning, and disk creation is refused with `507 insufficient_storage`, overcommit or not. A create that hyperstor refuses for it all the same (`pool_full`, resource exhausted) is `insufficient_storage` too: the disk waits, `Ready` false with reason `DatastoreFull` and one warning event, and tries again each minute. `nearfull` is a warning only. Existing disks are untouched: hyperstor still takes overwrites, and holds a VM's new writes for a while (hyperstor D183). | A full pool refuses new volumes (hyperstor D182), so a disk sent there can only fail; refusing it up front says why, and waiting a minute between tries keeps a filling cluster from a stream of refused calls (each audited by hyperstor), as the pilot saw with S25. Overcommit is about glidex's own estimate of space, not about a pool that has none. |
 
 ## 3. What changes, at a glance
 
@@ -1088,7 +1089,9 @@ the identity (`ApiUnavailable`), and gives the pool's usable total and
 free bytes (S27), from the first address whose member knows them. Sizes
 are 0 on agents, and on servers when hyperstor doesn't report them (before
 hyperstor D156, or while a device is yet to report). `overcommit: false`
-is accepted and checked against them.
+is accepted and checked against them. The same answer gives the pool's
+fullness (hyperstor D27): `full` marks the row and refuses new disks,
+`nearfull` adds a warning (S30).
 
 **Images on hyperstor** use the image volume, not a copy of the image
 file: `Datastore::holds_image_files` is true only for `shared-dir`
@@ -1124,6 +1127,13 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
   certificates last longer than the tests); a stale hold preempted
   between two real nodes, and a node's probe letting go of a hold
   (S26: unit tests only).
+- **Full pools (S30):** the probe's fullness, the refusal at creation
+  and the controller's wait. Tests: `a_full_datastore_refuses_new_disks`
+  (a row marked full refuses a disk with `507`, overcommit or not;
+  cleared, the disk goes) and
+  `datastore::hyperstor::tests::a_full_pool_is_insufficient_storage`.
+  Not checked against a real full pool; the controller's minute wait
+  has no test of its own.
 - **Failed creations (S25), found installing on a pilot host** against a
   three-member map service: `hyperstorctl --map` took one address
   (hyperstor I176), so the fill failed; the deleted image volume then

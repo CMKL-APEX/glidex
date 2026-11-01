@@ -624,6 +624,14 @@ gxctl datastore create hs1 --hyperstor 10.0.0.5:8850,10.0.0.6:8850 --pool 1 --to
   With `--no-overcommit`, a disk larger than the pool's free space is
   refused (`507 insufficient_storage`).
 
+While the pool is **full** (past hyperstor's full ratio), new disks on
+the datastore are refused with `507 insufficient_storage`, overcommit
+or not, and `gxctl datastore show` says so on each server's line. A
+disk whose creation hyperstor refuses for it waits (`DatastoreFull`)
+and is tried again each minute, so freeing space (purging hyperstor's
+trash, adding a device) lets it finish. Disks already there keep
+working. A nearly full pool is a warning only.
+
 **Web UI:** **Datastores**, **Add Datastore**, *hyperstor cluster*: the
 **Name**, the **Cluster API** addresses, the **Pool** and the **Token**.
 

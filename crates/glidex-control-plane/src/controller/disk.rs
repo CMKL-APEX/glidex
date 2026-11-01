@@ -371,6 +371,33 @@ impl VmManager {
                 self.images.put_disk(&d)?;
                 Ok(Some(Duration::from_secs(3)))
             }
+            Err(e @ ImageError::InsufficientStorage { .. }) => {
+                // A hyperstor pool that filled up (S30): wait for space,
+                // asking again each minute, not at the error backoff.
+                let mut d = latest;
+                let first = !d
+                    .conditions
+                    .iter()
+                    .any(|c| c.kind == "Ready" && c.reason == "DatastoreFull");
+                d.phase = DiskPhase::Pending;
+                set_cond(
+                    &mut d.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "DatastoreFull",
+                    e.to_string(),
+                );
+                let event = first.then(|| {
+                    Event::new(
+                        "controller",
+                        EventKind::Warning,
+                        "DatastoreFull",
+                        format!("waiting for space: {e}"),
+                    )
+                });
+                self.put_disk_with_event(&d, event)?;
+                Ok(Some(Duration::from_secs(60)))
+            }
             Err(e @ (ImageError::InvalidDisk { .. } | ImageError::InvalidImage(_))) => {
                 let mut d = latest;
                 d.phase = DiskPhase::Failed;
