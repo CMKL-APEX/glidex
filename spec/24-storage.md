@@ -1529,3 +1529,18 @@ two separate clients. Everything was removed afterwards.
   `logical_block_size` 512 and `physical_block_size` 4096. Checked on
   the dev host on 2026-10-23, with `hyperstor-vhost` from hyperstor's
   512e change.
+
+**H10. A disk detached from a running VM (D11; #229).**
+- Checked on the prism cluster on 2026-11-01, main at 3d4cb67: a VM on
+  prism1 (Cloud Hypervisor, `ubuntu-26.04` linked on `hs`) and a 1 GiB
+  blank data disk on `hs`. Attaching bound the disk's worker to prism1,
+  the VM's node.
+- Detached while the VM ran: the disk stayed attached to it and a
+  delete was refused (`409`, "attached to VM"), as D11 says.
+- Stopped: the disk was released within a second (event `Released`),
+  and deleting it then succeeded.
+- A second disk detached while running, then the VM deleted without a
+  stop: the disk was released with the VM, and could be deleted.
+- Not run: the VM's node and the disk's worker on different nodes
+  (the case #229 fixed); attaching binds the worker to the VM's node,
+  so it takes a worker that moves while the disk is attached.
