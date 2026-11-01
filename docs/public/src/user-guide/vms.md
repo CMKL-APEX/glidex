@@ -304,7 +304,15 @@ in the VM's details. See [Networks](networks.md).
 `data_disks` lists disks of the project (names or ids), attached in
 order after the boot disk. A disk is attached to one VM at a time.
 
-To attach or detach a disk later:
+To attach or detach a disk later: under **Disks** on the VM's page,
+pick a free disk of the project and **Attach**, or **Detach** one; or
+
+```
+gxctl> attach-disk my-vm data-1
+gxctl> detach-disk my-vm data-1
+```
+
+or with the API:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -313,8 +321,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
   -X DELETE https://host.example.org:8841/vms/<id>/disks/data-1
 ```
 
-On a running VM the change applies at the next start. See
-[Images and disks](images-and-disks.md).
+On a running VM the change applies at the next start (`gxctl` says
+so). See [Images and disks](images-and-disks.md).
 
 ### PCI devices
 
@@ -554,8 +562,10 @@ boot disk, the firmware and host paths can't be changed.
 
 The web UI and `gxctl` have no edit form for most settings. Both change
 the vCPUs and the elastic range (**Scale CPU / Elasticity** on the VM's
-page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), and `gxctl`
-changes PCI devices (`attach-device`, `detach-device`).
+page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), the memory
+(**Change memory** on the VM's page, `gxctl memory my-vm 8G`) and data
+disks ([Data disks](#data-disks)), and `gxctl` changes PCI devices
+(`attach-device`, `detach-device`).
 
 A change to vCPUs, memory, kernel arguments, the credential, hugepages,
 policies, device pool requests, networks or data disks of a running VM

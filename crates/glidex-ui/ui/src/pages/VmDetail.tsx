@@ -29,6 +29,7 @@ import VmUsage from "../components/VmUsage";
 import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
 import VmCpuScale from "../components/VmCpuScale";
+import VmMemory from "../components/VmMemory";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -245,6 +246,7 @@ export default function VmDetail() {
                 <p className="text-lg font-semibold text-gray-900">
                   {vm.mem_size_mib} MiB
                 </p>
+                <VmMemory vm={vm} onChanged={fetchVm} />
               </div>
               {vm.nics && vm.nics.length > 0 && (
                 <div>

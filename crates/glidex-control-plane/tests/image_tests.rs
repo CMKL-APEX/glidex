@@ -2305,3 +2305,143 @@ async fn kernel_from_disk_requests() {
     let (status, _) = request(&app, "POST", "/vms/nope/extract-kernel", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// One gRPC call (binary protobuf, auth off): the reply message, or the
+/// `grpc-status` of a failure.
+async fn grpc_call<Q: buffa::Message, R: buffa::Message>(
+    app: &Router,
+    path: &str,
+    req: &Q,
+) -> Result<R, String> {
+    let msg = req.encode_to_vec();
+    let mut body = vec![0u8];
+    body.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    body.extend_from_slice(&msg);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", "application/grpc")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let headers = resp.headers().clone();
+    let collected = resp.into_body().collect().await.unwrap();
+    let status = collected
+        .trailers()
+        .and_then(|t| t.get("grpc-status").cloned())
+        .or_else(|| headers.get("grpc-status").cloned());
+    let status = status.map(|s| s.to_str().unwrap().to_string());
+    if status.as_deref() != Some("0") {
+        return Err(status.unwrap_or_default());
+    }
+    let b = collected.to_bytes();
+    let len = u32::from_be_bytes([b[1], b[2], b[3], b[4]]) as usize;
+    Ok(R::decode_from_slice(&b[5..5 + len]).unwrap())
+}
+
+/// Memory and data disks over native gRPC, the RPCs gxctl and the web UI
+/// use (`UpdateVm` `mem_size_mib`, `AttachDisk`, `DetachDisk`).
+#[tokio::test]
+async fn memory_and_data_disks_over_grpc() {
+    use glidex_api::proto::glidex::vm::v1::*;
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let (app, _manager) = create_app(tmp.path());
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({"name": "data-1", "size_bytes": 64 * MIB})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{d}");
+    let disk_id = ready_disk(&app, "data-1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": "g1", "vcpu_count": 1, "mem_size_mib": 512,
+            "kernel_image_path": "/k", "rootfs_path": "/r"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let vm_id = id_of(&vm);
+
+    let r: UpdateVmResponse = grpc_call(
+        &app,
+        "/glidex.vm.v1.VmService/UpdateVm",
+        &UpdateVmRequest {
+            id: vm_id.clone(),
+            change: VmChange {
+                mem_size_mib: 2048,
+                ..Default::default()
+            }
+            .into(),
+            update_mask: buffa_types::google::protobuf::FieldMask {
+                paths: vec!["mem_size_mib".into()],
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.vm.as_option().unwrap().mem_size_mib, 2048);
+
+    // By name, as gxctl passes it.
+    let r: AttachDiskResponse = grpc_call(
+        &app,
+        "/glidex.vm.v1.VmService/AttachDisk",
+        &AttachDiskRequest {
+            id: vm_id.clone(),
+            disk: "data-1".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.vm.as_option().unwrap().data_disks, vec![disk_id.clone()]);
+    let (_, d) = request(&app, "GET", "/disks/data-1", None).await;
+    assert_eq!(disk_of(&d)["attached_to"], vm_id.as_str(), "{d}");
+
+    let r: DetachDiskResponse = grpc_call(
+        &app,
+        "/glidex.vm.v1.VmService/DetachDisk",
+        &DetachDiskRequest {
+            id: vm_id.clone(),
+            disk: disk_id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(r.vm.as_option().unwrap().data_disks.is_empty());
+    let (_, d) = request(&app, "GET", "/disks/data-1", None).await;
+    assert!(disk_of(&d)["attached_to"].is_null(), "{d}");
+
+    // A refusal is a gRPC status: no such disk.
+    let r: Result<AttachDiskResponse, _> = grpc_call(
+        &app,
+        "/glidex.vm.v1.VmService/AttachDisk",
+        &AttachDiskRequest {
+            id: vm_id,
+            disk: "nope".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(r.err().as_deref(), Some("5"), "NOT_FOUND");
+}
