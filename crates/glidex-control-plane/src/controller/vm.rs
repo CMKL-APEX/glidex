@@ -120,6 +120,10 @@ fn launch_relevant(spec: &VmSpec) -> serde_json::Value {
         "max_vcpus": max_vcpus_repr,
         "mem_size_mib": c.mem_size_mib,
         "kernel_args": c.kernel_args,
+        // The kernel booted, by hand or followed from the guest: both
+        // take effect at the next launch (spec/23-kernel-boot.md K12).
+        "kernel_image": c.kernel_image,
+        "kernel_from_disk": c.kernel_from_disk,
         "credential": c.credential,
         "hugepages": c.hugepages,
         "data_disks": c.data_disks,
@@ -2365,6 +2369,23 @@ mod tests {
             let d = manager.images.get_disk(id).unwrap();
             assert_eq!((d.attached_to, d.owner), (None, None), "{id}");
         }
+    }
+
+    #[test]
+    fn launch_relevant_counts_the_kernel() {
+        let spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r",
+                "kernel_args": "", "kernel_image": "k1",
+            }
+        }))
+        .unwrap();
+        let mut other = spec.clone();
+        other.config.kernel_image = Some("k2".into());
+        assert_ne!(launch_relevant(&spec), launch_relevant(&other));
+        let mut follow = spec.clone();
+        follow.config.kernel_from_disk = true;
+        assert_ne!(launch_relevant(&spec), launch_relevant(&follow));
     }
 
     #[test]
