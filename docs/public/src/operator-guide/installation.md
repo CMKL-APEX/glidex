@@ -17,10 +17,8 @@ changes what is missing or outdated.
 - `git` and a Rust toolchain (`cargo`) to build and run the installer
   itself. The installer keeps Rust up to date with `rustup` afterwards.
 - Internet access to the distribution's package mirrors and to GitHub
-  (Cloud Hypervisor, its firmware, Bun). Rustup, Bun and the Cloud
-  Hypervisor firmware are checked against a pinned SHA-256 before use;
-  the Cloud Hypervisor binary is fetched over HTTPS from its pinned
-  release, without a checksum.
+  (Cloud Hypervisor, its firmware, Bun). Rustup, Bun, Cloud Hypervisor
+  and its firmware are checked against a pinned SHA-256 before use.
   Once running, Glidex itself also connects out for image downloads,
   logins and, if you use them, directory sync and kernel extraction:
   see [Outbound connections](configuration.md#outbound-connections).
