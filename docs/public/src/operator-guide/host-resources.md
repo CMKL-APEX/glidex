@@ -34,8 +34,8 @@ gxctl pci                              # this host's PCI devices, with NUMA node
 gxctl pci 0000:41:00.0                 # one device, and why it isn't ready
 ```
 
-`<node>` is a node name or id. In the web UI, a node's page (**Cluster**
-→ a node) has a **Topology** card: one column per NUMA node with its
+`<node>` is a node name or id. In the web UI, a host's page (**Hosts**,
+or **Cluster** → a node) has a **Topology** card: one column per NUMA node with its
 CPUs, memory, hugepages and devices, then devices with no NUMA node,
 the reserved CPUs, and the warnings.
 

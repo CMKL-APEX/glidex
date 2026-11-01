@@ -1,21 +1,31 @@
 # Introduction
 
 Glidex is a control plane for KVM virtual machines. It runs VMs on
-[Cloud Hypervisor](https://www.cloudhypervisor.org/) (the default) or
-[QEMU](https://www.qemu.org/), and you drive it from a web UI, the
+[Cloud Hypervisor](https://www.cloudhypervisor.org/) (the default),
+[QEMU](https://www.qemu.org/) or Pylon, a Cloud Hypervisor fork for
+elastic VMs, and you drive it from a web UI, the
 `gxctl` CLI, or its REST and RPC APIs. It runs on a single Linux host,
 or on many hosts joined into one cluster.
 
 ## Features
 
-- **Two hypervisors, one feature set.** Cloud Hypervisor and QEMU both
-  boot distribution cloud images through UEFI firmware, take networks,
-  disks and PCI (VFIO) devices, and support pause, resume and graceful
-  shutdown.
+- **Three hypervisors, one feature set.** Cloud Hypervisor, QEMU and
+  Pylon all boot distribution cloud images through UEFI firmware, or a
+  kernel directly, take networks, disks and PCI (VFIO) devices, and
+  support pause, resume and graceful shutdown.
+- **Elastic CPU.** A VM can have a range of vCPUs and a CPU weight. On
+  Pylon the host parks idle vCPUs in microseconds; on Cloud Hypervisor
+  and QEMU you change a running VM's vCPUs within the range.
 - **Images and disks.** Pull checksum-verified cloud images (Ubuntu,
-  Debian, Fedora) from a built-in catalog, or any image from an HTTPS
-  URL. Each VM gets a thin root disk linked to its image, grown together
-  with its root partition.
+  Debian, Fedora, AlmaLinux) from a built-in catalog, or any image from
+  an HTTPS URL. Each VM gets a thin root disk linked to its image, grown
+  together with its root partition.
+- **Datastores.** Keep disks on each node's own disk, on a shared
+  filesystem (NFS, CephFS), in LVM-thin pools, or in a hyperstor
+  cluster, and move them between datastores.
+- **GPUs and host resources.** Pass through GPUs and other PCI devices,
+  by address or from device pools shared out to projects, with NUMA
+  placement, dedicated CPUs and hugepages.
 - **Guest logins.** Store a username with a password and/or SSH keys
   once, and pick it when you create a VM. Glidex puts it into a
   cloud-init seed it generates for the VM.
@@ -25,8 +35,12 @@ or on many hosts joined into one cluster.
 - **Console.** Each VM's serial console in the browser or in `gxctl`,
   shared by any number of clients and logged to disk.
 - **Projects and access control.** Projects with members and quotas,
-  roles and teams, API tokens, login with local accounts (PAM) or OIDC,
-  Cedar policies, and an audit log.
+  roles and teams, tenants and directories, API tokens, login with
+  local accounts (PAM), single sign-on (OIDC, Google, JumpCloud) or
+  passkeys, invitations, Cedar policies, and an audit log.
+- **Workload identity.** Software in a VM gets short-lived identity
+  tokens, and can act as a service account, from the VM's metadata
+  endpoint, with no secret stored in the guest.
 - **Usage.** Metered CPU, memory, disk and network use, per project,
   VM, disk or network, by hour, day or billing month.
 - **Clustering.** Many hosts act as one. Servers keep the cluster's

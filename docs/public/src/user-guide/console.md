@@ -47,6 +47,10 @@ is replayed. If the console closes (the VM stopped, or the control
 plane restarted), or reconnecting fails five times, click **Reconnect**. **Back to VM** leaves the console;
 closing the page detaches without affecting the VM.
 
+In a cluster, the console opens from any server's web UI, whichever
+node the VM runs on, also behind a load balancer. If the cluster's
+leader changes just as the console opens, it fails once: open it again.
+
 ### Terminal
 
 The **Terminal:** menu at the top picks the terminal the page draws

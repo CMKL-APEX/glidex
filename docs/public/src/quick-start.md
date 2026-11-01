@@ -46,6 +46,10 @@ sets up these systemd services:
 - `glidex-ui`: the web UI, running as `glidex-ui`.
 - `glidex-authd`: checks local account passwords (PAM) for the web UI.
 
+It also sets up helper services the control plane uses: `glidex-netd`
+(host networking), `glidex-stord` (LVM-thin volumes) and `glidex-metad`
+(the metadata endpoint VMs reach).
+
 When it finishes, it prints a summary like this:
 
 ```text
@@ -198,9 +202,11 @@ default shown in brackets. For an Ubuntu VM on Cloud Hypervisor:
 ```text
 $ gxctl create
 VM name: my-vm
+GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional):
 vCPU count [1]: 2
 Memory (MiB) [512]: 2048
-Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
+Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor):
+Configure elastic CPU scaling (min/max vCPUs, weight)? [y/N] [n]:
 UEFI firmware [...] [cloudhv-edk2]:
 Boot disk from [image/disk/path] [image]:
 Image (ubuntu-26.04) [ubuntu-26.04]:
@@ -210,6 +216,7 @@ cloud-init seed image (optional, default: auto-generated):
 Login credential (...) [alice]:
 Networks (comma-separated; available: default; 'none' for no NIC) [default]:
 VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
+Device pools (comma-separated pool[:count], e.g. a100:2; optional):
 VM created successfully!
 ```
 

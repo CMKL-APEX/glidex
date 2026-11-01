@@ -13,10 +13,15 @@ too: `GET /watch` (server-sent events) is `WatchService.Watch`, and the
 console WebSocket is `VmService.Console`.
 
 - **Only on REST**: `/health`, `/auth/methods`, browser login and
-  logout, OIDC and connector login redirects, CSV exports, the cluster
-  snapshot, `/system/reconcile`, and the [SCIM
+  logout, OIDC and connector login redirects, the browser's accounts
+  (`/auth/accounts`), the [passkey ceremonies](rest.md#passkeys), the
+  [token exchange](rest.md#token-exchange-for-workloads), a directory's
+  OpenID endpoints (`/d/{directory}/…`), CSV exports, the cluster
+  snapshot, `/system/reconcile`, the [SCIM
   endpoints](rest.md#scim-20-for-identity-providers) identity providers
-  call.
+  call, and the [endpoints](rest.md#trust-between-organizations)
+  clusters and directories of different organizations call on each
+  other.
 - **Only on RPC**: the gRPC health service, server reflection (on
   `api.sock`) and `WatchService.WatchEvents` (one object's events as
   they happen).
@@ -71,8 +76,9 @@ once), with `gxctl auth login`, or from the web UI. See
 [Authentication](../operator-guide/authentication.md).
 
 A few operations need no credential: `GET /health`, `GET /auth/methods`,
-`GET /auth/server-info` and the login endpoints. The SCIM endpoints take
-only their connector's SCIM token. Everything else is
+`GET /auth/server-info`, the login endpoints and a directory's public
+OpenID endpoints. The SCIM endpoints take only their connector's SCIM
+token, and the endpoints between organizations a signed peer request. Everything else is
 authorized against the caller's roles and the site's Cedar policies
 ([Access control](../operator-guide/access-control.md)). A missing
 permission is `403 forbidden`; a resource in a project you can't read

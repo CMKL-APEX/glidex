@@ -23,6 +23,11 @@ bridges it waits for `--allow-ovs-restart`. If you turned DPDK on with
 `gxctl` or the web UI and want to keep it, pass `--ovs-profile dpdk`
 once. See [Back to the kernel profile](host-networking.md#back-to-the-kernel-profile).
 
+On a cluster member, a re-run also upgrades OVN when the cluster's
+`ovn-northd` is newer than the node's `ovn-controller`; see [OVN on
+cluster members](installation.md#ovn-on-cluster-members). After you
+upgrade OVN on the servers, re-run the installer on the other nodes.
+
 Browsers check for a new web UI every time they load a page, so a
 reload is enough to get it. A tab left open from before the update
 keeps the old UI, and may fail to open pages it hadn't loaded yet:
@@ -165,6 +170,9 @@ journalctl -u glidex-netd
 journalctl -u glidex-ui
 journalctl -u glidex-authd
 journalctl -u glidex-stord               # LVM-thin volumes, device access
+journalctl -u glidex-metad               # the guests' metadata endpoint
+journalctl -u glidex-pylond              # Pylon hosts
+journalctl -u glidex-vfio-boot -b        # what the boot binding did
 journalctl -u glidex-vm@<vm-id>          # one VM's shim and hypervisor
 journalctl -u 'glidex-vm@*' --since today
 ```
@@ -204,13 +212,14 @@ services and `glidex-netd`, tears down host networking (uplinks give
 the host's address back to its NIC), and removes units, binaries and
 installer-written configuration. Your data in
 `/var/lib/glidex-control-plane`, your files in `/etc/glidex`, Open
-vSwitch and `cloud-hypervisor` stay unless you ask:
+vSwitch, `cloud-hypervisor`, `pylon` and `pylond` stay unless you ask:
 
 | Option | Also removes |
 | --- | --- |
 | `--remove-ovs` | Open vSwitch (packages or the source build in `/opt/glidex`). |
 | `--reset-dpdk` | DPDK settings Glidex put in OVS. |
 | `--remove-cloud-hypervisor` | The `cloud-hypervisor` binary. |
+| `--remove-pylon` | The `pylon` and `pylond` binaries. |
 | `--purge-user-data` | `/var/lib/glidex-control-plane` (VMs, credentials, images, disks), `~/.glidex`, and `control-plane.json`, `netd.json` and `policies/` in `/etc/glidex`. |
 
 `-y` / `--yes` skips the confirmation. Back up first if you might want
@@ -224,6 +233,9 @@ unless `--purge-user-data`.
 
 On a cluster node, take the node out of the cluster first
 ([Remove an empty node](clusters.md#remove-an-empty-node) or
-[Detach](clusters.md#detach-a-node-with-its-vms)), then uninstall.
-
-<!-- TODO(verify): what uninstall does on a host that is still a cluster member (it doesn't check for membership in the code reviewed). -->
+[Detach](clusters.md#detach-a-node-with-its-vms)), then uninstall. The
+uninstaller doesn't check: on a host that is still a member it stops
+the node's VMs and services like on any host, and the cluster sees the
+node as unreachable. Its cluster identity stays in
+`/var/lib/glidex-control-plane/.glidex/cluster/` unless
+`--purge-user-data`.

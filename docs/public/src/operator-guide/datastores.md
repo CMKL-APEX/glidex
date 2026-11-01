@@ -522,9 +522,10 @@ can be placed again only on the node that has the volume.
 ### Metering
 
 `disk.stored` for a volume is the pool space it holds, not its size.
-For a file it is still the file's allocated size.
-
-<!-- TODO(verify): whether a linked volume's disk.stored counts blocks it still shares with the image volume (stord's data_percent × size). -->
+For a file it is still the file's allocated size. For a linked volume
+it is what LVM reports as mapped, which includes the blocks it still
+shares with its image volume, so the linked disks of one image together
+can count more than the pool holds.
 
 ### Thin pool space
 
@@ -590,15 +591,16 @@ held disk is waited for as before.
 
 On each node that should run VMs from hyperstor disks:
 
-- install hyperstor's `hyperstor-vhost` and run it for the cluster's
-  map service, with its default directory (`/run/hyperstor/vhost`),
-  `--allow-uid` naming the `glidex` user (so that Glidex may use its
-  control socket) and `--group` the `glidex` group (so that the
-  hypervisors may open its disks' sockets);
+- run hyperstor's `hyperstor-vhost` for the cluster's map service, with
+  its default directory (`/run/hyperstor/vhost`), letting the `glidex`
+  user use its control socket and giving its disks' sockets the
+  `glidex` group, so that the hypervisors may open them. hyperstor's
+  installer does this: `hyperstor-install install --vhost --vhost-user
+  glidex` on a host that already runs a hyperstor role, or
+  `hyperstor-install install --role vhost --map ADDR[,ADDR...]
+  --vhost-user glidex` on a host that only runs VMs;
 - install `hyperstorctl`: Glidex writes images into volumes and edits
   their partitions with it.
-
-<!-- TODO(verify): hyperstor's installer doesn't set up hyperstor-vhost as a service yet; the unit and its --allow-uid for glidex are to be written with it. -->
 
 Servers also need to reach the cluster's API (port 8850 by default):
 they do the volume operations, because only they hold Glidex's
@@ -611,7 +613,7 @@ it to Glidex in a file:
 
 ```bash
 hyperstorctl token create --role mgmt --name glidex > glidex.token
-gxctl datastore create hs1 --hyperstor 10.0.0.5:8850,10.0.0.6:8850 --pool 1 --token-file glidex.token
+gxctl datastore create hs1 --hyperstor 192.0.2.21:8850,192.0.2.22:8850 --pool 1 --token-file glidex.token
 ```
 
 - `--hyperstor API,...`: the cluster API's addresses, tried in turn.
@@ -649,10 +651,11 @@ API answers with Glidex's identity (`ApiUnavailable`).
 
 Free and total space are the pool's, as hyperstor reports them: usable
 space, after its copies or erasure coding. Servers read them from the
-cluster's API; other nodes show 0, and so does a server whose hyperstor
-doesn't report space yet (before hyperstor's D156, or while one of the
-pool's devices is yet to report). `gxctl datastore list` shows the most
-any node reports. Pools of one hyperstor cluster that share devices each
+cluster's API; other nodes report none (`0` in `gxctl datastore show`,
+`—` on the **Datastores** page), and so does a server whose hyperstor
+doesn't report space yet (a hyperstor too old to report it, or while one of the
+pool's devices is yet to report). `gxctl datastore list` and the
+**Datastores** page show the most any node reports. Pools of one hyperstor cluster that share devices each
 count the same free space.
 
 ### What is different from a directory
@@ -666,7 +669,9 @@ count the same free space.
   `hyperstorctl`, not a block device.
 - **Moves** onto or off a hyperstor datastore aren't supported yet.
 - **Placing a lost VM again** (`--fenced`) takes its disks' leases from
-  the forgotten node; nothing else does.
+  the forgotten node at its next start. Otherwise a VM takes only holds
+  that another node's `hyperstor-vhost` left behind (see above); a hold
+  of a disk operation is waited for.
 - **Metering** reports the disks' size, not the space they use.
 
 ### Deleting
@@ -721,8 +726,8 @@ disk on the default datastore) and when a disk is moved to it.
   ([detach](clusters.md#detach-a-node-with-its-vms)) can't take its disks
   on node-local datastores other than `local` along: move them to
   `local` first.
-- The status rows of a node that left stay listed until the datastore
-  is deleted.
+- A node that leaves the cluster drops out of each datastore's status
+  within a minute; a node that is only down keeps its last status.
 - Existing data can't be registered as a datastore: Glidex doesn't take
   over a directory that already has files in it.
 - Block storage is node-local LVM-thin only: no shared LVM, no Ceph

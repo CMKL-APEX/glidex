@@ -322,6 +322,7 @@ same ids and names.
 |  | `ListNetworkEvents` | `GET /networks/{id}/events` |
 |  | `GetNetworkOvn` | `GET /networks/{id}/ovn` |
 |  | `GrantNetwork` | `PUT /networks/{id}/grants` |
+|  | `SetNetworkHostApi` | `PUT /networks/{id}/host_api` |
 |  | `CreateProjectNetwork` | `POST /projects/{id}/networks` |
 |  | `SetNetworkRouter` | `PUT /projects/{id}/networks/{network}/router` |
 | `NetworkShareService` | `OfferNetworkShare` | `POST /networks/{id}/shares` |
@@ -445,6 +446,7 @@ same ids and names.
 |  | `ListOffers` | `GET /admissions/offers` |
 |  | `RevokeOffer` | `DELETE /admissions/offers/{id}` |
 |  | `ListTrustedDirectories` | `GET /admissions/directories` |
+|  | `SetTrustedDirectory` | `PATCH /admissions/directories/{id}` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
 | `DirectoryService` | `ListDirectories` | `GET /directories` |

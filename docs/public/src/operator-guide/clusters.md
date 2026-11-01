@@ -508,7 +508,7 @@ needs these:
   its scripts from a server with another build (`404` on
   `/assets/index-….js`). Two hosts building the same commit can still
   produce different files. Build once and install that build everywhere
-  (`glidex-install --prebuilt` from a workspace holding it), and turn on
+  (`./target/release/glidex-install --prebuilt` in a workspace holding it), and turn on
   session affinity by cookie in the load balancer, which also covers a
   rolling upgrade.
 - **Sign-ins per server.** A password (PAM) sign-in belongs to the server
@@ -517,7 +517,9 @@ needs these:
   makes a new user without roles. Link the account on every server to
   its user once (`gxctl user link alice pam alice --all-nodes`; see
   [Linking a sign-in](authentication.md#linking-a-sign-in-to-a-user)),
-  or give the roles to each user.
+  or give the roles to each user. If the servers share one account
+  database (LDAP, say), set `cluster.shared_local_accounts` instead:
+  an account name is then the same person on every node.
 - **The browser's address.** A tunnel daemon on the server (Cloudflare's
   `cloudflared`) connects to the UI from `127.0.0.1`. Set
   `GLIDEX_UI_CLIENT_IP_HEADER` to the header it puts the browser's
@@ -542,14 +544,16 @@ needs these:
   instead (Cloudflare's *Browser Cache TTL*) can keep a `404` in browsers
   for hours, such as one served while a server was being upgraded. Set
   it to respect the origin's headers.
-- **No affinity needed.** Any server can take any request: a server
+- **Requests need no affinity.** Apart from the script files above,
+  any server can take any request: a server
   forwards writes to the leader with the page's `Origin` and, for account
   changes, passkeys and sign-ins through an identity provider, its
   cookies. The leader runs both ends of a sign-in through an identity
   provider (its start and the provider's callback), so the callback may
   reach another server than the start did. It also issues and redeems
   console tickets, so the ticket and the console's WebSocket may reach
-  different servers.
+  different servers. A ticket lasts 30 seconds; if the leader changes
+  in that time, open the console again.
 
 ## Rolling upgrades
 

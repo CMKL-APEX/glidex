@@ -61,7 +61,7 @@ kernel always matches the modules on the image's disk.
   *extracting* and prints the kernel's release and command line.
 - To take the kernel out of an image you already have, including one
   pulled from a URL: **Extract kernel** on the image under **Images**,
-  `gxctl image extract-kernel my-image`, or
+  `gxctl image extract-kernel my-image [--name <name>]`, or
 
   ```bash
   curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -76,19 +76,26 @@ host. It builds that VM the first time it extracts, from pinned Debian
 packages for the image's architecture (a one-time download of about
 35 MB on x86_64, 30 MB on aarch64).
 
-That VM runs under KVM, so an image's kernel is extracted only on a
-host of the image's architecture:
+That VM runs under KVM, so an image's kernel is extracted on a host of
+the image's architecture:
 
 | Image | Extracted on |
 |---|---|
 | x86_64 | an x86_64 host with Cloud Hypervisor or QEMU |
 | aarch64 | an aarch64 host with Cloud Hypervisor |
 
-An administrator can also turn extraction off (for a host without
-internet access, say). Where it can't run, `kernel_from` is refused
-with `400 invalid_image` and the reason, for example *kernels can't be
-extracted here: aarch64 kernels are extracted on a aarch64 host; this
-one is x86_64*, and catalog pulls bring only the disk image.
+In a cluster, the server you ask needn't be that host: when it can't
+extract the kernel itself, the extraction runs on another ready node of
+the image's architecture with KVM. So a cluster with one aarch64 node
+extracts aarch64 kernels whichever server takes the pull.
+
+An administrator can also turn extraction off on a host (for a host
+without internet access, say). Where no node can run it, `kernel_from`
+is refused with `400 invalid_image` and the reason, for example
+*kernels can't be extracted here: aarch64 kernels are extracted on a
+aarch64 host; this one is x86_64* (in a cluster, followed by *and no
+other ready node is aarch64 with KVM*), and catalog pulls bring only
+the disk image.
 
 If extraction fails, only the kernel image fails, with the reason; the
 disk image stays ready and firmware boot is unaffected. **Retry** in
@@ -210,8 +217,9 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   Until it has one, the VM waits with the condition `DisksReady`
   `False` (*kernel &lt;name&gt; has not been copied to this node yet*).
 
-**Web UI:** **Create VM**, **Boot Mode** **Direct kernel boot**. The
-**Kernel** choice replaces **UEFI Firmware**: pick a kernel image. Only
+**Web UI:** **Create VM**, **Advanced options**, **Boot Mode**
+**Direct kernel boot**. The **Kernel** choice (**A kernel image**)
+replaces **UEFI Firmware**: pick it under **Kernel Image**. Only
 the chosen image's own kernel is preselected; when it has none, the
 choice stays empty and **Extract it from the image** makes one. Other
 kernels are listed as *— from &lt;image&gt;*, and picking one shows a
@@ -238,8 +246,9 @@ directly instead of a kernel image:
 | `initrd_path` | Its initramfs, optional; distro kernels need one. Only with `kernel_image_path`. |
 | `rootfs_path` | A root filesystem or disk image, used as is. Over the API, `image` and `root_disk` work too. |
 
-In the web UI: **Direct kernel boot**, then **Kernel** **Kernel files on
-the host**, with the kernel and initramfs paths; a root filesystem file
+In the web UI: under **Advanced options**, **Direct kernel boot**, then
+**Kernel** **Kernel files on the host (administrators)**, with the
+kernel and initramfs paths; a root filesystem file
 is the boot disk's path source. In `gxctl create`, answer `kernel` at
 *UEFI firmware*, give a host path at *Kernel*, then the *Initramfs path*
 (optional).
@@ -357,9 +366,12 @@ set it as the VM's `kernel` with `PATCH`.
 - It needs the `editor` role in the VM's project.
 - The VM must be stopped (`409 conflict` otherwise), boot a kernel
   image, and have a managed root disk (`400 invalid_config` otherwise).
-- On a cluster, send it to a server on a node that reaches the VM's
-  root disk; otherwise it is refused with `409`, naming the disk. A disk
-  being moved to another datastore is `409` too.
+- On a cluster, a disk on another node's own datastore is read on that
+  node; if that node can't extract now, the call is refused with `409`
+  (*disk … is on …, which can't extract … kernels now: …*). A disk the
+  server can't reach (on a shared datastore it doesn't mount, say) is
+  `409` too (*disk … is not reachable from this node: ask a server on a
+  node that has it*), and so is a disk being moved to another datastore.
 
 ## Kernel versions
 
@@ -402,7 +414,11 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   -d '{"change": {"kernel": "ubuntu-26.04-kernel"}, "update_mask": "kernel"}'
 ```
 
-<!-- TODO(verify): a kernel or kernel_from_disk change isn't counted in restart_required (launch_relevant leaves them out); confirm whether the VM should show RestartRequired. -->
+A change of `kernel` or `kernel_from_disk` on a running VM doesn't set
+`restart_required`, and the web UI doesn't say *Configuration changes
+take effect at the next start* for it: the VM boots the new kernel the
+next time you stop and start it. A `kernel_args` change does set it.
+
 The new kernel must be a ready kernel image of the same architecture.
 A firmware VM can't change to a kernel (`400 invalid_config`), and
 `kernel_image_path`, `initrd_path` and `generate_seed` can't be
@@ -413,8 +429,9 @@ changed.
 - Kernel boot has no UEFI firmware, so no Secure Boot and no UEFI
   variables.
 - Kernel extraction runs only on a host of the image's architecture
-  (x86_64 or aarch64), and on aarch64 only with Cloud Hypervisor.
-  Elsewhere, add kernel images from a URL or host files.
+  (x86_64 or aarch64), and on aarch64 only with Cloud Hypervisor; in a
+  cluster, on any ready node of it. Where there is none, add kernel
+  images from a URL or host files.
 - With a host-path kernel, the file must exist on the VM's node; Glidex
   doesn't copy it.
 
