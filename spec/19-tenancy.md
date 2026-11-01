@@ -116,7 +116,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D39 | Google accounts | The `google` preset serves **Google Workspace** (`accounts: workspace`, the default) and **consumer Google accounts** (`accounts: any`). Workspace logins are allowed by the ID token's `hd` claim, which must be one of `settings.domains`, never by the email's domain. A consumer connector admits only people the directory already knows: an invitation (D40), an address in `allowed_emails`, or (with `jit: false`) a linked identity. It needs `email_verified`. No tenant claims a public mail domain (`gmail.com`, `googlemail.com`). | Anyone can open a consumer Google account under any email address, so only `hd` proves Workspace membership. Consumer logins are a way in for known people, not signup (D31). |
 | D40 | Invitations | A directory owner or a tenant admin invites an **email address** to a tenant, with a tenant role, through one connector. The invitation is a link with a secret. The first login through that connector that brings the secret, with a **verified** email equal to the invited one, takes it: once, within 7 days. Only a hash of the secret is stored. It works with `jit: false`. | A gated connector needs a way in that doesn't need the IdP's subject in advance. The invitation names the tenant and the role up front. |
 | D41 | A SCIM user meets its login | A user created by SCIM is a **managed user** of that connector, keyed by the SCIM `id` glidex assigns, with the IdP's `externalId` when it sends one (JumpCloud doesn't), `userName` and primary email. The first login through the **same** connector with no identity yet is matched to the one enabled managed user whose `external_id` equals the token's subject, else whose `userName` or primary email equals the token's **verified** email (case-insensitive). The identity `(connector, subject)` is then linked (D17) and later logins use it; a managed user that has an identity of the connector already isn't matched again. A connector with `provisioning: scim` lets in only its managed users: no JIT, no invitations and no added sign-ins (§6.2) through it. A `POST /Users` whose `userName` or email is that of an existing, unmanaged user who logs in through the same connector (one that had JIT before SCIM) adopts that user instead of making a second. | The login and the provisioning come from one IdP, through one connector, so its verified email is the same person; the IdP's SCIM and OIDC ids differ in general. Letting only provisioned users in makes the IdP the one place that decides who has an account. |
-| D42 | SCIM removal | `active: false` disables the user (D20, `disabled_reason: scim`); `active: true` enables it again, unless an administrator disabled it. `DELETE /Users/{id}` also disables it and ends the SCIM link (the SCIM `id` is gone; the user, its links and audit history stay). An administrator may then delete the user (§6.3). | An IdP deletes a user when it is unassigned from the app, which isn't a decision to erase its records; disabling closes the access at once either way. |
+| D42 | SCIM removal | `active: false` disables the user (D20, `disabled_reason: scim`); `active: true` enables it again, unless an administrator disabled it. `DELETE /Users/{id}` also disables it and ends the SCIM link (the SCIM `id` is gone; the user, its links and audit history stay). An administrator may then delete the user (§6.2). | An IdP deletes a user when it is unassigned from the app, which isn't a decision to erase its records; disabling closes the access at once either way. |
 | D43 | SCIM groups | Every SCIM group is kept (`scim_groups`: id, `displayName`, members), so the IdP's view round-trips. With `group_mode: auto` each group is a managed team (`managed_by`, `external_id` = the group's id, named after `displayName`); with `mapped`, members of a group named in `group_teams` (by `displayName` or id) are members of that team. Those memberships have `source: connector:<id>`, for enabled managed users only, and never replace a manual one. A group that is deleted leaves its `auto` team in place, unmanaged and without the connector's members, so the team's role links give nobody anything until an administrator decides. A SCIM connector doesn't sync groups at login (§6 step 2): SCIM is their source. | One source per membership; an unmapped group isn't an error, since IdPs push whatever is assigned. |
 | D44 | Who a pull brings in | A pulled connector names **Google groups**. Their members, nested groups' members included, are its **managed users**. They are keyed by the Directory API user `id`, which is the subject Google's ID tokens carry, so `external_id == sub` and a login is matched exactly, with no email match. Logins through it reach managed users only (as D41): no JIT, no invitations, no added sign-ins (§6.2). A user who logged in before the pull, with that subject, is adopted. Nobody outside the groups gets an account. | Pulling a whole Workspace domain would give every employee a user; the groups the administrator names are who is meant to use glidex. |
 | D45 | Leaving, in a pull | A managed user no longer in the groups, or **suspended** or **archived** in Google, or deleted there, is disabled (D20, `disabled_reason: sync`) and stays managed. One back in the groups and active is enabled again, unless an administrator disabled it. | A pull sees only the current state, so leaving and a group change look alike; staying managed lets the person come back without an administrator, while D20 closes the access at once. |
@@ -149,6 +149,9 @@ organizations that **operate** it, and lets each keep its own identity.
 | D72 | Logging out at a cluster | When a cluster session from a trusted directory's login ends (logout, an account removed, sign out of all), the cluster posts `POST /d/<dir>/trust/v1/logout {cluster_id, sid}`, signed with its key (`purpose: logout`), and the directory ends that chain if it is that cluster's (`cluster:<id>`). The person's session at the directory, and other clusters' chains, stay. Best effort: a chain not ended lapses unused (D55). | Logging out should leave nothing at the directory that could make the cluster session again; but one cluster's logout is not a decision to sign out of the organization. |
 | D73 | A changed web UI address | The cluster sends its current web UI callback with each report (D70); the directory takes it as the `ui_callback` of that `TrustedCluster` when it is an `http(s)` URL and differs, and audits the change (`registerCallback`). | The report is already signed with the cluster key that the handshake pinned, the same trust the redeem gave the first callback; asking the tenant to opt in again for a moved web UI was work for nothing. |
 | D74 | Audit per directory | A hosted directory's audit is its own (D27): entries whose principal is that directory's (or a system actor acting for it: its OIDC endpoints, its connectors' SCIM and sync, its tenants' federations) are kept in `directory_audit` (directory scope, keyed `<directory>/<time>-<seq>`), and in the cluster's `audit` only when they name a project of this cluster. Its directory auditors and administrators read it (`readDirectoryAudit` on its `Directory`; `ReadAudit` with `directory`, theirs by default); nobody else does, the host's operator included. It follows the cluster's retention and goes when the directory is deleted. `local` and trusted directories' replicas keep the cluster's audit. | Each organization's record of who did what stays its own, as its users and connectors do (D58); what happened to this cluster's resources stays in the cluster's audit for its operator. |
+| D75 | Verified addresses on `oidc` connectors | An `oidc` connector's login rules that read the email (`allowed_domains`, `allowed_emails`, invitations, pre-added users) need a **verified** one: `email_verified: true` in the token, or, with the connector's `trust_email: true` ("the IdP verifies its users' addresses", off by default), no `email_verified` claim at all. `email_verified: false` is always believed. A token without a verified email is refused at a connector with `allowed_domains`, as an email outside them is. | Some IdPs let a user type any address into their profile; a domain or address rule on an address nobody checked lets anyone in. Others (Entra ID) never send the claim, because the organization assigns its users' addresses: the operator says so for that connector, as the `jumpcloud` preset does for JumpCloud. |
+| D76 | An allowlist on `oidc` connectors | `oidc` connectors get `allowed_emails`, as `google` and `jumpcloud` have (D39): with it, JIT creates accounts for those verified addresses only. `allowed_domains` still gates every login through the connector; `allowed_emails` gates which logins may create an account. | "Anyone at our domain, but only these people get an account" without SCIM or invitations. |
+| D77 | Pre-added users | A directory administrator adds a user **by email** before they ever sign in: email, tenant, role and connector (`CreateUser` with `pending`). The user is created at once (display name the address's local part, `email` set), with its tenant membership and role, and a **pending login** `{connector, email}`. The first login through that connector whose verified email (D75) equals it, and that has no identity yet, binds its identity to that user and clears the pending login, even with `jit: false`. One pending login per connector and address in a directory; the address must pass the connector's `allowed_domains`. Connectors as for invitations (§6.1): `oidc` and `google`, not provisioned ones, and into the owner's or an operator's tenant only through one that requires MFA (D22). Removing is what it is for any user: disable, or delete. | The directory's administrators decide who is in from the Access page, with no link to send. Taking an account by verified email alone is what `allowed_emails` with JIT already allows; here the administrator also fixes the tenant and role. An invitation (D40) stays the way in for an address the administrator doesn't want to bind ahead, or for a person who may sign in with another address. |
 
 ## 3. Threat model additions
 
@@ -267,7 +270,7 @@ claim) and checks the rest. Each has a module under
 |---|---|---|---|---|
 | `google` | `accounts` (`workspace` default \| `any`), `client_id`, `domains` (Workspace: one or more), `allowed_emails`, `device_client_id`, `trust_2sv` (Workspace) | issuer `https://accounts.google.com`, scopes `openid email profile` | Workspace: `hd` ∈ `domains` (the `hd=` request parameter is only a hint for Google's account chooser). Consumer: `email_verified`, then an invitation, `allowed_emails`, or an existing identity | `trust_2sv: true` (the operator says the Workspace domain enforces 2-step verification) makes every login count as MFA; otherwise none does. Consumer: none |
 | `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/`, scopes `openid email profile` | as `oidc`; an email the token says nothing about counts as verified (the organization sets its users' addresses), `email_verified: false` is believed | `amr`/`acr` as `oidc` |
-| `oidc` | as today | — | as today | `amr` `mfa`, or `acr` ∈ `mfa_acr_values` |
+| `oidc` | as today, plus `allowed_emails` (D76) and `trust_email` (D75) | — | as today; an email rule needs a verified address (D75) | `amr` `mfa`, or `acr` ∈ `mfa_acr_values` |
 
 - **Two Google clients.** Google allows the device grant (gxctl) only
   for an OAuth client of type *TVs and Limited Input devices*. A
@@ -313,7 +316,9 @@ per step. Never returns secrets or directory contents beyond counts.
    - refuses if the connector is disabled;
    - looks up `(connector_id, subject)`;
    - if absent: takes the invitation the login brings (its secret, and
-     a verified email equal to the invited one, §6.1), else JIT-creates the user in the directory
+     a verified email equal to the invited one, §6.1), else binds to the
+     user pre-added for this connector and verified email (D77, §6.3),
+     else JIT-creates the user in the directory
      when `jit` and `required_groups`/domain/`allowed_emails` rules
      pass; refused otherwise (same error and timing as a wrong
      password);
@@ -408,6 +413,32 @@ Without linking, one person signing in two ways is two users.
 `Principal` gains `directory_id` and the acting `tenant_id`; Cedar's
 `Auth` context gains `mfa: Bool`, so site policies can require MFA
 (e.g. `forbid … host.cluster.critical unless context.auth.mfa`).
+
+### 6.3 Pre-added users (D77)
+
+- **Adding.** `CreateUser {display_name?, pending: {email, connector,
+  tenant, role}}` (`POST /users`): `manageUsers` on the directory,
+  `manageTenantMembers` on the tenant, and `manageTenantBindings` unless
+  the role is `member` (as `CreateInvitation`). It writes the `User`
+  (`email`, `pending_login {connector, email}`, lower case), its tenant
+  membership (`added_by: "preadd:<admin>"`) and the role link in one
+  write. Refused: a provisioned or disabled connector, a kind other than
+  `oidc` or `google` (`422 connector_not_allowed`); an address outside
+  the connector's `allowed_domains` (`422 email_not_allowed`); a pending
+  login for that connector and address already (`409 already_exists`);
+  D22's tenants through a connector without `require_mfa`.
+- **Signing in.** In the common path (§6 step 2), for an identity the
+  directory doesn't have yet and no invitation: a user of the connector's
+  directory with `pending_login` equal to `{connector, verified email}`
+  gets the identity (`put_identity`), and its `pending_login` is cleared,
+  in one write. A disabled pre-added user is refused like any disabled
+  user. `required_groups` and `require_mfa` still apply.
+- **Showing.** Users with a `pending_login` are listed with
+  *not signed in yet* and the connector. `UpdateUser` can't set
+  `pending_login`; deleting the user removes it with the user.
+- **gxctl.** `gxctl user add <email> --tenant T [--role R] --connector C`.
+- **Web UI.** The Access page's **Add user** (email, tenant, role,
+  connector), for `host.manageUsers`.
 
 ## 7. Using a cluster
 
@@ -1539,6 +1570,23 @@ useful on one host first):
 T7 gets its own task list when it starts; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
+**T8 tasks** (domain-scoped `oidc` connectors and pre-added users, D75–D77;
+one PR each, in order):
+
+1. **Verified addresses** (D75): `OidcSettings.trust_email`; the `oidc`
+   path's `email_verified` from the claim or `trust_email`;
+   `allowed_domains` needing a verified address; the connector form's
+   checkbox; tests (verified, missing with and without `trust_email`,
+   `false`), docs.
+2. **`allowed_emails` on `oidc`** (D76): `OidcSettings.allowed_emails`,
+   `Connector::allowed_emails`, the form's field; tests, docs.
+3. **Pre-added users** (D77, §6.3): `User.pending_login`;
+   `CreateUserRequest.pending` and its checks; binding at login;
+   `ListUsers` showing it; gxctl `user add`; the Access page's **Add
+   user** and *not signed in yet*; tests (bound once, refused for an
+   unverified or other address, another connector, a provisioned
+   connector, a duplicate), UI e2e, docs.
+
 ## 19. Out of scope
 
 - A user who is a member of tenants in two directories (D3): two users.
@@ -1609,6 +1657,7 @@ T7 gets its own task list when it starts; per-protocol code under
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started.
+T8 (D75–D77) is designed; no code yet.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
