@@ -214,6 +214,11 @@ A **datastore** is where disks live; every disk is on one. See
   an **image volume**, a read-only copy of an image, that linked disks
   there are thin snapshots of. A full thin pool stalls the guests. See
   [LVM-thin](operator-guide/datastores.md#lvm-thin).
+- A **hyperstor** datastore (driver `hyperstor`) keeps disks as volumes
+  of a [hyperstor](https://github.com/CMKL-APEX/hyperstor) cluster's
+  pool, replicated across its nodes. Like a shared datastore, its disks
+  are bound to no node. See
+  [Hyperstor](operator-guide/datastores.md#hyperstor).
 
 A disk no running VM uses can **move** to another datastore. A linked disk is then
 rebased on the image's copy there, or **flattened** into a standalone
@@ -318,7 +323,10 @@ Workspace](operator-guide/authentication.md#directory-sync-from-google-workspace
 
 An **invitation** is a one-time link that lets one email address into a
 tenant, with a role, through one connector, even when that connector
-doesn't create users by itself. It expires, after 7 days by default.
+doesn't create users by itself; or, with no connector, by making a
+passkey. It expires, after 7 days by default. An administrator can also
+**pre-add** a user by email, with no link: the first sign-in through the
+named connector with that verified address takes the account.
 
 A **role binding** gives a user, team or token a **role** on a
 resource. Project roles, each including the one before it:
@@ -326,9 +334,9 @@ resource. Project roles, each including the one before it:
 | Role | Can |
 |---|---|
 | `viewer` | See the project, its VMs, disks and usage. |
-| `operator` | Also start, stop and pause VMs, and use their consoles. |
-| `editor` | Also create, change and delete VMs and disks, manage guest credentials, and attach networks. |
-| `owner` | Also manage members, and manage and share project networks. |
+| `operator` | Also start, stop, pause and change VMs, and use their consoles. |
+| `editor` | Also create and delete VMs and disks, attach disks and networks, and manage guest credentials. |
+| `owner` | Also manage members and service-account tokens, read the project's audit log, and manage and share project networks and routers. |
 
 Host roles cover the host or cluster itself: `auditor` (read-only,
 including the audit log), `image-admin` (images), `net-admin` (host
@@ -351,6 +359,12 @@ the number of days you choose, up to a limit the site sets.
 The secret is shown once, when you create the token. Create tokens with
 `gxctl token create` or on the web UI's **Tokens** page; revoke them the
 same way. See [Logging in](user-guide/logging-in.md).
+
+Software in a VM can act as a service account without a stored token
+(**workload identity**): the VM's metadata endpoint, `169.254.169.254`,
+hands it short-lived identity tokens and, when the VM is given a service
+account, Glidex tokens. See
+[Workload identity](user-guide/vms.md#workload-identity).
 
 A **workload federation** lets CI jobs and other workloads (GitHub
 Actions, GitLab CI, Kubernetes) use the API without a stored token. A

@@ -66,6 +66,19 @@ Devices passed through by address aren't metered. `gxctl usage` lists
 it with the other meters (`--meters device.alloc.a100` for that pool
 alone); the web UI's **Usage** page doesn't show it yet.
 
+A VM on [Pylon](vms.md#elastic-cpu), on a host where `pylond` runs, also
+has these meters, from `pylond`:
+
+| Meter | Unit | What it is |
+|---|---|---|
+| `pylon.cores_allocated` | core-seconds | Host cores `pylond` gave the VM × time. |
+| `pylon.core_usec` | µs | Core time `pylond` allocated to the VM. |
+| `pylon.cooperative_yields` | count | Cores the guest gave back by itself (its vCPUs parked when idle). |
+| `pylon.forced_preemptions` | count | Cores `pylond` took back from the guest. |
+
+`gxctl usage` lists them as raw numbers, without the unit; they are in
+the API's usage rows too. The web UI's **Usage** page doesn't show them.
+
 Some meters are derived when you read them:
 
 - `net.bytes` = received + sent; `net.ext_bytes` = the external part;

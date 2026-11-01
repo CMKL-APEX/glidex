@@ -104,7 +104,7 @@ hypervisor. Firmware is managed like the other images:
 
 | Key | Firmware | Hypervisor |
 |-----|----------|------------|
-| `cloudhv-edk2` | Cloud Hypervisor's EDK2 build (pinned) | Cloud Hypervisor |
+| `cloudhv-edk2` | Cloud Hypervisor's EDK2 build (pinned) | Cloud Hypervisor, Pylon |
 | `ovmf` | OVMF from the host's package | QEMU |
 | `ovmf-debian` | OVMF from a pinned Debian package | QEMU |
 
@@ -187,8 +187,10 @@ kernel's modules from its own disk. Extraction does that for you; for a
 URL, Ubuntu publishes each build's kernel and initramfs next to the
 image, in `unpacked/`.
 
-Extraction runs only on a host of the image's architecture (x86_64, or
-aarch64 with Cloud Hypervisor), and an aarch64 kernel gets
+Extraction runs on a host of the image's architecture (x86_64, or
+aarch64 with Cloud Hypervisor); in a cluster, a server of another
+architecture hands it to a ready node of the image's architecture. An
+aarch64 kernel gets
 `console=ttyAMA0` instead of `console=ttyS0`; a failed extraction fails only
 the kernel image (**Retry**, or `gxctl image retry`). See
 [Kernel boot](kernel-boot.md) to boot VMs from kernel images and to
@@ -210,12 +212,15 @@ a root disk independent of any one VM.
 - **Size (GiB)**: required for a blank disk. From an image it defaults
   to the image's size or 10 GiB, whichever is larger, and can't be
   smaller than the image.
-- **Format**: `qcow2` (default) or `raw`. On an
-  [LVM-thin datastore](#disks-on-an-lvm-thin-datastore), choose `raw`.
-- **Clone** (from an image): **Linked** or **Full copy**.
+- **Format**: `qcow2` (default) or `raw`. On a block datastore
+  ([LVM-thin](#disks-on-an-lvm-thin-datastore) or
+  [hyperstor](#disks-on-a-hyperstor-datastore)) the form shows
+  *raw (block volume)* instead: such disks are always raw.
+- **Clone** (from an image): **Linked** or **Full copy**. A raw disk on
+  any other datastore can only be a full copy.
 - **Datastore**: where the disk lives, shown once the operator has
   registered more than `local` ([Datastores](../operator-guide/datastores.md)).
-  The default is preselected.
+  The default is preselected and marked *(default)*.
 
 **gxctl:**
 
@@ -241,8 +246,9 @@ doesn't fit in its free space (`507 insufficient_storage`).
 
 - **Linked** (default for qcow2): a thin overlay on the image. Fast and
   small, but the image must stay as long as the disk exists.
-- **Full**: an independent copy. Needed for `raw` disks, except on an
-  LVM-thin datastore, where a linked disk is a raw thin snapshot.
+- **Full**: an independent copy. Needed for `raw` disks, except on a
+  block datastore, where a linked disk is a raw thin snapshot (LVM-thin)
+  or clone (hyperstor) of the image.
 
 ### Listing and inspecting disks
 
@@ -264,21 +270,23 @@ A disk is attached to one VM at a time.
   **Boot Disk**, *Existing disk*; in `gxctl create` answer `disk` at
   *Boot disk from*.
 - **As a data disk**: `gxctl create` asks for *Data disks* (disk names,
-  comma-separated). For an existing VM, use the API:
+  comma-separated). For an existing VM, pick a free disk of the project
+  under **Disks** on the VM's page and click **Attach**, or:
 
-  ```bash
-  curl --cacert host.crt -H "Authorization: Bearer $GLIDEX_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -X POST https://host.example.org:8841/vms/<vm-id>/disks -d '{"disk": "data1"}'
+  ```
+  gxctl> attach-disk my-vm data1
+  gxctl> detach-disk my-vm data1
   ```
 
-  On a running VM it takes effect the next time the VM starts.
-  `DELETE /vms/<vm-id>/disks/<disk>` detaches it, as does **Detach** next
-  to the disk on the VM's page in the web UI; the disk and its data stay.
-  A disk detached from a running VM stays attached to it until the VM
-  stops (or is deleted), and can be deleted from then on.
+  Over the API, `POST /vms/<vm-id>/disks` with `{"disk": "data1"}`
+  attaches it and `DELETE /vms/<vm-id>/disks/<disk>` detaches it (see
+  [Data disks](vms.md#data-disks)).
 
-<!-- TODO(verify): gxctl has no attach/detach command for a data disk on an existing VM, and the web UI only detaches. Update this section if one is added. -->
+  On a running VM either change takes effect the next time the VM
+  starts. **Detach** next to the disk on the VM's page detaches it too;
+  the disk and its data stay. A disk detached from a running VM stays
+  attached to it until the VM stops (or is deleted), and can be deleted
+  from then on.
 
 ### Growing and shrinking
 
@@ -300,8 +308,8 @@ gxctl disk resize data1 30                  # shrink
   partition is refused with the smallest size allowed.
 - A resize of a disk a running VM uses is recorded and applied once the
   VM stops.
-- A disk on an LVM-thin datastore can only grow; shrinking it is refused
-  (`400 invalid_disk`).
+- A disk on a block datastore (LVM-thin or hyperstor) can only grow;
+  shrinking it is refused (`400 invalid_disk`).
 
 To grow the root partition into space that is already there (say, after
 a resize with `--no-extend`):
@@ -327,6 +335,11 @@ gxctl disk rm data1
 
 It asks for confirmation; the disk's data is gone afterwards. A disk
 attached to a VM can't be deleted: detach it or delete the VM first. A
+disk that is still being made (a create that is copying, or retrying
+after a failure) can be deleted: the delete is taken, and the disk goes
+once the running attempt ends. A disk busy with a resize, move or
+root-partition extension refuses it (`409 conflict`, *disk … is busy
+(…)*). A
 root disk that was created along with a VM is deleted with the VM,
 unless you delete the VM with `--keep-disk` (in the web UI, **Keep disk**
 in the delete dialog); a kept disk is then like any other and can be
@@ -340,14 +353,17 @@ datastore each node has its own of, it lives on one node: the node of
 the first VM that uses it, and its VMs run there. On a **shared**
 datastore (one filesystem every node mounts), it is tied to no node, and
 its VM can run on any node that reaches the datastore; disk access then
-goes over the network. The **Disks** page has a *Datastore* column once
-there is more than `local`; `gxctl disk show` names it too (`local`, or
-the datastore's id). The **Datastores** page, and `gxctl datastore
-list`, show every datastore, the default, and how much space is free.
+goes over the network. A [hyperstor](#disks-on-a-hyperstor-datastore)
+datastore is shared in the same way. The **Disks** page has a
+*Datastore* column once there is more than `local`; `gxctl disk show`
+names it too (`local`, or the datastore's id). The **Datastores** page,
+and `gxctl datastore list`, show every datastore, the default, and its
+free space of its total (the most any node reports; *—* while no node
+reports it).
 
-In a cluster, the **Disks** page's *Node* column shows a disk's node, or
+In a cluster, the **Disks** page's *Node* column shows a disk's node,
 `shared · <node>` for a disk on a shared datastore (the node currently
-working on it).
+working on it), or *unbound* for a node-local disk no VM has used yet.
 
 Over the API, `node` (a node's name or id) binds a new disk on a
 node-local datastore to that node when it is created; an unknown node is
@@ -385,6 +401,28 @@ there. What differs:
 gxctl disk create db-root --image ubuntu-24.04 --size-gib 40 --datastore thin1   # linked, raw
 gxctl disk create db-data --size-gib 200 --datastore thin1
 gxctl disk move data1 --datastore thin1
+```
+
+### Disks on a hyperstor datastore
+
+A hyperstor datastore keeps each disk as a volume of a hyperstor
+cluster's pool, replicated across that cluster's nodes (see
+[Hyperstor](../operator-guide/datastores.md#hyperstor)). Like a disk on
+a shared filesystem, it is tied to no node: its VM runs on any node that
+reaches the datastore. What differs from a disk file:
+
+- **Always raw**, as on LVM-thin: leave the format out; qcow2 is
+  refused (`400 invalid_disk`).
+- **Linked or full.** A linked disk is a hyperstor clone of the image's
+  volume in that datastore, made at once. The image is written into that
+  volume the first time a linked disk needs it.
+- **Grow, never shrink**, root partition included.
+- **No moves yet** onto or off the datastore.
+- **A full pool** refuses new disks with `507 insufficient_storage`,
+  whether or not overcommit is on. Disks already there keep working.
+
+```bash
+gxctl disk create app-root --image ubuntu-24.04 --size-gib 40 --datastore hs1   # linked, raw
 ```
 
 ### Moving a disk
@@ -428,6 +466,9 @@ use the destination datastore. It is refused:
 
 Onto or off an LVM-thin datastore, a disk is always copied whole; see
 [Disks on an LVM-thin datastore](#disks-on-an-lvm-thin-datastore).
+Disks can't move onto or off a hyperstor datastore yet: the move fails
+(*disk … can't be moved onto a hyperstor datastore yet*) and the disk
+stays where it was.
 
 Moving a disk from one node's own storage to another node's isn't
 possible directly: move it to a shared datastore, then from there. A

@@ -156,10 +156,12 @@ attaches that file as it is.
 - The VM can't use a credential, and Glidex doesn't add networking,
   hostname or root-partition growth: put what you need in the seed.
 
-A seed is a small FAT or ISO volume labelled `CIDATA` holding
-`user-data` and `meta-data` (and optionally `network-config`), for
-example made with `cloud-localds` from the `cloud-image-utils` package.
-<!-- TODO(verify): the cloud_init_path seed format is whatever the guest's cloud-init NoCloud datasource accepts; Glidex only attaches the file. Confirm the tooling suggestion against the test fixtures if any. -->
+A seed is what cloud-init's NoCloud datasource reads: a small FAT or
+ISO volume labelled `CIDATA` (or `cidata`) holding `user-data` and
+`meta-data` (and optionally `network-config`). Make one with
+`cloud-localds` from the `cloud-image-utils` package, or with
+`mkfs.vfat -C -n cidata seed.img 2048` and `mcopy -i seed.img user-data
+meta-data ::` (from `dosfstools` and `mtools`).
 
 ## Over the API
 

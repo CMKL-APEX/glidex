@@ -37,25 +37,27 @@ consoles. See [Projects](projects.md).
 
 ### Web UI
 
-On the **VMs** page, click **+ Create VM** and fill in the form:
+On the **VMs** page, click **+ Create VM** and fill in the form. The
+fields come in this order:
 
 | Field | What it is |
 |---|---|
 | **VM Name** | The VM's name in the project. |
 | **Hypervisor Backend** | Cloud Hypervisor (the default), QEMU or Pylon. Fixed once created. |
-| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 512 MiB. On Pylon with **Elastic CPU scaling**, the vCPU count is the maximum and can't be edited. |
+| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 1024 MiB. On Pylon with **Elastic CPU scaling**, the vCPU count is the maximum and can't be edited. |
 | **Elastic CPU scaling** | Min vCPUs, max vCPUs and weight. See [Elastic CPU](#elastic-cpu). |
-| **Placement** | Clusters only: **Automatic**, or a node. See [Placement on a cluster](#placement-on-a-cluster). |
-| **Boot Mode** | **UEFI firmware (distro cloud image)** or **Direct kernel boot**. |
-| **UEFI Firmware** | The firmware image to boot through; the newest one for the hypervisor is preselected. |
+| **GPUs (optional)** | A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others are greyed and say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
 | **Boot Disk** | **New disk from an image**, **Existing disk** (an unattached disk of the project), or **Disk image file path**. |
 | **Image**, **Root disk (GiB)** | For a new disk from an image: a linked disk is created for this VM, its root partition extended, and deleted with the VM. |
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
-| **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
-| **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
-| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
-| **Device Pools (optional)** | How many devices to take from each other pool (NICs, NVMe…) your project may use. |
-| **VFIO PCI Devices (optional)** | Under **Advanced options**: other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
+| **Service Account (optional)** | Shown when the project has service accounts: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
+| **Networks** | One NIC per ticked network, in that order. A network named `default`, or else the project's only network, is ticked for you. |
+| **Device Pools (optional)** | How many devices to take from each pool other than GPU pools (NICs, NVMe…) your project may use. |
+| **Placement** | Clusters only: **Automatic**, or a node. See [Placement on a cluster](#placement-on-a-cluster). |
+| **Advanced options** | Folded away; its heading shows the boot mode and firmware or kernel chosen. It opens by itself when a choice in it is missing (no firmware image for the hypervisor, say). It holds the fields below. |
+| **Boot Mode** | **UEFI firmware (distro cloud image)** or **Direct kernel boot**. |
+| **UEFI Firmware** | The firmware image to boot through; the newest one for the hypervisor and the VM's architecture is preselected. |
+| **VFIO PCI Devices (optional)** | Other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
@@ -65,7 +67,7 @@ With **Direct kernel boot**, the form asks for a **Kernel** instead of
 comes first and is the only one preselected; **Extract it from the
 image** makes it if there is none. Another image's kernel usually won't
 boot this one: its initramfs waits for that image's root disk),
-or, for administrators, **Kernel files on the host** (kernel and
+or, for administrators, **Kernel files on the host (administrators)** (kernel and
 initramfs paths, see [Host paths](#host-paths)). **Kernel Arguments**
 default to the kernel image's own command line. **Follow the guest's
 kernel** boots the kernel the guest installs (see
@@ -440,7 +442,8 @@ With GPUs, an empty vCPU or memory answer takes the pool's sizing.
   them by hand. A GPU pool with **Under one PCIe switch** ticked is an
   ordinary pool request instead, without the NUMA alignment or the
   sizing.
-- **This node's GPUs:** each display-class device the node could pass
+- **This node's GPUs** (*Or pick this node's GPUs*, under the pools):
+  each display-class device the node could pass
   through, with its address, vendor, ids and NUMA node. A ticked one is
   sent in `vfio_devices`. One not ready is greyed with the reason (for
   example *not bound to vfio-pci (driver: amdgpu)*): an operator
@@ -598,6 +601,10 @@ an image is deleted with it, unless you keep it (`--keep-disk`,
 `?keep_disk=true`, or **Keep disk** in the web UI's delete dialog, which
 names the disks that go and those that stay). Other disks are only
 detached.
+
+A VM whose root disk is still being made (say, by a create that keeps
+failing) can be deleted too: its disk starts no new attempt, and the
+VM goes once the running one ends, taking its own root disk with it.
 
 ## States and events
 
@@ -770,7 +777,7 @@ not the host's, and a GPU and a NIC that share a PCIe switch on the
 host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
-<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; the MMIO apertures aren't sized yet (spec GV1 not done). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; a pool's `bar_mib` (the MMIO aperture size) isn't built yet (spec/27-gpu-vms.md GV6). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
 
 ## Elastic CPU
 

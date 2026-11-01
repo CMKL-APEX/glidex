@@ -40,14 +40,15 @@ copy. System roles, site policies and admissions belong to the cluster.
 
 Out of the box:
 
-- Nobody can do anything without a role, except read the image catalog
-  and network names, and manage their own tokens.
+- Nobody can do anything without a role, except read the image catalog,
+  network and datastore names, and manage their own tokens and sign-in
+  methods.
 - Root and members of `glidex-admin` on the local socket are break-glass
   administrators: always allowed, whatever the bindings and site
   policies. Use it to recover, not for daily work.
-- A VM only uses disks and credentials of its own project, and only
-  networks its project was granted. No role or site policy can change
-  that.
+- A VM only uses disks and credentials of its own project, only
+  networks its project was granted, and only a service account of its
+  own tenant. No role or site policy can change that.
 - A disabled user and an expired token are refused everything.
 - Changes that can cut a host off, and policy writes, need a recent
   login (see [Sessions and
@@ -74,7 +75,12 @@ It does this only while nobody has `system-admin`, so adding people to
 `glidex-admin` later makes them break-glass users on the socket, but
 gives them no roles in the web UI. Give roles instead.
 
-<!-- TODO(verify): the API offers no call to give directory-admin / directory-auditor to more people (only the first-start bootstrap grants them); confirm before documenting how. -->
+`directory-admin` and `directory-auditor` come only from this first
+start (and, in a [hosted
+directory](authentication.md#hosting-other-organizations-directories),
+from its first administrator's invitation): no command or API call
+gives them to anyone else yet. A host upgraded from before tenants gave
+its `auditor`s `directory-auditor` once.
 
 ## Roles
 
@@ -87,7 +93,7 @@ Given on one project. Each includes the one above it.
 | `viewer` | See the project, its VMs, disks and usage. |
 | `operator` | Also start, stop and pause VMs, and open their consoles. |
 | `editor` | Also create, change and delete VMs and disks, manage credentials, and attach networks. |
-| `owner` | Also manage the project's bindings and service-account tokens, its networks and network sharing, and read its audit log. |
+| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, and read its audit log. |
 
 ### Host roles
 
@@ -109,6 +115,20 @@ on [one host](#on-one-host-of-a-cluster) instead). Only members of the
 |---|---|
 | `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members, bindings, [tenant pools](host-resources.md#tenant-pools) and [workload federations](workload-federation.md). Includes `owner` on its projects. |
 | `tenant-auditor` | Read the tenant, its members, bindings, tenant pools and workload federations, and its projects. |
+
+### Directory roles
+
+Given on the directory: the host's own (`local`), or a [hosted
+one](authentication.md#hosting-other-organizations-directories). See
+[The first administrators](#the-first-administrators) for who has them.
+
+| Role | May |
+|---|---|
+| `directory-admin` | Manage the directory's users, teams and anyone's tokens; create, change, suspend and delete tenants, and manage every tenant's members, bindings, invitations and workload federations; manage login connectors, their secrets, SCIM tokens and syncs; rotate the directory's signing key. |
+| `directory-auditor` | Read the directory: its tenants (with their members, bindings and federations), users, teams, connectors, SCIM token lists and signing keys, and a hosted directory's own audit log. |
+
+Neither includes a project role: a directory administrator reaches a
+tenant's projects only through a tenant or project role.
 
 ## Giving roles
 
@@ -421,6 +441,7 @@ Actions of these features, and who has them out of the box:
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
 | `syncConnector` | the directory | `directory-admin`. |
 | `confirmConnectorSync` | the directory | `directory-admin`, with a recent login; applying a sync the safety stop blocked needs it as well as `syncConnector`. |
+| `useServiceAccount` | `Glidex::Project` (the service account's) | `owner` of that project (so `tenant-admin` and `system-admin` too); `context.project` is the VM's. Checked when a VM is given a service account (see [Workload identity](../user-guide/vms.md#workload-identity)). One of another tenant is always refused (base policy `base.service-account-same-tenant`). |
 
 `system-admin` has every host role above. A PCI device is
 `Glidex::PciDevice::"<node-id>/<address>"`, for example
@@ -517,7 +538,12 @@ gxctl audit --user <user-id> --since 1767225600000   # Unix milliseconds
 ```
 
 `auditor` and `system-admin` read all of it; a project's owners read
-their project's. Entries older than `audit.retention_days` (90) are
+their project's. A [hosted
+directory](authentication.md#hosting-other-organizations-directories)
+keeps its own audit log, read by its `directory-admin`s and
+`directory-auditor`s (`gxctl audit --directory <id>`, action
+`readDirectoryAudit`), not by the host's operator; what its people do
+with this cluster's projects is in both. Entries older than `audit.retention_days` (90) are
 deleted. Each entry is also written to the control plane's journal:
 
 ```bash

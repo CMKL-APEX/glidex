@@ -164,7 +164,7 @@ Lists return everything you may see in one answer, except:
 - `GET /tenants`: `page_size`, `page_token`; the answer has
   `next_page_token`.
 - `GET /audit`: `since`, `limit` (default 500, at most 5000),
-  `project`, `user`.
+  `project`, `user`, `directory`.
 
 ### Live changes: `GET /watch`
 
@@ -296,6 +296,12 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/auth/exchange` | Exchange a workload's JWT for a short-lived token, through a workload federation; no credential (see [Token exchange](#token-exchange-for-workloads)) |
 | `POST` | `/auth/passkeys/login/start`, `/auth/passkeys/login/finish` | Passkey sign-in for the browser; no credential (see [Passkeys](#passkeys)) |
 | `POST` | `/auth/passkeys/register/start`, `/auth/passkeys/register/finish` | Add a passkey to yourself, from a browser session (see [Passkeys](#passkeys)) |
+| `GET` | `/auth/accounts` | The accounts this browser is signed in with, one per directory, and which is active; read from its cookies only, nothing stored on the server; no credential |
+| `POST` | `/auth/accounts/switch` | Make another of the browser's accounts active (`{directory}`) |
+| `POST` | `/auth/accounts/add` | Keep the active account in the browser's list, so the login page can sign in to another directory |
+| `POST` | `/auth/accounts/remove` | Sign out of one of the browser's accounts and drop it from the list (`{directory}`) |
+| `POST` | `/auth/accounts/logout-all` | End every session of the browser and drop the list |
+| `GET` | `/auth/t/{trusted}/start`, `/auth/t/{trusted}/callback` | Web UI login at a trusted directory of another organization (redirects); the callback makes a session on this cluster for that directory's user; no credential |
 | `POST` | `/auth/session` | A browser session cookie for the local user calling on `api.sock`: `{cookie_name, cookie, csrf}`, with the user's stored teams only; `403` for any other caller |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |
@@ -310,7 +316,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)) |
 | `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU, `devices` and `gpus` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
 | `GET` | `/vms/{id}` | Get a VM |
-| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy` and `devices` |
+| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy`, `devices`, `service_account`, `min_vcpus`, `max_vcpus` and `cpu_weight`. A change to `mem_size_mib` or `data_disks` of a running VM applies at its next start |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
 | `POST` | `/vms/{id}/start` | Start, or resume a paused VM (`?wait=`) |
 | `POST` | `/vms/{id}/place` | Place a stopped or lost VM again: on `node` (`{node}`, optional), or where the scheduler finds room; answers `{vm}`. See [Placing a stopped or lost VM again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again) |
@@ -320,7 +326,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `POST` | `/vms/{id}/extract-kernel` | Extract the kernel on a stopped VM's root disk as a new kernel image the VM owns: `202 {image}`, extracting. See [Extract once](../user-guide/kernel-boot.md#extract-once) |
 | `POST` | `/vms/{id}/devices` | Attach a PCI device (VFIO); hot-plugged if running |
 | `DELETE` | `/vms/{id}/devices` | Detach a PCI device |
-| `POST` | `/vms/{id}/disks` | Attach a data disk (on a running VM: at its next start) |
+| `POST` | `/vms/{id}/disks` | Attach a data disk: `{disk}` (id, or a name in the VM's tenant); on a running VM at its next start (`?wait=`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk |
 | `GET` | `/vms/{id}/console` | Console availability and WebSocket path |
 | `POST` | `/vms/{id}/console/ticket` | Single-use console ticket for a browser session |
@@ -414,6 +420,7 @@ shared datastore has `datastore` and `datastore_name` instead of a
 | `DELETE` | `/networks/{id}` | Delete (`?wait=`; `409` while a VM uses it) |
 | `GET` | `/networks/{id}/events` | The network's last events |
 | `GET` | `/networks/{id}/ovn` | A cluster network as OVN sees it: switch, ports, router |
+| `PUT` | `/networks/{id}/host_api` | Open this host's API to a NAT network's guests, or close it: `{host_api: true\|false}` → `{network}` (host network administrators) |
 | `PUT` | `/networks/{id}/grants` | Which projects and tenants may use a host network (replaces the grants) |
 | `POST` | `/networks/{id}/shares` | Offer a project network to another project |
 | `DELETE` | `/networks/{id}/shares/{project}` | Withdraw a share |
@@ -492,7 +499,7 @@ UI's Host pages send it.
 | `POST` | `/tokens` | Create a token, personal or for a service account; the secret is returned once |
 | `DELETE` | `/tokens/{id}` | Revoke a token |
 | `GET` | `/users` | List users and their identities |
-| `POST` | `/users` | Create a user |
+| `POST` | `/users` | Create a user: `{display_name, identities}`, or pre-add one by email before they sign in with `{pending: {email, connector, tenant, role}}` (an enabled `oidc`, `google` or `jumpcloud` connector that isn't provisioned; `role` `member`, `role.tenant-admin` or `role.tenant-auditor`, default `member`) |
 | `PATCH` | `/users/{id}` | Change a user; for a user a SCIM connector manages (`managed_by`), its display name, and enabling it after its IdP disabled it, are `409 managed_by_connector` |
 | `DELETE` | `/users/{id}` | Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went. `409 managed_by_connector` for a managed user that is still enabled |
 | `POST` | `/users/{id}/identities` | Link a login identity to a user (providers `pam`, `unix` or `oidc:<issuer>`) |
@@ -517,7 +524,7 @@ UI's Host pages send it.
 | `POST` | `/authz/validate` | Check a policy without saving it |
 | `POST` | `/authz/simulate` | Decide requests under the current policies plus proposed changes |
 | `POST` | `/authz/reload` | Reload policies |
-| `GET` | `/audit` | The audit log (`since`, `limit`, `project`, `user`) |
+| `GET` | `/audit` | The audit log (`since`, `limit`, `project`, `user`; `directory`: a hosted directory's own log) |
 
 ### Tenants and login connectors
 
@@ -543,6 +550,8 @@ UI's Host pages send it.
 | `POST` | `/d/{directory}/device_authorization` | Public, RFC 8628: `client_id=gxctl` → `{device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval}`; the code is approved on the web UI's `/device` page |
 | `POST` | `/d/{directory}/token` | Public, form-encoded: `grant_type` `authorization_code`, `refresh_token` or `urn:ietf:params:oauth:grant-type:device_code`, `client_id=gxctl`; `resource=urn:glidex:cluster:<id>` adds an access token for that cluster. Answers `{refresh_token, id_token, access_token?, expires_in?}`; a refresh token works once, and using an old one again ends its chain. Errors are OAuth's (`invalid_grant`, `invalid_target`, `authorization_pending`, `slow_down`, …) |
 | `POST` | `/d/{directory}/revoke` | Public, RFC 7009: `token=<refresh token>` ends its chain and the access tokens it gave |
+| `POST` | `/d/{directory}/device/inspect` | What a device code is for (`{user_code}`), for the web UI's `/device` page |
+| `POST` | `/d/{directory}/device/answer` | Approve or refuse a device code (`{user_code, approve}`) |
 | `GET` | `/tenants/{id}/members` | List explicit members |
 | `POST` | `/tenants/{id}/members` | Add a member |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |
@@ -559,11 +568,12 @@ UI's Host pages send it.
 | `GET` | `/admissions/offers` | Open and redeemed offers (never their secrets) |
 | `DELETE` | `/admissions/offers/{id}` | Revoke an offer. Needs a recent login |
 | `GET` | `/admissions/directories` | The directories of other organizations this cluster trusts, with their admitted tenants |
+| `PATCH` | `/admissions/directories/{id}` | How long a trusted directory's credentials stay good without its feed: `{max_staleness_minutes}` (at least 1; absent: the cluster's default, `trust.default_max_staleness_minutes`); `{id}` is its `trusted-…` id |
 | `GET` | `/tenants/{id}/clusters` | The clusters of other organizations the tenant uses |
 | `POST` | `/tenants/{id}/clusters` | Redeem a cluster's offer: `{offer: "gxo_…"}` → `201 {cluster}`. This directory and the cluster trust each other for the tenant from then on. Needs a recent login |
 | `DELETE` | `/tenants/{id}/clusters/{cluster}` | Stop using that cluster; it is told. Needs a recent login |
-| `GET` | `/directories` | The directories this host serves (`id`, `name`, `issuer`, `created_at`); the operator's, who sees nothing inside them |
-| `POST` | `/directories` | `{id, name, owner, admin_email, days?}` → `201 {directory, invitation_link}`: a directory, its owner tenant, and an invitation for its first administrator, who signs in with a passkey; the link is shown once. Needs a recent login |
+| `GET` | `/directories` | The directories this host serves (`id`, `name`, `issuer`, `trust_domain`, `created_at`); the operator's, who sees nothing inside them |
+| `POST` | `/directories` | `{id, name, owner, admin_email, days?, trust_domain?}` → `201 {directory, invitation_link}`: a directory, its owner tenant, and an invitation for its first administrator, who signs in with a passkey; the link is shown once. Needs a recent login |
 | `DELETE` | `/directories/{id}` | Delete a directory nobody uses yet (no user, connector or project: else `409 directory_not_empty`); `local` stays. Needs a recent login |
 | `PUT` | `/admissions/{tenant}` | Admit a tenant or change its cap |
 | `DELETE` | `/admissions/{tenant}` | Remove an admission |
@@ -578,6 +588,23 @@ UI's Host pages send it.
 | `GET` | `/connectors/{id}/scim-tokens` | A SCIM connector's tokens (never the tokens) and its endpoint path |
 | `POST` | `/connectors/{id}/scim-tokens` | Make a SCIM token (`{name, days}`, 1–365 days, default 180; at most five live per connector): `201 {token, secret, path}`, the `gxs_` secret shown once. Needs a recent login; `409 not_provisioned` unless the connector is `provisioning: scim` |
 | `DELETE` | `/connectors/{id}/scim-tokens/{token}` | Revoke a SCIM token |
+
+### Trust between organizations
+
+Clusters and directories of different organizations call these on each
+other once an admission offer is redeemed. They take no user
+credential: each request is signed with the peer's key. Every refusal
+answers the same way; the reason is in the audit log. Clients don't
+call them.
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/trust/v1/redeem` | At a cluster: a directory redeems an admission offer |
+| `POST` | `/trust/v1/end` | At a cluster: a trusted directory ends a tenant's trust |
+| `POST` | `/d/{directory}/trust/v1/end` | At a directory: a trusted cluster stops admitting one of its tenants |
+| `POST` | `/d/{directory}/trust/v1/logout` | At a directory: a trusted cluster's session ended, so its login chain ends (`{cluster_id, sid}`); `204` |
+| `POST` | `/d/{directory}/feed/v1` | At a directory: the snapshot for a cluster (`{cluster_id, revision}`): the tenants opted in to it, their projects, members and role links, and the directory's keys; `304` when the cluster's revision is current |
+| `POST` | `/d/{directory}/feed/v1/report` | At a directory: a cluster's report on the tenants opted in to it (`{cluster_id, report, ui_callback}`) |
 
 ### SCIM 2.0, for identity providers
 

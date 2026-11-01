@@ -102,7 +102,7 @@ remove the federation and add it again.
 
 | Field | What it is |
 |---|---|
-| `id` | `a-z`, `0-9` and `-`, 1–48 characters; unique in the tenant. Can't be changed |
+| `id` | `a-z`, `0-9` and `-`, 1–48 characters; unique in the tenant. Can't be changed. `vm` is taken (see [A VM's identity token](#a-vms-identity-token)) |
 | `display_name` | Optional, at most 128 characters |
 | `issuer` | The issuer's URL exactly as its tokens carry it in `iss`: `https://…`. A trailing `/` is dropped |
 | `audience` | What the workload asks its issuer for, and what the token's `aud` must hold (GitHub's `audience`, GitLab's `id_tokens` `aud`). At most 256 characters |
@@ -246,6 +246,26 @@ curl --fail-with-body --cacert tls.crt -X POST https://host.example.org:8841/aut
 }'
 ```
 
+### A VM's identity token
+
+A tenant has one federation it needn't add: `<tenant slug>/vm`. It takes
+the identity token of one of the tenant's own VMs (see [Workload
+identity](../user-guide/vms.md#workload-identity)) and gives the token
+of the VM's service account, as the metadata endpoint's
+`/v1/glidex/token` does. It is for software that got the VM's identity
+token and runs somewhere else, such as a build container the VM hands
+it to. The token is accepted when:
+
+- it is an identity token of the tenant's directory, signed with its
+  keys, unexpired, and its `aud` is this cluster's id (`cluster` in the
+  metadata endpoint's `/v1/instance`);
+- its VM still exists, runs, is the tenant's, and has a service
+  account;
+- it wasn't exchanged before (by its `jti`).
+
+The answer and the errors are those above; the token lives 15 minutes,
+never past the service account's expiry.
+
 ## The token it gives
 
 - It acts as the rule's service account: the same roles, in the same
@@ -280,7 +300,10 @@ account.
   account's token, with the federated token's id.
 
 These entries have no project: `auditor` and `system-admin` read them
-(see [Audit log](access-control.md#audit-log)).
+(see [Audit log](access-control.md#audit-log)). For a tenant of a
+[hosted directory](authentication.md#hosting-other-organizations-directories),
+they are in that directory's own audit log instead, read by its
+directory administrators and auditors.
 
 ```bash
 gxctl audit --limit 50

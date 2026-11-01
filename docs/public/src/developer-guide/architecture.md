@@ -55,7 +55,9 @@ daemon with a narrow protocol on a Unix socket.
 | `glidex-stord` | root (`glidex-stord.service`) | [`glidex-stord`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord) | Makes, activates and removes LVM-thin volumes in the volume groups the operator allows, and hands each device to the `glidex` user |
 | `glidex-authd` | root, socket-activated (`glidex-authd.socket`) | [`glidex-authd`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-authd) | Checks local users' passwords with PAM; one operation, `authenticate` |
 | `glidex-vm-shim` | `glidex`, one `glidex-vm@<id>.service` per running VM | [`glidex-vm-shim`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-vm-shim) | Parent of one hypervisor; owns its PTY, console socket and console log; records how it exited |
-| `cloud-hypervisor`, `qemu-system-*` | child of the shim | upstream | The VM itself |
+| `cloud-hypervisor`, `qemu-system-*`, `pylon` | child of the shim | upstream (Pylon: a Cloud Hypervisor fork, installed with `--with-pylon`) | The VM itself |
+| `glidex-metad` | `glidex-metad` (`glidex-metad.service`) | [`glidex-metad`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-metad) | The metadata endpoint guests reach at `169.254.169.254`: checks each request and asks the control plane to answer for the VM behind the port it came from. Holds no key |
+| `pylond` | root (`glidex-pylond.service`), only with Pylon | the separate Pylon project | Pylon's core arbiter: Pylon VMs register with it; the control plane reads their statistics and sends policy updates |
 | `glidex-ui` | `glidex-ui` (`glidex-ui.service`) | [`glidex-ui`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ui) | Serves the React UI over HTTPS and proxies `/api/*` (WebSocket upgrades included) to the control plane's `ui.sock` |
 | `gxctl` | the user | `crates/glidex-control-plane/src/bin/gxctl` | CLI on the generated RPC clients |
 | `glidex-install` | root, once | [`glidex-install`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-install) | Installs binaries, users, units and the polkit rule; creates or joins a cluster |
@@ -79,13 +81,19 @@ and the control plane start.
 | `/run/glidex-stord/stord.sock`, `stord-admin.sock` | stord | control plane; the admin group |
 | `/run/glidex-authd/auth.sock` | authd | control plane |
 | `/run/glidex-cp/vms/<id>/{shim.sock, api.sock, console.sock}` | shim, hypervisor, shim | control plane only |
+| `/run/glidex-cp/metad.sock` | control plane | `glidex-metad` only (checked by peer uid) |
+| `169.254.169.254:8775` | `glidex-metad` | guests: netd's rules DNAT `169.254.169.254:80` from each VM port on node NAT networks here, with the port's own peer address |
+| `/run/pylon/pylond.sock` | `pylond` | Pylon hypervisors; the control plane (statistics, policy updates) |
 | system D-Bus | systemd | control plane starts and stops `glidex-vm@<id>` units (allowed by the polkit rule `50-glidex-vm.rules`) |
 
 Socket and port numbers are configurable; these are the defaults. The
 helpers' protocols are newline-delimited JSON; the clients live in the
 helper crates (`glidex_netd::client`, `glidex_stord::client`,
 `glidex_authd::client`) so the control plane and the daemon share one
-definition.
+definition. The clients block; a call can take seconds (netd up to 30 s,
+LVM commands, hyperstor's API), so the control plane makes them through
+`glidex_raftstore::wait::blocking`, which on a Tokio worker waits in
+`block_in_place` and leaves the runtime free to drive I/O.
 
 ### Why VMs survive control-plane restarts
 
@@ -227,6 +235,17 @@ crate; glidex's schema (the `TableId` list, each table's scope, and the
 write `Origin`s) is
 [`store/db.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/store/db.rs).
 `TableId` is append-only: a table can be retired, its id never reused.
+
+Writes take one **write lane**, a mutex, and in a cluster hold it until
+Raft has committed the write. Raft's round trip needs the Tokio
+runtime's I/O, so no worker may block outright on the lane, or on any
+other lock held across a store write (the network store's write mutex,
+the image cache, the directory key lock): if the worker that blocked
+was the one driving I/O, the lane's holder never hears back and every
+later request queues behind it. Those waits go through
+[`glidex_raftstore::wait`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-raftstore/src/wait.rs):
+a free lock is taken at once, a held one is waited for in
+`block_in_place`.
 
 `VmManager`
 ([`state.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/state.rs))
@@ -377,7 +396,7 @@ standalone host is both roles with a local store and one implicit node,
 
 | Topic | How | Code |
 |---|---|---|
-| Node API | `:8842`: Raft (`/raft/*`), join and rejoin, read index, list and watch, heartbeats, status writes, ledger shipping, image file copies, console/stats relays, host-only relays; anything else is a forwarded API request | [`cluster/server.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/server.rs), [`cluster/net.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/net.rs) |
+| Node API | `:8842`: Raft (`/raft/*`), join and rejoin, read index, list and watch, heartbeats, status writes, ledger shipping, image file copies, console/stats relays, console tickets, metadata questions, host-only relays; anything else is a forwarded API request | [`cluster/server.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/server.rs), [`cluster/net.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/net.rs) |
 | PKI | One cluster CA whose key every server holds; node certificates name the node and its advertise address. The CA can be rotated, and is when a server leaves | [`cluster/pki.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/pki.rs), [`cluster/rotation.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/rotation.rs) |
 | Joining | `gxctl cluster init` makes a one-voter cluster; hosts join with a single-use join token (only its hash is stored) and get a certificate | [`cluster/manage.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/manage.rs), [`cluster/tokens.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/tokens.rs) |
 | Node lifecycle | Phases `Active`, `Draining`, `Departing`, `Departed`, `Removed`, `Forgotten`. Remove an empty node, forget a lost one, rejoin as the same node, detach with its VMs, import a standalone host's VMs | [`cluster/membership.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/membership.rs), [`cluster/departure.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/departure.rs), [`cluster/import.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/import.rs) |
@@ -463,6 +482,7 @@ block device.
 | `dir` (the built-in `local` is one) | node-local | files named by disk id in a directory on each node | none |
 | `shared-dir` | shared (NFS, CephFS, … mounted by the operator) | files every reaching node sees; one **worker** node acts on each disk; a file lock records who has a volume open | none |
 | `lvm` | node-local | LVM-thin volumes `gx-d-<disk-id>`; linked disks are thin snapshots of an image volume `gx-i-<image-id>` | `glidex-stord` creates, activates and removes volumes and hands the device to the `glidex` user |
+| `hyperstor` | shared (a pool of a hyperstor cluster) | volumes managed through the cluster's API over mutual TLS, from servers only; filled and partitioned with `hyperstorctl`; served to the VM over vhost-user-blk by the node's `hyperstor-vhost`; linked disks are clones of an image volume | none in Glidex; hyperstor's own services |
 
 A node-local disk binds to a node at creation or at its VM's first
 placement, and pins that VM's placement; a disk on a shared datastore
@@ -474,7 +494,7 @@ holding linked disks gets its own copy (`…/ds:<datastore>`). Disks can
 move between datastores.
 
 Code: [`datastore/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/datastore)
-(`file.rs`, `lvm.rs`, `record.rs`, `probe.rs`, `manage.rs`),
+(`file.rs`, `lvm.rs`, `hyperstor.rs`, `record.rs`, `probe.rs`, `manage.rs`),
 [`images/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/images),
 [`glidex-stord`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord).
 Design: [24-storage.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md),
@@ -498,8 +518,12 @@ queries a guest leaves in it), and the listener outlives the PTY, so a
 dead guest's last output is still visible. The browser gets a
 short-lived single-use ticket (`CreateConsoleTicket`), then opens
 `/vms/{id}/console/ws`; `api/vms.rs::console_ws` and the RPC share
-`service::vm::console_target`/`console_connect`. For a VM on another
-node, the server that authorized the request relays to that node.
+`service::vm::console_target`/`console_connect`. In a cluster tickets
+live in the leader's memory: a follower forwards ticket requests to the
+leader, and the server that takes the WebSocket redeems the ticket there
+(`POST /cluster/v1/console-ticket`), so the two requests may reach
+different servers. For a VM on another node, the server that authorized
+the request relays to that node.
 
 Code: [`glidex-vm-shim/src/proxy.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-vm-shim/src/proxy.rs),
 [`api/vms.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/vms.rs).
@@ -539,12 +563,18 @@ Using it: [Kernel boot](../user-guide/kernel-boot.md).
 
 Hypervisor drivers
 ([`hypervisor/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/hypervisor):
-`cloud_hypervisor.rs`, `qemu.rs`) are stateless. A driver turns a VM's
+`cloud_hypervisor.rs`, `qemu.rs`, `pylon.rs`) are stateless. A driver turns a VM's
 config into the full command line the shim runs, and performs runtime
 operations (observe, pause/resume, VFIO hot-plug) over the hypervisor's
 socket with `glidex-hv-client`. Because everything is a path, a
-restarted control plane manages instances exactly as before. Design:
-[04-hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md).
+restarted control plane manages instances exactly as before.
+**Pylon** is a Cloud Hypervisor fork with fast CPU core elasticity: its
+driver reuses Cloud Hypervisor's arguments and API client, adds
+`--pylon` with a shared memory page and `pylond`'s socket, and sends
+`pylond` policy updates (minimum and maximum cores, weight) for a running
+VM. A node reports whether `pylond` runs. Design:
+[04-hypervisors.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md),
+[30-pylon.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/30-pylon.md).
 
 ### Devices
 
@@ -585,6 +615,7 @@ user.
 | Passkeys | WebAuthn registration and sign-in; a passkey is one of a user's identities | `auth/passkeys.rs`, `auth/webauthn.rs`, `api/passkeys.rs` |
 | Workload federation | A tenant trusts an external JWT issuer (CI systems, Kubernetes); `POST /auth/exchange` (RFC 8693) swaps a matching token for a short-lived token of a service account | `directory/federation.rs`, `directory/exchange.rs` |
 | Tokens | Browser sessions (cookie); personal and service-account tokens (`gxt_…`), stored only as hashes | `auth/store.rs` |
+| Workload identity | A VM asks the metadata endpoint (`glidex-metad`) for an identity token (a JWT with a SPIFFE ID, signed with its directory's keys, granting nothing in Glidex) or, with a service account attached, a short-lived Glidex token. metad names only the VM port's peer address; the control plane finds the running VM on that node, and answers itself where writes go there, else asks the leader (`/cluster/v1/metadata`) | `directory/workload.rs`, `api/metad.rs`, [`glidex-metad`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-metad), `glidex_ovs::metadata` |
 
 Tenancy sits on top: **directories** hold users, teams and connectors;
 **tenants** own projects and need an **admission** on a cluster to
@@ -595,6 +626,7 @@ principals, tenants, projects, hosts and resources.
 Design: [11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md),
 [19-tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md),
 [25-passkeys.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md),
+[29-workload-identity.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/29-workload-identity.md),
 [17-gxctl-auth.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/17-gxctl-auth.md).
 Operating it: [Authentication](../operator-guide/authentication.md),
 [Access control](../operator-guide/access-control.md),

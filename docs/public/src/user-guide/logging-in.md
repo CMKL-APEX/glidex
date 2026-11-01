@@ -50,7 +50,13 @@ otherwise, so after you are added to a group (or come back), it can take
 that long before you can sign in.
 
 In a cluster, open a server's web UI. Opening an agent's sends you to a
-server's, at that agent's Host page; sign in there.
+server's, at that agent's Host page; sign in there. Any server will do,
+also behind a load balancer: your session, account changes and passkeys
+work through whichever server answers. A password (PAM) sign-in is the
+exception: it is an account of the server that checked it. If signing
+in with your password on another server gives you a user with no
+projects, ask an administrator to link that server's account to your
+user.
 
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
@@ -85,6 +91,21 @@ invitation.
 - Keep it to yourself until you have used it: it works like a password.
 - If the page says the invitation was already used, revoked or has
   expired, ask for a new one.
+
+An invitation can make you a passkey instead, for a directory with no
+single sign-on yet. The page then shows your email
+and **Create a passkey and sign in**: confirm in your browser's or
+device's prompt, and you are signed in. You sign in with that passkey
+from then on, and can add your organization's sign-in later under
+**Your account** (see [Passkeys](#passkeys)).
+
+### Added before you sign in
+
+An administrator may also add you by email before you have ever signed
+in, with no link. Sign in through the provider they name, with that
+address: your first sign-in takes the account, with the tenant and role
+they gave it. The provider must say your address is verified. Until you
+sign in, administrators see you as *not signed in yet*.
 
 ### Your account
 
@@ -247,7 +268,7 @@ your account is disabled, or at `gxctl auth logout`.
   them in turn.
 - Without `--profile`, `--url` refreshes the profile that already points
   at that host; for a new host add `--save` to name the profile after it:
-  a host name's first label (`gpu-dev2.example.net` gives `gpu-dev2`),
+  a host name's first label (`host.example.org` gives `host`),
   or a whole IP address with dashes (`192.0.2.10` gives `192-0-2-10`).
 
 The first profile you create becomes the current one; `--use` makes a

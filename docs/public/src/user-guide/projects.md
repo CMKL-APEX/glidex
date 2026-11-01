@@ -196,7 +196,8 @@ Anyone with a role in the project may look. The list includes the
 project's **tenant pools**: shares of a cluster pool that the tenant's
 administrator gave to some of its projects, each with a maximum
 (`from`, `max` and `used` in the API's `GET /pci-pools?project=lab`).
-The web UI's create form offers the same pools under **Device Pools**.
+The web UI's create form offers the same pools: GPU pools under
+**GPUs (optional)**, the others under **Device Pools (optional)**.
 How a VM asks for devices is in
 [Devices from a pool](vms.md#devices-from-a-pool).
 
