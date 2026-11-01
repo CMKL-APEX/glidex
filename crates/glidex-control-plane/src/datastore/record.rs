@@ -239,6 +239,10 @@ pub struct NodeRow {
     /// (spec/24-storage.md §4.4): NFS mounted `soft`, or with local locks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// It refuses new data though it is reachable: a hyperstor datastore
+    /// whose pool is full (spec/24-storage.md S30).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full: bool,
     /// `lvm`: the images this node keeps a volume of in it (`gx-i-<id>`,
     /// spec/24-storage.md §11.1), so the datastore isn't deleted from under
     /// them.

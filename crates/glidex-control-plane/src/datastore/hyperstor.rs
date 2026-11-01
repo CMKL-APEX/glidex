@@ -320,6 +320,11 @@ fn api_err(e: connectrpc::ConnectError) -> ImageError {
         C::Unavailable | C::DeadlineExceeded => ImageError::NotReady(format!("hyperstor: {msg}")),
         C::FailedPrecondition => ImageError::Busy(format!("hyperstor: {msg}")),
         C::InvalidArgument | C::OutOfRange => ImageError::invalid_disk(format!("hyperstor: {msg}")),
+        // `pool_full` (hyperstor D182): no new volume until space is freed.
+        C::ResourceExhausted => ImageError::InsufficientStorage {
+            message: format!("hyperstor: {msg}"),
+            details: serde_json::json!({ "reason": "pool_full" }),
+        },
         _ => ImageError::Io(format!("hyperstor: {msg}")),
     }
 }
@@ -423,11 +428,12 @@ impl HyperstorDriver {
         Ok(std::sync::Arc::new(tls))
     }
 
-    /// The pool's usable total and free bytes (hyperstor D156), from the
-    /// first address whose member knows them: only the map service's leader
-    /// hears the devices' reports. `None` when none does (an older hyperstor,
-    /// or a device yet to report).
-    pub fn space(&self) -> Result<Option<(u64, u64)>, ImageError> {
+    /// The pool's usable total and free bytes (hyperstor D156) and how full
+    /// it is (hyperstor D27), from the first address whose member knows
+    /// them: only the map service's leader hears the devices' reports.
+    /// `None` when none does (an older hyperstor, or a device yet to
+    /// report).
+    pub fn space(&self) -> Result<Option<PoolSpace>, ImageError> {
         let tls = self.tls()?;
         block_on(async {
             let (mut answered, mut last) = (false, None);
@@ -1263,9 +1269,23 @@ pub fn renew(api: &[String], id: &Identity) -> Result<Option<Enrolled>, String> 
 
 /// `pool`'s usable total and free bytes in a status answer, when the member
 /// that gave it knows them (hyperstor D156).
-fn pool_space(pools: &[pb::Pool], pool: u32) -> Option<(u64, u64)> {
+/// A hyperstor pool's space as its map service reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolSpace {
+    pub total: u64,
+    pub free: u64,
+    /// `ok`, `nearfull` or `full` (hyperstor D27); empty from a hyperstor
+    /// before it, or until every device has reported.
+    pub fullness: String,
+}
+
+fn pool_space(pools: &[pb::Pool], pool: u32) -> Option<PoolSpace> {
     let p = pools.iter().find(|p| p.id == pool)?;
-    Some((p.total_bytes?, p.free_bytes?))
+    Some(PoolSpace {
+        total: p.total_bytes?,
+        free: p.free_bytes?,
+        fullness: p.fullness.clone(),
+    })
 }
 
 /// What this node finds of a hyperstor datastore (§4.1): its
@@ -1296,7 +1316,22 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
     }
     if driver.has_identity() {
         match driver.space() {
-            Ok(Some((total, free))) => (row.total_bytes, row.free_bytes) = (total, free),
+            Ok(Some(space)) => {
+                (row.total_bytes, row.free_bytes) = (space.total, space.free);
+                // Hyperstor refuses new volumes in a full pool (its D182),
+                // so the datastore refuses new disks (S30).
+                row.full = space.fullness == "full";
+                match space.fullness.as_str() {
+                    "full" => row.warnings.push(format!(
+                        "hyperstor pool {} is full: new disks are refused until space is freed",
+                        driver.pool
+                    )),
+                    "nearfull" => row
+                        .warnings
+                        .push(format!("hyperstor pool {} is nearly full", driver.pool)),
+                    _ => {}
+                }
+            }
             Ok(None) => {}
             Err(e) => tracing::debug!("hyperstor pool space: {e}"),
         }
@@ -1389,10 +1424,35 @@ mod tests {
             pool(1, Some((100, 40))),
             pool(2, None),
         ];
-        assert_eq!(pool_space(&pools, 1), Some((100, 40)));
+        assert_eq!(
+            pool_space(&pools, 1),
+            Some(PoolSpace {
+                total: 100,
+                free: 40,
+                fullness: String::new()
+            })
+        );
         // Not the leader, or a device yet to report.
         assert_eq!(pool_space(&pools, 2), None);
         assert_eq!(pool_space(&pools, 3), None, "no such pool");
+    }
+
+    #[test]
+    fn a_full_pool_is_insufficient_storage() {
+        use connectrpc::{ConnectError, ErrorCode};
+        // hyperstor D182: `pool_full` comes as resource exhausted.
+        let e = api_err(ConnectError::new(
+            ErrorCode::ResourceExhausted,
+            "pool 3 is full (device 2 at 96 %)",
+        ));
+        assert!(
+            matches!(&e, ImageError::InsufficientStorage { message, .. } if message.contains("pool 3 is full")),
+            "{e:?}"
+        );
+        assert!(matches!(
+            api_err(ConnectError::new(ErrorCode::Unavailable, "no leader")),
+            ImageError::NotReady(_)
+        ));
     }
 
     /// A stand-in hyperstor-vhost: answers each request line with what

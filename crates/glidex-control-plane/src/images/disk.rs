@@ -197,8 +197,9 @@ impl ImageManager {
 
     /// Put a new disk on the datastore asked for, else the default for disks
     /// (spec/24-storage.md S13), checking that it can go there: the node it is
-    /// bound to is one of the datastore's, and a datastore that doesn't
-    /// overcommit has room on some node it can go to (§5.2).
+    /// bound to is one of the datastore's, the datastore isn't full (S30),
+    /// and one that doesn't overcommit has room on some node it can go to
+    /// (§5.2).
     fn choose_datastore(&self, key: Option<&str>, disk: &mut Disk) -> Result<(), ImageError> {
         use crate::datastore::record;
         let io = |e: record::DatastoreError| ImageError::Io(e.to_string());
@@ -240,6 +241,18 @@ impl ImageManager {
             } else {
                 ok.first().map(|n| n.to_string())
             };
+        }
+        // A hyperstor pool that is full takes no new volume, overcommit or
+        // not (S30): refused here rather than retried against the cluster.
+        if let Some(r) = record::rows(&self.db, &ds.id)
+            .map_err(io)?
+            .into_values()
+            .find(|r| r.reachable && r.full)
+        {
+            return Err(ImageError::InsufficientStorage {
+                message: format!("datastore {} is full: {}", ds.name, r.warnings.join("; ")),
+                details: serde_json::json!({ "full": true }),
+            });
         }
         if ds.overcommit {
             return Ok(());
