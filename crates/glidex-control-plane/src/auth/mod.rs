@@ -1821,6 +1821,7 @@ impl AuthService {
             groups_claim: s.groups_claim.clone(),
             jit: c.jit,
             allowed_domains: s.allowed_domains.clone(),
+            trust_email: s.trust_email,
             required_groups: c.required_groups.clone(),
             group_teams: c
                 .group_teams

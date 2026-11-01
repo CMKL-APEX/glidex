@@ -157,6 +157,10 @@ message OidcSettings {
   repeated string allowed_domains = 5 [json_name = "allowed_domains"];
   optional string redirect_uri = 6 [json_name = "redirect_uri"];
   repeated string mfa_acr_values = 7 [json_name = "mfa_acr_values"];
+  // The IdP verifies its users' addresses: a token without
+  // `email_verified` counts as verified (spec/19-tenancy.md D75).
+  // `email_verified: false` is believed either way.
+  optional bool trust_email = 8 [json_name = "trust_email"];
 }
 
 // Which Google accounts a `google` connector serves (spec/19-tenancy.md D39).

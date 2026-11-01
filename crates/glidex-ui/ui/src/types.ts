@@ -1975,6 +1975,8 @@ export interface OidcSettings {
   allowed_domains?: string[];
   redirect_uri?: string;
   mfa_acr_values?: string[];
+  /** The IdP verifies its users' addresses (spec/19-tenancy.md D75). */
+  trust_email?: boolean;
 }
 
 /** `google` settings (spec/19-tenancy.md D39, §5.1). */

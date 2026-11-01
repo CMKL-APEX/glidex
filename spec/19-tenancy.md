@@ -1657,7 +1657,7 @@ one PR each, in order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started.
-T8 (D75–D77) is designed; no code yet.
+T8 (D75–D77): task 1 (D75) is implemented; tasks 2 and 3 are not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -2083,3 +2083,11 @@ Task 8a, the UI and gxctl for another organization's cluster:
 | Not yet | the real check with two organizations (8b) |
 
 Task 8b, the real check: spec/20-idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between gpu-dev2's cluster and spark-1 as a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.
+
+T8, verified addresses and pre-added users:
+
+| Spec | Code |
+|---|---|
+| D75: an `oidc` connector's email rules need a verified address; `trust_email` | `glidex_auth::oidc::ClientConfig.trust_email`, `OidcState::identity` (`email_verified` from the preset, the claim, or `trust_email` when there is none; `allowed_domains` on a verified address only); `directory::OidcSettings.trust_email`, `config::OidcConfig.trust_email`; proto `OidcSettings.trust_email`; gxctl `connector add oidc --trust-email`; the connector form's checkbox |
+| Tests | `glidex-auth` `allowed_domains_need_a_verified_address`; `connector_tests::an_oidc_domain_rule_needs_a_verified_address`; UI e2e `connectors.spec.ts` "an OIDC connector takes its email domains and trusts its IdP's addresses" |
+| Not yet | D76 (`allowed_emails` on `oidc`), D77 (pre-added users) |

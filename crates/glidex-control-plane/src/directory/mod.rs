@@ -162,6 +162,10 @@ pub struct OidcSettings {
     pub groups_claim: String,
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+    /// The IdP verifies its users' addresses: a token without
+    /// `email_verified` counts as verified (19-tenancy.md D75).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trust_email: bool,
     /// Where the IdP sends the browser back; default
     /// `<first allowed origin>/api/auth/c/<id>/callback`.
     #[serde(default)]
@@ -421,6 +425,7 @@ impl Connector {
                         scopes: presets::google::SCOPES.map(String::from).to_vec(),
                         groups_claim: default_groups_claim(),
                         allowed_domains: Vec::new(),
+                        trust_email: false,
                         redirect_uri: g.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -441,6 +446,7 @@ impl Connector {
                         scopes: presets::jumpcloud::SCOPES.map(String::from).to_vec(),
                         groups_claim: j.groups_claim().to_string(),
                         allowed_domains: Vec::new(),
+                        trust_email: false,
                         redirect_uri: j.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -710,7 +716,8 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
             sync: None,
             settings: serde_json::json!({
                 "issuer": o.issuer, "client_id": o.client_id, "scopes": o.scopes, "groups_claim": o.groups_claim,
-                "allowed_domains": o.allowed_domains, "redirect_uri": o.redirect_uri,
+                "allowed_domains": o.allowed_domains, "trust_email": o.trust_email,
+                "redirect_uri": o.redirect_uri,
             }),
             source: Source::File,
             created_at: 0,

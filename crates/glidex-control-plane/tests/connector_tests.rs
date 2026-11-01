@@ -1065,6 +1065,50 @@ async fn a_step_up_through_a_connector_asks_the_idp_for_a_fresh_login() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
+/// spec/19-tenancy.md D75: an `oidc` connector's domain rule reads a
+/// verified address only; `trust_email` vouches for a token that doesn't
+/// say, never for one that says no.
+#[tokio::test]
+async fn an_oidc_domain_rule_needs_a_verified_address() {
+    let mock = idp::start().await;
+    let h = harness();
+    for (id, trust) in [("strict", false), ("trusting", true)] {
+        let v = h
+            .oidc_connector(
+                &mock,
+                id,
+                json!({"oidc": {"issuer": mock.base, "client_id": "glidex",
+                    "allowed_domains": ["example.org"], "trust_email": trust}}),
+            )
+            .await;
+        assert_eq!(v["connector"]["oidc"]["trust_email"], trust, "{v}");
+    }
+    let with = |verified: Option<Value>| {
+        let mut c = claims(&mock, "");
+        if let Some(v) = verified {
+            c["email_verified"] = v;
+        }
+        c
+    };
+    for (id, verified, want) in [
+        ("strict", Some(json!(true)), StatusCode::SEE_OTHER),
+        ("strict", None, StatusCode::FORBIDDEN),
+        ("strict", Some(json!(false)), StatusCode::FORBIDDEN),
+        ("trusting", None, StatusCode::SEE_OTHER),
+        ("trusting", Some(json!(false)), StatusCode::FORBIDDEN),
+    ] {
+        let c = with(verified);
+        assert_eq!(h.login_with(&mock, id, c.clone()).await, want, "{id} {c}");
+    }
+    // Verified, but outside the domains.
+    let mut c = with(Some(json!(true)));
+    c["email"] = json!("alice@other.org");
+    assert_eq!(
+        h.login_with(&mock, "strict", c).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
 #[tokio::test]
 async fn require_mfa_checks_amr_and_acr() {
     let mock = idp::start().await;

@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 type Settings = glidex_api::proto::glidex::directory::v1::__buffa::oneof::connector::Settings;
 
 const USAGE: &str = "Usage: connector list | show <id> \
-    | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--mfa-acr V]... [COMMON] \
+    | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--trust-email] [--mfa-acr V]... [COMMON] \
     | add pam <id> [--name TEXT] [--allow-group G]... [COMMON] \
     | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
     | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
@@ -120,6 +120,11 @@ fn show(c: &Connector) {
             }
             if !o.allowed_domains.is_empty() {
                 println!("  Email domains:  {}", o.allowed_domains.join(", "));
+            }
+            if o.trust_email == Some(true) {
+                println!(
+                    "  Addresses:      trusted (a token without email_verified counts as verified)"
+                );
             }
             if let Some(r) = &o.redirect_uri {
                 println!("  Redirect URI:   {r}");
@@ -357,6 +362,7 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
                         scopes: strings(args, "--scope"),
                         groups_claim: flag_value(args, "--groups-claim").unwrap_or("").into(),
                         allowed_domains: strings(args, "--domain"),
+                        trust_email: has_flag(args, "--trust-email").then_some(true),
                         mfa_acr_values: strings(args, "--mfa-acr"),
                         ..Default::default()
                     })))
