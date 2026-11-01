@@ -544,7 +544,10 @@ needs these:
   it to respect the origin's headers.
 - **No affinity needed.** Any server can take any request: a server
   forwards writes to the leader with the page's `Origin` and, for account
-  changes and passkeys, its cookies, and the leader issues and redeems
+  changes, passkeys and sign-ins through an identity provider, its
+  cookies. The leader runs both ends of a sign-in through an identity
+  provider (its start and the provider's callback), so the callback may
+  reach another server than the start did. It also issues and redeems
   console tickets, so the ticket and the console's WebSocket may reach
   different servers.
 

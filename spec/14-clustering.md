@@ -1673,6 +1673,18 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
   with routable pod CIDRs, and for peering with outside Kubernetes
   clusters.
 - **Placement groups / anti-affinity.**
+- **Sign-ins through an IdP that survive a leader change.** The leader
+  holds a browser login's state (`state`, nonce, PKCE verifier) in
+  memory, and followers forward its start and callback there, so a
+  leader change in the middle of a login loses it. Instead, a sealed
+  cookie: the state encrypted and authenticated with a key every server
+  holds (the cluster's secrets key), bound to the browser and valid 10
+  minutes, which any server can open. No single-use record is needed:
+  the IdP's code is single-use and PKCE binds it to the verifier in the
+  cookie. Not for console tickets, which travel in a URL and need a
+  server-side single use, nor for the Raft store, where every login
+  would be two committed writes and its secrets would sit in the log and
+  snapshots.
 - **A native OVSDB client** in place of `ovn-nbctl`; write-lane
   pipelining (D3).
 - **Moving disks between hosts as part of live migration.** Offline
