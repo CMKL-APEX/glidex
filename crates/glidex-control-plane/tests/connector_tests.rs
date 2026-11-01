@@ -1117,6 +1117,84 @@ async fn an_oidc_domain_rule_needs_a_verified_address() {
     );
 }
 
+/// spec/19-tenancy.md D76: on an `oidc` connector, `allowed_domains` gates
+/// every login and `allowed_emails` which of them may make an account.
+#[tokio::test]
+async fn an_oidc_allowlist_picks_who_gets_an_account() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.session(&h.admin("admin-allow"));
+    // An address the domains refuse could never log in: refused up front.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(
+                json!({"connector": {"id": "bad", "display_name": "Bad", "jit": true,
+                "oidc": {"issuer": mock.base, "client_id": "glidex",
+                    "allowed_domains": ["example.org"], "allowed_emails": ["bob@other.org"]}}}),
+            ),
+            &admin,
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["error"], "invalid_connector", "{v}");
+    let v = h
+        .oidc_connector(
+            &mock,
+            "listed",
+            json!({"oidc": {"issuer": mock.base, "client_id": "glidex",
+                "allowed_domains": ["example.org"], "allowed_emails": ["Alice@example.org"]}}),
+        )
+        .await;
+    assert_eq!(
+        v["connector"]["oidc"]["allowed_emails"],
+        json!(["Alice@example.org"]),
+        "{v}"
+    );
+    let person = |sub: &str, email: &str, verified: bool| {
+        let mut c = alice_claims(&mock);
+        c["sub"] = json!(sub);
+        c["email"] = json!(email);
+        c["email_verified"] = json!(verified);
+        c
+    };
+    // Listed (compared without case) and verified: an account.
+    assert_eq!(
+        h.login_with(&mock, "listed", person("a", "alice@example.org", true))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+    // In the domain but not listed: no account.
+    assert_eq!(
+        h.login_with(&mock, "listed", person("b", "bob@example.org", true))
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    // Once in, the allowlist doesn't stand in the way of the next login.
+    let (_, v) = h
+        .rest(
+            "PATCH",
+            "/connectors/listed",
+            Some(
+                json!({"connector": {"oidc": {"issuer": mock.base, "client_id": "glidex",
+                "allowed_domains": ["example.org"], "allowed_emails": ["carol@example.org"]}}}),
+            ),
+            &admin,
+        )
+        .await;
+    assert_eq!(
+        v["connector"]["oidc"]["allowed_emails"],
+        json!(["carol@example.org"]),
+        "{v}"
+    );
+    assert_eq!(
+        h.login_with(&mock, "listed", person("a", "alice@example.org", true))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+}
+
 #[tokio::test]
 async fn require_mfa_checks_amr_and_acr() {
     let mock = idp::start().await;

@@ -71,7 +71,7 @@ test("Google and JumpCloud connectors are made with their own fields", async ({ 
 
 // D75: a domain rule reads verified addresses; the operator vouches for
 // an IdP that never says.
-test("an OIDC connector takes its email domains and trusts its IdP's addresses", async ({ page }) => {
+test("an OIDC connector takes its email domains, an allowlist, and trusts its IdP's addresses", async ({ page }) => {
   const OIDC = "e2e-oidc-domain";
   try {
     await page.goto("/connectors");
@@ -82,15 +82,17 @@ test("an OIDC connector takes its email domains and trusts its IdP's addresses",
     await dialog.locator("#connector-issuer").fill("https://idp.example.org");
     await dialog.locator("#connector-client_id").fill("glidex");
     await dialog.locator("#connector-allowed_domains").fill("example.org");
+    await dialog.locator("#connector-allowed_emails").fill("ann@example.org");
     await expect(dialog.locator("#connector-trust-email")).not.toBeChecked();
     await dialog.locator("#connector-trust-email").check();
     await dialog.getByRole("button", { name: "Create Connector" }).click();
     await expect(dialog).toBeHidden();
-    expect((await api(`/connectors/${OIDC}`)).connector.oidc).toMatchObject({ allowed_domains: ["example.org"], trust_email: true });
+    expect((await api(`/connectors/${OIDC}`)).connector.oidc).toMatchObject({ allowed_domains: ["example.org"], allowed_emails: ["ann@example.org"], trust_email: true });
 
     const row = page.getByRole("row", { name: new RegExp(OIDC) });
     await row.getByRole("button", { name: "Edit" }).click();
     await expect(dialog.locator("#connector-trust-email")).toBeChecked();
+    await expect(dialog.locator("#connector-allowed_emails")).toHaveValue("ann@example.org");
     await dialog.locator("#connector-trust-email").uncheck();
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).toBeHidden();

@@ -231,6 +231,11 @@ gxctl connector list
   (`allowed_domains`, `trust_email`). In the web UI's connector form they
   are **Allowed email domains** and **The IdP verifies its users'
   addresses**.
+- `--allow-email E` (an `oidc` connector's **Allowed emails**): with
+  `--jit`, only these verified addresses get an account. `--domain`
+  still gates every login, so a connector can let in anyone at the
+  domain who already has an account and create accounts for the listed
+  people only. Each address must be in one of the domains.
 - `--default-tenant <t>` makes new users members of tenant `<t>`. If
   that is the `admin` tenant or another operator tenant, a connector that creates users must also
   have `--require-group`.

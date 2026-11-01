@@ -1977,6 +1977,8 @@ export interface OidcSettings {
   mfa_acr_values?: string[];
   /** The IdP verifies its users' addresses (spec/19-tenancy.md D75). */
   trust_email?: boolean;
+  /** With JIT, only these verified addresses get an account (D76). */
+  allowed_emails?: string[];
 }
 
 /** `google` settings (spec/19-tenancy.md D39, §5.1). */

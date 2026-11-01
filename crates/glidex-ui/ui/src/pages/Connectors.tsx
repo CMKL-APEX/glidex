@@ -137,7 +137,7 @@ function formState(c?: Connector): FormState {
     mfa_acr_values: (c?.oidc?.mfa_acr_values ?? []).join(" "),
     google_accounts: c?.google?.accounts === "GOOGLE_ACCOUNTS_ANY" ? "any" : "workspace",
     domains: (c?.google?.domains ?? []).join(", "),
-    allowed_emails: (c?.google?.allowed_emails ?? c?.jumpcloud?.allowed_emails ?? []).join(", "),
+    allowed_emails: (c?.google?.allowed_emails ?? c?.jumpcloud?.allowed_emails ?? c?.oidc?.allowed_emails ?? []).join(", "),
     device_client_id: c?.google?.device_client_id ?? "",
     trust_2sv: !!c?.google?.trust_2sv,
   };
@@ -208,6 +208,7 @@ function toInput(f: FormState): ConnectorInput {
       allowed_domains: words(f.allowed_domains),
       mfa_acr_values: words(f.mfa_acr_values),
       trust_email: f.trust_email,
+      allowed_emails: words(f.allowed_emails),
     };
     if (f.redirect_uri.trim()) c.oidc.redirect_uri = f.redirect_uri.trim();
   }
@@ -512,6 +513,9 @@ function ConnectorForm({
               <span className="block text-xs text-gray-500">For IdPs that never send email_verified, such as Entra ID, where the organization assigns the addresses. A token that says unverified is refused either way.</span>
             </span>
           </label>
+          {text("allowed_emails", "Allowed emails", {
+            hint: "Comma-separated. With “Create users” on, only these verified addresses get an account; empty lets anyone the domains allow.",
+          })}
           {text("mfa_acr_values", "MFA acr values", { hint: "Space-separated values that count as MFA." })}
         </>
       )}
