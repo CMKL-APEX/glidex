@@ -1,6 +1,6 @@
 // A real VM driven entirely from the UI: credential and network, create
 // with firmware boot, start, console login, pause/resume, graceful shut
-// down, delete. Needs KVM, the hypervisor, glidex-netd + OVS and
+// down, force off cutting a shutdown short, delete. Needs KVM, the hypervisor, glidex-netd + OVS and
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -80,7 +80,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(page.getByText(LABEL[hypervisor], { exact: true })).toBeVisible();
       await page.getByRole("button", { name: "Start" }).click();
       await expect(page.getByRole("button", { name: "Shut down" })).toBeVisible({ timeout: 60_000 });
-      await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Force off" })).toBeVisible();
       const addr = page.getByText(/^10\.88\.\d+\.\d+$/);
       await expect(addr).toBeVisible({ timeout: 30_000 });
       ip = (await addr.textContent())!.trim();
@@ -119,7 +119,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
       // The power button can't reach a paused guest.
       await expect(page.getByRole("button", { name: "Shut down" })).toBeHidden();
-      await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Force off" })).toBeVisible();
       await page.getByRole("button", { name: "Resume" }).click();
       await expect(page.getByRole("button", { name: "Shut down" })).toBeVisible();
     });
@@ -131,6 +131,27 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       expect(stopped.state).toBe("VM_STATE_STOPPED");
       const log = await api<string>(`/vms/${stopped.id}/console/log`);
       expect(log, "guest powered off cleanly").toMatch(CLEAN_POWEROFF);
+    });
+
+    await test.step("force off cuts a shutdown short", async () => {
+      await page.getByRole("button", { name: "Start" }).click();
+      await expect(page.getByRole("button", { name: "Shut down" })).toBeVisible({ timeout: 60_000 });
+      // Still in its firmware, the guest doesn't answer the power button:
+      // the shutdown would wait its 60 s.
+      await page.getByRole("button", { name: "Shut down" }).click();
+      const forceOff = page.getByRole("button", { name: "Force off" });
+      await expect(forceOff).toBeVisible();
+      const asked = Date.now();
+      await forceOff.click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toContainText("may lose data");
+      await dialog.getByRole("button", { name: "Force off", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Start" })).toBeVisible({ timeout: 30_000 });
+      expect(Date.now() - asked, "stopped before the shutdown's 60 s").toBeLessThan(45_000);
+      const stopped = await vm();
+      expect(stopped.state).toBe("VM_STATE_STOPPED");
+      // A grace of 0, not the 60 s the Shut down left: the next stop is hard too.
+      expect((await api(`/vms/${stopped.id}`)).vm.stop_grace_secs ?? 0).toBe(0);
     });
 
     await test.step("delete it", async () => {

@@ -263,8 +263,8 @@ gxctl stop my-vm --graceful
 (`--graceful <secs>` to change that) for it to shut down, then stops it.
 Without `--graceful`, `stop` ends the VM at once, like pulling the plug.
 
-In the web UI: **Shut down** for the graceful stop, **Stop** for the
-immediate one.
+In the web UI: **Shut down** for the graceful stop, **Force off** for
+the immediate one.
 
 To remove the VM and the root disk made for it (it asks first; add
 `--keep-disk` to keep the disk):

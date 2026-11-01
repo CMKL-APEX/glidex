@@ -814,7 +814,10 @@ export const deleteVm = (id: string, keepDisk = false) =>
   rpc(VmService.method.deleteVm, { id, wait_secs: WAIT_SECS, keep_disk: keepDisk }).then((r) => r.vm as VmResponse | undefined);
 
 /** One VM lifecycle action from the UI's buttons. `shutdown` presses the
- * power button and stops the VM hard after 60 s. */
+ * power button and stops the VM hard after 60 s; `stop` (Force off) stops
+ * it at once. It sends a grace of 0, not none: none reuses the VM's stored
+ * grace, which a Shut down set to 60 s, and 0 also cuts short a shutdown
+ * still waiting. */
 export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pause" | "delete"): Promise<unknown> {
   switch (action) {
     case "start":
@@ -822,7 +825,7 @@ export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pa
     case "shutdown":
       return stopVm(id, 60);
     case "stop":
-      return stopVm(id);
+      return stopVm(id, 0);
     case "pause":
       return pauseVm(id);
     case "delete":

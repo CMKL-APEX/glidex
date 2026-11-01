@@ -159,7 +159,7 @@ ui/src/
 │   ├── Loading.tsx
 │   ├── Modal.tsx           # Re-exports the kit's
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, firmware image, boot disk source, credential picker, restart behaviour, start now)
-│   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
+│   ├── VmActions.tsx       # Start/Shut down/Force off/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
@@ -264,9 +264,15 @@ and `last_exit`.
 - **Actions** (`VmActions`): Start is offered for `created`, `stopped`,
   `paused`, and `failed` unless the VM is already meant to run; a VM
   being deleted shows no actions. Delete asks for confirmation (a root
-  disk created with the VM goes with it). Stop is
-  offered while running or paused **or** whenever the desired state is
-  not `stopped`, so a VM stuck starting or crash-looping can be stopped.
+  disk created with the VM goes with it). **Force off** (a hard stop) is
+  offered while running, paused or stopping **or** whenever the desired
+  state is not `stopped`, so a VM stuck starting or crash-looping can be
+  stopped, and a shutdown still waiting for the guest can be cut short.
+  It stays enabled while another action's call is waiting (a Shut down
+  waits up to 80 s). It asks for confirmation first, and sends
+  `graceful_timeout_secs=0`:
+  a stop with no grace would reuse the VM's stored `stop_grace_secs`,
+  which a Shut down sets to 60.
   `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
   plus 20 s, at most 300) and delete; a failed reconcile comes back as
   an `ApiRequestError` like any other.
