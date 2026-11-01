@@ -86,6 +86,7 @@ pub fn user_pb(u: &User, identities: &[Identity]) -> pb::User {
         external_id: u.managed.as_ref().and_then(|m| m.external_id.clone()),
         email: u.email.clone(),
         disabled_reason: u.disabled_reason.map(|r| r.as_str().into()),
+        pending_connector: u.pending_login.as_ref().map(|p| p.connector.clone()),
         identities: identities.iter().map(identity_pb).collect(),
         ..Default::default()
     }
@@ -739,6 +740,14 @@ pub fn create_user(
     req: pb::CreateUserRequest,
 ) -> ServiceResult<pb::CreateUserResponse> {
     call.require(call.directory_ent(), EntitySet::new())?;
+    if let Some(p) = req.pending.as_option() {
+        if !req.identities.is_empty() {
+            return Err(bad(
+                "a pre-added user has no identities yet: its first login adds one",
+            ));
+        }
+        return preadd_user(call, req.display_name.clone(), p);
+    }
     let s = &call.auth().store;
     for i in &req.identities {
         if !valid_provider(&i.provider) || i.subject.is_empty() {
@@ -767,6 +776,7 @@ pub fn create_user(
         managed: None,
         email: None,
         disabled_reason: None,
+        pending_login: None,
     };
     s.put_user(&u).map_err(store_err)?;
     for i in req.identities {
@@ -780,6 +790,123 @@ pub fn create_user(
         .map_err(store_err)?;
     }
     call.set_target(format!("user:{}", u.id));
+    Ok(pb::CreateUserResponse {
+        user: user_pb(&u, &[]).into(),
+        ..Default::default()
+    })
+}
+
+/// D77, §6.3: a user made now, with its tenant and role, for the first
+/// login through `pending.connector` with `pending.email`.
+fn preadd_user(
+    call: &Call,
+    display_name: String,
+    p: &pb::PendingUser,
+) -> ServiceResult<pb::CreateUserResponse> {
+    use crate::service::invitations::{MEMBER, may_give_role, usable_connector};
+    let email = p.email.trim().to_ascii_lowercase();
+    let Some((local, domain)) = email.split_once('@').filter(|(l, d)| {
+        !l.is_empty() && d.contains('.') && !d.contains('@') && !email.contains(char::is_whitespace)
+    }) else {
+        return Err(bad(format!("{:?} is not an email address", p.email)));
+    };
+    // Its tenant: one the caller sees (`visible` would also check this
+    // route's action, `manageUsers`, on the tenant).
+    let t = call
+        .auth()
+        .tenants
+        .resolve_in(call.p.directory_id(), &p.tenant)
+        .ok()
+        .filter(|t| call.allowed("readTenant", Ent::Tenant(t.id.clone()), EntitySet::new()))
+        .ok_or_else(|| not_found("tenant"))?;
+    let tenant = Ent::Tenant(t.id.clone());
+    let role = if p.role.is_empty() {
+        MEMBER
+    } else {
+        p.role.as_str()
+    };
+    may_give_role(call, &tenant, role)?;
+    let c = usable_connector(call, &p.connector, t.owns_directory || t.operator)?;
+    if c.directory_id != call.p.directory_id() {
+        return Err(bad(format!("no connector {}", p.connector)));
+    }
+    if !c.provisioning.is_none() {
+        return Err(ServiceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "connector_not_allowed",
+            "this connector's users are provisioned by its IdP: add them there",
+        ));
+    }
+    let domains = c.oidc().map(|o| o.allowed_domains).unwrap_or_default();
+    if !domains.is_empty() && !domains.iter().any(|d| d.eq_ignore_ascii_case(domain)) {
+        return Err(ServiceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "email_not_allowed",
+            format!("the connector allows only {}", domains.join(", ")),
+        ));
+    }
+    let s = &call.auth().store;
+    let waiting = s.users().map_err(store_err)?.into_iter().any(|u| {
+        u.directory_id == c.directory_id
+            && u.pending_login
+                .as_ref()
+                .is_some_and(|w| w.is(&c.id, &email))
+    });
+    if waiting {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "already_exists",
+            format!("{email} is already pre-added for connector {}", c.id),
+        ));
+    }
+    let u = User {
+        id: uuid::Uuid::new_v4().to_string(),
+        directory_id: c.directory_id.clone(),
+        display_name: match display_name.trim() {
+            "" => local.to_string(),
+            d => d.to_string(),
+        },
+        disabled: false,
+        default_project: None,
+        created_at: crate::auth::store::now(),
+        managed: None,
+        email: Some(email.clone()),
+        disabled_reason: None,
+        pending_login: Some(crate::auth::store::PendingLogin {
+            connector: c.id.clone(),
+            email: email.clone(),
+        }),
+    };
+    s.put_user(&u).map_err(store_err)?;
+    call.set_target(format!("user:{}", u.id));
+    call.detail("email", serde_json::json!(email));
+    call.detail("connector", serde_json::json!(c.id));
+    call.detail("tenant", serde_json::json!(t.id));
+    call.detail("role", serde_json::json!(role));
+    let by = format!("preadd:{}", call.p.user_id().unwrap_or("-"));
+    let linked = call
+        .auth()
+        .tenants
+        .add_member(&t.id, Ent::User(u.id.clone()), &by)
+        .map_err(super::tenancy::tenant_error)
+        .and_then(|_| {
+            if role == MEMBER {
+                return Ok(());
+            }
+            call.auth()
+                .add_link(role, Ent::User(u.id.clone()), tenant.clone(), &by)
+                .map(|_| ())
+                .map_err(|e| ServiceError::from(auth_error(e)))
+        });
+    // Half a pre-added user is no use: take it back.
+    if let Err(e) = linked {
+        let _ = call
+            .auth()
+            .tenants
+            .remove_member(&t.id, &Ent::User(u.id.clone()));
+        let _ = s.delete_user(&u.id);
+        return Err(e);
+    }
     Ok(pb::CreateUserResponse {
         user: user_pb(&u, &[]).into(),
         ..Default::default()

@@ -406,6 +406,7 @@ pub fn snapshot_for(
             managed: None,
             email: None,
             disabled_reason: None,
+            pending_login: None,
         };
         rows.push(trust::Row {
             table: "users".into(),

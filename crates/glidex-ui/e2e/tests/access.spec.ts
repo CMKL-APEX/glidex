@@ -166,3 +166,52 @@ test("system roles: grant and remove; no host scope on a standalone host", async
   await expect(row).toHaveCount(0);
   expect(await auditor()).toHaveLength(0);
 });
+
+// spec/19-tenancy.md D77: a directory administrator adds someone by email;
+// the account and its tenant role are there before they ever sign in.
+test("users: add one by email before they sign in", async ({ page }) => {
+  const CONNECTOR = "e2e-preadd";
+  const EMAIL = "e2e-preadd@example.org";
+  const gone = async () => {
+    for (const u of ((await api<{ users?: any[] }>("/users")).users ?? []).filter((u) => u.email === EMAIL)) await del(`/users/${u.id}`);
+    await del(`/connectors/${CONNECTOR}`);
+  };
+  await gone();
+  try {
+    await api("/connectors", {
+      method: "POST",
+      body: {
+        connector: {
+          id: CONNECTOR,
+          display_name: "E2E SSO",
+          jit: false,
+          oidc: { issuer: "https://idp.example.org", client_id: "glidex", allowed_domains: ["example.org"] },
+        },
+      },
+    });
+    await page.goto("/directory/access");
+    const users = page.locator("section", { has: page.getByRole("heading", { name: "Users" }) });
+    await users.getByRole("button", { name: "Add user" }).click();
+    const form = users.getByRole("form", { name: "Add user" });
+    await form.getByLabel("Email").fill(EMAIL);
+    await form.getByLabel("Role").selectOption("role.tenant-auditor");
+    await form.getByLabel("Sign in with").selectOption(CONNECTOR);
+    await form.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText(`Added ${EMAIL}`);
+    const row = users.locator("tbody tr", { hasText: EMAIL });
+    await expect(row).toContainText("not signed in yet");
+    await expect(row).toContainText("E2E SSO");
+    await expect(row).toContainText("e2e-preadd");
+    const u = ((await api<{ users?: any[] }>("/users")).users ?? []).find((u) => u.email === EMAIL);
+    expect(u).toMatchObject({ display_name: "e2e-preadd", pending_connector: CONNECTOR });
+
+    // Twice is refused, with why.
+    await users.getByRole("button", { name: "Add user" }).click();
+    await form.getByLabel("Email").fill(EMAIL);
+    await form.getByLabel("Sign in with").selectOption(CONNECTOR);
+    await form.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByText(/already pre-added/)).toBeVisible();
+  } finally {
+    await gone();
+  }
+});

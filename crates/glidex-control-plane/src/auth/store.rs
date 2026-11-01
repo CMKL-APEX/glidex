@@ -103,6 +103,24 @@ pub struct User {
     /// Why it is disabled, when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<DisabledReason>,
+    /// Pre-added (spec/19-tenancy.md D77): the first login through this
+    /// connector with this verified address takes the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_login: Option<PendingLogin>,
+}
+
+/// A pre-added user's way in (spec/19-tenancy.md §6.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingLogin {
+    pub connector: String,
+    /// Lower case.
+    pub email: String,
+}
+
+impl PendingLogin {
+    pub fn is(&self, connector: &str, email: &str) -> bool {
+        self.connector == connector && self.email.eq_ignore_ascii_case(email)
+    }
 }
 
 /// A user or team a connector provisions (spec/19-tenancy.md §8): its
@@ -825,6 +843,52 @@ impl IdentityStore {
         })
     }
 
+    /// D77: the user pre-added in `directory` for `connector` and
+    /// `verified_email`, its identity linked and its pending login
+    /// cleared in one write. `None` when the identity is already known
+    /// or no user waits for it.
+    pub fn take_pending_login(
+        &self,
+        directory: &str,
+        connector: &str,
+        provider: &str,
+        subject: &str,
+        verified_email: &str,
+    ) -> Result<Option<User>, StoreError> {
+        self.scim(directory, connector, |tx| {
+            let key = Identity::key(provider, subject);
+            let known = {
+                let t = tx.tx.open_table(IDENTITIES)?;
+                t.get(key.as_str())?.is_some()
+            };
+            if known {
+                return Ok(None);
+            }
+            let Some(mut u) = tx.rows::<User>(USERS)?.into_iter().find(|u| {
+                u.directory_id == directory
+                    && u.pending_login
+                        .as_ref()
+                        .is_some_and(|p| p.is(connector, verified_email))
+            }) else {
+                return Ok(None);
+            };
+            u.pending_login = None;
+            tx.put_user(&u)?;
+            tx.put(
+                IDENTITIES,
+                &key,
+                &Identity {
+                    provider: provider.to_string(),
+                    subject: subject.to_string(),
+                    user_id: u.id.clone(),
+                    email: Some(verified_email.to_string()),
+                    created_at: now(),
+                },
+            )?;
+            Ok::<_, StoreError>(Some(u))
+        })
+    }
+
     /// The managed users and groups of `connector`, read outside a write.
     pub fn scim_read(&self, connector: &str) -> Result<(Vec<User>, Vec<ScimGroup>), StoreError> {
         let users = self
@@ -997,6 +1061,7 @@ impl IdentityStore {
                     managed: None,
                     email: None,
                     disabled_reason: None,
+                    pending_login: None,
                 };
                 self.put_user(&u)?;
                 u
@@ -1964,6 +2029,7 @@ mod tests {
             }),
             email: Some("alice@example.org".into()),
             disabled_reason: None,
+            pending_login: None,
         };
         let login = |s: &IdentityStore, c: &str| {
             s.scim_login(c, "oidc:c", "sub-1", Some("alice@example.org"))

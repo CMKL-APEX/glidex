@@ -1078,6 +1078,9 @@ export interface User {
   email?: string;
   /** Why it is disabled. */
   disabled_reason?: "admin" | "scim" | "connector_deleted" | "sync";
+  /** Pre-added, not signed in yet: the connector whose first login with
+   *  `email` takes it (spec/19-tenancy.md D77). */
+  pending_connector?: string;
 }
 
 export type UserView = User;

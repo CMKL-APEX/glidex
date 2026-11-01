@@ -1095,6 +1095,10 @@ export const removeSystemBinding = (link: string) => rpc(SystemBindingService.me
 // ---- users, teams and tokens --------------------------------------------------
 
 export const listUsers = () => rpc(UserService.method.listUsers).then((r) => (r.users ?? []) as UserView[]);
+/** Pre-add someone by email (spec/19-tenancy.md D77): their first login
+ *  through `connector` with that verified address takes the account. */
+export const preaddUser = (pending: { email: string; connector: string; tenant: string; role: string }) =>
+  rpc(UserService.method.createUser, { pending }).then((r) => r.user as User);
 export const updateUser = (id: string, req: { display_name?: string; disabled?: boolean; default_project?: string }) =>
   rpc(UserService.method.updateUser, { ...req, id, update_mask: maskOf(req) }).then((r) => r.user as User);
 

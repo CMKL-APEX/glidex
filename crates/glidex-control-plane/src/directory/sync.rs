@@ -364,6 +364,7 @@ fn apply_op(tx: &ScimTx<'_>, c: &Connector, op: &Op) -> Result<(), SyncError> {
                 managed: None,
                 email: None,
                 disabled_reason: None,
+                pending_login: None,
             };
             attrs(su).apply(&mut u, &c.id);
             set_keys(&mut u, su);
@@ -645,6 +646,7 @@ mod tests {
             }),
             email: Some(format!("{ext}@corp.example")),
             disabled_reason: disabled,
+            pending_login: None,
         }
     }
 

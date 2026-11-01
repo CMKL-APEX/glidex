@@ -665,6 +665,41 @@ In the web UI, a tenant's page has an **Invitations** card: the list,
 is created (see [Tenants and
 admissions](access-control.md#tenants-and-admissions)).
 
+## Adding people before they sign in
+
+A directory administrator can add a person by email before they ever
+sign in: the account exists at once, with its tenant and role, and the
+person's first sign-in through the named connector with that address
+takes it. There is no link to send; tell them to sign in. With a
+connector that doesn't create users (`--no-jit`), this makes "only the
+people we add" a list you keep on the **Access** page.
+
+```bash
+gxctl user add alice@example.org --tenant web --connector corp --role role.tenant-admin
+gxctl user list        # "not signed in yet: alice@example.org through corp"
+```
+
+- **Who adds.** Directory administrators (the right to manage users),
+  who may also give the role in that tenant.
+- **Who can take it.** The first login through that connector whose
+  **verified** address is the one added, from an account Glidex doesn't
+  know yet. It is taken once. The connector's other rules still apply:
+  its email domains, required groups and MFA.
+- `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector,
+  not a provisioned one, as for invitations; the address must be in the
+  connector's email domains when it has any.
+- `--role` is `member` (the default: membership only),
+  `role.tenant-admin` or `role.tenant-auditor`. `--name` sets the display
+  name; it defaults to the part of the address before the `@`.
+- **Removing.** As for any user: **Disable** ends their sessions and keeps
+  them out; **Delete** removes the account (with the connector creating
+  users, they would get a new one at their next sign-in, so disable
+  instead).
+
+In the web UI, the **Access** page's **Add user** takes the email,
+tenant, role and connector. Until they sign in, the user is listed with
+*not signed in yet* and the address they sign in with.
+
 ### Accepting an invitation
 
 The invited person opens the link. The page says which tenant and role
