@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { PowerState, VmState } from "../types";
+import ConfirmDialog from "./ConfirmDialog";
 
 export type VmAction = "start" | "shutdown" | "stop" | "pause" | "delete";
 
@@ -21,11 +23,17 @@ export default function VmActions({
   onAction,
   loading = false,
 }: VmActionsProps) {
+  const [confirmForceOff, setConfirmForceOff] = useState(false);
   if (deleting) return <span className="text-sm text-gray-500">Being deleted…</span>;
   const canStart =
     state === "created" || state === "stopped" || state === "paused" || (state === "failed" && desired !== "running");
+  // Also while stopping: a guest that ignores the power button would
+  // otherwise keep the page waiting out the whole grace.
   const canStop =
-    state === "running" || state === "paused" || (desired !== undefined && desired !== "stopped");
+    state === "running" ||
+    state === "paused" ||
+    state === "stopping" ||
+    (desired !== undefined && desired !== "stopped");
   const canPause = state === "running";
   // The power button only reaches a running guest.
   const canShutdown = state === "running";
@@ -63,11 +71,12 @@ export default function VmActions({
       {canStop && (
         <button
           className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors disabled:opacity-50"
-          disabled={loading}
+          // Not held back by `loading`: a Shut down waits for the VM (up to
+          // 80 s), and this is what cuts that wait short.
           title="Stop immediately, like pulling the plug"
-          onClick={() => onAction(vmId, "stop")}
+          onClick={() => setConfirmForceOff(true)}
         >
-          Stop
+          Force off
         </button>
       )}
       <button
@@ -77,6 +86,15 @@ export default function VmActions({
       >
         Delete
       </button>
+      {confirmForceOff && (
+        <ConfirmDialog
+          title="Force off"
+          consequence="The VM stops at once, like pulling the plug, without waiting for the guest to shut down. The guest may lose data it hasn't written to disk."
+          actionLabel="Force off"
+          onConfirm={async () => onAction(vmId, "stop")}
+          onClose={() => setConfirmForceOff(false)}
+        />
+      )}
     </div>
   );
 }

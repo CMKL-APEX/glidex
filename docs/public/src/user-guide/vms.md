@@ -465,7 +465,7 @@ A pool the project may not use is refused as with `devices`
 | Resume a paused VM | **Resume** | `start <vm>` | `POST /vms/{id}/start` |
 | Pause | **Pause** | `pause <vm>` | `POST /vms/{id}/pause` |
 | Graceful stop | **Shut down** | `stop <vm> --graceful [secs]` | `POST /vms/{id}/stop?graceful_timeout_secs=60` |
-| Immediate stop | **Stop** | `stop <vm>` | `POST /vms/{id}/stop` |
+| Immediate stop | **Force off** | `stop <vm>` | `POST /vms/{id}/stop` |
 | Delete | **Delete** | `delete <vm> [--keep-disk]` | `DELETE /vms/{id}` |
 | Place a stopped or lost VM on another node (`system-admin`) | **Place on another node** | `place <vm> [--node N]` | `POST /vms/{id}/place` |
 
@@ -490,14 +490,15 @@ gxctl> stop my-vm --graceful          # wait up to 60 s
 gxctl> stop my-vm --graceful 120      # wait up to 120 s (at most 300)
 ```
 
-The web UI's **Shut down** waits 60 seconds. **Stop** and `stop` without
-`--graceful` stop the VM like pulling the plug.
+The web UI's **Shut down** waits 60 seconds. **Force off** stops the VM
+like pulling the plug, after you confirm; it also cuts short a shutdown
+that is still waiting for the guest.
 
 The timeout you give is kept as the VM's stop grace (`stop_grace_secs`)
-and used again by later stops that don't give one, including stops from
-the web UI's **Stop** button. Pass `--graceful 0` (or
-`graceful_timeout_secs=0`) for an immediate stop after a graceful one.
-<!-- TODO(verify): a stop without a grace reuses the stored stop_grace_secs; confirm this is intended rather than a bug before publishing. -->
+and used again by later stops that don't give one, such as `stop`
+without `--graceful`. Pass `--graceful 0` (or `graceful_timeout_secs=0`)
+for an immediate stop after a graceful one. The web UI's **Force off**
+always sends 0.
 
 ### Pause and resume
 
