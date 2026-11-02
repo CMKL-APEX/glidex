@@ -1039,7 +1039,8 @@ gxctl user unlink alice pam:alice@<node id>
 
 On a standalone host, or with `cluster.shared_local_accounts`, give the
 account alone: `gxctl user link alice pam alice`. A subject of the
-other shape is refused (`400`), since no sign-in would ever match it.
+other shape is refused (`400`), since no sign-in would ever match it;
+the same goes for the sign-ins given with `POST /users`.
 
 The user is an id, or a name exactly one user has. A sign-in already
 linked to another user is refused: remove that user, or unlink it there,
