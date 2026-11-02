@@ -217,6 +217,7 @@ fn spec_of(
         scope: scope_of(scope),
         physnet,
         router,
+        node: None,
     })
 }
 
@@ -334,7 +335,7 @@ pub async fn create_network(
         call.target_project(None).ok().into_iter().collect()
     };
     let tenants = resolve_tenants(call, &req.tenants)?;
-    let spec = spec_of(
+    let mut spec = spec_of(
         req.name,
         req.mode.as_known().unwrap_or_default(),
         req.port_type.as_known().unwrap_or_default(),
@@ -347,6 +348,7 @@ pub async fn create_network(
         req.physnet,
         req.router,
     )?;
+    spec.node = req.node;
     let n = call
         .manager()
         .create_host_network(spec, grants, tenants, req.all_projects)

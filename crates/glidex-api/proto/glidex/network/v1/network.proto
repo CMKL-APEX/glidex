@@ -207,6 +207,11 @@ message CreateNetworkRequest {
   // Tenants (ids or slugs) whose every project may use it.
   repeated string tenants = 13;
   bool all_projects = 14 [json_name = "all_projects"];
+  // A node network's node (id or name); default: the node that serves
+  // the request, the leader in a cluster. On another node, that node
+  // makes the bridge and its NAT, and the network is `PENDING` until it
+  // has; `subnet` and bridged networks aren't supported there.
+  optional string node = 15;
 }
 message CreateNetworkResponse {
   Network network = 1;

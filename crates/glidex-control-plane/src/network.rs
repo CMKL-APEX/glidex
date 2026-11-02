@@ -200,6 +200,10 @@ pub struct CreateNetworkRequest {
     /// `PUT /projects/{id}/networks/{network}/router`.
     #[serde(default)]
     pub router: Option<String>,
+    /// A node network's node (id or name); default: the node that serves
+    /// the request (the leader, in a cluster).
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 fn default_port_type() -> VmPortKind {
@@ -541,6 +545,7 @@ mod tests {
             scope: None,
             physnet: None,
             router: None,
+            node: None,
         }
     }
 
