@@ -1056,18 +1056,10 @@ errors and the docs keep saying *tenant*.
 remaining, approval}`, so the UI shows **Create &lt;label&gt;** only to
 those who may, and says how many they have left.
 
-**Open questions** (to settle before T9's code):
-
-1. **Approval by default:** `none` (as above) or `required`?
-2. **Counting:** by creator (as above, so a user who hands a tenant to
-   others still counts it), or by tenants where the user is the only
-   `tenant-admin`?
-3. **Deleting one's own tenant:** allowed when empty (as above), or
-   only by directory administrators?
-4. **Following the default cap:** as above, or a snapshot of the cap
-   at admission?
-5. **The label in gxctl:** keep *tenant* (as above), or print the label
-   in headings too?
+**Settled** (2026-11-02): approval defaults to `none`; the per-user
+limit counts tenants by creator; a tenant's admins may delete it once
+empty (`admins_may_delete`, on by default); admissions follow the
+default cap until set by hand; gxctl keeps saying *tenant*.
 
 ## 12. Trust between directories and clusters
 
