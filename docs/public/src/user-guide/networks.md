@@ -138,6 +138,12 @@ nodes map: see [Host networking](../operator-guide/host-networking.md).
 Provider networks are created from the web UI (**Provider (a physical
 network)**, with its **Physical network** and **VLAN**) or the API.
 
+On a cluster, the web UI's form picks a host network's **Node** (when
+the network doesn't span every node); it starts at the node serving the
+page. For a node other than the leader, the form leaves out the subnet
+and bridged mode, which only the leader can set: that node picks the
+subnet.
+
 Then grant it. The lists replace the current grants:
 
 ```

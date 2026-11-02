@@ -242,6 +242,9 @@ export interface CreateNetworkRequest {
   dns?: boolean;
   /** Cluster (OVN) or node; the server's default is the cluster's when OVN is on. */
   scope?: NetworkScope;
+  /** A node network's node (id or name); the server's default is the leader
+   * in a cluster. Host networks only. */
+  node?: string;
   /** A provider network (cluster scope, bridged): its physical network. */
   physnet?: string;
   /** A project NAT network on one of the project's VPC routers (id or name). */

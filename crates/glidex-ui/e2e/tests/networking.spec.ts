@@ -37,9 +37,10 @@ test("a project network is created from the Networking page", async ({ page }) =
   const mode = field(page, "Mode");
   await expect(mode.locator("option")).toHaveText([/NAT/, /Isolated/]);
   await expect(form.getByText("VLAN (optional)")).toHaveCount(0);
-  // A host network offers all three modes again.
+  // A host network offers all three modes again; a node only in a cluster.
   await field(page, "Network for").selectOption("");
   await expect(mode.locator("option")).toHaveCount(3);
+  await expect(page.locator("#network-node")).toHaveCount(0);
   await field(page, "Network for").selectOption(project.id);
 
   await page.getByPlaceholder("lab").fill(NETWORK);
