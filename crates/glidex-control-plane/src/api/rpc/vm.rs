@@ -267,4 +267,20 @@ impl VmService for Svc {
     ) -> ServiceResult<DetachDiskResponse> {
         vm_write!(self, ctx, req, svc::detach_disk, DetachDiskResponse)
     }
+
+    async fn attach_network(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, AttachNetworkRequest>,
+    ) -> ServiceResult<AttachNetworkResponse> {
+        vm_write!(self, ctx, req, svc::attach_network, AttachNetworkResponse)
+    }
+
+    async fn detach_network(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DetachNetworkRequest>,
+    ) -> ServiceResult<DetachNetworkResponse> {
+        vm_write!(self, ctx, req, svc::detach_network, DetachNetworkResponse)
+    }
 }

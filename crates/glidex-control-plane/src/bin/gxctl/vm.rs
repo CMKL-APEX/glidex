@@ -1690,6 +1690,69 @@ pub async fn disk(client: &ApiClient, attach: bool, args: &[&str]) {
     }
 }
 
+/// `attach-network <name|id> <network> [--mac <mac>]` and
+/// `detach-network <name|id> <network> [--mac <mac>]`: a NIC, by its
+/// network's name or id (and its MAC, among several on one network).
+pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
+    let u = if attach {
+        "Usage: attach-network <name|id> <network> [--mac <mac>]"
+    } else {
+        "Usage: detach-network <name|id> <network> [--mac <mac>]"
+    };
+    if has_flag(args, "--mac") && flag_value(args, "--mac").is_none() {
+        return usage(u);
+    }
+    let mac = flag_value(args, "--mac").map(String::from);
+    let pos = crate::admin::positional(args, &["--mac"]);
+    let (Some(net), 2) = (pos.get(1).copied(), pos.len()) else {
+        return usage(u);
+    };
+    let Some(vm_id) = resolve(client, &pos, u).await else {
+        return;
+    };
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let res = if attach {
+        svc.attach_network(AttachNetworkRequest {
+            id: vm_id,
+            network: net.to_string(),
+            mac,
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    } else {
+        svc.detach_network(DetachNetworkRequest {
+            id: vm_id,
+            network: net.to_string(),
+            mac,
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    };
+    match res {
+        Ok(vm) => {
+            let vm = vm.unwrap_or_default();
+            println!(
+                "{} Network {} {} {}",
+                "Success:".green(),
+                net,
+                if attach {
+                    "attached to"
+                } else {
+                    "detached from"
+                },
+                if vm.name.is_empty() { pos[0] } else { &vm.name }
+            );
+            note_next_start(&vm);
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 

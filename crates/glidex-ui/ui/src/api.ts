@@ -815,6 +815,14 @@ export const attachVmDisk = (id: string, disk: string) =>
 export const detachVmDisk = (id: string, disk: string) =>
   vmWrite(rpc(VmService.method.detachDisk, { id, disk }) as Promise<VmWriteResponse>);
 
+/** Give a VM a NIC on one more network; on a running VM from its next start. */
+export const attachVmNetwork = (id: string, network: string) =>
+  vmWrite(rpc(VmService.method.attachNetwork, { id, network }) as Promise<VmWriteResponse>);
+
+/** Remove the VM's NIC with `mac` on `network`; on a running VM at its next start. */
+export const detachVmNetwork = (id: string, network: string, mac: string) =>
+  vmWrite(rpc(VmService.method.detachNetwork, { id, network, mac }) as Promise<VmWriteResponse>);
+
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
 export const extractVmKernel = (id: string) =>
   rpc(ImageService.method.extractVmKernel, { id }).then((r) => r.image as ImageInfo);

@@ -289,6 +289,105 @@ async fn vms_reference_networks() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
+/// `AttachNetwork` and `DetachNetwork` (`POST /vms/{id}/networks`,
+/// `DELETE /vms/{id}/networks/{network}`): kept NICs keep their MACs, and
+/// a new one takes a MAC no other NIC has.
+#[tokio::test(flavor = "multi_thread")]
+async fn vms_attach_and_detach_networks() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab"}, {"network": "iso"}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = vm_id(&body);
+    let nics = |body: &Value| -> Vec<(String, String)> {
+        vm_of(body)["nics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| {
+                (
+                    n["network_name"].as_str().unwrap().to_string(),
+                    n["mac"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let first = nics(&body);
+    let (lab0, iso0) = (first[0].1.clone(), first[1].1.clone());
+    let path = format!("/vms/{id}/networks");
+
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "lab"}))).await;
+    assert!(status.is_success(), "{status} {body}");
+    let now = nics(&body);
+    assert_eq!(now.len(), 3, "{body}");
+    assert_eq!((&now[0].1, &now[1].1), (&lab0, &iso0), "kept MACs: {body}");
+    let lab2 = now[2].1.clone();
+    assert!(lab2 != lab0 && lab2 != iso0, "{body}");
+
+    // Two NICs on `lab`: which one is the MAC's to say.
+    let (status, body) = request(&h.app, "DELETE", &format!("{path}/lab"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(&h.app, "DELETE", &format!("{path}/lab?mac={lab0}"), None).await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(
+        nics(&body),
+        vec![
+            ("iso".to_string(), iso0.clone()),
+            ("lab".to_string(), lab2.clone())
+        ]
+    );
+
+    // The NIC added now is second in line, but its MAC isn't the one the
+    // second NIC (iso) has.
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "iso"}))).await;
+    assert!(status.is_success(), "{status} {body}");
+    let now = nics(&body);
+    let macs: std::collections::HashSet<_> = now.iter().map(|n| &n.1).collect();
+    assert_eq!(macs.len(), 3, "distinct MACs: {body}");
+
+    // Refusals: a MAC another NIC has, a network the VM isn't on, no such
+    // network.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &path,
+        Some(json!({"network": "lab", "mac": iso0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(
+        &h.app,
+        "DELETE",
+        &format!("{path}/lab?mac=02:00:00:00:00:01"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "nope"}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let (status, _) = request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_start_detaches_ports() {
     failed_start_detaches_ports_for("cloudhypervisor", "cloud-hypervisor").await;

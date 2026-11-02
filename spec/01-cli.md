@@ -119,6 +119,7 @@ name (ids when `/projects` isn't readable).
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
 | `memory <name\|id> [<size>]` | `GetVm`: the VM's memory; with a size (MiB, or `8G`): `UpdateVm` (`mem_size_mib`), from the next start on a running VM (it says so) |
 | `attach-disk <vm> <disk>` / `detach-disk <vm> <disk>` | `AttachDisk` / `DetachDisk`, the disk by name or id; on a running VM from the next start (it says so) |
+| `attach-network <vm> <network> [--mac <mac>]` / `detach-network …` | `AttachNetwork` / `DetachNetwork`, the network by name or id, `--mac` for one NIC of several on it; on a running VM from the next start (it says so) |
 | `credentials` / `creds` | `GET /credentials` + table (no hashes) |
 | `credential-add` | Username, hidden password ×2, `.pub` files → `POST /credentials` |
 | `credential-passwd <user>` | Hidden password ×2 → `PUT /credentials/{user}` |

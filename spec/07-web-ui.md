@@ -285,6 +285,10 @@ and `last_exit`.
   (`AttachDisk`). On a running VM each applies at the next start
   (`restart_required`); the server's refusal (quota, a disk another node
   can't reach) is shown where it was asked.
+- **Networks.** Under Network, each NIC has **Detach** (`DetachNetwork`
+  with its MAC), and a picker lists the networks the project may use
+  (not being deleted) to **Attach** (`AttachNetwork`), the same network
+  again included. On a running VM each applies at the next start.
 - **VmDetail** also shows "Configuration changes take effect at the next
   start." while `restart_required`, and an **Events** list (newest
   first, warnings highlighted) from `GET /vms/{id}/events`, refreshed

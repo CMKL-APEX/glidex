@@ -870,6 +870,7 @@ allow.**
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
 | `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
+| `DELETE /vms/{id}/networks/{network}` | `detachNetwork` on the Vm |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
 **Paths.** Any explicit `kernel_image_path`, `initrd_path`, `rootfs_path` or

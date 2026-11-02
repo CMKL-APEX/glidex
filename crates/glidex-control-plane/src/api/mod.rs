@@ -289,6 +289,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "detachDisk",
         delete(vms::detach_disk),
     )
+    .add(
+        "POST",
+        "/vms/{id}/networks",
+        "attachNetwork",
+        post(vms::attach_network),
+    )
+    .add(
+        "DELETE",
+        "/vms/{id}/networks/{network}",
+        "detachNetwork",
+        delete(vms::detach_network),
+    )
     // ---- guest credentials
     .add(
         "GET",
