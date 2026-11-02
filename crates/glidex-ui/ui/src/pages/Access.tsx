@@ -16,7 +16,7 @@ import {
   secondaryButton,
   signInLabel,
 } from "../components/ui";
-import { useSession } from "../session";
+import { useSession, useTenantLabel } from "../session";
 import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 
 function TeamCard({
@@ -131,6 +131,7 @@ function disabledWhy(r: string | undefined): string {
  *  its tenant role exist now; their first sign-in through the connector
  *  with that verified address takes it. */
 function AddUser({ onAdded, onError }: { onAdded: (email: string) => void; onError: (m: string) => void }) {
+  const label = useTenantLabel();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -192,7 +193,7 @@ function AddUser({ onAdded, onError }: { onAdded: (email: string) => void; onErr
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <select aria-label="Tenant" className={field} value={tenant} onChange={(e) => setTenant(e.target.value)}>
+        <select aria-label={label.one} className={field} value={tenant} onChange={(e) => setTenant(e.target.value)}>
           {tenants.map((t) => (
             <option key={t.id} value={t.id}>
               {t.display_name || t.slug}

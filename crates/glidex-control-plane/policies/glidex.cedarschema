@@ -187,6 +187,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action rotateSigningKey in ["directory.keys", "step-up", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // Self-service tenants and the web UI's word for a tenant
+  // (spec/19-tenancy.md §11.1).
+  action readDirectorySettings in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action updateDirectorySettings in ["directory.tenants", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   // SCIM bearer tokens (spec/19-tenancy.md §8.1): who holds one provisions
   // the connector's users.
   action readScimTokens in ["directory.read", "directory-scoped"]

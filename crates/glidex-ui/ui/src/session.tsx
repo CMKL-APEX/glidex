@@ -74,6 +74,9 @@ const HOST_ACTION_RESOURCE = {
   // per-tenant actions are checked on each tenant by its page.
   listTenants: "Directory",
   createTenant: "Directory",
+  // Self-service tenants and the tenant label (spec/19-tenancy.md §11.1).
+  readDirectorySettings: "Directory",
+  updateDirectorySettings: "Directory",
   listAdmissions: "Cluster",
   manageAdmissions: "Cluster",
   listConnectors: "Directory",
@@ -118,6 +121,13 @@ export function useSession(): Session {
   const s = useContext(SessionContext);
   if (!s) throw new Error("useSession outside SessionProvider");
   return s;
+}
+
+/** What the caller's directory calls a tenant in this UI (spec/19-tenancy.md
+ * D81), such as "Lab" and "Labs"; "Tenant" and "Tenants" by default. */
+export function useTenantLabel(): { one: string; many: string } {
+  const { me } = useSession();
+  return { one: me.tenant_label || "Tenant", many: me.tenant_label_plural || "Tenants" };
 }
 
 /** Capability checks for the caller; `null` while loading. Re-runs when

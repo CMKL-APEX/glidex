@@ -75,6 +75,10 @@ message WhoAmIResponse {
   TokenSummary token = 13;
   // A browser session's CSRF value, for `X-Glidex-CSRF` on writes.
   optional string csrf = 14;
+  // What the caller's directory calls a tenant in the web UI
+  // (spec/19-tenancy.md D81), singular and plural.
+  string tenant_label = 15 [json_name = "tenant_label"];
+  string tenant_label_plural = 16 [json_name = "tenant_label_plural"];
 }
 
 message TokenSummary {

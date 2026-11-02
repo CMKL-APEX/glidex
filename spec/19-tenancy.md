@@ -966,7 +966,7 @@ off until the directory's administrators and the cluster's operator turn
 it on; each side has its own settings.
 
 **The directory's settings** (`Directory.settings`, set by its
-administrators: `UpdateDirectorySettings`, `PATCH /directory/settings`,
+administrators: `UpdateDirectorySettings`, `PUT /directory/settings`,
 action `updateDirectorySettings` in `directory.tenants`; audited):
 
 | Setting | Default | Meaning |
@@ -975,7 +975,7 @@ action `updateDirectorySettings` in `directory.tenants`; audited):
 | `self_service.creators` | `all` | `all`: every user of the directory. Or a list of the directory's teams (ids or names), for example a team synced from a Google group (D44): only their members. |
 | `self_service.max_per_user` | `3` | Tenants one user may have created and not deleted, pending ones included. `0` to `100`. |
 | `self_service.max_total` | none | Self-service tenants in the directory, in all. |
-| `self_service.approval` | `none` | `none`: the tenant is active at once. `required`: it is created **pending** until a directory administrator approves it (`approveTenant`, D78). |
+| `self_service.approval_required` | `false` | `false`: the tenant is active at once. `true`: it is created **pending** until a directory administrator approves it (`approveTenant`, D78). |
 | `self_service.slug_prefix` | `""` | Prepended to the slug a user picks (`lab-`), so self-service tenants are told apart and can't take names IT keeps. |
 | `self_service.admins_may_delete` | `true` | The tenant's admins may delete it themselves once it holds nothing (`deleteOwnTenant`). Off: only directory administrators delete. |
 | `tenant_label` | `{"singular": "Tenant", "plural": "Tenants"}` | What the web UI calls a tenant for this directory's users (D81), such as `Lab`/`Labs`. 1–24 characters each. |
@@ -1021,7 +1021,7 @@ request then:
 2. checks the limits (`409 tenant_limit` with `limit: per_user` or
    `total`), counting tenants with `created_by` the caller;
 3. creates the tenant with `self_service: true`, `created_by`, and
-   `pending` under `approval: required`, and links the caller as its
+   `pending` under `approval_required`, and links the caller as its
    `tenant-admin`, in one write;
 4. when active, admits it on the cluster by `AutoAdmission` (D79).
 
@@ -1047,12 +1047,13 @@ Deleting a tenant still needs it empty on every cluster (`409
 tenant_in_use`); it frees its creator's slot.
 
 **Display label (D81).** `tenant_label` is read with the directory's
-public settings (`GET /auth/me` and `discover`), and the web UI uses it
+public settings (`WhoAmI`, `GET /auth/whoami`: `tenant_label` and
+`tenant_label_plural`), and the web UI uses it
 wherever it names a tenant to a user: the header's picker, *Create
 Lab*, *Lab members*, the Tenants page's title. The API, gxctl, audit,
 errors and the docs keep saying *tenant*.
 
-**What a user sees.** `GET /auth/me` gains `self_service: {allowed,
+**What a user sees.** `WhoAmI` gains `self_service: {allowed,
 remaining, approval}`, so the UI shows **Create &lt;label&gt;** only to
 those who may, and says how many they have left.
 
@@ -1251,7 +1252,7 @@ with one directory); cluster operations on the cluster.
 | `createDirectory`, `listDirectories` | host | `POST/GET /directories` | `DirectoryService.Create`, `List` | the host cluster's `system-admin` |
 | `listTenants` … `deleteTenant` | directory | `/tenants…` | `TenantService.…` | `directory.read` / `directory.tenants`; own tenant |
 | `createOwnTenant`, `deleteOwnTenant`, `approveTenant` (§11.1) | directory | `POST /tenants` (as above), `DELETE /tenants/{id}`, `POST /tenants/{id}/approve` | `TenantService.Create`, `Delete`, `Approve` | `base.self-service-tenant`; the tenant's `tenant-admin`; `directory.tenants` |
-| `updateDirectorySettings` (§11.1) | directory | `GET/PATCH /directory/settings` | `DirectoryService.GetSettings`, `UpdateSettings` | `directory.tenants`; the label and `self_service.enabled`: any user of the directory |
+| `readDirectorySettings`, `updateDirectorySettings` (§11.1) | directory | `GET/PUT /directory/settings` | `DirectorySettingsService.GetDirectorySettings`, `UpdateDirectorySettings` | `directory.read`, `directory.tenants`; the label: any user, through `WhoAmI` |
 | `optIn` (an offer token, or a fleet cluster), `optOut`, `listClusters` | directory | `POST /tenants/{id}/clusters` (`{offer}` or `{fleet, cluster}`), `DELETE …/{cluster}`, `GET …` | `TenantService.OptIn`, `OptOut`, `ListClusters` | `tenant.clusters` |
 | `createInvitation`, `listInvitations`, `revokeInvitation` | directory | `POST/GET /tenants/{id}/invitations`, `DELETE /invitations/{id}` | `InvitationService.Create`, `List`, `Revoke` | `tenant.members`; `directory.tenants` |
 | `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | directory | `/tenants/{id}/bindings` | `TenantService.…Binding` | `tenant.members` |
@@ -1721,7 +1722,7 @@ order):
 1. **Settings and the label** (D81): `Directory.settings`
    (`self_service`, `tenant_label`) with validation;
    `UpdateDirectorySettings` (proto, REST, `updateDirectorySettings`);
-   the label in `GET /auth/me` and `discover`; the web UI using it
+   the label in `WhoAmI`; the web UI using it
    (header, Tenants, Members); the Directory page's **Self-service**
    card; gxctl `directory settings`; tests, docs.
 2. **Creating one's own tenant** (D78): `Tenant.{self_service,
@@ -1730,7 +1731,7 @@ order):
    self_service_teams}`, `User.directory`) and `base.self-service-tenant`;
    `CreateTenant` choosing the path; limits and slug prefix;
    `tenant_pending`; `approveTenant`; `deleteOwnTenant`;
-   `auth/me.self_service`; the **Create &lt;label&gt;** form and the
+   `WhoAmI.self_service`; the **Create &lt;label&gt;** form and the
    Tenants page's *Pending* and self-service marks; tests (allowed,
    off, not in a creator team, a token or service account refused, each
    limit, `operator` refused, pending blocks projects, approve, delete
@@ -1822,7 +1823,8 @@ order):
 ## 23. Implementation status
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
-check with two organizations); T2b, T4b, T6b, T7 and T9 are not started.
+check with two organizations); T2b, T4b, T6b and T7 are not started;
+T9 has task 1 (settings and the label).
 T8 (D75–D77) is implemented.
 What follows is per milestone.
 
@@ -2261,3 +2263,11 @@ T8, verified addresses and pre-added users:
 | D77: pre-added users (§6.3) | `auth::store::User.pending_login` (`PendingLogin`), `IdentityStore::take_pending_login`; `AuthService::external_login_invited` (binds before the allowlist and JIT); `service::access::create_user` → `preadd_user` (`invitations::may_give_role`, `usable_connector`); proto `CreateUserRequest.pending` (`PendingUser`), `User.pending_connector`; gxctl `user add`, `user list`; the Access page's **Add user** and *not signed in yet* |
 | Tests (D77) | `connector_tests::a_pre_added_user_is_taken_by_its_first_verified_login` (role there before the login; refused twice, outside the domains, not an address, with identities, an unknown or provisioned connector; unverified, another connector and another subject take nothing; taken once, JIT off); UI e2e `access.spec.ts` "users: add one by email before they sign in" |
 | Not yet | the real check on the prism cluster with a Google Workspace connector |
+
+T9, self-service tenants (§11.1):
+
+| Spec | Code |
+|---|---|
+| Task 1: directory settings and the label (D78's settings, D81) | `tenants::DirectorySettings` (`SelfService`, `TenantLabel`, `validate`) on `Directory.settings`, `TenantStore::set_settings`; `glidex.directory.v1.DirectorySettingsService` (`service::directory_settings`; `GET/PUT /directory/settings`, actions `readDirectorySettings` in `directory.read`, `updateDirectorySettings` in `directory.tenants`); `WhoAmI.tenant_label`, `tenant_label_plural`; gxctl `directory settings`; the web UI's `useTenantLabel` (Directory tabs, Tenants, tenant page, Projects, Access) and the Directory page's **Settings** tab |
+| Tests | `tenants::tests::directory_settings_are_checked_kept_and_default_when_absent`; UI e2e `self-service.spec.ts` (settings saved, the label in whoami and on the pages, a bad prefix refused) |
+| Not yet | tasks 2–5: creating one's own tenant, automatic admission, open pools, the real check. The self-service settings are stored but nothing acts on them |

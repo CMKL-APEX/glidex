@@ -14,6 +14,7 @@ pub mod cluster;
 pub mod common;
 pub mod directories;
 pub mod directory;
+pub mod directory_settings;
 pub mod federations;
 pub mod host;
 pub mod invitations;

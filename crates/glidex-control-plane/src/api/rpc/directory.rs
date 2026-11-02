@@ -2,7 +2,7 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::{directory, federations, invitations, signing_keys};
+use crate::service::{directory, directory_settings, federations, invitations, signing_keys};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::directory::v1::*;
 
@@ -10,6 +10,7 @@ pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc
     let router = ConnectorServiceExt::register(Svc::new(app), router);
     let router = FederationServiceExt::register(Svc::new(app), router);
     let router = SigningKeyServiceExt::register(Svc::new(app), router);
+    let router = DirectorySettingsServiceExt::register(Svc::new(app), router);
     InvitationServiceExt::register(Svc::new(app), router)
 }
 
@@ -217,5 +218,29 @@ impl SigningKeyService for Svc {
         req: ServiceRequest<'_, RotateSigningKeyRequest>,
     ) -> ServiceResult<RotateSigningKeyResponse> {
         op!(self, ctx, req, signing_keys::rotate_signing_key)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl DirectorySettingsService for Svc {
+    async fn get_directory_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetDirectorySettingsRequest>,
+    ) -> ServiceResult<GetDirectorySettingsResponse> {
+        op!(self, ctx, req, directory_settings::get_directory_settings)
+    }
+
+    async fn update_directory_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateDirectorySettingsRequest>,
+    ) -> ServiceResult<UpdateDirectorySettingsResponse> {
+        op!(
+            self,
+            ctx,
+            req,
+            directory_settings::update_directory_settings
+        )
     }
 }

@@ -103,6 +103,7 @@ pub fn whoami(call: &Call) -> ServiceResult<WhoAmIResponse> {
 
 pub fn whoami_of(app: &App, p: &crate::auth::Principal) -> ServiceResult<WhoAmIResponse> {
     let (host_roles, project_roles) = roles_of(app, p)?;
+    let label = crate::service::directory_settings::tenant_label(app, p.directory_id());
     Ok(WhoAmIResponse {
         user_id: p.user.as_ref().map(|u| u.id.clone()),
         display_name: p
@@ -150,6 +151,8 @@ pub fn whoami_of(app: &App, p: &crate::auth::Principal) -> ServiceResult<WhoAmIR
             })
             .into(),
         csrf: p.csrf.clone(),
+        tenant_label: label.singular,
+        tenant_label_plural: label.plural,
         ..Default::default()
     })
 }

@@ -478,6 +478,8 @@ same ids and names.
 | `InvitationService` | `ListInvitations` | `GET /tenants/{id}/invitations` |
 |  | `CreateInvitation` | `POST /tenants/{id}/invitations` |
 |  | `RevokeInvitation` | `DELETE /invitations/{id}` |
+| `DirectorySettingsService` | `GetDirectorySettings` | `GET /directory/settings` |
+|  | `UpdateDirectorySettings` | `PUT /directory/settings` |
 | `SigningKeyService` | `ListSigningKeys` | `GET /directory/keys` |
 |  | `RotateSigningKey` | `POST /directory/keys/rotate` |
 

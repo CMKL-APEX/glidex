@@ -19,7 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Tenancy and directories | [19-tenancy.md](19-tenancy.md) §11.1, T9 | `spec/tenancy-self-service` | Self-service tenants: users create tenants (labs) within limits, automatic admission with a default cap, open pools, a display label per directory (D78–D81) |
+| Tenancy and directories | [19-tenancy.md](19-tenancy.md) §11.1, T9 | `spec/tenancy-self-service` (#260) → `feat/tenancy-settings` | Self-service tenants: users create tenants (labs) within limits, automatic admission with a default cap, open pools, a display label per directory (D78–D81) |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas

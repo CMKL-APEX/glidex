@@ -6,7 +6,7 @@ import { formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { Badge, ErrorBanner, Field, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton, selectClass } from "../components/ui";
-import { useSession } from "../session";
+import { useSession, useTenantLabel } from "../session";
 
 /** The tenant's flags as badges: owner of the directory, operator of this
  * cluster, suspended. */
@@ -29,6 +29,7 @@ export function AdmissionBadge({ tenant }: { tenant: Tenant }) {
 }
 
 function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const label = useTenantLabel();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [operator, setOperator] = useState(false);
@@ -153,7 +154,7 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
           Cancel
         </button>
         <button type="submit" className={primaryButton} disabled={busy}>
-          {busy ? "Creating..." : "Create Tenant"}
+          {busy ? "Creating..." : `Create ${label.one}`}
         </button>
       </div>
     </form>
@@ -162,6 +163,7 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
 
 export default function Tenants() {
   const { host } = useSession();
+  const label = useTenantLabel();
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -179,10 +181,10 @@ export default function Tenants() {
 
   return (
     <div>
-      <PageHeader title="Tenants" subtitle="Tenants own projects; their members and roles decide who may use them.">
+      <PageHeader title={label.many} subtitle={`${label.many} own projects; their members and roles decide who may use them.`}>
         {host.createTenant && (
           <button className={primaryButton} onClick={() => setCreating(true)}>
-            + Create Tenant
+            + Create {label.one}
           </button>
         )}
       </PageHeader>
@@ -191,14 +193,14 @@ export default function Tenants() {
         <LoadingCard />
       ) : tenants.length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
-          You can't see any tenant.
+          You can't see any {label.one.toLowerCase()}.
         </div>
       ) : (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">
-                <th className="px-4 py-3 font-medium">Tenant</th>
+                <th className="px-4 py-3 font-medium">{label.one}</th>
                 <th className="px-4 py-3 font-medium">Flags</th>
                 <th className="px-4 py-3 font-medium">This cluster</th>
                 <th className="px-4 py-3 font-medium">Created</th>
@@ -227,7 +229,7 @@ export default function Tenants() {
         </div>
       )}
       {creating && (
-        <Modal title="Create Tenant" onClose={() => setCreating(false)}>
+        <Modal title={`Create ${label.one}`} onClose={() => setCreating(false)}>
           <CreateTenantForm
             onCancel={() => setCreating(false)}
             onDone={() => {
