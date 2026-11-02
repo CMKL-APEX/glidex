@@ -27,6 +27,8 @@ export default function Header() {
   const tenants = useTenants();
   const readsATenant = !me.token && tenants.length > 0;
   const directoryReader = host.listTenants || host.createTenant;
+  // A user the directory lets create their own tenants finds the form there.
+  const createsOwnTenant = !!me.self_service?.allowed;
   const groups = byTenant(projects, (id) => tenants.find((t) => t.id === id)?.slug ?? id);
 
   const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
@@ -45,7 +47,7 @@ export default function Header() {
     {
       to: "/directory",
       label: "Directory",
-      show: directoryReader || readsATenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
+      show: directoryReader || readsATenant || createsOwnTenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
     },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
