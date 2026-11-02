@@ -479,6 +479,21 @@ fn create_own_tenant(
             "a tenant of your own takes a slug and a display name only",
         ));
     }
+    let t = make_own_tenant(call, user, &req.slug, req.display_name)?;
+    Ok(pb::CreateTenantResponse {
+        tenant: tenant_pb(call, &t)?.into(),
+        ..Default::default()
+    })
+}
+
+/// D78's steps once the request is known to be one's own tenant: the
+/// limits, the prefix, the tenant with `user` its admin, the admission.
+fn make_own_tenant(
+    call: &Call,
+    user: &crate::auth::store::User,
+    slug: &str,
+    display_name: String,
+) -> ServiceResult<tenants::Tenant> {
     let dir = call.p.directory_id();
     let store = &call.auth().tenants;
     let ss = store
@@ -505,13 +520,13 @@ fn create_own_tenant(
             "the directory has as many self-service tenants as it allows",
         ));
     }
-    let slug = if req.slug.starts_with(&ss.slug_prefix) {
-        req.slug.clone()
+    let slug = if slug.starts_with(&ss.slug_prefix) {
+        slug.to_string()
     } else {
-        format!("{}{}", ss.slug_prefix, req.slug)
+        format!("{}{}", ss.slug_prefix, slug)
     };
     let t = store
-        .create_own(dir, &slug, req.display_name, &user.id, ss.approval_required)
+        .create_own(dir, &slug, display_name, &user.id, ss.approval_required)
         .map_err(tenant_error)?;
     call.set_target(format!("tenant:{}", t.id));
     call.detail("slug", serde_json::json!(t.slug));
@@ -526,10 +541,93 @@ fn create_own_tenant(
         return Err(auth_error(e).into());
     }
     auto_admit(call, &t);
-    Ok(pb::CreateTenantResponse {
-        tenant: tenant_pb(call, &t)?.into(),
-        ..Default::default()
-    })
+    Ok(t)
+}
+
+/// D82: at a sign-in of `user` through connector `c`, a tenant of their
+/// own when the directory makes one and they are a member of none (`c`'s
+/// default tenant aside), once per user. `email` names it. Never fails
+/// the sign-in: a refusal or an error is audited and left there.
+pub fn tenant_at_sign_in(
+    app: &crate::api::AppState,
+    c: &crate::directory::Connector,
+    user: &crate::auth::store::User,
+    email: Option<&str>,
+    request_id: &str,
+) {
+    let store = &app.auth.tenants;
+    let once = format!("auto-tenant/{}", user.id);
+    let settings = match store.get_directory(&user.directory_id) {
+        Ok(Some(d)) => d.settings,
+        _ => return,
+    };
+    let ss = &settings.self_service;
+    if !ss.enabled || !ss.auto_create || store.done(&once).unwrap_or(true) {
+        return;
+    }
+    let Ok(all) = store.list() else { return };
+    let me = Ent::User(user.id.clone());
+    let member = all
+        .iter()
+        .filter(|t| t.directory_id == user.directory_id)
+        .filter(|t| c.default_tenant.as_deref() != Some(t.id.as_str()))
+        .any(|t| app.auth.is_member(&me, &t.id).unwrap_or(true));
+    if member {
+        return;
+    }
+    let Ok(Some(p)) = app.auth.principal_for(&me) else {
+        return;
+    };
+    let call = Call::on_behalf(app, p, "createOwnTenant", request_id);
+    call.detail("auto", serde_json::json!(true));
+    let name = email
+        .and_then(|e| e.split('@').next())
+        .unwrap_or(&user.display_name);
+    let base = slug_base(&ss.slug_prefix, name);
+    let taken = |s: &str| {
+        all.iter()
+            .any(|t| t.id == s || (t.slug == s && t.directory_id == user.directory_id))
+    };
+    let Some(slug) = std::iter::once(base.clone())
+        .chain((2..100).map(|n| format!("{base}-{n}")))
+        .find(|s| !taken(s))
+    else {
+        return;
+    };
+    let display = format!("{}'s {}", user.display_name, settings.tenant_label.singular);
+    let made = call
+        .require_action(
+            "createOwnTenant",
+            call.directory_ent(),
+            EntitySet::new(),
+            &[],
+        )
+        .map_err(ServiceError::from)
+        .and_then(|()| make_own_tenant(&call, user, &slug, display));
+    match made {
+        Ok(_) => {
+            let _ = store.mark_done(&once);
+            call.write_audit(None, &format!("sign-in:{}", c.id));
+        }
+        Err(e) => call.write_audit(Some(&e.code), &format!("sign-in:{}", c.id)),
+    }
+}
+
+/// `prefix` and `name` as a tenant slug, with room for a `-NN` after it.
+fn slug_base(prefix: &str, name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let room = 32usize.saturating_sub(prefix.len() + 3);
+    out.truncate(room);
+    let out = out.trim_end_matches('-');
+    let out = if out.is_empty() { "user" } else { out };
+    format!("{prefix}{out}")
 }
 
 /// A pending self-service tenant becomes usable (D78).

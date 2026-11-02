@@ -1000,7 +1000,7 @@ fn print_key(k: &SigningKey) {
 
 const SETTINGS_USAGE: &str = "directory settings [--self-service on|off] [--creators all|TEAM,...] \
     [--max-per-user N] [--max-total N|none] [--approval none|required] [--slug-prefix P|none] \
-    [--admins-may-delete on|off] [--label SINGULAR/PLURAL]";
+    [--admins-may-delete on|off] [--auto-create on|off] [--label SINGULAR/PLURAL]";
 
 fn on_off(v: &str) -> Result<bool, String> {
     match v {
@@ -1067,6 +1067,14 @@ fn print_settings(s: &DirectorySettings, teams: &HashMap<String, String>) {
             "no"
         }
     );
+    println!(
+        "  At first sign-in:  {}",
+        if ss.auto_create {
+            "one for a user in none"
+        } else {
+            "no"
+        }
+    );
 }
 
 /// Apply `directory settings` flags to `s`; whether any was given.
@@ -1109,6 +1117,10 @@ fn settings_flags(args: &[&str], s: &mut DirectorySettings) -> Result<bool, Stri
     }
     if let Some(v) = flag_value(args, "--admins-may-delete") {
         ss.admins_may_delete = Some(on_off(v)?);
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--auto-create") {
+        ss.auto_create = on_off(v)?;
         changed = true;
     }
     if let Some(v) = flag_value(args, "--label") {

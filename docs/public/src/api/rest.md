@@ -545,7 +545,7 @@ UI's Host pages send it.
 | `DELETE` | `/tenants/{id}/federations/{federation}` | Remove a federation; the tokens it gave stop working. Needs a recent login |
 | `GET` | `/directory/keys` | The directory's issuer URL (`issuer`, `issuer_fixed`) and its token signing keys: `{keys: [{kid, alg, created_at, retired_at, published_until, active}]}`; never a private part |
 | `POST` | `/directory/keys/rotate` | A new active signing key; the previous one stays published until its tokens expire. Needs a recent login |
-| `GET` | `/directory/settings` | The caller's directory's settings: `{settings: {tenant_label: {singular, plural}, self_service: {enabled, creator_teams, max_per_user, max_total, approval_required, slug_prefix, admins_may_delete}}}` (`directory.read`) |
+| `GET` | `/directory/settings` | The caller's directory's settings: `{settings: {tenant_label: {singular, plural}, self_service: {enabled, creator_teams, max_per_user, max_total, approval_required, slug_prefix, admins_may_delete, auto_create}}}` (`directory.read`) |
 | `PUT` | `/directory/settings` | Replace them (`{settings}`; an absent part takes its defaults: *Tenant*/*Tenants*, self-service off, 3 per user); teams by id or name, answered as ids (`directory.tenants`) |
 | `GET` | `/d/{directory}/.well-known/openid-configuration` | Public: the directory's OIDC discovery document (`issuer`, `jwks_uri`, ES256) |
 | `GET` | `/d/{directory}/jwks.json` | Public: the directory's signing keys as a JWKS, cacheable for 5 minutes |

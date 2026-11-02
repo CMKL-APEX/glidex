@@ -241,7 +241,9 @@ a name. Or:
 gxctl tenant create ml-lab --name "Machine learning lab"
 ```
 
-You become its `tenant-admin`: you add its members, give them roles and
+Your directory may also make one for you the first time you sign in, if
+you aren't yet a member of any; it is named after you, and you can
+rename it. You become its `tenant-admin`: you add its members, give them roles and
 create its projects. The directory decides:
 
 - who may (everyone, or members of some teams);

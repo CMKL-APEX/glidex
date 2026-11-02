@@ -275,6 +275,11 @@ pub async fn poll_device(
         Err(e) => return Err(oidc_error(e)),
     };
     let user = oidc_user(app, &c, &identity)?;
+    let email = identity
+        .email
+        .as_deref()
+        .filter(|_| identity.email_verified);
+    super::tenancy::tenant_at_sign_in(app, &c, &user, email, origin.request_id);
     let name = req.token_name.unwrap_or_else(|| "gxctl".into());
     let days = DEVICE_TOKEN_DAYS.min(c.token_max_days());
     let (secret, token) = app
@@ -354,6 +359,7 @@ pub async fn password_token(
             return Err(auth_error(e).into());
         }
     };
+    super::tenancy::tenant_at_sign_in(app, &c, &user, None, origin.request_id);
     // D20: a connector without provisioning can't vouch for a long token.
     let days = req
         .days
