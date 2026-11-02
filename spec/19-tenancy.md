@@ -156,6 +156,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D79 | Automatic admission and the default cap | A cluster's operator can admit, as they become active, the self-service tenants (or all new user tenants) of a directory the cluster **hosts**, with a **default cap** and labels (`AutoAdmission`, per directory). An admission made so follows later changes to the default cap until the operator sets that tenant's cap by hand. Tenants of trusted directories of other organizations are not admitted this way; fleets do that (D34). | A tenant nobody admits can make projects but no VMs, which defeats self-service. Following the default lets IT raise every lab at once and still give a special lab its own cap. |
 | D80 | Open pools | A `pci.allow` entry with `"tenants": ["*"]` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
 | D81 | The display label | A directory sets what its users' web UI calls a tenant (`tenant_label`, singular and plural, default *Tenant*). The API, gxctl, audit, errors and docs keep *tenant*. | Each organization has its word (lab, team, workspace); one model underneath keeps the policies, the API and the docs the same. Per directory, because a host's directories are different organizations. |
+| D82 | A tenant at first sign-in | With `self_service.auto_create` on, a user who signs in through one of the directory's connectors, may create tenants (D78), and is a member of no tenant (the connector's `default_tenant` aside) gets one made for them, as if they had created it: the same limits, prefix, approval and automatic admission. Once per user: deleting it doesn't bring it back. Its slug is the prefix and the user's sign-in name (the address before `@`), made a valid slug, `-2`, `-3`… when taken; its display name is *&lt;name&gt;'s &lt;label&gt;*. A failure doesn't stop the sign-in; it is audited. Off by default. | Onboarding in one step: a new user lands in a tenant of their own, ready for projects, without finding the create form. A user invited to a lab, or added to one before signing in, is already a member and gets none. Once, so a user who deletes theirs isn't handed another at every sign-in. |
 
 ## 3. Threat model additions
 
@@ -957,7 +958,7 @@ and clusters and manages the account's members.
 links, opt-ins and federations, and sees every admission, delegated
 link and operator support action affecting it.
 
-### 11.1 Self-service tenants (D78–D81)
+### 11.1 Self-service tenants (D78–D82)
 
 A directory can let its own users create tenants, for example a
 university where anyone may start a lab, with resources from a default
@@ -978,6 +979,7 @@ action `updateDirectorySettings` in `directory.tenants`; audited):
 | `self_service.approval_required` | `false` | `false`: the tenant is active at once. `true`: it is created **pending** until a directory administrator approves it (`approveTenant`, D78). |
 | `self_service.slug_prefix` | `""` | Prepended to the slug a user picks (`lab-`), so self-service tenants are told apart and can't take names IT keeps. |
 | `self_service.admins_may_delete` | `true` | The tenant's admins may delete it themselves once it holds nothing (`deleteOwnTenant`). Off: only directory administrators delete. |
+| `self_service.auto_create` | `false` | A user who may create tenants and is a member of none gets one at their first sign-in (D82). |
 | `tenant_label` | `{"singular": "Tenant", "plural": "Tenants"}` | What the web UI calls a tenant for this directory's users (D81), such as `Lab`/`Labs`. 1–24 characters each. |
 
 **The cluster's settings**, per directory the cluster hosts
@@ -1038,6 +1040,17 @@ create tenants: not service accounts, federated workloads, API tokens
 of another tenant, personal tokens narrowed to some roles (they
 wouldn't carry the new tenant's admin role), or break-glass (`base.break-glass` passes it, but
 there is no user to count).
+
+**At sign-in (D82).** With `auto_create` on, a sign-in through one of
+the directory's connectors (OIDC, Google, PAM; browser or gxctl) of a
+user who is a member of no tenant, other than the connector's
+`default_tenant`, and has never had one made this way, creates one as
+the user (`createOwnTenant`, the steps above). The slug is
+`slug_prefix` and the address before `@` (or the display name), lower
+case, other characters as `-`, cut to fit, with `-2`, `-3`… when taken;
+the display name is *&lt;display name&gt;'s &lt;label&gt;*. The audit
+entry is `createOwnTenant` with `auto: true`. A refusal (a limit, a
+site `forbid`) or an error leaves the sign-in as it was.
 
 **Pending tenants.** A pending tenant is listed to its creator and to
 the directory's administrators (Tenants, *Pending*); its members can't
@@ -1517,7 +1530,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: gpu-dev2 with prism1, and spark-1 made a cluster of its own. Can start once T1 has landed. |
 | **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
-| **T9** self-service tenants | §11.1, D78–D81: directory settings, `createOwnTenant`, limits, pending tenants and approval, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
+| **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1725,7 +1738,7 @@ one PR each, in order):
    unverified or other address, another connector, a provisioned
    connector, a duplicate), UI e2e, docs.
 
-**T9 tasks** (self-service tenants, §11.1, D78–D81; one PR each, in
+**T9 tasks** (self-service tenants, §11.1, D78–D82; one PR each, in
 order):
 
 1. **Settings and the label** (D81): `Directory.settings`
@@ -1759,6 +1772,11 @@ order):
 5. **The real check** (spec/20-idp-checks.md): on the prism cluster,
    with the Google connector: a user creates a lab, invites a member,
    runs a VM from the open pool, and is refused past the limit.
+6. **A tenant at first sign-in** (D82): `self_service.auto_create`
+   (settings, proto, gxctl, the **Settings** tab); creating it at a
+   connector sign-in; tests (off, made once, not for a member of a
+   tenant, the connector's default tenant aside, a taken slug, the
+   limits, a refusal doesn't stop the sign-in), docs.
 
 ## 19. Out of scope
 
@@ -2285,4 +2303,4 @@ T9, self-service tenants (§11.1):
 | Tests (task 3) | `tenancy_tests::new_tenants_are_admitted_with_the_default_cap` (self_service and all, a directory not hosted, a cap required, never an operator, the new default to those that follow, a hand-set cap stops following and a suspension doesn't, pending admitted on approval, off keeps what was made) |
 | Task 4: open pools (D80) | `config::PciGrant.tenants` `["*"]` (checked: alone, on a pool); `api::vms::pool_tenant_grants` answers every tenant with an admission here for such a pool, which the Cedar `PciPool.tenant_grants`, tenant pools and the project's pool listing all use |
 | Tests (task 4) | `config` tests (`"*"` alone and on a pool only); `tenancy_tests::an_open_pool_is_granted_to_every_admitted_tenant` (listed for an admitted tenant's project and not another's, a tenant pool from it, refused before admission) |
-| Not yet | task 5: the real check on the prism cluster. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
+| Not yet | task 5: the real check on the prism cluster. Task 6: a tenant at first sign-in (D82). Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
