@@ -37,7 +37,11 @@ On a cluster, a network is either:
   outside through the cluster's shared **edge**, which an administrator
   sets up first;
 - a **node network**, a bridge on one node: only VMs placed on that node
-  can use it, and the scheduler places them there.
+  can use it, and the scheduler places them there. `--node <name>` picks
+  the node; by default it is the node that serves the request, which on
+  a cluster is the leader. On another node the network is `pending`
+  until that node has made its bridge and NAT, within a resync (30 s by
+  default); netd there picks its subnet.
 
 On a cluster with OVN on, new networks span the cluster unless you ask
 for a node network. The cluster's bridged networks are **provider**
@@ -123,6 +127,7 @@ gxctl> network-add lab --subnet 10.88.7.0/24
 gxctl> network-add backend --isolated
 gxctl> network-add lan --bridged br-lan      # on an existing glidex bridge with an uplink
 gxctl> network-add lab --cluster             # or --node, on a cluster
+gxctl> network-add lab --node gpu-1          # a node network on node gpu-1
 ```
 
 `--vlan <n>` puts a network on a VLAN, `--vhost-user` makes its NICs

@@ -58,6 +58,9 @@ impl VmManager {
             }
             Err(e) => return Err(e.into()),
         };
+        // Created for this node by another (the leader): nothing of it is
+        // here yet, and no VM on it has an address to keep.
+        let new = net.phase == NetworkPhase::Pending;
         let record = bridges.iter().find(|b| b.spec.name == net.bridge);
         let mut problems: Vec<String> = Vec::new();
         match (net.mode, record) {
@@ -88,6 +91,17 @@ impl VmManager {
                 .await
                 .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
                 {
+                    Ok(_) if new => {
+                        let _ = self.store.push_event(
+                            &event_key("network", &net.id),
+                            Event::new(
+                                "controller",
+                                EventKind::Normal,
+                                "BridgeCreated",
+                                format!("created bridge {}", net.bridge),
+                            ),
+                        );
+                    }
                     Ok(_) if restore => {
                         let _ = self.store.push_event(
                             &event_key("network", &net.id),
@@ -131,7 +145,7 @@ impl VmManager {
                 Ok(nats) => match nats.iter().find(|n| n.state.bridge == net.bridge) {
                     None => {
                         let users = Self::network_users(&*self.vms.read().await, &net.id);
-                        if !net.owns_bridge || !users.is_empty() {
+                        if !net.owns_bridge || (!users.is_empty() && !new) {
                             problems.push("netd has no NAT for it".into());
                         } else {
                             let spec = NatSpec {
@@ -147,6 +161,20 @@ impl VmManager {
                             .await
                             .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
                             {
+                                Ok(n) if new => {
+                                    let _ = self.store.push_event(
+                                        &event_key("network", &net.id),
+                                        Event::new(
+                                            "controller",
+                                            EventKind::Normal,
+                                            "NatCreated",
+                                            format!(
+                                                "created NAT {} on {}",
+                                                n.state.subnet, net.bridge
+                                            ),
+                                        ),
+                                    );
+                                }
                                 Ok(n) => {
                                     let _ = self.store.push_event(
                                         &event_key("network", &net.id),

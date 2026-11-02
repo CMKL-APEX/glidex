@@ -161,7 +161,7 @@ A datastore is named by its name or id. See
 |---|---|
 | `networks`, `nets`, `network list` | List networks |
 | `network show <net>` | A network's id, mode, grants or shares |
-| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge |
+| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node [N]]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge; `--node N` on node N's (no `--subnet` or `--bridged` there) |
 | `network create <name> --project P [--isolated] [--vhost-user] [--subnet CIDR] [--mtu N]` | Create a project network (NAT unless `--isolated`). Without `--project`, same as `network-add` |
 | `network rm <net>`, `network-rm`, `net-rm` | Delete, waiting up to a minute |
 | `network host-api <net> on\|off` | Open this host's API to a NAT network's guests, or close it (host network administrators) |

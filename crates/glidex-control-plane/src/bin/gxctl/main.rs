@@ -696,7 +696,7 @@ fn print_help() {
     println!("  {}          - List networks", "networks".cyan());
     println!(
         "  {} - Create a network (default: NAT)",
-        "network-add <name> [--nat|--isolated|--bridged <br>]".cyan()
+        "network-add <name> [--nat|--isolated|--bridged <br>] [--node N]".cyan()
     );
     println!("  {}  - Delete a network", "network-rm <name>".cyan());
     println!("  {}           - List glidex OVS bridges", "bridges".cyan());

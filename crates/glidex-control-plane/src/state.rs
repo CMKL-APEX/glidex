@@ -4846,13 +4846,42 @@ impl VmManager {
         req: CreateNetworkRequest,
         project: Option<&str>,
     ) -> Result<Network, VmManagerError> {
-        if req.scope == Some(crate::network::NetworkScope::Cluster)
-            || (req.scope.is_none() && self.ovn_enabled())
+        if req.node.is_none()
+            && (req.scope == Some(crate::network::NetworkScope::Cluster)
+                || (req.scope.is_none() && self.ovn_enabled()))
         {
             return self.create_cluster_network(req, project).await;
         }
+        if req.node.is_some() && req.scope == Some(crate::network::NetworkScope::Cluster) {
+            return Err(NetError::Invalid(
+                "a cluster network spans every node: `node` is for a node network".into(),
+            )
+            .into());
+        }
         let mut net = req.to_network()?;
         net.project = project.map(str::to_string);
+        // Another node's network: that node's network controller makes its
+        // bridge and NAT, as it re-creates them after netd loses them. Only
+        // this node's netd is in reach here.
+        let me = self.local_node_id();
+        let node = match &req.node {
+            Some(want) => self.resolve_node(want)?,
+            None => me.clone(),
+        };
+        let remote = node != me;
+        if remote && net.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid(format!(
+                "a bridged network uses a bridge on its node: create it on {node}"
+            ))
+            .into());
+        }
+        if remote && req.subnet.is_some() {
+            return Err(NetError::Invalid(format!(
+                "a subnet is chosen on the network's node: leave it out, or create the network on {node}"
+            ))
+            .into());
+        }
+        net.node = Some(node);
         if let Some(why) = self.network_name_taken(&net.name, project)? {
             return Err(NetError::Conflict(why).into());
         }
@@ -4869,6 +4898,7 @@ impl VmManager {
             .into());
         }
         match net.mode {
+            _ if remote => net.phase = network::NetworkPhase::Pending,
             NetworkMode::Nat | NetworkMode::Isolated => {
                 let datapath = match net.port_type {
                     VmPortKind::VhostUser => Datapath::Netdev,

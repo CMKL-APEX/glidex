@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Clustering | [14-clustering.md](14-clustering.md) D23 | `fix/network-node` | A node network made for a named node (`node` on create), for a dev VM on gpu-dev2 while the leader is prism2 |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas

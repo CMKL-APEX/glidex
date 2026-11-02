@@ -160,6 +160,10 @@ fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkReques
         scope: scope.into(),
         subnet: flag_value(args, "--subnet").map(str::to_string),
         vlan,
+        // `--node N`: that node's; a bare `--node`: the serving node's.
+        node: flag_value(args, "--node")
+            .filter(|v| !v.starts_with("--"))
+            .map(str::to_string),
         ..Default::default()
     })
 }
@@ -167,7 +171,7 @@ fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkReques
 /// `network-add <name> …`, `network create <name> …` without `--project`
 pub async fn create_host(client: &ApiClient, args: &[&str]) {
     let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]".yellow());
+        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node [N]]".yellow());
         return;
     };
     let req = match host_network_request(name, args) {
@@ -628,6 +632,15 @@ mod tests {
             r.scope.as_known(),
             Some(NetworkScope::NETWORK_SCOPE_UNSPECIFIED)
         );
+
+        assert_eq!(r.node, None);
+
+        let r = host_network_request("d", &["d", "--node", "gpu-dev2", "--isolated"]).unwrap();
+        assert_eq!(r.scope.as_known(), Some(NetworkScope::NETWORK_SCOPE_NODE));
+        assert_eq!(r.node.as_deref(), Some("gpu-dev2"));
+        assert_eq!(r.mode.as_known(), Some(NetworkMode::NETWORK_MODE_ISOLATED));
+        let r = host_network_request("d", &["d", "--node", "--isolated"]).unwrap();
+        assert_eq!(r.node, None);
 
         assert!(host_network_request("x", &["x", "--vlan", "seven"]).is_err());
     }
