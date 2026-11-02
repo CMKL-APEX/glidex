@@ -823,8 +823,8 @@ fn print_help() {
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
     println!(
-        "  {} - Directories this host serves (operator), and the token signing keys of yours (rotating needs a fresh login)",
-        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate]".cyan()
+        "  {} - Directories this host serves (operator), the token signing keys of yours (rotating needs a fresh login), and its settings: self-service tenants and the web UI's word for a tenant",
+        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate] | settings [...]".cyan()
     );
     println!(
         "  {} - Projects",
@@ -1184,7 +1184,10 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
         "federation",
         &["list", "show", "add", "enable", "disable", "remove"],
     ),
-    ("directory", &["list", "create", "delete", "keys"]),
+    (
+        "directory",
+        &["list", "create", "delete", "keys", "settings"],
+    ),
     (
         "disk",
         &[

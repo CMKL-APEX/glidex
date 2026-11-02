@@ -1115,6 +1115,9 @@ export interface WhoAmI {
   token?: { id: string; name: string; device?: string; client?: string };
   /** A browser session's CSRF value. */
   csrf?: string;
+  /** What the caller's directory calls a tenant (spec/19-tenancy.md D81). */
+  tenant_label?: string;
+  tenant_label_plural?: string;
 }
 
 export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";

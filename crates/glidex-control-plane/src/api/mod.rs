@@ -1276,6 +1276,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "rotateSigningKey",
         post(issuer::rotate_key),
     )
+    // ---- the directory's settings (spec/19-tenancy.md §11.1)
+    .add(
+        "GET",
+        "/directory/settings",
+        "readDirectorySettings",
+        get(issuer::get_settings),
+    )
+    .add(
+        "PUT",
+        "/directory/settings",
+        "updateDirectorySettings",
+        put(issuer::put_settings),
+    )
     // ---- directory connectors (spec/19-tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
         "GET",

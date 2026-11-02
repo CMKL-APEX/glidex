@@ -31,6 +31,7 @@ tab each, shown to those allowed to see it:
 | **Users & roles** | Users and their sign-in methods, teams, and system roles. |
 | **Connectors** | Login connectors (see [Login connectors](authentication.md#login-connectors)). |
 | **Policies** | Base and site policies (see [Site policies](#site-policies)). |
+| **Settings** | What the web UI calls a tenant, and self-service tenants (see [Directory settings](#directory-settings)). |
 
 The directory holds users, teams, connectors, tenants, projects, tenant
 and project roles, and tokens; every server of a cluster has the same
@@ -124,8 +125,8 @@ one](authentication.md#hosting-other-organizations-directories). See
 
 | Role | May |
 |---|---|
-| `directory-admin` | Manage the directory's users, teams and anyone's tokens; create, change, suspend and delete tenants, and manage every tenant's members, bindings, invitations and workload federations; manage login connectors, their secrets, SCIM tokens and syncs; rotate the directory's signing key. |
-| `directory-auditor` | Read the directory: its tenants (with their members, bindings and federations), users, teams, connectors, SCIM token lists and signing keys, and a hosted directory's own audit log. |
+| `directory-admin` | Manage the directory's users, teams and anyone's tokens; create, change, suspend and delete tenants, and manage every tenant's members, bindings, invitations and workload federations; manage login connectors, their secrets, SCIM tokens and syncs; rotate the directory's signing key; change its [settings](#directory-settings). |
+| `directory-auditor` | Read the directory: its tenants (with their members, bindings and federations), users, teams, connectors, SCIM token lists, signing keys and settings, and a hosted directory's own audit log. |
 
 Neither includes a project role: a directory administrator reaches a
 tenant's projects only through a tenant or project role.
@@ -261,6 +262,35 @@ connector), the tenant isn't created either. Over the API,
 answers the link in `invitation_link`, once. `gxctl tenant create` has
 no option for it; create the tenant, then `gxctl invite create <tenant>
 <email> --connector <c> --role role.tenant-admin`.
+
+### Directory settings
+
+The directory's administrators (`directory-admin`; `directory-auditor`
+reads them) set two things on the **Directory** page's **Settings** tab,
+with `gxctl directory settings`, or with `PUT /directory/settings`:
+
+- **The display label.** What the web UI calls a tenant for this
+  directory's users, one and many: for a university, *Lab* and *Labs*.
+  The web UI then says *Create Lab*, *Lab roles*, and names the
+  **Labs** tab so. The API, gxctl, the audit log and these docs keep
+  saying *tenant*.
+- **Self-service.** Whether users may create tenants of their own, who
+  (every user of the directory, or members of some teams), how many per
+  user (default 3, at most 100) and in all, whether a directory
+  administrator approves each, a slug prefix (such as `lab-`), and
+  whether a tenant's administrators may delete it once it holds nothing
+  (default yes). These are stored but not acted on yet: users can't
+  create tenants until a later release.
+
+```bash
+gxctl directory settings                                   # show them
+gxctl directory settings --label Lab/Labs
+gxctl directory settings --self-service on --creators staff,faculty \
+  --max-per-user 2 --max-total 200 --approval required --slug-prefix lab-
+```
+
+`gxctl directory settings` changes only the options given. Each answer
+is the settings as stored, teams by id.
 
 ## Removing people
 

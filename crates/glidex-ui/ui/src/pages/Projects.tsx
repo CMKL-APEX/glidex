@@ -6,7 +6,7 @@ import { QUOTA_KEYS, QUOTA_LABELS } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { ErrorBanner, Field, PageHeader, errorMessage, inputClass, primaryButton, selectClass } from "../components/ui";
-import { useSession } from "../session";
+import { useSession, useTenantLabel } from "../session";
 import { useDirectory, useProjectTenants, useTenants } from "../hooks";
 
 /** `used / limit` (or `used` when unlimited). */
@@ -42,6 +42,7 @@ function CreateProjectForm({
   onCancel: () => void;
 }) {
   const [dir] = useDirectory();
+  const label = useTenantLabel();
   const [tenant, setTenant] = useState(() => initialTenant(tenants, selectedTenant));
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -77,7 +78,7 @@ function CreateProjectForm({
         />
       </Field>
       {tenants.length > 1 && (
-        <Field label="Tenant" htmlFor="project-tenant">
+        <Field label={label.one} htmlFor="project-tenant">
           <select id="project-tenant" className={selectClass} value={tenant} onChange={(e) => setTenant(e.target.value)}>
             {tenants.map((t) => (
               <option key={t.id} value={t.id}>
@@ -117,6 +118,7 @@ function CreateProjectForm({
 
 export default function Projects() {
   const session = useSession();
+  const label = useTenantLabel();
   const [projects, setProjects] = useState<ProjectView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -158,7 +160,7 @@ export default function Projects() {
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       {projectTenantIds.length > 1 && (
         <div className="mb-3 flex items-center gap-2 text-sm text-gray-600">
-          <label htmlFor="projects-tenant">Tenant</label>
+          <label htmlFor="projects-tenant">{label.one}</label>
           <select
             id="projects-tenant"
             className="px-2 py-1 border border-gray-300 rounded-lg bg-white text-sm"
@@ -186,7 +188,7 @@ export default function Projects() {
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">
                 <th className="px-4 py-3 font-medium">Project</th>
-                {showTenant && <th className="px-4 py-3 font-medium">Tenant</th>}
+                {showTenant && <th className="px-4 py-3 font-medium">{label.one}</th>}
                 {QUOTA_KEYS.map((k) => (
                   <th key={k} className="px-4 py-3 font-medium">
                     {QUOTA_LABELS[k]}

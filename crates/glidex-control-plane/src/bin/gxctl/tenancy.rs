@@ -49,6 +49,22 @@ pub(crate) fn rpc_err(e: connectrpc::ConnectError) -> String {
     }
 }
 
+/// Team names by id, for printing; empty when the caller can't list teams.
+pub(crate) async fn team_names(t: &RpcTransport) -> std::collections::HashMap<String, String> {
+    use glidex_api::proto::glidex::access::v1::{ListTeamsRequest, TeamServiceClient};
+    TeamServiceClient::new(t.clone(), t.config())
+        .list_teams(ListTeamsRequest::default())
+        .await
+        .map(|r| {
+            r.into_owned()
+                .teams
+                .into_iter()
+                .map(|t| (t.id, t.name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) async fn transport(client: &ApiClient) -> Option<RpcTransport> {
     match client.rpc_transport().await {
         Ok(t) => Some(t),

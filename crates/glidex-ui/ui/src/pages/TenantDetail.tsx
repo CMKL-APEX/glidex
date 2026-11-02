@@ -24,7 +24,7 @@ import {
   SignInMethods,
   userIdOf,
 } from "../components/ui";
-import { useCan } from "../session";
+import { useCan, useTenantLabel } from "../session";
 import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
 
@@ -668,6 +668,7 @@ export default function TenantDetail() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirm, setConfirm] = useState<"suspend" | "resume" | "delete" | null>(null);
+  const label = useTenantLabel();
 
   const allowed = useCan(CAPS.map((action) => ({ action, resource: { type: "Tenant" as const, id } })));
   const can = (c: Cap) => !!allowed?.[CAPS.indexOf(c)];
@@ -845,7 +846,7 @@ export default function TenantDetail() {
       {can("readTenantFederations") && <FederationsCard tenant={tenant} canManage={can("manageTenantFederations")} />}
 
       {canReadBindings && (
-        <Card title="Tenant roles">
+        <Card title={`${label.one} roles`}>
           {bindings === null ? (
             <Loading />
           ) : (
@@ -875,7 +876,7 @@ export default function TenantDetail() {
       )}
 
       {editing && (
-        <Modal title="Edit Tenant" onClose={() => setEditing(false)}>
+        <Modal title={`Edit ${label.one}`} onClose={() => setEditing(false)}>
           <EditTenantForm
             tenant={tenant}
             onCancel={() => setEditing(false)}
@@ -888,7 +889,7 @@ export default function TenantDetail() {
       )}
       {confirm === "suspend" && (
         <ConfirmDialog
-          title="Suspend Tenant"
+          title={`Suspend ${label.one}`}
           consequence={
             <p>
               Members of <span className="font-semibold">{tenant.slug}</span> won't be able to act on its projects and
@@ -905,7 +906,7 @@ export default function TenantDetail() {
       )}
       {confirm === "resume" && (
         <ConfirmDialog
-          title="Resume Tenant"
+          title={`Resume ${label.one}`}
           consequence={
             <p>
               Members of <span className="font-semibold">{tenant.slug}</span> can use its resources again.
@@ -922,7 +923,7 @@ export default function TenantDetail() {
       )}
       {confirm === "delete" && (
         <ConfirmDialog
-          title="Delete Tenant"
+          title={`Delete ${label.one}`}
           consequence={
             <p>
               Deletes tenant <span className="font-semibold">{tenant.slug}</span>, its members and its role links. It is

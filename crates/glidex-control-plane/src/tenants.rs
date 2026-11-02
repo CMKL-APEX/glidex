@@ -89,6 +89,108 @@ pub struct Directory {
     /// issued a workload token (29-workload-identity.md W13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_domain: Option<String>,
+    /// Self-service tenants and the web UI's word for a tenant
+    /// (spec/19-tenancy.md §11.1).
+    #[serde(default, skip_serializing_if = "DirectorySettings::is_default")]
+    pub settings: DirectorySettings,
+}
+
+/// A directory's settings (spec/19-tenancy.md §11.1), set by its
+/// administrators.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectorySettings {
+    pub self_service: SelfService,
+    pub tenant_label: TenantLabel,
+}
+
+/// Who may create tenants of their own, and how many (D78).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfService {
+    pub enabled: bool,
+    /// Team ids whose members may; empty: every user of the directory.
+    pub creator_teams: Vec<String>,
+    pub max_per_user: u32,
+    pub max_total: Option<u32>,
+    pub approval_required: bool,
+    pub slug_prefix: String,
+    pub admins_may_delete: bool,
+}
+
+impl Default for SelfService {
+    fn default() -> Self {
+        SelfService {
+            enabled: false,
+            creator_teams: Vec::new(),
+            max_per_user: 3,
+            max_total: None,
+            approval_required: false,
+            slug_prefix: String::new(),
+            admins_may_delete: true,
+        }
+    }
+}
+
+/// What the web UI calls a tenant (D81).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TenantLabel {
+    pub singular: String,
+    pub plural: String,
+}
+
+impl Default for TenantLabel {
+    fn default() -> Self {
+        TenantLabel {
+            singular: "Tenant".into(),
+            plural: "Tenants".into(),
+        }
+    }
+}
+
+/// Most tenants one user may create (D78).
+pub const MAX_PER_USER: u32 = 100;
+const MAX_SLUG_PREFIX: usize = 16;
+const MAX_LABEL: usize = 24;
+
+impl DirectorySettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Refuse what can't be stored; the caller resolves team names to ids.
+    pub fn validate(&self) -> Result<(), TenantError> {
+        let s = &self.self_service;
+        if s.max_per_user > MAX_PER_USER {
+            return Err(TenantError::Invalid(format!(
+                "max_per_user is at most {MAX_PER_USER}"
+            )));
+        }
+        let p = &s.slug_prefix;
+        if p.len() > MAX_SLUG_PREFIX
+            || p.starts_with('-')
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(TenantError::Invalid(format!(
+                "invalid slug prefix '{p}': use [a-z0-9-], at most {MAX_SLUG_PREFIX} characters, not starting with '-'"
+            )));
+        }
+        for (what, v) in [
+            ("singular", &self.tenant_label.singular),
+            ("plural", &self.tenant_label.plural),
+        ] {
+            let n = v.chars().count();
+            if v.trim() != v || n == 0 || n > MAX_LABEL || v.chars().any(char::is_control) {
+                return Err(TenantError::Invalid(format!(
+                    "the tenant label's {what} form is 1-{MAX_LABEL} characters, without surrounding spaces"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +403,7 @@ impl TenantStore {
             created_at: at,
             issuer: None,
             trust_domain: None,
+            settings: DirectorySettings::default(),
         };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
@@ -508,6 +611,7 @@ impl TenantStore {
             created_at: at,
             issuer: None,
             trust_domain: None,
+            settings: DirectorySettings::default(),
         };
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -605,6 +709,21 @@ impl TenantStore {
             )));
         }
         d.trust_domain = Some(td.to_string());
+        self.put(DIRECTORIES, id, &d)?;
+        Ok(d)
+    }
+
+    /// Replace `id`'s settings (checked first).
+    pub fn set_settings(
+        &self,
+        id: &str,
+        settings: DirectorySettings,
+    ) -> Result<Directory, TenantError> {
+        settings.validate()?;
+        let mut d = self
+            .get_directory(id)?
+            .ok_or_else(|| TenantError::NotFound(format!("directory {id}")))?;
+        d.settings = settings;
         self.put(DIRECTORIES, id, &d)?;
         Ok(d)
     }
@@ -948,6 +1067,56 @@ mod tests {
         assert!(s.delete(DEFAULT_TENANT).is_err());
         s.delete(&t.id).unwrap();
         assert!(s.admission(&t.id).unwrap().is_none() && s.members(&t.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn directory_settings_are_checked_kept_and_default_when_absent() {
+        let (s, _d) = store();
+        let d = s.directory().unwrap().unwrap();
+        assert_eq!(d.settings, DirectorySettings::default());
+        assert_eq!(d.settings.self_service.max_per_user, 3);
+        assert!(d.settings.self_service.admins_may_delete);
+        // A record from before settings existed reads as the defaults.
+        let old: Directory =
+            serde_json::from_str(r#"{"id":"x","name":"x","owner_tenant":"t","created_at":0}"#)
+                .unwrap();
+        assert_eq!(old.settings, DirectorySettings::default());
+        assert!(!serde_json::to_string(&old).unwrap().contains("settings"));
+
+        let mut set = DirectorySettings::default();
+        set.self_service.enabled = true;
+        set.self_service.slug_prefix = "lab-".into();
+        set.tenant_label = TenantLabel {
+            singular: "Lab".into(),
+            plural: "Labs".into(),
+        };
+        let d = s.set_settings(LOCAL_DIRECTORY, set.clone()).unwrap();
+        assert_eq!(d.settings, set);
+        assert_eq!(s.directory().unwrap().unwrap().settings, set);
+
+        let bad = |f: &dyn Fn(&mut DirectorySettings)| {
+            let mut b = set.clone();
+            f(&mut b);
+            assert!(
+                matches!(
+                    s.set_settings(LOCAL_DIRECTORY, b),
+                    Err(TenantError::Invalid(_))
+                ),
+                "accepted a bad setting"
+            );
+        };
+        bad(&|b| b.self_service.max_per_user = MAX_PER_USER + 1);
+        bad(&|b| b.self_service.slug_prefix = "Lab-".into());
+        bad(&|b| b.self_service.slug_prefix = "-x".into());
+        bad(&|b| b.self_service.slug_prefix = "a".repeat(17));
+        bad(&|b| b.tenant_label.singular = String::new());
+        bad(&|b| b.tenant_label.plural = " Labs".into());
+        bad(&|b| b.tenant_label.plural = "x".repeat(25));
+        assert_eq!(s.directory().unwrap().unwrap().settings, set, "unchanged");
+        assert!(matches!(
+            s.set_settings("nope", set),
+            Err(TenantError::NotFound(_))
+        ));
     }
 
     #[test]

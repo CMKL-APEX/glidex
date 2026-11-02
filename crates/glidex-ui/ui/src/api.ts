@@ -126,6 +126,7 @@ import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v
 import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
+import { DirectorySettingsService, type DirectorySettingsJson } from "./gen/glidex/directory/v1/settings_pb";
 import {
   MetricsService,
   UsageService,
@@ -1480,6 +1481,13 @@ export const removeAdmission = (tenant: string) => rpc(AdmissionService.method.r
 
 // ---- login connectors (spec/19-tenancy.md §5, §14) ------------------------------
 
+/** The caller's directory's settings (spec/19-tenancy.md §11.1). */
+export type DirectorySettings = DirectorySettingsJson;
+export const getDirectorySettings = () =>
+  rpc(DirectorySettingsService.method.getDirectorySettings).then((r) => (r.settings ?? {}) as DirectorySettings);
+/** Replaces them; answers them as stored (team names as ids). */
+export const updateDirectorySettings = (settings: DirectorySettings) =>
+  rpc(DirectorySettingsService.method.updateDirectorySettings, { settings }).then((r) => (r.settings ?? {}) as DirectorySettings);
 export const listConnectors = () => rpc(ConnectorService.method.listConnectors).then((r) => (r.connectors ?? []) as Connector[]);
 export const getConnector = (id: string) => rpc(ConnectorService.method.getConnector, { id }).then((r) => r.connector as Connector);
 export const createConnector = (connector: ConnectorInput) =>
