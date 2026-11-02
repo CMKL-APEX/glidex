@@ -735,6 +735,34 @@ fn valid_provider(p: &str) -> bool {
     p == "pam" || p == "unix" || p.starts_with("oidc:")
 }
 
+/// An identity an admin gives a user. A local login is looked up as
+/// `local_subject` makes it: a subject of another shape would never sign
+/// anyone in (D13).
+fn check_identity(provider: &str, subject: &str) -> ServiceResult<()> {
+    if !valid_provider(provider) || subject.is_empty() {
+        return Err(bad(
+            "identities are pam:, unix: or oidc:<issuer> with a subject",
+        ));
+    }
+    if matches!(provider, "pam" | "unix") {
+        let per_node = crate::authz::local_accounts_per_node();
+        match (subject.contains('@'), per_node) {
+            (false, true) => {
+                return Err(bad(
+                    "in this cluster a local sign-in is per node: <account>@<node id>",
+                ));
+            }
+            (true, false) => {
+                return Err(bad(
+                    "local sign-ins aren't per node here: give the account alone",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn create_user(
     call: &Call,
     req: pb::CreateUserRequest,
@@ -750,11 +778,7 @@ pub fn create_user(
     }
     let s = &call.auth().store;
     for i in &req.identities {
-        if !valid_provider(&i.provider) || i.subject.is_empty() {
-            return Err(bad(
-                "identities are pam:, unix: or oidc:<issuer> with a subject",
-            ));
-        }
+        check_identity(&i.provider, &i.subject)?;
         if s.identity(&i.provider, &i.subject)
             .map_err(store_err)?
             .is_some()
@@ -977,29 +1001,7 @@ pub fn link_identity(
     call.set_target(format!("user:{}", req.id));
     let s = &call.auth().store;
     user_here(call, &req.id)?;
-    if !valid_provider(&req.provider) || req.subject.is_empty() {
-        return Err(bad(
-            "identities are pam:, unix: or oidc:<issuer> with a subject",
-        ));
-    }
-    // A local login is looked up as `local_subject` makes it: a subject
-    // of another shape would never sign anyone in (D13).
-    if matches!(req.provider.as_str(), "pam" | "unix") {
-        let per_node = crate::authz::local_accounts_per_node();
-        match (req.subject.contains('@'), per_node) {
-            (false, true) => {
-                return Err(bad(
-                    "in this cluster a local sign-in is per node: <account>@<node id>",
-                ));
-            }
-            (true, false) => {
-                return Err(bad(
-                    "local sign-ins aren't per node here: give the account alone",
-                ));
-            }
-            _ => {}
-        }
-    }
+    check_identity(&req.provider, &req.subject)?;
     if s.identity(&req.provider, &req.subject)
         .map_err(store_err)?
         .is_some()
