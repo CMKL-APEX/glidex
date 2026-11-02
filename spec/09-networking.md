@@ -1,7 +1,7 @@
 # VM Networking with Open vSwitch (DPDK / AF_XDP)
 
-**Status: implemented (M1–M8); M9 (§8.6) specified, with open questions
-in §8.6.6.** Every other design question is decided (§1).
+**Status: implemented (M1–M8); M9 (§8.6) specified, not built.** All
+design questions are decided (§1).
 This document is the implementation spec: component boundaries, wire
 protocol, data models, host commands, and milestones with acceptance
 tests (§15). §0 records what was verified on a real host and what host
@@ -22,7 +22,7 @@ protocol/client library), control-plane `network.rs`; packaging in
 | M6 bridged | yes | `bridged_uplink_e2e`: refused, rolled back, committed, VM on LAN, restored |
 | M7 DPDK / vhost-user | yes | `vhost_user_e2e` on OVS-DPDK 25.11.0 (no DPDK *NIC* uplink: no IOMMU on the test host) |
 | M8 AF_XDP + source build | yes | `afxdp_uplink_e2e` (generic mode, veth); the source build is unit-tested only |
-| M9 source routes (§8.6) | spec only: open questions in §8.6.6 | not run yet |
+| M9 source routes (§8.6) | spec only | not run yet |
 
 End-to-end tests are `#[ignore]`d in
 `crates/glidex-control-plane/tests/functional_tests.rs` and need a root
@@ -126,6 +126,10 @@ during the milestone that uses them.
 | 11 | Ports that share a subnet (issue #256) | **netd adds per-port source routes** (a table and a `from` rule per address) for the subnets it is told to (§8.6). Linux picks the outgoing port by destination alone, so without them every reply in the subnet leaves by one port; hyperstor's D216 leaves the rules to the host network's owner, which on a glidex host is netd. |
 | 12 | Owning routing rules | **netd marks its rules and routes with its own routing protocol number** and changes or deletes only those (§8.6.3). The host's own addresses aren't glidex's, so a marker on the rule, not on the address, is what keeps the §8.1 invariant. |
 | 13 | Keeping them current | **netd re-plans on address changes and at start**, not only when asked (§8.6.4): addresses come and go with links, DHCP and reboots, and a stale rule sends traffic out of a port that has lost its address. |
+| 14 | Which subnets (#256) | **Only the subnets named in `netd.json`** (`source_routes.subnets`); every other shared subnet is reported, never changed (§8.6.2). netd changes only what glidex owns (§8.1), and a host may already manage these rules with netplan. |
+| 15 | Table numbers (#256) | **A configurable range** (`source_routes.table_range`, default `[4200, 4299]`), one number per interface name, kept in the state database (§8.6.3). A host that already uses those numbers moves the range. |
+| 16 | IPv6 (#256) | **In M9 with IPv4**, the same code with `-6` (§8.6.1). The pilot's IPoIB subnets are IPv4, so IPv6 is unit-tested until a host has it. |
+| 17 | ARP settings (#256) | **netd sets `arp_ignore=1` and `arp_announce=2` on the ports of managed subnets**, records the values it replaced, and puts them back when a port stops being managed (§8.6.6). `rp_filter` is left as it is: the rules make strict filtering pass. |
 
 ## 2. Background
 
@@ -528,7 +532,7 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (22-host-topology.md §5.3) |
 | `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (22-host-topology.md §10.1) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
-| `list_source_routes` | full, read-only | – → per shared subnet: its ports, addresses, the table and rule of each, whether it is managed, and conflicts (§8.6.5) |
+| `list_source_routes` | full, read-only | – → per shared subnet: its ports, addresses, the table and rule of each, whether it is managed, conflicts, and each port's ARP and `rp_filter` settings (§8.6.5) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 
 "full" means both full sockets (`netd.sock`, `netd-admin.sock`), subject
@@ -555,6 +559,7 @@ ReDB tables with JSON values:
 | `nat` | bridge | `NatState` + `dns` + `reservations: {mac → ip}` |
 | `vm_ports` | `vm_id/nic` | `VmPortSpec` + port name, binding, `ipv4?`, owner uid |
 | `source_tables` | ifname | the routing table number given to the port (§8.6.3) |
+| `arp_saved` | ifname | the `arp_ignore` and `arp_announce` the port had before netd set them (§8.6.6) |
 
 ### 7.5 Configuration (`/etc/glidex/netd.json`, optional)
 
@@ -747,7 +752,7 @@ uplink alone. Verified end to end on the nested cluster: a host's only
 NIC moved onto a bridge through the agent's web UI, the host rebooted,
 and came back reachable with the address re-applied.
 
-### 8.6 Source routes for ports that share a subnet (decisions 11–13)
+### 8.6 Source routes for ports that share a subnet (decisions 11–17)
 
 **The problem** (issue #256). When several ports of a host have
 addresses in one subnet (an HGX host's eight IPoIB ports, say), the main
@@ -760,8 +765,9 @@ the connection fails. hyperstor's storage endpoints bind these addresses
 an endpoint without a rule, and its D216 leaves the rules to netd. Any
 service that binds one of those addresses has the same problem.
 
-These ports aren't OVS uplinks: netd adds nothing to OVS here. It only
-writes routing tables and rules, through `ip`.
+These ports aren't OVS uplinks: netd adds nothing to OVS here. It
+writes routing tables and rules, through `ip`, and two ARP settings per
+port (§8.6.6).
 
 #### 8.6.1 What netd adds
 
@@ -772,6 +778,8 @@ and each such address `A` on port `P`:
 ip route replace <subnet> dev P src A table T(P) proto glidex
 ip rule add from A lookup T(P) priority <rule_priority> protocol glidex
 ```
+
+IPv6 addresses get the same with `ip -6` (decision 16).
 
 `T(P)` is the port's table (§8.6.3). The table has only the subnet's
 route: traffic from `A` to anywhere else falls through to the main
@@ -788,15 +796,21 @@ since netd plans from the addresses as they are.
 `netd.json` (§7.5) gets `source_routes`:
 
 ```json
-{ "source_routes": { "subnets": ["10.40.0.0/16"], "rule_priority": 1000 } }
+{ "source_routes": { "subnets": ["10.40.0.0/16"], "rule_priority": 1000,
+                     "table_range": [4200, 4299] } }
 ```
 
-- `subnets`: the subnets netd manages. Empty, the default, means none:
-  netd only reports (§8.6.5). See open question 1.
+- `subnets`: the subnets netd manages, IPv4 or IPv6 (decision 14). Empty,
+  the default, means none: netd only reports (§8.6.5).
 - `rule_priority`: the rules' priority, before `main` (32766); default
   1000, which is ahead of Tailscale's (5210–5270). It must
   not be a priority the host's own rules use; netd refuses to start
   with one in use by a rule that isn't its own.
+- `table_range`: the routing table numbers netd may give ports,
+  inclusive (decision 15). Default `[4200, 4299]`. It must stay clear
+  of 253–255 (`default`, `main`, `local`); netd refuses to start
+  otherwise. A port whose table falls outside a changed range gets a
+  new number on the next pass.
 
 #### 8.6.3 Ownership and table numbers
 
@@ -806,11 +820,11 @@ since netd plans from the addresses as they are.
   doesn't assign; the task picks it. netd changes and deletes only
   routes and rules with that protocol (the §8.1 invariant). `ip rule`
   has carried a protocol since Linux 4.17.
-- **Tables.** Each port gets a number from a fixed range (proposed
-  `4200`–`4299`), kept by interface name in `source_tables` (§7.4) so it
-  survives reboots. Interface indexes can change across a reboot, so
-  they aren't used. A number already holding routes that aren't
-  netd's is skipped. See open question 2.
+- **Tables.** Each port gets a number from `table_range`, kept by
+  interface name in `source_tables` (§7.4) so it survives reboots.
+  Interface indexes can change across a reboot, so they aren't used. A
+  number already holding routes that aren't netd's is skipped. A full
+  range is reported, and the ports left over get no rules.
 - **Conflicts.** If an address already has a `from` rule that isn't
   netd's (netplan's `routing-policy`, NetworkManager, a hand-made one),
   netd leaves the address alone and reports the conflict. It doesn't
@@ -820,7 +834,7 @@ since netd plans from the addresses as they are.
 
 - **At start**, as a reconcile step (§7.7 step 3).
 - **On address changes:** netd listens for rtnetlink address events
-  (`RTMGRP_IPV4_IFADDR`, plus IPv6 if open question 3 says so) and
+  (`RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR`) and
   re-plans. A short debounce (1 s) makes a burst of changes one pass.
 - **Every 60 s** as well, to catch an event missed while netd was busy.
 
@@ -838,31 +852,31 @@ ports, addresses, tables and rules, and for each address one of:
 `ok`, `missing` (managed, not yet applied), `unmanaged` (not in
 `subnets`), or `conflict` (another manager's rule; that rule is shown).
 It also gives each port's `rp_filter`, `arp_ignore` and `arp_announce`.
-netd reports these three settings and never changes them (open
-question 4). The control plane shows this in `GET /ovs/status`'s host
+The control plane shows this in `GET /ovs/status`'s host
 part, and the host page shows a warning for `missing`, `unmanaged` and
 `conflict`.
 
-#### 8.6.6 Open questions
+#### 8.6.6 ARP settings (decision 17)
 
-1. **Automatic or opt-in?** Proposed: **opt-in by subnet**
-   (`source_routes.subnets`), and report the rest. netd changes only
-   what glidex owns (§8.1). Rules for the host's own addresses are new
-   ground, and a host may already manage them with netplan. The other
-   choice is to manage every shared subnet automatically, with a list
-   of subnets to leave out.
-2. **Table numbering.** Proposed: a fixed range `4200`–`4299`, one number
-   per interface name, kept in the state database. The other choices
-   are numbers derived from interface indexes (not stable across
-   reboots), or configurable ranges.
-3. **IPv6.** Proposed: **in the same milestone**, with the same code and
-   `-6` (`from A` rules work the same way). The pilot's IPoIB subnets are
-   IPv4, so IPv6 is unit-tested only until a host has it.
-4. **`rp_filter`, `arp_ignore`, `arp_announce`.** Proposed: **report
-   only.** The pilot hosts already set `arp_ignore=1` and
-   `arp_announce=2`, the rules make strict `rp_filter` pass, and these
-   are host-wide policy. The other choice is that netd sets them on
-   managed ports.
+On each port of a managed subnet, netd sets
+`net.ipv4.conf.<port>.arp_ignore=1` (answer ARP only for addresses on
+the port asked) and `arp_announce=2` (use the port's own address as
+the ARP source). Without them, a host with several ports in one subnet
+answers ARP for every address from every port, and peers send traffic
+for one address to whichever port answered first.
+
+- netd writes them with `sysctl -w`, per port, never `all` or `default`:
+  other ports keep the host's policy.
+- Before the first change it records the port's values in `arp_saved`
+  (§7.4). When the port stops being managed (its subnet is removed from
+  `subnets`, or it no longer has an address there), netd puts them back
+  and forgets them. A port that disappears is simply forgotten.
+- Each pass sets them again if something else changed them, and reports
+  that it did.
+- `rp_filter` is not changed: the rules make strict reverse-path
+  filtering pass (§8.6.1), and loose or off filtering already passes.
+- IPv6 has no equivalent: neighbour discovery already answers per
+  interface.
 
 ## 9. VM ports
 
@@ -1241,7 +1255,7 @@ its tests passing in CI.
 | **M6** bridged networks | `Kernel` uplinks, classification, IP migration with gateway check, commit/rollback, re-apply at start | Unit tests for classification and every rollback path (gateway check fails, no commit, wrong token); ignored e2e in a netns with a veth "NIC" carrying an address: migrate, commit, flush + reconcile, rollback. |
 | **M7** DPDK | `dpdk` profile, `init_dpdk`, `netdev` bridges, `Dpdk` uplinks (bind/restore, re-bind at start), vhost-user ports, `MemoryConfig.shared/hugepages`, VFIO conflict | Unit tests for sysfs writes and restore; ignored e2e with `GLIDEX_TEST_OVS_DPDK=1`: two VMs over vhost-user ping each other. |
 | **M8** AF_XDP + source build | `Afxdp` uplinks, effective-mode reporting, pinned source build | Unit tests for build steps and checksum failure; ignored e2e: AF_XDP generic mode over a veth pair. |
-| **M9** source routes (§8.6) | `glidex-ovs` `srcroute.rs`: plan (addresses → wanted rules and routes), diff against `ip -j rule`/`ip -j route show table all` filtered to protocol `glidex`, apply; netd: `source_routes` config, `source_tables` table, the reconcile step, the address watcher and 60 s pass, `list_source_routes`; the installer's `rt_protos.d` file; the host status in the control plane and a warning on the host page | Unit tests with `RecordingExec` and canned `ip -j` output: one port gets nothing; two ports get two tables and rules; a removed address loses its rule; another manager's rule is a `conflict` and left alone; a non-glidex route in a candidate table skips that number; a priority in use by others stops netd. Ignored e2e in a netns: two veth ports in one subnet towards a peer namespace with `rp_filter=1`, traffic from each address leaves by its own port and a connection to the second address succeeds, then delete the address and see its rule removed. On a pilot GPU host: hyperstor's `check` passes. |
+| **M9** source routes (§8.6) | `glidex-ovs` `srcroute.rs`: plan (addresses → wanted rules and routes), diff against `ip -j rule`/`ip -j route show table all` filtered to protocol `glidex`, apply; netd: `source_routes` config (`subnets`, `rule_priority`, `table_range`), `source_tables` and `arp_saved`, the ARP settings (§8.6.6), IPv4 and IPv6, the reconcile step, the address watcher and 60 s pass, `list_source_routes`; the installer's `rt_protos.d` file; the host status in the control plane and a warning on the host page | Unit tests with `RecordingExec` and canned `ip -j` output: one port gets nothing; two ports get two tables and rules; a removed address loses its rule; another manager's rule is a `conflict` and left alone; a non-glidex route in a candidate table skips that number; a priority in use by others, or a range touching 253–255, stops netd; IPv6 gets `ip -6` rules; ARP settings are saved, set on managed ports only, and restored when a port stops being managed. Ignored e2e in a netns: two veth ports in one subnet towards a peer namespace with `rp_filter=1`, traffic from each address leaves by its own port and a connection to the second address succeeds, then delete the address and see its rule removed. On a pilot GPU host: hyperstor's `check` passes. |
 
 Every ignored e2e test runs in a throwaway network namespace, uses veth
 pairs instead of real NICs, and tears down its bridges, the `inet
