@@ -16,6 +16,7 @@ members = [
     "crates/glidex-raftstore",
     "crates/glidex-auth",
     "crates/glidex-metad",
+    "crates/glidex-topology",
 ]
 resolver = "2"
 
