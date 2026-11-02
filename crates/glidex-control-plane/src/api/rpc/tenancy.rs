@@ -93,6 +93,14 @@ impl TenantService for Svc {
         op!(self, ctx, req, tenancy::delete_tenant)
     }
 
+    async fn approve_tenant(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ApproveTenantRequest>,
+    ) -> ServiceResult<ApproveTenantResponse> {
+        op!(self, ctx, req, tenancy::approve_tenant)
+    }
+
     async fn list_device_pools(
         &self,
         ctx: RequestContext,

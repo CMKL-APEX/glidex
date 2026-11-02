@@ -70,6 +70,19 @@ pub async fn suspend(
     )?))
 }
 
+pub async fn approve(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<pb::ApproveTenantResponse>, ApiErr> {
+    Ok(Json(svc::approve_tenant(
+        &c,
+        pb::ApproveTenantRequest {
+            id,
+            ..Default::default()
+        },
+    )?))
+}
+
 pub async fn resume(
     c: Caller,
     Path(id): Path<String>,

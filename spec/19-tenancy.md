@@ -1006,28 +1006,36 @@ which only `base.self-service-tenant` permits:
 @id("base.self-service-tenant")
 permit (principal, action == Glidex::Action::"createOwnTenant", resource)
 when {
-  resource.self_service &&
-  principal is Glidex::User && principal.directory == resource &&
-  (resource.self_service_all || principal in resource.self_service_teams)
+  resource.self_service && (
+    (principal is Glidex::User &&
+      (resource.self_service_all || principal in resource.self_service_teams)) ||
+    (principal is Glidex::Token && principal has owner &&
+      (resource.self_service_all || principal.owner in resource.self_service_teams)))
 };
 ```
+
+The resource is always the caller's own directory (D58), so a user of
+another directory never matches; a personal token acts as its owner.
 
 Site policies can narrow it (`forbid` for a team, an hour, a label);
 they can't open it to anyone the base policy leaves out. In code, the
 request then:
 
 1. takes only `slug` and `display_name`: never `operator`, owner or
-   domains (`422` otherwise); the slug gets `slug_prefix`;
-2. checks the limits (`409 tenant_limit` with `limit: per_user` or
-   `total`), counting tenants with `created_by` the caller;
+   domains (`400` otherwise); the slug gets `slug_prefix` unless it
+   starts with it;
+2. checks the limits (`409 tenant_limit`; the audit entry's `limit` is
+   `per_user` or `total`), counting tenants with `created_by` the caller;
 3. creates the tenant with `self_service: true`, `created_by`, and
-   `pending` under `approval_required`, and links the caller as its
-   `tenant-admin`, in one write;
+   `pending` under `approval_required`, with the caller a listed member,
+   in one write; then links the caller as its `tenant-admin` (the
+   tenant is deleted again if that fails);
 4. when active, admits it on the cluster by `AutoAdmission` (D79).
 
 Only users who signed in through one of the directory's connectors
 create tenants: not service accounts, federated workloads, API tokens
-of another tenant, or break-glass (`base.break-glass` passes it, but
+of another tenant, personal tokens narrowed to some roles (they
+wouldn't carry the new tenant's admin role), or break-glass (`base.break-glass` passes it, but
 there is no user to count).
 
 **Pending tenants.** A pending tenant is listed to its creator and to
@@ -1824,7 +1832,7 @@ order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
-T9 has task 1 (settings and the label).
+T9 has tasks 1 and 2 (settings and the label; creating one's own tenant).
 T8 (D75–D77) is implemented.
 What follows is per milestone.
 
@@ -2270,4 +2278,6 @@ T9, self-service tenants (§11.1):
 |---|---|
 | Task 1: directory settings and the label (D78's settings, D81) | `tenants::DirectorySettings` (`SelfService`, `TenantLabel`, `validate`) on `Directory.settings`, `TenantStore::set_settings`; `glidex.directory.v1.DirectorySettingsService` (`service::directory_settings`; `GET/PUT /directory/settings`, actions `readDirectorySettings` in `directory.read`, `updateDirectorySettings` in `directory.tenants`); `WhoAmI.tenant_label`, `tenant_label_plural`; gxctl `directory settings`; the web UI's `useTenantLabel` (Directory tabs, Tenants, tenant page, Projects, Access) and the Directory page's **Settings** tab |
 | Tests | `tenants::tests::directory_settings_are_checked_kept_and_default_when_absent`; UI e2e `self-service.spec.ts` (settings saved, the label in whoami and on the pages, a bad prefix refused) |
-| Not yet | tasks 2–5: creating one's own tenant, automatic admission, open pools, the real check. The self-service settings are stored but nothing acts on them |
+| Task 2: creating one's own tenant (D78) | `Tenant.{self_service, created_by, pending}`, `TenantStore::{create_own, self_service_counts}`; schema `Directory.{self_service, self_service_all, self_service_teams}` (`EntitySet::directory_with`), actions `createOwnTenant` (`shared`, only `base.self-service-tenant`), `deleteOwnTenant` (`tenant.projects`, step-up), `approveTenant` (`directory.tenants`); `service::tenancy::{create_own_tenant, approve_tenant}`, `delete_tenant`'s own path, `create_project`'s `403 tenant_pending`; `TenantService.ApproveTenant` (`POST /tenants/{id}/approve`); `Tenant.{self_service, created_by, created_by_name, pending, no_admin}`; `WhoAmI.self_service` (`directory_settings::self_service_of`); gxctl `tenant approve` and the flags in `tenant list`/`show`; the Tenants page's own-tenant form and badges, the tenant page's **Approve** and own delete; a narrowed personal token is refused |
+| Tests (task 2) | `tenancy_tests::users_create_tenants_of_their_own_within_the_directorys_limits` (off by default, the prefix, never an operator, each limit and whoami's count, delete when empty and refused when not or when `admins_may_delete` is off, another's tenant invisible, creator teams, pending blocks projects until approved, a site `forbid` wins). No UI e2e of the own-tenant form or **Approve**: the e2e signs in as a directory administrator only |
+| Not yet | tasks 3–5: automatic admission, open pools, the real check. A self-service tenant waits for its operator's admission like any other |

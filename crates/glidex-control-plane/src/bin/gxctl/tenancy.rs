@@ -86,6 +86,15 @@ fn status(t: &Tenant) -> String {
     if t.suspended == Some(true) {
         tags.push("SUSPENDED");
     }
+    if t.self_service == Some(true) {
+        tags.push("self-service");
+    }
+    if t.pending == Some(true) {
+        tags.push("PENDING approval");
+    }
+    if t.no_admin == Some(true) {
+        tags.push("no administrator");
+    }
     match t.admission.as_option() {
         Some(a) if a.status.as_known() == Some(AdmissionStatus::ADMISSION_STATUS_SUSPENDED) => {
             tags.push("admission suspended")
@@ -174,7 +183,7 @@ fn device_pool_line(p: &TenantDevicePool) -> String {
 
 pub async fn tenant(client: &ApiClient, args: &[&str]) {
     let u = "Usage: tenant list | show <t> | create <slug> [--name TEXT] [--operator] | rename <t> <name> \
-             | suspend <t> | resume <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
+             | suspend <t> | resume <t> | approve <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
              | unbind <t> <link> | device-pools <t> \
              | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
@@ -220,6 +229,14 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                     println!("  Name:      {}", t.display_name);
                     println!("  Directory: {}", t.directory_id);
                     println!("  Status:    {}", status(&t));
+                    if !t.created_by.is_empty() {
+                        let who = if t.created_by_name.is_empty() {
+                            &t.created_by
+                        } else {
+                            &t.created_by_name
+                        };
+                        println!("  Creator:   {who}");
+                    }
                     if let Some(a) = t.admission.as_option() {
                         println!("  Cap here:  {}", cap_line(a.cap.as_option()));
                     }
@@ -244,7 +261,14 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                         t.slug.yellow(),
                         t.id
                     );
-                    println!("  Admit it on this cluster with: admission set {}", t.slug);
+                    if t.pending == Some(true) {
+                        println!(
+                            "  It waits for a directory administrator's approval: tenant approve {}",
+                            t.slug
+                        );
+                    } else if t.admission.as_option().is_none() {
+                        println!("  Admit it on this cluster with: admission set {}", t.slug);
+                    }
                 }
                 Err(e) => err(rpc_err(e)),
             }
@@ -263,6 +287,19 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 .map(|r| r.into_owned())
             {
                 Ok(_) => println!("{}", "Renamed.".green()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "approve" => {
+            let Some(id) = id(1) else { return usage(u) };
+            match svc
+                .approve_tenant(ApproveTenantRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("{} {id}", "Approved:".green()),
                 Err(e) => err(rpc_err(e)),
             }
         }

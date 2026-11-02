@@ -531,12 +531,13 @@ UI's Host pages send it.
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/tenants` | Tenants you can see (`page_size`, `page_token`) |
-| `POST` | `/tenants` | Create a tenant; with `first_admin: {email, connector, days}`, also invite its first `tenant-admin` (the link in `invitation_link`, once) |
+| `POST` | `/tenants` | Create a tenant; with `first_admin: {email, connector, days}`, also invite its first `tenant-admin` (the link in `invitation_link`, once). A user who isn't a directory administrator creates one of their own where the directory allows it ([self-service](../user-guide/projects.md#a-tenant-of-your-own)): `slug` and `display_name` only, `403` where it doesn't, `409 tenant_limit` over its limits |
 | `GET` | `/tenants/{id}` | Get a tenant |
 | `PATCH` | `/tenants/{id}` | Change a tenant |
-| `DELETE` | `/tenants/{id}` | Delete a tenant (`409 tenant_in_use` while it has projects) |
+| `DELETE` | `/tenants/{id}` | Delete a tenant (`409 tenant_in_use` while it has projects); a self-service tenant's `tenant-admin` may delete it where the directory allows it. Needs a recent login |
 | `POST` | `/tenants/{id}/suspend` | Suspend a tenant |
 | `POST` | `/tenants/{id}/resume` | Resume a tenant |
+| `POST` | `/tenants/{id}/approve` | Approve a pending self-service tenant (`directory.tenants`); until then its members can't create projects (`403 tenant_pending`) |
 | `GET` | `/tenants/{id}/federations` | The tenant's [workload federations](../operator-guide/workload-federation.md) (CI issuers it trusts) |
 | `POST` | `/tenants/{id}/federations` | Trust a CI or workload issuer: `{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}` → `201`. Needs a recent login. The issuer is read at once (`422 issuer_unreachable`); rules pin `repository`, `project_path` or `sub` with exact values and name service-account token ids of the tenant's projects (`422 invalid_federation`) |
 | `GET` | `/tenants/{id}/federations/{federation}` | Get a federation |

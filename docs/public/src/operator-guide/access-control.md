@@ -279,8 +279,13 @@ with `gxctl directory settings`, or with `PUT /directory/settings`:
   user (default 3, at most 100) and in all, whether a directory
   administrator approves each, a slug prefix (such as `lab-`), and
   whether a tenant's administrators may delete it once it holds nothing
-  (default yes). These are stored but not acted on yet: users can't
-  create tenants until a later release.
+  (default yes). See [A tenant of your own](../user-guide/projects.md#a-tenant-of-your-own)
+  for what users see. Tenants made so are marked *self-service* with
+  their creator, *pending approval* until approved (`gxctl tenant
+  approve <t>`, or **Approve** on the tenant's page), and *no
+  administrator* if nobody holds `tenant-admin` on one any more: add
+  one. Site policies can narrow who may (`forbid` on
+  `createOwnTenant`), not widen it.
 
 ```bash
 gxctl directory settings                                   # show them

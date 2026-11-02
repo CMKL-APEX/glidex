@@ -34,6 +34,9 @@ const CAPS = [
   "suspendTenant",
   "resumeTenant",
   "deleteTenant",
+  // Self-service tenants (spec/19-tenancy.md D78).
+  "approveTenant",
+  "deleteOwnTenant",
   "readTenantMembers",
   "manageTenantMembers",
   "readTenantBindings",
@@ -738,7 +741,7 @@ export default function TenantDetail() {
   return (
     <div>
       <Link to="/tenants" className="text-sky-600 hover:text-sky-700 text-sm">
-        ← Tenants
+        ← {label.many}
       </Link>
       <div className="flex items-center justify-between mt-2 mb-6 gap-4">
         <div>
@@ -750,10 +753,28 @@ export default function TenantDetail() {
             <TenantFlags tenant={tenant} />
             <AdmissionBadge tenant={tenant} />
             <code className="text-xs text-gray-400 font-mono">{tenant.id}</code>
-            <span>created {formatTimestamp(tenant.created_at)}</span>
+            <span>
+              created {formatTimestamp(tenant.created_at)}
+              {tenant.created_by_name && ` by ${tenant.created_by_name}`}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {tenant.pending && can("approveTenant") && (
+            <button
+              className={secondaryButton}
+              onClick={async () => {
+                try {
+                  await api.approveTenant(tenant.id);
+                  refresh();
+                } catch (e) {
+                  setError(errorMessage(e));
+                }
+              }}
+            >
+              Approve
+            </button>
+          )}
           {can("updateTenant") && (
             <button className={secondaryButton} onClick={() => setEditing(true)}>
               Edit
@@ -769,7 +790,7 @@ export default function TenantDetail() {
               Resume
             </button>
           )}
-          {can("deleteTenant") && (
+          {(can("deleteTenant") || (tenant.self_service && can("deleteOwnTenant"))) && (
             <button
               className="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-lg"
               onClick={() => setConfirm("delete")}

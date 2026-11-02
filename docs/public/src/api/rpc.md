@@ -432,6 +432,7 @@ same ids and names.
 |  | `SuspendTenant` | `POST /tenants/{id}/suspend` |
 |  | `ResumeTenant` | `POST /tenants/{id}/resume` |
 |  | `DeleteTenant` | `DELETE /tenants/{id}` |
+|  | `ApproveTenant` | `POST /tenants/{id}/approve` |
 |  | `ListMembers` | `GET /tenants/{id}/members` |
 |  | `AddMember` | `POST /tenants/{id}/members` |
 |  | `RemoveMember` | `DELETE /tenants/{id}/members/{principal}` |

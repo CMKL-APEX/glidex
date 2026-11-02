@@ -16,6 +16,13 @@ export function TenantFlags({ tenant }: { tenant: Tenant }) {
       {tenant.owns_directory && <Badge kind="role">owns directory</Badge>}
       {tenant.operator && <Badge kind="link">operator</Badge>}
       {tenant.suspended && <Badge kind="denied">suspended</Badge>}
+      {tenant.self_service && (
+        <span title={tenant.created_by_name ? `created by ${tenant.created_by_name}` : undefined}>
+          <Badge kind="muted">self-service</Badge>
+        </span>
+      )}
+      {tenant.pending && <Badge kind="warn">pending approval</Badge>}
+      {tenant.no_admin && <Badge kind="warn">no administrator</Badge>}
     </span>
   );
 }
@@ -26,6 +33,67 @@ export function AdmissionBadge({ tenant }: { tenant: Tenant }) {
   if (!a) return <Badge kind="muted">not admitted</Badge>;
   if (a.status === "ADMISSION_STATUS_SUSPENDED") return <Badge kind="warn">admission suspended</Badge>;
   return <Badge kind="ok">admitted</Badge>;
+}
+
+/** A user's own tenant (spec/19-tenancy.md D78): a slug and a name; they
+ * become its administrator. */
+function CreateOwnTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const label = useTenantLabel();
+  const { me, refresh } = useSession();
+  const prefix = me.self_service?.slug_prefix ?? "";
+  const [slug, setSlug] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createTenant({ slug, display_name: displayName || undefined });
+      // whoami counts what is left; projects may go into the new one.
+      await refresh();
+      onDone();
+    } catch (err) {
+      setError(errorMessage(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <Field label="Slug" htmlFor="tenant-slug">
+        <div className="flex items-center gap-1">
+          {prefix && <span className="font-mono text-sm text-gray-500">{prefix}</span>}
+          <input
+            id="tenant-slug"
+            className={inputClass}
+            required
+            pattern="[a-z0-9\-]{1,32}"
+            title="lowercase letters, digits and dashes"
+            value={slug}
+            onChange={(e) => setSlug(e.target.value)}
+          />
+        </div>
+      </Field>
+      <Field label="Display name" htmlFor="tenant-name">
+        <input id="tenant-name" className={inputClass} value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+      </Field>
+      <p className="text-xs text-gray-500">
+        You become its administrator: you add its members and create its projects.
+        {me.self_service?.approval_required && " A directory administrator approves it before it can be used."}
+        {me.self_service?.remaining !== undefined && ` You may create ${me.self_service.remaining} more.`}
+      </p>
+      <div className="flex justify-end gap-3 pt-2">
+        <button type="button" className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" className={primaryButton} disabled={busy}>
+          {busy ? "Creating..." : `Create ${label.one}`}
+        </button>
+      </div>
+    </form>
+  );
 }
 
 function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
@@ -162,8 +230,10 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
 }
 
 export default function Tenants() {
-  const { host } = useSession();
+  const { host, me } = useSession();
   const label = useTenantLabel();
+  // A directory administrator creates any tenant; others one of their own.
+  const own = !host.createTenant && !!me.self_service?.allowed;
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -182,7 +252,7 @@ export default function Tenants() {
   return (
     <div>
       <PageHeader title={label.many} subtitle={`${label.many} own projects; their members and roles decide who may use them.`}>
-        {host.createTenant && (
+        {(host.createTenant || own) && (
           <button className={primaryButton} onClick={() => setCreating(true)}>
             + Create {label.one}
           </button>
@@ -230,13 +300,23 @@ export default function Tenants() {
       )}
       {creating && (
         <Modal title={`Create ${label.one}`} onClose={() => setCreating(false)}>
-          <CreateTenantForm
-            onCancel={() => setCreating(false)}
-            onDone={() => {
-              setCreating(false);
-              refresh();
-            }}
-          />
+          {own ? (
+            <CreateOwnTenantForm
+              onCancel={() => setCreating(false)}
+              onDone={() => {
+                setCreating(false);
+                refresh();
+              }}
+            />
+          ) : (
+            <CreateTenantForm
+              onCancel={() => setCreating(false)}
+              onDone={() => {
+                setCreating(false);
+                refresh();
+              }}
+            />
+          )}
         </Modal>
       )}
     </div>

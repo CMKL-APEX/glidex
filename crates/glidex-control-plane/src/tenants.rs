@@ -209,6 +209,16 @@ pub struct Tenant {
     #[serde(default)]
     pub suspended: bool,
     pub created_at: u64,
+    /// Created by one of the directory's users for themselves (D78).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_service: bool,
+    /// Who created it (a user id), for a self-service tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// Waits for a directory administrator's approval (D78): its members
+    /// can't create projects yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +424,9 @@ impl TenantStore {
             operator: true,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let default = Tenant {
             id: DEFAULT_TENANT.into(),
@@ -424,6 +437,9 @@ impl TenantStore {
             operator: false,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let admit = |t: &str| Admission {
             tenant_id: t.into(),
@@ -603,6 +619,9 @@ impl TenantStore {
             operator: false,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let d = Directory {
             id: id.into(),
@@ -860,9 +879,82 @@ impl TenantStore {
             operator,
             suspended: false,
             created_at: now(),
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         self.put(TENANTS, &t.id.clone(), &t)?;
         Ok(t)
+    }
+
+    /// A tenant `user` creates for themselves in `directory` (D78), with
+    /// `user` as a listed member, in one write. `pending` until approved.
+    /// The caller checked who may, and the limits.
+    pub fn create_own(
+        &self,
+        directory: &str,
+        slug: &str,
+        display_name: String,
+        user: &str,
+        pending: bool,
+    ) -> Result<Tenant, TenantError> {
+        validate_slug(slug)?;
+        if self
+            .list()?
+            .iter()
+            .any(|t| t.id == slug || (t.slug == slug && t.directory_id == directory))
+        {
+            return Err(TenantError::AlreadyExists(slug.to_string()));
+        }
+        let at = now();
+        let t = Tenant {
+            id: uuid::Uuid::new_v4().to_string(),
+            directory_id: directory.into(),
+            slug: slug.into(),
+            display_name,
+            owns_directory: false,
+            operator: false,
+            suspended: false,
+            created_at: at,
+            self_service: true,
+            created_by: Some(user.into()),
+            pending,
+        };
+        let m = Member {
+            tenant_id: t.id.clone(),
+            principal: Ent::User(user.into()),
+            by: user.into(),
+            at,
+        };
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(TENANTS)?
+                .insert(t.id.as_str(), serde_json::to_vec(&t)?.as_slice())?;
+            txn.open_table(MEMBERS)?.insert(
+                member_key(&t.id, &m.principal).as_str(),
+                serde_json::to_vec(&m)?.as_slice(),
+            )?;
+        }
+        txn.commit()?;
+        Ok(t)
+    }
+
+    /// Self-service tenants of `directory`: `(created by user, in all)` (D78).
+    pub fn self_service_counts(
+        &self,
+        directory: &str,
+        user: &str,
+    ) -> Result<(u32, u32), TenantError> {
+        let mine = self
+            .list()?
+            .into_iter()
+            .filter(|t| t.directory_id == directory && t.self_service)
+            .collect::<Vec<_>>();
+        let by_user = mine
+            .iter()
+            .filter(|t| t.created_by.as_deref() == Some(user))
+            .count();
+        Ok((by_user as u32, mine.len() as u32))
     }
 
     pub fn update(&self, t: &Tenant) -> Result<(), TenantError> {

@@ -254,9 +254,29 @@ impl EntitySet {
     }
 
     pub fn directory(&mut self, id: &str, owner: &str) -> &mut Self {
+        self.directory_with(id, owner, &crate::tenants::SelfService::default())
+    }
+
+    /// A directory with its self-service settings (spec/19-tenancy.md D78).
+    pub fn directory_with(
+        &mut self,
+        id: &str,
+        owner: &str,
+        s: &crate::tenants::SelfService,
+    ) -> &mut Self {
+        let teams: Vec<Value> = s
+            .creator_teams
+            .iter()
+            .map(|t| Ent::Team(t.clone()).json_ref())
+            .collect();
         self.add(
             Ent::Directory(id.into()),
-            json!({ "owner": Ent::Tenant(owner.into()).json_ref() }),
+            json!({
+                "owner": Ent::Tenant(owner.into()).json_ref(),
+                "self_service": s.enabled,
+                "self_service_all": s.creator_teams.is_empty(),
+                "self_service_teams": teams,
+            }),
             vec![],
         )
     }
