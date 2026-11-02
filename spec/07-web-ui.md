@@ -90,8 +90,16 @@ the `https://` URL.
    The Account page lists the same accounts, each with **Remove**. The
    login page lists them as well, so a browser with no active session
    can switch back.
-6. The header's project selector lists `GET /projects`; the choice is
-   saved with `PATCH /users/me {"default_project": id}`. Lists of VMs,
+6. The header's project selector lists `GET /projects`, under an
+   `<optgroup>` per tenant when they span more than one (named by slug
+   from `GET /tenants`, by id for a tenant the caller can't read); the
+   choice is
+   saved with `PATCH /users/me {"default_project": id}`. The Projects
+   page filters by tenant (`?tenant=<id>`, shown for two or more), and
+   its Create Project form offers a **Tenant** for the tenants where
+   `checkAccess` allows `createProject` (shown for two or more; it
+   starts at the selected project's tenant, else `default`); the button
+   shows when any tenant allows it. Lists of VMs,
    disks and credentials pass `?project=`, creates pass `project`, the
    VM form only offers networks the project may use, and the pages
    remount when the project changes.

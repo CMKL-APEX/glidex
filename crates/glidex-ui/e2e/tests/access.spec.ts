@@ -6,10 +6,15 @@ import { api, del, expect, test } from "../fixtures";
 test.use({ ignoredConsoleErrors: /status of 4\d\d/ });
 
 const PROJECT = "e2e-proj";
+const TENANT = "e2e-org";
+const TENANT_PROJECT = "e2e-org-proj";
 
 async function cleanup() {
-  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
-  if (p) await del(`/projects/${p.id}`);
+  for (const p of ((await api<{ projects?: any[] }>("/projects")).projects ?? []).filter((x) => [PROJECT, TENANT_PROJECT].includes(x.name))) {
+    await del(`/projects/${p.id}`);
+  }
+  const t = ((await api<{ tenants?: any[] }>("/tenants")).tenants ?? []).find((x) => x.slug === TENANT);
+  if (t) await del(`/tenants/${t.id}`);
   for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name.startsWith("e2e-"))) await del(`/tokens/${t.id}`);
   const policies = await api("/authz/policies");
   for (const s of (policies.site ?? []).filter((s: any) => s.id.startsWith("site.e2e"))) {
@@ -53,6 +58,48 @@ test("projects: create, members, quotas, delete", async ({ page }) => {
   await page.getByRole("button", { name: "Delete project" }).click();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("link", { name: PROJECT, exact: true })).toHaveCount(0);
+});
+
+test("projects: create one in another tenant; the picker and the list sort them by tenant", async ({ page }) => {
+  const { tenant } = await api("/tenants", { method: "POST", body: { slug: TENANT, display_name: "E2E Org" } });
+  expect(tenant?.id).toBeTruthy();
+  // Its members create its projects (base.tenant-boundary): join it as its administrator.
+  const me = await api("/auth/whoami");
+  const principal = { type: "User", id: me.user.id };
+  await api(`/tenants/${tenant.id}/members`, { method: "POST", body: { principal } });
+  await api(`/tenants/${tenant.id}/bindings`, { method: "POST", body: { role: "role.tenant-admin", principal } });
+  await page.goto("/projects");
+  // One tenant among the caller's projects: no filter yet.
+  await expect(page.getByLabel("Tenant", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "+ Create Project" }).click();
+  const field = page.locator("#project-tenant");
+  // It starts at the selected project's tenant.
+  await expect(field).toHaveValue("default");
+  await field.selectOption(tenant.id);
+  await page.getByLabel("Name").fill(TENANT_PROJECT);
+  await page.getByRole("button", { name: "Create Project", exact: true }).click();
+  await expect(page.getByRole("link", { name: TENANT_PROJECT, exact: true })).toBeVisible();
+  const made = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === TENANT_PROJECT);
+  expect(made.tenant_id).toBe(tenant.id);
+
+  // The list filters by tenant, in the address too.
+  const filter = page.locator("#projects-tenant");
+  await filter.selectOption(tenant.id);
+  await expect(page).toHaveURL(new RegExp(`tenant=${tenant.id}`));
+  await expect(page.getByRole("link", { name: TENANT_PROJECT, exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "default", exact: true })).toHaveCount(0);
+  await filter.selectOption("");
+  await expect(page.getByRole("link", { name: "default", exact: true })).toBeVisible();
+
+  // The header's picker puts each tenant's projects under its name.
+  await page.reload();
+  const picker = page.getByLabel("Project", { exact: true });
+  await expect(picker.locator(`optgroup[label="${TENANT}"] option`)).toHaveText([TENANT_PROJECT]);
+  await expect(picker.locator('optgroup[label="default"] option', { hasText: "default" })).toHaveCount(1);
+
+  await del(`/projects/${made.id}`);
+  await del(`/tenants/${tenant.id}`);
 });
 
 test("tokens: the secret is shown once; revoke", async ({ page }) => {

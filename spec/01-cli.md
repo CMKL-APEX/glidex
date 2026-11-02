@@ -192,7 +192,7 @@ name (ids when `/projects` isn't readable).
 | `connector secret set <id> [field] [--from-file PATH]` | `SetSecret` (default field `client_secret`); the value comes from a hidden prompt, piped stdin or the file, never from argv |
 | `connector test <id>` / `remove <id>` | `TestConnector` (one line per step) / `DeleteConnector` |
 | `project list` / `show <p>` | `GET /projects`, `GET /projects/{p}` (quotas and usage) |
-| `project create <name> [--description D]` | `POST /projects` (in tenant `default` unless the body names `tenant`) |
+| `project create <name> [--description D] [--tenant T]` | `POST /projects` (in tenant `default` unless `--tenant` names one, by slug or id) |
 | `project delete <p>` | Confirmation → `DELETE /projects/{p}` |
 | `project quota <p> [key=value…]` | Without edits: show. With: `GET` the current quotas, apply the edits (`vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`; `none` = unlimited) and `PATCH /projects/{p} {"quotas": …}` (the server replaces the whole set) |
 | `project use <p>` | `PATCH /users/me {"default_project": p}` (`-`/`none` clears). Where the server has no profile (service-account token, auth disabled) the project is used for this session only |
