@@ -253,5 +253,7 @@ create its projects. The directory decides:
 - whether you may delete it yourself once it holds nothing (on its page,
   or `gxctl tenant delete <t>`; it needs a recent login).
 
-A new tenant can hold projects, but its VMs need the cluster's operator
-to admit it first ([Clusters](../operator-guide/clusters.md)).
+A new tenant can hold projects; its VMs need the cluster to admit it.
+Where the operator turned on automatic admission, that happens when it
+is created (or approved), with the cluster's default cap; otherwise ask
+the operator ([Automatic admission](../operator-guide/access-control.md#automatic-admission)).

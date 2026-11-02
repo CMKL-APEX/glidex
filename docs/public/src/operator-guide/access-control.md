@@ -250,6 +250,28 @@ gxctl tenant list
 The web UI has the **Directory** page's **Tenants** tab, and an
 **Admissions** page, for the same.
 
+#### Automatic admission
+
+Instead of admitting each new tenant, the cluster can admit them by
+itself, per directory it hosts, with a **default cap**:
+
+```bash
+gxctl admission auto set local --mode self_service --cap vms=4,vcpus=16,memory_mib=65536,devices.a100=1
+gxctl admission auto                       # what is on
+gxctl admission auto remove local          # back to admitting by hand
+```
+
+`self_service` admits [self-service tenants](#directory-settings) as
+they become active (created, or approved where approval is required);
+`all` admits every new user tenant of the directory, never an operator
+tenant. An admission made so follows the default cap: change the
+default and they all get it. Set one tenant's cap by hand (for a lab
+that needs more) and it keeps its own from then on; suspending it
+doesn't change that. The Admissions page has the same as its
+**Automatic admission** card, and marks the admissions that follow it
+*default cap*. Tenants of other organizations' directories are still
+admitted by offer ([Clusters](clusters.md#admitting-another-organizations-tenant)).
+
 #### A new tenant's first administrator
 
 When creating a tenant in the web UI, you can fill in **First
@@ -279,7 +301,8 @@ with `gxctl directory settings`, or with `PUT /directory/settings`:
   user (default 3, at most 100) and in all, whether a directory
   administrator approves each, a slug prefix (such as `lab-`), and
   whether a tenant's administrators may delete it once it holds nothing
-  (default yes). See [A tenant of your own](../user-guide/projects.md#a-tenant-of-your-own)
+  (default yes). A new one runs VMs once the cluster admits it, by hand
+  or [automatically](#automatic-admission). See [A tenant of your own](../user-guide/projects.md#a-tenant-of-your-own)
   for what users see. Tenants made so are marked *self-service* with
   their creator, *pending approval* until approved (`gxctl tenant
   approve <t>`, or **Approve** on the tenant's page), and *no

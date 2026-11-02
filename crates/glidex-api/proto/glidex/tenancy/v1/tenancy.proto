@@ -205,6 +205,33 @@ service AdmissionService {
       rest: "DELETE /admissions/offers/{id}"
     };
   }
+  // Which new tenants of the directories this cluster hosts it admits by
+  // itself, with what default cap (spec/19-tenancy.md D79).
+  rpc ListAutoAdmissions(ListAutoAdmissionsRequest) returns (ListAutoAdmissionsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listAdmissions"
+      kind: KIND_READ
+      rest: "GET /admissions/auto"
+    };
+  }
+  // Sets a directory's automatic admission; the admissions that follow
+  // its default cap take the new one.
+  rpc SetAutoAdmission(SetAutoAdmissionRequest) returns (SetAutoAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "PUT /admissions/auto/{directory}"
+    };
+  }
+  // Turns it off: new tenants wait for the operator again. Admissions it
+  // made stay.
+  rpc RemoveAutoAdmission(RemoveAutoAdmissionRequest) returns (RemoveAutoAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "DELETE /admissions/auto/{directory}"
+    };
+  }
   // The directories of other organizations this cluster trusts (D65).
   rpc ListTrustedDirectories(ListTrustedDirectoriesRequest) returns (ListTrustedDirectoriesResponse) {
     option (glidex.api.v1.op) = {
@@ -312,7 +339,55 @@ message Admission {
   // directory's tenants.
   string tenant_slug = 7 [json_name = "tenant_slug"];
   string tenant_display_name = 8 [json_name = "tenant_display_name"];
+  // Made by automatic admission; its cap follows the directory's default
+  // cap until the operator sets another (spec/19-tenancy.md D79).
+  optional bool follows_default = 9 [json_name = "follows_default"];
 }
+
+enum AutoAdmissionMode {
+  AUTO_ADMISSION_MODE_UNSPECIFIED = 0;
+  // Self-service tenants, as they become active.
+  AUTO_ADMISSION_MODE_SELF_SERVICE = 1;
+  // Every new user tenant.
+  AUTO_ADMISSION_MODE_ALL = 2;
+}
+
+message AutoAdmission {
+  // A directory this cluster hosts (`local`, or a hosted one).
+  string directory_id = 1 [json_name = "directory_id"];
+  AutoAdmissionMode mode = 2;
+  // The default cap of the admissions it makes.
+  Quotas cap = 3;
+  // Those admissions follow later changes to `cap`; absent: true.
+  optional bool follow_default = 4 [json_name = "follow_default"];
+  string by = 5;
+  google.protobuf.Timestamp at = 6;
+}
+
+message ListAutoAdmissionsRequest {}
+
+message ListAutoAdmissionsResponse {
+  repeated AutoAdmission auto_admissions = 1 [json_name = "auto_admissions"];
+}
+
+message SetAutoAdmissionRequest {
+  string directory = 1;
+  AutoAdmissionMode mode = 2;
+  Quotas cap = 3;
+  optional bool follow_default = 4 [json_name = "follow_default"];
+}
+
+message SetAutoAdmissionResponse {
+  AutoAdmission auto_admission = 1 [json_name = "auto_admission"];
+  // Admissions that took the new default cap.
+  uint32 updated = 2;
+}
+
+message RemoveAutoAdmissionRequest {
+  string directory = 1;
+}
+
+message RemoveAutoAdmissionResponse {}
 
 // A tenant's share of a cluster device pool, split among its projects.
 message TenantDevicePool {

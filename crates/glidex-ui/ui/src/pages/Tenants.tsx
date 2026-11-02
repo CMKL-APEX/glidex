@@ -215,7 +215,7 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
       </div>
       <p className="text-xs text-gray-500">
         With an email, they get an invitation to be the tenant's administrator. A new tenant isn't admitted to this cluster
-        yet; admit it on the Admissions page.
+        unless it admits new tenants automatically; otherwise admit it on the Admissions page.
       </p>
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg" onClick={onCancel}>

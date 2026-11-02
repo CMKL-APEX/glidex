@@ -572,6 +572,9 @@ UI's Host pages send it.
 | `DELETE` | `/admissions/offers/{id}` | Revoke an offer. Needs a recent login |
 | `GET` | `/admissions/directories` | The directories of other organizations this cluster trusts, with their admitted tenants |
 | `PATCH` | `/admissions/directories/{id}` | How long a trusted directory's credentials stay good without its feed: `{max_staleness_minutes}` (at least 1; absent: the cluster's default, `trust.default_max_staleness_minutes`); `{id}` is its `trusted-…` id |
+| `GET` | `/admissions/auto` | Automatic admission per hosted directory: `{auto_admissions: [{directory_id, mode, cap, follow_default, by, at}]}` |
+| `PUT` | `/admissions/auto/{directory}` | Admit new tenants of a directory this cluster hosts by itself: `{mode: AUTO_ADMISSION_MODE_SELF_SERVICE \| AUTO_ADMISSION_MODE_ALL, cap, follow_default?}`; answers `{auto_admission, updated}`, `updated` being the admissions that took the new cap. Needs a recent login |
+| `DELETE` | `/admissions/auto/{directory}` | Turn it off; admissions it made stay. Needs a recent login |
 | `GET` | `/tenants/{id}/clusters` | The clusters of other organizations the tenant uses |
 | `POST` | `/tenants/{id}/clusters` | Redeem a cluster's offer: `{offer: "gxo_…"}` → `201 {cluster}`. This directory and the cluster trust each other for the tenant from then on. Needs a recent login |
 | `DELETE` | `/tenants/{id}/clusters/{cluster}` | Stop using that cluster; it is told. Needs a recent login |
