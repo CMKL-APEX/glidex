@@ -1445,3 +1445,171 @@ async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
     let (s, _) = h.rest("POST", "/tenants", Some(create("again")), &d).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
 }
+
+/// Automatic admission (spec/19-tenancy.md D79): a hosted directory's
+/// self-service (or all new) tenants are admitted as they become active,
+/// with a default cap they follow until the operator sets theirs by hand.
+#[tokio::test]
+async fn new_tenants_are_admitted_with_the_default_cap() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(json!({ "settings": { "self_service": { "enabled": true, "max_per_user": 5 } } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let auto = |mode: &str, vms: u32| json!({ "mode": mode, "cap": { "vms": vms, "devices": { "a100": 1 } } });
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_SELF_SERVICE", 2)),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["auto_admission"]["follow_default"], true);
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/nowhere",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 2)),
+            &at,
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "only a directory this cluster hosts"
+    );
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(json!({ "mode": "AUTO_ADMISSION_MODE_ALL" })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a cap is required");
+
+    let admission = |v: &Value| v["tenant"]["admission"].clone();
+    let a = h.session(&h.user("alice"));
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "alab" })), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let alab = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(admission(&v)["cap"]["vms"], 2, "{v}");
+    assert_eq!(admission(&v)["cap"]["devices"]["a100"], 1);
+    assert_eq!(admission(&v)["follows_default"], true);
+    assert_eq!(admission(&v)["status"], "ADMISSION_STATUS_ADMITTED");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "manual" })), &at)
+        .await;
+    assert_eq!(
+        admission(&v),
+        Value::Null,
+        "self_service mode: not an administrator's tenant"
+    );
+
+    // All new user tenants; the new default reaches those that follow it.
+    let (_, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 5)),
+            &at,
+        )
+        .await;
+    assert_eq!(v["updated"], 1, "{v}");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "corp" })), &at)
+        .await;
+    let corp = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(admission(&v)["cap"]["vms"], 5, "{v}");
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "ops", "operator": true })),
+            &at,
+        )
+        .await;
+    assert_eq!(admission(&v), Value::Null, "never an operator tenant");
+
+    // A cap set by hand stops following; a suspension alone doesn't.
+    let (s, v) = h
+        .rest(
+            "PUT",
+            &format!("/admissions/{alab}"),
+            Some(json!({ "cap": { "vms": 7 } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["admission"]["follows_default"], Value::Null);
+    let (_, v) = h
+        .rest(
+            "PUT",
+            &format!("/admissions/{corp}"),
+            Some(json!({ "suspended": true })),
+            &at,
+        )
+        .await;
+    assert_eq!(v["admission"]["follows_default"], true, "{v}");
+    let (_, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 9)),
+            &at,
+        )
+        .await;
+    assert_eq!(v["updated"], 1, "only corp follows: {v}");
+    let (_, v) = h.rest("GET", "/admissions", None, &at).await;
+    let cap_of = |id: &str| {
+        v["admissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["tenant_id"] == id)
+            .map(|a| a["cap"]["vms"].clone())
+            .unwrap()
+    };
+    assert_eq!((cap_of(&alab), cap_of(&corp)), (json!(7), json!(9)));
+
+    // A pending tenant is admitted when approved, not before.
+    h.rest(
+        "PUT",
+        "/directory/settings",
+        Some(json!({ "settings": { "self_service": { "enabled": true, "approval_required": true } } })),
+        &at,
+    )
+    .await;
+    let b = h.session(&h.user("bob"));
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "blab" })), &b)
+        .await;
+    assert_eq!(admission(&v), Value::Null, "{v}");
+    let blab = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (_, v) = h
+        .rest("POST", &format!("/tenants/{blab}/approve"), None, &at)
+        .await;
+    assert_eq!(admission(&v)["cap"]["vms"], 9, "{v}");
+
+    // Off: new tenants wait for the operator; admissions made stay.
+    let (s, _) = h.rest("DELETE", "/admissions/auto/local", None, &at).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = h.rest("GET", "/admissions/auto", None, &at).await;
+    assert_eq!(v["auto_admissions"], Value::Null, "{v}");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "later" })), &at)
+        .await;
+    assert_eq!(admission(&v), Value::Null);
+    let (_, v) = h.rest("GET", &format!("/tenants/{blab}"), None, &at).await;
+    assert_eq!(admission(&v)["cap"]["vms"], 9);
+}

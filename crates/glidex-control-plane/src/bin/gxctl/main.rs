@@ -817,7 +817,7 @@ fn print_help() {
     println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|approve|delete <t> | members|add-member|remove-member …".cyan());
     println!(
         "  {} - Tenants admitted on this cluster, and their caps",
-        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories".cyan()
+        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | auto [set <dir> --mode self_service|all --cap k=v,… | remove <dir>]".cyan()
     );
     println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
@@ -1174,6 +1174,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "revoke-offer",
             "directories",
             "staleness",
+            "auto",
         ],
     ),
     (

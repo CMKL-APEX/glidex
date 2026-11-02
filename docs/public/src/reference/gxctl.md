@@ -267,6 +267,9 @@ and [Access control](../operator-guide/access-control.md).
 | `admission offers`, `revoke-offer <id>` | Offers made, open or redeemed; revoke one |
 | `admission directories` | Directories of other organizations this cluster trusts |
 | `admission staleness <directory> <minutes\|default>` | How long a trusted directory's credentials stay good without its feed |
+| `admission auto [list]` | Which new tenants of each hosted directory this cluster admits by itself, and their default cap |
+| `admission auto set <directory> --mode self_service\|all --cap key=value,… [--follow-default on\|off]` | Admit them automatically with that default cap (`vms=10,vcpus=32,devices.a100=1`); admissions made so follow later changes to it unless `--follow-default off`. Needs a recent login |
+| `admission auto remove <directory>` | Turn it off; admissions made stay |
 | `directory list` | Directories this host serves (operator) |
 | `directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME]` | Host a directory for an organization; prints an invitation link once for its first administrator, who signs in with a passkey. `--owner` defaults to `<id>-admin`, `--days` (the invitation's lifetime) to 7; `--trust-domain`: its SPIFFE trust domain, fixed for good |
 | `directory delete <id>` | Delete a hosted directory |

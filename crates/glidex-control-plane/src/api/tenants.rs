@@ -208,6 +208,38 @@ pub async fn remove_admission(c: Caller, Path(tenant): Path<String>) -> Result<S
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn list_auto_admissions(
+    c: Caller,
+) -> Result<Json<pb::ListAutoAdmissionsResponse>, ApiErr> {
+    Ok(Json(svc::list_auto_admissions(
+        &c,
+        pb::ListAutoAdmissionsRequest::default(),
+    )?))
+}
+
+pub async fn set_auto_admission(
+    c: Caller,
+    Path(directory): Path<String>,
+    Json(mut req): Json<pb::SetAutoAdmissionRequest>,
+) -> Result<Json<pb::SetAutoAdmissionResponse>, ApiErr> {
+    req.directory = directory;
+    Ok(Json(svc::set_auto_admission(&c, req)?))
+}
+
+pub async fn remove_auto_admission(
+    c: Caller,
+    Path(directory): Path<String>,
+) -> Result<StatusCode, ApiErr> {
+    svc::remove_auto_admission(
+        &c,
+        pb::RemoveAutoAdmissionRequest {
+            directory,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn list_device_pools(
     c: Caller,
     Path(id): Path<String>,

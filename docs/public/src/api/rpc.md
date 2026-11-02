@@ -450,6 +450,9 @@ same ids and names.
 |  | `RevokeOffer` | `DELETE /admissions/offers/{id}` |
 |  | `ListTrustedDirectories` | `GET /admissions/directories` |
 |  | `SetTrustedDirectory` | `PATCH /admissions/directories/{id}` |
+|  | `ListAutoAdmissions` | `GET /admissions/auto` |
+|  | `SetAutoAdmission` | `PUT /admissions/auto/{directory}` |
+|  | `RemoveAutoAdmission` | `DELETE /admissions/auto/{directory}` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
 | `DirectoryService` | `ListDirectories` | `GET /directories` |

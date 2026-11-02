@@ -1487,6 +1487,25 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageAdmissions",
         patch(tenants::set_trusted_directory),
     )
+    // Automatic admission (spec/19-tenancy.md D79)
+    .add(
+        "GET",
+        "/admissions/auto",
+        "listAdmissions",
+        get(tenants::list_auto_admissions),
+    )
+    .add(
+        "PUT",
+        "/admissions/auto/{directory}",
+        "manageAdmissions",
+        put(tenants::set_auto_admission),
+    )
+    .add(
+        "DELETE",
+        "/admissions/auto/{directory}",
+        "manageAdmissions",
+        delete(tenants::remove_auto_admission),
+    )
     .add(
         "GET",
         "/tenants/{id}/clusters",

@@ -232,7 +232,7 @@ export default function DirectorySettings() {
                 <span>Their administrators may delete them once they hold nothing.</span>
               </label>
               <p className="text-xs text-gray-500">
-                A new one can hold projects; it runs VMs on a cluster once that cluster's operator admits it.
+                A new one can hold projects; it runs VMs on a cluster once that cluster admits it: by hand, or automatically with a default cap (its Admissions page).
               </p>
             </div>
           </Card>

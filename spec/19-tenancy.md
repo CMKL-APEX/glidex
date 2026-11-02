@@ -981,15 +981,16 @@ action `updateDirectorySettings` in `directory.tenants`; audited):
 | `tenant_label` | `{"singular": "Tenant", "plural": "Tenants"}` | What the web UI calls a tenant for this directory's users (D81), such as `Lab`/`Labs`. 1–24 characters each. |
 
 **The cluster's settings**, per directory the cluster hosts
-(`AutoAdmission`, replicated; `PUT/GET/DELETE /admissions/auto/{directory}`,
-action `updateAutoAdmission` in `cluster.admissions`; step-up, audited):
+(`AutoAdmission`, replicated; `GET /admissions/auto` (`listAdmissions`),
+`PUT/DELETE /admissions/auto/{directory}` (`manageAdmissions`: step-up,
+audited)):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `mode` | `off` | `off`: new tenants wait for the operator, as today. `self_service`: a self-service tenant is admitted when it becomes active. `all`: every new user tenant of the directory is. |
+| `mode` | off (no record) | Absent: new tenants wait for the operator, as today. `self_service`: a self-service tenant is admitted when it becomes active. `all`: every new user tenant of the directory is (never an operator or owner tenant). |
 | `cap` | required unless `off` | The **default cap** of those admissions (`Quotas`, `devices.<pool>` included). |
 | `follow_default` | `true` | An admission made this way follows later changes to `cap`, until the operator sets that tenant's cap by hand (D79). |
-| `labels` | `[]` | `operator_labels` put on those admissions (D35). |
+| `labels` | `[]` | `operator_labels` put on those admissions (D35). Not built: admissions carry no labels yet. |
 
 And in `control-plane.json`, with the other grants: a `pci.allow`
 entry with `"tenants": "*"` grants a pool to every tenant admitted on
@@ -1269,7 +1270,7 @@ with one directory); cluster operations on the cluster.
 | SCIM 2.0 | directory | `/scim/v2/c/{id}/…` | — (RFC 7644) | SCIM token |
 | federations | directory | `/tenants/{id}/federations` | `FederationService.…` | `tenant.federations` |
 | `offerAdmission`, `listAdmissions`, `updateAdmission`, `removeAdmission` | cluster | `POST/GET /admissions`, `PATCH/DELETE /admissions/{tenant}` | `AdmissionService.…` | `cluster.admissions`; tenants see their own |
-| `updateAutoAdmission` (§11.1) | cluster | `GET/PUT/DELETE /admissions/auto/{directory}` | `AdmissionService.GetAuto`, `SetAuto`, `RemoveAuto` | `cluster.admissions` (step-up) |
+| automatic admission (§11.1) | cluster | `GET /admissions/auto`, `PUT/DELETE /admissions/auto/{directory}` | `AdmissionService.ListAutoAdmissions`, `SetAutoAdmission`, `RemoveAutoAdmission` | `listAdmissions`; `manageAdmissions` (`cluster.admissions`, step-up) |
 | `listTrustedDirectories`, `updateTrustedDirectory`, `removeTrustedDirectory` | cluster | `/trust/directories…` | `TrustService.…` | `cluster.trust` |
 | resources (VMs, disks, networks, …) | cluster | unchanged paths | per 18-grpc.md §9 | unchanged + `useCluster` (§10.4) |
 | `createAccount`, `updateAccount`, `listAccounts` | fleet | `POST/PATCH/GET /fleet/v1/accounts` | `FleetService.…Account` | `fleet.registry` (own account: `tenant.read`) |
@@ -1832,7 +1833,7 @@ order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
-T9 has tasks 1 and 2 (settings and the label; creating one's own tenant).
+T9 has tasks 1–3 (settings and the label; creating one's own tenant; automatic admission).
 T8 (D75–D77) is implemented.
 What follows is per milestone.
 
@@ -2280,4 +2281,6 @@ T9, self-service tenants (§11.1):
 | Tests | `tenants::tests::directory_settings_are_checked_kept_and_default_when_absent`; UI e2e `self-service.spec.ts` (settings saved, the label in whoami and on the pages, a bad prefix refused) |
 | Task 2: creating one's own tenant (D78) | `Tenant.{self_service, created_by, pending}`, `TenantStore::{create_own, self_service_counts}`; schema `Directory.{self_service, self_service_all, self_service_teams}` (`EntitySet::directory_with`), actions `createOwnTenant` (`shared`, only `base.self-service-tenant`), `deleteOwnTenant` (`tenant.projects`, step-up), `approveTenant` (`directory.tenants`); `service::tenancy::{create_own_tenant, approve_tenant}`, `delete_tenant`'s own path, `create_project`'s `403 tenant_pending`; `TenantService.ApproveTenant` (`POST /tenants/{id}/approve`); `Tenant.{self_service, created_by, created_by_name, pending, no_admin}`; `WhoAmI.self_service` (`directory_settings::self_service_of`); gxctl `tenant approve` and the flags in `tenant list`/`show`; the Tenants page's own-tenant form and badges, the tenant page's **Approve** and own delete; a narrowed personal token is refused |
 | Tests (task 2) | `tenancy_tests::users_create_tenants_of_their_own_within_the_directorys_limits` (off by default, the prefix, never an operator, each limit and whoami's count, delete when empty and refused when not or when `admins_may_delete` is off, another's tenant invisible, creator teams, pending blocks projects until approved, a site `forbid` wins). No UI e2e of the own-tenant form or **Approve**: the e2e signs in as a directory administrator only |
-| Not yet | tasks 3–5: automatic admission, open pools, the real check. A self-service tenant waits for its operator's admission like any other |
+| Task 3: automatic admission (D79) | `tenants::{AutoAdmission, AutoMode}`, table `auto_admissions` (by directory), `Admission.follows_default`; `TenantStore::{auto_admissions, set_auto_admission (the new cap to those that follow, one write), remove_auto_admission, auto_admit}`; `service::tenancy::{list,set,remove}_auto_admission`, `auto_admit` on creating (either path) and approving a tenant, `set_admission` keeping `follows_default` only for the same cap; `AdmissionService.{List,Set,Remove}AutoAdmission(s)`; gxctl `admission auto`, `devices.<pool>` in caps; the Admissions page's **Automatic admission** card and *default cap* badge |
+| Tests (task 3) | `tenancy_tests::new_tenants_are_admitted_with_the_default_cap` (self_service and all, a directory not hosted, a cap required, never an operator, the new default to those that follow, a hand-set cap stops following and a suspension doesn't, pending admitted on approval, off keeps what was made) |
+| Not yet | tasks 4–5: open pools, the real check. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |

@@ -1435,6 +1435,24 @@ export const optOutCluster = (id: string, cluster: string) => rpc(TenantService.
 
 export type Offer = OfferJson;
 export type TrustedDirectory = TrustedDirectoryJson;
+/** Automatic admission per hosted directory (spec/19-tenancy.md D79). */
+export interface AutoAdmission {
+  directory_id: string;
+  mode: "AUTO_ADMISSION_MODE_SELF_SERVICE" | "AUTO_ADMISSION_MODE_ALL";
+  cap?: TenantQuotas;
+  follow_default?: boolean;
+  by?: string;
+  at?: string;
+}
+export const listAutoAdmissions = () =>
+  rpc(AdmissionService.method.listAutoAdmissions).then((r) => (r.auto_admissions ?? []) as AutoAdmission[]);
+export const setAutoAdmission = (directory: string, req: { mode: AutoAdmission["mode"]; cap: TenantQuotas; follow_default: boolean }) =>
+  rpc(AdmissionService.method.setAutoAdmission, { directory, ...req }).then((r) => ({
+    auto: r.auto_admission as AutoAdmission,
+    updated: r.updated ?? 0,
+  }));
+export const removeAutoAdmission = (directory: string) =>
+  rpc(AdmissionService.method.removeAutoAdmission, { directory }).then(none);
 export const listOffers = () => rpc(AdmissionService.method.listOffers).then((r) => (r.offers ?? []) as Offer[]);
 /** An offer for tenant `tenant` of the directory at `directory` (its issuer
  *  URL); the `gxo_…` token is in the answer only. */

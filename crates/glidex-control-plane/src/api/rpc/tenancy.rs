@@ -256,6 +256,30 @@ impl AdmissionService for Svc {
     ) -> ServiceResult<SetTrustedDirectoryResponse> {
         op!(self, ctx, req, tenancy::set_trusted_directory)
     }
+
+    async fn list_auto_admissions(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListAutoAdmissionsRequest>,
+    ) -> ServiceResult<ListAutoAdmissionsResponse> {
+        op!(self, ctx, req, tenancy::list_auto_admissions)
+    }
+
+    async fn set_auto_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetAutoAdmissionRequest>,
+    ) -> ServiceResult<SetAutoAdmissionResponse> {
+        op!(self, ctx, req, tenancy::set_auto_admission)
+    }
+
+    async fn remove_auto_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RemoveAutoAdmissionRequest>,
+    ) -> ServiceResult<RemoveAutoAdmissionResponse> {
+        op!(self, ctx, req, tenancy::remove_auto_admission)
+    }
 }
 
 #[allow(refining_impl_trait)]

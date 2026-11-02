@@ -1936,6 +1936,8 @@ export interface Admission {
   /** The tenant's slug and name, for operators who can't read tenants. */
   tenant_slug?: string;
   tenant_display_name?: string;
+  /** Made by automatic admission; its cap follows the directory's default (spec/19-tenancy.md D79). */
+  follows_default?: boolean;
 }
 
 export interface Tenant {

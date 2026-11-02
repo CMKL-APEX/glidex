@@ -26,6 +26,8 @@ const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_membe
 const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
 const OFFERS: TableDefinition<&str, &[u8]> = TableDefinition::new("admission_offers");
+/// Automatic admission per hosted directory, by directory id (D79).
+const AUTO_ADMISSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("auto_admissions");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// The directory a host hosts (D32).
@@ -239,6 +241,44 @@ pub struct Admission {
     pub status: AdmissionStatus,
     pub by: String,
     pub at: u64,
+    /// Made by automatic admission, its cap the directory's default cap
+    /// until the operator sets one by hand (D79).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follows_default: bool,
+}
+
+/// Which new tenants of a directory this cluster admits by itself (D79).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoMode {
+    /// Self-service tenants, as they become active.
+    SelfService,
+    /// Every new user tenant.
+    All,
+}
+
+/// Automatic admission for one directory this cluster hosts (D79).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoAdmission {
+    pub directory_id: String,
+    pub mode: AutoMode,
+    /// The default cap of the admissions it makes.
+    pub cap: Quotas,
+    /// Those admissions follow later changes to `cap` until set by hand.
+    pub follow_default: bool,
+    pub by: String,
+    pub at: u64,
+}
+
+impl AutoAdmission {
+    /// Whether it admits `t` now.
+    pub fn takes(&self, t: &Tenant) -> bool {
+        t.directory_id == self.directory_id
+            && !t.pending
+            && !t.operator
+            && !t.owns_directory
+            && (self.mode == AutoMode::All || t.self_service)
+    }
 }
 
 /// A tenant's share of a cluster device pool, split among some of its
@@ -448,6 +488,7 @@ impl TenantStore {
             status: AdmissionStatus::Admitted,
             by: "bootstrap".into(),
             at,
+            follows_default: false,
         };
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -998,6 +1039,7 @@ impl TenantStore {
             status,
             by: by.into(),
             at: now(),
+            follows_default: false,
         };
         self.put(ADMISSIONS, &t.id, &a)?;
         Ok(a)
@@ -1019,9 +1061,91 @@ impl TenantStore {
             status: AdmissionStatus::Admitted,
             by: by.into(),
             at: now(),
+            follows_default: false,
         };
         self.put(ADMISSIONS, tenant_id, &a)?;
         Ok(a)
+    }
+
+    /// Store `a` as it is, `follows_default` included.
+    pub fn put_admission(&self, a: &Admission) -> Result<(), TenantError> {
+        self.put(ADMISSIONS, &a.tenant_id, a)
+    }
+
+    // ---- automatic admission (D79) --------------------------------------
+
+    pub fn auto_admissions(&self) -> Result<Vec<AutoAdmission>, TenantError> {
+        let mut out: Vec<AutoAdmission> = self.read_all(AUTO_ADMISSIONS)?;
+        out.sort_by(|a, b| a.directory_id.cmp(&b.directory_id));
+        Ok(out)
+    }
+
+    pub fn auto_admission(&self, directory: &str) -> Result<Option<AutoAdmission>, TenantError> {
+        Ok(self
+            .auto_admissions()?
+            .into_iter()
+            .find(|a| a.directory_id == directory))
+    }
+
+    /// Set `a`, and give its cap to the admissions that follow it, in one
+    /// write. The directory must be one this cluster hosts.
+    pub fn set_auto_admission(&self, a: &AutoAdmission) -> Result<u32, TenantError> {
+        if self.get_directory(&a.directory_id)?.is_none() {
+            return Err(TenantError::NotFound(format!(
+                "directory {}",
+                a.directory_id
+            )));
+        }
+        let following: Vec<Admission> = self
+            .admissions()?
+            .into_iter()
+            .filter(|x| x.follows_default && x.directory_id == a.directory_id)
+            .collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(AUTO_ADMISSIONS)?
+                .insert(a.directory_id.as_str(), serde_json::to_vec(a)?.as_slice())?;
+            let mut t = txn.open_table(ADMISSIONS)?;
+            for mut x in following.iter().cloned() {
+                x.cap = a.cap.clone();
+                x.by = a.by.clone();
+                x.at = a.at;
+                t.insert(x.tenant_id.as_str(), serde_json::to_vec(&x)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(following.len() as u32)
+    }
+
+    pub fn remove_auto_admission(&self, directory: &str) -> Result<(), TenantError> {
+        if !self.remove(AUTO_ADMISSIONS, directory)? {
+            return Err(TenantError::NotFound(format!(
+                "no automatic admission for {directory}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Admit `t` by its directory's automatic admission, if that takes it
+    /// and it has no admission yet; the admission made.
+    pub fn auto_admit(&self, t: &Tenant) -> Result<Option<Admission>, TenantError> {
+        let Some(auto) = self.auto_admission(&t.directory_id)? else {
+            return Ok(None);
+        };
+        if !auto.takes(t) || self.admission(&t.id)?.is_some() {
+            return Ok(None);
+        }
+        let a = Admission {
+            tenant_id: t.id.clone(),
+            directory_id: t.directory_id.clone(),
+            cap: auto.cap.clone(),
+            status: AdmissionStatus::Admitted,
+            by: format!("auto:{}", t.directory_id),
+            at: now(),
+            follows_default: auto.follow_default,
+        };
+        self.put(ADMISSIONS, &t.id, &a)?;
+        Ok(Some(a))
     }
 
     pub fn remove_admission(&self, tenant: &str) -> Result<(), TenantError> {

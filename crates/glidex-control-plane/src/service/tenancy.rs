@@ -152,8 +152,113 @@ fn admission_pb(call: &Call, a: &tenants::Admission) -> pb::Admission {
         .into(),
         by: a.by.clone(),
         at: ts(a.at).into(),
+        follows_default: a.follows_default.then_some(true),
         ..Default::default()
     }
+}
+
+/// Admit `t` here if its directory's automatic admission takes it (D79).
+/// The tenant exists either way: a failure is logged, not answered.
+fn auto_admit(call: &Call, t: &tenants::Tenant) {
+    match call.auth().tenants.auto_admit(t) {
+        Ok(Some(a)) => call.detail("admitted", serde_json::json!(a.cap)),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("automatic admission of tenant {}: {e}", t.id),
+    }
+}
+
+fn auto_pb(a: &tenants::AutoAdmission) -> pb::AutoAdmission {
+    pb::AutoAdmission {
+        directory_id: a.directory_id.clone(),
+        mode: match a.mode {
+            tenants::AutoMode::SelfService => {
+                pb::AutoAdmissionMode::AUTO_ADMISSION_MODE_SELF_SERVICE
+            }
+            tenants::AutoMode::All => pb::AutoAdmissionMode::AUTO_ADMISSION_MODE_ALL,
+        }
+        .into(),
+        cap: quotas_to_pb(&a.cap).into(),
+        follow_default: Some(a.follow_default),
+        by: a.by.clone(),
+        at: ts(a.at).into(),
+        ..Default::default()
+    }
+}
+
+pub fn list_auto_admissions(
+    call: &Call,
+    _req: pb::ListAutoAdmissionsRequest,
+) -> ServiceResult<pb::ListAutoAdmissionsResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let all = call
+        .auth()
+        .tenants
+        .auto_admissions()
+        .map_err(tenant_error)?;
+    Ok(pb::ListAutoAdmissionsResponse {
+        auto_admissions: all.iter().map(auto_pb).collect(),
+        ..Default::default()
+    })
+}
+
+pub fn set_auto_admission(
+    call: &Call,
+    req: pb::SetAutoAdmissionRequest,
+) -> ServiceResult<pb::SetAutoAdmissionResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    call.set_target(format!("directory:{}", req.directory));
+    let mode = match req.mode.as_known() {
+        Some(pb::AutoAdmissionMode::AUTO_ADMISSION_MODE_SELF_SERVICE) => {
+            tenants::AutoMode::SelfService
+        }
+        Some(pb::AutoAdmissionMode::AUTO_ADMISSION_MODE_ALL) => tenants::AutoMode::All,
+        _ => {
+            return Err(ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                "mode is self_service or all (remove it to turn it off)",
+            ));
+        }
+    };
+    let cap = req.cap.as_option().ok_or_else(|| {
+        ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "cap is required: the default cap of the admissions it makes",
+        )
+    })?;
+    let a = tenants::AutoAdmission {
+        directory_id: req.directory.clone(),
+        mode,
+        cap: quotas_from_pb(cap),
+        follow_default: req.follow_default.unwrap_or(true),
+        by: call.p.user_id().unwrap_or("-").to_string(),
+        at: crate::tenancy::now(),
+    };
+    call.detail("auto_admission", serde_json::json!(a));
+    let updated = call
+        .auth()
+        .tenants
+        .set_auto_admission(&a)
+        .map_err(tenant_error)?;
+    Ok(pb::SetAutoAdmissionResponse {
+        auto_admission: auto_pb(&a).into(),
+        updated,
+        ..Default::default()
+    })
+}
+
+pub fn remove_auto_admission(
+    call: &Call,
+    req: pb::RemoveAutoAdmissionRequest,
+) -> ServiceResult<pb::RemoveAutoAdmissionResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    call.set_target(format!("directory:{}", req.directory));
+    call.auth()
+        .tenants
+        .remove_auto_admission(&req.directory)
+        .map_err(tenant_error)?;
+    Ok(pb::RemoveAutoAdmissionResponse::default())
 }
 
 /// Whether anyone holds `role.tenant-admin` on tenant `id`.
@@ -330,6 +435,7 @@ pub fn create_tenant(
         }
         None => None,
     };
+    auto_admit(call, &t);
     Ok(pb::CreateTenantResponse {
         tenant: tenant_pb(call, &t)?.into(),
         invitation_link: link,
@@ -419,6 +525,7 @@ fn create_own_tenant(
         let _ = store.delete(&t.id);
         return Err(auth_error(e).into());
     }
+    auto_admit(call, &t);
     Ok(pb::CreateTenantResponse {
         tenant: tenant_pb(call, &t)?.into(),
         ..Default::default()
@@ -440,6 +547,7 @@ pub fn approve_tenant(
     }
     t.pending = false;
     call.auth().tenants.update(&t).map_err(tenant_error)?;
+    auto_admit(call, &t);
     Ok(pb::ApproveTenantResponse {
         tenant: tenant_pb(call, &t)?.into(),
         ..Default::default()
@@ -773,9 +881,18 @@ pub fn set_admission(
         (Some(false), _) | (None, None) => AdmissionStatus::Admitted,
         (None, Some(a)) => a.status,
     };
+    // An automatic admission keeps following the default cap (D79) until
+    // the operator gives it another.
+    let follows = current
+        .as_ref()
+        .is_some_and(|a| a.follows_default && a.cap == cap);
     call.detail("cap", serde_json::json!(cap));
     let by = call.p.user_id().unwrap_or("-").to_string();
-    let a = store.admit(&t.id, cap, status, &by).map_err(tenant_error)?;
+    let mut a = store.admit(&t.id, cap, status, &by).map_err(tenant_error)?;
+    if follows {
+        a.follows_default = true;
+        store.put_admission(&a).map_err(tenant_error)?;
+    }
     Ok(pb::SetAdmissionResponse {
         admission: admission_pb(call, &a).into(),
         ..Default::default()

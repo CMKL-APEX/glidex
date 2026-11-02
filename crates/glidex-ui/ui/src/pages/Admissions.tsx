@@ -19,6 +19,7 @@ import {
 } from "../components/ui";
 import { useSession } from "../session";
 import { OffersCard, TrustedDirectoriesCard } from "../components/Trust";
+import { AutoAdmissionCard } from "../components/AutoAdmission";
 
 const suspended = (a: Admission) => a.status === "ADMISSION_STATUS_SUSPENDED";
 
@@ -219,6 +220,11 @@ export default function Admissions() {
                     </td>
                     <td className="px-4 py-3">
                       {suspended(a) ? <Badge kind="warn">suspended</Badge> : <Badge kind="ok">admitted</Badge>}
+                      {a.follows_default && (
+                        <div className="mt-1">
+                          <Badge kind="muted">default cap</Badge>
+                        </div>
+                      )}
                     </td>
                     {QUOTA_KEYS.map((k) => (
                       <td key={k} className="px-4 py-3 text-gray-700">
@@ -274,6 +280,7 @@ export default function Admissions() {
         </Modal>
       )}
       <div className="mt-6">
+        <AutoAdmissionCard manage={manage} onChanged={refresh} />
         <TrustedDirectoriesCard manage={manage} />
         <OffersCard manage={manage} />
       </div>
