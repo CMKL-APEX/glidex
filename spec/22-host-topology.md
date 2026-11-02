@@ -186,6 +186,30 @@ source of truth for what a device is for.
 A host without `/sys/devices/system/node` (a kernel built without NUMA)
 has one node, 0, holding every CPU and all memory.
 
+### 3.5 The `glidex-topology` crate and network ports
+
+The reading above (except glidex's pools and readiness) lives in its own
+crate, `glidex-topology`, with no glidex dependency, so hyperstor reads
+hosts the same way (hyperstor's D204, its `spec/26-networks.md` §29.3). The
+control plane re-exports its types; nothing changes in the summary or
+the tree.
+
+- **`pci`:** the raw functions (`read_raw`) and each one's place
+  (`places`: kind, root port, the nearest switch above it).
+- **`numa`:** NUMA nodes with their CPUs and socket.
+- **`net`:** every netdev on a PCI function (bonds, bridges and USB
+  devices such as a BMC's have none): link layer (`type` 1 Ethernet, 32
+  InfiniBand), `operstate`, `speed`, `mtu`, the bond or bridge it is in
+  (`master`), its addresses or its master's (`getifaddrs`), and its RDMA
+  port from `/sys/class/infiniband/<dev>/ports/<n>`: `link_layer`,
+  `state`, `rate`, and for InfiniBand the subnet prefix (the first 64 bits
+  of `gids/0`) and `sm_lid`, which together name the fabric. A RoCE
+  port is found by `gid_attrs/ndevs/0`, a bond's member by its PCI
+  function (only the first member carries the bond's RDMA device).
+- **`Host::closeness`:** `switch` when any switch port is above both
+  functions, however deep (on an HGX board a GPU and its NIC meet two
+  levels up, `nvidia-smi topo`'s `PXB`), then `numa`, `socket`, `far`.
+
 ## 4. Reporting
 
 ### 4.1 Node status
