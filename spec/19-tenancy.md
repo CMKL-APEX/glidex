@@ -154,7 +154,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D77 | Pre-added users | A directory administrator adds a user **by email** before they ever sign in: email, tenant, role and connector (`CreateUser` with `pending`). The user is created at once (display name the address's local part, `email` set), with its tenant membership and role, and a **pending login** `{connector, email}`. The first login through that connector whose verified email (D75) equals it, and that has no identity yet, binds its identity to that user and clears the pending login, even with `jit: false`. One pending login per connector and address in a directory; the address must pass the connector's `allowed_domains`. Connectors as for invitations (§6.1): an enabled OIDC kind (`oidc`, `google`, `jumpcloud`), not a provisioned one, and into the owner's or an operator's tenant only through one that requires MFA (D22). Removing is what it is for any user: disable, or delete. | The directory's administrators decide who is in from the Access page, with no link to send. Taking an account by verified email alone is what `allowed_emails` with JIT already allows; here the administrator also fixes the tenant and role. An invitation (D40) stays the way in for an address the administrator doesn't want to bind ahead, or for a person who may sign in with another address. |
 | D78 | Self-service tenants | A directory's administrators can let its users create **user tenants** themselves (§11.1), off by default. They choose who (`all`, or members of some teams), how many per user and in all, whether a directory administrator approves each, and a slug prefix. The creator becomes the tenant's `tenant-admin`. Only users who signed in through the directory's connectors may; the tenant is never an operator or owner tenant. This narrows D31: there is still no signup, since only people the directory already lets in can create tenants. | An organization (a university's labs) wants its people to organize themselves without asking IT for each tenant. The connectors already decide who is a user; the limits, the approval switch and site policies bound the rest. |
 | D79 | Automatic admission and the default cap | A cluster's operator can admit, as they become active, the self-service tenants (or all new user tenants) of a directory the cluster **hosts**, with a **default cap** and labels (`AutoAdmission`, per directory). An admission made so follows later changes to the default cap until the operator sets that tenant's cap by hand. Tenants of trusted directories of other organizations are not admitted this way; fleets do that (D34). | A tenant nobody admits can make projects but no VMs, which defeats self-service. Following the default lets IT raise every lab at once and still give a special lab its own cap. |
-| D80 | Open pools | A `pci.allow` entry with `"tenants": "*"` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
+| D80 | Open pools | A `pci.allow` entry with `"tenants": ["*"]` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
 | D81 | The display label | A directory sets what its users' web UI calls a tenant (`tenant_label`, singular and plural, default *Tenant*). The API, gxctl, audit, errors and docs keep *tenant*. | Each organization has its word (lab, team, workspace); one model underneath keeps the policies, the API and the docs the same. Per directory, because a host's directories are different organizations. |
 
 ## 3. Threat model additions
@@ -993,7 +993,7 @@ audited)):
 | `labels` | `[]` | `operator_labels` put on those admissions (D35). Not built: admissions carry no labels yet. |
 
 And in `control-plane.json`, with the other grants: a `pci.allow`
-entry with `"tenants": "*"` grants a pool to every tenant admitted on
+entry with `"tenants": ["*"]` grants a pool to every tenant admitted on
 the cluster, an **open pool** (D80). `quotas.default` stays what each
 new project gets, inside its tenant's cap.
 
@@ -1751,7 +1751,7 @@ order):
    **Automatic admission** card; gxctl `admission auto`; tests (off,
    `self_service`, `all`, a hand-set cap stops following, a trusted
    directory's tenant not admitted), docs.
-4. **Open pools** (D80): `pci.allow` `"tenants": "*"` in config
+4. **Open pools** (D80): `pci.allow` `"tenants": ["*"]` in config
    loading, `pool_tenant_grants` and the Cedar `PciPool.tenant_grants`
    (or an `open` flag); tests (a VM and a tenant pool from an open
    pool; capped by `devices.<pool>`), docs; the note in
@@ -1833,7 +1833,7 @@ order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
-T9 has tasks 1–3 (settings and the label; creating one's own tenant; automatic admission).
+T9 has tasks 1–4 (settings and the label; creating one's own tenant; automatic admission; open pools); task 5, the real check, is not run yet.
 T8 (D75–D77) is implemented.
 What follows is per milestone.
 
@@ -2283,4 +2283,6 @@ T9, self-service tenants (§11.1):
 | Tests (task 2) | `tenancy_tests::users_create_tenants_of_their_own_within_the_directorys_limits` (off by default, the prefix, never an operator, each limit and whoami's count, delete when empty and refused when not or when `admins_may_delete` is off, another's tenant invisible, creator teams, pending blocks projects until approved, a site `forbid` wins). No UI e2e of the own-tenant form or **Approve**: the e2e signs in as a directory administrator only |
 | Task 3: automatic admission (D79) | `tenants::{AutoAdmission, AutoMode}`, table `auto_admissions` (by directory), `Admission.follows_default`; `TenantStore::{auto_admissions, set_auto_admission (the new cap to those that follow, one write), remove_auto_admission, auto_admit}`; `service::tenancy::{list,set,remove}_auto_admission`, `auto_admit` on creating (either path) and approving a tenant, `set_admission` keeping `follows_default` only for the same cap; `AdmissionService.{List,Set,Remove}AutoAdmission(s)`; gxctl `admission auto`, `devices.<pool>` in caps; the Admissions page's **Automatic admission** card and *default cap* badge |
 | Tests (task 3) | `tenancy_tests::new_tenants_are_admitted_with_the_default_cap` (self_service and all, a directory not hosted, a cap required, never an operator, the new default to those that follow, a hand-set cap stops following and a suspension doesn't, pending admitted on approval, off keeps what was made) |
-| Not yet | tasks 4–5: open pools, the real check. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
+| Task 4: open pools (D80) | `config::PciGrant.tenants` `["*"]` (checked: alone, on a pool); `api::vms::pool_tenant_grants` answers every tenant with an admission here for such a pool, which the Cedar `PciPool.tenant_grants`, tenant pools and the project's pool listing all use |
+| Tests (task 4) | `config` tests (`"*"` alone and on a pool only); `tenancy_tests::an_open_pool_is_granted_to_every_admitted_tenant` (listed for an admitted tenant's project and not another's, a tenant pool from it, refused before admission) |
+| Not yet | task 5: the real check on the prism cluster. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |

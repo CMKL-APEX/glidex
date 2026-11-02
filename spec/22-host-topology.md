@@ -735,10 +735,11 @@ in the cluster config (`control-plane.json`, replicated with the rest of
   devices over its nodes. Projects that may use the pool see this count.
 - `GET /pci-pools`, `gxctl pci pools`: each pool with its devices per
   node, free counts and holders (holders need a host role).
-- An `allow` entry with `"tenants": "*"` grants a pool to every tenant
-  admitted on the cluster, an **open pool** (19-tenancy.md D80, not
-  built yet): VM requests and tenant pools (§9.1a) treat it as a grant
-  to each, and the tenant's cap `devices.<pool>` bounds its share.
+- An `allow` entry with `"tenants": ["*"]` grants a pool to every tenant
+  with an admission on the cluster, an **open pool** (19-tenancy.md
+  D80): VM requests and tenant pools (§9.1a) treat it as a grant to
+  each, and the tenant's cap `devices.<pool>` bounds its share. `"*"`
+  goes alone, on a pool.
 
 ### 9.1a Tenant pools
 

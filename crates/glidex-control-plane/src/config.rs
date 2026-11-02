@@ -386,7 +386,8 @@ pub struct PciGrant {
     #[serde(default)]
     pub projects: Vec<String>,
     /// Tenant ids or slugs: every project of theirs may use the device
-    /// (spec/19-tenancy.md D25).
+    /// (spec/19-tenancy.md D25). `["*"]` with `pool`: every tenant
+    /// admitted on this cluster, an open pool (D80).
     #[serde(default)]
     pub tenants: Vec<String>,
     /// The node (id or name) whose device this is; absent: the device at
@@ -535,6 +536,12 @@ impl PciConfig {
             }
         }
         for g in &self.allow {
+            if g.tenants.iter().any(|t| t == "*") && (g.pool.is_none() || g.tenants.len() > 1) {
+                return Err(
+                    "pci.allow: \"tenants\": [\"*\"] (every admitted tenant) goes alone, on a pool"
+                        .into(),
+                );
+            }
             match (&g.bdf, &g.pool) {
                 (Some(_), None) => {}
                 (None, Some(p)) if seen.contains(p.as_str()) => {}
@@ -880,6 +887,19 @@ mod tests {
         c.allow.pop();
         c.allow.push(grant(Some("0000:41:00.0"), Some("a100")));
         assert!(c.check().unwrap_err().contains("one bdf or one pool"));
+        c.allow.pop();
+        // An open pool (spec/19-tenancy.md D80): "*" alone, on a pool.
+        let open = |bdf: Option<&str>, pool: Option<&str>, tenants: &[&str]| PciGrant {
+            tenants: tenants.iter().map(|t| t.to_string()).collect(),
+            ..grant(bdf, pool)
+        };
+        c.allow.push(open(None, Some("a100"), &["*"]));
+        assert!(c.check().is_ok());
+        c.allow.push(open(None, Some("a100"), &["*", "acme"]));
+        assert!(c.check().unwrap_err().contains("goes alone, on a pool"));
+        c.allow.pop();
+        c.allow.push(open(Some("0000:41:00.0"), None, &["*"]));
+        assert!(c.check().unwrap_err().contains("goes alone, on a pool"));
     }
 
     use super::*;
