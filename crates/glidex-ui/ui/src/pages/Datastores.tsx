@@ -19,11 +19,15 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** How many nodes reach it, and the most free space any of them has. */
-function reach(d: Datastore): { ok: number; all: number; free: number | null } {
+/** A node's view has sizes: a hyperstor agent's, or one before the pool's space is known, has none. */
+const sized = (r: DatastoreNode) => r.reachable && num(r.total_bytes) > 0;
+
+/** How many nodes reach it, and the most free space any of them has, of its size. */
+function reach(d: Datastore): { ok: number; all: number; free: number | null; total: number | null } {
   const rows = d.node_status ?? [];
   const ok = rows.filter((r) => r.reachable);
-  return { ok: ok.length, all: rows.length, free: ok.length ? Math.max(...ok.map((r) => num(r.free_bytes))) : null };
+  const best = rows.filter(sized).reduce<DatastoreNode | null>((b, r) => (b && num(b.free_bytes) >= num(r.free_bytes) ? b : r), null);
+  return { ok: ok.length, all: rows.length, free: best && num(best.free_bytes), total: best && num(best.total_bytes) };
 }
 
 function RowStatus({ r }: { r: DatastoreNode }) {
@@ -221,12 +225,10 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
         <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
         <span>New disks go here unless they name a datastore</span>
       </label>
-      {!hyperstor && (
-        <label className="flex items-center space-x-2 text-sm">
-          <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
-          <span>Overcommit: disks may promise more than the free space (thin files)</span>
-        </label>
-      )}
+      <label className="flex items-center space-x-2 text-sm">
+        <input type="checkbox" checked={overcommit} onChange={(e) => setOvercommit(e.target.checked)} />
+        <span>Overcommit: disks may promise more than the free space (thin {hyperstor ? "volumes" : "files"})</span>
+      </label>
       <div className="flex justify-end space-x-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg" onClick={onCancel}>
           Cancel
@@ -306,7 +308,7 @@ function Detail({ d }: { d: Datastore }) {
                     </div>
                   ))}
                 </td>
-                <td>{r.reachable ? `${formatBytes(r.free_bytes)} of ${formatBytes(r.total_bytes)}` : "—"}</td>
+                <td>{sized(r) ? `${formatBytes(r.free_bytes)} of ${formatBytes(r.total_bytes)}` : "—"}</td>
                 <td className="font-mono break-all">{r.path}</td>
               </tr>
             ))}
@@ -405,7 +407,15 @@ export default function Datastores() {
                     <td className={`px-4 py-3 ${r.ok < r.all ? "text-amber-700" : ""}`}>
                       {r.all === 0 ? "—" : `${r.ok} of ${r.all}`}
                     </td>
-                    <td className="px-4 py-3">{r.free === null ? "—" : formatBytes(r.free)}</td>
+                    <td className="px-4 py-3">
+                      {r.free === null || r.total === null ? (
+                        "—"
+                      ) : (
+                        <>
+                          {formatBytes(r.free)} <span className="text-xs text-gray-500">of {formatBytes(r.total)}</span>
+                        </>
+                      )}
+                    </td>
                     <td className="px-4 py-3">{d.disks ?? 0}</td>
                     <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                       {host.manageDatastore && !d.default_for_disks && (

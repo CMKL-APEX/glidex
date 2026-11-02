@@ -92,6 +92,7 @@ Non-goals for this revision (each in §18):
 | D20 | **Every server holds the cluster CA key, and the CA is rotated whenever a server leaves** (removed, forgotten or departed) or on demand (§12.5). Until the old CA is retired, a leaf certificate is accepted only if the leader issued it (`issued_certs`). | Any server can sign joins and renewals, so losing one server never stops certificate issuance. A server that leaves takes a copy of the key with it; rotation makes that copy worthless, and the issued-certificate check means it can't mint usable glidex certificates in the meantime. |
 | D21 | **VPC routers are opt-in, per project** (§11.2a). Networks attached to the same VPC router route to each other; different routers, and the shared edge, are isolated from each other. Subnets still come from one cluster IPAM (no overlapping CIDRs in this revision). | Tenants get their own egress address and multi-subnet routing without giving up the isolation of §11.2. One address space keeps port security, metering by address and future peering simple. |
 | D22 | **External traffic on OVN is metered from conntrack accounting in each router's SNAT zone** on the gateway node (§13.2), not from OVN flow statistics. | A connection is external exactly when it is SNATed, which is 13-metering.md D6's definition. OVN exposes no counters on logical objects; OpenFlow statistics by cookie are ambiguous (32-bit cookie prefixes, cookie 0 for conjunctive flows), reset when flows are reinstalled, and depend on how the pipeline is laid out in each OVN version. |
+| D23 | **A node network is made for a named node, by that node.** `node` on create names it (default: the node serving the request, the leader once forwarded). For another node the leader only records the network, `pending`; that node's network controller makes its bridge and NAT (09-networking.md §11.2a), with a subnet netd picks there. A `subnet` and bridged networks are refused for another node. | A node network's bridge and NAT are its node's netd's, which only that node reaches; writes go to the leader, so without `node` every node network landed on the leader. The controller already re-creates a lost bridge and NAT, so making them is the same step. |
 
 ## 4. Topology
 
@@ -1673,6 +1674,18 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
   with routable pod CIDRs, and for peering with outside Kubernetes
   clusters.
 - **Placement groups / anti-affinity.**
+- **Sign-ins through an IdP that survive a leader change.** The leader
+  holds a browser login's state (`state`, nonce, PKCE verifier) in
+  memory, and followers forward its start and callback there, so a
+  leader change in the middle of a login loses it. Instead, a sealed
+  cookie: the state encrypted and authenticated with a key every server
+  holds (the cluster's secrets key), bound to the browser and valid 10
+  minutes, which any server can open. No single-use record is needed:
+  the IdP's code is single-use and PKCE binds it to the verifier in the
+  cookie. Not for console tickets, which travel in a URL and need a
+  server-side single use, nor for the Raft store, where every login
+  would be two committed writes and its secrets would sit in the log and
+  snapshots.
 - **A native OVSDB client** in place of `ovn-nbctl`; write-lane
   pipelining (D3).
 - **Moving disks between hosts as part of live migration.** Offline

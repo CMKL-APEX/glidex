@@ -4,21 +4,23 @@ import * as api from "../api";
 import type { Tenant } from "../types";
 import { Loading } from "../components/Loading";
 import { Card, PageHeader } from "../components/ui";
-import { useSession } from "../session";
+import { useSession, useTenantLabel } from "../session";
 
 const Tenants = lazy(() => import("./Tenants"));
 const Access = lazy(() => import("./Access"));
 const Connectors = lazy(() => import("./Connectors"));
 const Policies = lazy(() => import("./Policies"));
+const DirectorySettings = lazy(() => import("./DirectorySettings"));
 
 /** What the directory page's tabs are, and who sees each. */
-export function directoryTabs(host: Record<string, boolean>, readsATenant: boolean) {
+export function directoryTabs(host: Record<string, boolean>, readsATenant: boolean, tenants = "Tenants") {
   return [
     { id: "overview", label: "Overview", show: true },
-    { id: "tenants", label: "Tenants", show: host.listTenants || host.createTenant || readsATenant },
+    { id: "tenants", label: tenants, show: host.listTenants || host.createTenant || readsATenant },
     { id: "access", label: "Users & roles", show: host.listUsers || host.listTeams || host.readSystemBindings },
     { id: "connectors", label: "Connectors", show: host.listConnectors },
     { id: "policies", label: "Policies", show: host.readPolicy },
+    { id: "settings", label: "Settings", show: host.readDirectorySettings },
   ].filter((t) => t.show);
 }
 
@@ -27,7 +29,8 @@ export function directoryTabs(host: Record<string, boolean>, readsATenant: boole
 export default function Directory() {
   const { tab = "overview" } = useParams<{ tab: string }>();
   const { host } = useSession();
-  const tabs = directoryTabs(host, true);
+  const label = useTenantLabel();
+  const tabs = directoryTabs(host, true, label.many);
   if (!tabs.some((t) => t.id === tab)) return <Navigate to="/directory" replace />;
   return (
     <div>
@@ -53,6 +56,7 @@ export default function Directory() {
         {tab === "access" && <Access />}
         {tab === "connectors" && <Connectors />}
         {tab === "policies" && <Policies />}
+        {tab === "settings" && <DirectorySettings />}
       </Suspense>
     </div>
   );
@@ -61,6 +65,7 @@ export default function Directory() {
 /** The directory itself: whose it is, and what lives where. */
 function Overview() {
   const { me, host } = useSession();
+  const label = useTenantLabel();
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
   const [counts, setCounts] = useState<{ users?: number; teams?: number; connectors?: number }>({});
   useEffect(() => {
@@ -75,7 +80,7 @@ function Overview() {
   const owner = tenants?.find((t) => t.owns_directory);
   return (
     <div>
-      <PageHeader title="Directory" subtitle="Who can sign in, how, and to which tenants." />
+      <PageHeader title="Directory" subtitle={`Who can sign in, how, and to which ${label.many.toLowerCase()}.`} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="This directory">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm" data-testid="directory-overview">
@@ -83,7 +88,7 @@ function Overview() {
             <dd className="font-mono">{me.directory_id ?? "local"}</dd>
             <dt className="text-gray-500">Owned by</dt>
             <dd>{owner ? <Link to={`/tenants/${owner.id}`} className="text-sky-700 hover:underline">{owner.display_name || owner.slug}</Link> : "—"}</dd>
-            <dt className="text-gray-500">Tenants</dt>
+            <dt className="text-gray-500">{label.many}</dt>
             <dd>{tenants ? tenants.length : "—"}</dd>
             {counts.users !== undefined && (
               <>

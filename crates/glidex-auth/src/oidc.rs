@@ -66,8 +66,12 @@ pub struct ClientConfig {
     pub scopes: Vec<String>,
     /// The ID token claim that lists the user's groups.
     pub groups_claim: String,
-    /// Email domains allowed to log in; empty allows any.
+    /// Email domains allowed to log in; empty allows any. A login needs
+    /// a verified address in one of them.
     pub allowed_domains: Vec<String>,
+    /// A token without `email_verified` counts as verified: the IdP
+    /// assigns its users' addresses (spec/19-tenancy.md D75).
+    pub trust_email: bool,
     /// Groups of which a user must be in one; empty requires none.
     pub required_groups: Vec<String>,
     /// Where the IdP sends the browser back; must be registered with it.
@@ -591,10 +595,27 @@ impl<A: Clone> OidcState<A> {
             Some(serde_json::Value::String(s)) => vec![s.clone()],
             _ => Vec::new(),
         };
+        // The preset's checks, and its word on MFA and the address where
+        // it has one.
+        let preset = match &self.preset.rule {
+            Some(rule) => rule.check(&c.rest).map_err(OidcError::NotAllowed)?,
+            None => Checked::default(),
+        };
+        let email_verified =
+            preset
+                .email_verified
+                .unwrap_or_else(|| match c.rest.get("email_verified") {
+                    Some(serde_json::Value::Bool(b)) => *b,
+                    Some(serde_json::Value::String(s)) => s == "true",
+                    None => self.cfg.trust_email,
+                    Some(_) => false,
+                });
         if !self.cfg.allowed_domains.is_empty() {
+            // An address nobody checked proves nothing about its domain.
             let domain = c
                 .email
                 .as_deref()
+                .filter(|_| email_verified)
                 .and_then(|e| e.rsplit_once('@'))
                 .map(|(_, d)| d.to_ascii_lowercase());
             if !domain.is_some_and(|d| {
@@ -617,23 +638,12 @@ impl<A: Clone> OidcState<A> {
             .or(c.preferred_username.clone())
             .or(c.email.clone())
             .unwrap_or_else(|| c.sub.clone());
-        // The preset's checks, and its word on MFA where it has one.
-        let preset = match &self.preset.rule {
-            Some(rule) => rule.check(&c.rest).map_err(OidcError::NotAllowed)?,
-            None => Checked::default(),
-        };
         let amr_mfa = matches!(c.rest.get("amr"), Some(serde_json::Value::Array(a)) if a.iter().any(|m| m.as_str() == Some("mfa")));
         let acr_mfa = c
             .rest
             .get("acr")
             .and_then(|a| a.as_str())
             .is_some_and(|a| self.cfg.mfa_acr.iter().any(|m| m == a));
-        let email_verified = preset.email_verified.unwrap_or(
-            matches!(
-                c.rest.get("email_verified"),
-                Some(serde_json::Value::Bool(true))
-            ) || c.rest.get("email_verified").and_then(|v| v.as_str()) == Some("true"),
-        );
         Ok(OidcIdentity {
             issuer: issuer.to_string(),
             subject: c.sub,
@@ -750,6 +760,7 @@ mod tests {
                 scopes: vec!["openid".into()],
                 groups_claim: "groups".into(),
                 allowed_domains: vec!["example.org".into()],
+                trust_email: false,
                 required_groups: vec!["staff".into()],
                 redirect_uri: None,
                 callback_path: "/auth/callback".into(),
@@ -824,7 +835,8 @@ mod tests {
         let c = client(true);
         let ok = |extra: serde_json::Value| {
             let mut v = serde_json::json!({
-                "sub": "s1", "email": "ann@Example.org", "groups": ["staff"], "nonce": "n",
+                "sub": "s1", "email": "ann@Example.org", "email_verified": true,
+                "groups": ["staff"], "nonce": "n",
             });
             v.as_object_mut()
                 .unwrap()
@@ -833,7 +845,7 @@ mod tests {
         };
         let id = ok(serde_json::json!({ "acr": "phr" })).unwrap();
         assert_eq!(id.display_name, "ann@Example.org");
-        assert!(id.mfa && !id.email_verified);
+        assert!(id.mfa && id.email_verified);
         assert!(matches!(
             ok(serde_json::json!({ "nonce": "other" })),
             Err(OidcError::Invalid(_))
@@ -856,6 +868,39 @@ mod tests {
         ));
         let v = ok(serde_json::json!({ "amr": ["pwd", "mfa"], "email_verified": "true" })).unwrap();
         assert!(v.mfa && v.email_verified);
+    }
+
+    /// D75: a domain rule reads only an address the IdP verified, or one
+    /// it says nothing about when the connector trusts its addresses.
+    #[test]
+    fn allowed_domains_need_a_verified_address() {
+        let login = |trust_email: bool, verified: Option<serde_json::Value>| {
+            let mut c = client(true);
+            c.cfg.trust_email = trust_email;
+            let mut v = serde_json::json!({
+                "sub": "s1", "email": "ann@example.org", "groups": ["staff"],
+            });
+            if let Some(x) = verified {
+                v["email_verified"] = x;
+            }
+            c.identity("https://idp.example", claims(v), None)
+        };
+        let refused = |r: Result<OidcIdentity, OidcError>| matches!(r, Err(OidcError::NotAllowed(m)) if m.contains("domain"));
+        assert!(login(false, Some(true.into())).unwrap().email_verified);
+        assert!(login(false, Some("true".into())).unwrap().email_verified);
+        assert!(refused(login(false, None)));
+        assert!(refused(login(false, Some(false.into()))));
+        assert!(refused(login(false, Some("yes".into()))));
+        // Trusted: a missing claim counts, an explicit `false` doesn't.
+        assert!(login(true, None).unwrap().email_verified);
+        assert!(refused(login(true, Some(false.into()))));
+        assert!(refused(login(true, Some("false".into()))));
+        // Without a domain rule, an unverified address still logs in,
+        // marked unverified for the rules downstream.
+        let mut c = client(true);
+        c.cfg.allowed_domains.clear();
+        let v = serde_json::json!({ "sub": "s1", "email": "x@any.org", "groups": ["staff"] });
+        assert!(!c.identity("i", claims(v), None).unwrap().email_verified);
     }
 
     #[test]

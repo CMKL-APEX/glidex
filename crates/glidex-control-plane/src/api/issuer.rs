@@ -387,3 +387,30 @@ pub async fn rotate_key(
         Default::default(),
     )?))
 }
+
+// ---- REST twins of glidex.directory.v1.DirectorySettingsService ----------
+
+/// `GET /directory/settings`.
+pub async fn get_settings(
+    c: super::Caller,
+) -> Result<
+    Json<glidex_api::proto::glidex::directory::v1::GetDirectorySettingsResponse>,
+    super::ApiErr,
+> {
+    Ok(Json(
+        crate::service::directory_settings::get_directory_settings(&c, Default::default())?,
+    ))
+}
+
+/// `PUT /directory/settings`.
+pub async fn put_settings(
+    c: super::Caller,
+    Json(req): Json<glidex_api::proto::glidex::directory::v1::UpdateDirectorySettingsRequest>,
+) -> Result<
+    Json<glidex_api::proto::glidex::directory::v1::UpdateDirectorySettingsResponse>,
+    super::ApiErr,
+> {
+    Ok(Json(
+        crate::service::directory_settings::update_directory_settings(&c, req)?,
+    ))
+}

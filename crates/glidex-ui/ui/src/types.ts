@@ -242,6 +242,9 @@ export interface CreateNetworkRequest {
   dns?: boolean;
   /** Cluster (OVN) or node; the server's default is the cluster's when OVN is on. */
   scope?: NetworkScope;
+  /** A node network's node (id or name); the server's default is the leader
+   * in a cluster. Host networks only. */
+  node?: string;
   /** A provider network (cluster scope, bridged): its physical network. */
   physnet?: string;
   /** A project NAT network on one of the project's VPC routers (id or name). */
@@ -1078,6 +1081,9 @@ export interface User {
   email?: string;
   /** Why it is disabled. */
   disabled_reason?: "admin" | "scim" | "connector_deleted" | "sync";
+  /** Pre-added, not signed in yet: the connector whose first login with
+   *  `email` takes it (spec/19-tenancy.md D77). */
+  pending_connector?: string;
 }
 
 export type UserView = User;
@@ -1109,6 +1115,11 @@ export interface WhoAmI {
   token?: { id: string; name: string; device?: string; client?: string };
   /** A browser session's CSRF value. */
   csrf?: string;
+  /** What the caller's directory calls a tenant (spec/19-tenancy.md D81). */
+  tenant_label?: string;
+  tenant_label_plural?: string;
+  /** Whether the caller may create a tenant of their own now (D78). */
+  self_service?: { allowed?: boolean; remaining?: number; approval_required?: boolean; slug_prefix?: string };
 }
 
 export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";
@@ -1925,6 +1936,8 @@ export interface Admission {
   /** The tenant's slug and name, for operators who can't read tenants. */
   tenant_slug?: string;
   tenant_display_name?: string;
+  /** Made by automatic admission; its cap follows the directory's default (spec/19-tenancy.md D79). */
+  follows_default?: boolean;
 }
 
 export interface Tenant {
@@ -1940,6 +1953,14 @@ export interface Tenant {
   admission?: Admission;
   /** The tenant operating this cluster: never suspended or unadmitted here. */
   operates_here?: boolean;
+  /** Created by one of the directory's users for themselves (spec/19-tenancy.md D78). */
+  self_service?: boolean;
+  created_by?: string;
+  created_by_name?: string;
+  /** Waits for a directory administrator's approval. */
+  pending?: boolean;
+  /** A self-service tenant nobody administers any more. */
+  no_admin?: boolean;
 }
 
 /** An explicit member of a tenant: a user or a team. */
@@ -1975,6 +1996,10 @@ export interface OidcSettings {
   allowed_domains?: string[];
   redirect_uri?: string;
   mfa_acr_values?: string[];
+  /** The IdP verifies its users' addresses (spec/19-tenancy.md D75). */
+  trust_email?: boolean;
+  /** With JIT, only these verified addresses get an account (D76). */
+  allowed_emails?: string[];
 }
 
 /** `google` settings (spec/19-tenancy.md D39, §5.1). */

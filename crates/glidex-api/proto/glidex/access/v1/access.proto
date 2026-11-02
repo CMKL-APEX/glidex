@@ -311,6 +311,9 @@ message User {
   optional string email = 9;
   // Why it is disabled: `admin`, `scim` or `connector_deleted`. Output only.
   optional string disabled_reason = 10 [json_name = "disabled_reason"];
+  // Pre-added and not signed in yet (spec/19-tenancy.md D77): the
+  // connector whose first login with `email` takes it. Output only.
+  optional string pending_connector = 11 [json_name = "pending_connector"];
 }
 
 message ListUsersRequest {}
@@ -325,8 +328,24 @@ message IdentityRef {
 }
 
 message CreateUserRequest {
+  // Default with `pending`: the address's local part.
   string display_name = 1 [json_name = "display_name"];
   repeated IdentityRef identities = 2;
+  // Pre-add the user by email (spec/19-tenancy.md D77, §6.3); not with
+  // `identities`.
+  PendingUser pending = 3;
+}
+
+// Who a pre-added user is, and where it goes.
+message PendingUser {
+  string email = 1;
+  // An enabled `oidc` or `google` connector, not a provisioned one.
+  string connector = 2;
+  // A tenant id or slug.
+  string tenant = 3;
+  // `member` (membership only), `role.tenant-admin` or
+  // `role.tenant-auditor`; default `member`.
+  string role = 4;
 }
 message CreateUserResponse {
   User user = 1;

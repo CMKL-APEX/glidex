@@ -15,7 +15,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/system/v1/system.proto.
  */
 export const file_glidex_system_v1_system: GenFile = /*@__PURE__*/
-  fileDesc("Ch1nbGlkZXgvc3lzdGVtL3YxL3N5c3RlbS5wcm90bxIQZ2xpZGV4LnN5c3RlbS52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCKuAgoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEiMKCmNsdXN0ZXJfaWQYASABKAlIAFIKY2x1c3Rlcl9pZIgBARIdCgdub2RlX2lkGAIgASgJSAFSB25vZGVfaWSIAQESIgoMY2x1c3Rlcl9uYW1lGAMgASgJUgxjbHVzdGVyX25hbWUSDwoHdmVyc2lvbhgEIAEoCRIYCgtmaW5nZXJwcmludBgFIAEoCUgCiAEBEi8KB21ldGhvZHMYBiABKAsyHi5nbGlkZXguc3lzdGVtLnYxLkxvZ2luTWV0aG9kcxImCg50b2tlbl9hdWRpZW5jZRgHIAEoCVIOdG9rZW5fYXVkaWVuY2VCDQoLX2NsdXN0ZXJfaWRCCgoIX25vZGVfaWRCDgoMX2ZpbmdlcnByaW50ImgKDExvZ2luTWV0aG9kcxIQCgNwYW0YASABKAhIAIgBARIRCgRvaWRjGAIgASgISAGIAQESFQoIZGlzYWJsZWQYAyABKAhIAogBAUIGCgRfcGFtQgcKBV9vaWRjQgsKCV9kaXNhYmxlZCIPCg1XaG9BbUlSZXF1ZXN0IroECg5XaG9BbUlSZXNwb25zZRIdCgd1c2VyX2lkGAEgASgJSABSB3VzZXJfaWSIAQESIgoMZGlzcGxheV9uYW1lGAIgASgJUgxkaXNwbGF5X25hbWUSDgoGbWV0aG9kGAMgASgJEh8KCHRva2VuX2lkGAQgASgJSAFSCHRva2VuX2lkiAEBEg0KBXRlYW1zGAUgAygJEiUKC2JyZWFrX2dsYXNzGAYgASgISAJSC2JyZWFrX2dsYXNziAEBEh4KCmhvc3Rfcm9sZXMYByADKAlSCmhvc3Rfcm9sZXMSQwoNcHJvamVjdF9yb2xlcxgIIAMoCzIdLmdsaWRleC5zeXN0ZW0udjEuUHJvamVjdFJvbGVSDXByb2plY3Rfcm9sZXMSLQoPZGVmYXVsdF9wcm9qZWN0GAkgASgJSANSD2RlZmF1bHRfcHJvamVjdIgBARIQCgNtZmEYCiABKAhIBIgBARIiCgxkaXJlY3RvcnlfaWQYCyABKAlSDGRpcmVjdG9yeV9pZBIkCgR1c2VyGAwgASgLMhYuZ2xpZGV4LmFjY2Vzcy52MS5Vc2VyEi0KBXRva2VuGA0gASgLMh4uZ2xpZGV4LnN5c3RlbS52MS5Ub2tlblN1bW1hcnkSEQoEY3NyZhgOIAEoCUgFiAEBQgoKCF91c2VyX2lkQgsKCV90b2tlbl9pZEIOCgxfYnJlYWtfZ2xhc3NCEgoQX2RlZmF1bHRfcHJvamVjdEIGCgRfbWZhQgcKBV9jc3JmImgKDFRva2VuU3VtbWFyeRIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhMKBmRldmljZRgDIAEoCUgAiAEBEhMKBmNsaWVudBgEIAEoCUgBiAEBQgkKB19kZXZpY2VCCQoHX2NsaWVudCKQAQoLUHJvamVjdFJvbGUSDwoHcHJvamVjdBgBIAEoCRInCgxwcm9qZWN0X25hbWUYAiABKAlIAFIMcHJvamVjdF9uYW1liAEBEgwKBHJvbGUYAyABKAkSKAoDdmlhGAQgASgLMhsuZ2xpZGV4LnN5c3RlbS52MS5FbnRpdHlSZWZCDwoNX3Byb2plY3RfbmFtZSIxCglFbnRpdHlSZWYSDAoEdHlwZRgBIAEoCRIPCgJpZBgCIAEoCUgAiAEBQgUKA19pZDKPAgoNU3lzdGVtU2VydmljZRKHAQoNR2V0U2VydmVySW5mbxImLmdsaWRleC5zeXN0ZW0udjEuR2V0U2VydmVySW5mb1JlcXVlc3QaJy5nbGlkZXguc3lzdGVtLnYxLkdldFNlcnZlckluZm9SZXNwb25zZSIlyukYIQoGcHVibGljEAEaFUdFVCAvYXV0aC9zZXJ2ZXItaW5mbxJ0CgZXaG9BbUkSHy5nbGlkZXguc3lzdGVtLnYxLldob0FtSVJlcXVlc3QaIC5nbGlkZXguc3lzdGVtLnYxLldob0FtSVJlc3BvbnNlIifK6RgjCg1hdXRoZW50aWNhdGVkEAEaEEdFVCAvYXV0aC93aG9hbWliBnByb3RvMw", [file_glidex_access_v1_access, file_glidex_api_v1_options]);
+  fileDesc("Ch1nbGlkZXgvc3lzdGVtL3YxL3N5c3RlbS5wcm90bxIQZ2xpZGV4LnN5c3RlbS52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCKuAgoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEiMKCmNsdXN0ZXJfaWQYASABKAlIAFIKY2x1c3Rlcl9pZIgBARIdCgdub2RlX2lkGAIgASgJSAFSB25vZGVfaWSIAQESIgoMY2x1c3Rlcl9uYW1lGAMgASgJUgxjbHVzdGVyX25hbWUSDwoHdmVyc2lvbhgEIAEoCRIYCgtmaW5nZXJwcmludBgFIAEoCUgCiAEBEi8KB21ldGhvZHMYBiABKAsyHi5nbGlkZXguc3lzdGVtLnYxLkxvZ2luTWV0aG9kcxImCg50b2tlbl9hdWRpZW5jZRgHIAEoCVIOdG9rZW5fYXVkaWVuY2VCDQoLX2NsdXN0ZXJfaWRCCgoIX25vZGVfaWRCDgoMX2ZpbmdlcnByaW50ImgKDExvZ2luTWV0aG9kcxIQCgNwYW0YASABKAhIAIgBARIRCgRvaWRjGAIgASgISAGIAQESFQoIZGlzYWJsZWQYAyABKAhIAogBAUIGCgRfcGFtQgcKBV9vaWRjQgsKCV9kaXNhYmxlZCIPCg1XaG9BbUlSZXF1ZXN0ItMFCg5XaG9BbUlSZXNwb25zZRIdCgd1c2VyX2lkGAEgASgJSABSB3VzZXJfaWSIAQESIgoMZGlzcGxheV9uYW1lGAIgASgJUgxkaXNwbGF5X25hbWUSDgoGbWV0aG9kGAMgASgJEh8KCHRva2VuX2lkGAQgASgJSAFSCHRva2VuX2lkiAEBEg0KBXRlYW1zGAUgAygJEiUKC2JyZWFrX2dsYXNzGAYgASgISAJSC2JyZWFrX2dsYXNziAEBEh4KCmhvc3Rfcm9sZXMYByADKAlSCmhvc3Rfcm9sZXMSQwoNcHJvamVjdF9yb2xlcxgIIAMoCzIdLmdsaWRleC5zeXN0ZW0udjEuUHJvamVjdFJvbGVSDXByb2plY3Rfcm9sZXMSLQoPZGVmYXVsdF9wcm9qZWN0GAkgASgJSANSD2RlZmF1bHRfcHJvamVjdIgBARIQCgNtZmEYCiABKAhIBIgBARIiCgxkaXJlY3RvcnlfaWQYCyABKAlSDGRpcmVjdG9yeV9pZBIkCgR1c2VyGAwgASgLMhYuZ2xpZGV4LmFjY2Vzcy52MS5Vc2VyEi0KBXRva2VuGA0gASgLMh4uZ2xpZGV4LnN5c3RlbS52MS5Ub2tlblN1bW1hcnkSEQoEY3NyZhgOIAEoCUgFiAEBEiIKDHRlbmFudF9sYWJlbBgPIAEoCVIMdGVuYW50X2xhYmVsEjAKE3RlbmFudF9sYWJlbF9wbHVyYWwYECABKAlSE3RlbmFudF9sYWJlbF9wbHVyYWwSQQoMc2VsZl9zZXJ2aWNlGBEgASgLMh0uZ2xpZGV4LnN5c3RlbS52MS5TZWxmU2VydmljZVIMc2VsZl9zZXJ2aWNlQgoKCF91c2VyX2lkQgsKCV90b2tlbl9pZEIOCgxfYnJlYWtfZ2xhc3NCEgoQX2RlZmF1bHRfcHJvamVjdEIGCgRfbWZhQgcKBV9jc3JmIpQBCgtTZWxmU2VydmljZRIPCgdhbGxvd2VkGAEgASgIEhYKCXJlbWFpbmluZxgCIAEoDUgAiAEBEiwKEWFwcHJvdmFsX3JlcXVpcmVkGAMgASgIUhFhcHByb3ZhbF9yZXF1aXJlZBIgCgtzbHVnX3ByZWZpeBgEIAEoCVILc2x1Z19wcmVmaXhCDAoKX3JlbWFpbmluZyJoCgxUb2tlblN1bW1hcnkSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRITCgZkZXZpY2UYAyABKAlIAIgBARITCgZjbGllbnQYBCABKAlIAYgBAUIJCgdfZGV2aWNlQgkKB19jbGllbnQikAEKC1Byb2plY3RSb2xlEg8KB3Byb2plY3QYASABKAkSJwoMcHJvamVjdF9uYW1lGAIgASgJSABSDHByb2plY3RfbmFtZYgBARIMCgRyb2xlGAMgASgJEigKA3ZpYRgEIAEoCzIbLmdsaWRleC5zeXN0ZW0udjEuRW50aXR5UmVmQg8KDV9wcm9qZWN0X25hbWUiMQoJRW50aXR5UmVmEgwKBHR5cGUYASABKAkSDwoCaWQYAiABKAlIAIgBAUIFCgNfaWQyjwIKDVN5c3RlbVNlcnZpY2UShwEKDUdldFNlcnZlckluZm8SJi5nbGlkZXguc3lzdGVtLnYxLkdldFNlcnZlckluZm9SZXF1ZXN0GicuZ2xpZGV4LnN5c3RlbS52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiJcrpGCEKBnB1YmxpYxABGhVHRVQgL2F1dGgvc2VydmVyLWluZm8SdAoGV2hvQW1JEh8uZ2xpZGV4LnN5c3RlbS52MS5XaG9BbUlSZXF1ZXN0GiAuZ2xpZGV4LnN5c3RlbS52MS5XaG9BbUlSZXNwb25zZSInyukYIwoNYXV0aGVudGljYXRlZBABGhBHRVQgL2F1dGgvd2hvYW1pYgZwcm90bzM", [file_glidex_access_v1_access, file_glidex_api_v1_options]);
 
 /**
  * @generated from message glidex.system.v1.GetServerInfoRequest
@@ -294,6 +294,27 @@ export type WhoAmIResponse = Message<"glidex.system.v1.WhoAmIResponse"> & {
    * @generated from field: optional string csrf = 14;
    */
   csrf?: string | undefined;
+
+  /**
+   * What the caller's directory calls a tenant in the web UI
+   * (spec/19-tenancy.md D81), singular and plural.
+   *
+   * @generated from field: string tenant_label = 15 [json_name = "tenant_label"];
+   */
+  tenantLabel: string;
+
+  /**
+   * @generated from field: string tenant_label_plural = 16 [json_name = "tenant_label_plural"];
+   */
+  tenantLabelPlural: string;
+
+  /**
+   * Whether the caller may create a tenant of their own now
+   * (spec/19-tenancy.md D78).
+   *
+   * @generated from field: glidex.system.v1.SelfService self_service = 17 [json_name = "self_service"];
+   */
+  selfService?: SelfService | undefined;
 };
 
 /**
@@ -381,6 +402,27 @@ export type WhoAmIResponseJson = {
    * @generated from field: optional string csrf = 14;
    */
   csrf?: string;
+
+  /**
+   * What the caller's directory calls a tenant in the web UI
+   * (spec/19-tenancy.md D81), singular and plural.
+   *
+   * @generated from field: string tenant_label = 15 [json_name = "tenant_label"];
+   */
+  tenant_label?: string;
+
+  /**
+   * @generated from field: string tenant_label_plural = 16 [json_name = "tenant_label_plural"];
+   */
+  tenant_label_plural?: string;
+
+  /**
+   * Whether the caller may create a tenant of their own now
+   * (spec/19-tenancy.md D78).
+   *
+   * @generated from field: glidex.system.v1.SelfService self_service = 17 [json_name = "self_service"];
+   */
+  self_service?: SelfServiceJson;
 };
 
 /**
@@ -389,6 +431,81 @@ export type WhoAmIResponseJson = {
  */
 export const WhoAmIResponseSchema: GenMessage<WhoAmIResponse, {jsonType: WhoAmIResponseJson}> = /*@__PURE__*/
   messageDesc(file_glidex_system_v1_system, 4);
+
+/**
+ * @generated from message glidex.system.v1.SelfService
+ */
+export type SelfService = Message<"glidex.system.v1.SelfService"> & {
+  /**
+   * The directory lets the caller, and they are under its limits.
+   *
+   * @generated from field: bool allowed = 1;
+   */
+  allowed: boolean;
+
+  /**
+   * How many more they may create; absent when the directory doesn't
+   * let them create any.
+   *
+   * @generated from field: optional uint32 remaining = 2;
+   */
+  remaining?: number | undefined;
+
+  /**
+   * A new one waits for a directory administrator's approval.
+   *
+   * @generated from field: bool approval_required = 3 [json_name = "approval_required"];
+   */
+  approvalRequired: boolean;
+
+  /**
+   * Put before the slug they pick.
+   *
+   * @generated from field: string slug_prefix = 4 [json_name = "slug_prefix"];
+   */
+  slugPrefix: string;
+};
+
+/**
+ * @generated from message glidex.system.v1.SelfService
+ */
+export type SelfServiceJson = {
+  /**
+   * The directory lets the caller, and they are under its limits.
+   *
+   * @generated from field: bool allowed = 1;
+   */
+  allowed?: boolean;
+
+  /**
+   * How many more they may create; absent when the directory doesn't
+   * let them create any.
+   *
+   * @generated from field: optional uint32 remaining = 2;
+   */
+  remaining?: number;
+
+  /**
+   * A new one waits for a directory administrator's approval.
+   *
+   * @generated from field: bool approval_required = 3 [json_name = "approval_required"];
+   */
+  approval_required?: boolean;
+
+  /**
+   * Put before the slug they pick.
+   *
+   * @generated from field: string slug_prefix = 4 [json_name = "slug_prefix"];
+   */
+  slug_prefix?: string;
+};
+
+/**
+ * Describes the message glidex.system.v1.SelfService.
+ * Use `create(SelfServiceSchema)` to create a new message.
+ */
+export const SelfServiceSchema: GenMessage<SelfService, {jsonType: SelfServiceJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_system_v1_system, 5);
 
 /**
  * @generated from message glidex.system.v1.TokenSummary
@@ -445,7 +562,7 @@ export type TokenSummaryJson = {
  * Use `create(TokenSummarySchema)` to create a new message.
  */
 export const TokenSummarySchema: GenMessage<TokenSummary, {jsonType: TokenSummaryJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_system_v1_system, 5);
+  messageDesc(file_glidex_system_v1_system, 6);
 
 /**
  * @generated from message glidex.system.v1.ProjectRole
@@ -506,7 +623,7 @@ export type ProjectRoleJson = {
  * Use `create(ProjectRoleSchema)` to create a new message.
  */
 export const ProjectRoleSchema: GenMessage<ProjectRole, {jsonType: ProjectRoleJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_system_v1_system, 6);
+  messageDesc(file_glidex_system_v1_system, 7);
 
 /**
  * A Cedar entity, as REST's `{"type": "Team", "id": "…"}`.
@@ -551,7 +668,7 @@ export type EntityRefJson = {
  * Use `create(EntityRefSchema)` to create a new message.
  */
 export const EntityRefSchema: GenMessage<EntityRef, {jsonType: EntityRefJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_system_v1_system, 7);
+  messageDesc(file_glidex_system_v1_system, 8);
 
 /**
  * @generated from service glidex.system.v1.SystemService

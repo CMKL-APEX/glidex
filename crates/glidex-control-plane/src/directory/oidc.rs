@@ -95,6 +95,7 @@ impl OidcState {
             scopes: cfg.scopes.clone(),
             groups_claim: cfg.groups_claim.clone(),
             allowed_domains: cfg.allowed_domains.clone(),
+            trust_email: cfg.trust_email,
             required_groups: cfg.required_groups.clone(),
             redirect_uri: cfg.redirect_uri.clone(),
             callback_path: callback_path.to_string(),

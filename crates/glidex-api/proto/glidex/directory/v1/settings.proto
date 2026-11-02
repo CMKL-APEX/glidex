@@ -1,0 +1,68 @@
+// A directory's settings (spec/19-tenancy.md §11.1): self-service tenants
+// (D78) and what its web UI calls a tenant (D81).
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+
+service DirectorySettingsService {
+  rpc GetDirectorySettings(GetDirectorySettingsRequest) returns (GetDirectorySettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDirectorySettings"
+      kind: KIND_READ
+      rest: "GET /directory/settings"
+    };
+  }
+  // Replaces the caller's directory's settings with `settings`.
+  rpc UpdateDirectorySettings(UpdateDirectorySettingsRequest) returns (UpdateDirectorySettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateDirectorySettings"
+      kind: KIND_WRITE
+      rest: "PUT /directory/settings"
+    };
+  }
+}
+
+message DirectorySettings {
+  SelfServiceSettings self_service = 1 [json_name = "self_service"];
+  TenantLabel tenant_label = 2 [json_name = "tenant_label"];
+}
+
+// Who may create tenants of their own, and how many (D78).
+message SelfServiceSettings {
+  bool enabled = 1;
+  // Teams (id or name; answered as ids) whose members may create tenants;
+  // empty: every user of the directory.
+  repeated string creator_teams = 2 [json_name = "creator_teams"];
+  // Tenants one user may have created and not deleted, 0-100; absent: 3.
+  optional uint32 max_per_user = 3 [json_name = "max_per_user"];
+  // Self-service tenants in the directory, in all; absent: no limit.
+  optional uint32 max_total = 4 [json_name = "max_total"];
+  // A new tenant waits for a directory administrator's approval.
+  bool approval_required = 5 [json_name = "approval_required"];
+  // Put before the slug a user picks; `[a-z0-9-]`, at most 16 characters.
+  string slug_prefix = 6 [json_name = "slug_prefix"];
+  // A tenant's admins may delete it once it holds nothing; absent: true.
+  optional bool admins_may_delete = 7 [json_name = "admins_may_delete"];
+}
+
+// What the web UI calls a tenant (D81), 1-24 characters each.
+message TenantLabel {
+  string singular = 1;
+  string plural = 2;
+}
+
+message GetDirectorySettingsRequest {}
+
+message GetDirectorySettingsResponse {
+  DirectorySettings settings = 1;
+}
+
+message UpdateDirectorySettingsRequest {
+  DirectorySettings settings = 1;
+}
+
+message UpdateDirectorySettingsResponse {
+  DirectorySettings settings = 1;
+}

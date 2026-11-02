@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 type Settings = glidex_api::proto::glidex::directory::v1::__buffa::oneof::connector::Settings;
 
 const USAGE: &str = "Usage: connector list | show <id> \
-    | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--mfa-acr V]... [COMMON] \
+    | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--trust-email] [--allow-email E]... [--mfa-acr V]... [COMMON] \
     | add pam <id> [--name TEXT] [--allow-group G]... [COMMON] \
     | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
     | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
@@ -120,6 +120,14 @@ fn show(c: &Connector) {
             }
             if !o.allowed_domains.is_empty() {
                 println!("  Email domains:  {}", o.allowed_domains.join(", "));
+            }
+            if !o.allowed_emails.is_empty() {
+                println!("  Allowed emails: {}", o.allowed_emails.join(", "));
+            }
+            if o.trust_email == Some(true) {
+                println!(
+                    "  Addresses:      trusted (a token without email_verified counts as verified)"
+                );
             }
             if let Some(r) = &o.redirect_uri {
                 println!("  Redirect URI:   {r}");
@@ -357,6 +365,8 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
                         scopes: strings(args, "--scope"),
                         groups_claim: flag_value(args, "--groups-claim").unwrap_or("").into(),
                         allowed_domains: strings(args, "--domain"),
+                        trust_email: has_flag(args, "--trust-email").then_some(true),
+                        allowed_emails: strings(args, "--allow-email"),
                         mfa_acr_values: strings(args, "--mfa-acr"),
                         ..Default::default()
                     })))
@@ -988,12 +998,177 @@ fn print_key(k: &SigningKey) {
     );
 }
 
+const SETTINGS_USAGE: &str = "directory settings [--self-service on|off] [--creators all|TEAM,...] \
+    [--max-per-user N] [--max-total N|none] [--approval none|required] [--slug-prefix P|none] \
+    [--admins-may-delete on|off] [--label SINGULAR/PLURAL]";
+
+fn on_off(v: &str) -> Result<bool, String> {
+    match v {
+        "on" | "yes" | "true" => Ok(true),
+        "off" | "no" | "false" => Ok(false),
+        _ => Err(format!("'{v}': use on or off")),
+    }
+}
+
+fn print_settings(s: &DirectorySettings, teams: &HashMap<String, String>) {
+    let dflt = SelfServiceSettings::default();
+    let ss = s.self_service.as_option().unwrap_or(&dflt);
+    let label = s.tenant_label.as_option();
+    let (one, many) = label
+        .map(|l| (l.singular.as_str(), l.plural.as_str()))
+        .unwrap_or(("Tenant", "Tenants"));
+    println!("  Label:             {one} / {many}");
+    println!(
+        "  Self-service:      {}",
+        if ss.enabled {
+            "on".green()
+        } else {
+            "off".normal()
+        }
+    );
+    let creators = if ss.creator_teams.is_empty() {
+        "every user of the directory".to_string()
+    } else {
+        ss.creator_teams
+            .iter()
+            .map(|id| teams.get(id).cloned().unwrap_or_else(|| id.clone()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!("  Who may create:    {creators}");
+    println!("  Per user:          {}", ss.max_per_user.unwrap_or(3));
+    println!(
+        "  In all:            {}",
+        ss.max_total
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "no limit".into())
+    );
+    println!(
+        "  Approval:          {}",
+        if ss.approval_required {
+            "required"
+        } else {
+            "none"
+        }
+    );
+    println!(
+        "  Slug prefix:       {}",
+        if ss.slug_prefix.is_empty() {
+            "none"
+        } else {
+            &ss.slug_prefix
+        }
+    );
+    println!(
+        "  Admins may delete: {}",
+        if ss.admins_may_delete.unwrap_or(true) {
+            "yes (once empty)"
+        } else {
+            "no"
+        }
+    );
+}
+
+/// Apply `directory settings` flags to `s`; whether any was given.
+fn settings_flags(args: &[&str], s: &mut DirectorySettings) -> Result<bool, String> {
+    let mut changed = false;
+    let ss = s.self_service.get_or_insert_default();
+    if let Some(v) = flag_value(args, "--self-service") {
+        ss.enabled = on_off(v)?;
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--creators") {
+        ss.creator_teams = match v {
+            "all" => Vec::new(),
+            v => v.split(',').map(|t| t.trim().to_string()).collect(),
+        };
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--max-per-user") {
+        ss.max_per_user = Some(v.parse().map_err(|_| format!("'{v}': not a number"))?);
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--max-total") {
+        ss.max_total = match v {
+            "none" => None,
+            v => Some(v.parse().map_err(|_| format!("'{v}': not a number"))?),
+        };
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--approval") {
+        ss.approval_required = match v {
+            "none" => false,
+            "required" => true,
+            _ => return Err(format!("'{v}': use none or required")),
+        };
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--slug-prefix") {
+        ss.slug_prefix = if v == "none" { String::new() } else { v.into() };
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--admins-may-delete") {
+        ss.admins_may_delete = Some(on_off(v)?);
+        changed = true;
+    }
+    if let Some(v) = flag_value(args, "--label") {
+        let (one, many) = v
+            .split_once('/')
+            .ok_or_else(|| format!("'{v}': use SINGULAR/PLURAL, e.g. Lab/Labs"))?;
+        let l = s.tenant_label.get_or_insert_default();
+        l.singular = one.trim().into();
+        l.plural = many.trim().into();
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// `directory settings` (spec/19-tenancy.md §11.1): show them, or change
+/// those named and keep the rest.
+async fn settings(t: &crate::client::RpcTransport, args: &[&str]) {
+    let svc = DirectorySettingsServiceClient::new(t.clone(), t.config());
+    let mut s = match svc
+        .get_directory_settings(GetDirectorySettingsRequest::default())
+        .await
+        .map(|r| r.into_owned())
+    {
+        Ok(r) => r.settings.as_option().cloned().unwrap_or_default(),
+        Err(e) => return err(rpc_err(e)),
+    };
+    let changed = match settings_flags(args, &mut s) {
+        Ok(c) => c,
+        Err(e) => {
+            err(e);
+            return usage(SETTINGS_USAGE);
+        }
+    };
+    if changed {
+        match svc
+            .update_directory_settings(UpdateDirectorySettingsRequest {
+                settings: s.into(),
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) => s = r.settings.as_option().cloned().unwrap_or_default(),
+            Err(e) => return err(rpc_err(e)),
+        }
+    }
+    let teams = crate::tenancy::team_names(t).await;
+    print_settings(&s, &teams);
+}
+
 /// `directory keys [rotate]` (spec/19-tenancy.md D52, D53): the directory's
-/// issuer URL and token signing keys, on `SigningKeyService`.
+/// issuer URL and token signing keys, on `SigningKeyService`;
+/// `directory settings` its settings (§11.1).
 pub async fn directory(client: &ApiClient, args: &[&str]) {
     let Some(t) = transport(client).await else {
         return;
     };
+    if args.first() == Some(&"settings") {
+        return settings(&t, &args[1..]).await;
+    }
     let svc = SigningKeyServiceClient::new(t.clone(), t.config());
     match (args.first().copied(), args.get(1).copied()) {
         (Some("keys" | "key"), None | Some("list" | "ls")) => match svc
@@ -1119,7 +1294,7 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
             }
         }
         _ => usage(
-            "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME] | delete <id> | keys [rotate]",
+            "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME] | delete <id> | keys [rotate] | settings [...]",
         ),
     }
 }

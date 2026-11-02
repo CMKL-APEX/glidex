@@ -1642,6 +1642,43 @@ pub async fn detach_disk(call: &Call, req: pb::DetachDiskRequest) -> ServiceResu
     respond(call, vm, req.wait_secs, Vec::new()).await
 }
 
+pub async fn attach_network(call: &Call, req: pb::AttachNetworkRequest) -> ServiceResult<VmReply> {
+    let (vm, _, _) = visible_vm(call, &req.id).await?;
+    let n = call
+        .manager()
+        .find_network(&vm.project, &req.network)
+        .map_err(manager_err)?;
+    let mut es = project_entities(&vm.project);
+    let e = crate::api::add_network(&mut es, &n);
+    call.require_action(
+        "useNetwork",
+        e,
+        es,
+        &[("project", Ent::Project(vm.project.clone()))],
+    )?;
+    let att = m::NetworkAttachment {
+        network: n.id,
+        mac: req.mac,
+        queue_pairs: req.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+    };
+    let vm = call
+        .manager()
+        .attach_network(&req.id, att)
+        .await
+        .map_err(manager_err)?;
+    respond(call, vm, req.wait_secs, Vec::new()).await
+}
+
+pub async fn detach_network(call: &Call, req: pb::DetachNetworkRequest) -> ServiceResult<VmReply> {
+    visible_vm(call, &req.id).await?;
+    let vm = call
+        .manager()
+        .detach_network(&req.id, &req.network, req.mac.as_deref())
+        .await
+        .map_err(manager_err)?;
+    respond(call, vm, req.wait_secs, Vec::new()).await
+}
+
 // ---- the live console (the WebSocket and `Console`) ---------------------------
 
 /// Where a VM's console is: its shim's socket here, or its node.
@@ -1673,9 +1710,12 @@ pub async fn console_target(
     let (e, es) = vm_entities(&vm);
     call.require_visible("readVm", e, es, "VM")?;
     use crate::auth::Method;
-    if matches!(call.p.method, Method::Pam | Method::Oidc | Method::Passkey)
-        && !ticket.is_some_and(|t| call.auth().redeem_ticket(&call.p, &vm.id, t))
-    {
+    let browser = matches!(call.p.method, Method::Pam | Method::Oidc | Method::Passkey);
+    let redeemed = match ticket {
+        Some(t) if browser => redeem_ticket(call, &vm.id, t).await?,
+        _ => false,
+    };
+    if browser && !redeemed {
         return Err(ServiceError::new(
             StatusCode::FORBIDDEN,
             "ticket_required",
@@ -1686,6 +1726,21 @@ pub async fn console_target(
         Some(addr) => ConsoleTarget::Remote { addr, vm: vm.id },
         None => ConsoleTarget::Local(vm.paths().console_socket),
     })
+}
+
+/// Use up a console ticket. A cluster's tickets are the leader's, which
+/// issued it wherever the browser asked (spec/11-security.md decision 21);
+/// on any other server the leader redeems it.
+async fn redeem_ticket(call: &Call, vm: &str, ticket: &str) -> ServiceResult<bool> {
+    match call.manager().cluster() {
+        Some(c) if c.node.is_some() && !c.is_leader() => c
+            .redeem_console_ticket(&call.p.cedar(), vm, ticket)
+            .await
+            .map_err(|e| {
+                ServiceError::new(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable", e)
+            }),
+        _ => Ok(call.auth().redeem_ticket(&call.p, vm, ticket)),
+    }
 }
 
 /// Connect to the console a target names.

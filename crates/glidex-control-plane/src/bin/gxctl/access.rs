@@ -419,7 +419,7 @@ async fn get_project(
 }
 
 pub async fn project(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: project list | show <p> | create <name> [--description TEXT] | delete <p> | quota <p> key=value... | use <p>";
+    let u = "Usage: project list | show <p> | create <name> [--description TEXT] [--tenant T] | delete <p> | quota <p> key=value... | use <p>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => match list_projects(client).await {
             Ok(ps) if ps.is_empty() => println!("No projects visible to you."),
@@ -448,6 +448,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                     Ok(p) => {
                         println!("  Name:        {}", p.name.yellow());
                         println!("  Id:          {}", p.id);
+                        println!("  Tenant:      {}", p.tenant_id);
                         println!("  Description: {}", p.description);
                         println!("  Created:     {}", ts(p.created_at.as_option()));
                         println!(
@@ -461,7 +462,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         "create" => {
-            let pos = positional(&args[1..], &["--description"]);
+            let pos = positional(&args[1..], &["--description", "--tenant"]);
             let Some(name) = pos.first() else {
                 return usage(u);
             };
@@ -470,6 +471,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                 .create_project(CreateProjectRequest {
                     name: name.to_string(),
                     description: flag_value(args, "--description").unwrap_or("").to_string(),
+                    tenant: flag_value(args, "--tenant").map(str::to_string),
                     ..Default::default()
                 })
                 .await
@@ -774,11 +776,21 @@ pub async fn user(client: &ApiClient, args: &[&str]) {
                             .iter()
                             .map(|i| format!("{}:{}", i.provider, i.subject))
                             .collect();
+                        let waiting = match &u.pending_connector {
+                            Some(c) => format!(
+                                "not signed in yet: {} through {c}",
+                                u.email.as_deref().unwrap_or("-")
+                            )
+                            .yellow()
+                            .to_string(),
+                            None => String::new(),
+                        };
                         println!(
-                            "  {:<38} {:<20} {}{}",
+                            "  {:<38} {:<20} {}{}{}",
                             u.id.cyan(),
                             u.display_name,
                             ids.join(", "),
+                            waiting,
                             if u.disabled == Some(true) {
                                 " (disabled)".red().to_string()
                             } else {
@@ -790,7 +802,199 @@ pub async fn user(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(rpc_err(e)),
             }
         }
-        _ => usage("Usage: user list"),
+        "add" => user_add(client, &args[1..]).await,
+        "link" => user_link(client, &args[1..]).await,
+        "unlink" => user_unlink(client, &args[1..]).await,
+        _ => usage(USER_USAGE),
+    }
+}
+
+const USER_USAGE: &str = "Usage: user list | add <email> --tenant T --connector C [--role R] [--name N] | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>";
+
+/// `user add`: pre-add someone by email (spec/19-tenancy.md D77); their
+/// first login through the connector with that verified address takes it.
+async fn user_add(client: &ApiClient, args: &[&str]) {
+    let (Some(email), Some(tenant), Some(connector)) = (
+        args.first().filter(|a| !a.starts_with("--")),
+        flag_value(args, "--tenant"),
+        flag_value(args, "--connector"),
+    ) else {
+        return usage(USER_USAGE);
+    };
+    let svc = svc!(client, UserServiceClient);
+    let req = CreateUserRequest {
+        display_name: flag_value(args, "--name").unwrap_or("").into(),
+        pending: PendingUser {
+            email: email.to_string(),
+            connector: connector.into(),
+            tenant: tenant.into(),
+            role: flag_value(args, "--role").unwrap_or("").into(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    match svc.create_user(req).await {
+        Ok(r) => {
+            let u = r.into_owned().user;
+            println!(
+                "Added {} ({}): their first sign-in through {connector} as {email} takes the account.",
+                u.display_name,
+                u.id.cyan()
+            );
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// A user's id from an id, or from a display name exactly one user has
+/// (names repeat: the same account name signs in on several servers).
+async fn resolve_user(svc: &UserServiceClient<RpcTransport>, key: &str) -> Result<String, String> {
+    let users = svc
+        .list_users(ListUsersRequest::default())
+        .await
+        .map_err(rpc_err)?
+        .into_owned()
+        .users;
+    if let Some(u) = users.iter().find(|u| u.id == key) {
+        return Ok(u.id.clone());
+    }
+    let named: Vec<&str> = users
+        .iter()
+        .filter(|u| u.display_name == key)
+        .map(|u| u.id.as_str())
+        .collect();
+    match named.as_slice() {
+        [id] => Ok(id.to_string()),
+        [] => Err(format!("no user {key}")),
+        many => Err(format!(
+            "{} users are named {key}: give one's id ({})",
+            many.len(),
+            many.join(", ")
+        )),
+    }
+}
+
+/// The subjects to link. In a cluster, `pam` and `unix` sign-ins are an
+/// account on one node, `<account>@<node id>`: `<account>@<node>` takes a
+/// node's name or id, and `--all-nodes` a bare account on every node
+/// (`nodes`: id and name). On a standalone host, or where the cluster
+/// shares local accounts, the subject is the bare account; the server
+/// refuses a shape that would never sign anyone in. Other providers
+/// (`oidc:<issuer>`) take the subject as it is.
+fn link_subjects(
+    provider: &str,
+    subject: &str,
+    all_nodes: bool,
+    nodes: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    if provider != "pam" && provider != "unix" {
+        if all_nodes {
+            return Err("--all-nodes is for pam and unix sign-ins".into());
+        }
+        if !provider.starts_with("oidc:") {
+            return Err(format!(
+                "unknown provider {provider}: pam, unix or oidc:<issuer>"
+            ));
+        }
+        return Ok(vec![subject.to_string()]);
+    }
+    let standalone = nodes.iter().all(|(id, _)| id == "local");
+    if all_nodes {
+        if subject.contains('@') {
+            return Err("with --all-nodes, give the account alone".into());
+        }
+        if standalone {
+            return Ok(vec![subject.to_string()]);
+        }
+        return Ok(nodes
+            .iter()
+            .map(|(id, _)| format!("{subject}@{id}"))
+            .collect());
+    }
+    let Some((account, node)) = subject.rsplit_once('@') else {
+        return Ok(vec![subject.to_string()]);
+    };
+    if standalone {
+        return Err("on a standalone host a local sign-in is the account alone".into());
+    }
+    let id = nodes
+        .iter()
+        .find(|(id, name)| id == node || name == node)
+        .map(|(id, _)| id)
+        .ok_or_else(|| format!("no node {node}"))?;
+    Ok(vec![format!("{account}@{id}")])
+}
+
+async fn user_link(client: &ApiClient, args: &[&str]) {
+    let all_nodes = has_flag(args, "--all-nodes");
+    let pos: Vec<&str> = args
+        .iter()
+        .copied()
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+    let [user, provider, subject] = pos.as_slice() else {
+        return usage(USER_USAGE);
+    };
+    let svc = svc!(client, UserServiceClient);
+    let id = match resolve_user(&svc, user).await {
+        Ok(id) => id,
+        Err(e) => return err(e),
+    };
+    let nodes = if *provider == "pam" || *provider == "unix" {
+        match crate::cluster::list_nodes(client).await {
+            Ok(ns) => ns
+                .iter()
+                .filter_map(|n| {
+                    let m = n.meta.as_option()?;
+                    let name = n
+                        .spec
+                        .as_option()
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    Some((m.id.clone(), name))
+                })
+                .collect(),
+            Err(e) => return err(e),
+        }
+    } else {
+        Vec::new()
+    };
+    let subjects = match link_subjects(provider, subject, all_nodes, &nodes) {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    for subject in subjects {
+        let req = LinkIdentityRequest {
+            id: id.clone(),
+            provider: provider.to_string(),
+            subject: subject.clone(),
+            ..Default::default()
+        };
+        match svc.link_identity(req).await {
+            Ok(_) => println!("{} {provider}:{subject} → {id}", "Linked:".green()),
+            Err(e) => err(format!("{provider}:{subject}: {}", rpc_err(e))),
+        }
+    }
+}
+
+async fn user_unlink(client: &ApiClient, args: &[&str]) {
+    let [user, key] = args else {
+        return usage(USER_USAGE);
+    };
+    let svc = svc!(client, UserServiceClient);
+    let id = match resolve_user(&svc, user).await {
+        Ok(id) => id,
+        Err(e) => return err(e),
+    };
+    let req = UnlinkIdentityRequest {
+        id: id.clone(),
+        key: key.to_string(),
+        ..Default::default()
+    };
+    match svc.unlink_identity(req).await {
+        Ok(_) => println!("{} {key} from {id}", "Unlinked:".green()),
+        Err(e) => err(rpc_err(e)),
     }
 }
 
@@ -1268,6 +1472,48 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_subjects_name_a_node_for_pam_and_unix() {
+        let nodes = [
+            ("n1".to_string(), "prism1".to_string()),
+            ("n2".to_string(), "prism2".to_string()),
+        ];
+        assert_eq!(
+            link_subjects("pam", "alice@prism2", false, &nodes).unwrap(),
+            ["alice@n2"]
+        );
+        assert_eq!(
+            link_subjects("unix", "alice@n1", false, &nodes).unwrap(),
+            ["alice@n1"]
+        );
+        assert_eq!(
+            link_subjects("pam", "alice", true, &nodes).unwrap(),
+            ["alice@n1", "alice@n2"]
+        );
+        // The server decides whether this cluster shares local accounts.
+        assert_eq!(
+            link_subjects("pam", "alice", false, &nodes).unwrap(),
+            ["alice"]
+        );
+        assert!(link_subjects("pam", "alice@prism9", false, &nodes).is_err());
+        assert!(link_subjects("pam", "alice@prism1", true, &nodes).is_err());
+        assert_eq!(
+            link_subjects("oidc:https://idp.example", "sub-1", false, &[]).unwrap(),
+            ["sub-1"]
+        );
+        assert!(link_subjects("oidc:https://idp.example", "sub-1", true, &[]).is_err());
+        assert!(link_subjects("ldap", "x", false, &[]).is_err());
+        // A standalone host: the bare account, whichever way it is asked.
+        let local = [("local".to_string(), "host".to_string())];
+        for all in [false, true] {
+            assert_eq!(
+                link_subjects("pam", "alice", all, &local).unwrap(),
+                ["alice"]
+            );
+        }
+        assert!(link_subjects("pam", "alice@host", false, &local).is_err());
+    }
 
     #[test]
     fn quota_edits_merge_into_the_current_set() {

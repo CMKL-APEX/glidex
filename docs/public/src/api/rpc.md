@@ -276,6 +276,8 @@ same ids and names.
 |  | `DetachDevice` | `DELETE /vms/{id}/devices` |
 |  | `AttachDisk` | `POST /vms/{id}/disks` |
 |  | `DetachDisk` | `DELETE /vms/{id}/disks/{disk}` |
+|  | `AttachNetwork` | `POST /vms/{id}/networks` |
+|  | `DetachNetwork` | `DELETE /vms/{id}/networks/{network}` |
 
 ### `glidex.storage.v1`
 
@@ -322,6 +324,7 @@ same ids and names.
 |  | `ListNetworkEvents` | `GET /networks/{id}/events` |
 |  | `GetNetworkOvn` | `GET /networks/{id}/ovn` |
 |  | `GrantNetwork` | `PUT /networks/{id}/grants` |
+|  | `SetNetworkHostApi` | `PUT /networks/{id}/host_api` |
 |  | `CreateProjectNetwork` | `POST /projects/{id}/networks` |
 |  | `SetNetworkRouter` | `PUT /projects/{id}/networks/{network}/router` |
 | `NetworkShareService` | `OfferNetworkShare` | `POST /networks/{id}/shares` |
@@ -429,6 +432,7 @@ same ids and names.
 |  | `SuspendTenant` | `POST /tenants/{id}/suspend` |
 |  | `ResumeTenant` | `POST /tenants/{id}/resume` |
 |  | `DeleteTenant` | `DELETE /tenants/{id}` |
+|  | `ApproveTenant` | `POST /tenants/{id}/approve` |
 |  | `ListMembers` | `GET /tenants/{id}/members` |
 |  | `AddMember` | `POST /tenants/{id}/members` |
 |  | `RemoveMember` | `DELETE /tenants/{id}/members/{principal}` |
@@ -445,6 +449,10 @@ same ids and names.
 |  | `ListOffers` | `GET /admissions/offers` |
 |  | `RevokeOffer` | `DELETE /admissions/offers/{id}` |
 |  | `ListTrustedDirectories` | `GET /admissions/directories` |
+|  | `SetTrustedDirectory` | `PATCH /admissions/directories/{id}` |
+|  | `ListAutoAdmissions` | `GET /admissions/auto` |
+|  | `SetAutoAdmission` | `PUT /admissions/auto/{directory}` |
+|  | `RemoveAutoAdmission` | `DELETE /admissions/auto/{directory}` |
 |  | `SetAdmission` | `PUT /admissions/{tenant}` |
 |  | `RemoveAdmission` | `DELETE /admissions/{tenant}` |
 | `DirectoryService` | `ListDirectories` | `GET /directories` |
@@ -474,6 +482,8 @@ same ids and names.
 | `InvitationService` | `ListInvitations` | `GET /tenants/{id}/invitations` |
 |  | `CreateInvitation` | `POST /tenants/{id}/invitations` |
 |  | `RevokeInvitation` | `DELETE /invitations/{id}` |
+| `DirectorySettingsService` | `GetDirectorySettings` | `GET /directory/settings` |
+|  | `UpdateDirectorySettings` | `PUT /directory/settings` |
 | `SigningKeyService` | `ListSigningKeys` | `GET /directory/keys` |
 |  | `RotateSigningKey` | `POST /directory/keys/rotate` |
 

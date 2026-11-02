@@ -163,7 +163,12 @@ Who gets in:
 - `required_groups`: only members of one of these groups (from
   `groups_claim`). Empty lets in everyone the provider authenticates for
   this client, so set it, or restrict the client at the provider.
-- `allowed_domains`: only users whose email is in one of these domains.
+- `allowed_domains`: only users whose email is in one of these domains,
+  and verified: the ID token says `email_verified: true`. Some providers,
+  such as Microsoft Entra ID, never send `email_verified`, because the
+  organization assigns its users' addresses; for those, set
+  `trust_email: true` and a token that doesn't say counts as verified.
+  A token that says `email_verified: false` is refused either way.
 - `jit: false`: only people who already have a Glidex user.
 
 `group_teams` maps provider groups to Glidex teams, which must exist
@@ -221,8 +226,18 @@ gxctl connector list
   contains `mfa`, or `acr` is one of the `--mfa-acr` values).
 - `--token-max-days N` caps the tokens a login through the connector
   mints (default 30 days).
-- `--jit` / `--no-jit`, `--require-group`, `--team GROUP=TEAM` and
-  `--domain` work as in the file settings.
+- `--jit` / `--no-jit`, `--require-group`, `--team GROUP=TEAM`,
+  `--domain` and `--trust-email` work as in the file settings
+  (`allowed_domains`, `trust_email`). In the web UI's connector form they
+  are **Allowed email domains** and **The IdP verifies its users'
+  addresses**. `gxctl connector update` doesn't change `--domain`,
+  `--trust-email`, `--allow-email` or `--mfa-acr`; change them in the
+  web UI's connector form (**Edit**).
+- `--allow-email E` (an `oidc` connector's **Allowed emails**): with
+  `--jit`, only these verified addresses get an account. `--domain`
+  still gates every login, so a connector can let in anyone at the
+  domain who already has an account and create accounts for the listed
+  people only. Each address must be in one of the domains.
 - `--default-tenant <t>` makes new users members of tenant `<t>`. If
   that is the `admin` tenant or another operator tenant, a connector that creates users must also
   have `--require-group`.
@@ -652,6 +667,43 @@ In the web UI, a tenant's page has an **Invitations** card: the list,
 is created (see [Tenants and
 admissions](access-control.md#tenants-and-admissions)).
 
+## Adding people before they sign in
+
+A directory administrator can add a person by email before they ever
+sign in: the account exists at once, with its tenant and role, and the
+person's first sign-in through the named connector with that address
+takes it. There is no link to send; tell them to sign in. With a
+connector that doesn't create users (`--no-jit`), this makes "only the
+people we add" a list you keep on the **Directory** page's **Users &
+roles** tab.
+
+```bash
+gxctl user add alice@example.org --tenant web --connector corp --role role.tenant-admin
+gxctl user list        # "not signed in yet: alice@example.org through corp"
+```
+
+- **Who adds.** Directory administrators (the right to manage users),
+  who may also give the role in that tenant.
+- **Who can take it.** The first login through that connector whose
+  **verified** address is the one added, from an account Glidex doesn't
+  know yet. It is taken once. The connector's other rules still apply:
+  its email domains, required groups and MFA. Its `--allow-email` and
+  `--default-tenant` don't apply: the account already has its tenant.
+- `--connector` is an enabled `oidc`, `google` or `jumpcloud` connector,
+  not a provisioned one, as for invitations; the address must be in the
+  connector's email domains when it has any.
+- `--role` is `member` (the default: membership only),
+  `role.tenant-admin` or `role.tenant-auditor`. `--name` sets the display
+  name; it defaults to the part of the address before the `@`.
+- **Removing.** As for any user: **Disable** ends their sessions and keeps
+  them out; **Delete** removes the account (with the connector creating
+  users, they would get a new one at their next sign-in, so disable
+  instead).
+
+In the web UI, **Add user** on the **Users & roles** tab takes the email,
+tenant, role and connector. Until they sign in, the user is listed with
+*not signed in yet* and the address they sign in with.
+
 ### Accepting an invitation
 
 The invited person opens the link. The page says which tenant and role
@@ -775,10 +827,12 @@ passkey, which is refused (`409 last_identity`).
 
 A user who has lost every way in (both their passkeys, say) can't add a
 new one, and nobody else can add one for them. An administrator gives
-them a way back in by linking another sign-in method to their user over the API
-(`POST /users/{id}/identities`, needs `directory-admin`), such as their
-local account; they then sign in with it and add a new passkey.
-<!-- TODO(verify): the provider and subject a PAM or OIDC identity takes in POST /users/{id}/identities (valid providers: pam, unix, oidc:<issuer>; connector sign-ins can't be linked this way). Name the exact body before documenting it further. -->
+them a way back in by linking another sign-in method to their user,
+such as their local account (needs `directory-admin`); they then sign in
+with it and add a new passkey, with `gxctl user link` (see
+[Linking a sign-in to a user](#linking-a-sign-in-to-a-user)).
+The providers are `pam`, `unix` and `oidc:<issuer>`; a connector's
+sign-in can't be linked this way.
 
 ## Hosting other organizations' directories
 
@@ -813,8 +867,12 @@ their email domain (`allowed_domains`), the page sends them to their
 directory's sign-in. The login page never lists the directories a host
 serves.
 
-Their tenants use this host's cluster only when you admit them, as any
-tenant (`gxctl admission set`). `gxctl directory delete acme` removes a
+Creating and deleting directories needs `system-admin` and a recent
+login. Their tenants use this host's cluster only when you admit them,
+as any tenant (`gxctl admission set`). A tenant whose directory is on
+another organization's own Glidex is admitted with an offer instead
+(see [Admitting another organization's
+tenant](clusters.md#admitting-another-organizations-tenant)). `gxctl directory delete acme` removes a
 directory nobody uses yet; one with users, sign-in providers or projects
 stays until its administrators remove them. The host's own directory,
 `local`, stays.
@@ -933,7 +991,12 @@ Some actions need a login in the last 10 minutes:
 - adding, changing or removing login connectors, their secrets and
   their SCIM tokens, and applying a [blocked directory
   sync](#the-safety-stop);
-- managing admissions and deleting tenants;
+- managing admissions and offers, deleting tenants, creating and
+  deleting [hosted directories](#hosting-other-organizations-directories),
+  and redeeming another organization's offer for a tenant;
+- rotating the directory's token signing key;
+- adding or removing a sign-in method of your own account (a passkey,
+  another provider);
 - adding, changing and removing [workload federations](workload-federation.md);
 - host network changes that can cut the host off (installing Open
   vSwitch, DPDK, committing or removing uplinks, deleting bridges);
@@ -956,6 +1019,34 @@ host's socket, or with a token that has its own roles.
 gxctl whoami          # method, teams, roles
 gxctl user list       # every user and their identities
 ```
+
+### Linking a sign-in to a user
+
+In a cluster, a password (PAM) sign-in, and a user on a host's socket
+(`unix`), is an account on one node: `pam:alice@<node id>` (unless
+`cluster.shared_local_accounts` is set; then it is `pam:alice`
+everywhere). The first sign-in on a node
+where it isn't linked yet makes a new user with no roles. In a cluster
+whose servers share account names, as behind a load balancer, link the
+account on every node to its user once:
+
+```bash
+gxctl user link alice pam alice --all-nodes    # pam:alice@<each node>
+gxctl user link alice unix alice --all-nodes   # the same for gxctl on the socket
+gxctl user link alice pam alice@node2          # one node, by name or id
+gxctl user unlink alice pam:alice@<node id>
+```
+
+On a standalone host, or with `cluster.shared_local_accounts`, give the
+account alone: `gxctl user link alice pam alice`. A subject of the
+other shape is refused (`400`), since no sign-in would ever match it;
+the same goes for the sign-ins given with `POST /users`.
+
+The user is an id, or a name exactly one user has. A sign-in already
+linked to another user is refused: remove that user, or unlink it there,
+first (`409 conflict`). Linking needs `manageUsers` on the directory
+(`directory-admin`). `gxctl user list` shows each user's sign-ins as
+`<provider>:<subject>`.
 
 The audit log records every login, write and denied request (see
 [Access control](access-control.md#audit-log)).

@@ -168,7 +168,11 @@ store, vCPU pinning differs (22-host-topology.md H9), and Cloud Hypervisor
 reports no usable disk latency (13-metering.md D17). Features that only one
 backend can offer have to wait or be refused. Revisit if one backend
 falls behind on a feature users need, or if maintaining parity starts
-to block features.
+to block features. A third driver, Pylon
+([30-pylon.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/30-pylon.md)),
+is a Cloud Hypervisor fork for fast CPU core elasticity; its driver
+reuses Cloud Hypervisor's command line and API client and adds its own
+flags and the host daemon `pylond`.
 
 ## VM lifecycle
 
@@ -259,6 +263,10 @@ peer-credential checks and a per-operation allow-list:
 
 The web UI's server, `glidex-ui`, runs as its own user with no authority
 of its own: it serves files and proxies `/api` (11-security.md decision 4).
+The guests' metadata endpoint, `glidex-metad`, is the same kind of
+process: its own user, no key, parsing guests' HTTP outside the control
+plane, which takes requests on `metad.sock` from that user alone
+(29-workload-identity.md W11).
 
 **Why.**
 
@@ -340,7 +348,12 @@ the same voter (D18). The replicated store holds metering history,
 about 12 MB per VM, on every server; that sets the ceiling of roughly
 5,000 VMs (§4.1). Past it, the plan is to move metering history out of
 the replicated store first. `openraft` is pre-1.0 and is upgraded
-deliberately.
+deliberately. A write holds the one write lane across its Raft round
+trip, and that round trip needs the async runtime's I/O. So synchronous
+code must never block a Tokio worker on the lane, on another lock held
+across a store write, or on a slow helper call: two control planes hung
+that way (PRs #221, #227, #228). Such waits go through
+`glidex_raftstore::wait`, which waits in `block_in_place`.
 
 ### Leader-computed write sets
 
@@ -624,9 +637,11 @@ which is what federation replaces.
 
 **Consequences.** Exchanged tokens last at most an hour and can't be
 renewed. Identity for Glidex's own VMs (a metadata endpoint and SPIFFE
-IDs) is a separate draft,
+IDs) is a separate spec,
 [29-workload-identity.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/29-workload-identity.md),
-not implemented. See [Workload federation](../operator-guide/workload-federation.md).
+built in part: identity tokens, VMs' service accounts and the endpoint
+on node NAT networks (`glidex-metad`); the other network kinds, vsock
+and agents are not built yet. See [Workload federation](../operator-guide/workload-federation.md).
 
 ## Networking
 
@@ -703,7 +718,8 @@ disks and images live (24-storage.md S2). A driver creates, sizes, deletes
 and opens volumes in it, and a topology says which nodes reach it (S4).
 The drivers are `dir` (node-local; the built-in `local` datastore),
 `shared-dir` (a filesystem the operator mounts on every node: NFS,
-CephFS, GPFS…) and `lvm` (node-local LVM-thin). Glidex's driver trait,
+CephFS, GPFS…), `lvm` (node-local LVM-thin) and `hyperstor` (a pool of
+a hyperstor cluster, served to VMs over vhost-user-blk; §11.2). Glidex's driver trait,
 `StorageDriver`, follows CSI's split between controller and node
 operations and its topology and capability model, but Glidex does not
 host CSI plugins yet (S1).
@@ -903,7 +919,10 @@ Logs are appended across restarts and rotated once at 16 MiB
 A console held by the control plane (the design before PR #4).
 
 **Consequences.** The browser reaches the console through a WebSocket
-with a single-use ticket, `gxctl` through a bidirectional RPC. The
+with a single-use ticket, `gxctl` through a bidirectional RPC. In a
+cluster the ticket is kept in the leader's memory, not replicated, so a
+load balancer with no affinity works, and a leader change drops tickets
+not yet used (11-security.md decision 21). The
 browser terminal is [ghostty-web](https://github.com/coder/ghostty-web)
 by default, with xterm.js as a choice, because ghostty-web renders to a
 canvas that screen readers can't read (PR #50). See

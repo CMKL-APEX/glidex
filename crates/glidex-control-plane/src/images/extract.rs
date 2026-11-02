@@ -156,11 +156,15 @@ impl ImageManager {
                 src.name, src.status
             )));
         }
-        if let Some(existing) = self.images.read().unwrap().values().find(|i| {
-            i.for_image.as_deref() == Some(src.id.as_str())
-                && i.status == ImageStatus::Extracting
-                && i.deletion_requested_at.is_none()
-        }) {
+        if let Some(existing) = glidex_raftstore::wait::read(&self.images)
+            .unwrap()
+            .values()
+            .find(|i| {
+                i.for_image.as_deref() == Some(src.id.as_str())
+                    && i.status == ImageStatus::Extracting
+                    && i.deletion_requested_at.is_none()
+            })
+        {
             return Ok((existing.clone(), false));
         }
         let name = name.unwrap_or_else(|| {
@@ -169,7 +173,11 @@ impl ImageManager {
             n
         });
         validate_name("image", &name)?;
-        if self.images.read().unwrap().values().any(|i| i.name == name) {
+        if glidex_raftstore::wait::read(&self.images)
+            .unwrap()
+            .values()
+            .any(|i| i.name == name)
+        {
             return Err(ImageError::AlreadyExists(format!(
                 "an image named {name} already exists (pass a different name, or delete it first)"
             )));

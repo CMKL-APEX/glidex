@@ -518,10 +518,13 @@ impl Mirror<crate::store::Glidex> for NodeLink {
                     .and_then(|v| v["index"].as_u64())
                     .unwrap_or(0);
                 // Read your writes: the controller's next step reads the cache.
+                // The revision arrives over the runtime's I/O: wait off the worker.
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                while self.db.revision() < index && std::time::Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+                glidex_raftstore::wait::blocking(|| {
+                    while self.db.revision() < index && std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                });
                 Ok(Submitted::Acked(index))
             }
             Ok(r) => {

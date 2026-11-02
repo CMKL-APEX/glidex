@@ -59,6 +59,12 @@ pub fn set_local_account_scope(node: Option<String>) {
     *account_scope_cell().write().unwrap() = node;
 }
 
+/// Whether local login names are per node here: in a cluster unless
+/// `cluster.shared_local_accounts` (D13). The same on every server.
+pub fn local_accounts_per_node() -> bool {
+    account_scope_cell().read().unwrap().is_some()
+}
+
 /// The subject a local login name has in the identity store.
 pub fn local_subject(name: &str) -> String {
     match &*account_scope_cell().read().unwrap() {
@@ -248,9 +254,29 @@ impl EntitySet {
     }
 
     pub fn directory(&mut self, id: &str, owner: &str) -> &mut Self {
+        self.directory_with(id, owner, &crate::tenants::SelfService::default())
+    }
+
+    /// A directory with its self-service settings (spec/19-tenancy.md D78).
+    pub fn directory_with(
+        &mut self,
+        id: &str,
+        owner: &str,
+        s: &crate::tenants::SelfService,
+    ) -> &mut Self {
+        let teams: Vec<Value> = s
+            .creator_teams
+            .iter()
+            .map(|t| Ent::Team(t.clone()).json_ref())
+            .collect();
         self.add(
             Ent::Directory(id.into()),
-            json!({ "owner": Ent::Tenant(owner.into()).json_ref() }),
+            json!({
+                "owner": Ent::Tenant(owner.into()).json_ref(),
+                "self_service": s.enabled,
+                "self_service_all": s.creator_teams.is_empty(),
+                "self_service_teams": teams,
+            }),
             vec![],
         )
     }

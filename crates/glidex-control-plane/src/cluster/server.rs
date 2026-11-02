@@ -55,6 +55,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/images/{id}/file", get(image_file))
         .route("/cluster/v1/raw", post(raw_write))
         .route("/cluster/v1/auth", post(auth_call))
+        .route("/cluster/v1/console-ticket", post(redeem_console_ticket))
         .route("/cluster/v1/ovn-status", get(ovn_status))
         .route("/cluster/v1/topology", get(topology))
         .route("/cluster/v1/devices/{address}/{op}", post(device_op))
@@ -1250,6 +1251,39 @@ struct AuthCall {
 }
 
 /// Named identity operations a follower can't do itself.
+#[derive(Deserialize)]
+struct RedeemTicket {
+    principal: crate::authz::Ent,
+    vm: String,
+    ticket: String,
+}
+
+/// `POST /cluster/v1/console-ticket`: a server redeems, on the leader that
+/// issued it, the console ticket a browser brought it (spec/11-security.md
+/// decision 21). Only a server may ask: it vouches for the principal, as it
+/// does for a forwarded request.
+async fn redeem_console_ticket(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    Json(r): Json<RedeemTicket>,
+) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    if !c.is_leader() {
+        return not_leader(&c);
+    }
+    let Some(app) = c.app.get() else {
+        return fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "the API isn't up yet",
+        );
+    };
+    let redeemed = app.auth.redeem_ticket_of(&r.principal, &r.vm, &r.ticket);
+    Json(json!({ "redeemed": redeemed })).into_response()
+}
+
 async fn auth_call(
     State(c): Ctx,
     p: Option<Extension<PeerCert>>,

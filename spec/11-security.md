@@ -49,6 +49,8 @@ bullets of [09-networking.md §14](09-networking.md#14-security).
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
 | 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([17-gxctl-auth.md §5](17-gxctl-auth.md)). |
 | 19 | Browser-trusted certificates on a tailnet | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([21-tailscale-tls.md](21-tailscale-tls.md) §2). |
+| 20 | Client address behind a tunnel | `glidex-ui` takes the browser's address from one named header (`GLIDEX_UI_CLIENT_IP_HEADER`, such as Cloudflare's `CF-Connecting-IP`) **only from a loopback peer**: a tunnel daemon on the same host (`cloudflared`). From any other peer, or when unset, the address is the TCP peer's, as before. Off by default; one header, one address, no list of proxies. Anything that can connect to the UI over loopback can then choose its address in rate limits and audit, which is acceptable on a host whose local users are its administrators. |
+| 21 | Console tickets in a cluster | A server's console ticket is the **leader's**: a server that isn't the leader forwards `POST /vms/{id}/console/ticket` (and `CreateConsoleTicket`) to the leader, which keeps the ticket in memory, and the server that takes the WebSocket redeems it there (`/cluster/v1/console-ticket`, servers only). So the two requests may reach different servers, as they do behind a load balancer or tunnel replicas with no affinity, and a ticket still works once. No Raft write: a leader change in a ticket's 30 seconds drops it, and the user opens the console again. A standalone host keeps its tickets as before. |
 
 ## 3. Threat model
 
@@ -357,6 +359,10 @@ selects TCP.
   carry a session cookie or a token, and only from this peer does it
   read `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`.
   The UI overwrites, never appends to, these headers.
+  `X-Forwarded-For` is the TCP peer's address, except behind a tunnel on
+  the same host (decision 20): with `GLIDEX_UI_CLIENT_IP_HEADER` set and a
+  loopback peer, it is the address in that header, when the header holds
+  exactly one.
 - **Host check (UI):** `GLIDEX_UI_HOSTS` allowlist (default
   `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, and the
   addresses of the host's interfaces, read at startup; any port).
@@ -393,7 +399,9 @@ selects TCP.
 - **Console tickets:** `POST /vms/{id}/console/ticket` (needs
   `vm.console`) → `{ticket, expires_in: 30}`. The WebSocket URL carries
   `?ticket=`; tickets are single use, bound to the principal and VM, and
-  the session is re-checked at upgrade.
+  the session is re-checked at upgrade. In a cluster the leader issues
+  and redeems them, whichever servers the two requests reach (decision
+  21).
 - Response headers from the UI: `Content-Security-Policy: default-src
   'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self';
   frame-ancestors 'none'` and more (07-web-ui.md; `'wasm-unsafe-eval'` for
@@ -862,6 +870,7 @@ allow.**
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
 | `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
+| `DELETE /vms/{id}/networks/{network}` | `detachNetwork` on the Vm |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
 **Paths.** Any explicit `kernel_image_path`, `initrd_path`, `rootfs_path` or
@@ -1428,7 +1437,9 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
 | Reloadable certificates ([21-tailscale-tls.md](21-tailscale-tls.md) TS0) | `glidex_tls::{CertSlot, Resolver, FileCert}`; control plane `serve.rs`/`main.rs` (re-publishes `tls.crt`), UI `main.rs` |
+| Client address behind a tunnel (decision 20) | `crates/glidex-ui/src/main.rs` (`client_addr`, test `the_client_ip_header_counts_from_loopback_only`) |
 | Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-tls/src/tailscale.rs` (local API client, polling; shared with hyperstor's management service), `crates/glidex-ui/src/main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([21-tailscale-tls.md](21-tailscale-tls.md) §4.6) |
+| Console tickets in a cluster (decision 21) | `api/gate.rs` (`is_console_ticket`: issued on the leader), `cluster/server.rs` (`/cluster/v1/console-ticket`), `Cluster::redeem_console_ticket`, `service::vm::console_target`; test `console_tickets_are_the_leaders_and_redeemed_once_from_any_server` |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

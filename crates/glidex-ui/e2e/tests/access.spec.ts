@@ -6,10 +6,15 @@ import { api, del, expect, test } from "../fixtures";
 test.use({ ignoredConsoleErrors: /status of 4\d\d/ });
 
 const PROJECT = "e2e-proj";
+const TENANT = "e2e-org";
+const TENANT_PROJECT = "e2e-org-proj";
 
 async function cleanup() {
-  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
-  if (p) await del(`/projects/${p.id}`);
+  for (const p of ((await api<{ projects?: any[] }>("/projects")).projects ?? []).filter((x) => [PROJECT, TENANT_PROJECT].includes(x.name))) {
+    await del(`/projects/${p.id}`);
+  }
+  const t = ((await api<{ tenants?: any[] }>("/tenants")).tenants ?? []).find((x) => x.slug === TENANT);
+  if (t) await del(`/tenants/${t.id}`);
   for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name.startsWith("e2e-"))) await del(`/tokens/${t.id}`);
   const policies = await api("/authz/policies");
   for (const s of (policies.site ?? []).filter((s: any) => s.id.startsWith("site.e2e"))) {
@@ -53,6 +58,48 @@ test("projects: create, members, quotas, delete", async ({ page }) => {
   await page.getByRole("button", { name: "Delete project" }).click();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("link", { name: PROJECT, exact: true })).toHaveCount(0);
+});
+
+test("projects: create one in another tenant; the picker and the list sort them by tenant", async ({ page }) => {
+  const { tenant } = await api("/tenants", { method: "POST", body: { slug: TENANT, display_name: "E2E Org" } });
+  expect(tenant?.id).toBeTruthy();
+  // Its members create its projects (base.tenant-boundary): join it as its administrator.
+  const me = await api("/auth/whoami");
+  const principal = { type: "User", id: me.user.id };
+  await api(`/tenants/${tenant.id}/members`, { method: "POST", body: { principal } });
+  await api(`/tenants/${tenant.id}/bindings`, { method: "POST", body: { role: "role.tenant-admin", principal } });
+  await page.goto("/projects");
+  // One tenant among the caller's projects: no filter yet.
+  await expect(page.getByLabel("Tenant", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "+ Create Project" }).click();
+  const field = page.locator("#project-tenant");
+  // It starts at the selected project's tenant.
+  await expect(field).toHaveValue("default");
+  await field.selectOption(tenant.id);
+  await page.getByLabel("Name").fill(TENANT_PROJECT);
+  await page.getByRole("button", { name: "Create Project", exact: true }).click();
+  await expect(page.getByRole("link", { name: TENANT_PROJECT, exact: true })).toBeVisible();
+  const made = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === TENANT_PROJECT);
+  expect(made.tenant_id).toBe(tenant.id);
+
+  // The list filters by tenant, in the address too.
+  const filter = page.locator("#projects-tenant");
+  await filter.selectOption(tenant.id);
+  await expect(page).toHaveURL(new RegExp(`tenant=${tenant.id}`));
+  await expect(page.getByRole("link", { name: TENANT_PROJECT, exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "default", exact: true })).toHaveCount(0);
+  await filter.selectOption("");
+  await expect(page.getByRole("link", { name: "default", exact: true })).toBeVisible();
+
+  // The header's picker puts each tenant's projects under its name.
+  await page.reload();
+  const picker = page.getByLabel("Project", { exact: true });
+  await expect(picker.locator(`optgroup[label="${TENANT}"] option`)).toHaveText([TENANT_PROJECT]);
+  await expect(picker.locator('optgroup[label="default"] option', { hasText: "default" })).toHaveCount(1);
+
+  await del(`/projects/${made.id}`);
+  await del(`/tenants/${tenant.id}`);
 });
 
 test("tokens: the secret is shown once; revoke", async ({ page }) => {
@@ -103,7 +150,8 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await expect(sim.getByText("allow").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText(/Saved as version 1/)).toBeVisible();
+  // Slow in a debug build: see the delete below.
+  await expect(page.getByText(/Saved as version 1/)).toBeVisible({ timeout: 30_000 });
   const listing = await api("/authz/policies");
   expect((listing.site ?? []).map((s: any) => s.id)).toContain(id);
 
@@ -126,6 +174,9 @@ test("policies: validate, simulate, save and delete a site policy", async ({ pag
   await page.getByRole("button", { name: "Load into editor" }).click();
 
   await page.getByRole("button", { name: "Delete" }).click();
+  // A policy write checks the whole policy set against the schema, twice
+  // for a delete: seconds in a debug build. The page clears once it is done.
+  await expect(page.getByText("Choose a policy to view it")).toBeVisible({ timeout: 30_000 });
   await expect.poll(async () => ((await api("/authz/policies")).site ?? []).map((s: any) => s.id)).not.toContain(id);
 });
 
@@ -161,4 +212,53 @@ test("system roles: grant and remove; no host scope on a standalone host", async
   await row.getByRole("button", { name: "Remove" }).click();
   await expect(row).toHaveCount(0);
   expect(await auditor()).toHaveLength(0);
+});
+
+// spec/19-tenancy.md D77: a directory administrator adds someone by email;
+// the account and its tenant role are there before they ever sign in.
+test("users: add one by email before they sign in", async ({ page }) => {
+  const CONNECTOR = "e2e-preadd";
+  const EMAIL = "e2e-preadd@example.org";
+  const gone = async () => {
+    for (const u of ((await api<{ users?: any[] }>("/users")).users ?? []).filter((u) => u.email === EMAIL)) await del(`/users/${u.id}`);
+    await del(`/connectors/${CONNECTOR}`);
+  };
+  await gone();
+  try {
+    await api("/connectors", {
+      method: "POST",
+      body: {
+        connector: {
+          id: CONNECTOR,
+          display_name: "E2E SSO",
+          jit: false,
+          oidc: { issuer: "https://idp.example.org", client_id: "glidex", allowed_domains: ["example.org"] },
+        },
+      },
+    });
+    await page.goto("/directory/access");
+    const users = page.locator("section", { has: page.getByRole("heading", { name: "Users" }) });
+    await users.getByRole("button", { name: "Add user" }).click();
+    const form = users.getByRole("form", { name: "Add user" });
+    await form.getByLabel("Email").fill(EMAIL);
+    await form.getByLabel("Role").selectOption("role.tenant-auditor");
+    await form.getByLabel("Sign in with").selectOption(CONNECTOR);
+    await form.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText(`Added ${EMAIL}`);
+    const row = users.locator("tbody tr", { hasText: EMAIL });
+    await expect(row).toContainText("not signed in yet");
+    await expect(row).toContainText("E2E SSO");
+    await expect(row).toContainText("e2e-preadd");
+    const u = ((await api<{ users?: any[] }>("/users")).users ?? []).find((u) => u.email === EMAIL);
+    expect(u).toMatchObject({ display_name: "e2e-preadd", pending_connector: CONNECTOR });
+
+    // Twice is refused, with why.
+    await users.getByRole("button", { name: "Add user" }).click();
+    await form.getByLabel("Email").fill(EMAIL);
+    await form.getByLabel("Sign in with").selectOption(CONNECTOR);
+    await form.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByText(/already pre-added/)).toBeVisible();
+  } finally {
+    await gone();
+  }
 });

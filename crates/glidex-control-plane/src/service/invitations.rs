@@ -79,7 +79,35 @@ pub fn list_invitations(
 /// The connector an invitation to `tenant` may go through: an enabled one
 /// that logs in by email; for the owner's or an operator's tenant, one
 /// D22 allows there, requiring MFA.
-fn usable_connector(call: &Call, id: &str, guarded: bool) -> ServiceResult<Connector> {
+/// Whether the caller may make someone a member of `tenant` with `role`
+/// (`member`, membership only, or a tenant role): an invitation's or a
+/// pre-added user's (spec/19-tenancy.md §6.1, §6.3).
+pub(crate) fn may_give_role(call: &Call, tenant: &Ent, role: &str) -> ServiceResult<()> {
+    if role != MEMBER && !crate::authz::TENANT_ROLES.contains(&role) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            format!(
+                "role is {MEMBER} (membership only) or one of {}",
+                crate::authz::TENANT_ROLES.join(", ")
+            ),
+        ));
+    }
+    call.require_action("manageTenantMembers", tenant.clone(), EntitySet::new(), &[])?;
+    if role != MEMBER {
+        call.require_action(
+            "manageTenantBindings",
+            tenant.clone(),
+            EntitySet::new(),
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
+/// A connector whose logins carry a verified email, and, for the owner's
+/// or an operator's tenant (`guarded`), one D22 allows there.
+pub(crate) fn usable_connector(call: &Call, id: &str, guarded: bool) -> ServiceResult<Connector> {
     let c = call
         .auth()
         .connectors
@@ -128,21 +156,8 @@ pub fn create_invitation(
     let t = super::tenancy::visible(call, &req.tenant)?;
     let tenant = Ent::Tenant(t.id.clone());
     call.require(tenant.clone(), EntitySet::new())?;
-    if req.role != MEMBER && !crate::authz::TENANT_ROLES.contains(&req.role.as_str()) {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            format!(
-                "role is {MEMBER} (membership only) or one of {}",
-                crate::authz::TENANT_ROLES.join(", ")
-            ),
-        ));
-    }
     // Taking it adds a member and links the role: what the inviter may do.
-    call.require_action("manageTenantMembers", tenant.clone(), EntitySet::new(), &[])?;
-    if req.role != MEMBER {
-        call.require_action("manageTenantBindings", tenant, EntitySet::new(), &[])?;
-    }
+    may_give_role(call, &tenant, &req.role)?;
     let c = usable_connector(call, &req.connector, t.owns_directory || t.operator)?;
     let by = call.p.user_id().unwrap_or("-").to_string();
     let (inv, token) = call

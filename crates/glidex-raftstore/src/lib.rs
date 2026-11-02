@@ -18,3 +18,4 @@
 pub mod raft;
 pub mod store;
 pub mod testing;
+pub mod wait;

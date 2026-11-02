@@ -1542,6 +1542,217 @@ pub async fn scale(client: &ApiClient, args: &[&str]) {
     println!("{} CPU policy updated for {}", "Success:".green(), vm.name);
 }
 
+/// `4096`, `4096M`, `8G`, `8GiB` → MiB; 0 and fractions refused.
+fn parse_mib(s: &str) -> Result<u32, String> {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    let (num, mul) = if let Some(n) = lower.strip_suffix("gib").or(lower.strip_suffix("g")) {
+        (n, 1024)
+    } else if let Some(n) = lower.strip_suffix("mib").or(lower.strip_suffix("m")) {
+        (n, 1)
+    } else {
+        (lower.as_str(), 1)
+    };
+    match num
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .and_then(|n| n.checked_mul(mul))
+    {
+        Some(m) if m > 0 => Ok(m),
+        _ => Err(format!("Invalid memory size: {t} (MiB, or e.g. 8G)")),
+    }
+}
+
+/// Said after a change that waits for the VM's next start.
+fn note_next_start(vm: &Vm) {
+    if vm.restart_required == Some(true) {
+        println!(
+            "  {}",
+            "The VM is running: this applies at its next start (stop and start it).".yellow()
+        );
+    }
+}
+
+/// `memory <name|id> [<size>]`: show, or set `mem_size_mib`.
+pub async fn memory(client: &ApiClient, args: &[&str]) {
+    let u = "Usage: memory <name|id> [<MiB>|<N>G]";
+    if args.len() > 2 {
+        return usage(u);
+    }
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let Some(size) = args.get(1) else {
+        match client.get_vm(&vm_id).await {
+            Ok(vm) => println!("{}: {} MiB", vm.name, vm.mem_size_mib),
+            Err(e) => err(e),
+        }
+        return;
+    };
+    let mib = match parse_mib(size) {
+        Ok(m) => m,
+        Err(e) => return err(e),
+    };
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let req = UpdateVmRequest {
+        id: vm_id,
+        change: VmChange {
+            mem_size_mib: mib,
+            ..Default::default()
+        }
+        .into(),
+        update_mask: buffa_types::google::protobuf::FieldMask {
+            paths: vec!["mem_size_mib".into()],
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    match svc.update_vm(req).await {
+        Ok(r) => {
+            let vm = r.into_owned().vm.as_option().cloned().unwrap_or_default();
+            println!(
+                "{} {} has {} MiB",
+                "Changed:".green(),
+                if vm.name.is_empty() {
+                    args[0]
+                } else {
+                    &vm.name
+                },
+                vm.mem_size_mib
+            );
+            note_next_start(&vm);
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `attach-disk <name|id> <disk>` and `detach-disk …`: a data disk, by
+/// name or id.
+pub async fn disk(client: &ApiClient, attach: bool, args: &[&str]) {
+    let u = if attach {
+        "Usage: attach-disk <name|id> <disk>"
+    } else {
+        "Usage: detach-disk <name|id> <disk>"
+    };
+    let (Some(disk), 2) = (args.get(1), args.len()) else {
+        return usage(u);
+    };
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let res = if attach {
+        svc.attach_disk(AttachDiskRequest {
+            id: vm_id,
+            disk: disk.to_string(),
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    } else {
+        svc.detach_disk(DetachDiskRequest {
+            id: vm_id,
+            disk: disk.to_string(),
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    };
+    match res {
+        Ok(vm) => {
+            let vm = vm.unwrap_or_default();
+            println!(
+                "{} Disk {} {} {}",
+                "Success:".green(),
+                disk,
+                if attach {
+                    "attached to"
+                } else {
+                    "detached from"
+                },
+                if vm.name.is_empty() {
+                    args[0]
+                } else {
+                    &vm.name
+                }
+            );
+            note_next_start(&vm);
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `attach-network <name|id> <network> [--mac <mac>]` and
+/// `detach-network <name|id> <network> [--mac <mac>]`: a NIC, by its
+/// network's name or id (and its MAC, among several on one network).
+pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
+    let u = if attach {
+        "Usage: attach-network <name|id> <network> [--mac <mac>]"
+    } else {
+        "Usage: detach-network <name|id> <network> [--mac <mac>]"
+    };
+    if has_flag(args, "--mac") && flag_value(args, "--mac").is_none() {
+        return usage(u);
+    }
+    let mac = flag_value(args, "--mac").map(String::from);
+    let pos = crate::admin::positional(args, &["--mac"]);
+    let (Some(net), 2) = (pos.get(1).copied(), pos.len()) else {
+        return usage(u);
+    };
+    let Some(vm_id) = resolve(client, &pos, u).await else {
+        return;
+    };
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let res = if attach {
+        svc.attach_network(AttachNetworkRequest {
+            id: vm_id,
+            network: net.to_string(),
+            mac,
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    } else {
+        svc.detach_network(DetachNetworkRequest {
+            id: vm_id,
+            network: net.to_string(),
+            mac,
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned().vm.as_option().cloned())
+    };
+    match res {
+        Ok(vm) => {
+            let vm = vm.unwrap_or_default();
+            println!(
+                "{} Network {} {} {}",
+                "Success:".green(),
+                net,
+                if attach {
+                    "attached to"
+                } else {
+                    "detached from"
+                },
+                if vm.name.is_empty() { pos[0] } else { &vm.name }
+            );
+            note_next_start(&vm);
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1594,6 +1805,18 @@ mod tests {
         assert_eq!(plain_state("running", "running"), "running");
         assert_eq!(plain_state("stopped", "running"), "stopped → running");
         assert_eq!(plain_state("running", ""), "running");
+    }
+
+    #[test]
+    fn memory_sizes() {
+        assert_eq!(parse_mib("4096"), Ok(4096));
+        assert_eq!(parse_mib("4096M"), Ok(4096));
+        assert_eq!(parse_mib("8G"), Ok(8192));
+        assert_eq!(parse_mib("8gib"), Ok(8192));
+        assert!(parse_mib("0").is_err());
+        assert!(parse_mib("1.5G").is_err());
+        assert!(parse_mib("lots").is_err());
+        assert!(parse_mib("5000000G").is_err());
     }
 
     #[test]

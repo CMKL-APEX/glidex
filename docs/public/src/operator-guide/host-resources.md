@@ -34,8 +34,8 @@ gxctl pci                              # this host's PCI devices, with NUMA node
 gxctl pci 0000:41:00.0                 # one device, and why it isn't ready
 ```
 
-`<node>` is a node name or id. In the web UI, a node's page (**Cluster**
-→ a node) has a **Topology** card: one column per NUMA node with its
+`<node>` is a node name or id. In the web UI, a host's page (**Hosts**,
+or **Cluster** → a node) has a **Topology** card: one column per NUMA node with its
 CPUs, memory, hugepages and devices, then devices with no NUMA node,
 the reserved CPUs, and the warnings.
 
@@ -260,6 +260,20 @@ names) or tenants (ids or slugs), like device grants (see
 [Who may use a device](pci-passthrough.md#who-may-use-a-device)).
 `net-admin` and `system-admin` may use any pool. In policies the
 permission is `usePciPool`.
+
+An **open pool** is granted to every tenant this cluster admits:
+`"tenants": ["*"]`, alone, on a pool entry:
+
+```json
+"allow": [ { "pool": "a100", "tenants": ["*"] } ]
+```
+
+A tenant gets it with its admission and loses it with its admission.
+How much each takes is its cap's `devices.a100` (`gxctl admission set
+<t> devices.a100=1`, or the default cap of [automatic
+admission](access-control.md#automatic-admission)); without a limit a
+tenant may take all of the pool. Its tenant admins can split their
+share into [tenant pools](#tenant-pools) as from any granted pool.
 
 ### How VMs get devices
 

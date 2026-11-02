@@ -120,6 +120,10 @@ fn launch_relevant(spec: &VmSpec) -> serde_json::Value {
         "max_vcpus": max_vcpus_repr,
         "mem_size_mib": c.mem_size_mib,
         "kernel_args": c.kernel_args,
+        // The kernel booted, by hand or followed from the guest: both
+        // take effect at the next launch (spec/23-kernel-boot.md K12).
+        "kernel_image": c.kernel_image,
+        "kernel_from_disk": c.kernel_from_disk,
         "credential": c.credential,
         "hugepages": c.hugepages,
         "data_disks": c.data_disks,
@@ -518,8 +522,12 @@ impl VmManager {
         // ---- 2. deletion -----------------------------------------------------
         let deleting = vm.deletion_requested_at.is_some();
         if deleting && !live {
-            self.finalize_deletion(&vm).await?;
-            return Ok(None);
+            return match self.finalize_deletion(&vm).await {
+                Ok(()) => Ok(None),
+                // A disk's create is still running; it starts no other.
+                Err(VmManagerError::Image(ImageError::Busy(_))) => Ok(Some(Duration::from_secs(2))),
+                Err(e) => Err(e),
+            };
         }
 
         let desired = if deleting {
@@ -762,10 +770,13 @@ impl VmManager {
 
         self.write_status(&vm.id, vm.generation, st, events).await?;
         // Disks the spec no longer references lose their claim with the
-        // instance (D11): the disk controller releases them.
+        // instance (D11). Released here: on a cluster the disk's worker
+        // may be another node, which hears nothing of this exit.
         for d in &inst.disks {
-            self.queue
-                .add(crate::controller::queue::Key::Disk(d.clone()));
+            if let Ok(mut disk) = self.images.get_disk(d) {
+                self.release_if_unclaimed(&mut disk).await?;
+            }
+            self.queue.add(Key::Disk(d.clone()));
         }
         if let Some((actor, reason, msg)) = stop {
             self.stop_spec_after_exit(&vm.id, vm.generation, actor, reason, msg)
@@ -2150,6 +2161,23 @@ impl VmManager {
                 .into());
             }
         }
+        // A create still running on one of its disks would write the disk
+        // back after it went: wait for it (spec/24-storage.md S29).
+        if has(FINALIZER_DISKS) {
+            let c = vm.config();
+            if let Some(id) = c
+                .root_disk
+                .iter()
+                .chain(c.data_disks.iter())
+                .find(|id| self.images.busy_op(id) == Some("create"))
+            {
+                return Err(ImageError::Busy(format!(
+                    "VM {}'s disk {id} is still being created; deleted once that attempt ends",
+                    vm.name
+                ))
+                .into());
+            }
+        }
         let mut detach = Vec::new();
         let mut owned = None;
         if has(FINALIZER_DISKS) {
@@ -2158,6 +2186,10 @@ impl VmManager {
             if let Some(i) = &vm.status.instance {
                 ids.extend(i.disks.iter());
             }
+            // A disk detached while running keeps its claim after the
+            // instance is gone too, until the disk controller next sees it.
+            let claimed = self.attached_disk_ids(&vm.id);
+            ids.extend(claimed.iter());
             ids.sort();
             ids.dedup();
             for id in ids {
@@ -2172,6 +2204,10 @@ impl VmManager {
                 {
                     owned = Some(d);
                 } else {
+                    // A kept root disk outlives its VM: it is no one's now.
+                    if d.owner.as_deref() == Some(vm.id.as_str()) {
+                        d.owner = None;
+                    }
                     detach.push(d);
                 }
             }
@@ -2300,6 +2336,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.revision(), before + 1);
+    }
+
+    /// A disk detached while its VM ran keeps the VM's claim (D11); if the
+    /// VM is deleted before anything releases it, the deletion does.
+    #[tokio::test]
+    async fn deleting_a_vm_releases_disks_detached_while_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "", "firmware_path": "/f.fd"
+        }))
+        .unwrap();
+        let vm = manager.create_vm("gone".into(), config).await.unwrap();
+        let disk = |id: &str, owner: Option<&str>| -> crate::images::Disk {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "format": "raw", "size_bytes": 1 << 20,
+                "origin": {"kind": "blank"}, "created_at": 0,
+                "attached_to": vm.id, "owner": owner,
+            }))
+            .unwrap()
+        };
+        // In no spec of the VM: one detached while it ran, one a root disk
+        // it was made with and keeps (keep_disk).
+        manager.images.put_disk(&disk("detached", None)).unwrap();
+        manager
+            .images
+            .put_disk(&disk("kept", Some(&vm.id)))
+            .unwrap();
+        assert!(manager.delete_vm(&vm.id).await.unwrap());
+        for id in ["detached", "kept"] {
+            let d = manager.images.get_disk(id).unwrap();
+            assert_eq!((d.attached_to, d.owner), (None, None), "{id}");
+        }
+    }
+
+    #[test]
+    fn launch_relevant_counts_the_kernel() {
+        let spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "config": {
+                "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r",
+                "kernel_args": "", "kernel_image": "k1",
+            }
+        }))
+        .unwrap();
+        let mut other = spec.clone();
+        other.config.kernel_image = Some("k2".into());
+        assert_ne!(launch_relevant(&spec), launch_relevant(&other));
+        let mut follow = spec.clone();
+        follow.config.kernel_from_disk = true;
+        assert_ne!(launch_relevant(&spec), launch_relevant(&follow));
     }
 
     #[test]

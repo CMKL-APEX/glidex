@@ -6,7 +6,6 @@ import {
   describeExit,
   desiredState,
   generationBehind,
-  nicNetworkLabel,
   num,
   settled,
   nodeUnreachable,
@@ -21,12 +20,16 @@ import {
 import NodeName from "../components/NodeName";
 import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
+import DeleteVmDialog from "../components/DeleteVmDialog";
+import VmDisks from "../components/VmDisks";
 import PlaceVm from "../components/PlaceVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
 import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
 import VmCpuScale from "../components/VmCpuScale";
+import VmMemory from "../components/VmMemory";
+import VmNetworks from "../components/VmNetworks";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -42,6 +45,7 @@ export default function VmDetail() {
   const [events, setEvents] = useState<api.VmEvent[]>([]);
   /** The firmware image's name, once looked up (the VM carries its id). */
   const [firmwareName, setFirmwareName] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // While a delete runs, follow the VM on the live stream instead of
   // asking for it: once it is gone, a GET would 404 (handled, but logged
@@ -101,8 +105,7 @@ export default function VmDetail() {
     return () => abort.abort();
   }, [id]);
 
-  const handleAction = async (vmId: string, action: VmAction) => {
-    if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;
+  const handleAction = async (vmId: string, action: VmAction, keepDisk = false) => {
     setActionLoading(true);
     setError(null);
     deleting.current = action === "delete";
@@ -110,7 +113,7 @@ export default function VmDetail() {
     // meanwhile.
     const peek = setTimeout(fetchVm, 500);
     try {
-      await api.vmAction(vmId, action);
+      await (action === "delete" ? api.deleteVm(vmId, keepDisk) : api.vmAction(vmId, action));
       if (action === "delete") {
         navigate("/");
         return;
@@ -243,23 +246,9 @@ export default function VmDetail() {
                 <p className="text-lg font-semibold text-gray-900">
                   {vm.mem_size_mib} MiB
                 </p>
+                <VmMemory vm={vm} onChanged={fetchVm} />
               </div>
-              {vm.nics && vm.nics.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Network</h3>
-                  <ul className="mt-1 space-y-1 text-sm">
-                    {vm.nics.map((nic, i) => (
-                      <li key={i} className="font-mono">
-                        <span className="text-gray-900" title={nic.network}>{nicNetworkLabel(nic)}</span>{" "}
-                        <span className="text-gray-500">{nic.mac}</span>{" "}
-                        <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>
-                          {nic.ipv4 ?? "no address"}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <VmNetworks vm={vm} onChanged={fetchVm} />
             </div>
             <div className="space-y-4">
               <div>
@@ -288,12 +277,7 @@ export default function VmDetail() {
                 </div>
               )}
               <VmServiceAccount vm={vm} onChanged={fetchVm} />
-              {vm.root_disk && (
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>
-                  <p className="font-mono text-sm text-gray-700 break-all">{vm.root_disk}</p>
-                </div>
-              )}
+              <VmDisks vm={vm} onChanged={fetchVm} />
               {vm.restart_policy && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">If it stops on its own</h3>
@@ -372,7 +356,7 @@ export default function VmDetail() {
                 state={vmState(vm)}
                 desired={desiredState(vm)}
                 deleting={vm.deleting}
-                onAction={handleAction}
+                onAction={(vmId, action) => (action === "delete" ? setConfirmDelete(true) : handleAction(vmId, action))}
                 loading={actionLoading}
               />
               <PlaceVm vm={vm} stopped={["stopped", "created", "failed"].includes(vmState(vm)) && desiredState(vm) === "stopped"} onDone={fetchVm} />
@@ -434,6 +418,9 @@ export default function VmDetail() {
             Back to Dashboard
           </Link>
         </div>
+      )}
+      {confirmDelete && vm && (
+        <DeleteVmDialog vm={vm} onDelete={(keep) => handleAction(vm.id, "delete", keep)} onClose={() => setConfirmDelete(false)} />
       )}
     </div>
   );

@@ -19,6 +19,7 @@ import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
 import { NetworkOvnDialog } from "../components/OvnViews";
 import { useNodes } from "../nodes";
+import { useLiveCluster } from "../live";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -83,6 +84,20 @@ function AddNetworkForm({
   const [span, setSpan] = useState<"cluster" | "node">("cluster");
   const canSpan = nodes.clustered && ovnOn === true;
   const clusterWide = canSpan && span === "cluster";
+  // A host network's node, by default the one serving this page. The leader
+  // makes the network; for any other node it only records it, and that
+  // node's controller makes the bridge and NAT, so a subnet or a bridged
+  // network can only be chosen for the leader (spec/14-clustering.md D23).
+  const [pickedNode, setPickedNode] = useState("");
+  const cluster = useLiveCluster();
+  const nodeChoices = [...nodes.nodes.values()].sort((a, b) => a.spec.name.localeCompare(b.spec.name));
+  const choosesNode = scope === "" && nodes.clustered && !clusterWide && nodeChoices.length > 0;
+  const node = choosesNode ? pickedNode || nodes.self || "" : "";
+  const leader = cluster?.raft?.leader?.name;
+  const nodeRemote = !!node && !!leader && nodes.nodes.get(node)?.spec.name !== leader;
+  useEffect(() => {
+    if (nodeRemote && mode === "NETWORK_MODE_BRIDGED") setMode("NETWORK_MODE_NAT");
+  }, [nodeRemote, mode]);
 
   // Project networks are NAT or isolated, on a bridge glidex names.
   const project = scope !== "";
@@ -112,7 +127,7 @@ function AddNetworkForm({
     setError(null);
     try {
       // Cluster networks get an address range for isolated mode too (cluster IPAM).
-      const subnetValue = (mode === "NETWORK_MODE_NAT" || (clusterWide && mode === "NETWORK_MODE_ISOLATED")) && subnet ? subnet : undefined;
+      const subnetValue = (mode === "NETWORK_MODE_NAT" || (clusterWide && mode === "NETWORK_MODE_ISOLATED")) && subnet && !nodeRemote ? subnet : undefined;
       const scopeValue: NetworkScope | undefined = nodes.clustered
         ? canSpan && span === "cluster"
           ? "NETWORK_SCOPE_CLUSTER"
@@ -127,6 +142,7 @@ function AddNetworkForm({
           port_type: portType,
           subnet: subnetValue,
           scope: scopeValue,
+          node: node || undefined,
           bridge: clusterWide ? undefined : bridge || undefined,
           vlan: vlan ? Number(vlan) : undefined,
           physnet: clusterWide && mode === "NETWORK_MODE_BRIDGED" ? physnet : undefined,
@@ -161,7 +177,7 @@ function AddNetworkForm({
       </div>
       {nodes.clustered && ovnOn === false && (
         <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
-          This network is for this node only. Networks that span every node need OVN, which is off for this cluster
+          This network is for one node. Networks that span every node need OVN, which is off for this cluster
           {host.configureOvn ? (
             <>
               : turn it on from the <Link to="/cluster" className="text-sky-700 hover:underline">Cluster page</Link>.
@@ -178,12 +194,33 @@ function AddNetworkForm({
           </label>
           <select id="network-span" className={`${inputClass} bg-white`} value={span} onChange={(e) => setSpan(e.target.value as "cluster" | "node")}>
             <option value="cluster">Every node (cluster network on OVN)</option>
-            <option value="node">This node only (a bridge here)</option>
+            <option value="node">One node (a bridge on it)</option>
           </select>
           <p className="mt-1 text-xs text-gray-500">
             {span === "cluster"
               ? "VMs on any node can use it; traffic between nodes goes through Geneve tunnels."
-              : "Only VMs placed on the node serving this page can use it."}
+              : "Only VMs placed on its node can use it."}
+          </p>
+        </div>
+      )}
+      {choosesNode && (
+        <div>
+          <label htmlFor="network-node" className="block text-sm font-medium text-gray-700">
+            Node
+          </label>
+          <select id="network-node" className={`${inputClass} bg-white`} value={node} onChange={(e) => setPickedNode(e.target.value)}>
+            {!nodes.self && <option value="">The cluster's leader</option>}
+            {nodeChoices.map((n) => (
+              <option key={n.meta.id} value={n.meta.id}>
+                {n.spec.name}
+                {n.meta.id === nodes.self ? " (this node)" : ""}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            {nodeRemote
+              ? `${nodes.name(node)} makes the bridge and NAT within half a minute. Its subnet is chosen there, and a bridged network must be created on ${leader}, the leader.`
+              : "Only VMs placed on this node can use it."}
           </p>
         </div>
       )}
@@ -205,7 +242,7 @@ function AddNetworkForm({
           <select className={`${inputClass} bg-white`} value={mode} onChange={(e) => setMode(e.target.value as NetworkMode)}>
             <option value="NETWORK_MODE_NAT">NAT (DHCP + masquerade)</option>
             <option value="NETWORK_MODE_ISOLATED">Isolated (VM-to-VM)</option>
-            {!project && <option value="NETWORK_MODE_BRIDGED">{clusterWide ? "Provider (a physical network)" : "Bridged (existing bridge)"}</option>}
+            {!project && !nodeRemote && <option value="NETWORK_MODE_BRIDGED">{clusterWide ? "Provider (a physical network)" : "Bridged (existing bridge)"}</option>}
           </select>
         </div>
         <div>
@@ -216,7 +253,7 @@ function AddNetworkForm({
           </select>
         </div>
       </div>
-      {(mode === "NETWORK_MODE_NAT" || (clusterWide && mode === "NETWORK_MODE_ISOLATED")) && (
+      {(mode === "NETWORK_MODE_NAT" || (clusterWide && mode === "NETWORK_MODE_ISOLATED")) && !nodeRemote && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Subnet (optional)</label>
           <input

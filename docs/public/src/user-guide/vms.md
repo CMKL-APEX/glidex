@@ -37,25 +37,27 @@ consoles. See [Projects](projects.md).
 
 ### Web UI
 
-On the **VMs** page, click **+ Create VM** and fill in the form:
+On the **VMs** page, click **+ Create VM** and fill in the form. The
+fields come in this order:
 
 | Field | What it is |
 |---|---|
 | **VM Name** | The VM's name in the project. |
 | **Hypervisor Backend** | Cloud Hypervisor (the default), QEMU or Pylon. Fixed once created. |
-| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 512 MiB. On Pylon with **Elastic CPU scaling**, the vCPU count is the maximum and can't be edited. |
+| **vCPU Count**, **Memory (MiB)** | Defaults 1 vCPU and 1024 MiB. On Pylon with **Elastic CPU scaling**, the vCPU count is the maximum and can't be edited. |
 | **Elastic CPU scaling** | Min vCPUs, max vCPUs and weight. See [Elastic CPU](#elastic-cpu). |
-| **Placement** | Clusters only: **Automatic**, or a node. See [Placement on a cluster](#placement-on-a-cluster). |
-| **Boot Mode** | **UEFI firmware (distro cloud image)** or **Direct kernel boot**. |
-| **UEFI Firmware** | The firmware image to boot through; the newest one for the hypervisor is preselected. |
+| **GPUs (optional)** | A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others are greyed and say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
 | **Boot Disk** | **New disk from an image**, **Existing disk** (an unattached disk of the project), or **Disk image file path**. |
 | **Image**, **Root disk (GiB)** | For a new disk from an image: a linked disk is created for this VM, its root partition extended, and deleted with the VM. |
 | **Login Credential** | A credential of the project, provisioned by cloud-init on first boot; or none. |
-| **Service Account** | Optional: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
-| **Networks** | One NIC per ticked network, in that order. A network named `default` is ticked for you. |
-| **GPUs (optional)** | Right after the size. A count from each GPU pool your project may use (it sizes the VM; see [GPUs](#gpus)), and the node's own GPUs to tick: those ready for passthrough and held by no other VM can be ticked, the others say why not. In a cluster, the node's GPUs appear once a node is chosen under **Placement**. |
-| **Device Pools (optional)** | How many devices to take from each other pool (NICs, NVMe…) your project may use. |
-| **VFIO PCI Devices (optional)** | Under **Advanced options**: other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
+| **Service Account (optional)** | Shown when the project has service accounts: the identity software in the VM gets glidex tokens for. See [Workload identity](#workload-identity). |
+| **Networks** | One NIC per ticked network, in that order. A network named `default`, or else the project's only network, is ticked for you. |
+| **Device Pools (optional)** | How many devices to take from each pool other than GPU pools (NICs, NVMe…) your project may use. |
+| **Placement** | Clusters only: **Automatic**, or a node. See [Placement on a cluster](#placement-on-a-cluster). |
+| **Advanced options** | Folded away; its heading shows the boot mode and firmware or kernel chosen. It opens by itself when a choice in it is missing (no firmware image for the hypervisor, say). It holds the fields below. |
+| **Boot Mode** | **UEFI firmware (distro cloud image)** or **Direct kernel boot**. |
+| **UEFI Firmware** | The firmware image to boot through; the newest one for the hypervisor and the VM's architecture is preselected. |
+| **VFIO PCI Devices (optional)** | Other host PCI devices to pass through, by path. See [Devices](#pci-devices). |
 | **If It Crashes** | **Restart it (with backoff)** or **Leave it stopped**. |
 | **After a Host Reboot** | **Start it again if it was running** or **Leave it stopped**. |
 | **Start it now** | Start the VM as soon as it is created. |
@@ -65,7 +67,7 @@ With **Direct kernel boot**, the form asks for a **Kernel** instead of
 comes first and is the only one preselected; **Extract it from the
 image** makes it if there is none. Another image's kernel usually won't
 boot this one: its initramfs waits for that image's root disk),
-or, for administrators, **Kernel files on the host** (kernel and
+or, for administrators, **Kernel files on the host (administrators)** (kernel and
 initramfs paths, see [Host paths](#host-paths)). **Kernel Arguments**
 default to the kernel image's own command line. **Follow the guest's
 kernel** boots the kernel the guest installs (see
@@ -299,12 +301,44 @@ optional: by default each NIC gets a stable MAC derived from the VM's
 id. `queue_pairs` (1 to 8) is optional. The address each NIC got shows
 in the VM's details. See [Networks](networks.md).
 
+To add or remove a NIC later: under **Network** on the VM's page, pick
+a network and **Attach**, or **Detach** a NIC; or
+
+```
+gxctl> attach-network my-vm lab
+gxctl> detach-network my-vm lab
+```
+
+or with the API:
+
+```bash
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms/<id>/networks -d '{"network": "lab"}'
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
+  -X DELETE https://host.example.org:8841/vms/<id>/networks/lab
+```
+
+A new NIC goes after the others. The NICs you keep keep their MACs, and
+a new one gets a MAC no other NIC of the VM has. When the VM has more
+than one NIC on the network, say which to remove with its MAC
+(`--mac 02:…`, `?mac=02:…`). On a running VM the change applies at the
+next start (`gxctl` says so); inside the guest, NICs after a removed one
+move up by one, and may get new interface names.
+
 ### Data disks
 
 `data_disks` lists disks of the project (names or ids), attached in
 order after the boot disk. A disk is attached to one VM at a time.
 
-To attach or detach a disk later:
+To attach or detach a disk later: under **Disks** on the VM's page,
+pick a free disk of the project and **Attach**, or **Detach** one; or
+
+```
+gxctl> attach-disk my-vm data-1
+gxctl> detach-disk my-vm data-1
+```
+
+or with the API:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -313,8 +347,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
   -X DELETE https://host.example.org:8841/vms/<id>/disks/data-1
 ```
 
-On a running VM the change applies at the next start. See
-[Images and disks](images-and-disks.md).
+On a running VM the change applies at the next start (`gxctl` says
+so). See [Images and disks](images-and-disks.md).
 
 ### PCI devices
 
@@ -432,7 +466,8 @@ With GPUs, an empty vCPU or memory answer takes the pool's sizing.
   them by hand. A GPU pool with **Under one PCIe switch** ticked is an
   ordinary pool request instead, without the NUMA alignment or the
   sizing.
-- **This node's GPUs:** each display-class device the node could pass
+- **This node's GPUs** (*Or pick this node's GPUs*, under the pools):
+  each display-class device the node could pass
   through, with its address, vendor, ids and NUMA node. A ticked one is
   sent in `vfio_devices`. One not ready is greyed with the reason (for
   example *not bound to vfio-pci (driver: amdgpu)*): an operator
@@ -465,7 +500,7 @@ A pool the project may not use is refused as with `devices`
 | Resume a paused VM | **Resume** | `start <vm>` | `POST /vms/{id}/start` |
 | Pause | **Pause** | `pause <vm>` | `POST /vms/{id}/pause` |
 | Graceful stop | **Shut down** | `stop <vm> --graceful [secs]` | `POST /vms/{id}/stop?graceful_timeout_secs=60` |
-| Immediate stop | **Stop** | `stop <vm>` | `POST /vms/{id}/stop` |
+| Immediate stop | **Force off** | `stop <vm>` | `POST /vms/{id}/stop` |
 | Delete | **Delete** | `delete <vm> [--keep-disk]` | `DELETE /vms/{id}` |
 | Place a stopped or lost VM on another node (`system-admin`) | **Place on another node** | `place <vm> [--node N]` | `POST /vms/{id}/place` |
 
@@ -490,14 +525,15 @@ gxctl> stop my-vm --graceful          # wait up to 60 s
 gxctl> stop my-vm --graceful 120      # wait up to 120 s (at most 300)
 ```
 
-The web UI's **Shut down** waits 60 seconds. **Stop** and `stop` without
-`--graceful` stop the VM like pulling the plug.
+The web UI's **Shut down** waits 60 seconds. **Force off** stops the VM
+like pulling the plug, after you confirm; it also cuts short a shutdown
+that is still waiting for the guest.
 
 The timeout you give is kept as the VM's stop grace (`stop_grace_secs`)
-and used again by later stops that don't give one, including stops from
-the web UI's **Stop** button. Pass `--graceful 0` (or
-`graceful_timeout_secs=0`) for an immediate stop after a graceful one.
-<!-- TODO(verify): a stop without a grace reuses the stored stop_grace_secs; confirm this is intended rather than a bug before publishing. -->
+and used again by later stops that don't give one, such as `stop`
+without `--graceful`. Pass `--graceful 0` (or `graceful_timeout_secs=0`)
+for an immediate stop after a graceful one. The web UI's **Force off**
+always sends 0.
 
 ### Pause and resume
 
@@ -554,8 +590,11 @@ boot disk, the firmware and host paths can't be changed.
 
 The web UI and `gxctl` have no edit form for most settings. Both change
 the vCPUs and the elastic range (**Scale CPU / Elasticity** on the VM's
-page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), and `gxctl`
-changes PCI devices (`attach-device`, `detach-device`).
+page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), the memory
+(**Change memory** on the VM's page, `gxctl memory my-vm 8G`), networks
+([Networks](#networks)) and data disks ([Data disks](#data-disks)), and
+`gxctl` changes PCI devices
+(`attach-device`, `detach-device`).
 
 A change to vCPUs, memory, kernel arguments, the credential, hugepages,
 policies, device pool requests, networks or data disks of a running VM
@@ -584,7 +623,13 @@ gxctl> delete my-vm --keep-disk     # keep the root disk created for it
 Deleting stops the VM if it runs, releases its NICs and their
 addresses, and detaches its disks. A root disk created for the VM from
 an image is deleted with it, unless you keep it (`--keep-disk`,
-`?keep_disk=true`). Other disks are only detached.
+`?keep_disk=true`, or **Keep disk** in the web UI's delete dialog, which
+names the disks that go and those that stay). Other disks are only
+detached.
+
+A VM whose root disk is still being made (say, by a create that keeps
+failing) can be deleted too: its disk starts no new attempt, and the
+VM goes once the running one ends, taking its own root disk with it.
 
 ## States and events
 
@@ -757,7 +802,7 @@ not the host's, and a GPU and a NIC that share a PCIe switch on the
 host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
-<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; the MMIO apertures aren't sized yet (spec GV1 not done). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; a pool's `bar_mib` (the MMIO aperture size) isn't built yet (spec/27-gpu-vms.md GV6). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
 
 ## Elastic CPU
 

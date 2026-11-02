@@ -239,6 +239,10 @@ pub struct NodeRow {
     /// (spec/24-storage.md §4.4): NFS mounted `soft`, or with local locks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// It refuses new data though it is reachable: a hyperstor datastore
+    /// whose pool is full (spec/24-storage.md S30).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full: bool,
     /// `lvm`: the images this node keeps a volume of in it (`gx-i-<id>`,
     /// spec/24-storage.md §11.1), so the datastore isn't deleted from under
     /// them.
@@ -475,6 +479,22 @@ pub fn rows(db: &Db, datastore: &str) -> Result<BTreeMap<String, NodeRow>, Datas
     Ok(out)
 }
 
+/// The nodes with a row about a datastore that aren't members (`members`:
+/// the cluster's nodes, departed ones left out): a standalone host's
+/// `local` from before it formed the cluster, and departed nodes'.
+pub fn stale_row_nodes<'a>(
+    rows: &'a BTreeMap<String, NodeRow>,
+    members: &std::collections::HashSet<String>,
+) -> Vec<&'a str> {
+    if members.is_empty() {
+        return Vec::new();
+    }
+    rows.keys()
+        .filter(|n| !members.contains(*n))
+        .map(String::as_str)
+        .collect()
+}
+
 /// This node's row about `datastore` (a status write, spec/14-clustering.md
 /// §8.3); `None` removes it.
 pub fn put_row(
@@ -496,4 +516,21 @@ pub fn put_row(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_of_nodes_outside_the_cluster_are_stale() {
+        let rows: BTreeMap<String, NodeRow> = ["local", "n1", "n2", "gone"]
+            .into_iter()
+            .map(|n| (n.to_string(), NodeRow::default()))
+            .collect();
+        let members = ["n1", "n2"].into_iter().map(String::from).collect();
+        assert_eq!(stale_row_nodes(&rows, &members), ["gone", "local"]);
+        // Not the leader, or no node list: nothing is dropped.
+        assert!(stale_row_nodes(&rows, &Default::default()).is_empty());
+    }
 }

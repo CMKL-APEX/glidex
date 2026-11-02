@@ -296,9 +296,11 @@ guest, does.
 In a cluster with OVN on, *cluster networks* span every node: each node
 is an OVN chassis, VMs on different nodes reach each other through
 Geneve tunnels, and NAT cluster networks leave through a shared edge on
-gateway nodes. Turning OVN on and setting the edge is in
+gateway nodes. Every node's `ovn-controller` must be at least as new as
+the cluster's `ovn-northd`; the installer sees to that (see [OVN on
+cluster members](installation.md#ovn-on-cluster-members)). Turning OVN on and setting the edge is in
 [Clusters](clusters.md#cluster-networks-on-ovn). Each node also has
-host-level settings, on the node's page (**Cluster** → a node):
+host-level settings, on the host's page (**Hosts**, or **Cluster** → a node):
 
 ### Physical networks
 
@@ -307,7 +309,7 @@ nodes reach. On each node, map the name to the glidex bridge that has
 the uplink to that LAN. Provider networks (bridged cluster networks) and
 the shared edge use these names.
 
-On the node's page, **Physical networks** → **Change…**, add rows of
+On the host's page, **Physical networks** → **Change…**, add rows of
 *physical network* → *bridge*. It applies within half a minute, without
 a restart. You can also set them in the host's
 `/etc/glidex/control-plane.json` (read when the control plane starts);
@@ -329,7 +331,7 @@ its physical network.
 ### The `br-int` datapath
 
 OVN's integration bridge, `br-int`, carries every VM port on cluster
-networks. On the node's page, **br-int datapath** → **Change…**:
+networks. On the host's page, **br-int datapath** → **Change…**:
 
 | Setting | Use |
 | --- | --- |

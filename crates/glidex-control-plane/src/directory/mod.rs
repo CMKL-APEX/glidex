@@ -162,6 +162,13 @@ pub struct OidcSettings {
     pub groups_claim: String,
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+    /// The IdP verifies its users' addresses: a token without
+    /// `email_verified` counts as verified (19-tenancy.md D75).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trust_email: bool,
+    /// With `jit`, only these verified addresses get a new account (D76).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_emails: Vec<String>,
     /// Where the IdP sends the browser back; default
     /// `<first allowed origin>/api/auth/c/<id>/callback`.
     #[serde(default)]
@@ -421,6 +428,8 @@ impl Connector {
                         scopes: presets::google::SCOPES.map(String::from).to_vec(),
                         groups_claim: default_groups_claim(),
                         allowed_domains: Vec::new(),
+                        trust_email: false,
+                        allowed_emails: Vec::new(),
                         redirect_uri: g.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -441,6 +450,8 @@ impl Connector {
                         scopes: presets::jumpcloud::SCOPES.map(String::from).to_vec(),
                         groups_claim: j.groups_claim().to_string(),
                         allowed_domains: Vec::new(),
+                        trust_email: false,
+                        allowed_emails: Vec::new(),
                         redirect_uri: j.redirect_uri.clone(),
                         mfa_acr_values: Vec::new(),
                     },
@@ -483,6 +494,7 @@ impl Connector {
     /// when not empty.
     pub fn allowed_emails(&self) -> Vec<String> {
         match self.kind {
+            Kind::Oidc => self.oidc().map(|o| o.allowed_emails).unwrap_or_default(),
             Kind::Google => self.google().map(|g| g.allowed_emails).unwrap_or_default(),
             Kind::Jumpcloud => self
                 .jumpcloud()
@@ -565,6 +577,24 @@ impl Connector {
                 }
                 if !s.scopes.iter().any(|x| x == "openid") {
                     return Err(ConnectorError::Invalid("scopes must include openid".into()));
+                }
+                // An address the domains refuse could never log in.
+                for e in &s.allowed_emails {
+                    let Some((_, domain)) = e.rsplit_once('@') else {
+                        return Err(ConnectorError::Invalid(format!(
+                            "{e:?} is not an email address"
+                        )));
+                    };
+                    if !s.allowed_domains.is_empty()
+                        && !s
+                            .allowed_domains
+                            .iter()
+                            .any(|d| d.eq_ignore_ascii_case(domain))
+                    {
+                        return Err(ConnectorError::Invalid(format!(
+                            "{e:?} is outside allowed_domains"
+                        )));
+                    }
                 }
             }
             Kind::Google => {
@@ -710,7 +740,8 @@ pub fn file_connectors(cfg: &Config) -> Vec<Connector> {
             sync: None,
             settings: serde_json::json!({
                 "issuer": o.issuer, "client_id": o.client_id, "scopes": o.scopes, "groups_claim": o.groups_claim,
-                "allowed_domains": o.allowed_domains, "redirect_uri": o.redirect_uri,
+                "allowed_domains": o.allowed_domains, "trust_email": o.trust_email,
+                "redirect_uri": o.redirect_uri,
             }),
             source: Source::File,
             created_at: 0,
@@ -869,7 +900,7 @@ impl ConnectorStore {
     // ---- secrets --------------------------------------------------------
 
     fn data_key(&self, directory: &str) -> Result<Zeroizing<Vec<u8>>, ConnectorError> {
-        let kek = self.kek.read().unwrap();
+        let kek = glidex_raftstore::wait::read(&self.kek).unwrap();
         let wrapped = match self.get_raw::<secrets::WrappedKey>(KEYS, directory)? {
             Some(w) => w,
             None => {
@@ -1001,7 +1032,12 @@ impl ConnectorStore {
 
     /// The KEK, for the leader to send to a new server (never logged).
     pub fn kek_bytes(&self) -> Zeroizing<Vec<u8>> {
-        Zeroizing::new(self.kek.read().unwrap().bytes().to_vec())
+        Zeroizing::new(
+            glidex_raftstore::wait::read(&self.kek)
+                .unwrap()
+                .bytes()
+                .to_vec(),
+        )
     }
 
     /// The KEK before the current one, while a rotation re-wraps.
@@ -1017,20 +1053,24 @@ impl ConnectorStore {
     /// new server, or every server when the leader rotates). The data keys
     /// in the replicated store are wrapped by one of them.
     pub fn install_kek(&self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), ConnectorError> {
-        self.kek.write().unwrap().install(bytes, previous)?;
+        glidex_raftstore::wait::write(&self.kek)
+            .unwrap()
+            .install(bytes, previous)?;
         Ok(())
     }
 
     /// Whether the KEK is a systemd credential, which only its operator
     /// rotates (on every server).
     pub fn kek_is_credential(&self) -> bool {
-        self.kek.read().unwrap().is_credential()
+        glidex_raftstore::wait::read(&self.kek)
+            .unwrap()
+            .is_credential()
     }
 
     /// Wrap every directory's data key with the current KEK (the last step
     /// of a rotation), in one write. Returns how many changed.
     pub fn rewrap_data_keys(&self) -> Result<usize, ConnectorError> {
-        let kek = self.kek.read().unwrap();
+        let kek = glidex_raftstore::wait::read(&self.kek).unwrap();
         let id = kek.id();
         let mut changed = Vec::new();
         for (k, w) in self.read_all::<secrets::WrappedKey>(KEYS)? {
@@ -1053,7 +1093,7 @@ impl ConnectorStore {
     }
 
     pub fn kek_id(&self) -> String {
-        self.kek.read().unwrap().id()
+        glidex_raftstore::wait::read(&self.kek).unwrap().id()
     }
 }
 

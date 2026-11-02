@@ -138,8 +138,38 @@ pub fn stale_here(
 
 /// An image's volume id, derived from the image's (one per datastore: the
 /// datastore is another cluster, or another pool).
-pub fn image_volume_id(image_id: &str) -> String {
+pub fn image_volume_id(image_id: &str, datastore: &str) -> String {
+    hyperstor_pki::sha256_hex(format!("glidex-image:{image_id}:on:{datastore}").as_bytes())[..32]
+        .to_string()
+}
+
+/// The id image volumes had before they were per datastore: one per image,
+/// so two datastores on one hyperstor cluster wanted the same id, and the
+/// second, listing only its own pool, retried "exists" for ever.
+fn legacy_image_volume_id(image_id: &str) -> String {
     hyperstor_pki::sha256_hex(format!("glidex-image:{image_id}").as_bytes())[..32].to_string()
+}
+
+/// Which id `image_id`'s volume on `datastore` has, from the volumes of its
+/// pool (`(id, name)`): one made before ids were per datastore, named for
+/// this datastore, is kept (its disks are clones of it); else the
+/// datastore's own (spec/24-storage.md S28).
+fn pick_image_volume_id<'a>(
+    image_id: &str,
+    datastore: &str,
+    listed: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> String {
+    let legacy = legacy_image_volume_id(image_id);
+    let name = image_volume_name(image_id, datastore);
+    if listed.into_iter().any(|(id, n)| id == legacy && n == name) {
+        legacy
+    } else {
+        image_volume_id(image_id, datastore)
+    }
+}
+
+fn image_volume_name(image_id: &str, datastore: &str) -> String {
+    format!("glidex image {image_id} on {datastore}")
 }
 
 /// `id` as a volume id: a UUID as it is, anything else hashed under
@@ -258,18 +288,22 @@ fn run_ctl(ctl: &Path, args: &[&str]) -> Result<(), ImageError> {
 }
 
 /// Runs `f` on a runtime of its own, on a thread of its own: the driver's
-/// methods block, and may be called from inside another runtime.
+/// methods block, and may be called from inside another runtime. A Tokio
+/// worker waits for it in `block_in_place` (up to the API's timeout per
+/// address), so the worker's runtime keeps driving its I/O.
 fn block_on<T: Send>(f: impl std::future::Future<Output = T> + Send) -> T {
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime")
-                .block_on(f)
+    glidex_raftstore::wait::blocking(|| {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a runtime")
+                    .block_on(f)
+            })
+            .join()
+            .expect("the API call's thread")
         })
-        .join()
-        .expect("the API call's thread")
     })
 }
 
@@ -286,6 +320,11 @@ fn api_err(e: connectrpc::ConnectError) -> ImageError {
         C::Unavailable | C::DeadlineExceeded => ImageError::NotReady(format!("hyperstor: {msg}")),
         C::FailedPrecondition => ImageError::Busy(format!("hyperstor: {msg}")),
         C::InvalidArgument | C::OutOfRange => ImageError::invalid_disk(format!("hyperstor: {msg}")),
+        // `pool_full` (hyperstor D182): no new volume until space is freed.
+        C::ResourceExhausted => ImageError::InsufficientStorage {
+            message: format!("hyperstor: {msg}"),
+            details: serde_json::json!({ "reason": "pool_full" }),
+        },
         _ => ImageError::Io(format!("hyperstor: {msg}")),
     }
 }
@@ -332,7 +371,17 @@ impl HyperstorDriver {
 
     /// What image `image_id`'s volume is called.
     fn image_volume_name(&self, image_id: &str) -> String {
-        format!("glidex image {image_id} on {}", self.datastore)
+        image_volume_name(image_id, &self.datastore)
+    }
+
+    /// The id `image_id`'s volume has on this datastore ([`pick_image_volume_id`]).
+    fn image_volume_of(&self, image_id: &str) -> Result<String, ImageError> {
+        let vols = self.volumes()?;
+        Ok(pick_image_volume_id(
+            image_id,
+            &self.datastore,
+            vols.iter().map(|v| (v.id.as_str(), v.name.as_str())),
+        ))
     }
 
     /// Deletes this datastore's image volumes whose image `live` says is
@@ -351,7 +400,9 @@ impl HyperstorDriver {
                 continue;
             };
             // One being purged is on its way already.
-            if live(image) || v.id != image_volume_id(image) || v.state != "active" {
+            let ours = v.id == image_volume_id(image, &self.datastore)
+                || v.id == legacy_image_volume_id(image);
+            if live(image) || !ours || v.state != "active" {
                 continue;
             }
             match self.delete(&v.id) {
@@ -362,6 +413,53 @@ impl HyperstorDriver {
             }
         }
         Ok(gone)
+    }
+
+    /// TLS as glidex's identity.
+    fn tls(&self) -> Result<std::sync::Arc<connectrpc::rustls::ClientConfig>, ImageError> {
+        let id = self.identity.as_ref().ok_or_else(|| {
+            ImageError::NotReady(
+                "hyperstor volumes are managed from glidex's servers, which hold its identity"
+                    .into(),
+            )
+        })?;
+        let tls = hyperstor_pki::client_config(&id.cert, &id.key, &id.root)
+            .map_err(|e| ImageError::Io(format!("hyperstor identity: {e}")))?;
+        Ok(std::sync::Arc::new(tls))
+    }
+
+    /// The pool's usable total and free bytes (hyperstor D156) and how full
+    /// it is (hyperstor D27), from the first address whose member knows
+    /// them: only the map service's leader hears the devices' reports.
+    /// `None` when none does (an older hyperstor, or a device yet to
+    /// report).
+    pub fn space(&self) -> Result<Option<PoolSpace>, ImageError> {
+        let tls = self.tls()?;
+        block_on(async {
+            let (mut answered, mut last) = (false, None);
+            for a in &self.api {
+                let Ok(uri) = format!("https://{a}").parse::<http::Uri>() else {
+                    continue;
+                };
+                let client = hyperstor_api::ClusterServiceClient::new(
+                    connectrpc::client::HttpClient::with_tls(tls.clone()),
+                    connectrpc::client::ClientConfig::new(uri).with_default_timeout(API_TIMEOUT),
+                );
+                match client.get_status(pb::GetStatusRequest::default()).await {
+                    Ok(s) => {
+                        answered = true;
+                        if let Some(space) = pool_space(&s.into_owned().pools, self.pool) {
+                            return Ok(Some(space));
+                        }
+                    }
+                    Err(e) => last = Some(e),
+                }
+            }
+            match last {
+                Some(e) if !answered => Err(api_err(e)),
+                _ => Ok(None),
+            }
+        })
     }
 
     /// Calls the cluster API through each address in turn while one is
@@ -395,15 +493,7 @@ impl HyperstorDriver {
         F: Fn(C) -> Fut + Sync,
         Fut: std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send,
     {
-        let id = self.identity.as_ref().ok_or_else(|| {
-            ImageError::NotReady(
-                "hyperstor volumes are managed from glidex's servers, which hold its identity"
-                    .into(),
-            )
-        })?;
-        let tls = hyperstor_pki::client_config(&id.cert, &id.key, &id.root)
-            .map_err(|e| ImageError::Io(format!("hyperstor identity: {e}")))?;
-        let tls = std::sync::Arc::new(tls);
+        let tls = self.tls()?;
         block_on(async {
             let mut last = None;
             for a in &self.api {
@@ -631,7 +721,7 @@ impl HyperstorDriver {
         file: &Path,
         size: u64,
     ) -> Result<(String, u64), ImageError> {
-        let id = image_volume_id(image_id);
+        let id = self.image_volume_of(image_id)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(30 * 60);
         // Each round makes progress or waits; a few rounds of another
         // worker's volume coming and going, and it's that worker's error.
@@ -697,7 +787,7 @@ impl HyperstorDriver {
     /// Delete image `image_id`'s volume (its golden snapshot with it); one
     /// gone already is fine, one that disks still clone from is refused.
     pub fn delete_image_volume(&self, image_id: &str) -> Result<(), ImageError> {
-        self.delete(&image_volume_id(image_id))
+        self.delete(&self.image_volume_of(image_id)?)
     }
 
     /// The binding the partition code works on, for `id`.
@@ -717,6 +807,11 @@ impl HyperstorDriver {
     /// [`Self::vhost`], keeping a `held` answer's holder: the label of the
     /// lease that holds the volume (hyperstor D153).
     fn vhost_call(&self, req: serde_json::Value) -> Result<serde_json::Value, VhostRefusal> {
+        // Up to a minute: off the worker on a Tokio runtime's.
+        glidex_raftstore::wait::blocking(|| self.vhost_call_now(req))
+    }
+
+    fn vhost_call_now(&self, req: serde_json::Value) -> Result<serde_json::Value, VhostRefusal> {
         let path = self.vhost_dir.join("control.sock");
         let unavailable = |e: std::io::Error| {
             VhostRefusal::from(ImageError::NotReady(format!(
@@ -1172,10 +1267,32 @@ pub fn renew(api: &[String], id: &Identity) -> Result<Option<Enrolled>, String> 
     })
 }
 
+/// `pool`'s usable total and free bytes in a status answer, when the member
+/// that gave it knows them (hyperstor D156).
+/// A hyperstor pool's space as its map service reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolSpace {
+    pub total: u64,
+    pub free: u64,
+    /// `ok`, `nearfull` or `full` (hyperstor D27); empty from a hyperstor
+    /// before it, or until every device has reported.
+    pub fullness: String,
+}
+
+fn pool_space(pools: &[pb::Pool], pool: u32) -> Option<PoolSpace> {
+    let p = pools.iter().find(|p| p.id == pool)?;
+    Some(PoolSpace {
+        total: p.total_bytes?,
+        free: p.free_bytes?,
+        fullness: p.fullness.clone(),
+    })
+}
+
 /// What this node finds of a hyperstor datastore (§4.1): its
 /// `hyperstor-vhost` answers (`VhostUnavailable` if not), and, on a server,
-/// the cluster API answers to glidex's identity (`ApiUnavailable`).
-/// hyperstor reports no free space yet: the sizes are 0 (S22).
+/// the cluster API answers to glidex's identity (`ApiUnavailable`) and
+/// gives the pool's space (S27). Other nodes, and a cluster that doesn't
+/// report it, show 0.
 pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::NodeRow {
     let mut row = super::record::NodeRow {
         reachable: true,
@@ -1195,6 +1312,29 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
         row.reachable = false;
         row.reason = "ApiUnavailable".into();
         row.message = e.to_string();
+        return row;
+    }
+    if driver.has_identity() {
+        match driver.space() {
+            Ok(Some(space)) => {
+                (row.total_bytes, row.free_bytes) = (space.total, space.free);
+                // Hyperstor refuses new volumes in a full pool (its D182),
+                // so the datastore refuses new disks (S30).
+                row.full = space.fullness == "full";
+                match space.fullness.as_str() {
+                    "full" => row.warnings.push(format!(
+                        "hyperstor pool {} is full: new disks are refused until space is freed",
+                        driver.pool
+                    )),
+                    "nearfull" => row
+                        .warnings
+                        .push(format!("hyperstor pool {} is nearly full", driver.pool)),
+                    _ => {}
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::debug!("hyperstor pool space: {e}"),
+        }
     }
     row
 }
@@ -1218,6 +1358,29 @@ mod tests {
         d
     }
 
+    /// Two datastores on one hyperstor cluster each have their own image
+    /// volume; one made before ids were per datastore stays its maker's.
+    #[test]
+    fn image_volumes_are_per_datastore_and_old_ones_stay() {
+        let (a, b) = ("ds-a", "ds-b");
+        assert_ne!(image_volume_id("img", a), image_volume_id("img", b));
+        assert_ne!(image_volume_id("img", a), legacy_image_volume_id("img"));
+        // None yet: each datastore's own.
+        assert_eq!(
+            pick_image_volume_id("img", a, []),
+            image_volume_id("img", a)
+        );
+        // ds-a made one under the old id: ds-a keeps it, ds-b makes its own.
+        let old = legacy_image_volume_id("img");
+        let name = image_volume_name("img", a);
+        let listed = [(old.as_str(), name.as_str())];
+        assert_eq!(pick_image_volume_id("img", a, listed), old);
+        assert_eq!(
+            pick_image_volume_id("img", b, listed),
+            image_volume_id("img", b)
+        );
+    }
+
     #[test]
     fn volumes_are_named_from_disks_and_images() {
         let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
@@ -1227,8 +1390,11 @@ mod tests {
         let odd = volume_id(&disk("legacy-disk"));
         assert_eq!(odd.len(), 32);
         assert_eq!(odd, volume_id(&disk("legacy-disk")));
-        assert_ne!(image_volume_id("img-1"), image_volume_id("img-2"));
-        assert_eq!(image_volume_id("img-1").len(), 32);
+        assert_ne!(
+            image_volume_id("img-1", "ds"),
+            image_volume_id("img-2", "ds")
+        );
+        assert_eq!(image_volume_id("img-1", "ds").len(), 32);
         let p = tool_path("10.0.0.5:8849,10.0.0.6:8849", &odd);
         assert_eq!(
             parse_tool_path(Path::new(&p)),
@@ -1243,6 +1409,50 @@ mod tests {
         };
         assert_eq!(b.path().to_str().unwrap(), format!("hyperstor://m:1/{odd}"));
         assert_eq!(b.vhost_socket(), None, "not staged");
+    }
+
+    #[test]
+    fn pool_space_is_the_pools_when_the_member_knows_it() {
+        let pool = |id, space: Option<(u64, u64)>| pb::Pool {
+            id,
+            total_bytes: space.map(|s| s.0),
+            free_bytes: space.map(|s| s.1),
+            ..Default::default()
+        };
+        let pools = [
+            pool(0, Some((9, 9))),
+            pool(1, Some((100, 40))),
+            pool(2, None),
+        ];
+        assert_eq!(
+            pool_space(&pools, 1),
+            Some(PoolSpace {
+                total: 100,
+                free: 40,
+                fullness: String::new()
+            })
+        );
+        // Not the leader, or a device yet to report.
+        assert_eq!(pool_space(&pools, 2), None);
+        assert_eq!(pool_space(&pools, 3), None, "no such pool");
+    }
+
+    #[test]
+    fn a_full_pool_is_insufficient_storage() {
+        use connectrpc::{ConnectError, ErrorCode};
+        // hyperstor D182: `pool_full` comes as resource exhausted.
+        let e = api_err(ConnectError::new(
+            ErrorCode::ResourceExhausted,
+            "pool 3 is full (device 2 at 96 %)",
+        ));
+        assert!(
+            matches!(&e, ImageError::InsufficientStorage { message, .. } if message.contains("pool 3 is full")),
+            "{e:?}"
+        );
+        assert!(matches!(
+            api_err(ConnectError::new(ErrorCode::Unavailable, "no leader")),
+            ImageError::NotReady(_)
+        ));
     }
 
     /// A stand-in hyperstor-vhost: answers each request line with what

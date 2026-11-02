@@ -1257,3 +1257,464 @@ async fn a_tenant_admin_lists_the_tenants_projects() {
         .collect();
     assert_eq!(names, vec!["in-acme"], "{v}");
 }
+
+/// Self-service tenants (spec/19-tenancy.md §11.1, D78): off by default;
+/// then within the directory's limits, with the creator as `tenant-admin`;
+/// creator teams, approval, deleting one's own, and a site `forbid`.
+#[tokio::test]
+async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let alice = h.user("alice");
+    let a = h.session(&alice);
+    let create = |slug: &str| json!({ "slug": slug, "display_name": format!("Lab {slug}") });
+
+    // Off by default: only the directory's administrators create tenants.
+    let (s, _) = h.rest("POST", "/tenants", Some(create("one")), &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(v["self_service"]["allowed"], json!(null), "{v}");
+
+    let settings = |ss: Value| json!({ "settings": { "self_service": ss } });
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(settings(json!({
+                "enabled": true, "max_per_user": 2, "max_total": 3, "slug_prefix": "lab-"
+            }))),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = h
+        .rest("PUT", "/directory/settings", Some(settings(json!({}))), &a)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "only its administrators");
+
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(v["self_service"]["allowed"], true, "{v}");
+    assert_eq!(v["self_service"]["remaining"], 2);
+    assert_eq!(v["self_service"]["slug_prefix"], "lab-");
+
+    // A user tenant they administer, its slug prefixed.
+    let (s, v) = h.rest("POST", "/tenants", Some(create("one")), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let one = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["tenant"]["slug"], "lab-one");
+    assert_eq!(v["tenant"]["self_service"], true);
+    assert_eq!(v["tenant"]["created_by"], alice.as_str());
+    assert_eq!(v["tenant"]["operator"], false);
+    assert_eq!(v["tenant"]["pending"], json!(null));
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/projects",
+            Some(json!({ "name": "web", "tenant": "lab-one" })),
+            &a,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "its admin creates projects: {v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "ops", "operator": true })),
+            &a,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "never an operator: {v}");
+
+    // The per-user limit, then the directory's.
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(create("lab-two")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["tenant"]["slug"], "lab-two", "the prefix isn't doubled");
+    let two = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (s, v) = h.rest("POST", "/tenants", Some(create("three")), &a).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_limit"))
+    );
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(
+        (
+            &v["self_service"]["allowed"],
+            &v["self_service"]["remaining"]
+        ),
+        (&json!(null), &json!(0)),
+        "{v}"
+    );
+    let bob = h.session(&h.user("bob"));
+    let (s, _) = h.rest("POST", "/tenants", Some(create("bob")), &bob).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let carol = h.session(&h.user("carol"));
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(create("carol")), &carol)
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_limit")),
+        "three in all"
+    );
+
+    // Deleting one's own once empty frees a slot; with a project, no.
+    let (s, v) = h.rest("DELETE", &format!("/tenants/{one}"), None, &a).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_in_use"))
+    );
+    let (s, v) = h.rest("DELETE", &format!("/tenants/{two}"), None, &a).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, v) = h.rest("DELETE", "/tenants/lab-bob", None, &a).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "someone else's: {v}");
+
+    // Creator teams: only their members.
+    let (_, v) = h
+        .rest("POST", "/teams", Some(json!({ "name": "staff" })), &at)
+        .await;
+    let staff = v["team"]["id"].as_str().unwrap().to_string();
+    let dave = h.user("dave");
+    h.rest("PUT", &format!("/teams/{staff}/members/{dave}"), None, &at)
+        .await;
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(settings(json!({
+                "enabled": true, "creator_teams": ["staff"], "max_total": 10,
+                "approval_required": true, "admins_may_delete": false
+            }))),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["settings"]["self_service"]["creator_teams"],
+        json!([staff])
+    );
+    let (s, _) = h
+        .rest("POST", "/tenants", Some(create("carol")), &carol)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not in a creator team");
+
+    // Approval: pending until a directory administrator approves it.
+    let d = h.session(&dave);
+    let (s, v) = h.rest("POST", "/tenants", Some(create("dave")), &d).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["tenant"]["pending"], true);
+    let dl = v["tenant"]["id"].as_str().unwrap().to_string();
+    let project = json!({ "name": "web", "tenant": "dave" });
+    let (s, v) = h.rest("POST", "/projects", Some(project.clone()), &d).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("tenant_pending"))
+    );
+    let (s, _) = h
+        .rest("POST", &format!("/tenants/{dl}/approve"), None, &d)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not by its creator");
+    let (s, v) = h
+        .rest("POST", &format!("/tenants/{dl}/approve"), None, &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["tenant"]["pending"], json!(null));
+    let (s, v) = h.rest("POST", "/projects", Some(project), &d).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // admins_may_delete off: only the directory's administrators.
+    let (s, _) = h.rest("POST", "/tenants", Some(create("spare")), &d).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, v) = h.rest("DELETE", "/tenants/spare", None, &d).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+
+    // A site policy narrows who may.
+    let forbid = format!(
+        "@id(\"site.no-dave\")\nforbid (principal == Glidex::User::\"{dave}\", action == Glidex::Action::\"createOwnTenant\", resource);"
+    );
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/authz/policies/site.no-dave",
+            Some(json!({ "text": forbid, "version": 0 })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = h.rest("POST", "/tenants", Some(create("again")), &d).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
+}
+
+/// Automatic admission (spec/19-tenancy.md D79): a hosted directory's
+/// self-service (or all new) tenants are admitted as they become active,
+/// with a default cap they follow until the operator sets theirs by hand.
+#[tokio::test]
+async fn new_tenants_are_admitted_with_the_default_cap() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(json!({ "settings": { "self_service": { "enabled": true, "max_per_user": 5 } } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let auto = |mode: &str, vms: u32| json!({ "mode": mode, "cap": { "vms": vms, "devices": { "a100": 1 } } });
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_SELF_SERVICE", 2)),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["auto_admission"]["follow_default"], true);
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/nowhere",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 2)),
+            &at,
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "only a directory this cluster hosts"
+    );
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(json!({ "mode": "AUTO_ADMISSION_MODE_ALL" })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a cap is required");
+
+    let admission = |v: &Value| v["tenant"]["admission"].clone();
+    let a = h.session(&h.user("alice"));
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "alab" })), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let alab = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(admission(&v)["cap"]["vms"], 2, "{v}");
+    assert_eq!(admission(&v)["cap"]["devices"]["a100"], 1);
+    assert_eq!(admission(&v)["follows_default"], true);
+    assert_eq!(admission(&v)["status"], "ADMISSION_STATUS_ADMITTED");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "manual" })), &at)
+        .await;
+    assert_eq!(
+        admission(&v),
+        Value::Null,
+        "self_service mode: not an administrator's tenant"
+    );
+
+    // All new user tenants; the new default reaches those that follow it.
+    let (_, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 5)),
+            &at,
+        )
+        .await;
+    assert_eq!(v["updated"], 1, "{v}");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "corp" })), &at)
+        .await;
+    let corp = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(admission(&v)["cap"]["vms"], 5, "{v}");
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "ops", "operator": true })),
+            &at,
+        )
+        .await;
+    assert_eq!(admission(&v), Value::Null, "never an operator tenant");
+
+    // A cap set by hand stops following; a suspension alone doesn't.
+    let (s, v) = h
+        .rest(
+            "PUT",
+            &format!("/admissions/{alab}"),
+            Some(json!({ "cap": { "vms": 7 } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["admission"]["follows_default"], Value::Null);
+    let (_, v) = h
+        .rest(
+            "PUT",
+            &format!("/admissions/{corp}"),
+            Some(json!({ "suspended": true })),
+            &at,
+        )
+        .await;
+    assert_eq!(v["admission"]["follows_default"], true, "{v}");
+    let (_, v) = h
+        .rest(
+            "PUT",
+            "/admissions/auto/local",
+            Some(auto("AUTO_ADMISSION_MODE_ALL", 9)),
+            &at,
+        )
+        .await;
+    assert_eq!(v["updated"], 1, "only corp follows: {v}");
+    let (_, v) = h.rest("GET", "/admissions", None, &at).await;
+    let cap_of = |id: &str| {
+        v["admissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["tenant_id"] == id)
+            .map(|a| a["cap"]["vms"].clone())
+            .unwrap()
+    };
+    assert_eq!((cap_of(&alab), cap_of(&corp)), (json!(7), json!(9)));
+
+    // A pending tenant is admitted when approved, not before.
+    h.rest(
+        "PUT",
+        "/directory/settings",
+        Some(json!({ "settings": { "self_service": { "enabled": true, "approval_required": true } } })),
+        &at,
+    )
+    .await;
+    let b = h.session(&h.user("bob"));
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "blab" })), &b)
+        .await;
+    assert_eq!(admission(&v), Value::Null, "{v}");
+    let blab = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (_, v) = h
+        .rest("POST", &format!("/tenants/{blab}/approve"), None, &at)
+        .await;
+    assert_eq!(admission(&v)["cap"]["vms"], 9, "{v}");
+
+    // Off: new tenants wait for the operator; admissions made stay.
+    let (s, _) = h.rest("DELETE", "/admissions/auto/local", None, &at).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = h.rest("GET", "/admissions/auto", None, &at).await;
+    assert_eq!(v["auto_admissions"], Value::Null, "{v}");
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "later" })), &at)
+        .await;
+    assert_eq!(admission(&v), Value::Null);
+    let (_, v) = h.rest("GET", &format!("/tenants/{blab}"), None, &at).await;
+    assert_eq!(admission(&v)["cap"]["vms"], 9);
+}
+
+/// An open pool (spec/19-tenancy.md D80): `"tenants": ["*"]` grants it to
+/// every tenant admitted here, for VMs and tenant pools; how much each
+/// takes is its cap's `devices.<pool>`.
+#[tokio::test]
+async fn an_open_pool_is_granted_to_every_admitted_tenant() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+        }];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec![],
+            tenants: vec!["*".into()],
+            node: None,
+        }];
+    });
+    let at = h.session(&h.admin("ada"));
+    let tom = h.user("tom");
+    let t = h.token(&tom);
+    let tenant = |slug: &'static str| {
+        let h = &h;
+        let at = at.clone();
+        let tom = tom.clone();
+        let t = t.clone();
+        async move {
+            let (_, v) = h
+                .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+                .await;
+            let id = v["tenant"]["id"].as_str().unwrap().to_string();
+            let admin =
+                json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": tom } });
+            h.rest("POST", &format!("/tenants/{id}/bindings"), Some(admin), &at)
+                .await;
+            let (s, v) = h
+                .rest(
+                    "POST",
+                    "/projects",
+                    Some(json!({ "name": format!("{slug}-p"), "tenant": id })),
+                    &t,
+                )
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            (id, v["project"]["id"].as_str().unwrap().to_string())
+        }
+    };
+    let (lab, lab_p) = tenant("lab").await;
+    let (other, other_p) = tenant("other").await;
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/lab",
+            Some(json!({ "cap": { "devices": { "a100": 1 } } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The admitted tenant's projects may use it; the other's, not yet.
+    let pools = |p: String| {
+        let h = &h;
+        let t = t.clone();
+        async move {
+            let (_, v) = h
+                .rest("GET", &format!("/pci-pools?project={p}"), None, &t)
+                .await;
+            v["pools"]
+                .as_array()
+                .map(|a| a.iter().map(|p| p["name"].clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
+    };
+    assert_eq!(pools(lab_p.clone()).await, vec![json!("a100")]);
+    assert!(pools(other_p.clone()).await.is_empty());
+
+    // A tenant pool may draw from it.
+    let set = |id: &str, p: &str| {
+        (
+            format!("/tenants/{id}/device-pools"),
+            json!({ "pools": [{ "name": "team-gpus", "from": "a100", "max": 1, "projects": [p] }] }),
+        )
+    };
+    let (path, body) = set(&lab, &lab_p);
+    let (s, v) = h.rest("PUT", &path, Some(body), &t).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["pools"][0]["ungranted"], Value::Null, "{v}");
+    let (path, body) = set(&other, &other_p);
+    let (s, _) = h.rest("PUT", &path, Some(body), &t).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not admitted: not granted");
+
+    // Admitted, the other may too.
+    h.rest("PUT", "/admissions/other", Some(json!({})), &at)
+        .await;
+    assert_eq!(pools(other_p).await, vec![json!("a100")]);
+}

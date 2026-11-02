@@ -166,6 +166,20 @@ service VmService {
       rest: "DELETE /vms/{id}/disks/{disk}"
     };
   }
+  rpc AttachNetwork(AttachNetworkRequest) returns (AttachNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "attachNetwork"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/networks"
+    };
+  }
+  rpc DetachNetwork(DetachNetworkRequest) returns (DetachNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachNetwork"
+      kind: KIND_WRITE
+      rest: "DELETE /vms/{id}/networks/{network}"
+    };
+  }
 }
 
 // The state the API shows, from the observed phase (§7.4).
@@ -710,6 +724,36 @@ message DetachDiskRequest {
   optional uint32 wait_secs = 3 [json_name = "wait_secs"];
 }
 message DetachDiskResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+// A NIC on one more network, after the VM's others; on a running VM from
+// its next start.
+message AttachNetworkRequest {
+  string id = 1;
+  // Network id, or a name the VM's project can use.
+  string network = 2;
+  // Absent: one derived from the VM id that no other NIC has.
+  optional string mac = 3;
+  optional uint32 queue_pairs = 4 [json_name = "queue_pairs"];
+  optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+}
+message AttachNetworkResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+// Remove a NIC; on a running VM at its next start.
+message DetachNetworkRequest {
+  string id = 1;
+  // Network id or name.
+  string network = 2;
+  // Which NIC, when the VM has more than one on the network.
+  optional string mac = 3;
+  optional uint32 wait_secs = 4 [json_name = "wait_secs"];
+}
+message DetachNetworkResponse {
   Vm vm = 1;
   optional bool settled = 2;
 }

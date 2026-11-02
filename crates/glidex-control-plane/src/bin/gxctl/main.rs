@@ -616,6 +616,26 @@ fn print_help() {
         "scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]".cyan()
     );
     println!(
+        "  {} - Show or change a VM's memory (MiB, or with G); from the next start",
+        "memory <name|id> [<size>]".cyan()
+    );
+    println!(
+        "  {} - Attach a data disk to a VM; on a running VM from the next start",
+        "attach-disk <name|id> <disk>".cyan()
+    );
+    println!(
+        "  {} - Detach a data disk (kept); on a running VM at the next start",
+        "detach-disk <name|id> <disk>".cyan()
+    );
+    println!(
+        "  {} - Give a VM a NIC on one more network; on a running VM from the next start",
+        "attach-network <name|id> <network> [--mac <mac>]".cyan()
+    );
+    println!(
+        "  {} - Remove a VM's NIC on a network; on a running VM at the next start",
+        "detach-network <name|id> <network> [--mac <mac>]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -676,7 +696,7 @@ fn print_help() {
     println!("  {}          - List networks", "networks".cyan());
     println!(
         "  {} - Create a network (default: NAT)",
-        "network-add <name> [--nat|--isolated|--bridged <br>]".cyan()
+        "network-add <name> [--nat|--isolated|--bridged <br>] [--node N]".cyan()
     );
     println!("  {}  - Delete a network", "network-rm <name>".cyan());
     println!("  {}           - List glidex OVS bridges", "bridges".cyan());
@@ -794,21 +814,22 @@ fn print_help() {
         "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>"
             .cyan()
     );
-    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|delete <t> | members|add-member|remove-member …".cyan());
+    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|approve|delete <t> | members|add-member|remove-member …".cyan());
     println!(
         "  {} - Tenants admitted on this cluster, and their caps",
-        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories".cyan()
+        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | auto [set <dir> --mode self_service|all --cap k=v,… | remove <dir>]".cyan()
     );
     println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
     println!(
-        "  {} - Directories this host serves (operator), and the token signing keys of yours (rotating needs a fresh login)",
-        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate]".cyan()
+        "  {} - Directories this host serves (operator), the token signing keys of yours (rotating needs a fresh login), and its settings: self-service tenants and the web UI's word for a tenant",
+        "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate] | settings [...]".cyan()
     );
     println!(
         "  {} - Projects",
-        "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
+        "project list | show <p> | create <name> [--description D] [--tenant T] | delete <p>"
+            .cyan()
     );
     println!(
         "  {} - Quotas (none = unlimited)",
@@ -824,8 +845,8 @@ fn print_help() {
         "system-binding list [--node N] | add <role> <principal> [--node N] | remove <id>".cyan()
     );
     println!(
-        "  {}         - Users and their identities",
-        "user list".cyan()
+        "  {} - Users and their sign-ins; pre-add one by email; link one, on a node or every node",
+        "user list | add <email> --tenant T --connector C [--role R] [--name N] | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>".cyan()
     );
     println!(
         "  {} - Teams",
@@ -1048,6 +1069,11 @@ const COMMANDS: &[&str] = &[
     "cluster",
     "attach-device",
     "detach-device",
+    "attach-disk",
+    "detach-disk",
+    "attach-network",
+    "detach-network",
+    "memory",
     "credentials",
     "creds",
     "credential-add",
@@ -1122,6 +1148,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "rename",
             "suspend",
             "resume",
+            "approve",
             "delete",
             "members",
             "add-member",
@@ -1147,6 +1174,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "revoke-offer",
             "directories",
             "staleness",
+            "auto",
         ],
     ),
     (
@@ -1158,7 +1186,10 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
         "federation",
         &["list", "show", "add", "enable", "disable", "remove"],
     ),
-    ("directory", &["list", "create", "delete", "keys"]),
+    (
+        "directory",
+        &["list", "create", "delete", "keys", "settings"],
+    ),
     (
         "disk",
         &[
@@ -1222,7 +1253,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ),
     ("binding", &["list", "add", "remove"]),
     ("system-binding", &["list", "add", "remove"]),
-    ("user", &["list"]),
+    ("user", &["list", "add", "link", "unlink"]),
     (
         "team",
         &["list", "create", "delete", "add-member", "remove-member"],
@@ -1463,6 +1494,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "kernel" => vm::kernel(client, &parts[1..]).await,
         "service-account" => vm::service_account(client, &parts[1..]).await,
         "scale" => vm::scale(client, &parts[1..]).await,
+        "memory" => vm::memory(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
@@ -1506,6 +1538,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "attach-device" => vm::device(client, true, &parts[1..]).await,
         "detach-device" => vm::device(client, false, &parts[1..]).await,
+        "attach-disk" => vm::disk(client, true, &parts[1..]).await,
+        "detach-disk" => vm::disk(client, false, &parts[1..]).await,
+        "attach-network" => vm::network(client, true, &parts[1..]).await,
+        "detach-network" => vm::network(client, false, &parts[1..]).await,
 
         "credentials" | "creds" => storage::credentials(client).await,
 

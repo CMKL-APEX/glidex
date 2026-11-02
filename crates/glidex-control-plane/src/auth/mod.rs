@@ -141,6 +141,7 @@ impl Principal {
                 managed: None,
                 email: None,
                 disabled_reason: None,
+                pending_login: None,
             }),
             token: None,
             token_narrowed: false,
@@ -880,7 +881,13 @@ impl AuthService {
             } else {
                 ""
             });
-            es.directory(d, owner);
+            let self_service = snap
+                .directories
+                .iter()
+                .find(|x| &x.id == d)
+                .map(|x| x.settings.self_service.clone())
+                .unwrap_or_default();
+            es.directory_with(d, owner, &self_service);
         }
         for t in &wanted {
             match snap.tenant(t) {
@@ -1593,11 +1600,21 @@ impl AuthService {
             ),
             None => None,
         };
+        // D77: a user pre-added for this connector and verified address
+        // takes the identity, with or without JIT.
+        let preadded = match (existed, &invited, id.email.as_deref()) {
+            (false, None, Some(e)) if id.email_verified => {
+                self.store
+                    .take_pending_login(&c.directory_id, &c.id, &provider, &id.subject, e)?
+            }
+            _ => None,
+        };
         // A connector with an allowlist gives new accounts to those
         // verified addresses only (D39); an invitation is its own way in.
         let allowed = c.allowed_emails();
         if !existed
             && invited.is_none()
+            && preadded.is_none()
             && !allowed.is_empty()
             && !(id.email_verified
                 && id
@@ -1609,17 +1626,22 @@ impl AuthService {
                 "this address may not get an account through this connector".into(),
             ));
         }
-        let user = self
-            .store
-            .user_for_identity_in(
-                &c.directory_id,
-                &provider,
-                &id.subject,
-                &id.display_name,
-                id.email.clone(),
-                c.jit || invited.is_some(),
-            )?
-            .ok_or_else(|| AuthError::NotAllowed("no glidex account for this identity".into()))?;
+        let user = match &preadded {
+            Some(u) => u.clone(),
+            None => self
+                .store
+                .user_for_identity_in(
+                    &c.directory_id,
+                    &provider,
+                    &id.subject,
+                    &id.display_name,
+                    id.email.clone(),
+                    c.jit || invited.is_some(),
+                )?
+                .ok_or_else(|| {
+                    AuthError::NotAllowed("no glidex account for this identity".into())
+                })?,
+        };
         if user.disabled {
             return Err(AuthError::NotAllowed("this account is disabled".into()));
         }
@@ -1649,7 +1671,11 @@ impl AuthService {
             .collect();
         self.store
             .sync_memberships(&user.id, c.member_source(), &teams)?;
-        if !existed && let Some(t) = &c.default_tenant {
+        // A pre-added user has the tenant its administrator gave it.
+        if !existed
+            && preadded.is_none()
+            && let Some(t) = &c.default_tenant
+        {
             self.tenants
                 .add_member(
                     t,
@@ -1821,6 +1847,7 @@ impl AuthService {
             groups_claim: s.groups_claim.clone(),
             jit: c.jit,
             allowed_domains: s.allowed_domains.clone(),
+            trust_email: s.trust_email,
             required_groups: c.required_groups.clone(),
             group_teams: c
                 .group_teams
@@ -2056,10 +2083,16 @@ impl AuthService {
 
     /// Consume a ticket for `vm_id` held by `p`.
     pub fn redeem_ticket(&self, p: &Principal, vm_id: &str, ticket: &str) -> bool {
+        self.redeem_ticket_of(&p.cedar(), vm_id, ticket)
+    }
+
+    /// The same, for a principal another server names (a cluster's
+    /// tickets are the leader's: spec/11-security.md decision 21).
+    pub fn redeem_ticket_of(&self, principal: &Ent, vm_id: &str, ticket: &str) -> bool {
         let now = store::now();
         let mut tickets = self.tickets.lock().unwrap();
         match tickets.remove(&sha256_hex(ticket.as_bytes())) {
-            Some(t) => t.expires > now && t.vm_id == vm_id && t.principal == p.cedar(),
+            Some(t) => t.expires > now && t.vm_id == vm_id && t.principal == *principal,
             None => false,
         }
     }

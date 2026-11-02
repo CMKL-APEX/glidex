@@ -26,6 +26,8 @@ const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_membe
 const DEVICE_POOLS: TableDefinition<&str, &[u8]> = TableDefinition::new("tenant_device_pools");
 const PROJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("projects");
 const OFFERS: TableDefinition<&str, &[u8]> = TableDefinition::new("admission_offers");
+/// Automatic admission per hosted directory, by directory id (D79).
+const AUTO_ADMISSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("auto_admissions");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// The directory a host hosts (D32).
@@ -89,6 +91,108 @@ pub struct Directory {
     /// issued a workload token (29-workload-identity.md W13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_domain: Option<String>,
+    /// Self-service tenants and the web UI's word for a tenant
+    /// (spec/19-tenancy.md §11.1).
+    #[serde(default, skip_serializing_if = "DirectorySettings::is_default")]
+    pub settings: DirectorySettings,
+}
+
+/// A directory's settings (spec/19-tenancy.md §11.1), set by its
+/// administrators.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectorySettings {
+    pub self_service: SelfService,
+    pub tenant_label: TenantLabel,
+}
+
+/// Who may create tenants of their own, and how many (D78).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfService {
+    pub enabled: bool,
+    /// Team ids whose members may; empty: every user of the directory.
+    pub creator_teams: Vec<String>,
+    pub max_per_user: u32,
+    pub max_total: Option<u32>,
+    pub approval_required: bool,
+    pub slug_prefix: String,
+    pub admins_may_delete: bool,
+}
+
+impl Default for SelfService {
+    fn default() -> Self {
+        SelfService {
+            enabled: false,
+            creator_teams: Vec::new(),
+            max_per_user: 3,
+            max_total: None,
+            approval_required: false,
+            slug_prefix: String::new(),
+            admins_may_delete: true,
+        }
+    }
+}
+
+/// What the web UI calls a tenant (D81).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TenantLabel {
+    pub singular: String,
+    pub plural: String,
+}
+
+impl Default for TenantLabel {
+    fn default() -> Self {
+        TenantLabel {
+            singular: "Tenant".into(),
+            plural: "Tenants".into(),
+        }
+    }
+}
+
+/// Most tenants one user may create (D78).
+pub const MAX_PER_USER: u32 = 100;
+const MAX_SLUG_PREFIX: usize = 16;
+const MAX_LABEL: usize = 24;
+
+impl DirectorySettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Refuse what can't be stored; the caller resolves team names to ids.
+    pub fn validate(&self) -> Result<(), TenantError> {
+        let s = &self.self_service;
+        if s.max_per_user > MAX_PER_USER {
+            return Err(TenantError::Invalid(format!(
+                "max_per_user is at most {MAX_PER_USER}"
+            )));
+        }
+        let p = &s.slug_prefix;
+        if p.len() > MAX_SLUG_PREFIX
+            || p.starts_with('-')
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(TenantError::Invalid(format!(
+                "invalid slug prefix '{p}': use [a-z0-9-], at most {MAX_SLUG_PREFIX} characters, not starting with '-'"
+            )));
+        }
+        for (what, v) in [
+            ("singular", &self.tenant_label.singular),
+            ("plural", &self.tenant_label.plural),
+        ] {
+            let n = v.chars().count();
+            if v.trim() != v || n == 0 || n > MAX_LABEL || v.chars().any(char::is_control) {
+                return Err(TenantError::Invalid(format!(
+                    "the tenant label's {what} form is 1-{MAX_LABEL} characters, without surrounding spaces"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +211,16 @@ pub struct Tenant {
     #[serde(default)]
     pub suspended: bool,
     pub created_at: u64,
+    /// Created by one of the directory's users for themselves (D78).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_service: bool,
+    /// Who created it (a user id), for a self-service tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// Waits for a directory administrator's approval (D78): its members
+    /// can't create projects yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +241,44 @@ pub struct Admission {
     pub status: AdmissionStatus,
     pub by: String,
     pub at: u64,
+    /// Made by automatic admission, its cap the directory's default cap
+    /// until the operator sets one by hand (D79).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follows_default: bool,
+}
+
+/// Which new tenants of a directory this cluster admits by itself (D79).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoMode {
+    /// Self-service tenants, as they become active.
+    SelfService,
+    /// Every new user tenant.
+    All,
+}
+
+/// Automatic admission for one directory this cluster hosts (D79).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoAdmission {
+    pub directory_id: String,
+    pub mode: AutoMode,
+    /// The default cap of the admissions it makes.
+    pub cap: Quotas,
+    /// Those admissions follow later changes to `cap` until set by hand.
+    pub follow_default: bool,
+    pub by: String,
+    pub at: u64,
+}
+
+impl AutoAdmission {
+    /// Whether it admits `t` now.
+    pub fn takes(&self, t: &Tenant) -> bool {
+        t.directory_id == self.directory_id
+            && !t.pending
+            && !t.operator
+            && !t.owns_directory
+            && (self.mode == AutoMode::All || t.self_service)
+    }
 }
 
 /// A tenant's share of a cluster device pool, split among some of its
@@ -301,6 +453,7 @@ impl TenantStore {
             created_at: at,
             issuer: None,
             trust_domain: None,
+            settings: DirectorySettings::default(),
         };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
@@ -311,6 +464,9 @@ impl TenantStore {
             operator: true,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let default = Tenant {
             id: DEFAULT_TENANT.into(),
@@ -321,6 +477,9 @@ impl TenantStore {
             operator: false,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let admit = |t: &str| Admission {
             tenant_id: t.into(),
@@ -329,6 +488,7 @@ impl TenantStore {
             status: AdmissionStatus::Admitted,
             by: "bootstrap".into(),
             at,
+            follows_default: false,
         };
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -500,6 +660,9 @@ impl TenantStore {
             operator: false,
             suspended: false,
             created_at: at,
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         let d = Directory {
             id: id.into(),
@@ -508,6 +671,7 @@ impl TenantStore {
             created_at: at,
             issuer: None,
             trust_domain: None,
+            settings: DirectorySettings::default(),
         };
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -605,6 +769,21 @@ impl TenantStore {
             )));
         }
         d.trust_domain = Some(td.to_string());
+        self.put(DIRECTORIES, id, &d)?;
+        Ok(d)
+    }
+
+    /// Replace `id`'s settings (checked first).
+    pub fn set_settings(
+        &self,
+        id: &str,
+        settings: DirectorySettings,
+    ) -> Result<Directory, TenantError> {
+        settings.validate()?;
+        let mut d = self
+            .get_directory(id)?
+            .ok_or_else(|| TenantError::NotFound(format!("directory {id}")))?;
+        d.settings = settings;
         self.put(DIRECTORIES, id, &d)?;
         Ok(d)
     }
@@ -741,9 +920,82 @@ impl TenantStore {
             operator,
             suspended: false,
             created_at: now(),
+            self_service: false,
+            created_by: None,
+            pending: false,
         };
         self.put(TENANTS, &t.id.clone(), &t)?;
         Ok(t)
+    }
+
+    /// A tenant `user` creates for themselves in `directory` (D78), with
+    /// `user` as a listed member, in one write. `pending` until approved.
+    /// The caller checked who may, and the limits.
+    pub fn create_own(
+        &self,
+        directory: &str,
+        slug: &str,
+        display_name: String,
+        user: &str,
+        pending: bool,
+    ) -> Result<Tenant, TenantError> {
+        validate_slug(slug)?;
+        if self
+            .list()?
+            .iter()
+            .any(|t| t.id == slug || (t.slug == slug && t.directory_id == directory))
+        {
+            return Err(TenantError::AlreadyExists(slug.to_string()));
+        }
+        let at = now();
+        let t = Tenant {
+            id: uuid::Uuid::new_v4().to_string(),
+            directory_id: directory.into(),
+            slug: slug.into(),
+            display_name,
+            owns_directory: false,
+            operator: false,
+            suspended: false,
+            created_at: at,
+            self_service: true,
+            created_by: Some(user.into()),
+            pending,
+        };
+        let m = Member {
+            tenant_id: t.id.clone(),
+            principal: Ent::User(user.into()),
+            by: user.into(),
+            at,
+        };
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(TENANTS)?
+                .insert(t.id.as_str(), serde_json::to_vec(&t)?.as_slice())?;
+            txn.open_table(MEMBERS)?.insert(
+                member_key(&t.id, &m.principal).as_str(),
+                serde_json::to_vec(&m)?.as_slice(),
+            )?;
+        }
+        txn.commit()?;
+        Ok(t)
+    }
+
+    /// Self-service tenants of `directory`: `(created by user, in all)` (D78).
+    pub fn self_service_counts(
+        &self,
+        directory: &str,
+        user: &str,
+    ) -> Result<(u32, u32), TenantError> {
+        let mine = self
+            .list()?
+            .into_iter()
+            .filter(|t| t.directory_id == directory && t.self_service)
+            .collect::<Vec<_>>();
+        let by_user = mine
+            .iter()
+            .filter(|t| t.created_by.as_deref() == Some(user))
+            .count();
+        Ok((by_user as u32, mine.len() as u32))
     }
 
     pub fn update(&self, t: &Tenant) -> Result<(), TenantError> {
@@ -787,6 +1039,7 @@ impl TenantStore {
             status,
             by: by.into(),
             at: now(),
+            follows_default: false,
         };
         self.put(ADMISSIONS, &t.id, &a)?;
         Ok(a)
@@ -808,9 +1061,91 @@ impl TenantStore {
             status: AdmissionStatus::Admitted,
             by: by.into(),
             at: now(),
+            follows_default: false,
         };
         self.put(ADMISSIONS, tenant_id, &a)?;
         Ok(a)
+    }
+
+    /// Store `a` as it is, `follows_default` included.
+    pub fn put_admission(&self, a: &Admission) -> Result<(), TenantError> {
+        self.put(ADMISSIONS, &a.tenant_id, a)
+    }
+
+    // ---- automatic admission (D79) --------------------------------------
+
+    pub fn auto_admissions(&self) -> Result<Vec<AutoAdmission>, TenantError> {
+        let mut out: Vec<AutoAdmission> = self.read_all(AUTO_ADMISSIONS)?;
+        out.sort_by(|a, b| a.directory_id.cmp(&b.directory_id));
+        Ok(out)
+    }
+
+    pub fn auto_admission(&self, directory: &str) -> Result<Option<AutoAdmission>, TenantError> {
+        Ok(self
+            .auto_admissions()?
+            .into_iter()
+            .find(|a| a.directory_id == directory))
+    }
+
+    /// Set `a`, and give its cap to the admissions that follow it, in one
+    /// write. The directory must be one this cluster hosts.
+    pub fn set_auto_admission(&self, a: &AutoAdmission) -> Result<u32, TenantError> {
+        if self.get_directory(&a.directory_id)?.is_none() {
+            return Err(TenantError::NotFound(format!(
+                "directory {}",
+                a.directory_id
+            )));
+        }
+        let following: Vec<Admission> = self
+            .admissions()?
+            .into_iter()
+            .filter(|x| x.follows_default && x.directory_id == a.directory_id)
+            .collect();
+        let txn = self.db.begin(crate::store::Origin::Api)?;
+        {
+            txn.open_table(AUTO_ADMISSIONS)?
+                .insert(a.directory_id.as_str(), serde_json::to_vec(a)?.as_slice())?;
+            let mut t = txn.open_table(ADMISSIONS)?;
+            for mut x in following.iter().cloned() {
+                x.cap = a.cap.clone();
+                x.by = a.by.clone();
+                x.at = a.at;
+                t.insert(x.tenant_id.as_str(), serde_json::to_vec(&x)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(following.len() as u32)
+    }
+
+    pub fn remove_auto_admission(&self, directory: &str) -> Result<(), TenantError> {
+        if !self.remove(AUTO_ADMISSIONS, directory)? {
+            return Err(TenantError::NotFound(format!(
+                "no automatic admission for {directory}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Admit `t` by its directory's automatic admission, if that takes it
+    /// and it has no admission yet; the admission made.
+    pub fn auto_admit(&self, t: &Tenant) -> Result<Option<Admission>, TenantError> {
+        let Some(auto) = self.auto_admission(&t.directory_id)? else {
+            return Ok(None);
+        };
+        if !auto.takes(t) || self.admission(&t.id)?.is_some() {
+            return Ok(None);
+        }
+        let a = Admission {
+            tenant_id: t.id.clone(),
+            directory_id: t.directory_id.clone(),
+            cap: auto.cap.clone(),
+            status: AdmissionStatus::Admitted,
+            by: format!("auto:{}", t.directory_id),
+            at: now(),
+            follows_default: auto.follow_default,
+        };
+        self.put(ADMISSIONS, &t.id, &a)?;
+        Ok(Some(a))
     }
 
     pub fn remove_admission(&self, tenant: &str) -> Result<(), TenantError> {
@@ -948,6 +1283,56 @@ mod tests {
         assert!(s.delete(DEFAULT_TENANT).is_err());
         s.delete(&t.id).unwrap();
         assert!(s.admission(&t.id).unwrap().is_none() && s.members(&t.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn directory_settings_are_checked_kept_and_default_when_absent() {
+        let (s, _d) = store();
+        let d = s.directory().unwrap().unwrap();
+        assert_eq!(d.settings, DirectorySettings::default());
+        assert_eq!(d.settings.self_service.max_per_user, 3);
+        assert!(d.settings.self_service.admins_may_delete);
+        // A record from before settings existed reads as the defaults.
+        let old: Directory =
+            serde_json::from_str(r#"{"id":"x","name":"x","owner_tenant":"t","created_at":0}"#)
+                .unwrap();
+        assert_eq!(old.settings, DirectorySettings::default());
+        assert!(!serde_json::to_string(&old).unwrap().contains("settings"));
+
+        let mut set = DirectorySettings::default();
+        set.self_service.enabled = true;
+        set.self_service.slug_prefix = "lab-".into();
+        set.tenant_label = TenantLabel {
+            singular: "Lab".into(),
+            plural: "Labs".into(),
+        };
+        let d = s.set_settings(LOCAL_DIRECTORY, set.clone()).unwrap();
+        assert_eq!(d.settings, set);
+        assert_eq!(s.directory().unwrap().unwrap().settings, set);
+
+        let bad = |f: &dyn Fn(&mut DirectorySettings)| {
+            let mut b = set.clone();
+            f(&mut b);
+            assert!(
+                matches!(
+                    s.set_settings(LOCAL_DIRECTORY, b),
+                    Err(TenantError::Invalid(_))
+                ),
+                "accepted a bad setting"
+            );
+        };
+        bad(&|b| b.self_service.max_per_user = MAX_PER_USER + 1);
+        bad(&|b| b.self_service.slug_prefix = "Lab-".into());
+        bad(&|b| b.self_service.slug_prefix = "-x".into());
+        bad(&|b| b.self_service.slug_prefix = "a".repeat(17));
+        bad(&|b| b.tenant_label.singular = String::new());
+        bad(&|b| b.tenant_label.plural = " Labs".into());
+        bad(&|b| b.tenant_label.plural = "x".repeat(25));
+        assert_eq!(s.directory().unwrap().unwrap().settings, set, "unchanged");
+        assert!(matches!(
+            s.set_settings("nope", set),
+            Err(TenantError::NotFound(_))
+        ));
     }
 
     #[test]

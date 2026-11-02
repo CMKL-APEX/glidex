@@ -79,6 +79,28 @@ impl VmManager {
         ok.first().map(|n| n.to_string())
     }
 
+    /// A claim outlives its VM's spec only as long as an instance has the
+    /// disk open (D11): once none does, `attached_to` is cleared. Any node
+    /// may do this, not only the disk's worker: the VM's node calls it as
+    /// the instance ends.
+    pub(crate) async fn release_if_unclaimed(&self, disk: &mut Disk) -> Result<(), VmManagerError> {
+        if disk.attached_to.is_none()
+            || Self::disk_claimed_by(&*self.vms.read().await, &disk.id, None).is_some()
+        {
+            return Ok(());
+        }
+        let vm = disk.attached_to.take();
+        self.put_disk_with_event(
+            disk,
+            Some(Event::new(
+                "controller",
+                EventKind::Normal,
+                "Released",
+                format!("no longer claimed by VM {}", vm.unwrap_or_default()),
+            )),
+        )
+    }
+
     /// One round for disk `id`.
     pub async fn reconcile_disk(&self, id: &str) -> Next {
         let Ok(disk) = self.images.get_disk(id) else {
@@ -273,6 +295,15 @@ impl VmManager {
                 return Ok(Some(Duration::from_secs(if stuck { 30 } else { 3 })));
             }
         }
+        // Its VM is being deleted: no new attempt; the VM's deletion waits
+        // for one already running, then deletes the disk (S29).
+        {
+            let vms = self.vms.read().await;
+            let vm = Self::disk_claimed_by(&vms, &disk.id, None).and_then(|id| vms.get(&id));
+            if vm.is_some_and(|vm| vm.deletion_requested_at.is_some()) {
+                return Ok(None);
+            }
+        }
         let guard = match self.images.begin(&disk.id, "create") {
             Ok(g) => g,
             Err(_) => return Ok(Some(Duration::from_secs(1))),
@@ -340,6 +371,33 @@ impl VmManager {
                 self.images.put_disk(&d)?;
                 Ok(Some(Duration::from_secs(3)))
             }
+            Err(e @ ImageError::InsufficientStorage { .. }) => {
+                // A hyperstor pool that filled up (S30): wait for space,
+                // asking again each minute, not at the error backoff.
+                let mut d = latest;
+                let first = !d
+                    .conditions
+                    .iter()
+                    .any(|c| c.kind == "Ready" && c.reason == "DatastoreFull");
+                d.phase = DiskPhase::Pending;
+                set_cond(
+                    &mut d.conditions,
+                    "Ready",
+                    Tristate::False,
+                    "DatastoreFull",
+                    e.to_string(),
+                );
+                let event = first.then(|| {
+                    Event::new(
+                        "controller",
+                        EventKind::Warning,
+                        "DatastoreFull",
+                        format!("waiting for space: {e}"),
+                    )
+                });
+                self.put_disk_with_event(&d, event)?;
+                Ok(Some(Duration::from_secs(60)))
+            }
             Err(e @ (ImageError::InvalidDisk { .. } | ImageError::InvalidImage(_))) => {
                 let mut d = latest;
                 d.phase = DiskPhase::Failed;
@@ -391,6 +449,8 @@ impl VmManager {
 
     /// A made disk: missing file, resize, extend-root, on-boot grow done.
     async fn ready_round(&self, mut disk: Disk) -> Next {
+        // Whether or not its file is there.
+        self.release_if_unclaimed(&mut disk).await?;
         let driver = self.images.driver(&disk)?;
         if !driver.exists(&disk) {
             let path = driver.binding(&disk).path().to_path_buf();
@@ -417,27 +477,7 @@ impl VmManager {
             disk.phase = DiskPhase::Ready;
         }
 
-        let (in_use, claimed) = {
-            let vms = self.vms.read().await;
-            (
-                Self::disk_in_use(&vms, &disk.id),
-                Self::disk_claimed_by(&vms, &disk.id, None),
-            )
-        };
-        // A claim outlives its VM's spec only as long as an instance has
-        // the disk open (D11).
-        if disk.attached_to.is_some() && claimed.is_none() {
-            let vm = disk.attached_to.take();
-            self.put_disk_with_event(
-                &disk,
-                Some(Event::new(
-                    "controller",
-                    EventKind::Normal,
-                    "Released",
-                    format!("no longer claimed by VM {}", vm.unwrap_or_default()),
-                )),
-            )?;
-        }
+        let in_use = Self::disk_in_use(&*self.vms.read().await, &disk.id);
         let mut pending = Vec::new();
 
         // Resize (§10.1).

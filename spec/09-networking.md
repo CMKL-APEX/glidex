@@ -913,6 +913,7 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
 
 | `phase` | When |
 |---|---|
+| `pending` | created for another node (clustering D23); that node's controller hasn't made it yet |
 | `ready` | the bridge is in netd and live on the host; for NAT, netd has its NAT and, with `dns`, its dnsmasq is running |
 | `degraded` | something is missing; `Ready=False/Degraded` names it, event `Degraded` |
 | `netd_unavailable` | netd could not be reached (`Ready=Unknown`) |
@@ -923,6 +924,9 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
   whose netd record lacks `isolated` (from before the flag) is ensured
   again with it (event `BridgeUpdated`), so netd fences it
   ([11-security.md §8.4](11-security.md)).
+- A `pending` network (made for this node by another, clustering D23)
+  gets its bridge and NAT the same way, events `BridgeCreated` and
+  `NatCreated`, even with VMs on it: none has an address yet.
 - A lost NAT is re-created with `ensure_nat` (new subnet; event
   `NatRestored`) **only while no VM uses the network**. With VMs on it it
   is reported, not re-created: its subnet lives only in netd, and a new

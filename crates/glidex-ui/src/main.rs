@@ -81,6 +81,7 @@ async fn main() {
                  GLIDEX_UI_HOSTS      allowed Host values, host[:port],... (default: this host's names and addresses)\n  \
                  GLIDEX_UI_TLS        auto (HTTPS, default) or off (plain HTTP, loopback addresses only)\n  \
                  GLIDEX_UI_TLS_CERT   PEM certificate chain (default: a self-signed one)\n  GLIDEX_UI_TLS_KEY    PEM key (or the ui-tls-key systemd credential)\n  \
+                 GLIDEX_UI_CLIENT_IP_HEADER  header with the browser's address, trusted from loopback peers only (e.g. CF-Connecting-IP)\n  \
                  GLIDEX_API_SOCKET    control plane ui.sock (default {DEFAULT_API_SOCKET}, used when it exists)\n  \
                  GLIDEX_API_URL       control plane over TCP otherwise (default {DEFAULT_API_URL})\n  \
                  GLIDEX_API_CA_CERT   PEM file to trust for GLIDEX_API_URL (the local control plane's is trusted already)"
@@ -574,6 +575,9 @@ struct AppState {
     tls: bool,
     /// ... with a configured certificate: send HSTS.
     hsts: bool,
+    /// `GLIDEX_UI_CLIENT_IP_HEADER`: the header a tunnel on this host puts
+    /// the browser's address in (spec §5.6, D20).
+    client_ip_header: Option<HeaderName>,
 }
 
 /// The TCP peer of a browser connection.
@@ -594,6 +598,28 @@ fn upstream_path(uri: &Uri) -> String {
 const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
 const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
+
+/// The browser's address: the connection's peer, or, when
+/// `GLIDEX_UI_CLIENT_IP_HEADER` names a header and the peer is on loopback
+/// (a tunnel on this host, such as `cloudflared`), the address in that
+/// header. From any other peer the header is the client's own claim and
+/// counts for nothing (spec §5.6, D20).
+fn client_addr(header: Option<&HeaderName>, h: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
+    let loopback = peer.is_some_and(|ip| match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or(v6.is_loopback(), |v4| v4.is_loopback()),
+        v4 => v4.is_loopback(),
+    });
+    if !loopback {
+        return peer;
+    }
+    header
+        .and_then(|n| h.get(n))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse().ok())
+        .or(peer)
+}
 
 /// Replace (never append to) the forwarding headers with what this
 /// connection actually is. `Origin`, `Cookie`, `X-Glidex-CSRF` and
@@ -628,8 +654,9 @@ fn rewrite_forwarded(h: &mut HeaderMap, peer: Option<IpAddr>, tls: bool, host: O
 
 async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
     let peer = req.extensions().get::<PeerAddr>().map(|p| p.0.ip());
+    let client = client_addr(s.client_ip_header.as_ref(), req.headers(), peer);
     let host = request_host(&req);
-    rewrite_forwarded(req.headers_mut(), peer, s.tls, host.as_deref());
+    rewrite_forwarded(req.headers_mut(), client, s.tls, host.as_deref());
     // The upstream connection is HTTP/1.1 whatever the browser spoke.
     *req.version_mut() = Version::HTTP_11;
 
@@ -1091,6 +1118,12 @@ async fn serve() -> Result<(), String> {
         tokio::spawn(report_loop(upstream.clone(), home.clone(), own));
     }
     let hsts = cert.as_ref().is_some_and(|c| !c.self_signed);
+    let client_ip_header = env("GLIDEX_UI_CLIENT_IP_HEADER")
+        .map(|n| {
+            HeaderName::try_from(n.trim())
+                .map_err(|_| format!("GLIDEX_UI_CLIENT_IP_HEADER: '{}' is not a header name", n))
+        })
+        .transpose()?;
     let redirect = redirect_router(Arc::new(hosts.clone()));
     let router = app(
         &dist,
@@ -1098,6 +1131,7 @@ async fn serve() -> Result<(), String> {
             upstream,
             tls: tls_on,
             hsts,
+            client_ip_header,
         },
         hosts,
     );
@@ -1428,6 +1462,29 @@ mod tests {
     }
 
     #[test]
+    fn the_client_ip_header_counts_from_loopback_only() {
+        let cf = HeaderName::from_static("cf-connecting-ip");
+        let mut h = HeaderMap::new();
+        h.insert("cf-connecting-ip", " 203.0.113.7 ".parse().unwrap());
+        let ip = |s: &str| Some(s.parse::<IpAddr>().unwrap());
+        // From a tunnel on this host, the header is the browser.
+        for local in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(client_addr(Some(&cf), &h, ip(local)), ip("203.0.113.7"));
+        }
+        // From anyone else, the peer, whatever the header says.
+        assert_eq!(client_addr(Some(&cf), &h, ip("10.1.2.3")), ip("10.1.2.3"));
+        // Not configured: the peer.
+        assert_eq!(client_addr(None, &h, ip("127.0.0.1")), ip("127.0.0.1"));
+        // Missing or not an address: the peer.
+        assert_eq!(
+            client_addr(Some(&cf), &HeaderMap::new(), ip("127.0.0.1")),
+            ip("127.0.0.1")
+        );
+        h.insert("cf-connecting-ip", "203.0.113.7, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_addr(Some(&cf), &h, ip("127.0.0.1")), ip("127.0.0.1"));
+    }
+
+    #[test]
     fn security_headers_and_hsts_only_with_a_configured_certificate() {
         let mut h = HeaderMap::new();
         add_security_headers(&mut h, None);
@@ -1616,6 +1673,7 @@ mod tests {
                 .unwrap(),
                 tls: false,
                 hsts: false,
+                client_ip_header: None,
             },
             HostPolicy {
                 rules: default_host_rules(&local()),
@@ -1701,6 +1759,7 @@ mod tests {
             upstream: Upstream::new(spec, None).unwrap(),
             tls: false,
             hsts: false,
+            client_ip_header: None,
         };
         let router = app(
             dir.path(),
@@ -1821,6 +1880,7 @@ mod tests {
                 upstream,
                 tls: true,
                 hsts: false,
+                client_ip_header: None,
             },
             hosts.clone(),
         );
@@ -1942,6 +2002,7 @@ mod tests {
                 .unwrap(),
                 tls: true,
                 hsts: false,
+                client_ip_header: None,
             },
             hosts.clone(),
         );

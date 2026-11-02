@@ -129,6 +129,9 @@ tables! {
     EndedSids = 62 => "ended_sids",
     // Each hosted directory's own audit, keyed by directory (D74).
     DirectoryAudit = 63 => "directory_audit",
+    // Which new tenants of each hosted directory this cluster admits by
+    // itself, with their default cap (spec/19-tenancy.md D79).
+    AutoAdmissions = 64 => "auto_admissions",
 }
 
 /// Whose a table's records are (spec/19-tenancy.md §4): a directory's (they

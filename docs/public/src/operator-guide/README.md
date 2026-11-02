@@ -17,7 +17,10 @@ On every host, the installer sets up these systemd units:
 | `glidex-authd.socket`, `glidex-authd.service` | root | Checks local passwords with PAM for web logins. Started on demand; answers only the control plane. |
 | `glidex-netd.service` | root | Host networking: Open vSwitch bridges, NAT and DHCP, uplinks, VM ports, and binding NICs for DPDK and PCI passthrough. Takes changes only from the control plane. |
 | `glidex-stord.service` | root | The storage helper for [LVM-thin datastores](datastores.md#lvm-thin): makes, activates, grows and removes Glidex's logical volumes, only in the volume groups listed in `/etc/glidex/stord.json` (none by default), and lets each VM's unit open exactly its own volumes. Takes requests only from the control plane; keeps no state. Installed and enabled with the services, idle until a volume group is allowed. |
+| `glidex-metad.service` | `glidex-metad` | The metadata endpoint guests reach at `169.254.169.254` for their [workload identity](../user-guide/vms.md#workload-identity). Holds no key: it asks the control plane over `/run/glidex-cp/metad.sock`, which only this user may use. Installed with networking and the services. |
 | `glidex-vm@<id>.service` | `glidex` | One per running VM, in `glidex-vms.slice`: a small supervisor and the VM's hypervisor (Cloud Hypervisor or QEMU), in their own sandbox. Started and stopped by the control plane, never enabled. |
+| `glidex-pylond.service` | root (group `glidex`) | Pylon's core arbiter, on hosts with [Pylon](installation.md#pylon). Starts before the control plane. |
+| `glidex-vfio-boot.service` | root | A one-shot unit that sets SR-IOV VF counts and binds devices to `vfio-pci` at boot, before the other services. There only with the installer's `--vfio-devices` or `--sriov` (see [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots)). |
 
 Open vSwitch runs under its own units, and on cluster members so does
 OVN. The control plane needs `glidex-netd` only for VM networking and
@@ -59,9 +62,13 @@ journalctl -u glidex-control-plane -b
   single sign-on, login connectors, access tokens and sessions.
 - [Access control](access-control.md): roles, bindings, teams, tenants,
   quotas, site policies and the audit log.
+- [Workload federation](workload-federation.md): CI jobs and other
+  workloads trading their own tokens for Glidex ones.
 - [Host networking](host-networking.md): Open vSwitch, bridges, uplinks
   and NAT on a host.
 - [PCI passthrough](pci-passthrough.md): giving VMs host devices.
+- [Host resources](host-resources.md): NUMA nodes, dedicated CPUs,
+  hugepages, device pools and GPU requests.
 - [Datastores](datastores.md): where disks live; shared storage (NFS,
   CephFS) that lets VMs move between nodes, and LVM-thin volumes.
 - [Clusters](clusters.md): creating a cluster, joining, draining and

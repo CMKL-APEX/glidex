@@ -126,6 +126,7 @@ import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v
 import { FederationService, type FederationJson } from "./gen/glidex/directory/v1/federations_pb";
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
+import { DirectorySettingsService, type DirectorySettingsJson } from "./gen/glidex/directory/v1/settings_pb";
 import {
   MetricsService,
   UsageService,
@@ -801,6 +802,28 @@ export const setVmServiceAccount = (id: string, serviceAccount: string | null) =
 export const listServiceAccounts = (project: string) =>
   listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
+/** Change a VM's memory; on a running VM from its next start. */
+export function setVmMemory(id: string, mib: number) {
+  const vm = { mem_size_mib: mib };
+  return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
+}
+
+/** Attach a data disk (id or name); on a running VM from its next start. */
+export const attachVmDisk = (id: string, disk: string) =>
+  vmWrite(rpc(VmService.method.attachDisk, { id, disk }) as Promise<VmWriteResponse>);
+
+/** Detach a data disk; on a running VM at its next start (spec/06-rest-api.md). */
+export const detachVmDisk = (id: string, disk: string) =>
+  vmWrite(rpc(VmService.method.detachDisk, { id, disk }) as Promise<VmWriteResponse>);
+
+/** Give a VM a NIC on one more network; on a running VM from its next start. */
+export const attachVmNetwork = (id: string, network: string) =>
+  vmWrite(rpc(VmService.method.attachNetwork, { id, network }) as Promise<VmWriteResponse>);
+
+/** Remove the VM's NIC with `mac` on `network`; on a running VM at its next start. */
+export const detachVmNetwork = (id: string, network: string, mac: string) =>
+  vmWrite(rpc(VmService.method.detachNetwork, { id, network, mac }) as Promise<VmWriteResponse>);
+
 /** Extract the kernel on a stopped VM's disk as a kernel image it owns (§10.5). */
 export const extractVmKernel = (id: string) =>
   rpc(ImageService.method.extractVmKernel, { id }).then((r) => r.image as ImageInfo);
@@ -810,7 +833,10 @@ export const deleteVm = (id: string, keepDisk = false) =>
   rpc(VmService.method.deleteVm, { id, wait_secs: WAIT_SECS, keep_disk: keepDisk }).then((r) => r.vm as VmResponse | undefined);
 
 /** One VM lifecycle action from the UI's buttons. `shutdown` presses the
- * power button and stops the VM hard after 60 s. */
+ * power button and stops the VM hard after 60 s; `stop` (Force off) stops
+ * it at once. It sends a grace of 0, not none: none reuses the VM's stored
+ * grace, which a Shut down set to 60 s, and 0 also cuts short a shutdown
+ * still waiting. */
 export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pause" | "delete"): Promise<unknown> {
   switch (action) {
     case "start":
@@ -818,7 +844,7 @@ export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pa
     case "shutdown":
       return stopVm(id, 60);
     case "stop":
-      return stopVm(id);
+      return stopVm(id, 0);
     case "pause":
       return pauseVm(id);
     case "delete":
@@ -911,7 +937,7 @@ export const networkEvents = (id: string) =>
 /** Which projects and tenants may use a host network (replaces the grants). */
 export const grantNetwork = (id: string, req: { grants?: string[]; tenants?: string[]; all_projects?: boolean }) =>
   rpc(NetworkService.method.grantNetwork, { ...req, id }).then((r) => r.network as Network);
-export const createProjectNetwork = (project: string, req: Omit<CreateNetworkRequest, "bridge" | "physnet" | "grants" | "tenants" | "all_projects">) =>
+export const createProjectNetwork = (project: string, req: Omit<CreateNetworkRequest, "bridge" | "physnet" | "node" | "grants" | "tenants" | "all_projects">) =>
   rpc(NetworkService.method.createProjectNetwork, { ...req, project }).then((r) => r.network as Network);
 export const listRouters = (project: string) =>
   rpc(RouterService.method.listRouters, { project }).then((r) => (r.routers ?? []) as Router[]);
@@ -1078,6 +1104,10 @@ export const removeSystemBinding = (link: string) => rpc(SystemBindingService.me
 // ---- users, teams and tokens --------------------------------------------------
 
 export const listUsers = () => rpc(UserService.method.listUsers).then((r) => (r.users ?? []) as UserView[]);
+/** Pre-add someone by email (spec/19-tenancy.md D77): their first login
+ *  through `connector` with that verified address takes the account. */
+export const preaddUser = (pending: { email: string; connector: string; tenant: string; role: string }) =>
+  rpc(UserService.method.createUser, { pending }).then((r) => r.user as User);
 export const updateUser = (id: string, req: { display_name?: string; disabled?: boolean; default_project?: string }) =>
   rpc(UserService.method.updateUser, { ...req, id, update_mask: maskOf(req) }).then((r) => r.user as User);
 
@@ -1346,6 +1376,8 @@ export const updateTenant = (id: string, req: { display_name?: string; operator?
 export const suspendTenant = (id: string) => rpc(TenantService.method.suspendTenant, { id }).then((r) => r as { tenant: Tenant });
 export const resumeTenant = (id: string) => rpc(TenantService.method.resumeTenant, { id }).then((r) => r as { tenant: Tenant });
 export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenant, { id }).then(none);
+/** A pending self-service tenant becomes usable (spec/19-tenancy.md D78). */
+export const approveTenant = (id: string) => rpc(TenantService.method.approveTenant, { id }).then((r) => r.tenant as Tenant);
 
 // ---- invitations (spec/19-tenancy.md §6.1) -----------------------------------
 
@@ -1403,6 +1435,24 @@ export const optOutCluster = (id: string, cluster: string) => rpc(TenantService.
 
 export type Offer = OfferJson;
 export type TrustedDirectory = TrustedDirectoryJson;
+/** Automatic admission per hosted directory (spec/19-tenancy.md D79). */
+export interface AutoAdmission {
+  directory_id: string;
+  mode: "AUTO_ADMISSION_MODE_SELF_SERVICE" | "AUTO_ADMISSION_MODE_ALL";
+  cap?: TenantQuotas;
+  follow_default?: boolean;
+  by?: string;
+  at?: string;
+}
+export const listAutoAdmissions = () =>
+  rpc(AdmissionService.method.listAutoAdmissions).then((r) => (r.auto_admissions ?? []) as AutoAdmission[]);
+export const setAutoAdmission = (directory: string, req: { mode: AutoAdmission["mode"]; cap: TenantQuotas; follow_default: boolean }) =>
+  rpc(AdmissionService.method.setAutoAdmission, { directory, ...req }).then((r) => ({
+    auto: r.auto_admission as AutoAdmission,
+    updated: r.updated ?? 0,
+  }));
+export const removeAutoAdmission = (directory: string) =>
+  rpc(AdmissionService.method.removeAutoAdmission, { directory }).then(none);
 export const listOffers = () => rpc(AdmissionService.method.listOffers).then((r) => (r.offers ?? []) as Offer[]);
 /** An offer for tenant `tenant` of the directory at `directory` (its issuer
  *  URL); the `gxo_…` token is in the answer only. */
@@ -1451,6 +1501,13 @@ export const removeAdmission = (tenant: string) => rpc(AdmissionService.method.r
 
 // ---- login connectors (spec/19-tenancy.md §5, §14) ------------------------------
 
+/** The caller's directory's settings (spec/19-tenancy.md §11.1). */
+export type DirectorySettings = DirectorySettingsJson;
+export const getDirectorySettings = () =>
+  rpc(DirectorySettingsService.method.getDirectorySettings).then((r) => (r.settings ?? {}) as DirectorySettings);
+/** Replaces them; answers them as stored (team names as ids). */
+export const updateDirectorySettings = (settings: DirectorySettings) =>
+  rpc(DirectorySettingsService.method.updateDirectorySettings, { settings }).then((r) => (r.settings ?? {}) as DirectorySettings);
 export const listConnectors = () => rpc(ConnectorService.method.listConnectors).then((r) => (r.connectors ?? []) as Connector[]);
 export const getConnector = (id: string) => rpc(ConnectorService.method.getConnector, { id }).then((r) => r.connector as Connector);
 export const createConnector = (connector: ConnectorInput) =>

@@ -21,7 +21,7 @@ use cedar_policy::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
@@ -189,8 +189,15 @@ struct Sets {
 
 pub struct Engine<M: Model> {
     schema: Schema,
-    /// The shipped policy sources, parsed again on every install.
-    shipped: Vec<(String, PolicySource)>,
+    /// The shipped policies and templates, parsed and validated once: they
+    /// never change at run time, and validating the role templates is
+    /// most of the cost of a build.
+    shipped: PolicySet,
+    shipped_sources: HashMap<String, PolicySource>,
+    /// The links (id, template and slot values) known to validate: Cedar
+    /// validates a link against its own template only, so a link is
+    /// validated when it first appears, not on every build.
+    valid_links: std::sync::Mutex<HashSet<(String, String, String, String)>>,
     sets: ArcSwap<Sets>,
     /// Bumped on every install: clients re-run their capability checks.
     generation: std::sync::atomic::AtomicU64,
@@ -217,6 +224,27 @@ pub fn parse_with_ids(src: &str) -> Result<(Vec<Policy>, Vec<Template>), AuthzEr
     Ok((policies, templates))
 }
 
+/// The shipped sources as one set, with each id's source.
+fn parse_shipped(
+    shipped: &[(&str, PolicySource)],
+) -> Result<(PolicySet, HashMap<String, PolicySource>), AuthzError> {
+    let mut set = PolicySet::new();
+    let mut sources = HashMap::new();
+    for (src, kind) in shipped {
+        let (policies, templates) = parse_with_ids(src)?;
+        for p in policies {
+            sources.insert(p.id().to_string(), *kind);
+            set.add(p).map_err(|e| AuthzError::Invalid(e.to_string()))?;
+        }
+        for t in templates {
+            sources.insert(t.id().to_string(), *kind);
+            set.add_template(t)
+                .map_err(|e| AuthzError::Invalid(e.to_string()))?;
+        }
+    }
+    Ok((set, sources))
+}
+
 fn validation_errors(schema: &Schema, set: &PolicySet) -> Vec<String> {
     let result = Validator::new(schema.clone()).validate(set, ValidationMode::Strict);
     result.validation_errors().map(|e| e.to_string()).collect()
@@ -238,9 +266,16 @@ impl<M: Model> Engine<M> {
     ) -> Result<Self, AuthzError> {
         let (schema, _) =
             Schema::from_cedarschema_str(schema).map_err(|e| AuthzError::Invalid(e.to_string()))?;
+        let (shipped, shipped_sources) = parse_shipped(shipped)?;
+        let errors = validation_errors(&schema, &shipped);
+        if !errors.is_empty() {
+            return Err(AuthzError::Validation(errors));
+        }
         let engine = Self {
             schema,
-            shipped: shipped.iter().map(|(s, k)| (s.to_string(), *k)).collect(),
+            shipped,
+            shipped_sources,
+            valid_links: Default::default(),
             sets: ArcSwap::from_pointee(Sets {
                 full: PolicySet::new(),
                 base_only: PolicySet::new(),
@@ -257,24 +292,6 @@ impl<M: Model> Engine<M> {
         &self.schema
     }
 
-    fn base_set(&self) -> Result<(PolicySet, HashMap<String, PolicySource>), AuthzError> {
-        let mut set = PolicySet::new();
-        let mut sources = HashMap::new();
-        for (src, kind) in &self.shipped {
-            let (policies, templates) = parse_with_ids(src)?;
-            for p in policies {
-                sources.insert(p.id().to_string(), *kind);
-                set.add(p).map_err(|e| AuthzError::Invalid(e.to_string()))?;
-            }
-            for t in templates {
-                sources.insert(t.id().to_string(), *kind);
-                set.add_template(t)
-                    .map_err(|e| AuthzError::Invalid(e.to_string()))?;
-            }
-        }
-        Ok((set, sources))
-    }
-
     /// Build and validate the full set without publishing it.
     pub fn build(
         &self,
@@ -289,23 +306,67 @@ impl<M: Model> Engine<M> {
         links: &[Link<M::Ent>],
         site: &[SiteSource],
     ) -> Result<(PolicySet, HashMap<String, PolicySource>), AuthzError> {
-        let (mut set, mut sources) = self.base_set()?;
+        let mut set = self.shipped.clone();
+        let mut sources = self.shipped_sources.clone();
+        // Only what changes at run time is validated here: the shipped part
+        // was at construction, and Cedar validates each policy, template
+        // and link independently of the others.
+        let mut errors = Vec::new();
+        let mut known = self.valid_links.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = HashSet::new();
+        // The links not seen before, with their templates, validated together.
+        let mut new = PolicySet::new();
         for l in links {
+            let (principal, resource) = (M::uid(&l.principal), M::uid(&l.resource));
             let vals = HashMap::from([
-                (SlotId::principal(), M::uid(&l.principal)),
-                (SlotId::resource(), M::uid(&l.resource)),
+                (SlotId::principal(), principal.clone()),
+                (SlotId::resource(), resource.clone()),
             ]);
-            set.link(PolicyId::new(&l.template), PolicyId::new(&l.id), vals)
-                .map_err(|e| AuthzError::Invalid(format!("link {}: {}", l.id, e)))?;
+            set.link(
+                PolicyId::new(&l.template),
+                PolicyId::new(&l.id),
+                vals.clone(),
+            )
+            .map_err(|e| AuthzError::Invalid(format!("link {}: {}", l.id, e)))?;
             sources.insert(l.id.clone(), PolicySource::Link);
+            let key = (
+                l.id.clone(),
+                l.template.clone(),
+                principal.to_string(),
+                resource.to_string(),
+            );
+            if !known.contains(&key) {
+                let template = PolicyId::new(&l.template);
+                if new.template(&template).is_none()
+                    && let Some(t) = self.shipped.template(&template)
+                {
+                    new.add_template(t.clone())
+                        .map_err(|e| AuthzError::Invalid(e.to_string()))?;
+                }
+                new.link(template, PolicyId::new(&l.id), vals)
+                    .map_err(|e| AuthzError::Invalid(format!("link {}: {}", l.id, e)))?;
+            }
+            current.insert(key);
         }
+        if new.policies().next().is_some() {
+            errors = validation_errors(&self.schema, &new);
+        }
+        // Remember the current links once they validate; forget the rest.
+        if errors.is_empty() {
+            *known = current;
+        }
+        drop(known);
+        let mut changed = PolicySet::new();
         for s in site {
             let p = parse_site_policy(&s.id, &s.text)?;
-            set.add(p)
+            set.add(p.clone())
+                .map_err(|e| AuthzError::Invalid(format!("{}: {}", s.id, e)))?;
+            changed
+                .add(p)
                 .map_err(|e| AuthzError::Invalid(format!("{}: {}", s.id, e)))?;
             sources.insert(s.id.clone(), s.source);
         }
-        let errors = validation_errors(&self.schema, &set);
+        errors.extend(validation_errors(&self.schema, &changed));
         if !errors.is_empty() {
             return Err(AuthzError::Validation(errors));
         }
@@ -315,7 +376,7 @@ impl<M: Model> Engine<M> {
     /// Build, validate and atomically publish a new policy set.
     pub fn install(&self, links: &[Link<M::Ent>], site: &[SiteSource]) -> Result<(), AuthzError> {
         let (full, sources) = self.build_inner(links, site)?;
-        let (base_only, _) = self.base_set()?;
+        let base_only = self.shipped.clone();
         self.sets.store(Arc::new(Sets {
             full,
             base_only,
@@ -668,6 +729,23 @@ mod tests {
         // An action outside the schema is a bad request, also a deny.
         let d = e.check(&q("ann", "delete", 0));
         assert!(!d.allowed && !d.errors.is_empty(), "{d:?}");
+    }
+
+    #[test]
+    fn a_link_to_an_unknown_entity_type_is_refused() {
+        // A schema without documents: a link to one names no known type.
+        const USERS_ONLY: &str = r#"
+            namespace Tiny {
+                entity User = { "admin": Bool };
+                action "read", "write" appliesTo { principal: [User], resource: [User] };
+            }
+        "#;
+        let e = Engine::<Tiny>::with_sources(USERS_ONLY, &[(ROLES, PolicySource::Role)]).unwrap();
+        assert!(matches!(
+            e.install(&[reader("ann")], &[]),
+            Err(AuthzError::Validation(_))
+        ));
+        assert_eq!(e.generation(), 1, "a failed install publishes nothing");
     }
 
     #[test]

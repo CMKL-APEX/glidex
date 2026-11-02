@@ -95,6 +95,8 @@ interface FormState {
   scopes: string;
   groups_claim: string;
   allowed_domains: string;
+  /** `oidc`: the IdP verifies its users' addresses (D75). */
+  trust_email: boolean;
   redirect_uri: string;
   mfa_acr_values: string;
   /** `google`: Workspace by `hd`, or any account for invited and listed people. */
@@ -130,11 +132,12 @@ function formState(c?: Connector): FormState {
     scopes: (c?.oidc?.scopes ?? []).join(" "),
     groups_claim: c?.oidc?.groups_claim ?? c?.jumpcloud?.groups_claim ?? "",
     allowed_domains: (c?.oidc?.allowed_domains ?? []).join(", "),
+    trust_email: !!c?.oidc?.trust_email,
     redirect_uri: c?.oidc?.redirect_uri ?? c?.google?.redirect_uri ?? c?.jumpcloud?.redirect_uri ?? "",
     mfa_acr_values: (c?.oidc?.mfa_acr_values ?? []).join(" "),
     google_accounts: c?.google?.accounts === "GOOGLE_ACCOUNTS_ANY" ? "any" : "workspace",
     domains: (c?.google?.domains ?? []).join(", "),
-    allowed_emails: (c?.google?.allowed_emails ?? c?.jumpcloud?.allowed_emails ?? []).join(", "),
+    allowed_emails: (c?.google?.allowed_emails ?? c?.jumpcloud?.allowed_emails ?? c?.oidc?.allowed_emails ?? []).join(", "),
     device_client_id: c?.google?.device_client_id ?? "",
     trust_2sv: !!c?.google?.trust_2sv,
   };
@@ -204,6 +207,8 @@ function toInput(f: FormState): ConnectorInput {
       groups_claim: f.groups_claim.trim(),
       allowed_domains: words(f.allowed_domains),
       mfa_acr_values: words(f.mfa_acr_values),
+      trust_email: f.trust_email,
+      allowed_emails: words(f.allowed_emails),
     };
     if (f.redirect_uri.trim()) c.oidc.redirect_uri = f.redirect_uri.trim();
   }
@@ -498,7 +503,19 @@ function ConnectorForm({
             {text("scopes", "Scopes", { placeholder: "openid profile email" })}
             {text("groups_claim", "Groups claim", { placeholder: "groups" })}
           </div>
-          {text("allowed_domains", "Allowed email domains", { hint: "Comma-separated; empty allows any." })}
+          {text("allowed_domains", "Allowed email domains", {
+            hint: "Comma-separated; empty allows any. A login needs a verified address in one of them.",
+          })}
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input id="connector-trust-email" type="checkbox" className="mt-1" checked={f.trust_email} onChange={(e) => set("trust_email", e.target.checked)} />
+            <span>
+              The IdP verifies its users' addresses: count an address as verified when the token doesn't say.
+              <span className="block text-xs text-gray-500">For IdPs that never send email_verified, such as Entra ID, where the organization assigns the addresses. A token that says unverified is refused either way.</span>
+            </span>
+          </label>
+          {text("allowed_emails", "Allowed emails", {
+            hint: "Comma-separated. With “Create users” on, only these verified addresses get an account; empty lets anyone the domains allow.",
+          })}
           {text("mfa_acr_values", "MFA acr values", { hint: "Space-separated values that count as MFA." })}
         </>
       )}

@@ -1065,13 +1065,6 @@ pub async fn create_datastore(
                     "a hyperstor datastore takes hyperstor_api, hyperstor_pool and hyperstor_token, not path",
                 ));
             }
-            // hyperstor's volumes are thin and it doesn't report free space
-            // yet, so glidex can't keep disks within it (S22).
-            if req.overcommit == Some(false) {
-                return Err(invalid(
-                    "a hyperstor datastore can't refuse to overcommit: hyperstor doesn't report its free space yet",
-                ));
-            }
             hyperstor = Some(crate::datastore::manage::NewHyperstor {
                 api: req.hyperstor_api.clone(),
                 pool: req.hyperstor_pool,

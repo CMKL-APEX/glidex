@@ -7,7 +7,7 @@ membership, a path the `glidex` user can't read, or the host network.
 ## Check the services
 
 ```bash
-systemctl status glidex-control-plane glidex-netd glidex-ui glidex-authd.socket
+systemctl status glidex-control-plane glidex-netd glidex-ui glidex-authd.socket glidex-stord glidex-metad
 journalctl -u glidex-control-plane -b
 ```
 
@@ -34,11 +34,41 @@ At start, the control plane logs one line per check. Each should end in
 | `Checking KVM access... NO ACCESS` | The VMs, which run as `glidex`, can't open `/dev/kvm`: `glidex` isn't in its group (usually `kvm`), or its mode doesn't let that group read and write it. | `ls -l /dev/kvm`; re-run the installer, which adds `glidex` to the group. |
 | `Checking networking... LIMITED` | The control plane can only read netd's status: it isn't running as the `glidex` group. | Use the installed unit; don't run the control plane by hand as yourself. |
 | `Checking networking... UNAVAILABLE` | `glidex-netd` isn't running or not installed. | `systemctl status glidex-netd`; re-run the installer without `--no-networking`. |
+| `Waiting for the cluster... NO SERVER (running from the cache)` | On a cluster agent: no server answered within 20 seconds. The agent runs its VMs from its cached records and catches up once a server answers. | Check the servers and port 8842; see [Clusters](clusters.md#a-node-is-down-for-a-while). |
 | `Loading authorization policies... FAILED` | A policy file in `/etc/glidex/policies` is invalid or unreadable. | Fix it; the directory must be `root:glidex`, mode 0750. |
 
 Logs of one VM: `journalctl -u glidex-vm@<vm-id>`, and `gxctl events
 <vm>` for what Glidex did with it. For log locations and more detail,
 see [Maintenance](maintenance.md#logs).
+
+## The control plane stops answering
+
+`systemctl status glidex-control-plane` says `active (running)`, but
+`gxctl` waits forever, web UI pages don't load, and the journal has gone
+quiet. Check whether it answers at all:
+
+```bash
+curl -sk --max-time 5 https://localhost:8841/health    # {"status":"ok"} when it answers
+```
+
+Builds of main before 2026-10-31 could hang this way, most often on a
+cluster server: a request waiting for the database, a Raft commit, or a
+call to `glidex-netd`, `glidex-stord` or hyperstor could hold up every
+request after it. Builds that have #221, #227 and #228 (merged on
+2026-10-31) wait without holding up the others. There is no setting for
+it: update the host.
+
+Until then, restart the control plane. Running VMs keep running, and it
+adopts them again when it starts:
+
+```bash
+sudo systemctl restart glidex-control-plane
+```
+
+In a cluster, check `gxctl cluster status` afterwards; if the server
+was the leader, another one takes over while it restarts. If a build
+with those fixes still hangs, report it with the journal from before
+the restart.
 
 ## gxctl can't connect
 
@@ -58,6 +88,7 @@ see [Maintenance](maintenance.md#logs).
 | `421 Misdirected Request` | The browser used a name the UI doesn't serve. Add it to `GLIDEX_UI_HOSTS` (see [Configuration](configuration.md#web-ui)). |
 | `403 origin_not_allowed` | A change came from a page on another site, or a page calls the API on port 8841 directly from an origin not in `auth.allowed_origins`. Pages served by the web UI don't need that list. |
 | A page doesn't load after an update | The tab still runs the old UI. Reload it. |
+| Every user shows as `127.0.0.1` in the audit log | A proxy or tunnel on the host connects to the UI. Set `GLIDEX_UI_CLIENT_IP_HEADER` (see [Configuration](configuration.md#web-ui)). |
 | *This host is a cluster agent* (`503`) | An agent's web UI sends browsers to a server, and no server has published its web UI address yet. Open a server's web UI, or set `cluster.ui_url`; see [The web UI's address](clusters.md#the-web-uis-address). |
 | `421 use_a_server` from an agent's `https://<agent>:5173/api/…` | Expected: agents serve no API. Use a server. |
 | No **Sign in with a passkey** button | Passkeys are off (`auth.passkeys.enabled`), or the page is plain `http`, where browsers offer no passkeys. Use `https`. See [Passkeys](authentication.md#passkeys). |
@@ -324,6 +355,7 @@ sudo ovs-vsctl show
 | The installer says `OVS-DPDK stays on: DPDK ports need DPDK: …` | A DPDK uplink or vhost-user VM NIC is still on OVS. Remove the uplink and stop or move those VMs, then re-run. |
 | `br-int` stays userspace (netdev) after going back to the kernel profile | It switches only while no VM port is on `br-int`: stop or move the node's VMs on cluster networks. |
 | Cluster VMs on different nodes can't reach each other | UDP 6081 (Geneve) between the nodes' tunnel addresses; the **OVN** card on the Cluster page shows the tunnels. |
+| The installer stops: `the cluster's ovn-northd is OVN …, this host has …` or `upgrading OVN would remove …` | This member's OVN is older than the cluster's and the installer couldn't upgrade it: not an `apt-get` host, or the upgrade would replace another package. Install that OVN version or newer by hand, then re-run. See [OVN on cluster members](installation.md#ovn-on-cluster-members). |
 | `gxctl cluster status` lists ports that don't answer | Open them; see [Ports between nodes](host-networking.md#ports-between-nodes). |
 
 If the host lost its own connectivity after an uplink change, wait a

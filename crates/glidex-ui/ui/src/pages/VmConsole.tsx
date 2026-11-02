@@ -20,7 +20,10 @@ async function whyFailed(id: string, fallback: string): Promise<string> {
   return fallback;
 }
 
-type Status = "connecting" | "connected" | "closed" | "error";
+type Status = "connecting" | "connected" | "reconnecting" | "closed" | "error";
+
+/** Automatic reconnects in a row after the connection drops, before giving up. */
+const RECONNECTS = 5;
 
 export default function VmConsole() {
   const { id } = useParams<{ id: string }>();
@@ -31,17 +34,21 @@ export default function VmConsole() {
   // VM or of the control plane closes it), so connecting again picks up.
   const [attempt, setAttempt] = useState(0);
   const [kind, setKind] = useState<TerminalKind>(savedTerminalKind);
+  // Reconnects since the console last opened: a dropped connection (code
+  // 1006, from a proxy that cut it) connects again by itself, a few times.
+  const dropped = useRef(0);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!id || !container) return;
-    setStatus("connecting");
+    setStatus(dropped.current > 0 ? "reconnecting" : "connecting");
     setError(null);
 
     let term: ConsoleTerminal | null = null;
     let ws: WebSocket | null = null;
     let inputDisposable: { dispose(): void } | null = null;
     let disposed = false;
+    let reconnect: number | undefined;
     const encoder = new TextEncoder();
 
     const handleResize = () => {
@@ -86,19 +93,27 @@ export default function VmConsole() {
           ws = sock;
 
           sock.onopen = () => {
+            dropped.current = 0;
             setStatus("connected");
             setError(null);
           };
           sock.onclose = (ev) => {
+            // 1006: no close frame, so the connection dropped rather than
+            // the console ending (the server closes with a frame).
+            if (ev.code === 1006 && dropped.current < RECONNECTS) {
+              dropped.current += 1;
+              setStatus("reconnecting");
+              reconnect = window.setTimeout(() => setAttempt((a) => a + 1), 1000 * dropped.current);
+              return;
+            }
             setStatus("closed");
             if (ev.code !== 1000 && ev.code !== 1005) {
               whyFailed(id, `WebSocket closed (code ${ev.code})`).then((m) => !disposed && setError(m));
             }
           };
-          sock.onerror = () => {
-            setStatus("error");
-            whyFailed(id, "WebSocket connection error").then((m) => !disposed && setError(m));
-          };
+          // An error is always followed by a close, which says what next
+          // (reconnect, or why it failed).
+          sock.onerror = null;
           sock.onmessage = (ev) => {
             if (typeof ev.data === "string") {
               t.write(ev.data);
@@ -112,6 +127,7 @@ export default function VmConsole() {
 
     return () => {
       disposed = true;
+      window.clearTimeout(reconnect);
       window.removeEventListener("resize", handleResize);
       inputDisposable?.dispose();
       // Detach first: a message already in flight would otherwise be
@@ -138,6 +154,8 @@ export default function VmConsole() {
         ? "text-red-600"
         : status === "closed"
           ? "text-gray-500"
+          : status === "reconnecting"
+            ? "text-amber-600"
           : "text-sky-600";
 
   return (
@@ -187,7 +205,10 @@ export default function VmConsole() {
           {(status === "closed" || status === "error") && (
             <button
               className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
-              onClick={() => setAttempt((a) => a + 1)}
+              onClick={() => {
+                dropped.current = 0;
+                setAttempt((a) => a + 1);
+              }}
             >
               Reconnect
             </button>

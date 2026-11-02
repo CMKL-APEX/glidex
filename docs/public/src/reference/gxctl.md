@@ -61,7 +61,7 @@ See [Logging in](../user-guide/logging-in.md).
 
 | Command | Effect |
 |---|---|
-| `auth login [--url U]… [--profile P] [--oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--server U` is the same as `--url U`. `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes: `192.0.2.10` gives `192-0-2-10`, `[fd00::1]` gives `fd00-1`), `--non-interactive` |
+| `auth login [--url U]… [--profile P] [--directory [ID] [--via PROFILE] \| --oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--server U` is the same as `--url U`. `--directory`: device flow at a glidex directory (default `local`); `--via`: the profile of another organization's directory servers; `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes: `192.0.2.10` gives `192-0-2-10`, `[fd00::1]` gives `fd00-1`), `--non-interactive` |
 | `auth logout [--profile P] [--revoke] [--keep-token]` | Drop a profile's credential; `--revoke` also revokes the token on the server |
 | `auth status [--profile P]` | Target, cluster, trust mode, token and expiry |
 | `auth use <profile\|->` | Set the current profile (`-` clears it) |
@@ -89,6 +89,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `pause <vm> [--no-wait]` | Pause |
 | `service-account <vm> [--set <account> \| --none]` | Show or change the VM's service account, the identity its guest gets glidex tokens for (from its next token) |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
+| `memory <vm> [<MiB>\|<N>G]` | Show a VM's memory, or change it from the next start |
 | `scale <vm> [--vcpus N] [--min N] [--max N] [--weight N]` | Show a VM's vCPUs, elastic range and weight, or change them. On an elastic Pylon VM the vCPU count is the maximum. See [Elastic CPU](../user-guide/vms.md#elastic-cpu) |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
 | `place <vm> [--node N]` | Place a stopped or lost VM on another node, or where there is room (its disks on shared datastores; `system-admin`). Prints the node, or *Not placed yet* with the reason it waits |
@@ -97,6 +98,10 @@ See [Logging in](../user-guide/logging-in.md).
 | `log <vm>`, `logs` | The console log (last 1 MiB) |
 | `attach-device <vm> <path>` | Attach a PCI device (`/sys/bus/pci/devices/<address>` or the bare address) |
 | `detach-device <vm> <path>` | Detach a PCI device |
+| `attach-disk <vm> <disk>` | Attach a data disk; on a running VM from its next start |
+| `detach-disk <vm> <disk>` | Detach a data disk, which is kept; on a running VM at its next start |
+| `attach-network <vm> <network> [--mac <mac>]` | Add a NIC on a network; on a running VM from its next start |
+| `detach-network <vm> <network> [--mac <mac>]` | Remove the VM's NIC on a network (the MAC picks one of several); on a running VM at its next start |
 | `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy`, `datastores` |
 
 `start`, `stop`, `pause` and `delete` wait for the controller and print
@@ -125,11 +130,11 @@ Private key files are refused before anything is sent. See
 | `image list`, `images` | Images and their state. Kernel images show as `kernel <release>`, in state `extracting` until ready; the source of an extracted one is `extracted: <partition>:<path>` |
 | `image pull <catalog-key\|https-url> [--name N] [--sha256 H]` | Download and verify an image, showing progress. A catalog pull also extracts the image's kernel as `<name>-kernel` where the host can |
 | `image pull --firmware <key> [--name N]` | Download UEFI firmware from the catalog (`cloudhv-edk2`, `ovmf`) |
-| `image pull <url> --firmware-for <cloudhypervisor\|qemu> [--vars-url U] [--vars-sha256 H]` | Download firmware from a URL (QEMU: with its variable store) |
+| `image pull <url> --firmware-for <cloudhypervisor\|qemu\|pylon> [--vars-url U] [--vars-sha256 H]` | Download firmware from a URL (QEMU: with its variable store) |
 | `image pull <key> --no-kernel` | Pull a catalog image without taking its kernel out |
-| `image pull <url> --kernel [--initrd-url U] [--initrd-sha256 H] [--cmdline C]` | Download a kernel image |
+| `image pull <url> --kernel [--sha256 H] [--initrd-url U] [--initrd-sha256 H] [--cmdline C]` | Download a kernel image |
 | `image pull --kernel-path P [--initrd-path P] [--cmdline C]` | Copy a kernel image from host files (administrators) |
-| `image extract-kernel <image>` | Take the kernel out of a disk image |
+| `image extract-kernel <image> [--name N]`, `image pull --kernel-from <image>` | Take the kernel out of a disk image |
 | `image retry <image>` | Download a failed image again, or run a failed kernel extraction again |
 | `image rm <image>` | Delete an image; refused (`409`) while a disk uses it, or a VM boots or keeps a kernel image |
 | `disk list`, `disks` | List disks |
@@ -156,7 +161,7 @@ A datastore is named by its name or id. See
 |---|---|
 | `networks`, `nets`, `network list` | List networks |
 | `network show <net>` | A network's id, mode, grants or shares |
-| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge |
+| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node [N]]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge; `--node N` on node N's (no `--subnet` or `--bridged` there) |
 | `network create <name> --project P [--isolated] [--vhost-user] [--subnet CIDR] [--mtu N]` | Create a project network (NAT unless `--isolated`). Without `--project`, same as `network-add` |
 | `network rm <net>`, `network-rm`, `net-rm` | Delete, waiting up to a minute |
 | `network host-api <net> on\|off` | Open this host's API to a NAT network's guests, or close it (host network administrators) |
@@ -196,7 +201,7 @@ See [Host networking](../operator-guide/host-networking.md) and
 | Command | Effect |
 |---|---|
 | `usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour\|day\|month] [--meters m,…] [--tz Z] [--csv]` | Resource usage; default: this billing month by project |
-| `usage bandwidth\|disk-io\|compute [--month YYYY-MM] [--by …] [--project P] [--csv]` | Average, 30-second peak and 95th percentile per billing month |
+| `usage bandwidth\|disk-io\|compute [--month YYYY-MM \| --from D --to D] [--by …] [--project P] [--csv]` | Average, 30-second peak and 95th percentile per billing month |
 | `stats <vm>` | A VM's current CPU, memory, NIC and disk rates |
 | `bandwidth <vm> \| --network N [--from D] [--to D]` | 5-minute bandwidth series with its 95th percentile |
 | `io <vm> \| --disk D [--from D] [--to D]` | 5-minute disk I/O series |
@@ -211,7 +216,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 |---|---|
 | `project list`, `projects` | Projects you can see |
 | `project show <p>` | Quotas and usage |
-| `project create <name> [--description TEXT]` | Create a project |
+| `project create <name> [--description TEXT] [--tenant T]` | Create a project, in tenant `T` (slug or id; default `default`) |
 | `project delete <p>` | Delete after confirmation |
 | `project quota <p> [key=value…]` | Show, or set limits: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `devices.<pool>`; `none` means unlimited |
 | `project use <p>` | Set your default project (`-` or `none` clears it) |
@@ -220,9 +225,12 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `binding remove <p> <binding-id>` | Remove a binding |
 | `system-binding list [--node N] \| add <role> <principal> [--node N] \| remove <binding-id>` | System role bindings, cluster-wide or on one node's host (`auditor`, `net-admin`, `grant.host-paths` only); per-host ones list as `on host:<id>` |
 | `token list`, `tokens` | Your API tokens |
-| `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | Create a token; the secret is printed once |
+| `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]… [--cluster ID]… [--all-clusters]` | Create a token; the secret is printed once. `--cluster`: other organizations' clusters it works on too; `--all-clusters`: all of them |
 | `token revoke <id>` | Revoke a token |
-| `user list`, `users` | Users and their identities. Deleting a user is in the web UI or the API only |
+| `user list`, `users` | Users and their identities; a pre-added user shows *not signed in yet*. Deleting a user is in the web UI or the API only |
+| `user add <email> --tenant T --connector C [--role R] [--name N]` | Add someone by email before they sign in: their first sign-in through `C` with that verified address takes the account (role `member` by default) |
+| `user link <user> <provider> <subject> [--all-nodes]` | Link a sign-in to a user. `<provider>` is `pam`, `unix` or `oidc:<issuer>`; in a cluster a `pam` or `unix` subject is `<account>@<node>` (node by name or id), or `<account>` with `--all-nodes` for one link per node; on a standalone host, or with `cluster.shared_local_accounts`, it is `<account>` alone |
+| `user unlink <user> <provider>:<subject>` | Remove a linked sign-in, such as `pam:alice@<node id>` |
 | `team list \| create <name> \| delete <team>` | Teams |
 | `team add-member <team> <user-id>`, `remove-member <team> <user-id>` | Team membership |
 | `policy list \| show <id>` | Site Cedar policies |
@@ -231,7 +239,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `policy history <id>` | A policy's versions |
 | `policy delete <id>` | Delete after confirmation |
 | `policy reload` | Reload policies |
-| `audit [--project P] [--since <unix-ms>] [--limit N] [--user U]` | The audit log |
+| `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U]` | The audit log; `--directory`: a hosted directory's own log |
 
 Roles are written `owner` or `role.owner`; principals are `user:<id>`,
 `team:<id>` or `token:<id>`. See [Projects](../user-guide/projects.md)
@@ -242,18 +250,33 @@ and [Access control](../operator-guide/access-control.md).
 | Command | Effect |
 |---|---|
 | `tenant list \| show <t>` | Tenants |
-| `tenant create <slug> [--name TEXT] [--operator]` | Create a tenant |
+| `tenant create <slug> [--name TEXT] [--operator]` | Create a tenant; a user who isn't a directory administrator creates one of their own, where the directory allows it (no `--operator`) |
 | `tenant rename <t> <name>` | Change its display name |
 | `tenant suspend <t>`, `resume <t>`, `delete <t>` | Suspend, resume or delete |
+| `tenant approve <t>` | Approve a pending self-service tenant |
 | `tenant members <t>`, `add-member <t> <principal>`, `remove-member <t> <principal>` | Explicit members (`user:<id>`, `team:<id>`) |
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
 | `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |
 | `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
+| `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report |
+| `tenant opt-in <t> --offer TOKEN`, `opt-out <t> --cluster ID` | Start using another organization's cluster with the offer token its operator sent, or stop |
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips` |
 | `admission remove <tenant>` | Remove an admission |
+| `admission offer <tenant> --directory ISSUER [--days N]` | Offer an admission to a tenant of another organization's directory; prints a token once, which its administrator redeems with `tenant opt-in` |
+| `admission offers`, `revoke-offer <id>` | Offers made, open or redeemed; revoke one |
+| `admission directories` | Directories of other organizations this cluster trusts |
+| `admission staleness <directory> <minutes\|default>` | How long a trusted directory's credentials stay good without its feed |
+| `admission auto [list]` | Which new tenants of each hosted directory this cluster admits by itself, and their default cap |
+| `admission auto set <directory> --mode self_service\|all --cap key=value,… [--follow-default on\|off]` | Admit them automatically with that default cap (`vms=10,vcpus=32,devices.a100=1`); admissions made so follow later changes to it unless `--follow-default off`. Needs a recent login |
+| `admission auto remove <directory>` | Turn it off; admissions made stay |
+| `directory list` | Directories this host serves (operator) |
+| `directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME]` | Host a directory for an organization; prints an invitation link once for its first administrator, who signs in with a passkey. `--owner` defaults to `<id>-admin`, `--days` (the invitation's lifetime) to 7; `--trust-domain`: its SPIFFE trust domain, fixed for good |
+| `directory delete <id>` | Delete a hosted directory |
+| `directory keys [rotate]` | Your directory's issuer and token signing keys; `rotate` makes a new key (needs a recent login) |
+| `directory settings [--label SINGULAR/PLURAL] [--self-service on\|off] [--creators all\|TEAM,…] [--max-per-user N] [--max-total N\|none] [--approval none\|required] [--slug-prefix P\|none] [--admins-may-delete on\|off]` | Your directory's settings: what the web UI calls a tenant, and self-service tenants. Without options, shows them; with some, changes those and keeps the rest |
 | `connector list \| show <id>` | Login connectors (secrets show only whether they are set). `show` of a pulled connector adds its groups, administrator and interval (`Pull:`), and the last run: its result, changes, error, and the users a blocked run would disable |
-| `connector add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]… [common]` | Add an OIDC connector |
+| `connector add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--trust-email] [--allow-email E]… [--mfa-acr V]… [common]` | Add an OIDC connector. `--domain`: only verified addresses in these domains; `--trust-email`: a token without `email_verified` counts as verified; `--allow-email`: with `--jit`, only these addresses get an account |
 | `connector add pam <id> [--name TEXT] [--allow-group G]… [common]` | Add a PAM connector |
 | `connector add google <id> --client-id ID [--name TEXT] (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID] [common]` | Add a Google connector: Workspace accounts of the `--domain` domains, or (`--consumer`) any Google account of people invited or listed. `--device-client-id`: the *TVs and Limited Input devices* client for `auth login --oidc` |
 | `connector add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]… [common]` | Add a JumpCloud connector; `--groups-claim` defaults to `memberOf` |

@@ -754,6 +754,7 @@ mod tests {
             managed: None,
             email: None,
             disabled_reason: (!a.active).then_some(crate::auth::store::DisabledReason::Scim),
+            pending_login: None,
         };
         a.apply(&mut u, "jc");
         u

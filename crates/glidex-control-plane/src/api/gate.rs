@@ -52,6 +52,47 @@ const RPC_RESPONSE_HEADERS: &[&str] = &[
     "connect-content-encoding",
 ];
 
+/// Routes whose handlers read the browser's own cookies, not a session:
+/// the account list, passkey ceremonies and logins through an IdP, which
+/// the leader runs.
+fn browser_cookies(path: &str) -> bool {
+    path.starts_with("/auth/accounts")
+        || path.starts_with("/auth/passkeys/")
+        || path.starts_with("/auth/invitation/passkey/")
+        || is_idp_login(path)
+}
+
+/// A browser login through an IdP keeps its state (the `state`, nonce and
+/// PKCE verifier) in memory on the server that starts it, and the IdP sends
+/// the browser back to whichever server the load balancer picks: the
+/// leader runs both ends, as it does passkey ceremonies. The starts by
+/// POST (an invitation's, adding a sign-in) go there as writes already.
+fn is_idp_login(path: &str) -> bool {
+    if matches!(path, "/auth/oidc/start" | "/auth/oidc/callback") {
+        return true;
+    }
+    let one = |prefix: &str| {
+        path.strip_prefix(prefix)
+            .and_then(|r| {
+                r.strip_suffix("/start")
+                    .or_else(|| r.strip_suffix("/callback"))
+            })
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    };
+    one("/auth/c/") || one("/auth/t/")
+}
+
+/// Console tickets are the leader's, which redeems them for whichever
+/// server takes the WebSocket (spec/11-security.md decision 21): issue them
+/// there, though asking for one changes nothing.
+fn is_console_ticket(path: &str) -> bool {
+    path == "/glidex.vm.v1.VmService/CreateConsoleTicket"
+        || path
+            .strip_prefix("/vms/")
+            .and_then(|r| r.strip_suffix("/console/ticket"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// Routes that need no cluster at all.
 fn needs_no_barrier(path: &str) -> bool {
     path == "/health" || path == "/auth/methods" || path == "/auth/server-info"
@@ -131,7 +172,8 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
     let read = match glidex_api::operation(&path) {
         Some(op) => op.kind == glidex_api::Kind::Read || op.streaming,
         None => is_safe(req.method()),
-    };
+    } && !is_console_ticket(&path)
+        && !is_idp_login(&path);
     if read {
         if needs_no_barrier(&path) {
             return next.run(req).await;
@@ -203,6 +245,28 @@ async fn forward(
                 continue;
             }
             headers.push((name, v.to_string()));
+        }
+    }
+    // The page's origin: the leader skips its Origin check for a forwarded
+    // request, but an account change and a passkey ceremony read it.
+    if let Some(v) = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        headers.push(("origin", v.to_string()));
+    }
+    // A browser's account list and passkey ceremonies live in its cookies.
+    if browser_cookies(parts.uri.path()) {
+        // HTTP/2 may split cookies over several headers; HTTP/1.1 takes one.
+        let cookies: Vec<&str> = parts
+            .headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        if !cookies.is_empty() {
+            headers.push(("cookie", cookies.join("; ")));
         }
     }
     if let Some(p) = parts
@@ -297,4 +361,45 @@ async fn forward(
         }
     }
     unavailable("cluster_unavailable", "the cluster has no leader right now")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idp_logins_run_on_the_leader() {
+        for p in [
+            "/auth/oidc/start",
+            "/auth/oidc/callback",
+            "/auth/c/gsuite/start",
+            "/auth/c/gsuite/callback",
+            "/auth/t/acme/start",
+            "/auth/t/acme/callback",
+        ] {
+            assert!(is_idp_login(p), "{p}");
+            assert!(browser_cookies(p), "{p}");
+        }
+        for p in [
+            "/auth/c//callback",
+            "/auth/c/a/b/callback",
+            "/auth/c/gsuite/device",
+            "/auth/link/c/gsuite/start",
+            "/auth/methods",
+        ] {
+            assert!(!is_idp_login(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn console_tickets_are_asked_of_the_leader() {
+        assert!(is_console_ticket("/vms/abc/console/ticket"));
+        assert!(is_console_ticket(
+            "/glidex.vm.v1.VmService/CreateConsoleTicket"
+        ));
+        assert!(!is_console_ticket("/vms/abc/console/ws"));
+        assert!(!is_console_ticket("/vms//console/ticket"));
+        assert!(!is_console_ticket("/vms/a/b/console/ticket"));
+        assert!(!is_console_ticket("/glidex.vm.v1.VmService/GetConsoleLog"));
+    }
 }

@@ -117,6 +117,9 @@ name (ids when `/projects` isn't readable).
 | `node topology <node> [--devices]` | `GetNodeTopology`: NUMA nodes with their devices, or the devices with their tree place |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
+| `memory <name\|id> [<size>]` | `GetVm`: the VM's memory; with a size (MiB, or `8G`): `UpdateVm` (`mem_size_mib`), from the next start on a running VM (it says so) |
+| `attach-disk <vm> <disk>` / `detach-disk <vm> <disk>` | `AttachDisk` / `DetachDisk`, the disk by name or id; on a running VM from the next start (it says so) |
+| `attach-network <vm> <network> [--mac <mac>]` / `detach-network …` | `AttachNetwork` / `DetachNetwork`, the network by name or id, `--mac` for one NIC of several on it; on a running VM from the next start (it says so) |
 | `credentials` / `creds` | `GET /credentials` + table (no hashes) |
 | `credential-add` | Username, hidden password ×2, `.pub` files → `POST /credentials` |
 | `credential-passwd <user>` | Hidden password ×2 → `PUT /credentials/{user}` |
@@ -185,12 +188,12 @@ name (ids when `/projects` isn't readable).
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{id}/grants`: who may use a host network, by project or whole tenant (spec/19-tenancy.md D25); the lists replace the current ones |
 | `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/19-tenancy.md §13) |
 | `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |
-| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…` / `add google <id> --client-id ID (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID]` / `add jumpcloud <id> --client-id ID [--groups-claim C] [--allow-email E]…` (19-tenancy.md §5.1), all with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
+| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--trust-email] [--allow-email E]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…` / `add google <id> --client-id ID (--domain D… [--trust-2sv] \| --consumer [--allow-email E]…) [--device-client-id ID]` / `add jumpcloud <id> --client-id ID [--groups-claim C] [--allow-email E]…` (19-tenancy.md §5.1), all with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
 | `connector update <id> [--name N] [--enable\|--disable] [same flags]` | `UpdateConnector` with a field mask of the flags given |
 | `connector secret set <id> [field] [--from-file PATH]` | `SetSecret` (default field `client_secret`); the value comes from a hidden prompt, piped stdin or the file, never from argv |
 | `connector test <id>` / `remove <id>` | `TestConnector` (one line per step) / `DeleteConnector` |
 | `project list` / `show <p>` | `GET /projects`, `GET /projects/{p}` (quotas and usage) |
-| `project create <name> [--description D]` | `POST /projects` (in tenant `default` unless the body names `tenant`) |
+| `project create <name> [--description D] [--tenant T]` | `POST /projects` (in tenant `default` unless `--tenant` names one, by slug or id) |
 | `project delete <p>` | Confirmation → `DELETE /projects/{p}` |
 | `project quota <p> [key=value…]` | Without edits: show. With: `GET` the current quotas, apply the edits (`vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`; `none` = unlimited) and `PATCH /projects/{p} {"quotas": …}` (the server replaces the whole set) |
 | `project use <p>` | `PATCH /users/me {"default_project": p}` (`-`/`none` clears). Where the server has no profile (service-account token, auth disabled) the project is used for this session only |
@@ -199,6 +202,7 @@ name (ids when `/projects` isn't readable).
 | `binding remove <p> <binding-id>` | `DELETE /projects/{p}/bindings/{id}` |
 | `system-binding list [--node N]` / `add <role> <principal> [--node N]` / `remove <id>` | `GET/POST/DELETE /system/bindings` (`?node=` / `node` for one node's host) |
 | `user list` | `GET /users` (with identities) |
+| `user add <email> --tenant T --connector C [--role R] [--name N]` | `CreateUser` with `pending` (19-tenancy.md D77) |
 | `team list` / `create <name>` / `delete <team>` | `GET/POST /teams`, `DELETE /teams/{id}` |
 | `team add-member <team> <user-id>` / `remove-member …` | `PUT/DELETE /teams/{id}/members/{user}` (team by id or name) |
 | `policy list` / `show <id>` | `GET /authz/policies`, `GET /authz/policies/{id}` |

@@ -387,6 +387,10 @@ the commit, the revision becomes the Raft index and subscribers are told.
 Constraints:
 - A write set larger than the schema's limit (4 MiB of JSON) is refused.
 - Table ids are append-only, because they are stored in the log.
+- The lane is held across the Raft round trip, which needs the runtime's
+  I/O. `Db::begin` tries the lane first and, when it is held, waits in
+  `block_in_place` on a Tokio worker (`glidex_raftstore::wait`), so the
+  worker's other tasks and its I/O move to another thread.
 
 **Replay check.** Setting `GLIDEX_CHECK_WRITE_SETS` enables the replay
 check. CI runs `cargo test` with it set. With the variable set:

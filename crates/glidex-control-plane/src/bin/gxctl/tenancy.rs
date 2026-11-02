@@ -49,6 +49,22 @@ pub(crate) fn rpc_err(e: connectrpc::ConnectError) -> String {
     }
 }
 
+/// Team names by id, for printing; empty when the caller can't list teams.
+pub(crate) async fn team_names(t: &RpcTransport) -> std::collections::HashMap<String, String> {
+    use glidex_api::proto::glidex::access::v1::{ListTeamsRequest, TeamServiceClient};
+    TeamServiceClient::new(t.clone(), t.config())
+        .list_teams(ListTeamsRequest::default())
+        .await
+        .map(|r| {
+            r.into_owned()
+                .teams
+                .into_iter()
+                .map(|t| (t.id, t.name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) async fn transport(client: &ApiClient) -> Option<RpcTransport> {
     match client.rpc_transport().await {
         Ok(t) => Some(t),
@@ -70,6 +86,15 @@ fn status(t: &Tenant) -> String {
     if t.suspended == Some(true) {
         tags.push("SUSPENDED");
     }
+    if t.self_service == Some(true) {
+        tags.push("self-service");
+    }
+    if t.pending == Some(true) {
+        tags.push("PENDING approval");
+    }
+    if t.no_admin == Some(true) {
+        tags.push("no administrator");
+    }
     match t.admission.as_option() {
         Some(a) if a.status.as_known() == Some(AdmissionStatus::ADMISSION_STATUS_SUSPENDED) => {
             tags.push("admission suspended")
@@ -84,7 +109,7 @@ fn cap_line(q: Option<&Quotas>) -> String {
     let Some(q) = q else {
         return "unlimited".into();
     };
-    let parts: Vec<String> = [
+    let mut parts: Vec<String> = [
         ("vms", q.vms),
         ("vcpus", q.vcpus),
         ("memory_mib", q.memory_mib),
@@ -97,6 +122,9 @@ fn cap_line(q: Option<&Quotas>) -> String {
     .iter()
     .filter_map(|(k, v)| v.map(|v| format!("{k}={v}")))
     .collect();
+    let mut pools: Vec<_> = q.devices.iter().collect();
+    pools.sort();
+    parts.extend(pools.into_iter().map(|(p, n)| format!("devices.{p}={n}")));
     if parts.is_empty() {
         "unlimited".into()
     } else {
@@ -158,7 +186,7 @@ fn device_pool_line(p: &TenantDevicePool) -> String {
 
 pub async fn tenant(client: &ApiClient, args: &[&str]) {
     let u = "Usage: tenant list | show <t> | create <slug> [--name TEXT] [--operator] | rename <t> <name> \
-             | suspend <t> | resume <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
+             | suspend <t> | resume <t> | approve <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
              | unbind <t> <link> | device-pools <t> \
              | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
@@ -204,6 +232,14 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                     println!("  Name:      {}", t.display_name);
                     println!("  Directory: {}", t.directory_id);
                     println!("  Status:    {}", status(&t));
+                    if !t.created_by.is_empty() {
+                        let who = if t.created_by_name.is_empty() {
+                            &t.created_by
+                        } else {
+                            &t.created_by_name
+                        };
+                        println!("  Creator:   {who}");
+                    }
                     if let Some(a) = t.admission.as_option() {
                         println!("  Cap here:  {}", cap_line(a.cap.as_option()));
                     }
@@ -228,7 +264,14 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                         t.slug.yellow(),
                         t.id
                     );
-                    println!("  Admit it on this cluster with: admission set {}", t.slug);
+                    if t.pending == Some(true) {
+                        println!(
+                            "  It waits for a directory administrator's approval: tenant approve {}",
+                            t.slug
+                        );
+                    } else if t.admission.as_option().is_none() {
+                        println!("  Admit it on this cluster with: admission set {}", t.slug);
+                    }
                 }
                 Err(e) => err(rpc_err(e)),
             }
@@ -247,6 +290,19 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 .map(|r| r.into_owned())
             {
                 Ok(_) => println!("{}", "Renamed.".green()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "approve" => {
+            let Some(id) = id(1) else { return usage(u) };
+            match svc
+                .approve_tenant(ApproveTenantRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("{} {id}", "Approved:".green()),
                 Err(e) => err(rpc_err(e)),
             }
         }
@@ -629,6 +685,11 @@ fn parse_cap(args: &[&str]) -> Result<Option<Quotas>, String> {
             "networks" => &mut q.networks,
             "routers" => &mut q.routers,
             "external_ips" => &mut q.external_ips,
+            // Devices of a pool (spec/22-host-topology.md §9.3).
+            k if k.starts_with("devices.") && k.len() > "devices.".len() => {
+                q.devices.insert(k["devices.".len()..].to_string(), v);
+                continue;
+            }
             _ => return Err(format!("'{k}': unknown limit")),
         };
         *slot = Some(v);
@@ -636,13 +697,103 @@ fn parse_cap(args: &[&str]) -> Result<Option<Quotas>, String> {
     Ok(Some(q))
 }
 
+fn print_auto(a: &AutoAdmission) {
+    let mode = match a.mode.as_known() {
+        Some(AutoAdmissionMode::AUTO_ADMISSION_MODE_ALL) => "every new user tenant",
+        _ => "self-service tenants",
+    };
+    let follow = if a.follow_default == Some(false) {
+        "; admissions keep the cap they got"
+    } else {
+        "; admissions follow it until set by hand"
+    };
+    println!(
+        "  {:<20} {mode}, cap {}{follow}",
+        a.directory_id.cyan(),
+        cap_line(a.cap.as_option())
+    );
+}
+
+/// `admission auto` (spec/19-tenancy.md D79): which new tenants of each
+/// hosted directory this cluster admits by itself.
+async fn auto_admission(svc: &AdmissionServiceClient<RpcTransport>, args: &[&str]) {
+    let u = "Usage: admission auto [list] | auto set <directory> --mode self_service|all --cap key=value,... [--follow-default on|off] | auto remove <directory>";
+    match (args.first().copied(), args.get(1)) {
+        (None | Some("list" | "ls"), _) => match svc
+            .list_auto_admissions(ListAutoAdmissionsRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) if r.auto_admissions.is_empty() => {
+                println!("  No automatic admission: new tenants wait for the operator.")
+            }
+            Ok(r) => r.auto_admissions.iter().for_each(print_auto),
+            Err(e) => err(rpc_err(e)),
+        },
+        (Some("set"), Some(dir)) => {
+            let mode = match crate::flag_value(args, "--mode") {
+                Some("self_service" | "self-service") => {
+                    AutoAdmissionMode::AUTO_ADMISSION_MODE_SELF_SERVICE
+                }
+                Some("all") => AutoAdmissionMode::AUTO_ADMISSION_MODE_ALL,
+                _ => return usage(u),
+            };
+            let cap_args: Vec<&str> = crate::flag_value(args, "--cap")
+                .map(|c| c.split(',').map(str::trim).collect())
+                .unwrap_or_default();
+            let cap = match parse_cap(&cap_args) {
+                Ok(c) => c.unwrap_or_default(),
+                Err(e) => return err(e),
+            };
+            let follow = match crate::flag_value(args, "--follow-default") {
+                None => None,
+                Some("on" | "yes" | "true") => Some(true),
+                Some("off" | "no" | "false") => Some(false),
+                Some(_) => return usage(u),
+            };
+            let req = SetAutoAdmissionRequest {
+                directory: dir.to_string(),
+                mode: mode.into(),
+                cap: cap.into(),
+                follow_default: follow,
+                ..Default::default()
+            };
+            match svc.set_auto_admission(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    if let Some(a) = r.auto_admission.as_option() {
+                        print_auto(a);
+                    }
+                    if r.updated > 0 {
+                        println!("  {} admissions took the new cap.", r.updated);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        (Some("remove" | "rm" | "off"), Some(dir)) => match svc
+            .remove_auto_admission(RemoveAutoAdmissionRequest {
+                directory: dir.to_string(),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => println!(
+                "  Off for {dir}: new tenants wait for the operator; admissions made stay."
+            ),
+            Err(e) => err(rpc_err(e)),
+        },
+        _ => usage(u),
+    }
+}
+
 pub async fn admission(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | staleness <directory> <minutes|default>";
+    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | staleness <directory> <minutes|default> | auto [...]";
     let Some(t) = transport(client).await else {
         return;
     };
     let svc = AdmissionServiceClient::new(t.clone(), t.config());
     match args.first().copied().unwrap_or("list") {
+        "auto" => auto_admission(&svc, &args[1..]).await,
         // An admission for a tenant of another directory (spec/19-tenancy.md D64).
         "offer" => {
             let (Some(tenant), Some(directory)) =

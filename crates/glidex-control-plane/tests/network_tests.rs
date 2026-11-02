@@ -289,6 +289,105 @@ async fn vms_reference_networks() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
+/// `AttachNetwork` and `DetachNetwork` (`POST /vms/{id}/networks`,
+/// `DELETE /vms/{id}/networks/{network}`): kept NICs keep their MACs, and
+/// a new one takes a MAC no other NIC has.
+#[tokio::test(flavor = "multi_thread")]
+async fn vms_attach_and_detach_networks() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab"}, {"network": "iso"}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = vm_id(&body);
+    let nics = |body: &Value| -> Vec<(String, String)> {
+        vm_of(body)["nics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| {
+                (
+                    n["network_name"].as_str().unwrap().to_string(),
+                    n["mac"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let first = nics(&body);
+    let (lab0, iso0) = (first[0].1.clone(), first[1].1.clone());
+    let path = format!("/vms/{id}/networks");
+
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "lab"}))).await;
+    assert!(status.is_success(), "{status} {body}");
+    let now = nics(&body);
+    assert_eq!(now.len(), 3, "{body}");
+    assert_eq!((&now[0].1, &now[1].1), (&lab0, &iso0), "kept MACs: {body}");
+    let lab2 = now[2].1.clone();
+    assert!(lab2 != lab0 && lab2 != iso0, "{body}");
+
+    // Two NICs on `lab`: which one is the MAC's to say.
+    let (status, body) = request(&h.app, "DELETE", &format!("{path}/lab"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(&h.app, "DELETE", &format!("{path}/lab?mac={lab0}"), None).await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(
+        nics(&body),
+        vec![
+            ("iso".to_string(), iso0.clone()),
+            ("lab".to_string(), lab2.clone())
+        ]
+    );
+
+    // The NIC added now is second in line, but its MAC isn't the one the
+    // second NIC (iso) has.
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "iso"}))).await;
+    assert!(status.is_success(), "{status} {body}");
+    let now = nics(&body);
+    let macs: std::collections::HashSet<_> = now.iter().map(|n| &n.1).collect();
+    assert_eq!(macs.len(), 3, "distinct MACs: {body}");
+
+    // Refusals: a MAC another NIC has, a network the VM isn't on, no such
+    // network.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &path,
+        Some(json!({"network": "lab", "mac": iso0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(
+        &h.app,
+        "DELETE",
+        &format!("{path}/lab?mac=02:00:00:00:00:01"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request(&h.app, "POST", &path, Some(json!({"network": "nope"}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let (status, _) = request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_start_detaches_ports() {
     failed_start_detaches_ports_for("cloudhypervisor", "cloud-hypervisor").await;
@@ -1367,6 +1466,103 @@ async fn a_nat_network_may_open_the_hosts_api() {
         "PUT",
         "/networks/iso/host_api",
         Some(json!({"host_api": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// A node network created for another node: recorded for that node,
+/// `PENDING`, and nothing of it made here (that node's controller makes
+/// its bridge and NAT). A subnet or a bridged network can't be made from
+/// here; an unknown node is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_network_may_be_made_for_another_node() {
+    use glidex_control_plane::node::Node;
+    use glidex_netd::proto::{BridgeRecord, NatInfo, Op};
+    let h = harness(true);
+    let me = h.manager.local_node_id();
+    let spec =
+        |name: &str| serde_json::from_value(json!({"name": name, "role": "server"})).unwrap();
+    h.manager
+        .nodes()
+        .put(&Node::new(&me, spec("here")))
+        .unwrap();
+    let other = Node::new("00000000-0000-4000-8000-0000000000aa", spec("other"));
+    h.manager.nodes().put(&other).unwrap();
+    let netd = Netd::new(h._dir.path().join("run"));
+    let here = |bridge: &str| {
+        let b = netd
+            .call::<Vec<BridgeRecord>>(Op::ListBridges)
+            .unwrap()
+            .iter()
+            .any(|r| r.spec.name == bridge);
+        let n = netd
+            .call::<Vec<NatInfo>>(Op::ListNat)
+            .unwrap()
+            .iter()
+            .any(|n| n.state.bridge == bridge);
+        (b, n)
+    };
+    let mk = |name: &str, extra: Value| {
+        let mut b =
+            json!({"name": name, "mode": "NETWORK_MODE_NAT", "bridge": format!("gxbr-{name}")});
+        b.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        b
+    };
+
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(mk("far", json!({"node": "other"}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let net = &body["network"];
+    assert_eq!(net["node"], other.meta.id.as_str(), "{net}");
+    assert_eq!(net["phase"], "NETWORK_PHASE_PENDING", "{net}");
+    assert_eq!(
+        here("gxbr-far"),
+        (false, false),
+        "made on its node, not here"
+    );
+    let id = net["id"].as_str().unwrap().to_string();
+    h.manager.reconcile_network(&id).await.unwrap();
+    assert_eq!(here("gxbr-far"), (false, false), "not this node's to make");
+
+    // This node, by name: made here at once, as without `node`.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(mk("near", json!({"node": "here"}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["network"]["node"], me.as_str());
+    assert_eq!(body["network"]["phase"], "NETWORK_PHASE_READY");
+    assert_eq!(here("gxbr-near"), (true, true));
+
+    for (name, extra) in [
+        ("sub", json!({"node": "other", "subnet": "10.89.7.0/24"})),
+        ("unknown", json!({"node": "no-such-node"})),
+        (
+            "cl",
+            json!({"node": "other", "scope": "NETWORK_SCOPE_CLUSTER"}),
+        ),
+    ] {
+        let (status, body) = request(&h.app, "POST", "/networks", Some(mk(name, extra))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+    }
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(
+            json!({"name": "br", "mode": "NETWORK_MODE_BRIDGED", "bridge": "br0", "node": "other"}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

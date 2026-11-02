@@ -1081,7 +1081,9 @@ async fn auth_trust(args: &[&str]) {
     };
     let name = name.clone();
     let p = p.clone();
-    match args.get(1).copied().unwrap_or("list") {
+    // `args` starts after `trust`: the subcommand, then a pin.
+    let pos = positional(args, &["--profile"]);
+    match pos.first().copied().unwrap_or("list") {
         "list" => {
             if p.tls.pins.is_empty() {
                 println!("profile '{name}': no pins; the system store and the profile's CA decide");
@@ -1186,7 +1188,7 @@ async fn auth_trust(args: &[&str]) {
                     "{} profile '{name}': trust is the system store alone again",
                     "OK:".green()
                 );
-            } else if let Some(pin) = args.get(2) {
+            } else if let Some(pin) = pos.get(1) {
                 let want = glidex_tls::Trust::normalize_pin(pin);
                 let Some(want) = want else {
                     return err(format!(

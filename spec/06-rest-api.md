@@ -190,6 +190,8 @@ reported as `404`.
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
+| `POST` | `/vms/{id}/networks` | `attach_network` | Add a NIC, `{network, mac?, queue_pairs?}`, after the others; without `mac`, the VM-derived MAC of the lowest NIC index no other NIC's MAC has. On a running VM at the next start (`restart_required`) |
+| `DELETE` | `/vms/{id}/networks/{network}[?mac=]` | `detach_network` | Remove the NIC on the network (id or name); `400` when several are on it and `mac` doesn't pick one. The others keep their MACs; on a running VM at the next start |
 | `GET` | `/usage[?project=&from=&to=&month=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | `GetUsageResponse`: usage records ([13-metering.md §9.1](13-metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
 | `GET` | `/projects/{id}/usage`, `/vms/{id}/usage[?include=disks]`, `/disks/{id}/usage` | `usage::*_usage` | The same, for one project, VM (and its NICs) or disk |
 | `GET` | `/usage/bandwidth`, `/usage/disk-io`, `/usage/compute` `[?project=&month=YYYY-MM&group_by=&tz=&format=csv]` | `rates::bandwidth` / `disk_io` / `compute` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write; CPU and memory: cores, MiB and utilization) ([13-metering.md §9.3](13-metering.md#93-bandwidth)) |
@@ -727,6 +729,13 @@ stream over HTTP/2, for API clients and gxctl; 18-grpc.md §9.1.)
      `Message::Binary`.
    - `Message::Binary` / `Message::Text` from the client → written to
      the console. Close / error / `None` from the client ends the loop.
+   - Every 30 s, a `Message::Ping` (browsers answer it themselves). A
+     quiet console sends nothing for minutes, and a proxy in front of
+     the UI closes an idle WebSocket without a close frame (Cloudflare
+     after 100 s; the browser sees code 1006).
+4. When the console ends (the shim hangs up), sends `Message::Close`, so
+   a client tells the console ending (1005) from the connection
+   dropping (1006).
 
 ### Client expectations
 
@@ -742,6 +751,9 @@ stream over HTTP/2, for API clients and gxctl; 18-grpc.md §9.1.)
   carried, 02-console.md "Known gaps").
 - A ticket is used up by the connect: each new connection, a reconnect
   included, needs a new one.
+- The UI reconnects by itself after a drop (code 1006), up to five times
+  in a row, with a new ticket each time; after a close frame it waits
+  for **Reconnect**.
 
 ### Replay-on-connect behavior
 

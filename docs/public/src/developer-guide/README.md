@@ -10,7 +10,7 @@ instead; to use it, the [User guide](../user-guide/README.md).
 
 ## Glidex from a contributor's angle
 
-Glidex is a Rust workspace of 15 crates. At its centre is one binary,
+Glidex is a Rust workspace of 16 crates. At its centre is one binary,
 `glidex-control-plane`: an axum server that answers a REST API and an
 RPC API (gRPC, gRPC-Web and Connect) through one transport-neutral
 service layer, authorizes every call with Cedar, writes desired state
@@ -19,7 +19,8 @@ host toward it. Each VM runs under its own small supervisor,
 `glidex-vm-shim`, in its own systemd unit, so the control plane can
 restart without touching guests. Privileged work (Open vSwitch and NAT,
 LVM, PAM) is done by small root helpers that take requests only from
-the control plane. Several control planes form a cluster by replicating
+the control plane; guests reach a metadata endpoint, `glidex-metad`, for
+their identity tokens. Several control planes form a cluster by replicating
 their database with Raft; cluster networks run on OVN. The web UI
 (React, served by `glidex-ui`) and the `gxctl` CLI are clients of the
 same API, with types generated from the same protos.

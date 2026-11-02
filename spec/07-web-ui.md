@@ -90,8 +90,16 @@ the `https://` URL.
    The Account page lists the same accounts, each with **Remove**. The
    login page lists them as well, so a browser with no active session
    can switch back.
-6. The header's project selector lists `GET /projects`; the choice is
-   saved with `PATCH /users/me {"default_project": id}`. Lists of VMs,
+6. The header's project selector lists `GET /projects`, under an
+   `<optgroup>` per tenant when they span more than one (named by slug
+   from `GET /tenants`, by id for a tenant the caller can't read); the
+   choice is
+   saved with `PATCH /users/me {"default_project": id}`. The Projects
+   page filters by tenant (`?tenant=<id>`, shown for two or more), and
+   its Create Project form offers a **Tenant** for the tenants where
+   `checkAccess` allows `createProject` (shown for two or more; it
+   starts at the selected project's tenant, else `default`); the button
+   shows when any tenant allows it. Lists of VMs,
    disks and credentials pass `?project=`, creates pass `project`, the
    VM form only offers networks the project may use, and the pages
    remount when the project changes.
@@ -159,13 +167,15 @@ ui/src/
 │   ├── Loading.tsx
 │   ├── Modal.tsx           # Re-exports the kit's
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, firmware image, boot disk source, credential picker, restart behaviour, start now)
-│   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
+│   ├── VmActions.tsx       # Start/Shut down/Force off/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
+│   ├── VmMemory.tsx        # Change memory (UpdateVm mem_size_mib), from the next start
+│   ├── VmDisks.tsx         # Root and data disks; detach one, attach a free disk of the project
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
-    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, Reconnect after it closes
+    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, reconnects by itself after a drop, Reconnect after it closes
     ├── consoleTerminal.ts  # The two terminals (ghostty-web, xterm.js) behind one interface
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
@@ -264,12 +274,29 @@ and `last_exit`.
 - **Actions** (`VmActions`): Start is offered for `created`, `stopped`,
   `paused`, and `failed` unless the VM is already meant to run; a VM
   being deleted shows no actions. Delete asks for confirmation (a root
-  disk created with the VM goes with it). Stop is
-  offered while running or paused **or** whenever the desired state is
-  not `stopped`, so a VM stuck starting or crash-looping can be stopped.
+  disk created with the VM goes with it). **Force off** (a hard stop) is
+  offered while running, paused or stopping **or** whenever the desired
+  state is not `stopped`, so a VM stuck starting or crash-looping can be
+  stopped, and a shutdown still waiting for the guest can be cut short.
+  It stays enabled while another action's call is waiting (a Shut down
+  waits up to 80 s). It asks for confirmation first, and sends
+  `graceful_timeout_secs=0`:
+  a stop with no grace would reuse the VM's stored `stop_grace_secs`,
+  which a Shut down sets to 60.
   `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
   plus 20 s, at most 300) and delete; a failed reconcile comes back as
   an `ApiRequestError` like any other.
+- **Memory and data disks.** **Change memory** under Memory sends
+  `UpdateVm` with `mem_size_mib`. Under Disks, each data disk has
+  **Detach** (`DetachDisk`), and a picker lists the project's free disks
+  (ready, attached to nothing, not being deleted) to **Attach**
+  (`AttachDisk`). On a running VM each applies at the next start
+  (`restart_required`); the server's refusal (quota, a disk another node
+  can't reach) is shown where it was asked.
+- **Networks.** Under Network, each NIC has **Detach** (`DetachNetwork`
+  with its MAC), and a picker lists the networks the project may use
+  (not being deleted) to **Attach** (`AttachNetwork`), the same network
+  again included. On a running VM each applies at the next start.
 - **VmDetail** also shows "Configuration changes take effect at the next
   start." while `restart_required`, and an **Events** list (newest
   first, warnings highlighted) from `GET /vms/{id}/events`, refreshed
@@ -423,7 +450,11 @@ whether a QEMU image has a variable store or is a single file.
 `pages/Networking.tsx` creates both kinds of network with one form.
 "Network for" picks a host network (with `createNetwork`) or one of the
 projects whose networks the caller manages (`createProjectNetwork`,
-checked per project). A project network offers NAT or isolated mode and
+checked per project). In a cluster, a host network that doesn't span the
+nodes has a **Node** (its `node`, clustering D23), by default the node
+serving the page; for a node other than the Raft leader the form hides
+the subnet and bridged mode, which the leader refuses for another node.
+A project network offers NAT or isolated mode and
 tap or vhost-user ports, without bridge or VLAN, and is created with
 `POST /projects/{id}/networks`. For host admins the network table has a
 Project column (`host` for host networks); without host rights it lists

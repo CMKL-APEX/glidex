@@ -324,15 +324,19 @@ impl ImageManager {
                         key, arch
                     )));
                 }
-                if let Some(existing) = self.images.read().unwrap().values().find(|i| {
-                    i.firmware_key() == Some(key.as_str())
-                        && i.arch == arch
-                        && i.deletion_requested_at.is_none()
-                        && matches!(
-                            i.status,
-                            ImageStatus::Downloading { .. } | ImageStatus::Verifying
-                        )
-                }) {
+                if let Some(existing) = glidex_raftstore::wait::read(&self.images)
+                    .unwrap()
+                    .values()
+                    .find(|i| {
+                        i.firmware_key() == Some(key.as_str())
+                            && i.arch == arch
+                            && i.deletion_requested_at.is_none()
+                            && matches!(
+                                i.status,
+                                ImageStatus::Downloading { .. } | ImageStatus::Verifying
+                            )
+                    })
+                {
                     return Ok((existing.clone(), false));
                 }
                 hypervisor = Some(entry.hypervisor);
@@ -420,15 +424,19 @@ impl ImageManager {
                 let img = entry.for_arch(arch).ok_or_else(|| {
                     ImageError::InvalidImage(format!("{} has no image for {:?}", key, arch))
                 })?;
-                if let Some(existing) = self.images.read().unwrap().values().find(|i| {
-                    i.catalog_key() == Some(key.as_str())
-                        && i.arch == arch
-                        && i.deletion_requested_at.is_none()
-                        && matches!(
-                            i.status,
-                            ImageStatus::Downloading { .. } | ImageStatus::Verifying
-                        )
-                }) {
+                if let Some(existing) = glidex_raftstore::wait::read(&self.images)
+                    .unwrap()
+                    .values()
+                    .find(|i| {
+                        i.catalog_key() == Some(key.as_str())
+                            && i.arch == arch
+                            && i.deletion_requested_at.is_none()
+                            && matches!(
+                                i.status,
+                                ImageStatus::Downloading { .. } | ImageStatus::Verifying
+                            )
+                    })
+                {
                     return Ok((existing.clone(), false));
                 }
                 ImageSource::Catalog {

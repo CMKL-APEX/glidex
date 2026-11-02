@@ -109,6 +109,7 @@ the [gxctl reference](../reference/gxctl.md).
 | Functional tests | `#[ignore]`d tests, mostly `crates/glidex-control-plane/tests/functional_tests.rs` | KVM, hypervisors, an image; some need `glidex-netd`, OVS, OVN, LVM | No |
 | UI e2e | `crates/glidex-ui/e2e` (Playwright) | bun, Chromium; KVM and an image for the boot tests | No |
 | Nested cluster e2e | `crates/glidex-e2e/tests/nested_cluster.rs` | A Glidex host with nested KVM, about 9 GiB of memory | No |
+| Metadata endpoint e2e | `crates/glidex-e2e/tests/metadata.rs` | A Glidex host installed from your workspace (`glidex-metad`, netd's rules) with a NAT network | No |
 
 ### Unit and integration tests
 
@@ -174,7 +175,19 @@ The script installs the suite's dependencies and Playwright's Chromium
 with bun, starts a throwaway control plane on `:8851`, the Vite dev
 server on `:5174` and a production `glidex-ui` on `:5175`, and runs the
 suite. Tests that need KVM, an image or `glidex-netd` skip when those
-are missing. Without the script, from `crates/glidex-ui/e2e`:
+are missing. Only one run goes at a time on a machine: the script
+refuses a second. Set `E2E_API_PORT` (and `E2E_UI_PORT`,
+`E2E_UI_SERVER_PORT`) when something else holds those ports. Build
+first (`cargo build -p glidex-control-plane -p glidex-ui`): the harness
+times out while cargo builds. On a host with an install, run it in the
+`glidex` group so the boot tests reach `glidex-netd`:
+
+```bash
+sudo -n -g glidex -u $USER env HOME=$HOME PATH=$PATH GLIDEX_E2E_GROUP=glidex-admin \
+  scripts/dev/ui-e2e.sh -H ch -- tests/<spec>.spec.ts
+```
+
+Without the script, from `crates/glidex-ui/e2e`:
 
 ```bash
 (cd ../ui && bun install) && bun install && bunx playwright install chromium
@@ -196,6 +209,16 @@ It makes two VMs with this host's Glidex, installs Glidex from your
 workspace into both (`glidex-install --prebuilt`), forms a cluster with
 OVN, runs a guest on each and checks they reach each other over the
 Geneve tunnel. It takes 10 to 20 minutes.
+
+The metadata endpoint test runs against this host's own Glidex, which
+must be installed from your workspace and serve a NAT network. From
+inside a guest it reads `/v1/instance`, fetches an identity token and a
+Glidex token, and checks that a request without `Metadata-Flavor: Glidex`
+is refused:
+
+```bash
+cargo test -p glidex-e2e --test metadata -- --ignored --nocapture
+```
 
 ## CI
 
@@ -220,6 +243,34 @@ Two workflows run on every pull request to `main` and every push to
 
 CI does not run clippy, the ignored tests or the UI e2e suite: run the
 ones your change touches before you push.
+
+### Checks before pushing
+
+Run these on every commit of a stack, not only its top, since each
+stacked pull request is merged on its own (the same list as
+[`AGENTS.md`](https://github.com/CMKL-APEX/glidex/blob/main/AGENTS.md)):
+
+```bash
+cargo fmt --all --check
+cargo check --workspace --tests
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
+  cargo doc --workspace --no-deps --document-private-items
+GLIDEX_CHECK_WRITE_SETS=1 cargo test --workspace --no-fail-fast
+scripts/lint-store-writes.sh
+```
+
+And when they apply:
+
+| Changed | Also run |
+|---|---|
+| A `.proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`, `buf generate` (commit the regenerated `crates/glidex-ui/ui/src/gen`), `buf breaking --against '../../.git#branch=main,subdir=crates/glidex-api'`. |
+| The web UI | `bun install` (after a package change) and `bun x tsc -b --noEmit` in `crates/glidex-ui/ui`; the UI e2e for the pages touched. |
+| Docs | `mdbook build docs/public` (and `docs/internal` for `spec/`). |
+| VM, disk, network or host paths | The `#[ignore]`d functional tests that cover them, on a host. |
+
+The cluster tests are timing-sensitive: a failed `build` job may be
+rerun once; a second failure is real.
 
 ## Conventions
 
@@ -254,6 +305,12 @@ renamed, because code cites them by path.
   so every write has a write set a replicated store can propose.
   `scripts/lint-store-writes.sh` fails the build if `begin_write`
   appears anywhere else in the crate.
+- Never block a Tokio worker on a lock held across a store write (the
+  write lane, the network store's mutex, the image cache, the directory
+  key lock) or on a slow blocking call (netd, stord, hyperstor). In a
+  cluster a write holds the lane until Raft commits, and Raft needs the
+  runtime's I/O. Wait through `glidex_raftstore::wait` (`lock`, `read`,
+  `write`, `blocking`), which uses `block_in_place` on a worker.
 - Operations are decided in `service/`, never in an adapter: REST
   handlers and RPC adapters only decode, call one service function and
   encode.

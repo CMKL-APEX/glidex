@@ -70,6 +70,19 @@ pub async fn suspend(
     )?))
 }
 
+pub async fn approve(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<Json<pb::ApproveTenantResponse>, ApiErr> {
+    Ok(Json(svc::approve_tenant(
+        &c,
+        pb::ApproveTenantRequest {
+            id,
+            ..Default::default()
+        },
+    )?))
+}
+
 pub async fn resume(
     c: Caller,
     Path(id): Path<String>,
@@ -189,6 +202,38 @@ pub async fn remove_admission(c: Caller, Path(tenant): Path<String>) -> Result<S
         &c,
         pb::RemoveAdmissionRequest {
             tenant,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_auto_admissions(
+    c: Caller,
+) -> Result<Json<pb::ListAutoAdmissionsResponse>, ApiErr> {
+    Ok(Json(svc::list_auto_admissions(
+        &c,
+        pb::ListAutoAdmissionsRequest::default(),
+    )?))
+}
+
+pub async fn set_auto_admission(
+    c: Caller,
+    Path(directory): Path<String>,
+    Json(mut req): Json<pb::SetAutoAdmissionRequest>,
+) -> Result<Json<pb::SetAutoAdmissionResponse>, ApiErr> {
+    req.directory = directory;
+    Ok(Json(svc::set_auto_admission(&c, req)?))
+}
+
+pub async fn remove_auto_admission(
+    c: Caller,
+    Path(directory): Path<String>,
+) -> Result<StatusCode, ApiErr> {
+    svc::remove_auto_admission(
+        &c,
+        pb::RemoveAutoAdmissionRequest {
+            directory,
             ..Default::default()
         },
     )?;

@@ -31,6 +31,7 @@ tab each, shown to those allowed to see it:
 | **Users & roles** | Users and their sign-in methods, teams, and system roles. |
 | **Connectors** | Login connectors (see [Login connectors](authentication.md#login-connectors)). |
 | **Policies** | Base and site policies (see [Site policies](#site-policies)). |
+| **Settings** | What the web UI calls a tenant, and self-service tenants (see [Directory settings](#directory-settings)). |
 
 The directory holds users, teams, connectors, tenants, projects, tenant
 and project roles, and tokens; every server of a cluster has the same
@@ -40,14 +41,15 @@ copy. System roles, site policies and admissions belong to the cluster.
 
 Out of the box:
 
-- Nobody can do anything without a role, except read the image catalog
-  and network names, and manage their own tokens.
+- Nobody can do anything without a role, except read the image catalog,
+  network and datastore names, and manage their own tokens and sign-in
+  methods.
 - Root and members of `glidex-admin` on the local socket are break-glass
   administrators: always allowed, whatever the bindings and site
   policies. Use it to recover, not for daily work.
-- A VM only uses disks and credentials of its own project, and only
-  networks its project was granted. No role or site policy can change
-  that.
+- A VM only uses disks and credentials of its own project, only
+  networks its project was granted, and only a service account of its
+  own tenant. No role or site policy can change that.
 - A disabled user and an expired token are refused everything.
 - Changes that can cut a host off, and policy writes, need a recent
   login (see [Sessions and
@@ -74,7 +76,12 @@ It does this only while nobody has `system-admin`, so adding people to
 `glidex-admin` later makes them break-glass users on the socket, but
 gives them no roles in the web UI. Give roles instead.
 
-<!-- TODO(verify): the API offers no call to give directory-admin / directory-auditor to more people (only the first-start bootstrap grants them); confirm before documenting how. -->
+`directory-admin` and `directory-auditor` come only from this first
+start (and, in a [hosted
+directory](authentication.md#hosting-other-organizations-directories),
+from its first administrator's invitation): no command or API call
+gives them to anyone else yet. A host upgraded from before tenants gave
+its `auditor`s `directory-auditor` once.
 
 ## Roles
 
@@ -87,7 +94,7 @@ Given on one project. Each includes the one above it.
 | `viewer` | See the project, its VMs, disks and usage. |
 | `operator` | Also start, stop and pause VMs, and open their consoles. |
 | `editor` | Also create, change and delete VMs and disks, manage credentials, and attach networks. |
-| `owner` | Also manage the project's bindings and service-account tokens, its networks and network sharing, and read its audit log. |
+| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, and read its audit log. |
 
 ### Host roles
 
@@ -109,6 +116,20 @@ on [one host](#on-one-host-of-a-cluster) instead). Only members of the
 |---|---|
 | `tenant-admin` | Create and delete the tenant's projects, set their quotas, manage the tenant's members, bindings, [tenant pools](host-resources.md#tenant-pools) and [workload federations](workload-federation.md). Includes `owner` on its projects. |
 | `tenant-auditor` | Read the tenant, its members, bindings, tenant pools and workload federations, and its projects. |
+
+### Directory roles
+
+Given on the directory: the host's own (`local`), or a [hosted
+one](authentication.md#hosting-other-organizations-directories). See
+[The first administrators](#the-first-administrators) for who has them.
+
+| Role | May |
+|---|---|
+| `directory-admin` | Manage the directory's users, teams and anyone's tokens; create, change, suspend and delete tenants, and manage every tenant's members, bindings, invitations and workload federations; manage login connectors, their secrets, SCIM tokens and syncs; rotate the directory's signing key; change its [settings](#directory-settings). |
+| `directory-auditor` | Read the directory: its tenants (with their members, bindings and federations), users, teams, connectors, SCIM token lists, signing keys and settings, and a hosted directory's own audit log. |
+
+Neither includes a project role: a directory administrator reaches a
+tenant's projects only through a tenant or project role.
 
 ## Giving roles
 
@@ -229,6 +250,28 @@ gxctl tenant list
 The web UI has the **Directory** page's **Tenants** tab, and an
 **Admissions** page, for the same.
 
+#### Automatic admission
+
+Instead of admitting each new tenant, the cluster can admit them by
+itself, per directory it hosts, with a **default cap**:
+
+```bash
+gxctl admission auto set local --mode self_service --cap vms=4,vcpus=16,memory_mib=65536,devices.a100=1
+gxctl admission auto                       # what is on
+gxctl admission auto remove local          # back to admitting by hand
+```
+
+`self_service` admits [self-service tenants](#directory-settings) as
+they become active (created, or approved where approval is required);
+`all` admits every new user tenant of the directory, never an operator
+tenant. An admission made so follows the default cap: change the
+default and they all get it. Set one tenant's cap by hand (for a lab
+that needs more) and it keeps its own from then on; suspending it
+doesn't change that. The Admissions page has the same as its
+**Automatic admission** card, and marks the admissions that follow it
+*default cap*. Tenants of other organizations' directories are still
+admitted by offer ([Clusters](clusters.md#admitting-another-organizations-tenant)).
+
 #### A new tenant's first administrator
 
 When creating a tenant in the web UI, you can fill in **First
@@ -241,6 +284,41 @@ connector), the tenant isn't created either. Over the API,
 answers the link in `invitation_link`, once. `gxctl tenant create` has
 no option for it; create the tenant, then `gxctl invite create <tenant>
 <email> --connector <c> --role role.tenant-admin`.
+
+### Directory settings
+
+The directory's administrators (`directory-admin`; `directory-auditor`
+reads them) set two things on the **Directory** page's **Settings** tab,
+with `gxctl directory settings`, or with `PUT /directory/settings`:
+
+- **The display label.** What the web UI calls a tenant for this
+  directory's users, one and many: for a university, *Lab* and *Labs*.
+  The web UI then says *Create Lab*, *Lab roles*, and names the
+  **Labs** tab so. The API, gxctl, the audit log and these docs keep
+  saying *tenant*.
+- **Self-service.** Whether users may create tenants of their own, who
+  (every user of the directory, or members of some teams), how many per
+  user (default 3, at most 100) and in all, whether a directory
+  administrator approves each, a slug prefix (such as `lab-`), and
+  whether a tenant's administrators may delete it once it holds nothing
+  (default yes). A new one runs VMs once the cluster admits it, by hand
+  or [automatically](#automatic-admission). See [A tenant of your own](../user-guide/projects.md#a-tenant-of-your-own)
+  for what users see. Tenants made so are marked *self-service* with
+  their creator, *pending approval* until approved (`gxctl tenant
+  approve <t>`, or **Approve** on the tenant's page), and *no
+  administrator* if nobody holds `tenant-admin` on one any more: add
+  one. Site policies can narrow who may (`forbid` on
+  `createOwnTenant`), not widen it.
+
+```bash
+gxctl directory settings                                   # show them
+gxctl directory settings --label Lab/Labs
+gxctl directory settings --self-service on --creators staff,faculty \
+  --max-per-user 2 --max-total 200 --approval required --slug-prefix lab-
+```
+
+`gxctl directory settings` changes only the options given. Each answer
+is the settings as stored, teams by id.
 
 ## Removing people
 
@@ -421,6 +499,7 @@ Actions of these features, and who has them out of the box:
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
 | `syncConnector` | the directory | `directory-admin`. |
 | `confirmConnectorSync` | the directory | `directory-admin`, with a recent login; applying a sync the safety stop blocked needs it as well as `syncConnector`. |
+| `useServiceAccount` | `Glidex::Project` (the service account's) | `owner` of that project (so `tenant-admin` and `system-admin` too); `context.project` is the VM's. Checked when a VM is given a service account (see [Workload identity](../user-guide/vms.md#workload-identity)). One of another tenant is always refused (base policy `base.service-account-same-tenant`). |
 
 `system-admin` has every host role above. A PCI device is
 `Glidex::PciDevice::"<node-id>/<address>"`, for example
@@ -517,7 +596,12 @@ gxctl audit --user <user-id> --since 1767225600000   # Unix milliseconds
 ```
 
 `auditor` and `system-admin` read all of it; a project's owners read
-their project's. Entries older than `audit.retention_days` (90) are
+their project's. A [hosted
+directory](authentication.md#hosting-other-organizations-directories)
+keeps its own audit log, read by its `directory-admin`s and
+`directory-auditor`s (`gxctl audit --directory <id>`, action
+`readDirectoryAudit`), not by the host's operator; what its people do
+with this cluster's projects is in both. Entries older than `audit.retention_days` (90) are
 deleted. Each entry is also written to the control plane's journal:
 
 ```bash

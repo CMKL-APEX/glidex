@@ -41,11 +41,15 @@ gxctl node prepare-device <node> 0000:41:00.0   # its whole IOMMU group to vfio-
 gxctl node release-device <node> 0000:41:00.0   # back on the drivers it had
 ```
 
-Preparing binds every function of the device's IOMMU group (bridges
-aside) to `vfio-pci` and writes a udev rule giving `/dev/vfio/<group>`
-to `glidex`, so the next step is done too. It refuses a group with a NIC
+Preparing loads `vfio-pci` if needed, binds every function of the
+device's IOMMU group (bridges aside) to it, and writes a udev rule
+giving `/dev/vfio/<group>` to `glidex`, so the next step is done too.
+For a GPU with a resizable BAR it also shrinks the memory window when
+the host's GPU windows would add up to its memory or more (see
+[Prepare devices](host-resources.md#prepare-devices)); the boot binding
+and pools with `prepare: true` do the same. It refuses a group with a NIC
 the host uses or an OVS-DPDK uplink, and needs `net-admin` or
-`system-admin` on that host. The web UI's node page has **Prepare** and
+`system-admin` on that host. The host's page in the web UI has **Prepare** and
 **Release** buttons. Like the manual way below, it doesn't survive a
 reboot; a pool with `prepare: true` prepares its devices each time
 glidex starts, and the installer can bind them at boot (see [Keep it
@@ -71,10 +75,10 @@ at every boot, before glidex, glidex-netd or any other hypervisor
 starts:
 
 ```bash
-glidex-install --vfio-devices a100                 # a pool from control-plane.json
-glidex-install --vfio-devices 0000:41:00.0,0000:42:00.0
-glidex-install --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
-glidex-install --no-vfio-devices                   # stop doing it
+cargo run -p glidex-install -- --vfio-devices a100     # a pool from control-plane.json
+cargo run -p glidex-install -- --vfio-devices 0000:41:00.0,0000:42:00.0
+cargo run -p glidex-install -- --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
+cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
 ```
 
 | Flag | What it does |
@@ -162,7 +166,7 @@ using it. A device that isn't says why; the reasons are listed in
 [Ready devices](host-resources.md#ready-devices). Over the API it is `GET /pci-devices`
 for this host, and `GET /nodes/{id}/topology` for any node. Both need a
 host role (`auditor`, `net-admin` or `system-admin`) on that host. In
-the web UI, a node's page (**Cluster** → a node) has a **Topology**
+the web UI, a host's page (**Hosts**, or **Cluster** → a node) has a **Topology**
 card. The topology's fields and warnings are explained in
 [Host topology](host-resources.md#host-topology).
 
@@ -185,7 +189,9 @@ open files instead (through glidex-netd), and:
 - refuses **Release** of its group, and a VF count change on its PF:
   `IOMMU group 30 is in use by qemu-kvm-one (pid 37226)`;
 - leaves it alone in the boot binding and `--now`, since it is on
-  `vfio-pci` already.
+  `vfio-pci` already;
+- shows it greyed out, with that reason, in the web UI's VM form, where
+  a node's GPUs are picked, so nobody picks it.
 
 Glidex's own VMs (run as the `glidex` user) don't count against
 readiness. Without glidex-netd, nothing is known about other holders.
@@ -346,7 +352,7 @@ pools, GPU requests and metering are in
 
 ## NVLink fabric (NVSwitch)
 
-On an NVSwitch board (HGX A100, say), the node page's **Topology** card
+On an NVSwitch board (HGX A100, say), the host page's **Topology** card
 lists the NVSwitches under **NVLink fabric**: their driver, IOMMU group
 and NUMA node. `gxctl node topology <node>` prints them too. They are
 never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
@@ -366,7 +372,7 @@ gxctl node sriov gpu-01 0000:61:00.0 0     # none
 ```
 
 (`POST /nodes/{id}/devices/{pf}/sriov` with `{"vfs": 8}`, `net-admin`
-or `system-admin`; also the **VFs…** button on the node page.) A change
+or `system-admin`; also the **VFs…** button on the host's page.) A change
 removes every VF the PF had, so it is refused while a VM holds the PF or
 one of its VFs, and for a PF that is an OVS-DPDK uplink. To keep a VF
 count across reboots, give it to the installer: `--sriov

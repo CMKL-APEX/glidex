@@ -636,6 +636,14 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// Alice's ID token claims without a nonce: `login_with` adds the login's.
+fn alice_claims(mock: &idp::Mock) -> Value {
+    json!({
+        "iss": mock.base, "aud": "glidex", "sub": "user-123", "exp": now() + 300, "iat": now(),
+        "email": "alice@example.org", "name": "Alice", "groups": ["lab-staff"],
+    })
+}
+
 fn claims(mock: &idp::Mock, nonce: &str) -> Value {
     json!({
         "iss": mock.base, "aud": "glidex", "sub": "user-123", "exp": now() + 300, "iat": now(),
@@ -1063,6 +1071,264 @@ async fn a_step_up_through_a_connector_asks_the_idp_for_a_fresh_login() {
         )
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// spec/19-tenancy.md D75: an `oidc` connector's domain rule reads a
+/// verified address only; `trust_email` vouches for a token that doesn't
+/// say, never for one that says no.
+#[tokio::test]
+async fn an_oidc_domain_rule_needs_a_verified_address() {
+    let mock = idp::start().await;
+    let h = harness();
+    for (id, trust) in [("strict", false), ("trusting", true)] {
+        let v = h
+            .oidc_connector(
+                &mock,
+                id,
+                json!({"oidc": {"issuer": mock.base, "client_id": "glidex",
+                    "allowed_domains": ["example.org"], "trust_email": trust}}),
+            )
+            .await;
+        assert_eq!(v["connector"]["oidc"]["trust_email"], trust, "{v}");
+    }
+    let with = |verified: Option<Value>| {
+        let mut c = alice_claims(&mock);
+        if let Some(v) = verified {
+            c["email_verified"] = v;
+        }
+        c
+    };
+    for (id, verified, want) in [
+        ("strict", Some(json!(true)), StatusCode::SEE_OTHER),
+        ("strict", None, StatusCode::FORBIDDEN),
+        ("strict", Some(json!(false)), StatusCode::FORBIDDEN),
+        ("trusting", None, StatusCode::SEE_OTHER),
+        ("trusting", Some(json!(false)), StatusCode::FORBIDDEN),
+    ] {
+        let c = with(verified);
+        assert_eq!(h.login_with(&mock, id, c.clone()).await, want, "{id} {c}");
+    }
+    // Verified, but outside the domains.
+    let mut c = with(Some(json!(true)));
+    c["email"] = json!("alice@other.org");
+    assert_eq!(
+        h.login_with(&mock, "strict", c).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// spec/19-tenancy.md D76: on an `oidc` connector, `allowed_domains` gates
+/// every login and `allowed_emails` which of them may make an account.
+#[tokio::test]
+async fn an_oidc_allowlist_picks_who_gets_an_account() {
+    let mock = idp::start().await;
+    let h = harness();
+    let admin = h.session(&h.admin("admin-allow"));
+    // An address the domains refuse could never log in: refused up front.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/connectors",
+            Some(
+                json!({"connector": {"id": "bad", "display_name": "Bad", "jit": true,
+                "oidc": {"issuer": mock.base, "client_id": "glidex",
+                    "allowed_domains": ["example.org"], "allowed_emails": ["bob@other.org"]}}}),
+            ),
+            &admin,
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["error"], "invalid_connector", "{v}");
+    let v = h
+        .oidc_connector(
+            &mock,
+            "listed",
+            json!({"oidc": {"issuer": mock.base, "client_id": "glidex",
+                "allowed_domains": ["example.org"], "allowed_emails": ["Alice@example.org"]}}),
+        )
+        .await;
+    assert_eq!(
+        v["connector"]["oidc"]["allowed_emails"],
+        json!(["Alice@example.org"]),
+        "{v}"
+    );
+    let person = |sub: &str, email: &str, verified: bool| {
+        let mut c = alice_claims(&mock);
+        c["sub"] = json!(sub);
+        c["email"] = json!(email);
+        c["email_verified"] = json!(verified);
+        c
+    };
+    // Listed (compared without case) and verified: an account.
+    assert_eq!(
+        h.login_with(&mock, "listed", person("a", "alice@example.org", true))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+    // In the domain but not listed: no account.
+    assert_eq!(
+        h.login_with(&mock, "listed", person("b", "bob@example.org", true))
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    // Once in, the allowlist doesn't stand in the way of the next login.
+    let (_, v) = h
+        .rest(
+            "PATCH",
+            "/connectors/listed",
+            Some(
+                json!({"connector": {"oidc": {"issuer": mock.base, "client_id": "glidex",
+                "allowed_domains": ["example.org"], "allowed_emails": ["carol@example.org"]}}}),
+            ),
+            &admin,
+        )
+        .await;
+    assert_eq!(
+        v["connector"]["oidc"]["allowed_emails"],
+        json!(["carol@example.org"]),
+        "{v}"
+    );
+    assert_eq!(
+        h.login_with(&mock, "listed", person("a", "alice@example.org", true))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+}
+
+/// spec/19-tenancy.md D77, §6.3: a directory administrator pre-adds a
+/// person by email; their first login through that connector with that
+/// verified address takes the account, with its tenant and role, JIT or
+/// not.
+#[tokio::test]
+async fn a_pre_added_user_is_taken_by_its_first_verified_login() {
+    let mock = idp::start().await;
+    let h = harness();
+    h.oidc_connector(
+        &mock,
+        "corp",
+        json!({"jit": false, "oidc": {"issuer": mock.base, "client_id": "glidex",
+            "allowed_domains": ["example.org"]}}),
+    )
+    .await;
+    let s = h.session(&h.admin("ada"));
+    let add = |email: &str, connector: &str| {
+        json!({"pending": {"email": email, "connector": connector,
+            "tenant": "default", "role": "role.tenant-auditor"}})
+    };
+    let (st, v) = h
+        .rest("POST", "/users", Some(add("Alice@Example.org", "corp")), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let id = v["user"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["user"]["display_name"], "alice");
+    assert_eq!(v["user"]["email"], "alice@example.org");
+    assert_eq!(v["user"]["pending_connector"], "corp");
+    // Its tenant and role are there before it ever signs in.
+    let (_, b) = h.rest("GET", "/tenants/default/bindings", None, &s).await;
+    assert!(
+        b["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["role"] == "role.tenant-auditor" && x.to_string().contains(&id)),
+        "{b}"
+    );
+    // Refused: twice, outside the domains, not an address, with identities.
+    let (st, v) = h
+        .rest("POST", "/users", Some(add("alice@example.org", "corp")), &s)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("already_exists")),
+        "{v}"
+    );
+    let (st, v) = h
+        .rest("POST", "/users", Some(add("bob@other.org", "corp")), &s)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("email_not_allowed")),
+        "{v}"
+    );
+    let (st, _) = h.rest("POST", "/users", Some(add("bob", "corp")), &s).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let mut with_ids = add("carol@example.org", "corp");
+    with_ids["identities"] = json!([{"provider": "pam", "subject": "carol"}]);
+    let (st, _) = h.rest("POST", "/users", Some(with_ids), &s).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, _) = h
+        .rest("POST", "/users", Some(add("dave@example.org", "nope")), &s)
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let alice = |verified: bool| {
+        let mut c = alice_claims(&mock);
+        c["sub"] = json!("alice-sub");
+        c["email"] = json!("alice@example.org");
+        c["email_verified"] = json!(verified);
+        c
+    };
+    // An unverified address takes nothing (and the domain refuses it).
+    assert_eq!(
+        h.login_with(&mock, "corp", alice(false)).await,
+        StatusCode::FORBIDDEN
+    );
+    // Through another connector: no account (jit off there too).
+    h.oidc_connector(&mock, "other", json!({"jit": false}))
+        .await;
+    assert_eq!(
+        h.login_with(&mock, "other", alice(true)).await,
+        StatusCode::FORBIDDEN
+    );
+    // The verified address through its connector takes it, jit off.
+    assert_eq!(
+        h.login_with(&mock, "corp", alice(true)).await,
+        StatusCode::SEE_OTHER
+    );
+    let (_, v) = h.rest("GET", "/users", None, &s).await;
+    let u = v["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert!(u.get("pending_connector").is_none(), "{u}");
+    assert_eq!(u["identities"].as_array().unwrap().len(), 1, "{u}");
+    let users_before = v["users"].as_array().unwrap().len();
+    // And logs in again as itself.
+    assert_eq!(
+        h.login_with(&mock, "corp", alice(true)).await,
+        StatusCode::SEE_OTHER
+    );
+    let (_, v) = h.rest("GET", "/users", None, &s).await;
+    assert_eq!(v["users"].as_array().unwrap().len(), users_before);
+    // Taken: another login with the same address doesn't take it again.
+    let mut twin = alice(true);
+    twin["sub"] = json!("someone-else");
+    assert_eq!(
+        h.login_with(&mock, "corp", twin).await,
+        StatusCode::FORBIDDEN
+    );
+
+    // A provisioned connector's users come from its IdP.
+    scim_connector(&h, &mock, &s, "pushed", json!({})).await;
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/users",
+            Some(add("erin@example.org", "pushed")),
+            &s,
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("connector_not_allowed")
+        ),
+        "{v}"
+    );
 }
 
 #[tokio::test]

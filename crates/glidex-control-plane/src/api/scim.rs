@@ -346,6 +346,7 @@ pub async fn users(
                             managed: None,
                             email: None,
                             disabled_reason: None,
+                            pending_login: None,
                         },
                     };
                     a.apply(&mut u, &c.id);

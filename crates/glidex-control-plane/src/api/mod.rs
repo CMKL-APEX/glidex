@@ -289,6 +289,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "detachDisk",
         delete(vms::detach_disk),
     )
+    .add(
+        "POST",
+        "/vms/{id}/networks",
+        "attachNetwork",
+        post(vms::attach_network),
+    )
+    .add(
+        "DELETE",
+        "/vms/{id}/networks/{network}",
+        "detachNetwork",
+        delete(vms::detach_network),
+    )
     // ---- guest credentials
     .add(
         "GET",
@@ -1155,6 +1167,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(tenants::resume),
     )
     .add(
+        "POST",
+        "/tenants/{id}/approve",
+        "approveTenant",
+        post(tenants::approve),
+    )
+    .add(
         "GET",
         "/tenants/{id}/members",
         "readTenantMembers",
@@ -1263,6 +1281,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/directory/keys/rotate",
         "rotateSigningKey",
         post(issuer::rotate_key),
+    )
+    // ---- the directory's settings (spec/19-tenancy.md §11.1)
+    .add(
+        "GET",
+        "/directory/settings",
+        "readDirectorySettings",
+        get(issuer::get_settings),
+    )
+    .add(
+        "PUT",
+        "/directory/settings",
+        "updateDirectorySettings",
+        put(issuer::put_settings),
     )
     // ---- directory connectors (spec/19-tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
@@ -1455,6 +1486,25 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/admissions/directories/{id}",
         "manageAdmissions",
         patch(tenants::set_trusted_directory),
+    )
+    // Automatic admission (spec/19-tenancy.md D79)
+    .add(
+        "GET",
+        "/admissions/auto",
+        "listAdmissions",
+        get(tenants::list_auto_admissions),
+    )
+    .add(
+        "PUT",
+        "/admissions/auto/{directory}",
+        "manageAdmissions",
+        put(tenants::set_auto_admission),
+    )
+    .add(
+        "DELETE",
+        "/admissions/auto/{directory}",
+        "manageAdmissions",
+        delete(tenants::remove_auto_admission),
     )
     .add(
         "GET",

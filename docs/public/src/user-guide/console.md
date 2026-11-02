@@ -41,9 +41,15 @@ questions the guest asked its terminal earlier (such as where the
 cursor is), so opening the console doesn't type stale answers like
 `^[[38;1R` at the guest's prompt.
 
-If the connection closes (the VM stopped, or the control plane
-restarted), click **Reconnect**. **Back to VM** leaves the console;
+If the connection drops (a network blip, or a proxy cutting it), the
+page reconnects by itself: the status shows *reconnecting*, and the log
+is replayed. If the console closes (the VM stopped, or the control
+plane restarted), or reconnecting fails five times, click **Reconnect**. **Back to VM** leaves the console;
 closing the page detaches without affecting the VM.
+
+In a cluster, the console opens from any server's web UI, whichever
+node the VM runs on, also behind a load balancer. If the cluster's
+leader changes just as the console opens, it fails once: open it again.
 
 ### Terminal
 

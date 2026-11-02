@@ -69,7 +69,7 @@ impl ImageManager {
     /// The files of every image record, which are not spare.
     fn recorded_files(&self) -> BTreeSet<PathBuf> {
         let mut known = BTreeSet::new();
-        for img in self.images.read().unwrap().values() {
+        for img in glidex_raftstore::wait::read(&self.images).unwrap().values() {
             known.insert(self.image_path(&img.id));
             known.insert(self.part_path(&img.id));
             known.insert(self.initrd_part_path(&img.id));

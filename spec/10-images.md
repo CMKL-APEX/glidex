@@ -428,8 +428,10 @@ controller applies it (`controller/disk.rs`, [12-reconciliation.md
 §10.1](12-reconciliation.md#101-disk)). Each applied operation:
 
 - holds a `BusyGuard` for the disk while it runs, so a second operation
-  on the same disk or deleting it gets `409 conflict`, and a VM launch
-  waits (`DisksReady=False/DiskBusy`);
+  on the same disk or deleting it gets `409 conflict` (except during a
+  create: a deletion is recorded and applied once it ends,
+  [24-storage.md](24-storage.md) S29), and a VM launch waits
+  (`DisksReady=False/DiskBusy`);
 - runs only while no live instance has the disk open (no VM's
   `status.instance.disks` contains it, and no VM using it is being
   launched). Otherwise the request stays pending, with
@@ -648,7 +650,9 @@ default), but some do not (AlmaLinux sets `growpart` off in
 
 - refused with `409 conflict` while a VM claims it (its spec references
   it, or a live instance has it open; naming the VM). Detach it, or
-  delete the VM, first. Also `409` while an operation runs on it;
+  delete the VM, first. Also `409` while an operation other than its
+  create runs on it; during a create it is recorded, and the disk is
+  deleted once that attempt ends ([24-storage.md](24-storage.md) S29);
 - otherwise records `deletion_requested_at` and runs the disk controller
   at once, which deletes the record first, then the file. If the file
   cannot be removed, this is logged and the file stays behind as an

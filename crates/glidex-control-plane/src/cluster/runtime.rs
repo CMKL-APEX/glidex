@@ -333,6 +333,48 @@ impl Cluster {
         self.node.as_ref().and_then(|n| n.leader_addr())
     }
 
+    /// Redeem a console ticket on the leader, which issued it
+    /// (spec/11-security.md decision 21): `false` for a ticket that is
+    /// unknown, used, expired, or another principal's or VM's.
+    pub async fn redeem_console_ticket(
+        &self,
+        principal: &crate::authz::Ent,
+        vm: &str,
+        ticket: &str,
+    ) -> Result<bool, String> {
+        let addr = match self.leader_addr() {
+            Some(a) => a,
+            None => self
+                .wait_for_leader(Duration::from_secs(3))
+                .await
+                .ok_or("the cluster has no leader right now")?,
+        };
+        let body = serde_json::to_vec(&serde_json::json!({
+            "principal": principal,
+            "vm": vm,
+            "ticket": ticket,
+        }))
+        .map_err(|e| e.to_string())?;
+        let r = self
+            .client
+            .request(
+                &addr,
+                hyper::Method::POST,
+                "/cluster/v1/console-ticket",
+                &[("content-type", "application/json".into())],
+                Bytes::from(body),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if !r.status.is_success() {
+            return Err(format!("the leader answered {}", r.status));
+        }
+        Ok(serde_json::from_slice::<serde_json::Value>(&r.body)
+            .ok()
+            .and_then(|v| v["redeemed"].as_bool())
+            .unwrap_or(false))
+    }
+
     /// The server to send writes and reads to: this one when it leads, else
     /// the leader. Agents ask any server they know of (§8).
     pub fn set_api(&self, router: axum::Router) {

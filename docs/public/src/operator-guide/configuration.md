@@ -38,6 +38,9 @@ sudo systemctl restart glidex-control-plane
 | `api_socket` | path | `<run dir>/api.sock` | Unix socket for local `gxctl` users. |
 | `ui_socket` | path | `<run dir>/ui.sock` | Unix socket the web UI talks to. |
 | `ui_user` | string | `"glidex-ui"` | The only user allowed on `ui_socket`. |
+| `metad_socket` | path | `<run dir>/metad.sock` | Unix socket the metadata endpoint (`glidex-metad`) talks to. |
+| `metad_user` | string | `"glidex-metad"` | The only user allowed on `metad_socket`. |
+| `nat_host_api` | bool | `false` | Open this host's API (the `listen` ports) to the guests of every node NAT network on it, as a network's `host_api` does for one network. See [The host from a NAT network](../user-guide/networks.md#the-host-from-a-nat-network). |
 | `users_group` | string | `"glidex-users"` | Members may use `api_socket`. |
 | `admin_group` | string | `"glidex-admin"` | Members (and root) are break-glass administrators on `api_socket`. |
 
@@ -81,7 +84,8 @@ sudo systemctl restart glidex-control-plane
 | `scopes` | array of strings | `["openid", "profile", "email", "groups"]` | Scopes requested. |
 | `groups_claim` | string | `"groups"` | ID token claim that lists the user's groups. |
 | `jit` | bool | `true` | Create the Glidex user on their first login. |
-| `allowed_domains` | array of strings | `[]` | If set, only these email domains may log in. |
+| `allowed_domains` | array of strings | `[]` | If set, only verified addresses in these email domains may log in. |
+| `trust_email` | bool | `false` | The provider verifies its users' addresses: a token without `email_verified` counts as verified. |
 | `required_groups` | array of strings | `[]` | If set, only members of one of these groups may log in. |
 | `group_teams` | object | `{}` | Provider group → team name; memberships are updated at every login. |
 | `redirect_uri` | URL | first allowed origin + `/api/auth/oidc/callback` | Where the provider sends the browser back. Register exactly this URL with the provider. |
@@ -93,7 +97,7 @@ sudo systemctl restart glidex-control-plane
 | `authz.policy_files_dir` | path | `"/etc/glidex/policies"` | Directory of read-only site policy files (`*.cedar`). See [Access control](access-control.md#policy-files). |
 | `authz.policy_history` | integer, 1–1000 | `50` | Versions kept of each site policy. |
 | `quotas.default` | object | `{"networks": 2}` | Quotas of new projects, and of the `default` project when it is first created. Keys: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, and `devices` (`{"a100": 2}`: devices per pool). An omitted key is unlimited, except `networks` (2), `routers` (1) and `external_ips` (1); `null` is unlimited. |
-| `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool. See [PCI passthrough](pci-passthrough.md). |
+| `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool; `"tenants": ["*"]` on a pool grants it to every admitted tenant ([open pools](host-resources.md#who-may-use-a-pool)). See [PCI passthrough](pci-passthrough.md). |
 | `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
 | `trust.default_max_staleness_minutes` | integer | `60` | How long a trusted directory's sessions and tokens stay good here after its last feed, unless set for that directory (`gxctl admission staleness`); see [Clusters](clusters.md#admitting-another-organizations-tenant). |
@@ -105,7 +109,8 @@ up, with one of:
 - `pci.pools: pool <name> matches every device; give it a match`;
 - `pci.pools: pools <a> and <b> match the same devices`;
 - `pci.allow: no pool <name>`: a grant names an unknown pool;
-- `pci.allow: each grant names one bdf or one pool`.
+- `pci.allow: each grant names one bdf or one pool`;
+- `pci.allow: "tenants": ["*"] (every admitted tenant) goes alone, on a pool`.
 
 ### `reconcile` and `console`
 
@@ -161,7 +166,9 @@ See [Clusters](clusters.md).
 | `cluster.ui_relay` | bool | `true` | Replaced: an agent's web UI now sends browsers to a server. Accepted and ignored. |
 | `cluster.ovn.bridge_mappings` | object | `{}` | Physical network name → this host's Glidex bridge. Per host. |
 
-<!-- TODO(verify): cluster.role and cluster.tunnel_ip parse, but no code path reads them from the file (the role and tunnel address come from the join/init request); left out until confirmed. -->
+`cluster.role` and `cluster.tunnel_ip` are accepted and ignored: a
+node's role and tunnel address come from `gxctl cluster init` or its
+join.
 
 The other `cluster.ovn` keys (`enabled`, `underlay_mtu`, `nat_supernet`,
 `edge`, `snat_ct_zones`, `dns_servers`) are still accepted, but once the
@@ -187,6 +194,24 @@ change: `sudo systemctl restart glidex-stord`.
 
 Keep the other keys stord accepts at their defaults. Its log filter is
 `RUST_LOG` (default `info`).
+
+### `glidex-netd`
+
+`glidex-netd` reads `/etc/glidex/netd.json` at start (`--config <path>`
+for another file). Without the file every setting has its default. A
+file it can't read or parse stops it (`journalctl -u glidex-netd`).
+Restart it after a change: `sudo systemctl restart glidex-netd`; VMs
+keep running.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `nat_supernet` | CIDR | `"10.88.0.0/16"` | The range node NAT networks take their subnets from. A value that isn't a CIDR is ignored. |
+| `group` | string | `"glidex"` | The group allowed on netd's full socket (the control plane's). |
+| `admin_group` | string | `"glidex-admin"` | Break-glass administrators allowed on the full socket too. |
+| `policy` | object | both groups: `["*"]` | Group → the operations its members may send, by name, `*`, or a prefix ending in `*` (`"list_*"`). root may send any. netd logs the policy in force at start (`netd policy`). |
+| `gateway_check_secs` | integer | `20` | How long a [moved host address](host-networking.md#moving-the-hosts-address-onto-the-bridge) waits for the gateway to answer through the bridge. |
+| `commit_window_secs` | integer | `60` | How long an address move waits for the client's commit before netd rolls it back. |
+| `ovs_bin_dir` | path | unset | Where `ovs-vsctl` and the other OVS tools are, when not on `PATH`. |
 
 ### Example
 
@@ -249,9 +274,10 @@ Under the installed services:
 |---|---|
 | `/etc/glidex/control-plane.json` | This file. |
 | `/var/lib/glidex-control-plane/.glidex/` | Data directory: `glidex.db` (the database), `secrets.kek`, `images/`, `disks/`, firmware, `tls/` (the self-signed certificate). |
-| `/run/glidex-cp/` | Run directory: `api.sock`, `ui.sock`, `tls.crt` (a copy of the API's certificate for local clients), and one private directory per running VM. |
+| `/run/glidex-cp/` | Run directory: `api.sock`, `ui.sock`, `metad.sock`, `tls.crt` (a copy of the API's certificate for local clients), and one private directory per running VM. |
 | `/run/glidex/` | `glidex-netd`'s sockets. |
 | `/run/glidex-authd/auth.sock` | `glidex-authd`'s socket. |
+| `/etc/glidex/netd.json` | [`glidex-netd`](#glidex-netd)'s settings, if you write one. |
 | `/etc/glidex/stord.json` | [`glidex-stord`](#glidex-stord)'s settings: the volume groups it may use. |
 | `/run/glidex-stord/` | `glidex-stord`'s sockets: `stord.sock` (`root:glidex`, mode 0660) for the control plane. |
 | `/var/lib/glidex-ui/tls/` | The web UI's self-signed certificate. |
@@ -302,6 +328,8 @@ control plane makes these outbound HTTPS connections:
 | `GLIDEX_MAX_EXTRACTIONS` | `1` | Kernel extractions at the same time on this node. |
 | `GLIDEX_MAX_KERNEL_SIZE` | `128M` | Largest kernel of a kernel image, with a `K`, `M`, `G` or `T` suffix (binary units). |
 | `GLIDEX_MAX_INITRD_SIZE` | `1G` | Largest initramfs of a kernel image, likewise. |
+| `GLIDEX_HYPERSTORCTL` | `hyperstorctl` (on `PATH`) | The `hyperstorctl` program, for [hyperstor datastores](datastores.md#hyperstor). |
+| `GLIDEX_HYPERSTOR_VHOST_DIR` | `/run/hyperstor/vhost` | Where this node's `hyperstor-vhost` keeps its sockets. |
 | `GLIDEX_STORD_SOCKET` | `/run/glidex-stord/stord.sock` | `glidex-stord`'s socket, for [LVM-thin datastores](datastores.md#lvm-thin). Leave it for the installed services. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |
 | `RUST_LOG` | `glidex_control_plane=info,tower_http=info` | Log filter. |
@@ -330,6 +358,7 @@ configuration.
 | `GLIDEX_UI_TLS_CERT` | a self-signed certificate | PEM certificate chain. |
 | `GLIDEX_UI_TLS_KEY` | the `ui-tls-key` credential | PEM private key. Prefer the credential. |
 | `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate to its ts.net names ([TLS](tls.md#tailscale-certificates)). |
+| `GLIDEX_UI_CLIENT_IP_HEADER` | unset | A header that carries the browser's address, such as `CF-Connecting-IP`, trusted only on connections from this host itself (a tunnel such as `cloudflared` running here). Set it when a tunnel on the host connects to the UI, or every user's address is `127.0.0.1` in the audit log and shares one rate limit. See [Behind a load balancer or tunnel](clusters.md#behind-a-load-balancer-or-tunnel). |
 | `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | `tailscaled`'s local API socket. |
 | `GLIDEX_UI_DIR` | `/usr/local/share/glidex/ui` (unit) | The built UI. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket, used when it exists. |
@@ -344,3 +373,20 @@ For example, to serve the UI on one address under a DNS alias:
 Environment=GLIDEX_UI_LISTEN=192.0.2.10:5173
 Environment=GLIDEX_UI_HOSTS=glidex.example.org,192.0.2.10
 ```
+
+Behind a reverse proxy or a tunnel that runs on the host (such as
+`cloudflared`), list the public name users open in `GLIDEX_UI_HOSTS`,
+with the host's own names if people still use them: the variable
+replaces the default list. (On a cluster server, `cluster.ui_url`'s
+name is accepted without it.) Also set `GLIDEX_UI_CLIENT_IP_HEADER`, so
+the audit log and rate limits see each browser's address instead of
+`127.0.0.1`:
+
+```ini
+[Service]
+Environment=GLIDEX_UI_HOSTS=glidex.example.org,host.example.org
+Environment=GLIDEX_UI_CLIENT_IP_HEADER=CF-Connecting-IP
+```
+
+See [Behind a load balancer or tunnel](clusters.md#behind-a-load-balancer-or-tunnel)
+for what else a proxy in front of several servers needs.

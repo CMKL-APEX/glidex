@@ -527,6 +527,114 @@ async fn a_new_server_receives_the_secrets_key() {
     assert_eq!(disk, *secrets(0).connectors.kek_bytes());
 }
 
+/// The browser's account list (`/auth/accounts…`) and passkey ceremonies
+/// work through a follower's UI as on the leader's: the forward carries
+/// the `Origin` they require and the cookies they read (a load balancer
+/// sends browsers to any server).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn account_changes_through_a_follower_reach_the_leader_with_their_cookies() {
+    let _one = serial().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    let browser = [
+        ("origin", "https://glidex.test"),
+        ("x-forwarded-host", "glidex.test"),
+        ("x-forwarded-proto", "https"),
+        ("cookie", "gx_accounts=d:acme"),
+    ];
+    let add = |cp: &Cp| {
+        let router = ui_router(cp, None);
+        async move { via_ui_with(&router, "POST", "/auth/accounts/add", &browser, None).await }
+    };
+    let (s, _, on_leader) = add(&cps[leader]).await;
+    assert_eq!(s, StatusCode::OK, "{on_leader}");
+    assert_eq!(
+        on_leader["accounts"].as_array().map(Vec::len),
+        Some(1),
+        "{on_leader}"
+    );
+    // An election right after forming can answer 503 for a moment.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let (s, headers, via_follower) = loop {
+        let r = add(&cps[follower]).await;
+        if r.0 == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break r;
+    };
+    assert_eq!(s, StatusCode::OK, "{via_follower}");
+    assert_eq!(via_follower, on_leader);
+    assert!(
+        headers
+            .get_all("set-cookie")
+            .iter()
+            .any(|c| c.to_str().unwrap().starts_with("gx_accounts=")),
+        "{headers:?}"
+    );
+
+    // A passkey ceremony needs the page's origin too: its challenge names it.
+    let router = ui_router(&cps[follower], None);
+    let (s, headers, options) = via_ui_with(
+        &router,
+        "POST",
+        "/auth/passkeys/login/start",
+        &browser,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{options}");
+    assert_eq!(options["publicKey"]["rpId"], "glidex.test", "{options}");
+    assert!(headers.get("set-cookie").is_some(), "{headers:?}");
+}
+
+/// A console ticket is the leader's: another server redeems it there,
+/// once, and only for the principal and VM it was issued for
+/// (spec/11-security.md decision 21). Behind a load balancer the ticket
+/// and the WebSocket may reach different servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn console_tickets_are_the_leaders_and_redeemed_once_from_any_server() {
+    let _one = serial().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    let auths: Vec<_> = cps
+        .iter()
+        .map(|cp| {
+            let auth = glidex_control_plane::auth::AuthService::disabled_with(
+                cp.manager.database(),
+                Config::default(),
+            )
+            .unwrap();
+            cp.manager
+                .set_api_app(Arc::new(glidex_control_plane::api::App {
+                    manager: cp.manager.clone(),
+                    auth: auth.clone(),
+                }));
+            auth
+        })
+        .collect();
+    let p = glidex_control_plane::auth::Principal::system();
+    let other = glidex_control_plane::authz::Ent::User("someone-else".into());
+    let redeem = |who: &glidex_control_plane::authz::Ent, vm: &str, t: &str| {
+        let c = cluster(&cps[follower]);
+        let (who, vm, t) = (who.clone(), vm.to_string(), t.to_string());
+        async move { c.redeem_console_ticket(&who, &vm, &t).await.unwrap() }
+    };
+
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&other, "vm-1", &t).await, "another principal's");
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&p.cedar(), "vm-2", &t).await, "another VM's");
+    let t = auths[leader].issue_ticket(&p, "vm-1");
+    assert!(redeem(&p.cedar(), "vm-1", &t).await);
+    assert!(!redeem(&p.cedar(), "vm-1", &t).await, "used once");
+    // A ticket the follower kept itself isn't the leader's.
+    let t = auths[follower].issue_ticket(&p, "vm-1");
+    assert!(!redeem(&p.cedar(), "vm-1", &t).await);
+}
+
 /// A gRPC write sent to a follower is forwarded to the leader, and the
 /// leader's status comes back in the HTTP/2 trailers (spec/18-grpc.md §8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
