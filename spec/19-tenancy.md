@@ -152,6 +152,10 @@ organizations that **operate** it, and lets each keep its own identity.
 | D75 | Verified addresses on `oidc` connectors | An `oidc` connector's login rules that read the email (`allowed_domains`, `allowed_emails`, invitations, pre-added users) need a **verified** one: `email_verified: true` in the token, or, with the connector's `trust_email: true` ("the IdP verifies its users' addresses", off by default), no `email_verified` claim at all. `email_verified: false` is always believed. A token without a verified email is refused at a connector with `allowed_domains`, as an email outside them is. | Some IdPs let a user type any address into their profile; a domain or address rule on an address nobody checked lets anyone in. Others (Entra ID) never send the claim, because the organization assigns its users' addresses: the operator says so for that connector, as the `jumpcloud` preset does for JumpCloud. |
 | D76 | An allowlist on `oidc` connectors | `oidc` connectors get `allowed_emails`, as `google` and `jumpcloud` have (D39): with it, JIT creates accounts for those verified addresses only. `allowed_domains` still gates every login through the connector; `allowed_emails` gates which logins may create an account. | "Anyone at our domain, but only these people get an account" without SCIM or invitations. |
 | D77 | Pre-added users | A directory administrator adds a user **by email** before they ever sign in: email, tenant, role and connector (`CreateUser` with `pending`). The user is created at once (display name the address's local part, `email` set), with its tenant membership and role, and a **pending login** `{connector, email}`. The first login through that connector whose verified email (D75) equals it, and that has no identity yet, binds its identity to that user and clears the pending login, even with `jit: false`. One pending login per connector and address in a directory; the address must pass the connector's `allowed_domains`. Connectors as for invitations (§6.1): an enabled OIDC kind (`oidc`, `google`, `jumpcloud`), not a provisioned one, and into the owner's or an operator's tenant only through one that requires MFA (D22). Removing is what it is for any user: disable, or delete. | The directory's administrators decide who is in from the Access page, with no link to send. Taking an account by verified email alone is what `allowed_emails` with JIT already allows; here the administrator also fixes the tenant and role. An invitation (D40) stays the way in for an address the administrator doesn't want to bind ahead, or for a person who may sign in with another address. |
+| D78 | Self-service tenants | A directory's administrators can let its users create **user tenants** themselves (§11.1), off by default. They choose who (`all`, or members of some teams), how many per user and in all, whether a directory administrator approves each, and a slug prefix. The creator becomes the tenant's `tenant-admin`. Only users who signed in through the directory's connectors may; the tenant is never an operator or owner tenant. This narrows D31: there is still no signup, since only people the directory already lets in can create tenants. | An organization (a university's labs) wants its people to organize themselves without asking IT for each tenant. The connectors already decide who is a user; the limits, the approval switch and site policies bound the rest. |
+| D79 | Automatic admission and the default cap | A cluster's operator can admit, as they become active, the self-service tenants (or all new user tenants) of a directory the cluster **hosts**, with a **default cap** and labels (`AutoAdmission`, per directory). An admission made so follows later changes to the default cap until the operator sets that tenant's cap by hand. Tenants of trusted directories of other organizations are not admitted this way; fleets do that (D34). | A tenant nobody admits can make projects but no VMs, which defeats self-service. Following the default lets IT raise every lab at once and still give a special lab its own cap. |
+| D80 | Open pools | A `pci.allow` entry with `"tenants": "*"` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
+| D81 | The display label | A directory sets what its users' web UI calls a tenant (`tenant_label`, singular and plural, default *Tenant*). The API, gxctl, audit, errors and docs keep *tenant*. | Each organization has its word (lab, team, workspace); one model underneath keeps the policies, the API and the docs the same. Per directory, because a host's directories are different organizations. |
 
 ## 3. Threat model additions
 
@@ -953,6 +957,110 @@ and clusters and manages the account's members.
 links, opt-ins and federations, and sees every admission, delegated
 link and operator support action affecting it.
 
+### 11.1 Self-service tenants (D78–D81)
+
+A directory can let its own users create tenants, for example a
+university where anyone may start a lab, with resources from a default
+cap and an open pool, and IT granting more to some labs. Everything is
+off until the directory's administrators and the cluster's operator turn
+it on; each side has its own settings.
+
+**The directory's settings** (`Directory.settings`, set by its
+administrators: `UpdateDirectorySettings`, `PATCH /directory/settings`,
+action `updateDirectorySettings` in `directory.tenants`; audited):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `self_service.enabled` | `false` | Users may create tenants (D78). Turning it off stops new ones; existing tenants stay. |
+| `self_service.creators` | `all` | `all`: every user of the directory. Or a list of the directory's teams (ids or names), for example a team synced from a Google group (D44): only their members. |
+| `self_service.max_per_user` | `3` | Tenants one user may have created and not deleted, pending ones included. `0` to `100`. |
+| `self_service.max_total` | none | Self-service tenants in the directory, in all. |
+| `self_service.approval` | `none` | `none`: the tenant is active at once. `required`: it is created **pending** until a directory administrator approves it (`approveTenant`, D78). |
+| `self_service.slug_prefix` | `""` | Prepended to the slug a user picks (`lab-`), so self-service tenants are told apart and can't take names IT keeps. |
+| `self_service.admins_may_delete` | `true` | The tenant's admins may delete it themselves once it holds nothing (`deleteOwnTenant`). Off: only directory administrators delete. |
+| `tenant_label` | `{"singular": "Tenant", "plural": "Tenants"}` | What the web UI calls a tenant for this directory's users (D81), such as `Lab`/`Labs`. 1–24 characters each. |
+
+**The cluster's settings**, per directory the cluster hosts
+(`AutoAdmission`, replicated; `PUT/GET/DELETE /admissions/auto/{directory}`,
+action `updateAutoAdmission` in `cluster.admissions`; step-up, audited):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `mode` | `off` | `off`: new tenants wait for the operator, as today. `self_service`: a self-service tenant is admitted when it becomes active. `all`: every new user tenant of the directory is. |
+| `cap` | required unless `off` | The **default cap** of those admissions (`Quotas`, `devices.<pool>` included). |
+| `follow_default` | `true` | An admission made this way follows later changes to `cap`, until the operator sets that tenant's cap by hand (D79). |
+| `labels` | `[]` | `operator_labels` put on those admissions (D35). |
+
+And in `control-plane.json`, with the other grants: a `pci.allow`
+entry with `"tenants": "*"` grants a pool to every tenant admitted on
+the cluster, an **open pool** (D80). `quotas.default` stays what each
+new project gets, inside its tenant's cap.
+
+**Creating one.** `CreateTenant` (`POST /tenants`, `gxctl tenant
+create`) as today. A caller who passes `createTenant` (a directory
+administrator) creates any tenant, as today. Anyone else goes through
+`createOwnTenant` on the `Directory`, in the `shared` marker group,
+which only `base.self-service-tenant` permits:
+
+```cedar
+@id("base.self-service-tenant")
+permit (principal, action == Glidex::Action::"createOwnTenant", resource)
+when {
+  resource.self_service &&
+  principal is Glidex::User && principal.directory == resource &&
+  (resource.self_service_all || principal in resource.self_service_teams)
+};
+```
+
+Site policies can narrow it (`forbid` for a team, an hour, a label);
+they can't open it to anyone the base policy leaves out. In code, the
+request then:
+
+1. takes only `slug` and `display_name`: never `operator`, owner or
+   domains (`422` otherwise); the slug gets `slug_prefix`;
+2. checks the limits (`409 tenant_limit` with `limit: per_user` or
+   `total`), counting tenants with `created_by` the caller;
+3. creates the tenant with `self_service: true`, `created_by`, and
+   `pending` under `approval: required`, and links the caller as its
+   `tenant-admin`, in one write;
+4. when active, admits it on the cluster by `AutoAdmission` (D79).
+
+Only users who signed in through one of the directory's connectors
+create tenants: not service accounts, federated workloads, API tokens
+of another tenant, or break-glass (`base.break-glass` passes it, but
+there is no user to count).
+
+**Pending tenants.** A pending tenant is listed to its creator and to
+the directory's administrators (Tenants, *Pending*); its members can't
+create projects (`403 tenant_pending`). `approveTenant` (`POST
+/tenants/{id}/approve`, `directory.tenants`) makes it active and
+triggers automatic admission; deleting it is refusing it.
+
+**Afterwards.** A self-service tenant is a tenant: its admins manage
+members, teams, projects and quotas, tenant pools and federations (D14),
+and the directory's administrators can do what they can for any tenant
+(suspend, delete, delegate, D15). The operator can change its cap,
+suspend or end its admission. The Tenants page marks self-service
+tenants, their creator, and those left with no `tenant-admin` (the
+creator disabled or removed, D20), so an administrator can add one.
+Deleting a tenant still needs it empty on every cluster (`409
+tenant_in_use`); it frees its creator's slot.
+
+**Display label (D81).** `tenant_label` is read with the directory's
+public settings (`GET /auth/me` and `discover`), and the web UI uses it
+wherever it names a tenant to a user: the header's picker, *Create
+Lab*, *Lab members*, the Tenants page's title. The API, gxctl, audit,
+errors and the docs keep saying *tenant*.
+
+**What a user sees.** `GET /auth/me` gains `self_service: {allowed,
+remaining, approval}`, so the UI shows **Create &lt;label&gt;** only to
+those who may, and says how many they have left.
+
+**Settled** (2026-11-02): approval defaults to `none`; the per-user
+limit counts tenants by creator; a tenant's admins may delete it once
+empty (`admins_may_delete`, on by default); admissions follow the
+default cap until set by hand; gxctl keeps saying *tenant*.
+
 ## 12. Trust between directories and clusters
 
 Trust is always pairwise: a cluster holds a pin for each directory it
@@ -1142,6 +1250,8 @@ with one directory); cluster operations on the cluster.
 | `exchangeToken` | directory | `POST /auth/exchange` | `LoginService.ExchangeToken` | workload token |
 | `createDirectory`, `listDirectories` | host | `POST/GET /directories` | `DirectoryService.Create`, `List` | the host cluster's `system-admin` |
 | `listTenants` … `deleteTenant` | directory | `/tenants…` | `TenantService.…` | `directory.read` / `directory.tenants`; own tenant |
+| `createOwnTenant`, `deleteOwnTenant`, `approveTenant` (§11.1) | directory | `POST /tenants` (as above), `DELETE /tenants/{id}`, `POST /tenants/{id}/approve` | `TenantService.Create`, `Delete`, `Approve` | `base.self-service-tenant`; the tenant's `tenant-admin`; `directory.tenants` |
+| `updateDirectorySettings` (§11.1) | directory | `GET/PATCH /directory/settings` | `DirectoryService.GetSettings`, `UpdateSettings` | `directory.tenants`; the label and `self_service.enabled`: any user of the directory |
 | `optIn` (an offer token, or a fleet cluster), `optOut`, `listClusters` | directory | `POST /tenants/{id}/clusters` (`{offer}` or `{fleet, cluster}`), `DELETE …/{cluster}`, `GET …` | `TenantService.OptIn`, `OptOut`, `ListClusters` | `tenant.clusters` |
 | `createInvitation`, `listInvitations`, `revokeInvitation` | directory | `POST/GET /tenants/{id}/invitations`, `DELETE /invitations/{id}` | `InvitationService.Create`, `List`, `Revoke` | `tenant.members`; `directory.tenants` |
 | `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | directory | `/tenants/{id}/bindings` | `TenantService.…Binding` | `tenant.members` |
@@ -1150,6 +1260,7 @@ with one directory); cluster operations on the cluster.
 | SCIM 2.0 | directory | `/scim/v2/c/{id}/…` | — (RFC 7644) | SCIM token |
 | federations | directory | `/tenants/{id}/federations` | `FederationService.…` | `tenant.federations` |
 | `offerAdmission`, `listAdmissions`, `updateAdmission`, `removeAdmission` | cluster | `POST/GET /admissions`, `PATCH/DELETE /admissions/{tenant}` | `AdmissionService.…` | `cluster.admissions`; tenants see their own |
+| `updateAutoAdmission` (§11.1) | cluster | `GET/PUT/DELETE /admissions/auto/{directory}` | `AdmissionService.GetAuto`, `SetAuto`, `RemoveAuto` | `cluster.admissions` (step-up) |
 | `listTrustedDirectories`, `updateTrustedDirectory`, `removeTrustedDirectory` | cluster | `/trust/directories…` | `TrustService.…` | `cluster.trust` |
 | resources (VMs, disks, networks, …) | cluster | unchanged paths | per 18-grpc.md §9 | unchanged + `useCluster` (§10.4) |
 | `createAccount`, `updateAccount`, `listAccounts` | fleet | `POST/PATCH/GET /fleet/v1/accounts` | `FleetService.…Account` | `fleet.registry` (own account: `tenant.read`) |
@@ -1168,7 +1279,8 @@ Errors: `409 managed_by_connector`, `409 tenant_in_use`, `403
 tenant_suspended`, `403 not_admitted`, `403 untrusted_directory`, `403
 tenant_quota_exceeded`, `422 invalid_connector`, `409 sync_blocked`,
 `503 directory_unavailable`, `401 directory_stale`, `421
-directory_is_elsewhere` (with the directory's URL).
+directory_is_elsewhere` (with the directory's URL), `409 tenant_limit`
+and `403 tenant_pending` (§11.1).
 
 ### 14.1 Service layer (both transports)
 
@@ -1201,11 +1313,15 @@ file-defined connectors of the host's first directory. New:
 - Login: "work email or organization", then the directory's connector
   buttons; a cluster's UI sends the browser to the right directory and
   back (§7.1). A user in several tenants picks one.
-- Directory owner: **Tenants** (domains, self tags, operator flag, suspend, fleet registrations),
+- Directory owner: **Tenants** (domains, self tags, operator flag, suspend, fleet registrations;
+  self-service tenants marked, *Pending* to approve),
   **Directory** (connectors with the per-preset wizard, users, teams,
-  site policies).
+  site policies, **Self-service** and the display label, §11.1).
+- Any user, where the directory allows it: **Create &lt;label&gt;**,
+  with how many they have left (§11.1). The UI names tenants with the
+  directory's label (D81).
 - Operator, per cluster: **Admissions** (offers, pending fleet opt-ins,
-  caps, labels), **Fleet** (membership, published terms, admission
+  caps, labels, **Automatic admission** per hosted directory), **Fleet** (membership, published terms, admission
   policies, move), **Trusted directories** (lag, `max_staleness`), site
   policies, plus today's cluster pages.
 - Fleet (at the fleet's directory): fleet admins get **Accounts**
@@ -1224,13 +1340,18 @@ file-defined connectors of the host's first directory. New:
 **CLI** ([01-cli.md](01-cli.md)):
 ```
 gxctl auth login --directory <url> [--tenant <slug>] [--connector <id>]
-gxctl tenant list|show|create|update|suspend|resume|delete|opt-in|opt-out
+gxctl tenant list|show|create|update|suspend|resume|delete|approve|opt-in|opt-out
 gxctl directory create|list|promote                     # on a host
+gxctl directory settings [--self-service on|off] [--creators all|<team>,…] [--max-per-user N]
+      [--max-total N|none] [--approval none|required] [--slug-prefix P]
+      [--admins-may-delete on|off] [--label <singular>/<plural>]
 gxctl connector list|show|add <kind>|update|secret set <field>|test|sync|remove
 gxctl connector scim-token create|list|revoke
 gxctl invite create <tenant> <email> --role R --connector C | list [<tenant>] | revoke <id>
 gxctl federation list|add|remove
 gxctl admission offer|list|update|remove                # on a cluster
+gxctl admission auto <directory> [--mode off|self_service|all] [--cap k=v,…]
+      [--follow-default on|off] [--label k=v]           # on a cluster
 gxctl trust list|update|remove                          # on a cluster
 gxctl fleet create|registry|approve|suspend|label        # fleet admins
 gxctl fleet account create|update|list|invite            # fleet admins; account admins: their own
@@ -1386,6 +1507,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: gpu-dev2 with prism1, and spark-1 made a cluster of its own. Can start once T1 has landed. |
 | **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
+| **T9** self-service tenants | §11.1, D78–D81: directory settings, `createOwnTenant`, limits, pending tenants and approval, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1593,6 +1715,41 @@ one PR each, in order):
    unverified or other address, another connector, a provisioned
    connector, a duplicate), UI e2e, docs.
 
+**T9 tasks** (self-service tenants, §11.1, D78–D81; one PR each, in
+order):
+
+1. **Settings and the label** (D81): `Directory.settings`
+   (`self_service`, `tenant_label`) with validation;
+   `UpdateDirectorySettings` (proto, REST, `updateDirectorySettings`);
+   the label in `GET /auth/me` and `discover`; the web UI using it
+   (header, Tenants, Members); the Directory page's **Self-service**
+   card; gxctl `directory settings`; tests, docs.
+2. **Creating one's own tenant** (D78): `Tenant.{self_service,
+   created_by, pending}`; schema (`createOwnTenant`, `deleteOwnTenant`,
+   `approveTenant`; `Directory.{self_service, self_service_all,
+   self_service_teams}`, `User.directory`) and `base.self-service-tenant`;
+   `CreateTenant` choosing the path; limits and slug prefix;
+   `tenant_pending`; `approveTenant`; `deleteOwnTenant`;
+   `auth/me.self_service`; the **Create &lt;label&gt;** form and the
+   Tenants page's *Pending* and self-service marks; tests (allowed,
+   off, not in a creator team, a token or service account refused, each
+   limit, `operator` refused, pending blocks projects, approve, delete
+   when empty and refused when not, a site `forbid` wins), UI e2e, docs.
+3. **Automatic admission** (D79): the `AutoAdmission` table and API,
+   `Admission.follows_default`; admitting on activation; a change of
+   `cap` applied to those that follow it; the Admissions page's
+   **Automatic admission** card; gxctl `admission auto`; tests (off,
+   `self_service`, `all`, a hand-set cap stops following, a trusted
+   directory's tenant not admitted), docs.
+4. **Open pools** (D80): `pci.allow` `"tenants": "*"` in config
+   loading, `pool_tenant_grants` and the Cedar `PciPool.tenant_grants`
+   (or an `open` flag); tests (a VM and a tenant pool from an open
+   pool; capped by `devices.<pool>`), docs; the note in
+   22-host-topology.md §9.1.
+5. **The real check** (spec/20-idp-checks.md): on the prism cluster,
+   with the Google connector: a user creates a lab, invites a member,
+   runs a VM from the open pool, and is refused past the limit.
+
 ## 19. Out of scope
 
 - A user who is a member of tenants in two directories (D3): two users.
@@ -1604,7 +1761,8 @@ one PR each, in order):
 - SCIM outbound.
 - SAML (D30).
 - Tenant or directory self-service signup (D31), including public
-  signup with Google accounts (§20).
+  signup with Google accounts (§20). A directory's own users creating
+  tenants is D78.
 
 ## 20. Later designs
 
@@ -1623,9 +1781,10 @@ one PR each, in order):
   account's clusters and tenants (13-metering.md) gathered at the fleet,
   priced and invoiced per account.
 - **Public signup**: anyone with a Google (or other social) account
-  signs in and gets a tenant of their own. It needs tenant creation per
-  user, default caps and admission on clusters, abuse controls and
-  account deletion, and would revisit D31 and D39.
+  signs in and gets a tenant of their own. Tenant creation per user,
+  default caps and admission are D78–D79, for a directory's own users;
+  signup would still need abuse controls and account deletion, and
+  would revisit D31 and D39.
 - **A tenant's view across clusters**: resources, usage and audit from
   every cluster in one place, assembled by the UI and gxctl from each
   cluster's API at first, perhaps kept at the directory later.
@@ -1635,7 +1794,8 @@ one PR each, in order):
 1. **SAML:** not supported (D30).
 2. **Default tenant on upgrade:** existing projects go to `default`
    (D32, §16).
-3. **Tenant creation:** by the directory's owner (D31).
+3. **Tenant creation:** by the directory's owner (D31), or by its
+   users where it allows them (D78).
 4. **DPUs and accelerators:** later (§20).
 5. **Organizations and identity:** each tenant is in one directory,
    connected to its own IdP; tenants share logins only by sharing a
@@ -1662,7 +1822,7 @@ one PR each, in order):
 ## 23. Implementation status
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
-check with two organizations); T2b, T4b, T6b and T7 are not started.
+check with two organizations); T2b, T4b, T6b, T7 and T9 are not started.
 T8 (D75–D77) is implemented.
 What follows is per milestone.
 
