@@ -227,7 +227,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `token revoke <id>` | Revoke a token |
 | `user list`, `users` | Users and their identities; a pre-added user shows *not signed in yet*. Deleting a user is in the web UI or the API only |
 | `user add <email> --tenant T --connector C [--role R] [--name N]` | Add someone by email before they sign in: their first sign-in through `C` with that verified address takes the account (role `member` by default) |
-| `user link <user> <provider> <subject> [--all-nodes]` | Link a sign-in to a user. `<provider>` is `pam`, `unix` or `oidc:<issuer>`; a `pam` or `unix` subject is `<account>@<node>` (node by name or id), or `<account>` with `--all-nodes` for one link per node |
+| `user link <user> <provider> <subject> [--all-nodes]` | Link a sign-in to a user. `<provider>` is `pam`, `unix` or `oidc:<issuer>`; in a cluster a `pam` or `unix` subject is `<account>@<node>` (node by name or id), or `<account>` with `--all-nodes` for one link per node; on a standalone host, or with `cluster.shared_local_accounts`, it is `<account>` alone |
 | `user unlink <user> <provider>:<subject>` | Remove a linked sign-in, such as `pam:alice@<node id>` |
 | `team list \| create <name> \| delete <team>` | Teams |
 | `team add-member <team> <user-id>`, `remove-member <team> <user-id>` | Team membership |

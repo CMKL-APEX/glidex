@@ -873,10 +873,13 @@ async fn resolve_user(svc: &UserServiceClient<RpcTransport>, key: &str) -> Resul
     }
 }
 
-/// The subjects to link. `pam` and `unix` sign-ins are an account on one
-/// node, `<account>@<node id>`: `<account>@<node>` takes a node's name or
-/// id, and `--all-nodes` a bare account on every node (`nodes`: id and
-/// name). Other providers (`oidc:<issuer>`) take the subject as it is.
+/// The subjects to link. In a cluster, `pam` and `unix` sign-ins are an
+/// account on one node, `<account>@<node id>`: `<account>@<node>` takes a
+/// node's name or id, and `--all-nodes` a bare account on every node
+/// (`nodes`: id and name). On a standalone host, or where the cluster
+/// shares local accounts, the subject is the bare account; the server
+/// refuses a shape that would never sign anyone in. Other providers
+/// (`oidc:<issuer>`) take the subject as it is.
 fn link_subjects(
     provider: &str,
     subject: &str,
@@ -894,9 +897,13 @@ fn link_subjects(
         }
         return Ok(vec![subject.to_string()]);
     }
+    let standalone = nodes.iter().all(|(id, _)| id == "local");
     if all_nodes {
         if subject.contains('@') {
             return Err("with --all-nodes, give the account alone".into());
+        }
+        if standalone {
+            return Ok(vec![subject.to_string()]);
         }
         return Ok(nodes
             .iter()
@@ -904,10 +911,11 @@ fn link_subjects(
             .collect());
     }
     let Some((account, node)) = subject.rsplit_once('@') else {
-        return Err(format!(
-            "a {provider} sign-in is <account>@<node>, or <account> with --all-nodes"
-        ));
+        return Ok(vec![subject.to_string()]);
     };
+    if standalone {
+        return Err("on a standalone host a local sign-in is the account alone".into());
+    }
     let id = nodes
         .iter()
         .find(|(id, name)| id == node || name == node)
@@ -1481,7 +1489,11 @@ mod tests {
             link_subjects("pam", "alice", true, &nodes).unwrap(),
             ["alice@n1", "alice@n2"]
         );
-        assert!(link_subjects("pam", "alice", false, &nodes).is_err());
+        // The server decides whether this cluster shares local accounts.
+        assert_eq!(
+            link_subjects("pam", "alice", false, &nodes).unwrap(),
+            ["alice"]
+        );
         assert!(link_subjects("pam", "alice@prism9", false, &nodes).is_err());
         assert!(link_subjects("pam", "alice@prism1", true, &nodes).is_err());
         assert_eq!(
@@ -1490,6 +1502,15 @@ mod tests {
         );
         assert!(link_subjects("oidc:https://idp.example", "sub-1", true, &[]).is_err());
         assert!(link_subjects("ldap", "x", false, &[]).is_err());
+        // A standalone host: the bare account, whichever way it is asked.
+        let local = [("local".to_string(), "host".to_string())];
+        for all in [false, true] {
+            assert_eq!(
+                link_subjects("pam", "alice", all, &local).unwrap(),
+                ["alice"]
+            );
+        }
+        assert!(link_subjects("pam", "alice@host", false, &local).is_err());
     }
 
     #[test]

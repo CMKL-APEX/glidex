@@ -829,11 +829,8 @@ A user who has lost every way in (both their passkeys, say) can't add a
 new one, and nobody else can add one for them. An administrator gives
 them a way back in by linking another sign-in method to their user,
 such as their local account (needs `directory-admin`); they then sign in
-with it and add a new passkey. In a cluster, use `gxctl user link` (see
-[Linking a sign-in to a user](#linking-a-sign-in-to-a-user)). On a
-standalone host the account has no node in its name, which `gxctl user
-link` can't give yet; use the API:
-`POST /users/{id}/identities` with `{"provider": "pam", "subject": "alice"}`.
+with it and add a new passkey, with `gxctl user link` (see
+[Linking a sign-in to a user](#linking-a-sign-in-to-a-user)).
 The providers are `pam`, `unix` and `oidc:<issuer>`; a connector's
 sign-in can't be linked this way.
 
@@ -1039,6 +1036,10 @@ gxctl user link alice unix alice --all-nodes   # the same for gxctl on the socke
 gxctl user link alice pam alice@node2          # one node, by name or id
 gxctl user unlink alice pam:alice@<node id>
 ```
+
+On a standalone host, or with `cluster.shared_local_accounts`, give the
+account alone: `gxctl user link alice pam alice`. A subject of the
+other shape is refused (`400`), since no sign-in would ever match it.
 
 The user is an id, or a name exactly one user has. A sign-in already
 linked to another user is refused: remove that user, or unlink it there,

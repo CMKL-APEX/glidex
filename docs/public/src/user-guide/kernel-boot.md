@@ -414,10 +414,10 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
   -d '{"change": {"kernel": "ubuntu-26.04-kernel"}, "update_mask": "kernel"}'
 ```
 
-A change of `kernel` or `kernel_from_disk` on a running VM doesn't set
-`restart_required`, and the web UI doesn't say *Configuration changes
-take effect at the next start* for it: the VM boots the new kernel the
-next time you stop and start it. A `kernel_args` change does set it.
+A change of `kernel`, `kernel_from_disk` or `kernel_args` on a running
+VM sets `restart_required`, and the web UI says *Configuration changes
+take effect at the next start*: the VM boots the new kernel the next
+time you stop and start it.
 
 The new kernel must be a ready kernel image of the same architecture.
 A firmware VM can't change to a kernel (`400 invalid_config`), and

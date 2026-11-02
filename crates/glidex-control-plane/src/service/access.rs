@@ -982,6 +982,24 @@ pub fn link_identity(
             "identities are pam:, unix: or oidc:<issuer> with a subject",
         ));
     }
+    // A local login is looked up as `local_subject` makes it: a subject
+    // of another shape would never sign anyone in (D13).
+    if matches!(req.provider.as_str(), "pam" | "unix") {
+        let per_node = crate::authz::local_accounts_per_node();
+        match (req.subject.contains('@'), per_node) {
+            (false, true) => {
+                return Err(bad(
+                    "in this cluster a local sign-in is per node: <account>@<node id>",
+                ));
+            }
+            (true, false) => {
+                return Err(bad(
+                    "local sign-ins aren't per node here: give the account alone",
+                ));
+            }
+            _ => {}
+        }
+    }
     if s.identity(&req.provider, &req.subject)
         .map_err(store_err)?
         .is_some()

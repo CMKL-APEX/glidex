@@ -261,6 +261,14 @@ async fn projects_users_teams_and_tokens_over_rest() {
         .cloned()
         .unwrap();
     assert_eq!(listed["identities"][0]["provider"], "pam");
+    // Standalone, a local sign-in is the account alone: one named for a
+    // node would never sign anyone in.
+    let link = |subject: &str| json!({"provider": "pam", "subject": subject});
+    let path = format!("/users/{bob}/identities");
+    let (st, v) = h.rest("POST", &path, Some(link("robert@n1")), &t).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    let (st, v) = h.rest("POST", &path, Some(link("robert")), &t).await;
+    assert!(st.is_success(), "{st} {v}");
     let (st, v) = h
         .rest("POST", "/teams", Some(json!({"name": "ops"})), &t)
         .await;

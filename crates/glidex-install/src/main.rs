@@ -13,6 +13,8 @@ mod sysconfig;
 mod tailscale;
 mod uninstall;
 
+/// Cloud Hypervisor release, verified against `cloud_hypervisor_asset`
+/// (the digests GitHub lists for the release's assets). Bump together.
 const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// Release tag of <https://github.com/cloud-hypervisor/edk2/releases> to fetch
 /// the UEFI firmware from. Bump together with the digests in
@@ -1202,7 +1204,7 @@ fn print_plan(opts: &Options) {
         RUSTUP_VERSION, BUN_VERSION
     );
     println!(
-        "  - Cloud-Hypervisor {} and its UEFI firmware ({})",
+        "  - Cloud-Hypervisor {} and its UEFI firmware ({}) (checksums verified)",
         CLOUD_HYPERVISOR_VERSION, EDK2_FIRMWARE_VERSION
     );
     println!(
@@ -1930,6 +1932,20 @@ fn rustup_url(platform: &Platform) -> String {
 }
 
 /// Bun's release zip name (without `.zip`) and its sha256 for `BUN_VERSION`.
+fn cloud_hypervisor_asset(platform: &Platform) -> (&'static str, &'static str) {
+    if platform.arch == "x86_64" {
+        (
+            "cloud-hypervisor-static",
+            "448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc",
+        )
+    } else {
+        (
+            "cloud-hypervisor-static-aarch64",
+            "f192b510eea1c710cbc439d716bb0573c223fc463dbe3e6523788a2b7ef62850",
+        )
+    }
+}
+
 fn bun_asset(platform: &Platform) -> (&'static str, &'static str) {
     if platform.arch == "x86_64" {
         (
@@ -2144,11 +2160,7 @@ fn install_cloud_hypervisor(platform: &Platform) -> Result<()> {
         return Ok(());
     }
 
-    let binary_name = if platform.arch == "x86_64" {
-        "cloud-hypervisor-static"
-    } else {
-        "cloud-hypervisor-static-aarch64"
-    };
+    let (binary_name, sha256) = cloud_hypervisor_asset(platform);
     let url = format!(
         "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/{}/{}",
         CLOUD_HYPERVISOR_VERSION, binary_name
@@ -2156,7 +2168,7 @@ fn install_cloud_hypervisor(platform: &Platform) -> Result<()> {
     let tmp = TempDir::new()?;
     let download_path = tmp.path().join("cloud-hypervisor");
     println!("Downloading {}", url);
-    download(&url, &download_path)?;
+    download_verified(&url, &download_path, sha256)?;
     install_if_changed(&download_path, &target, "0755")?;
     println!(
         "{} {} → {}",
