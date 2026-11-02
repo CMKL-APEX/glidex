@@ -1118,6 +1118,8 @@ export interface WhoAmI {
   /** What the caller's directory calls a tenant (spec/19-tenancy.md D81). */
   tenant_label?: string;
   tenant_label_plural?: string;
+  /** Whether the caller may create a tenant of their own now (D78). */
+  self_service?: { allowed?: boolean; remaining?: number; approval_required?: boolean; slug_prefix?: string };
 }
 
 export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";
@@ -1949,6 +1951,14 @@ export interface Tenant {
   admission?: Admission;
   /** The tenant operating this cluster: never suspended or unadmitted here. */
   operates_here?: boolean;
+  /** Created by one of the directory's users for themselves (spec/19-tenancy.md D78). */
+  self_service?: boolean;
+  created_by?: string;
+  created_by_name?: string;
+  /** Waits for a directory administrator's approval. */
+  pending?: boolean;
+  /** A self-service tenant nobody administers any more. */
+  no_admin?: boolean;
 }
 
 /** An explicit member of a tenant: a user or a team. */

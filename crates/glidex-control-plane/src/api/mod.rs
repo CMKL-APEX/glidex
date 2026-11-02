@@ -1167,6 +1167,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(tenants::resume),
     )
     .add(
+        "POST",
+        "/tenants/{id}/approve",
+        "approveTenant",
+        post(tenants::approve),
+    )
+    .add(
         "GET",
         "/tenants/{id}/members",
         "readTenantMembers",

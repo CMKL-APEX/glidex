@@ -156,9 +156,31 @@ fn admission_pb(call: &Call, a: &tenants::Admission) -> pb::Admission {
     }
 }
 
+/// Whether anyone holds `role.tenant-admin` on tenant `id`.
+fn has_admin(call: &Call, id: &str) -> ServiceResult<bool> {
+    let mine = Ent::Tenant(id.to_string());
+    Ok(call
+        .auth()
+        .store
+        .links()
+        .map_err(|e| auth_error(e.into()))?
+        .iter()
+        .any(|l| l.link.resource == mine && l.link.template == "role.tenant-admin"))
+}
+
 fn tenant_pb(call: &Call, t: &tenants::Tenant) -> ServiceResult<pb::Tenant> {
     let admission = call.auth().tenants.admission(&t.id).map_err(tenant_error)?;
+    let creator = match &t.created_by {
+        Some(u) => principal_name(call, &Ent::User(u.clone()))?.unwrap_or_default(),
+        None => String::new(),
+    };
+    let no_admin = t.self_service && !has_admin(call, &t.id)?;
     Ok(pb::Tenant {
+        self_service: t.self_service.then_some(true),
+        created_by: t.created_by.clone().unwrap_or_default(),
+        created_by_name: creator,
+        pending: t.pending.then_some(true),
+        no_admin: no_admin.then_some(true),
         id: t.id.clone(),
         directory_id: t.directory_id.clone(),
         slug: t.slug.clone(),
@@ -268,6 +290,10 @@ pub fn create_tenant(
     call: &Call,
     req: pb::CreateTenantRequest,
 ) -> ServiceResult<pb::CreateTenantResponse> {
+    // Anyone but a directory administrator creates one of their own (D78).
+    if !call.allowed("createTenant", call.directory_ent(), EntitySet::new()) {
+        return create_own_tenant(call, req);
+    }
     call.require(call.directory_ent(), EntitySet::new())?;
     let t = call
         .auth()
@@ -307,6 +333,115 @@ pub fn create_tenant(
     Ok(pb::CreateTenantResponse {
         tenant: tenant_pb(call, &t)?.into(),
         invitation_link: link,
+        ..Default::default()
+    })
+}
+
+/// A user's tenant of their own (spec/19-tenancy.md §11.1, D78): where
+/// `base.self-service-tenant` lets them, within the directory's limits, a
+/// user tenant with them as its `tenant-admin`.
+fn create_own_tenant(
+    call: &Call,
+    req: pb::CreateTenantRequest,
+) -> ServiceResult<pb::CreateTenantResponse> {
+    call.require_action(
+        "createOwnTenant",
+        call.directory_ent(),
+        EntitySet::new(),
+        &[],
+    )?;
+    let Some(user) = call.p.user.as_ref() else {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "a service account can't create tenants",
+        ));
+    };
+    // A token narrowed to some roles stays within them: it wouldn't even
+    // carry the new tenant's admin role.
+    if call.p.token_narrowed {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "a token narrowed to some roles can't create tenants",
+        ));
+    }
+    if req.operator == Some(true) || req.first_admin.as_option().is_some() {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "a tenant of your own takes a slug and a display name only",
+        ));
+    }
+    let dir = call.p.directory_id();
+    let store = &call.auth().tenants;
+    let ss = store
+        .get_directory(dir)
+        .map_err(tenant_error)?
+        .map(|d| d.settings.self_service)
+        .unwrap_or_default();
+    let (mine, all) = store
+        .self_service_counts(dir, &user.id)
+        .map_err(tenant_error)?;
+    if mine >= ss.max_per_user {
+        call.detail("limit", serde_json::json!("per_user"));
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "tenant_limit",
+            format!("you have created {mine} tenants, the most one user may (delete one first)"),
+        ));
+    }
+    if ss.max_total.is_some_and(|m| all >= m) {
+        call.detail("limit", serde_json::json!("total"));
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "tenant_limit",
+            "the directory has as many self-service tenants as it allows",
+        ));
+    }
+    let slug = if req.slug.starts_with(&ss.slug_prefix) {
+        req.slug.clone()
+    } else {
+        format!("{}{}", ss.slug_prefix, req.slug)
+    };
+    let t = store
+        .create_own(dir, &slug, req.display_name, &user.id, ss.approval_required)
+        .map_err(tenant_error)?;
+    call.set_target(format!("tenant:{}", t.id));
+    call.detail("slug", serde_json::json!(t.slug));
+    call.detail("self_service", serde_json::json!(true));
+    if let Err(e) = call.auth().add_link(
+        "role.tenant-admin",
+        Ent::User(user.id.clone()),
+        Ent::Tenant(t.id.clone()),
+        &user.id,
+    ) {
+        let _ = store.delete(&t.id);
+        return Err(auth_error(e).into());
+    }
+    Ok(pb::CreateTenantResponse {
+        tenant: tenant_pb(call, &t)?.into(),
+        ..Default::default()
+    })
+}
+
+/// A pending self-service tenant becomes usable (D78).
+pub fn approve_tenant(
+    call: &Call,
+    req: pb::ApproveTenantRequest,
+) -> ServiceResult<pb::ApproveTenantResponse> {
+    let mut t = visible(call, &req.id)?;
+    if !t.pending {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("tenant {} isn't waiting for approval", t.slug),
+        ));
+    }
+    t.pending = false;
+    call.auth().tenants.update(&t).map_err(tenant_error)?;
+    Ok(pb::ApproveTenantResponse {
+        tenant: tenant_pb(call, &t)?.into(),
         ..Default::default()
     })
 }
@@ -376,8 +511,36 @@ pub fn delete_tenant(
     call: &Call,
     req: pb::DeleteTenantRequest,
 ) -> ServiceResult<pb::DeleteTenantResponse> {
-    let t = visible(call, &req.id)?;
-    call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
+    let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "tenant not found");
+    let t = call
+        .auth()
+        .tenants
+        .resolve_in(call.p.directory_id(), &req.id)
+        .map_err(|_| not_found())?;
+    let me = Ent::Tenant(t.id.clone());
+    // A self-service tenant's own admins may, where the directory lets
+    // them (D78); everyone else needs deleteTenant.
+    if t.self_service && !call.allowed("deleteTenant", me.clone(), EntitySet::new()) {
+        call.set_target(format!("tenant:{}", t.id));
+        call.require_readable("readTenant", me.clone(), EntitySet::new(), "tenant")?;
+        call.require_action("deleteOwnTenant", me.clone(), EntitySet::new(), &[])?;
+        let may = call
+            .auth()
+            .tenants
+            .get_directory(&t.directory_id)
+            .map_err(tenant_error)?
+            .is_some_and(|d| d.settings.self_service.admins_may_delete);
+        if !may {
+            return Err(ServiceError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "this directory's administrators delete its tenants",
+            ));
+        }
+    } else {
+        let t = visible(call, &req.id)?;
+        call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
+    }
     let projects = call.manager().projects().list().map_err(|e| {
         ServiceError::new(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -90,6 +90,57 @@ fn current(call: &Call) -> ServiceResult<DirectorySettings> {
         .unwrap_or_default())
 }
 
+/// Whether `p` may create a tenant of their own now, and how many more
+/// (D78), for `WhoAmI`.
+pub fn self_service_of(
+    app: &crate::api::App,
+    p: &crate::auth::Principal,
+) -> glidex_api::proto::glidex::system::v1::SelfService {
+    use glidex_api::proto::glidex::system::v1::SelfService as Pb;
+    let Some(user) = p.user.as_ref().filter(|_| !p.token_narrowed) else {
+        return Pb::default();
+    };
+    let dir = p.directory_id();
+    let ss = app
+        .auth
+        .tenants
+        .get_directory(dir)
+        .ok()
+        .flatten()
+        .map(|d| d.settings.self_service)
+        .unwrap_or_default();
+    let permitted = ss.enabled
+        && app
+            .auth
+            .authorize(
+                p,
+                "createOwnTenant",
+                crate::authz::Ent::Directory(dir.into()),
+                EntitySet::new(),
+                &[],
+            )
+            .allowed;
+    if !permitted {
+        return Pb::default();
+    }
+    let (mine, all) = app
+        .auth
+        .tenants
+        .self_service_counts(dir, &user.id)
+        .unwrap_or((u32::MAX, u32::MAX));
+    let remaining = ss
+        .max_per_user
+        .saturating_sub(mine)
+        .min(ss.max_total.map_or(u32::MAX, |m| m.saturating_sub(all)));
+    Pb {
+        allowed: remaining > 0,
+        remaining: Some(remaining),
+        approval_required: ss.approval_required,
+        slug_prefix: ss.slug_prefix,
+        ..Default::default()
+    }
+}
+
 /// What the caller's directory calls a tenant (D81), for `WhoAmI`.
 pub fn tenant_label(app: &crate::api::App, directory: &str) -> TenantLabel {
     app.auth

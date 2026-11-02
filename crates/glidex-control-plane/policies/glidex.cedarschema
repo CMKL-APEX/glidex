@@ -19,7 +19,10 @@ namespace Glidex {
 
   // Directories hold tenants, users and teams (spec/19-tenancy.md D2); a user
   // or team is `in` each tenant it is a member of (D3).
-  entity Directory { owner: Tenant };
+  // self_service*: who may create tenants of their own (D78, §11.1).
+  entity Directory {
+    owner: Tenant, self_service: Bool, self_service_all: Bool, self_service_teams: Set<Team>,
+  };
   entity Tenant in [Directory] {
     directory: Directory, owns_directory: Bool, operator: Bool, suspended: Bool,
     clusters: Set<Cluster>,
@@ -148,6 +151,16 @@ namespace Glidex {
   action updateTenant, suspendTenant, resumeTenant in ["directory.tenants", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action deleteTenant in ["directory.tenants", "step-up", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // Self-service tenants (spec/19-tenancy.md §11.1, D78): a user creates one
+  // where the directory allows it (base.self-service-tenant only); its
+  // admins delete it once empty, where the directory allows that; a
+  // directory administrator approves a pending one.
+  action createOwnTenant in ["shared"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action deleteOwnTenant in ["tenant.projects", "step-up", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  action approveTenant in ["directory.tenants", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   // Directory admins see and bootstrap every tenant of their directory.
   action readTenant, readTenantMembers, readTenantBindings in ["tenant.read", "directory.read", "tenant-scoped"]

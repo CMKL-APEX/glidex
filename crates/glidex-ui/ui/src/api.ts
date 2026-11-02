@@ -1376,6 +1376,8 @@ export const updateTenant = (id: string, req: { display_name?: string; operator?
 export const suspendTenant = (id: string) => rpc(TenantService.method.suspendTenant, { id }).then((r) => r as { tenant: Tenant });
 export const resumeTenant = (id: string) => rpc(TenantService.method.resumeTenant, { id }).then((r) => r as { tenant: Tenant });
 export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenant, { id }).then(none);
+/** A pending self-service tenant becomes usable (spec/19-tenancy.md D78). */
+export const approveTenant = (id: string) => rpc(TenantService.method.approveTenant, { id }).then((r) => r.tenant as Tenant);
 
 // ---- invitations (spec/19-tenancy.md §6.1) -----------------------------------
 

@@ -79,10 +79,11 @@ export function useTenants(): Tenant[] {
 }
 
 /** Of `tenants`, those the caller may create projects in; `null` while
- *  checking. */
+ *  checking. A tenant waiting for approval takes none yet. */
 export function useProjectTenants(tenants: Tenant[]): Tenant[] | null {
-  const allowed = useCan(tenants.map((t) => ({ action: "createProject", resource: { type: "Tenant" as const, id: t.id } })));
-  return allowed && tenants.filter((_, i) => allowed[i]);
+  const usable = tenants.filter((t) => !t.pending);
+  const allowed = useCan(usable.map((t) => ({ action: "createProject", resource: { type: "Tenant" as const, id: t.id } })));
+  return allowed && usable.filter((_, i) => allowed[i]);
 }
 
 /** Groups `projects` by tenant, in tenant name order, for a select's

@@ -250,9 +250,10 @@ and [Access control](../operator-guide/access-control.md).
 | Command | Effect |
 |---|---|
 | `tenant list \| show <t>` | Tenants |
-| `tenant create <slug> [--name TEXT] [--operator]` | Create a tenant |
+| `tenant create <slug> [--name TEXT] [--operator]` | Create a tenant; a user who isn't a directory administrator creates one of their own, where the directory allows it (no `--operator`) |
 | `tenant rename <t> <name>` | Change its display name |
 | `tenant suspend <t>`, `resume <t>`, `delete <t>` | Suspend, resume or delete |
+| `tenant approve <t>` | Approve a pending self-service tenant |
 | `tenant members <t>`, `add-member <t> <principal>`, `remove-member <t> <principal>` | Explicit members (`user:<id>`, `team:<id>`) |
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
 | `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |

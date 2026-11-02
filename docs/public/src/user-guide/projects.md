@@ -228,3 +228,30 @@ for confirmation). Its service-account tokens are revoked with it.
 On an installation with several tenants (organisations), each project
 belongs to one tenant, shown in the **Tenant** column. See
 [Access control](../operator-guide/access-control.md).
+
+## A tenant of your own
+
+Where your directory allows it, you can create tenants yourself: for a
+lab, a course or a team. Your directory may call them something else
+(*Labs*, say); the web UI uses its word. On **Directory**, the
+**Tenants** tab shows **+ Create Tenant** when you may: give a slug and
+a name. Or:
+
+```bash
+gxctl tenant create ml-lab --name "Machine learning lab"
+```
+
+You become its `tenant-admin`: you add its members, give them roles and
+create its projects. The directory decides:
+
+- who may (everyone, or members of some teams);
+- how many you may have created (3 unless it says otherwise; deleting
+  one frees its place), and how many there may be in all;
+- whether a directory administrator approves each first. Until then it
+  is *pending approval* and holds no projects;
+- a prefix put before your slug (`lab-ml-lab`);
+- whether you may delete it yourself once it holds nothing (on its page,
+  or `gxctl tenant delete <t>`; it needs a recent login).
+
+A new tenant can hold projects, but its VMs need the cluster's operator
+to admit it first ([Clusters](../operator-guide/clusters.md)).

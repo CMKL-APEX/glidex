@@ -814,7 +814,7 @@ fn print_help() {
         "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>"
             .cyan()
     );
-    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|delete <t> | members|add-member|remove-member …".cyan());
+    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|approve|delete <t> | members|add-member|remove-member …".cyan());
     println!(
         "  {} - Tenants admitted on this cluster, and their caps",
         "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories".cyan()
@@ -1148,6 +1148,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "rename",
             "suspend",
             "resume",
+            "approve",
             "delete",
             "members",
             "add-member",

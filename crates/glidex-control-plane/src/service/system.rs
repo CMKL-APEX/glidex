@@ -153,6 +153,7 @@ pub fn whoami_of(app: &App, p: &crate::auth::Principal) -> ServiceResult<WhoAmIR
         csrf: p.csrf.clone(),
         tenant_label: label.singular,
         tenant_label_plural: label.plural,
+        self_service: crate::service::directory_settings::self_service_of(app, p).into(),
         ..Default::default()
     })
 }

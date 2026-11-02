@@ -47,6 +47,19 @@ when {
   resource.tenant_grants.contains(context.project.tenant)
 };
 
+// D78: a directory's users create tenants of their own where it allows
+// them (spec/19-tenancy.md §11.1): all of them, or members of its creator
+// teams; a personal token as its owner. Site policies can only narrow it.
+@id("base.self-service-tenant")
+permit (principal, action == Glidex::Action::"createOwnTenant", resource)
+when {
+  resource.self_service && (
+    (principal is Glidex::User &&
+      (resource.self_service_all || principal in resource.self_service_teams)) ||
+    (principal is Glidex::Token && principal has owner &&
+      (resource.self_service_all || principal.owner in resource.self_service_teams)))
+};
+
 // Which PCI devices a project may use without host.devices.
 @id("base.pci-grant")
 permit (principal, action == Glidex::Action::"usePciDevice", resource)

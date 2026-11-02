@@ -357,6 +357,16 @@ pub fn create_project(
         .resolve_in(call.p.directory_id(), key)
         .map_err(|_| not_found("tenant"))?;
     call.require(Ent::Tenant(tenant.id.clone()), EntitySet::new())?;
+    if tenant.pending {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "tenant_pending",
+            format!(
+                "tenant {} waits for a directory administrator's approval",
+                tenant.slug
+            ),
+        ));
+    }
     // Without explicit quotas a project gets the site default (§6.3).
     let quotas = match req.quotas.as_option() {
         Some(q) => project_quotas(q),

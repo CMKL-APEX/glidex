@@ -1257,3 +1257,191 @@ async fn a_tenant_admin_lists_the_tenants_projects() {
         .collect();
     assert_eq!(names, vec!["in-acme"], "{v}");
 }
+
+/// Self-service tenants (spec/19-tenancy.md §11.1, D78): off by default;
+/// then within the directory's limits, with the creator as `tenant-admin`;
+/// creator teams, approval, deleting one's own, and a site `forbid`.
+#[tokio::test]
+async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let alice = h.user("alice");
+    let a = h.session(&alice);
+    let create = |slug: &str| json!({ "slug": slug, "display_name": format!("Lab {slug}") });
+
+    // Off by default: only the directory's administrators create tenants.
+    let (s, _) = h.rest("POST", "/tenants", Some(create("one")), &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(v["self_service"]["allowed"], json!(null), "{v}");
+
+    let settings = |ss: Value| json!({ "settings": { "self_service": ss } });
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(settings(json!({
+                "enabled": true, "max_per_user": 2, "max_total": 3, "slug_prefix": "lab-"
+            }))),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = h
+        .rest("PUT", "/directory/settings", Some(settings(json!({}))), &a)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "only its administrators");
+
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(v["self_service"]["allowed"], true, "{v}");
+    assert_eq!(v["self_service"]["remaining"], 2);
+    assert_eq!(v["self_service"]["slug_prefix"], "lab-");
+
+    // A user tenant they administer, its slug prefixed.
+    let (s, v) = h.rest("POST", "/tenants", Some(create("one")), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let one = v["tenant"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["tenant"]["slug"], "lab-one");
+    assert_eq!(v["tenant"]["self_service"], true);
+    assert_eq!(v["tenant"]["created_by"], alice.as_str());
+    assert_eq!(v["tenant"]["operator"], false);
+    assert_eq!(v["tenant"]["pending"], json!(null));
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/projects",
+            Some(json!({ "name": "web", "tenant": "lab-one" })),
+            &a,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "its admin creates projects: {v}");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "ops", "operator": true })),
+            &a,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "never an operator: {v}");
+
+    // The per-user limit, then the directory's.
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(create("lab-two")), &a)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["tenant"]["slug"], "lab-two", "the prefix isn't doubled");
+    let two = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (s, v) = h.rest("POST", "/tenants", Some(create("three")), &a).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_limit"))
+    );
+    let (_, v) = h.rest("GET", "/auth/whoami", None, &a).await;
+    assert_eq!(
+        (
+            &v["self_service"]["allowed"],
+            &v["self_service"]["remaining"]
+        ),
+        (&json!(null), &json!(0)),
+        "{v}"
+    );
+    let bob = h.session(&h.user("bob"));
+    let (s, _) = h.rest("POST", "/tenants", Some(create("bob")), &bob).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let carol = h.session(&h.user("carol"));
+    let (s, v) = h
+        .rest("POST", "/tenants", Some(create("carol")), &carol)
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_limit")),
+        "three in all"
+    );
+
+    // Deleting one's own once empty frees a slot; with a project, no.
+    let (s, v) = h.rest("DELETE", &format!("/tenants/{one}"), None, &a).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("tenant_in_use"))
+    );
+    let (s, v) = h.rest("DELETE", &format!("/tenants/{two}"), None, &a).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, v) = h.rest("DELETE", "/tenants/lab-bob", None, &a).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "someone else's: {v}");
+
+    // Creator teams: only their members.
+    let (_, v) = h
+        .rest("POST", "/teams", Some(json!({ "name": "staff" })), &at)
+        .await;
+    let staff = v["team"]["id"].as_str().unwrap().to_string();
+    let dave = h.user("dave");
+    h.rest("PUT", &format!("/teams/{staff}/members/{dave}"), None, &at)
+        .await;
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/directory/settings",
+            Some(settings(json!({
+                "enabled": true, "creator_teams": ["staff"], "max_total": 10,
+                "approval_required": true, "admins_may_delete": false
+            }))),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["settings"]["self_service"]["creator_teams"],
+        json!([staff])
+    );
+    let (s, _) = h
+        .rest("POST", "/tenants", Some(create("carol")), &carol)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not in a creator team");
+
+    // Approval: pending until a directory administrator approves it.
+    let d = h.session(&dave);
+    let (s, v) = h.rest("POST", "/tenants", Some(create("dave")), &d).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["tenant"]["pending"], true);
+    let dl = v["tenant"]["id"].as_str().unwrap().to_string();
+    let project = json!({ "name": "web", "tenant": "dave" });
+    let (s, v) = h.rest("POST", "/projects", Some(project.clone()), &d).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("tenant_pending"))
+    );
+    let (s, _) = h
+        .rest("POST", &format!("/tenants/{dl}/approve"), None, &d)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not by its creator");
+    let (s, v) = h
+        .rest("POST", &format!("/tenants/{dl}/approve"), None, &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["tenant"]["pending"], json!(null));
+    let (s, v) = h.rest("POST", "/projects", Some(project), &d).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // admins_may_delete off: only the directory's administrators.
+    let (s, _) = h.rest("POST", "/tenants", Some(create("spare")), &d).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, v) = h.rest("DELETE", "/tenants/spare", None, &d).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+
+    // A site policy narrows who may.
+    let forbid = format!(
+        "@id(\"site.no-dave\")\nforbid (principal == Glidex::User::\"{dave}\", action == Glidex::Action::\"createOwnTenant\", resource);"
+    );
+    let (s, v) = h
+        .rest(
+            "PUT",
+            "/authz/policies/site.no-dave",
+            Some(json!({ "text": forbid, "version": 0 })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = h.rest("POST", "/tenants", Some(create("again")), &d).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
+}

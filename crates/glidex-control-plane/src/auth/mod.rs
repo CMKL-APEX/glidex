@@ -881,7 +881,13 @@ impl AuthService {
             } else {
                 ""
             });
-            es.directory(d, owner);
+            let self_service = snap
+                .directories
+                .iter()
+                .find(|x| &x.id == d)
+                .map(|x| x.settings.self_service.clone())
+                .unwrap_or_default();
+            es.directory_with(d, owner, &self_service);
         }
         for t in &wanted {
             match snap.tenant(t) {
