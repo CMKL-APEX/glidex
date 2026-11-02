@@ -450,7 +450,11 @@ whether a QEMU image has a variable store or is a single file.
 `pages/Networking.tsx` creates both kinds of network with one form.
 "Network for" picks a host network (with `createNetwork`) or one of the
 projects whose networks the caller manages (`createProjectNetwork`,
-checked per project). A project network offers NAT or isolated mode and
+checked per project). In a cluster, a host network that doesn't span the
+nodes has a **Node** (its `node`, clustering D23), by default the node
+serving the page; for a node other than the Raft leader the form hides
+the subnet and bridged mode, which the leader refuses for another node.
+A project network offers NAT or isolated mode and
 tap or vhost-user ports, without bridge or VLAN, and is created with
 `POST /projects/{id}/networks`. For host admins the network table has a
 Project column (`host` for host networks); without host rights it lists

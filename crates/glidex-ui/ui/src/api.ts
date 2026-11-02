@@ -936,7 +936,7 @@ export const networkEvents = (id: string) =>
 /** Which projects and tenants may use a host network (replaces the grants). */
 export const grantNetwork = (id: string, req: { grants?: string[]; tenants?: string[]; all_projects?: boolean }) =>
   rpc(NetworkService.method.grantNetwork, { ...req, id }).then((r) => r.network as Network);
-export const createProjectNetwork = (project: string, req: Omit<CreateNetworkRequest, "bridge" | "physnet" | "grants" | "tenants" | "all_projects">) =>
+export const createProjectNetwork = (project: string, req: Omit<CreateNetworkRequest, "bridge" | "physnet" | "node" | "grants" | "tenants" | "all_projects">) =>
   rpc(NetworkService.method.createProjectNetwork, { ...req, project }).then((r) => r.network as Network);
 export const listRouters = (project: string) =>
   rpc(RouterService.method.listRouters, { project }).then((r) => (r.routers ?? []) as Router[]);
