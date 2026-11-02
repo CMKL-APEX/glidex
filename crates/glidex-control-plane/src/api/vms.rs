@@ -743,6 +743,46 @@ pub async fn detach_disk(
     ))
 }
 
+pub async fn attach_network(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::AttachNetworkRequest = body_for(v, id)?;
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
+    Ok(reply(
+        svc::attach_network(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct NicQuery {
+    mac: Option<String>,
+}
+
+pub async fn detach_network(
+    c: Caller,
+    Path((id, network)): Path<(String, String)>,
+    Query(w): Query<WaitQuery>,
+    Query(nic): Query<NicQuery>,
+) -> Result<Response, ApiErr> {
+    let req = pb::DetachNetworkRequest {
+        id,
+        network,
+        mac: nic.mac,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::detach_network(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

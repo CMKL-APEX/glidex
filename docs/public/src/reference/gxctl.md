@@ -100,6 +100,8 @@ See [Logging in](../user-guide/logging-in.md).
 | `detach-device <vm> <path>` | Detach a PCI device |
 | `attach-disk <vm> <disk>` | Attach a data disk; on a running VM from its next start |
 | `detach-disk <vm> <disk>` | Detach a data disk, which is kept; on a running VM at its next start |
+| `attach-network <vm> <network> [--mac <mac>]` | Add a NIC on a network; on a running VM from its next start |
+| `detach-network <vm> <network> [--mac <mac>]` | Remove the VM's NIC on a network (the MAC picks one of several); on a running VM at its next start |
 | `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy`, `datastores` |
 
 `start`, `stop`, `pause` and `delete` wait for the controller and print

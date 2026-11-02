@@ -2083,6 +2083,7 @@ impl VmManager {
             .get(project)?
             .map(|p| p.tenant_id)
             .unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.to_string());
+        let mut seen = std::collections::HashSet::new();
         for att in networks {
             let found = match self.find_network(project, &att.network) {
                 Ok(n) => Some(n),
@@ -2110,6 +2111,9 @@ impl VmManager {
             }
             if let Some(mac) = &att.mac {
                 glidex_ovs::names::validate_mac(mac).map_err(|e| invalid(e.to_string()))?;
+                if !seen.insert(mac.to_ascii_lowercase()) {
+                    return Err(invalid(format!("two NICs have MAC {mac}")));
+                }
             }
             if let Some(q) = att.queue_pairs
                 && !(1..=8).contains(&q)
@@ -2415,11 +2419,7 @@ impl VmManager {
         vm.spec.stop_grace_secs = opts.stop_grace_secs.unwrap_or(0);
         // Stable MACs derived from the VM id, so they show up in the API
         // and survive restarts.
-        for (i, att) in vm.spec.config.networks.iter_mut().enumerate() {
-            if att.mac.is_none() {
-                att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
-            }
-        }
+        fill_macs(&vm.id, &mut vm.spec.config.networks);
 
         // Managed disks. Checked under the VM write lock, so no other VM
         // can claim the same disk in between.
@@ -3219,11 +3219,7 @@ impl VmManager {
             }
             if let Some(nets) = c.networks {
                 let mut nets = nets;
-                for (i, att) in nets.iter_mut().enumerate() {
-                    if att.mac.is_none() {
-                        att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
-                    }
-                }
+                fill_macs(&vm.id, &mut nets);
                 self.check_networks(&project, &mut nets)?;
                 vm.spec.config.networks = nets;
             }
@@ -3444,6 +3440,81 @@ impl VmManager {
         let patch = VmPatch {
             config: Some(ConfigPatch {
                 data_disks: Some(keys),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)
+            .await
+            .map(|(vm, _)| vm)
+    }
+
+    /// Add a NIC on one more network, after the others; on a running VM
+    /// it takes effect at the next launch (`RestartRequired`, §7.3).
+    pub async fn attach_network(
+        &self,
+        vm_id: &str,
+        att: NetworkAttachment,
+    ) -> Result<Vm, VmManagerError> {
+        let vm = self.get_vm(vm_id).await?;
+        let mut nets = vm.config().networks.clone();
+        nets.push(att);
+        self.set_networks(vm_id, nets).await
+    }
+
+    /// Remove the VM's NIC on `key` (an id or name), or with `mac` when it
+    /// has more than one there. The others keep their MACs.
+    pub async fn detach_network(
+        &self,
+        vm_id: &str,
+        key: &str,
+        mac: Option<&str>,
+    ) -> Result<Vm, VmManagerError> {
+        let vm = self.get_vm(vm_id).await?;
+        // A network deleted since still names its NICs by id.
+        let id = self
+            .find_network(&vm.project, key)
+            .map(|n| n.id)
+            .unwrap_or_else(|_| key.to_string());
+        let mut nets = vm.config().networks.clone();
+        let on: Vec<usize> = (0..nets.len())
+            .filter(|&i| {
+                nets[i].network == id
+                    && mac.is_none_or(|m| {
+                        nets[i]
+                            .mac
+                            .as_deref()
+                            .is_some_and(|x| x.eq_ignore_ascii_case(m))
+                    })
+            })
+            .collect();
+        let pos = match on[..] {
+            [i] => i,
+            [] => {
+                return Err(invalid(match mac {
+                    Some(m) => format!("the VM has no NIC with MAC {m} on network {key}"),
+                    None => format!("the VM has no NIC on network {key}"),
+                }));
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "the VM has {} NICs on network {key}: give the MAC of the one to remove",
+                    on.len()
+                )));
+            }
+        };
+        nets.remove(pos);
+        self.set_networks(vm_id, nets).await
+    }
+
+    async fn set_networks(
+        &self,
+        vm_id: &str,
+        networks: Vec<NetworkAttachment>,
+    ) -> Result<Vm, VmManagerError> {
+        let patch = VmPatch {
+            config: Some(ConfigPatch {
+                networks: Some(networks),
                 ..Default::default()
             }),
             ..Default::default()
@@ -5802,6 +5873,24 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
         }
     };
     r.map_err(VmManagerError::Network)
+}
+
+/// Give each NIC without a MAC the one derived from the VM id and the
+/// lowest NIC index whose MAC no other NIC has: after a detach, a new NIC
+/// mustn't take the MAC a kept one already has.
+fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment]) {
+    for i in 0..networks.len() {
+        if networks[i].mac.is_some() {
+            continue;
+        }
+        networks[i].mac = (0..glidex_ovs::names::MAX_NICS)
+            .filter_map(|n| glidex_ovs::names::mac_address(vm_id, n).ok())
+            .find(|m| {
+                !networks
+                    .iter()
+                    .any(|a| a.mac.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(m)))
+            });
+    }
 }
 
 #[cfg(test)]

@@ -1642,6 +1642,43 @@ pub async fn detach_disk(call: &Call, req: pb::DetachDiskRequest) -> ServiceResu
     respond(call, vm, req.wait_secs, Vec::new()).await
 }
 
+pub async fn attach_network(call: &Call, req: pb::AttachNetworkRequest) -> ServiceResult<VmReply> {
+    let (vm, _, _) = visible_vm(call, &req.id).await?;
+    let n = call
+        .manager()
+        .find_network(&vm.project, &req.network)
+        .map_err(manager_err)?;
+    let mut es = project_entities(&vm.project);
+    let e = crate::api::add_network(&mut es, &n);
+    call.require_action(
+        "useNetwork",
+        e,
+        es,
+        &[("project", Ent::Project(vm.project.clone()))],
+    )?;
+    let att = m::NetworkAttachment {
+        network: n.id,
+        mac: req.mac,
+        queue_pairs: req.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+    };
+    let vm = call
+        .manager()
+        .attach_network(&req.id, att)
+        .await
+        .map_err(manager_err)?;
+    respond(call, vm, req.wait_secs, Vec::new()).await
+}
+
+pub async fn detach_network(call: &Call, req: pb::DetachNetworkRequest) -> ServiceResult<VmReply> {
+    visible_vm(call, &req.id).await?;
+    let vm = call
+        .manager()
+        .detach_network(&req.id, &req.network, req.mac.as_deref())
+        .await
+        .map_err(manager_err)?;
+    respond(call, vm, req.wait_secs, Vec::new()).await
+}
+
 // ---- the live console (the WebSocket and `Console`) ---------------------------
 
 /// Where a VM's console is: its shim's socket here, or its node.

@@ -6,7 +6,6 @@ import {
   describeExit,
   desiredState,
   generationBehind,
-  nicNetworkLabel,
   num,
   settled,
   nodeUnreachable,
@@ -30,6 +29,7 @@ import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
 import VmCpuScale from "../components/VmCpuScale";
 import VmMemory from "../components/VmMemory";
+import VmNetworks from "../components/VmNetworks";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -248,22 +248,7 @@ export default function VmDetail() {
                 </p>
                 <VmMemory vm={vm} onChanged={fetchVm} />
               </div>
-              {vm.nics && vm.nics.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Network</h3>
-                  <ul className="mt-1 space-y-1 text-sm">
-                    {vm.nics.map((nic, i) => (
-                      <li key={i} className="font-mono">
-                        <span className="text-gray-900" title={nic.network}>{nicNetworkLabel(nic)}</span>{" "}
-                        <span className="text-gray-500">{nic.mac}</span>{" "}
-                        <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>
-                          {nic.ipv4 ?? "no address"}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <VmNetworks vm={vm} onChanged={fetchVm} />
             </div>
             <div className="space-y-4">
               <div>

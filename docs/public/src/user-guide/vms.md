@@ -301,6 +301,30 @@ optional: by default each NIC gets a stable MAC derived from the VM's
 id. `queue_pairs` (1 to 8) is optional. The address each NIC got shows
 in the VM's details. See [Networks](networks.md).
 
+To add or remove a NIC later: under **Network** on the VM's page, pick
+a network and **Attach**, or **Detach** a NIC; or
+
+```
+gxctl> attach-network my-vm lab
+gxctl> detach-network my-vm lab
+```
+
+or with the API:
+
+```bash
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms/<id>/networks -d '{"network": "lab"}'
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
+  -X DELETE https://host.example.org:8841/vms/<id>/networks/lab
+```
+
+A new NIC goes after the others. The NICs you keep keep their MACs, and
+a new one gets a MAC no other NIC of the VM has. When the VM has more
+than one NIC on the network, say which to remove with its MAC
+(`--mac 02:…`, `?mac=02:…`). On a running VM the change applies at the
+next start (`gxctl` says so); inside the guest, NICs after a removed one
+move up by one, and may get new interface names.
+
 ### Data disks
 
 `data_disks` lists disks of the project (names or ids), attached in
@@ -567,8 +591,9 @@ boot disk, the firmware and host paths can't be changed.
 The web UI and `gxctl` have no edit form for most settings. Both change
 the vCPUs and the elastic range (**Scale CPU / Elasticity** on the VM's
 page, `gxctl scale`; see [Elastic CPU](#elastic-cpu)), the memory
-(**Change memory** on the VM's page, `gxctl memory my-vm 8G`) and data
-disks ([Data disks](#data-disks)), and `gxctl` changes PCI devices
+(**Change memory** on the VM's page, `gxctl memory my-vm 8G`), networks
+([Networks](#networks)) and data disks ([Data disks](#data-disks)), and
+`gxctl` changes PCI devices
 (`attach-device`, `detach-device`).
 
 A change to vCPUs, memory, kernel arguments, the credential, hugepages,

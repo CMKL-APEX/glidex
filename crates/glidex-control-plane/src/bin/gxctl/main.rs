@@ -628,6 +628,14 @@ fn print_help() {
         "detach-disk <name|id> <disk>".cyan()
     );
     println!(
+        "  {} - Give a VM a NIC on one more network; on a running VM from the next start",
+        "attach-network <name|id> <network> [--mac <mac>]".cyan()
+    );
+    println!(
+        "  {} - Remove a VM's NIC on a network; on a running VM at the next start",
+        "detach-network <name|id> <network> [--mac <mac>]".cyan()
+    );
+    println!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
@@ -1063,6 +1071,8 @@ const COMMANDS: &[&str] = &[
     "detach-device",
     "attach-disk",
     "detach-disk",
+    "attach-network",
+    "detach-network",
     "memory",
     "credentials",
     "creds",
@@ -1525,6 +1535,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "detach-device" => vm::device(client, false, &parts[1..]).await,
         "attach-disk" => vm::disk(client, true, &parts[1..]).await,
         "detach-disk" => vm::disk(client, false, &parts[1..]).await,
+        "attach-network" => vm::network(client, true, &parts[1..]).await,
+        "detach-network" => vm::network(client, false, &parts[1..]).await,
 
         "credentials" | "creds" => storage::credentials(client).await,
 

@@ -276,6 +276,8 @@ same ids and names.
 |  | `DetachDevice` | `DELETE /vms/{id}/devices` |
 |  | `AttachDisk` | `POST /vms/{id}/disks` |
 |  | `DetachDisk` | `DELETE /vms/{id}/disks/{disk}` |
+|  | `AttachNetwork` | `POST /vms/{id}/networks` |
+|  | `DetachNetwork` | `DELETE /vms/{id}/networks/{network}` |
 
 ### `glidex.storage.v1`
 
