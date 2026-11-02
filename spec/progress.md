@@ -20,6 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Tenancy and directories | [19-tenancy.md](19-tenancy.md) §11.1, T9 task 6 | `spec/tenancy-auto-tenant` → `feat/tenancy-auto-tenant` | A tenant at first sign-in: with `self_service.auto_create`, a user who is a member of no tenant gets one of their own when they first sign in (D82) |
+| Networking | [09-networking.md](09-networking.md) §8.6, M9 | `spec/networking-source-routes` | netd adds a table and a `from` rule per address on ports that share a subnet (issue #256, hyperstor's D216); open questions in §8.6.6 |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
@@ -33,7 +34,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211); the create form's GPUs section, with GPUs other VMs hold greyed (#210) | GV6's reboot test, docs (G15) and a pool's `bar_mib`; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C8; UI U0–U7 | C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
-| Networking | [09-networking.md](09-networking.md) | M1–M8 | M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
+| Networking | [09-networking.md](09-networking.md) | M1–M8 | M9 source routes for ports that share a subnet (§8.6, #256; open questions first); M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
 | Metering | [13-metering.md](13-metering.md) | M0–M4 (M4 not yet run on a host) | M4 host acceptance; §15.8 "After M4" | §15 Milestones |
 | Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4 | M4 on an installed KVM host | §18 Milestones |
 | Kernel boot | [23-kernel-boot.md](23-kernel-boot.md) | K0–K4; extraction on a node of the kernel's architecture (#153) | §13 changes to other specs | §12 Milestones |
