@@ -410,8 +410,20 @@ fn pool_grants<'a>(
         .filter(move |g| g.pool.as_deref() == Some(name))
 }
 
-/// Tenant ids granted cluster pool `name` (`pci.allow` with `tenants`).
+/// Tenant ids granted cluster pool `name` (`pci.allow` with `tenants`);
+/// for an open pool (`["*"]`, spec/19-tenancy.md D80) every tenant with an
+/// admission here, suspended or not.
 pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
+    if pool_grants(c, name).any(|g| g.tenants.iter().any(|t| t == "*")) {
+        return c
+            .auth()
+            .tenants
+            .admissions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.tenant_id)
+            .collect();
+    }
     pool_grants(c, name)
         .flat_map(|g| g.tenants.iter())
         .filter_map(|t| {

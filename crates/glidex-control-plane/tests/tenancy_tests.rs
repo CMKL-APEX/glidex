@@ -1613,3 +1613,108 @@ async fn new_tenants_are_admitted_with_the_default_cap() {
     let (_, v) = h.rest("GET", &format!("/tenants/{blab}"), None, &at).await;
     assert_eq!(admission(&v)["cap"]["vms"], 9);
 }
+
+/// An open pool (spec/19-tenancy.md D80): `"tenants": ["*"]` grants it to
+/// every tenant admitted here, for VMs and tenant pools; how much each
+/// takes is its cap's `devices.<pool>`.
+#[tokio::test]
+async fn an_open_pool_is_granted_to_every_admitted_tenant() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+        }];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec![],
+            tenants: vec!["*".into()],
+            node: None,
+        }];
+    });
+    let at = h.session(&h.admin("ada"));
+    let tom = h.user("tom");
+    let t = h.token(&tom);
+    let tenant = |slug: &'static str| {
+        let h = &h;
+        let at = at.clone();
+        let tom = tom.clone();
+        let t = t.clone();
+        async move {
+            let (_, v) = h
+                .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+                .await;
+            let id = v["tenant"]["id"].as_str().unwrap().to_string();
+            let admin =
+                json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": tom } });
+            h.rest("POST", &format!("/tenants/{id}/bindings"), Some(admin), &at)
+                .await;
+            let (s, v) = h
+                .rest(
+                    "POST",
+                    "/projects",
+                    Some(json!({ "name": format!("{slug}-p"), "tenant": id })),
+                    &t,
+                )
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            (id, v["project"]["id"].as_str().unwrap().to_string())
+        }
+    };
+    let (lab, lab_p) = tenant("lab").await;
+    let (other, other_p) = tenant("other").await;
+    let (s, _) = h
+        .rest(
+            "PUT",
+            "/admissions/lab",
+            Some(json!({ "cap": { "devices": { "a100": 1 } } })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The admitted tenant's projects may use it; the other's, not yet.
+    let pools = |p: String| {
+        let h = &h;
+        let t = t.clone();
+        async move {
+            let (_, v) = h
+                .rest("GET", &format!("/pci-pools?project={p}"), None, &t)
+                .await;
+            v["pools"]
+                .as_array()
+                .map(|a| a.iter().map(|p| p["name"].clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
+    };
+    assert_eq!(pools(lab_p.clone()).await, vec![json!("a100")]);
+    assert!(pools(other_p.clone()).await.is_empty());
+
+    // A tenant pool may draw from it.
+    let set = |id: &str, p: &str| {
+        (
+            format!("/tenants/{id}/device-pools"),
+            json!({ "pools": [{ "name": "team-gpus", "from": "a100", "max": 1, "projects": [p] }] }),
+        )
+    };
+    let (path, body) = set(&lab, &lab_p);
+    let (s, v) = h.rest("PUT", &path, Some(body), &t).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["pools"][0]["ungranted"], Value::Null, "{v}");
+    let (path, body) = set(&other, &other_p);
+    let (s, _) = h.rest("PUT", &path, Some(body), &t).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not admitted: not granted");
+
+    // Admitted, the other may too.
+    h.rest("PUT", "/admissions/other", Some(json!({})), &at)
+        .await;
+    assert_eq!(pools(other_p).await, vec![json!("a100")]);
+}

@@ -261,6 +261,20 @@ names) or tenants (ids or slugs), like device grants (see
 `net-admin` and `system-admin` may use any pool. In policies the
 permission is `usePciPool`.
 
+An **open pool** is granted to every tenant this cluster admits:
+`"tenants": ["*"]`, alone, on a pool entry:
+
+```json
+"allow": [ { "pool": "a100", "tenants": ["*"] } ]
+```
+
+A tenant gets it with its admission and loses it with its admission.
+How much each takes is its cap's `devices.a100` (`gxctl admission set
+<t> devices.a100=1`, or the default cap of [automatic
+admission](access-control.md#automatic-admission)); without a limit a
+tenant may take all of the pool. Its tenant admins can split their
+share into [tenant pools](#tenant-pools) as from any granted pool.
+
 ### How VMs get devices
 
 A VM asks with `devices`, for example `[{"pool": "a100", "count": 2,
