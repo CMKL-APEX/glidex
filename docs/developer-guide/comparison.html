@@ -1,0 +1,532 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Glidex compared - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/developer-guide/comparison.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="glidex-compared"><a class="header" href="#glidex-compared">Glidex compared</a></h1>
+<p>This page places Glidex next to other platforms that run virtual machines on
+your own hardware. It is for contributors: what Glidex does differently on
+purpose, and what it does not try to do.</p>
+<p>Facts about other products are as of <strong>October 2026</strong>, checked against
+their official documentation and project pages (see
+<a href="#references">References</a>). Products change quickly; check the linked pages
+before you rely on a detail. Facts about Glidex are from this repository at
+the same date. A dash (—) marks a cell this page does not claim.</p>
+<h2 id="positioning"><a class="header" href="#positioning">Positioning</a></h2>
+<p>Glidex is a KVM control plane written in Rust. It runs VMs on
+Cloud Hypervisor (the default) or QEMU, on one host or on a cluster of
+hosts that replicate their state with Raft embedded in the control-plane
+binary. One proto-defined service layer serves both a REST API and
+gRPC/gRPC-Web/Connect; a React web UI and the <code>gxctl</code> CLI use it.
+Networking is Open vSwitch on a host and OVN across a cluster.
+Authorization is Cedar policy over projects and tenants, with identities
+from local accounts, passkeys, OIDC providers, SCIM and directory sync.</p>
+<p>It sits between a single-host tool and a full private cloud (OpenStack,
+CloudStack). It aims at labs, teams and small clouds of up to about 50
+hosts, especially ones that hand out GPUs and other PCI devices. It is
+young (v0.0.x tags, first commit December 2025) and has fewer features
+than any mature product below.</p>
+<h2 id="comparison-matrix"><a class="header" href="#comparison-matrix">Comparison matrix</a></h2>
+<p>The Glidex column describes what is built today; planned work is in
+<a href="#non-goals-and-current-gaps">Non-goals and current gaps</a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Glidex</th><th>Proxmox VE</th><th>OpenStack</th><th>vSphere</th><th>Harvester / KubeVirt</th><th>Incus / LXD</th><th>OpenNebula</th><th>CloudStack</th></tr>
+</thead>
+<tbody>
+<tr><td>Control-plane model</td><td>One binary per host; 1, 3 or 5 <em>server</em> hosts run the API and Raft, <em>agent</em> hosts run VMs only</td><td>No central controller; every node runs the API and web UI</td><td>Many services (Nova, Neutron, Cinder, Keystone…) talking over a message queue, with a shared SQL database</td><td>vCenter Server appliance manages ESX hosts</td><td>Kubernetes controllers; VMs are custom resources run in <code>virt-launcher</code> pods</td><td>One daemon per host; clustered daemons share a replicated database</td><td>Front-end (<code>oned</code>) plus hypervisor hosts</td><td>Management server (Tomcat) plus hypervisor hosts</td></tr>
+<tr><td>Hypervisor</td><td>KVM via Cloud Hypervisor or QEMU</td><td>QEMU/KVM; LXC containers</td><td>KVM/QEMU mainly (libvirt); also LXC, vSphere, Ironic bare metal and others</td><td>ESX</td><td>KVM via libvirt/QEMU in pods</td><td>QEMU/KVM VMs; system and application containers</td><td>KVM, LXC</td><td>KVM, vSphere, XenServer/Xen, Hyper-V, LXC, bare metal</td></tr>
+<tr><td>State store and HA</td><td>Embedded Raft (openraft) over ReDB; no automatic VM failover</td><td>pmxcfs (database-driven file system) replicated by Corosync; HA manager with watchdog fencing restarts guests</td><td>SQL database (MySQL/MariaDB) and a message queue</td><td>vCenter with embedded PostgreSQL; vSphere HA and Fault Tolerance</td><td>Kubernetes API (etcd)</td><td>Incus: Cowsql replicated with Raft; LXD: Dqlite</td><td>Raft between an odd number of front-ends; one leader takes writes</td><td>MySQL; HA-enabled VMs restarted, possibly on another host</td></tr>
+<tr><td>Live migration</td><td>No (planned on shared datastores)</td><td>Yes (shared storage)</td><td>Yes</td><td>Yes (vMotion)</td><td>Yes</td><td>Yes (Incus, <code>migration.stateful</code>)</td><td>Yes (<code>onevm migrate --live</code>)</td><td>Yes</td></tr>
+<tr><td>Networking</td><td>OVS per host (NAT, isolated, bridged, VLAN); OVN across a cluster with an HA NAT edge and per-project routers</td><td>Linux/OVS bridges; SDN zones incl. VLAN, VXLAN, EVPN</td><td>Neutron ML2 with OVS or OVN drivers, among others</td><td>Standard and distributed switches</td><td>Kubernetes networking; VLAN networks in Harvester</td><td>Bridges; OVN networks across a cluster (Incus)</td><td>—</td><td>Basic (flat L2, L3 isolation) and Advanced (VLAN, SDN)</td></tr>
+<tr><td>Storage</td><td><code>dir</code> (node-local), <code>shared-dir</code> (NFS-like mount), node-local LVM-thin, hyperstor pools (shared block over vhost-user-blk); offline moves between them</td><td>Ceph RBD, ZFS, iSCSI, LVM, LVM-thin, NFS and more</td><td>Cinder with many back-end drivers</td><td>VMFS, NFS, vSAN, vVols</td><td>Longhorn distributed block storage (Harvester)</td><td>Incus: dir, Btrfs, LVM, ZFS, Ceph RBD/CephFS/Object, LINSTOR, TrueNAS</td><td>—</td><td>iSCSI, NFS, Ceph RBD, PowerFlex, ONTAP, local disk</td></tr>
+<tr><td>API style</td><td>REST + gRPC/Connect from one proto service layer</td><td>REST (JSON, JSON Schema)</td><td>REST per service</td><td>REST (vSphere Automation API)</td><td>Kubernetes API</td><td>REST</td><td>XML-RPC core, with bindings and REST APIs for some services</td><td>REST-like query API, EC2 compatibility layer</td></tr>
+<tr><td>Authorization</td><td>Cedar policies; project and host roles; audit log</td><td>Roles on paths (ACL model); pools</td><td>Keystone roles and policy</td><td>Global and inventory permissions</td><td>Rancher cluster and project roles (Harvester)</td><td>Incus: OpenFGA or restricted TLS certificates; projects</td><td>—</td><td>Roles, including dynamic custom roles</td></tr>
+<tr><td>Multi-tenancy</td><td>Tenants, projects, teams, quotas; per-project routers</td><td>Pools and permissions</td><td>Projects and domains</td><td>—</td><td>Rancher projects and namespaces (Harvester)</td><td>Projects</td><td>VDCs, groups</td><td>Domains, accounts, projects</td></tr>
+<tr><td>Identity integration</td><td>PAM, passkeys, OIDC presets (Google, JumpCloud), SCIM, Google Workspace pull sync, workload federation, identity tokens for VMs from a metadata endpoint</td><td>PAM, LDAP, Active Directory, OpenID Connect</td><td>LDAP backend; SAML2 and OpenID Connect federation</td><td>AD FS, Okta, Entra ID, PingFederate federation</td><td>—</td><td>Incus: TLS client certificates, OIDC</td><td>LDAP, SAML</td><td>LDAP/AD, SAML 2.0, OAuth2 (Google, GitHub)</td></tr>
+<tr><td>GPU / devices</td><td>VFIO passthrough with NUMA topology, device pools, GPU requests by count, hugepages, dedicated CPUs; no vGPU</td><td>PCIe passthrough, mediated devices (vGPU), SR-IOV</td><td>PCI passthrough, SR-IOV, vGPU</td><td>—</td><td>PCI passthrough; NVIDIA SR-IOV vGPU (Harvester); host devices and mediated devices (KubeVirt)</td><td>Incus VMs: physical, mdev, SR-IOV, native-context GPUs</td><td>PCI passthrough, SR-IOV, NVIDIA vGPU and MIG</td><td>GPU passthrough and vGPU on KVM</td></tr>
+<tr><td>Install / ops footprint</td><td><code>cargo run -p glidex-install</code> from source on an existing distro; systemd units; no external database</td><td>Debian-based distribution</td><td>Several services plus SQL and message queue</td><td>vCenter appliance and ESX hosts</td><td>Bare-metal HCI distribution on SUSE Linux Micro (Harvester)</td><td>Daemon on an existing distro</td><td>Front-end plus hosts</td><td>Management server, MySQL, hypervisor hosts</td></tr>
+<tr><td>License</td><td>MIT OR Apache-2.0</td><td>AGPL-3.0</td><td>Apache-2.0</td><td>Proprietary; subscription only (VCF, VVF)</td><td>Apache-2.0</td><td>Incus: Apache-2.0; LXD: AGPL-3.0</td><td>Apache-2.0</td><td>Apache-2.0</td></tr>
+<tr><td>Maturity and status</td><td>Early (v0.0.x)</td><td>Mature; major version 9</td><td>Mature; 2026.2 “Hibiscus”</td><td>Mature; Broadcom</td><td>Production releases</td><td>Mature; Incus is a community fork of LXD</td><td>Mature; 7.4</td><td>Mature; 4.23.0.0 regular release</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="products"><a class="header" href="#products">Products</a></h2>
+<h3 id="proxmox-ve"><a class="header" href="#proxmox-ve">Proxmox VE</a></h3>
+<p>A Debian-based server virtualization platform for QEMU/KVM and LXC, with a
+web UI, a REST API, HA, SDN and broad storage support.</p>
+<ul>
+<li><strong>Differs:</strong> every Proxmox node is equal and ships as a distribution;
+Glidex installs onto an existing distro and separates server and agent
+roles. Proxmox has live migration, HA restart with fencing, mediated
+devices and many storage types; Glidex has none of these today. Glidex
+has tenants, Cedar policy and SCIM and directory sync built in.</li>
+<li><strong>Pick Proxmox when</strong> you want a mature, all-in-one virtualization host
+for a small or medium site, with VMs and containers.</li>
+</ul>
+<h3 id="openstack"><a class="header" href="#openstack">OpenStack</a></h3>
+<p>A family of services (Nova compute, Neutron networking, Cinder block
+storage, Keystone identity…) that make a full IaaS cloud, run by the
+OpenInfra Foundation.</p>
+<ul>
+<li><strong>Differs:</strong> Glidex is one binary with an embedded store, not a set of
+services over a message queue and SQL database. It uses similar ideas at
+a smaller scale: OVN networks with routers, projects and quotas,
+federated identity. OpenStack covers far more: many hypervisor and
+storage drivers, vGPU, bare metal, very large deployments.</li>
+<li><strong>Pick OpenStack when</strong> you need a full cloud API, many back ends, or a
+large deployment with a team to run it.</li>
+</ul>
+<h3 id="ovirt-and-red-hat-virtualization"><a class="header" href="#ovirt-and-red-hat-virtualization">oVirt and Red Hat Virtualization</a></h3>
+<p>oVirt manages KVM hosts from a central Engine (web UI and REST API) on
+PostgreSQL, with the VDSM agent on each host. Its current release is
+4.5.7, and it describes itself as community-driven. Red Hat Virtualization
+4.4, the product built on it, left its Maintenance Phase on 31 August 2024
+and its Extended Life Phase on 31 August 2026. Red Hat points RHV users
+to OpenShift Virtualization.</p>
+<ul>
+<li><strong>Differs:</strong> oVirt keeps state in a central PostgreSQL database behind
+the Engine; Glidex replicates its own store with Raft and needs no
+external database.</li>
+<li><strong>Pick oVirt when</strong> you already run it and the community release meets
+your needs; former RHV customers are directed to OpenShift
+Virtualization.</li>
+</ul>
+<h3 id="vmware-vsphere-and-vcenter"><a class="header" href="#vmware-vsphere-and-vcenter">VMware vSphere and vCenter</a></h3>
+<p>ESX hosts managed by the vCenter appliance, with vMotion, vSphere HA,
+Fault Tolerance and vSAN. Broadcom ended perpetual licensing; vSphere is
+sold as subscriptions, chiefly in VMware Cloud Foundation (VCF) and
+VMware vSphere Foundation (VVF), licensed per core.</p>
+<ul>
+<li><strong>Differs:</strong> Glidex runs on stock Linux and KVM, is open source and has
+no license cost. vSphere is far ahead on live migration, HA, storage,
+ecosystem and vendor support.</li>
+<li><strong>Pick vSphere when</strong> you need those operational features and vendor
+support, and the subscription fits.</li>
+</ul>
+<h3 id="harvester-and-kubevirt"><a class="header" href="#harvester-and-kubevirt">Harvester and KubeVirt</a></h3>
+<p>KubeVirt adds VMs to Kubernetes as custom resources, run in pods with
+libvirt and QEMU. Harvester (SUSE) is a bare-metal HCI distribution built
+on Kubernetes, KubeVirt and Longhorn, managed alongside Rancher.</p>
+<ul>
+<li><strong>Differs:</strong> Glidex does not need Kubernetes; its state is in its own
+Raft store, and VMs are not pods. Glidex’s draft app layer
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/26-apps.md">26-apps.md</a>)
+would run Kubernetes <em>on</em> Glidex VMs, not Glidex on Kubernetes.</li>
+<li><strong>Pick Harvester or KubeVirt when</strong> your team already runs Kubernetes and
+wants VMs and containers under one API and toolchain.</li>
+</ul>
+<h3 id="incus-and-lxd"><a class="header" href="#incus-and-lxd">Incus and LXD</a></h3>
+<p>Incus is a community-driven alternative to Canonical’s LXD, maintained by
+many of LXD’s original developers. Both manage system containers and VMs
+through a REST API, on one host or a cluster with a replicated database
+(Cowsql for Incus, Dqlite for LXD). Incus is Apache-2.0; LXD is AGPL-3.0
+and maintained by Canonical.</p>
+<ul>
+<li><strong>Differs:</strong> the closest in shape: one daemon, a REST API, embedded
+replicated state, OVN networks. Glidex chose Raft over ReDB instead of a
+replicated SQL database
+(<a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md D1</a>),
+manages VMs only, offers Cloud Hypervisor as well as QEMU, and puts more
+into the control plane for tenants, identity and NUMA-aware device
+placement. Incus has containers, live migration and many storage
+drivers, and years of use.</li>
+<li><strong>Pick Incus or LXD when</strong> you want containers and VMs together, or a
+mature, packaged tool.</li>
+</ul>
+<h3 id="opennebula"><a class="header" href="#opennebula">OpenNebula</a></h3>
+<p>A cloud manager with a front-end (<code>oned</code>, HA through Raft across front-end
+servers) and KVM or LXC hosts, with VDCs for multi-tenancy, LDAP and SAML
+sign-in, GPU passthrough and vGPU.</p>
+<ul>
+<li><strong>Differs:</strong> both target private clouds. Both replicate front-end state
+with Raft; OpenNebula replicates SQL statements to its database, Glidex
+replicates write sets to ReDB. OpenNebula has live migration, broad
+GPU support and many integrations; Glidex has a smaller feature set,
+REST and gRPC from one schema, and Cedar authorization.</li>
+<li><strong>Pick OpenNebula when</strong> you need a proven private cloud today.</li>
+</ul>
+<h3 id="apache-cloudstack"><a class="header" href="#apache-cloudstack">Apache CloudStack</a></h3>
+<p>An IaaS platform: Java management servers on MySQL drive KVM, vSphere,
+XenServer/Xen, Hyper-V and other hosts, organized as regions, zones, pods
+and clusters, with domains, accounts and projects.</p>
+<ul>
+<li><strong>Differs:</strong> CloudStack supports many hypervisors and is built for
+multi-zone clouds; Glidex is KVM-only and much smaller.</li>
+<li><strong>Pick CloudStack when</strong> you run a multi-zone cloud for many tenants
+and need broad hypervisor and storage support.</li>
+</ul>
+<h3 id="microvm-stacks-firecracker-kata-containers"><a class="header" href="#microvm-stacks-firecracker-kata-containers">MicroVM stacks (Firecracker, Kata Containers)</a></h3>
+<p>Firecracker is a minimal KVM-based VMM built at AWS for serverless and
+container services (it runs AWS Lambda and Fargate). Kata Containers is a
+container runtime that runs workloads in lightweight VMs, through OCI and
+the Kubernetes CRI, with QEMU, Cloud Hypervisor or Firecracker. Cloud
+Hypervisor, Glidex’s default VMM, is built on the same rust-vmm crates.</p>
+<ul>
+<li><strong>Differs:</strong> these are VMMs or runtimes, not control planes. Glidex
+manages long-lived VMs with disks, networks and devices; it does not aim
+at per-request VM creation or container semantics. Glidex supported
+Firecracker early on and dropped it for its lack of GPU passthrough
+(<a href="design-decisions.html#cloud-hypervisor-and-qemu-with-one-feature-set-driven-directly">Design decisions</a>);
+it may return as the VMM of a lightweight, container-compatible layer.</li>
+<li><strong>Pick them when</strong> you need sandboxed, short-lived workloads in large
+numbers.</li>
+</ul>
+<h2 id="key-differentiators"><a class="header" href="#key-differentiators">Key differentiators</a></h2>
+<p>Each follows from a design decision; see
+<a href="design-decisions.html">Design decisions and trade-offs</a> for the reasoning.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Differentiator</th><th>Design decision</th><th>Evidence</th></tr>
+</thead>
+<tbody>
+<tr><td>No external database or message bus, even in a cluster</td><td>Raft embedded in the control plane over ReDB; the leader computes write sets, others apply bytes</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md">14-clustering.md</a> D1–D5, <code>crates/glidex-raftstore</code></td></tr>
+<tr><td>A single host stays a single host</td><td>Standalone uses the local store; Raft only after <code>gxctl cluster init</code></td><td>14-clustering.md D5</td></tr>
+<tr><td>Guests survive control-plane restarts and upgrades</td><td>Each VM runs under its own <code>glidex-vm-shim</code> in its own systemd unit; the control plane adopts them on start</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/12-reconciliation.md">12-reconciliation.md</a></td></tr>
+<tr><td>Two hypervisors behind one API</td><td>One driver contract for Cloud Hypervisor and QEMU</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/04-hypervisors.md">04-hypervisors.md</a></td></tr>
+<tr><td>One API, two transports</td><td>Protos are the source of truth; one service layer under REST and gRPC/Connect</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/18-grpc.md">18-grpc.md</a></td></tr>
+<tr><td>Policy as code</td><td>Cedar policies with shipped roles, decisions recorded in the audit log</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md">11-security.md</a> §7, §10</td></tr>
+<tr><td>Identity from the organization</td><td>Connectors (OIDC presets), SCIM, Google Workspace pull sync, invitations, passkeys, workload federation</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md">19-tenancy.md</a> T1–T5, <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/25-passkeys.md">25-passkeys.md</a></td></tr>
+<tr><td>Topology-aware device placement</td><td>Each node reports NUMA, CPUs, hugepages and PCIe tree; scheduler aligns devices, memory and dedicated CPUs; pools and GPU requests</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md">22-host-topology.md</a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/27-gpu-vms.md">27-gpu-vms.md</a></td></tr>
+<tr><td>Unprivileged control plane</td><td>Root work goes through small helpers (<code>glidex-netd</code>, <code>glidex-authd</code>, <code>glidex-stord</code>); guests’ metadata requests are parsed by <code>glidex-metad</code>, under its own user</td><td><a href="architecture.html">architecture.md</a>, 24-storage.md S12, S17</td></tr>
+<tr><td>Storage by mounts, not plugins first</td><td><code>shared-dir</code> uses mounts the operator makes; driver trait shaped like CSI for later</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md">24-storage.md</a> S1</td></tr>
+<tr><td>Verified images and kernel boot</td><td>Checksum-verified catalog, linked qcow2 disks, kernels extracted from cloud images</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/10-images.md">10-images.md</a>, <a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/23-kernel-boot.md">23-kernel-boot.md</a></td></tr>
+<tr><td>Metering built in</td><td>Hourly exactly-once usage ledger, per-VM and per-network traffic</td><td><a href="https://github.com/CMKL-APEX/glidex/blob/main/spec/13-metering.md">13-metering.md</a></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="non-goals-and-current-gaps"><a class="header" href="#non-goals-and-current-gaps">Non-goals and current gaps</a></h2>
+<p>Non-goals (by design):</p>
+<ul>
+<li><strong>Automatic VM failover.</strong> A node that stops heartbeating leaves its VMs
+unknown; nothing restarts them elsewhere, because a partitioned node may
+still run them (14-clustering.md D8). Moving a stopped or lost VM is an
+explicit operator action.</li>
+<li><strong>Containers.</strong> Glidex runs VMs only.</li>
+<li><strong>Running on Kubernetes</strong>, or an etcd/SQL dependency.</li>
+<li><strong>An eBPF datapath</strong> (14-clustering.md D15).</li>
+<li><strong>vGPU and mediated devices</strong> (22-host-topology.md §1).</li>
+</ul>
+<p>Gaps (not built yet, some planned):</p>
+<ul>
+<li>Live migration (planned after shared datastores; 14-clustering.md §18).</li>
+<li>Disk snapshots, backups, encryption at rest (24-storage.md §1).</li>
+<li>Shared block storage beyond hyperstor: <code>lvm</code> is node-local LVM-thin;
+shared LVM, Ceph RBD and a CSI adapter are later milestones. Ceph is
+usable only as a mounted CephFS through <code>shared-dir</code>.</li>
+<li>Serial console only: no VNC/SPICE or graphical display. Cloud Hypervisor
+itself runs Windows guests, but Glidex’s catalog holds Linux cloud images
+provisioned by cloud-init, and Windows guests are not a target today.
+They may come later, once the tooling supports them (a graphical
+console and Windows provisioning).</li>
+<li>Security groups, floating IPs, BGP and load balancers (14-clustering.md §2).</li>
+<li>Scale: designed for about 50 hosts and 2,000 VMs (14-clustering.md §4.1).</li>
+<li>LDAP, Entra ID and GitHub connectors (19-tenancy.md T2b, T4b); directories
+apart from clusters and fleets (T6, T7).</li>
+<li>Distribution packages: install is from source with Rust while Glidex is
+under active development; prebuilt binaries and distro packages are
+planned later.</li>
+</ul>
+<h2 id="references"><a class="header" href="#references">References</a></h2>
+<p>Glidex:</p>
+<ul>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/README.md</li>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/spec/README.md</li>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md</li>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md</li>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/spec/22-host-topology.md</li>
+<li>https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md</li>
+</ul>
+<p>Other products (official pages fetched for this comparison, October 2026):</p>
+<ul>
+<li>Proxmox VE: https://pve.proxmox.com/wiki/Main_Page,
+https://pve.proxmox.com/pve-docs/pve-admin-guide.html,
+https://pve.proxmox.com/pve-docs/pveum.1.html,
+https://pve.proxmox.com/wiki/PCI(e)_Passthrough</li>
+<li>OpenStack: https://www.openstack.org/,
+https://docs.openstack.org/nova/latest/admin/architecture.html,
+https://docs.openstack.org/nova/latest/admin/live-migration-usage.html,
+https://docs.openstack.org/nova/latest/admin/virtual-gpu.html,
+https://docs.openstack.org/neutron/latest/install/ovn/manual_install.html,
+https://docs.openstack.org/cinder/latest/drivers.html,
+https://docs.openstack.org/keystone/latest/admin/federation/introduction.html</li>
+<li>oVirt and RHV: https://www.ovirt.org/,
+https://www.ovirt.org/documentation/installing_ovirt_as_a_standalone_manager_with_local_databases/,
+https://docs.redhat.com/en/documentation/red_hat_virtualization/4.4,
+https://access.redhat.com/support/policy/updates/rhev</li>
+<li>VMware vSphere: https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/9-0/vcenter-installation-and-setup/introduction-to-vsphere-installation-and-setup/overview-of-the-vcsa.html,
+https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/9-0/vsphere-availability.html,
+https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/9-0/vsphere-storage.html,
+https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/9-0/vsphere-networking.html,
+https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/9-0/vsphere-authentication/vsphere-authentication-with-vcenter-single-sign-on/understanding-vcenter-server-identity-provider-federation.html,
+https://developer.broadcom.com/xapis/vsphere-automation-api/latest/,
+https://techdocs.broadcom.com/us/en/vmware-cis/vcf/vcf-9-0-and-later/9-1/licensing/licensing-overview.html,
+https://blogs.vmware.com/cloud-foundation/2024/01/22/vmware-end-of-availability-of-perpetual-licensing-and-saas-services/</li>
+<li>Harvester: https://docs.harvesterhci.io/v1.9/,
+https://docs.harvesterhci.io/v1.6/advanced/addons/pcidevices,
+https://docs.harvesterhci.io/v1.8/advanced/vgpusupport/,
+https://docs.harvesterhci.io/v1.8/rancher/rancher-rbac/,
+https://github.com/harvester/harvester</li>
+<li>KubeVirt: https://kubevirt.io/user-guide/,
+https://kubevirt.io/user-guide/architecture/architecture/,
+https://github.com/kubevirt/kubevirt</li>
+<li>Incus: https://linuxcontainers.org/incus/introduction/,
+https://linuxcontainers.org/incus/docs/main/explanation/clustering/,
+https://linuxcontainers.org/incus/docs/main/authentication/,
+https://linuxcontainers.org/incus/docs/main/reference/storage_drivers/,
+https://linuxcontainers.org/incus/docs/main/howto/move_instances/,
+https://linuxcontainers.org/incus/docs/main/reference/devices_gpu/</li>
+<li>LXD: https://canonical.com/lxd/docs/latest/,
+https://canonical.com/lxd/docs/latest/database/,
+https://github.com/canonical/lxd</li>
+<li>OpenNebula: https://docs.opennebula.io/7.4/,
+https://docs.opennebula.io/7.4/product/control_plane_configuration/high_availability/frontend_ha/,
+https://docs.opennebula.io/7.4/product/integration_references/system_interfaces/api/,
+https://docs.opennebula.io/7.4/product/virtual_machines_operation/virtual_machines/vm_instances/,
+https://github.com/OpenNebula/one</li>
+<li>Apache CloudStack: https://cloudstack.apache.org/,
+https://docs.cloudstack.apache.org/en/latest/conceptsandterminology/concepts.html,
+https://docs.cloudstack.apache.org/en/latest/adminguide/accounts.html,
+https://docs.cloudstack.apache.org/en/latest/adminguide/virtual_machines.html,
+https://docs.cloudstack.apache.org/en/4.21.0.0/adminguide/hosts.html</li>
+<li>Firecracker: https://github.com/firecracker-microvm/firecracker</li>
+<li>Kata Containers: https://katacontainers.io/</li>
+<li>Cloud Hypervisor: https://github.com/cloud-hypervisor/cloud-hypervisor</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../developer-guide/benchmarks.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../developer-guide/contributing.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../developer-guide/benchmarks.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../developer-guide/contributing.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

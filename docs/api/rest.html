@@ -1,0 +1,1092 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>REST API - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/api/rest.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="rest-api"><a class="header" href="#rest-api">REST API</a></h1>
+<h2 id="conventions"><a class="header" href="#conventions">Conventions</a></h2>
+<ul>
+<li><strong>Base URL</strong>: <code>https://host.example.org:8841</code>, with no path prefix
+(<code>https://host.example.org:8841/vms</code>). Locally, the same paths over the
+Unix socket <code>/run/glidex-cp/api.sock</code>.</li>
+<li><strong>JSON</strong> in and out (<code>Content-Type: application/json</code>), except the
+console WebSocket, the console log (raw bytes), CSV exports, the
+cluster snapshot and <code>/watch</code> (server-sent events).</li>
+<li><strong>Ids and names</strong>: VM paths take the VM’s id. Disks, images,
+datastores, networks, projects and nodes take an id or a name (for nodes, a live
+node’s name before a departed one’s), tenants an id or a slug; a name
+that several visible resources share is <code>409 ambiguous</code>. <code>gxctl</code>
+resolves VM names for you.</li>
+<li><strong>Projects</strong>: VMs, disks, guest credentials and project networks
+belong to a project. Creates take <code>project</code> (id or name) and default to
+your default project; lists take <code>?project=</code>.</li>
+<li><strong>Status codes</strong>: <code>200</code> OK, <code>201</code> created, <code>202</code> accepted (the
+controller is still working on it), <code>204</code> no content (gone).</li>
+</ul>
+<h3 id="proto-json"><a class="header" href="#proto-json">Proto JSON</a></h3>
+<p>Every operation with an RPC twin takes and answers that RPC’s message as
+proto3 JSON. What that means for a client:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Rule</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td>Field names are <code>snake_case</code>, as in the proto</td><td><code>mem_size_mib</code>, <code>root_disk_size_gib</code></td></tr>
+<tr><td>Responses are wrapped in the message’s fields</td><td><code>{"vms": [...]}</code>, <code>{"vm": {...}}</code>, <code>{"vm": {...}, "settled": true}</code></td></tr>
+<tr><td>64-bit integers are JSON strings</td><td><code>"size_bytes": "21474836480"</code></td></tr>
+<tr><td>Enum values are full proto names, in requests too</td><td><code>"hypervisor": "HYPERVISOR_QEMU"</code>, <code>"mode": "NETWORK_MODE_NAT"</code></td></tr>
+<tr><td>Times are RFC 3339</td><td><code>"created_at": "2026-10-17T08:00:00Z"</code></td></tr>
+<tr><td>Unset or default fields are left out, not <code>null</code></td><td>an unlimited quota is absent</td></tr>
+<tr><td>A body that isn’t the message is refused</td><td><code>422 invalid</code>: an unknown field, a wrong type, an unknown enum value</td></tr>
+</tbody>
+</table>
+</div>
+<p>Lowercase enum values (<code>"qemu"</code>, <code>"nat"</code>, <code>"running"</code>) are not accepted:
+they are <code>422 invalid</code>. Path and query parameters fill the message’s
+fields of the same meaning (<code>?wait=60</code> is <code>wait_secs</code>, <code>If-Match</code> is
+<code>expected_resource_version</code>).</p>
+<p>Partial updates (<code>PATCH</code>) change the fields present, or those listed in
+<code>update_mask</code>, a comma-separated string (<code>"description,quotas"</code>). A
+VM’s <code>PATCH</code> puts its fields under <code>change</code>:</p>
+<pre><code class="language-json">{
+  "change": {"power": "POWER_STATE_RUNNING", "mem_size_mib": 4096},
+  "update_mask": "power,mem_size_mib"
+}
+</code></pre>
+<p>Without <code>update_mask</code>, the fields present in <code>change</code> are the ones
+changed. <code>credential</code> in the mask but absent from <code>change</code> removes the
+VM’s credential.</p>
+<p>Plain JSON bodies of their own: <code>/health</code>, <code>/auth/methods</code>,
+<code>/auth/login</code>, <code>/auth/logout</code>, <code>/auth/session</code>, the OIDC and connector
+redirects, the <a href="#passkeys">passkey ceremonies</a> (WebAuthn JSON) and
+<code>/system/reconcile</code>. The <a href="#scim-20-for-identity-providers">SCIM endpoints</a>
+speak SCIM 2.0 JSON instead, and the <a href="#token-exchange-for-workloads">token
+exchange</a> OAuth’s form or JSON.</p>
+<h3 id="authentication"><a class="header" href="#authentication">Authentication</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Listener</th><th>Send</th></tr>
+</thead>
+<tbody>
+<tr><td>HTTPS <code>:8841</code></td><td><code>Authorization: Bearer &lt;token&gt;</code></td></tr>
+<tr><td><code>api.sock</code></td><td>Nothing; you are your Unix user</td></tr>
+</tbody>
+</table>
+</div>
+<p>A token from a <a href="#token-exchange-for-workloads">workload federation’s
+exchange</a> is sent the same way.
+Without a credential, protected endpoints answer <code>401 unauthenticated</code>.
+A request from a browser <code>Origin</code> the site doesn’t allow is
+<code>403 origin_not_allowed</code> on writes and WebSocket upgrades; through the
+web UI, the names the UI serves are allowed. See
+<a href="README.html#authentication">API overview</a>.</p>
+<h3 id="errors"><a class="header" href="#errors">Errors</a></h3>
+<p>Errors are a <code>glidex.api.v1.Error</code>: a stable <code>error</code> code, a human
+<code>message</code> and, for some codes, <code>details</code>. RPC errors carry the same
+code (<a href="rpc.html#errors">RPC errors</a>).</p>
+<pre><code class="language-json">{
+  "error": "quota_exceeded",
+  "message": "vms quota exceeded: limit 10, in use 10, requested 1",
+  "details": {"quota": [{"resource": "vms", "limit": 10, "used": 10, "requested": 1}]}
+}
+</code></pre>
+<p>Branch on <code>error</code>, never on <code>message</code>. Common codes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th><code>error</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>400</td><td><code>bad_request</code>, <code>invalid_request</code>, <code>invalid_config</code>, <code>invalid_disk</code>, <code>invalid_image</code>, <code>invalid_datastore</code>, <code>invalid_network</code>, <code>invalid_credential</code>, <code>invalid_project</code>, <code>invalid_state</code>, <code>project_required</code>, <code>range_too_large</code></td><td>The request is malformed or not valid here</td></tr>
+<tr><td>400</td><td><code>device_flow_unsupported</code></td><td>A device login through a <code>google</code> connector that has no device client</td></tr>
+<tr><td>400</td><td><code>passkey_not_added</code></td><td>Adding a passkey failed: the prompt expired, another user started it, or the passkey is already registered</td></tr>
+<tr><td>400</td><td><code>bad_target_node</code></td><td><code>X-Glidex-Target-Node</code> on a path that isn’t about one host, naming an unknown or departed node, or sent to a host that can’t act on other nodes (see <a href="#host-networking-and-pci">Host networking and PCI</a>)</td></tr>
+<tr><td>401</td><td><code>unauthenticated</code></td><td>No credential, or an invalid or expired token</td></tr>
+<tr><td>401</td><td><code>login_failed</code></td><td>Wrong username or password</td></tr>
+<tr><td>401</td><td><code>reauth_required</code></td><td>The operation needs a recent login; log in again</td></tr>
+<tr><td>401</td><td><code>passkey_refused</code></td><td>A passkey sign-in was refused; the same answer for every reason (unknown passkey, wrong origin, expired prompt, disabled user), which is in the audit log</td></tr>
+<tr><td>403</td><td><code>forbidden</code></td><td>Not allowed by your roles and the site’s policies</td></tr>
+<tr><td>403</td><td><code>quota_exceeded</code>, <code>tenant_quota_exceeded</code></td><td>Over a project quota, or the tenant’s cap; <code>details.quota</code> lists what</td></tr>
+<tr><td>403</td><td><code>not_admitted</code>, <code>tenant_suspended</code></td><td>The project’s tenant isn’t admitted on this site, or is suspended</td></tr>
+<tr><td>403</td><td><code>login_not_allowed</code>, <code>tls_required</code>, <code>ticket_required</code>, <code>origin_not_allowed</code>, <code>csrf_failed</code></td><td>Login or browser rules refused the request</td></tr>
+<tr><td>403</td><td><code>agent_no_local_api</code></td><td>A local request on a cluster agent, which has no API of its own: use a server</td></tr>
+<tr><td>404</td><td><code>passkeys_disabled</code></td><td>A passkey ceremony while <code>auth.passkeys.enabled</code> is <code>false</code></td></tr>
+<tr><td>404</td><td><code>not_found</code></td><td>No such resource, or one you can’t read</td></tr>
+<tr><td>409</td><td><code>conflict</code></td><td>A name already taken, a resource in use or being deleted, a concurrent change</td></tr>
+<tr><td>409</td><td><code>ambiguous</code></td><td>A name matches several resources; use the id</td></tr>
+<tr><td>409</td><td><code>cannot_delete_self</code>, <code>last_admin</code>, <code>last_identity</code></td><td>Deleting yourself, the last holder of <code>system-admin</code> or <code>directory-admin</code>, or a user’s last sign-in method (or one that would leave a single passkey as the only one)</td></tr>
+<tr><td>409</td><td><code>too_many_passkeys</code></td><td>The user already has 10 passkeys</td></tr>
+<tr><td>409</td><td><code>node_departed</code></td><td>A per-host role on a node that has left the cluster</td></tr>
+<tr><td>409</td><td><code>managed_by_connector</code></td><td>The user or team is managed by a SCIM connector or a directory sync: change it at the IdP (see <a href="../operator-guide/access-control.html#users-an-idp-manages">Users an IdP manages</a>)</td></tr>
+<tr><td>409</td><td><code>not_provisioned</code></td><td>A SCIM token for a connector that isn’t <code>provisioning: scim</code></td></tr>
+<tr><td>409</td><td><code>not_pulled</code>, <code>no_source</code>, <code>sync_running</code></td><td>A directory sync of a connector that isn’t <code>provisioning: pull</code>, of a kind Glidex can’t pull from (only Google Workspace), or whose run is already going</td></tr>
+<tr><td>409</td><td><code>would_lock_out</code>, <code>confirmation_required</code>, <code>host_interface_in_use</code>, <code>not_clustered</code>, <code>ovn_not_installed</code>, <code>dpdk_not_running</code>, …</td><td>A precondition isn’t met; the message says which</td></tr>
+<tr><td>412</td><td><code>precondition_failed</code></td><td><code>If-Match</code> didn’t match; <code>details.resource_version</code> has the current one</td></tr>
+<tr><td>413</td><td><code>too_large</code></td><td>The body is too large</td></tr>
+<tr><td>507</td><td><code>insufficient_storage</code></td><td>A datastore without overcommit lacks the space for a new or moved disk; <code>details</code> has <code>free_bytes</code> and <code>needed_bytes</code></td></tr>
+<tr><td>421</td><td><code>not_leader</code>, <code>use_a_server</code></td><td>Ask a cluster server (clients retry another). <code>use_a_server</code> is also the answer to an API request through a cluster agent’s web UI: <code>details.location</code> is a server’s web UI address (or <code>null</code>), <code>details.servers</code> the servers</td></tr>
+<tr><td>422</td><td><code>invalid</code></td><td>The body isn’t the expected message (unknown field, wrong type, unknown enum value)</td></tr>
+<tr><td>422</td><td><code>invalid_policy</code>, <code>invalid_connector</code>, <code>unsupported_on_host</code></td><td>Rejected policy text or connector settings; a feature this host can’t do</td></tr>
+<tr><td>422</td><td><code>invalid_federation</code>, <code>issuer_unreachable</code></td><td>Rejected workload federation settings (a rule without a pinned claim, a wildcard, a service account that isn’t the tenant’s, a TTL out of range, over 20 federations or 50 rules); an issuer whose discovery or keys can’t be read</td></tr>
+<tr><td>429</td><td><code>rate_limited</code>, <code>slow_down</code></td><td>Back off and retry (<code>slow_down</code>: also over 10 passkey sign-ins a minute from one client)</td></tr>
+<tr><td>502</td><td><code>netd_error</code>, <code>node_unreachable</code>, <code>idp_error</code></td><td>A helper, node or identity provider failed</td></tr>
+<tr><td>503</td><td><code>cluster_unavailable</code>, <code>netd_unavailable</code>, <code>hypervisor_unavailable</code>, <code>tool_unavailable</code>, <code>too_many_watchers</code>, <code>unavailable</code></td><td>Try again later, or fix the host</td></tr>
+<tr><td>500</td><td><code>internal</code>, <code>persistence_error</code>, <code>hypervisor_error</code>, <code>image_error</code></td><td>Server-side failure; quote <code>x-request-id</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="waiting-for-the-controller"><a class="header" href="#waiting-for-the-controller">Waiting for the controller</a></h3>
+<p>VM and disk writes, and image and network deletes, record what you
+want and return; controllers carry it out. By default such a write
+answers at once: <code>202</code> with the resource (<code>201</code> for a create, <code>204</code> for
+a delete with nothing left to do). Add <code>?wait=&lt;secs&gt;</code> (at most
+300) to hold the answer until the controller has acted:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Outcome</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td>Done in time</td><td><code>200</code> (<code>201</code> for a create) with <code>"settled": true</code></td></tr>
+<tr><td>The time ran out</td><td><code>202</code> with <code>"settled": false</code></td></tr>
+<tr><td>The controller failed</td><td>The error it hit, e.g. <code>500 hypervisor_error</code>, with the VM in <code>details.vm</code></td></tr>
+<tr><td>The resource is gone (a delete)</td><td><code>204</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>?wait</code> applies to VM create, start, stop, pause, <code>PATCH</code>, delete,
+device and disk attach/detach; disk create, resize, move and extend-root;
+image delete; network delete. <code>gxctl</code> waits 60 s by default.</p>
+<p>A VM’s <code>state</code> is what the controller last saw and <code>desired_state</code>
+what you asked for. Wait for its <code>Ready</code> condition to be <code>True</code>, not for
+a <code>state</code>.</p>
+<p>Start, stop, pause and <code>PATCH</code> of a VM take <code>If-Match: &lt;resource_version&gt;</code>:
+the write is refused with <code>412 precondition_failed</code> if the VM changed
+since you read it.</p>
+<h3 id="lists-and-paging"><a class="header" href="#lists-and-paging">Lists and paging</a></h3>
+<p>Lists return everything you may see in one answer, except:</p>
+<ul>
+<li><code>GET /tenants</code>: <code>page_size</code>, <code>page_token</code>; the answer has
+<code>next_page_token</code>.</li>
+<li><code>GET /audit</code>: <code>since</code>, <code>limit</code> (default 500, at most 5000),
+<code>project</code>, <code>user</code>, <code>directory</code>.</li>
+</ul>
+<h3 id="live-changes-get-watch"><a class="header" href="#live-changes-get-watch">Live changes: <code>GET /watch</code></a></h3>
+<p>A stream of server-sent events (<code>text/event-stream</code>) with the VMs,
+disks, images and networks you may list:</p>
+<ul>
+<li><code>?kinds=vms,disks,images,networks</code> (the default); also <code>nodes</code>,
+<code>imports</code>, <code>cluster</code>, <code>policy</code>, <code>datastores</code>.</li>
+<li><code>?project=&lt;p&gt;</code> limits VMs and disks to one project.</li>
+</ul>
+<p>The stream starts with an <code>added</code> event per object, then <code>synced</code>;
+after that <code>added</code>, <code>modified</code> and <code>deleted</code> as things change. Each
+event’s data is <code>{"kind": "vm", "id": "…", "object": {…}}</code>, with the
+object as its list answers it (no <code>object</code> on <code>deleted</code>). Authorization
+is re-checked for every event. A comment line every 15 s keeps a quiet
+stream open through proxies. The server ends a stream after 5 minutes
+with <code>expired</code>; reconnect for a fresh snapshot (a browser <code>EventSource</code>
+does this by itself). Too many open streams on a server give
+<code>503 too_many_watchers</code>: poll instead. <code>WatchService.Watch</code> is the same
+stream over RPC (<a href="rpc.html#streams">Streams</a>).</p>
+<h3 id="console-websocket"><a class="header" href="#console-websocket">Console WebSocket</a></h3>
+<ol>
+<li><code>GET /vms/{id}/console</code> says whether the console is available and
+gives the WebSocket path.</li>
+<li>A browser with a session cookie first gets a ticket,
+<code>POST /vms/{id}/console/ticket</code>, and passes it as <code>?ticket=</code>. A
+ticket is good for 30 s and one connection: a reconnect needs a new
+one. Without it a session gets <code>403 ticket_required</code>. Token and
+Unix-socket clients don’t need one.</li>
+<li><code>GET /vms/{id}/console/ws</code> upgrades to a WebSocket. An unknown VM, or
+one you can’t read, is <code>404</code>; a VM on a node that can’t be reached is
+<code>502 node_unreachable</code>, before the upgrade.</li>
+</ol>
+<p>On the WebSocket:</p>
+<ul>
+<li>The server first replays the console log, then sends the guest’s
+output live, as binary frames of raw serial bytes. Use
+<code>binaryType = "arraybuffer"</code>.</li>
+<li>Send keystrokes as binary or text frames (text is sent as its UTF-8
+bytes).</li>
+<li>There are no control messages: no resize, no framing beyond the
+bytes.</li>
+<li>If the console can’t be reached after the upgrade, the server sends
+one text frame with the error, then closes.</li>
+<li>Any number of clients can share a console.</li>
+</ul>
+<p><code>VmService.Console</code> is the same console as a bidirectional RPC stream,
+for clients that speak HTTP/2 (<a href="rpc.html#streams">Streams</a>).</p>
+<p><code>GET /vms/{id}/console/log?tail_bytes=N</code> returns the end of the console
+log as raw bytes (<code>application/octet-stream</code>, at most 1 MiB);
+<code>previous=true</code> reads the rotated one. See
+<a href="../user-guide/console.html">Console</a>.</p>
+<h3 id="cluster-reads"><a class="header" href="#cluster-reads">Cluster reads</a></h3>
+<p>In a cluster any server answers reads after catching up with the
+leader. Send <code>x-glidex-consistency: local</code> to skip that wait and accept
+a possibly stale answer. Writes sent to a follower are forwarded to the
+leader.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-bash">export GLIDEX_TOKEN=&lt;token&gt;
+api() { curl --fail-with-body --cacert tls.crt -H "Authorization: Bearer $GLIDEX_TOKEN" "$@"; }
+
+api https://host.example.org:8841/auth/whoami
+api 'https://host.example.org:8841/vms?project=lab'
+
+api -X POST https://host.example.org:8841/images \
+  -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
+
+api -X POST 'https://host.example.org:8841/vms?wait=60' \
+  -H 'Content-Type: application/json' -d '{
+  "name": "web-1", "project": "lab", "vcpu_count": 2, "mem_size_mib": 2048,
+  "hypervisor": "HYPERVISOR_QEMU", "image": "ubuntu-26.04",
+  "root_disk_size_gib": 20, "credential": "alice",
+  "networks": [{"network": "lab-net"}]
+}'
+
+api -X POST 'https://host.example.org:8841/vms/&lt;vm-id&gt;/stop?graceful_timeout_secs=60&amp;wait=90'
+</code></pre>
+<p>Change a VM, then get a token from a script:</p>
+<pre><code class="language-bash">api -X PATCH 'https://host.example.org:8841/vms/&lt;vm-id&gt;?wait=60' \
+  -H 'Content-Type: application/json' \
+  -d '{"change": {"vcpu_count": 4}, "update_mask": "vcpu_count"}'
+
+curl --cacert tls.crt -X POST https://host.example.org:8841/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "&lt;password&gt;", "token_name": "ci"}'
+# {"issued": {"token": "&lt;token&gt;", "token_id": "…",
+#   "expires_at": "2026-11-17T08:00:00Z", "user_id": "…", "display_name": "Alice"}}
+</code></pre>
+<p>On the host itself, no token is needed:</p>
+<pre><code class="language-bash">curl --unix-socket /run/glidex-cp/api.sock http://localhost/vms
+</code></pre>
+<h2 id="endpoints"><a class="header" href="#endpoints">Endpoints</a></h2>
+<p>Grouped by area. Query parameters in parentheses are optional.
+The RPC twin of each operation is in <a href="rpc.html#services">RPC API</a>.</p>
+<h3 id="service-and-login"><a class="header" href="#service-and-login">Service and login</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/health</code></td><td>Liveness: <code>{"status": "ok"}</code>; no credential</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/methods</code></td><td>Which login methods are on (PAM, OIDC, connectors; <code>passkeys</code> and <code>passkeys_rp_id</code>, the passkeys’ domain or <code>null</code>); no credential</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/server-info</code></td><td>The server’s identity: version, cluster, certificate fingerprint; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/discover</code></td><td>Which login connectors to offer for a tenant slug or email (<code>{hint, directory?}</code>): those of the directory asked for, else of the one the email’s domain belongs to, else the host’s own; the answer names that <code>directory</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/invitation/passkey/start</code>, <code>/auth/invitation/passkey/finish</code></td><td>Public: a passkey invitation’s page registers the invitee’s first passkey (<code>{invitation}</code>, then <code>{invitation, credential}</code>); finishing makes the user in the invitation’s directory, takes the invitation and signs them in (<code>201</code> with the session’s answer, as a login’s)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/login</code></td><td>Password login for the browser: sets a session cookie</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/token</code></td><td>Password login for tools: <code>{issued: {token, token_id, expires_at, user_id, display_name}}</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/oidc/start</code>, <code>/auth/oidc/callback</code></td><td>OIDC browser login (redirects); <code>?reauth=1</code> (or <code>true</code>) asks the IdP for a fresh login, for a recent-login step-up</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/oidc/device</code>, <code>/auth/oidc/device/poll</code></td><td>OIDC device flow for CLIs: start, then poll: <code>202 {pending: true}</code> until the user is done, then <code>200 {issued: …}</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/c/{id}/start</code>, <code>/auth/c/{id}/callback</code></td><td>Browser login through connector <code>{id}</code>; <code>?reauth=1</code> as above</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/c/{id}/start</code></td><td>Browser login that takes an invitation: <code>{invitation}</code> in the body, answers <code>{redirect}</code>; <code>404</code> for an invitation that isn’t open or is for another connector; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/invitation</code></td><td>What an invitation is for (tenant, connector, address, role, expiry): <code>{invitation: "&lt;id&gt;.&lt;secret&gt;"}</code>, from the link; <code>404</code> unless it is open; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/link/c/{id}/start</code></td><td>Add a sign-in method through connector <code>{id}</code> to yourself (<code>{return_to}</code>); needs a recent login; answers <code>{redirect}</code>. The callback returns to <code>return_to</code> with <code>?linked=&lt;id&gt;</code> or <code>?link_error=taken|not_allowed|not_signed_in</code>; a provisioned connector (SCIM or directory sync) is always <code>not_allowed</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/c/{id}/device</code>, <code>/auth/c/{id}/device/poll</code></td><td>Device flow through connector <code>{id}</code>, answered the same way; <code>400 device_flow_unsupported</code> for a <code>google</code> connector without a device client</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/exchange</code></td><td>Exchange a workload’s JWT for a short-lived token, through a workload federation; no credential (see <a href="#token-exchange-for-workloads">Token exchange</a>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/passkeys/login/start</code>, <code>/auth/passkeys/login/finish</code></td><td>Passkey sign-in for the browser; no credential (see <a href="#passkeys">Passkeys</a>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/passkeys/register/start</code>, <code>/auth/passkeys/register/finish</code></td><td>Add a passkey to yourself, from a browser session (see <a href="#passkeys">Passkeys</a>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/accounts</code></td><td>The accounts this browser is signed in with, one per directory, and which is active; read from its cookies only, nothing stored on the server; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/accounts/switch</code></td><td>Make another of the browser’s accounts active (<code>{directory}</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/accounts/add</code></td><td>Keep the active account in the browser’s list, so the login page can sign in to another directory</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/accounts/remove</code></td><td>Sign out of one of the browser’s accounts and drop it from the list (<code>{directory}</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/accounts/logout-all</code></td><td>End every session of the browser and drop the list</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/t/{trusted}/start</code>, <code>/auth/t/{trusted}/callback</code></td><td>Web UI login at a trusted directory of another organization (redirects); the callback makes a session on this cluster for that directory’s user; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/session</code></td><td>A browser session cookie for the local user calling on <code>api.sock</code>: <code>{cookie_name, cookie, csrf}</code>, with the user’s stored teams only; <code>403</code> for any other caller</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/logout</code></td><td>End the current session</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/whoami</code></td><td>Who you are: user, method, teams, roles, default project</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/check</code></td><td>Would these actions be allowed? One answer per check</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/allowed</code></td><td>Which actions you may take on each of some resources</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="vms"><a class="header" href="#vms">VMs</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/vms</code></td><td>List VMs (<code>?project=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms</code></td><td>Create a VM (<code>?wait=</code>). Boots through <code>firmware</code>, or a kernel image (<code>kernel</code>, with <code>kernel_from_disk</code> to follow the guest’s kernel); <code>generate_seed</code> overrides whether the cloud-init seed is generated; <code>initrd_path</code> goes with <code>kernel_image_path</code>; <code>gpus</code> (<code>{count, pool, nvlink}</code>) asks for GPUs from a device pool, NUMA-aligned, and with it <code>vcpu_count</code> and <code>mem_size_mib</code> may be left out to take the pool’s per-device sizing (see <a href="../user-guide/vms.html#gpus">GPUs</a>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/scheduler/preview</code></td><td>Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM’s hugepage, NUMA, CPU, <code>devices</code> and <code>gpus</code> settings; each node’s fit has <code>page_kib</code>, <code>hugepages_mib_taken</code> / <code>_capacity</code>, <code>numa_node</code>, <code>cpus</code>, <code>numa_aligned</code>, <code>pool_devices</code> and, for <code>NUMA_POLICY_ALIGNED</code> over several NUMA nodes, <code>numa</code> (each node’s share)</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}</code></td><td>Get a VM</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/vms/{id}</code></td><td>Change a VM’s spec (<code>?wait=</code>, <code>If-Match</code>); also <code>kernel</code>, <code>kernel_from_disk</code>, <code>hugepage_size</code>, <code>numa_policy</code>, <code>cpu_policy</code>, <code>devices</code>, <code>service_account</code>, <code>min_vcpus</code>, <code>max_vcpus</code> and <code>cpu_weight</code>. A change to <code>mem_size_mib</code> or <code>data_disks</code> of a running VM applies at its next start</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}</code></td><td>Delete a VM and its own root disk (<code>?keep_disk=true</code>, <code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/start</code></td><td>Start, or resume a paused VM (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/place</code></td><td>Place a stopped or lost VM again: on <code>node</code> (<code>{node}</code>, optional), or where the scheduler finds room; answers <code>{vm}</code>. See <a href="../operator-guide/datastores.html#placing-a-stopped-or-lost-vm-again">Placing a stopped or lost VM again</a></td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/stop</code></td><td>Stop; <code>?graceful_timeout_secs=N</code> presses the power button first and waits up to <code>N</code> s (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/pause</code></td><td>Pause (<code>?wait=</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/events</code></td><td>The VM’s last events</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/extract-kernel</code></td><td>Extract the kernel on a stopped VM’s root disk as a new kernel image the VM owns: <code>202 {image}</code>, extracting. See <a href="../user-guide/kernel-boot.html#extract-once">Extract once</a></td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/devices</code></td><td>Attach a PCI device (VFIO); hot-plugged if running</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}/devices</code></td><td>Detach a PCI device</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/disks</code></td><td>Attach a data disk: <code>{disk}</code> (id, or a name in the VM’s tenant); on a running VM at its next start (<code>?wait=</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}/disks/{disk}</code></td><td>Detach a data disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console</code></td><td>Console availability and WebSocket path</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/console/ticket</code></td><td>Single-use console ticket for a browser session</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console/ws</code></td><td>Console WebSocket</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console/log</code></td><td>Console log tail, raw bytes (<code>?tail_bytes=</code>, <code>?previous=true</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p>A VM with a GPU request has <code>gpus</code> as asked, with <code>pool</code> filled in.
+<code>numa_policy</code> takes <code>NUMA_POLICY_ALIGNED</code> (spread the VM over exactly
+its devices’ NUMA nodes); a VM aligned over more than one NUMA node has
+<code>numa</code>, one entry per guest NUMA node: <code>node</code> (the host’s), <code>vcpus</code>,
+<code>memory_mib</code> and <code>devices</code>. <code>gpus</code> can’t be changed with <code>PATCH</code>
+(<code>400 invalid_config</code>). A kernel-boot VM’s <code>kernel_args</code> default to
+<code>console=ttyS0 root=/dev/vda reboot=k panic=1</code>, with <code>console=ttyAMA0</code>
+for an aarch64 VM.</p>
+<h3 id="guest-credentials"><a class="header" href="#guest-credentials">Guest credentials</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/credentials</code></td><td>List guest logins (no password hashes)</td></tr>
+<tr><td><code>POST</code></td><td><code>/credentials</code></td><td>Create one: username, password and/or SSH keys</td></tr>
+<tr><td><code>GET</code></td><td><code>/credentials/{username}</code></td><td>Get one</td></tr>
+<tr><td><code>PUT</code></td><td><code>/credentials/{username}</code></td><td>Change the password and/or replace the SSH keys</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/credentials/{username}</code></td><td>Delete (<code>409</code> while a VM uses it)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="images"><a class="header" href="#images">Images</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/images/catalog</code></td><td>Built-in cloud images for this host’s architecture</td></tr>
+<tr><td><code>GET</code></td><td><code>/images/firmware-catalog</code></td><td>Built-in UEFI firmware images</td></tr>
+<tr><td><code>GET</code></td><td><code>/images</code></td><td>List images</td></tr>
+<tr><td><code>POST</code></td><td><code>/images</code></td><td>Download and verify an image (<code>catalog</code>, <code>url</code> + <code>sha256</code>, or <code>firmware</code>); <code>202</code> for a new one, <code>200</code> with one already in flight. Kernel images: <code>kind: IMAGE_KIND_KERNEL</code> with <code>url</code>, <code>initrd_url</code>, <code>initrd_sha256</code> and <code>cmdline</code>; <code>kernel_path</code> and <code>initrd_path</code> (host files); <code>kernel_from</code> (extract from a disk image); <code>with_kernel</code> (also extract a pulled disk image’s kernel). See <a href="../user-guide/kernel-boot.html#kernel-images">Kernel boot</a></td></tr>
+<tr><td><code>GET</code></td><td><code>/images/{id}</code></td><td>Get an image and its download progress</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/images/{id}</code></td><td>Delete, or cancel a download (<code>?wait=</code>; <code>409</code> while a disk uses it, or a VM boots or keeps a kernel image)</td></tr>
+<tr><td><code>POST</code></td><td><code>/images/{id}/retry</code></td><td>Download a failed image again, or run a failed kernel extraction again</td></tr>
+<tr><td><code>GET</code></td><td><code>/images/{id}/events</code></td><td>The image’s last events</td></tr>
+<tr><td><code>POST</code></td><td><code>/images/{id}/copies</code></td><td>Cluster: keep a copy on a node (<code>{node}</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/images/{id}/copies/{node}</code></td><td>Cluster: drop a node’s copy</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="disks"><a class="header" href="#disks">Disks</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/disks</code></td><td>List disks</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks</code></td><td>Create a blank disk or one from an image (<code>?wait=</code>); <code>node</code> (name or id) binds it to a node now, an unknown node is <code>400 invalid_config</code>; <code>datastore</code> (name or id) puts it there instead of the default datastore. On an LVM-thin datastore a disk is raw: leave <code>format</code> out (<code>DISK_FORMAT_QCOW2</code> is <code>400 invalid_disk</code>); linked disks are thin snapshots</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}</code></td><td>Get a disk and its partition table</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/disks/{id}</code></td><td>Delete (<code>409</code> while attached)</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks/{id}/move</code></td><td>Move a disk no running VM uses to another datastore: <code>{datastore, node, flatten, wait_secs}</code> (<code>wait_secs</code> or <code>?wait=</code>, at most 300); <code>200</code> once moved, else <code>202</code>. See <a href="../operator-guide/datastores.html#moving-a-disk-between-datastores">Moving a disk between datastores</a></td></tr>
+<tr><td><code>POST</code></td><td><code>/disks/{id}/resize</code></td><td>Grow or shrink (<code>?wait=</code>); a disk on an LVM-thin datastore only grows (<code>400 invalid_disk</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks/{id}/extend-root</code></td><td>Grow the root partition, offline or at next boot (<code>?wait=</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/events</code></td><td>The disk’s last events</td></tr>
+</tbody>
+</table>
+</div>
+<p>A disk has <code>datastore</code> (an id, or <code>local</code>) and, while it moves,
+<code>moving_to</code>. A move onto or off an LVM-thin datastore always makes a
+full copy, raw on LVM-thin. On a shared datastore it has no <code>node</code>; <code>worker</code> and
+<code>worker_name</code> name the node that works on its file.</p>
+<h3 id="datastores"><a class="header" href="#datastores">Datastores</a></h3>
+<p>See <a href="../operator-guide/datastores.html">Datastores</a>. <code>{id}</code> is an id or a
+name.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/datastores</code></td><td>List datastores, with each node’s status (everyone)</td></tr>
+<tr><td><code>POST</code></td><td><code>/datastores</code></td><td>Register one: <code>name</code>, <code>driver</code> (<code>DATASTORE_DRIVER_DIR</code>, <code>DATASTORE_DRIVER_SHARED_DIR</code>, <code>DATASTORE_DRIVER_LVM</code> or <code>DATASTORE_DRIVER_HYPERSTOR</code>), <code>path</code> (or, for LVM, <code>volume_group</code> and <code>thin_pool</code> and no <code>path</code>; for hyperstor, <code>hyperstor_api</code>, <code>hyperstor_pool</code> and <code>hyperstor_token</code> and no <code>path</code>), optional <code>node_paths</code> (node → path; for LVM, node → that node’s volume group), <code>nodes</code>, <code>default_for_disks</code>, <code>overcommit</code> (default on); <code>201</code>. A wrong combination is <code>400 invalid_datastore</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/datastores/{id}</code></td><td>Get a datastore</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/datastores/{id}</code></td><td>Change <code>node_paths</code>, <code>nodes</code>, <code>default_for_disks</code> or <code>overcommit</code></td></tr>
+<tr><td><code>DELETE</code></td><td><code>/datastores/{id}</code></td><td>Delete a datastore no disk is on and, for LVM-thin, where no node keeps image volumes (<code>409</code> otherwise); <code>204</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>A datastore also has <code>topology</code> (<code>DATASTORE_TOPOLOGY_NODE_LOCAL</code> or
+<code>DATASTORE_TOPOLOGY_SHARED</code>), <code>builtin</code> (<code>local</code>), <code>created_at</code>,
+<code>disks</code> (how many are on it) and <code>node_status</code>: per node, <code>node</code>,
+<code>node_name</code>, <code>reachable</code>, <code>reason</code> and <code>message</code> when it isn’t, <code>path</code>,
+<code>total_bytes</code>, <code>free_bytes</code>, <code>checked_at</code>, <code>warnings</code> and, for LVM-thin,
+<code>image_volumes</code> (the ids of images that node keeps a volume of). An
+LVM-thin datastore has <code>volume_group</code> and <code>thin_pool</code>, and an empty
+<code>path</code>; its <code>free_bytes</code> are the thin pool’s. See
+<a href="../operator-guide/datastores.html#lvm-thin">LVM-thin</a>. An image’s copy in a
+shared datastore has <code>datastore</code> and <code>datastore_name</code> instead of a
+<code>node</code>.</p>
+<h3 id="networks"><a class="header" href="#networks">Networks</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/networks</code></td><td>List networks</td></tr>
+<tr><td><code>POST</code></td><td><code>/networks</code></td><td>Create a host or cluster network (NAT, isolated or bridged)</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}</code></td><td>Get a network</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/networks/{id}</code></td><td>Delete (<code>?wait=</code>; <code>409</code> while a VM uses it)</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/events</code></td><td>The network’s last events</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/ovn</code></td><td>A cluster network as OVN sees it: switch, ports, router</td></tr>
+<tr><td><code>PUT</code></td><td><code>/networks/{id}/host_api</code></td><td>Open this host’s API to a NAT network’s guests, or close it: <code>{host_api: true|false}</code> → <code>{network}</code> (host network administrators)</td></tr>
+<tr><td><code>PUT</code></td><td><code>/networks/{id}/grants</code></td><td>Which projects and tenants may use a host network (replaces the grants)</td></tr>
+<tr><td><code>POST</code></td><td><code>/networks/{id}/shares</code></td><td>Offer a project network to another project</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/networks/{id}/shares/{project}</code></td><td>Withdraw a share</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/networks</code></td><td>Create a project network</td></tr>
+<tr><td><code>PUT</code></td><td><code>/projects/{id}/networks/{network}/router</code></td><td>Put a project network on one of the project’s routers, or back on the shared edge</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/network-shares</code></td><td>Shares offered to or accepted by a project</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/network-shares/{network}/accept</code></td><td>Accept a share</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/network-shares/{network}</code></td><td>Leave a share</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/routers</code></td><td>A project’s routers</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/routers</code></td><td>Create a router</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/routers/{router}</code></td><td>Get a router</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/routers/{router}</code></td><td>Delete a router (<code>409</code> while a network is attached)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="host-networking-and-pci"><a class="header" href="#host-networking-and-pci">Host networking and PCI</a></h3>
+<p>These act on the host that answers them. On a cluster server, a request
+with the header <code>X-Glidex-Target-Node: &lt;node id&gt;</code> acts on that node
+instead: it is authorized on that node’s host and run there. The same
+header works for <code>/system/reconcile</code>, <code>/cluster/leave</code> and the
+<code>glidex.host.v1</code> RPCs; anywhere else, for an unknown or departed node,
+or on a host that isn’t a server, it is <code>400 bad_target_node</code>. The web
+UI’s Host pages send it.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/ovs/status</code></td><td>Open vSwitch and networking helper status</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/install</code></td><td>Install Open vSwitch (kernel or DPDK profile)</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/dpdk-init</code></td><td>Initialize DPDK in Open vSwitch</td></tr>
+<tr><td><code>GET</code></td><td><code>/ovs/bridges</code></td><td>List glidex bridges</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges</code></td><td>Create a bridge</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/ovs/bridges/{name}</code></td><td>Delete a bridge</td></tr>
+<tr><td><code>GET</code></td><td><code>/ovs/bridges/{name}/uplinks</code></td><td>List a bridge’s uplinks</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks</code></td><td>Add an uplink (kernel, AF_XDP or DPDK)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}</code></td><td>Remove an uplink, restoring the NIC</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}/commit</code></td><td>Keep a migrated host address (otherwise it is rolled back at the deadline)</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}/reapply</code></td><td>Set up again an uplink that was rolled back at start</td></tr>
+<tr><td><code>GET</code></td><td><code>/pci-devices</code></td><td>List the host’s PCI devices, with <code>numa_node</code>, <code>ready</code> and, when not ready, <code>not_ready</code> (the reasons)</td></tr>
+<tr><td><code>GET</code></td><td><code>/pci-pools</code></td><td>Device pools: devices per node, holders, free counts, and <code>per_device_vcpus</code> / <code>per_device_memory_mib</code> when the pool sizes VMs per device; <code>?project=</code> the pools that project may use, free counts only</td></tr>
+<tr><td><code>GET</code></td><td><code>/host/topology</code></td><td>The host’s NUMA nodes and PCIe tree, with device readiness and warnings</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="usage-and-metrics"><a class="header" href="#usage-and-metrics">Usage and metrics</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/usage</code></td><td>Usage records by hour, day or month, grouped by project, VM, disk, NIC or network (<code>format=csv</code> for CSV)</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/usage</code></td><td>The same, for one project</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/usage</code></td><td>The same, for one VM and its NICs</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/usage</code></td><td>The same, for one disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/bandwidth</code></td><td>Per billing month: average, 30-second peak, 95th percentile of network traffic</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/disk-io</code></td><td>The same for disk I/O</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/compute</code></td><td>The same for CPU and memory</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/bandwidth</code></td><td>5-minute bandwidth series for a VM (<code>from</code>, <code>to</code>, <code>p95=true</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/io</code></td><td>5-minute disk I/O series for a VM</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/compute</code></td><td>5-minute CPU and memory series for a VM</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/io</code></td><td>5-minute I/O series for a disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/bandwidth</code></td><td>5-minute bandwidth series for a network</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/stats</code></td><td>A VM’s current rates: CPU, memory, NICs, disks</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/stats</code></td><td>A network’s current rates</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="projects-and-access"><a class="header" href="#projects-and-access">Projects and access</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/projects</code></td><td>Projects you can see</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects</code></td><td>Create a project</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}</code></td><td>Get a project with its quotas and usage</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/projects/{id}</code></td><td>Change description or quotas</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}</code></td><td>Delete a project</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/bindings</code></td><td>A project’s role bindings</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/bindings</code></td><td>Grant a role on the project to a user, team or token</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/bindings/{link}</code></td><td>Remove a binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/system/bindings</code></td><td>Host role bindings: the cluster’s and every host’s (<code>node</code>: one node’s host only)</td></tr>
+<tr><td><code>POST</code></td><td><code>/system/bindings</code></td><td>Grant a host role, cluster-wide or, with <code>node</code> (id or name), on one node’s host (<code>role.auditor</code>, <code>role.net-admin</code>, <code>grant.host-paths</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/system/bindings/{link}</code></td><td>Remove a host role binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/tokens</code></td><td>Your API tokens (all, for administrators)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tokens</code></td><td>Create a token, personal or for a service account; the secret is returned once</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tokens/{id}</code></td><td>Revoke a token</td></tr>
+<tr><td><code>GET</code></td><td><code>/users</code></td><td>List users and their identities</td></tr>
+<tr><td><code>POST</code></td><td><code>/users</code></td><td>Create a user: <code>{display_name, identities}</code>, or pre-add one by email before they sign in with <code>{pending: {email, connector, tenant, role}}</code> (an enabled <code>oidc</code>, <code>google</code> or <code>jumpcloud</code> connector that isn’t provisioned; <code>role</code> <code>member</code>, <code>role.tenant-admin</code> or <code>role.tenant-auditor</code>, default <code>member</code>)</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/users/{id}</code></td><td>Change a user; for a user a SCIM connector manages (<code>managed_by</code>), its display name, and enabling it after its IdP disabled it, are <code>409 managed_by_connector</code></td></tr>
+<tr><td><code>DELETE</code></td><td><code>/users/{id}</code></td><td>Delete a user with its sign-in methods, sessions, personal tokens, team memberships, role bindings and tenant memberships; answers how many of each went. <code>409 managed_by_connector</code> for a managed user that is still enabled</td></tr>
+<tr><td><code>POST</code></td><td><code>/users/{id}/identities</code></td><td>Link a login identity to a user (providers <code>pam</code>, <code>unix</code> or <code>oidc:&lt;issuer&gt;</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/users/{id}/identities/{key}</code></td><td>Remove a sign-in method, yours or (as an administrator) anyone’s, never the last unless the user is disabled (<code>end_sessions</code>); a passkey’s identity takes the passkey with it</td></tr>
+<tr><td><code>GET</code></td><td><code>/users/{id}/passkeys</code></td><td>A user’s passkeys: <code>{passkeys, rp_id}</code>; yours, or anyone’s with <code>listUsers</code></td></tr>
+<tr><td><code>PATCH</code></td><td><code>/users/{id}/passkeys/{passkey}</code></td><td>Rename one of your passkeys (<code>{name}</code>, 1–64 printable characters); only its user may</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/users/{id}/passkeys/{passkey}</code></td><td>Remove a passkey, yours or (as an administrator) anyone’s; <code>409 last_identity</code> if it would leave none, or a single passkey alone</td></tr>
+<tr><td><code>GET</code></td><td><code>/users/me</code></td><td>Same as <code>GET /auth/whoami</code></td></tr>
+<tr><td><code>PATCH</code></td><td><code>/users/me</code></td><td>Change your own profile (e.g. <code>default_project</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/users/me/ssh-keys</code></td><td>Your SSH public keys, to prefill a guest credential: your local account’s, or, without one here, those of a pulled connector’s SSH key field; <code>source</code> says which (<code>local</code>, <code>connector:&lt;id&gt;</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/teams</code></td><td>List teams</td></tr>
+<tr><td><code>POST</code></td><td><code>/teams</code></td><td>Create a team</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/teams/{id}</code></td><td>Change a team (<code>409 managed_by_connector</code> for a team a SCIM connector manages)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/teams/{id}</code></td><td>Delete a team (<code>409 managed_by_connector</code> for a managed team)</td></tr>
+<tr><td><code>PUT</code></td><td><code>/teams/{id}/members/{user}</code></td><td>Add a member</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/teams/{id}/members/{user}</code></td><td>Remove a member’s manual membership; one a SCIM connector gave is <code>409 managed_by_connector</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies</code></td><td>List site Cedar policies</td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies/{id}</code></td><td>Get a policy</td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies/{id}/versions</code></td><td>A policy’s history</td></tr>
+<tr><td><code>PUT</code></td><td><code>/authz/policies/{id}</code></td><td>Create or replace a policy (with its current <code>version</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/authz/policies/{id}</code></td><td>Delete a policy</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/validate</code></td><td>Check a policy without saving it</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/simulate</code></td><td>Decide requests under the current policies plus proposed changes</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/reload</code></td><td>Reload policies</td></tr>
+<tr><td><code>GET</code></td><td><code>/audit</code></td><td>The audit log (<code>since</code>, <code>limit</code>, <code>project</code>, <code>user</code>; <code>directory</code>: a hosted directory’s own log)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="tenants-and-login-connectors"><a class="header" href="#tenants-and-login-connectors">Tenants and login connectors</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/tenants</code></td><td>Tenants you can see (<code>page_size</code>, <code>page_token</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants</code></td><td>Create a tenant; with <code>first_admin: {email, connector, days}</code>, also invite its first <code>tenant-admin</code> (the link in <code>invitation_link</code>, once)</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}</code></td><td>Get a tenant</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/tenants/{id}</code></td><td>Change a tenant</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}</code></td><td>Delete a tenant (<code>409 tenant_in_use</code> while it has projects)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/suspend</code></td><td>Suspend a tenant</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/resume</code></td><td>Resume a tenant</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/federations</code></td><td>The tenant’s <a href="../operator-guide/workload-federation.html">workload federations</a> (CI issuers it trusts)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/federations</code></td><td>Trust a CI or workload issuer: <code>{federation: {id, display_name, issuer, audience, enabled, rules: [{match, service_account, ttl_secs}]}}</code> → <code>201</code>. Needs a recent login. The issuer is read at once (<code>422 issuer_unreachable</code>); rules pin <code>repository</code>, <code>project_path</code> or <code>sub</code> with exact values and name service-account token ids of the tenant’s projects (<code>422 invalid_federation</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/federations/{federation}</code></td><td>Get a federation</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/tenants/{id}/federations/{federation}</code></td><td>Change <code>display_name</code>, <code>issuer</code>, <code>audience</code>, <code>enabled</code> or <code>rules</code> (<code>{changes: {…}, update_mask?}</code>; <code>rules</code> replaces them all). Needs a recent login</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/federations/{federation}</code></td><td>Remove a federation; the tokens it gave stop working. Needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/directory/keys</code></td><td>The directory’s issuer URL (<code>issuer</code>, <code>issuer_fixed</code>) and its token signing keys: <code>{keys: [{kid, alg, created_at, retired_at, published_until, active}]}</code>; never a private part</td></tr>
+<tr><td><code>POST</code></td><td><code>/directory/keys/rotate</code></td><td>A new active signing key; the previous one stays published until its tokens expire. Needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/d/{directory}/.well-known/openid-configuration</code></td><td>Public: the directory’s OIDC discovery document (<code>issuer</code>, <code>jwks_uri</code>, ES256)</td></tr>
+<tr><td><code>GET</code></td><td><code>/d/{directory}/jwks.json</code></td><td>Public: the directory’s signing keys as a JWKS, cacheable for 5 minutes</td></tr>
+<tr><td><code>GET</code></td><td><code>/d/{directory}/authorize</code></td><td>Public, OAuth 2.0: the code flow with PKCE (S256) for client <code>gxctl</code> and a loopback <code>redirect_uri</code> (<code>http://127.0.0.1:&lt;port&gt;/…</code>); approved by the browser’s session, or the web UI logs in first</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/device_authorization</code></td><td>Public, RFC 8628: <code>client_id=gxctl</code> → <code>{device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval}</code>; the code is approved on the web UI’s <code>/device</code> page</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/token</code></td><td>Public, form-encoded: <code>grant_type</code> <code>authorization_code</code>, <code>refresh_token</code> or <code>urn:ietf:params:oauth:grant-type:device_code</code>, <code>client_id=gxctl</code>; <code>resource=urn:glidex:cluster:&lt;id&gt;</code> adds an access token for that cluster. Answers <code>{refresh_token, id_token, access_token?, expires_in?}</code>; a refresh token works once, and using an old one again ends its chain. Errors are OAuth’s (<code>invalid_grant</code>, <code>invalid_target</code>, <code>authorization_pending</code>, <code>slow_down</code>, …)</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/revoke</code></td><td>Public, RFC 7009: <code>token=&lt;refresh token&gt;</code> ends its chain and the access tokens it gave</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/device/inspect</code></td><td>What a device code is for (<code>{user_code}</code>), for the web UI’s <code>/device</code> page</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/device/answer</code></td><td>Approve or refuse a device code (<code>{user_code, approve}</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/members</code></td><td>List explicit members</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/members</code></td><td>Add a member</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/members/{principal}</code></td><td>Remove a member (<code>user:&lt;id&gt;</code> or <code>team:&lt;id&gt;</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/bindings</code></td><td>Tenant role bindings</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/bindings</code></td><td>Grant a tenant role</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/bindings/{link}</code></td><td>Remove a tenant role binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/device-pools</code></td><td>The tenant’s pools on this cluster, with what they hold</td></tr>
+<tr><td><code>PUT</code></td><td><code>/tenants/{id}/device-pools</code></td><td>Replace the tenant’s pools: <code>{pools: [{name, from, max, projects}]}</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/invitations</code></td><td>A tenant’s invitations, never their secrets</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/invitations</code></td><td>Invite an email address (<code>{email, role, connector, days}</code>); the link is returned once</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/invitations/{id}</code></td><td>Revoke an invitation</td></tr>
+<tr><td><code>GET</code></td><td><code>/admissions</code></td><td>Tenants admitted on this site, with their caps</td></tr>
+<tr><td><code>POST</code></td><td><code>/admissions/offers</code></td><td>Offer an admission to a tenant of another directory: <code>{tenant, directory, cap?, days?}</code> → <code>201 {offer, token}</code>; the <code>gxo_…</code> token (shown once) is what that tenant’s administrator redeems at their directory. Needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/admissions/offers</code></td><td>Open and redeemed offers (never their secrets)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/admissions/offers/{id}</code></td><td>Revoke an offer. Needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/admissions/directories</code></td><td>The directories of other organizations this cluster trusts, with their admitted tenants</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/admissions/directories/{id}</code></td><td>How long a trusted directory’s credentials stay good without its feed: <code>{max_staleness_minutes}</code> (at least 1; absent: the cluster’s default, <code>trust.default_max_staleness_minutes</code>); <code>{id}</code> is its <code>trusted-…</code> id</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/clusters</code></td><td>The clusters of other organizations the tenant uses</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/clusters</code></td><td>Redeem a cluster’s offer: <code>{offer: "gxo_…"}</code> → <code>201 {cluster}</code>. This directory and the cluster trust each other for the tenant from then on. Needs a recent login</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/clusters/{cluster}</code></td><td>Stop using that cluster; it is told. Needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/directories</code></td><td>The directories this host serves (<code>id</code>, <code>name</code>, <code>issuer</code>, <code>trust_domain</code>, <code>created_at</code>); the operator’s, who sees nothing inside them</td></tr>
+<tr><td><code>POST</code></td><td><code>/directories</code></td><td><code>{id, name, owner, admin_email, days?, trust_domain?}</code> → <code>201 {directory, invitation_link}</code>: a directory, its owner tenant, and an invitation for its first administrator, who signs in with a passkey; the link is shown once. Needs a recent login</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/directories/{id}</code></td><td>Delete a directory nobody uses yet (no user, connector or project: else <code>409 directory_not_empty</code>); <code>local</code> stays. Needs a recent login</td></tr>
+<tr><td><code>PUT</code></td><td><code>/admissions/{tenant}</code></td><td>Admit a tenant or change its cap</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/admissions/{tenant}</code></td><td>Remove an admission</td></tr>
+<tr><td><code>GET</code></td><td><code>/connectors</code></td><td>List login connectors</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors</code></td><td>Create a connector (<code>pam</code>, <code>oidc</code>, <code>google</code> or <code>jumpcloud</code> settings)</td></tr>
+<tr><td><code>GET</code></td><td><code>/connectors/{id}</code></td><td>Get a connector (secrets show only whether they are set); a pulled one has <code>sync</code> (its settings) and <code>sync_status</code> (the last run)</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/connectors/{id}</code></td><td>Change a connector; <code>provisioning</code> (<code>none</code>; <code>scim</code> for <code>oidc</code> and <code>jumpcloud</code>, or <code>pull</code> for a Google Workspace connector, both with <code>jit</code> off), <code>group_mode</code> (<code>mapped</code>, or <code>auto</code> when provisioned) and <code>sync</code> (<code>interval_minutes</code>, <code>max_disable</code>, <code>admin_email</code>, <code>groups</code>, <code>ssh_keys_field</code>) are fields like the others</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/connectors/{id}</code></td><td>Delete a connector and its SCIM tokens; <code>?users=detach</code> keeps the users it provisions enabled (the default, <code>?users=disable</code>, disables them). Answers <code>200 {users, teams}</code>: how many it released</td></tr>
+<tr><td><code>PUT</code></td><td><code>/connectors/{id}/secrets/{field}</code></td><td>Set a connector secret (write-only)</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors/{id}/test</code></td><td>Test a connector step by step</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors/{id}/sync</code></td><td>Run a pulled connector’s sync now: <code>{status}</code>, with <code>state</code> (<code>SYNC_STATE_OK</code>, <code>_FAILED</code>, <code>_BLOCKED</code>), <code>started_at</code>, <code>finished_at</code>, <code>changes</code> (<code>created</code>, <code>adopted</code>, <code>updated</code>, <code>disabled</code>, <code>enabled</code>), <code>error</code>, <code>would_disable</code> and <code>last_applied_at</code>. <code>{confirm: true}</code> applies one the safety stop blocked, and needs a recent login</td></tr>
+<tr><td><code>GET</code></td><td><code>/connectors/{id}/scim-tokens</code></td><td>A SCIM connector’s tokens (never the tokens) and its endpoint path</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors/{id}/scim-tokens</code></td><td>Make a SCIM token (<code>{name, days}</code>, 1–365 days, default 180; at most five live per connector): <code>201 {token, secret, path}</code>, the <code>gxs_</code> secret shown once. Needs a recent login; <code>409 not_provisioned</code> unless the connector is <code>provisioning: scim</code></td></tr>
+<tr><td><code>DELETE</code></td><td><code>/connectors/{id}/scim-tokens/{token}</code></td><td>Revoke a SCIM token</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="trust-between-organizations"><a class="header" href="#trust-between-organizations">Trust between organizations</a></h3>
+<p>Clusters and directories of different organizations call these on each
+other once an admission offer is redeemed. They take no user
+credential: each request is signed with the peer’s key. Every refusal
+answers the same way; the reason is in the audit log. Clients don’t
+call them.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POST</code></td><td><code>/trust/v1/redeem</code></td><td>At a cluster: a directory redeems an admission offer</td></tr>
+<tr><td><code>POST</code></td><td><code>/trust/v1/end</code></td><td>At a cluster: a trusted directory ends a tenant’s trust</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/trust/v1/end</code></td><td>At a directory: a trusted cluster stops admitting one of its tenants</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/trust/v1/logout</code></td><td>At a directory: a trusted cluster’s session ended, so its login chain ends (<code>{cluster_id, sid}</code>); <code>204</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/feed/v1</code></td><td>At a directory: the snapshot for a cluster (<code>{cluster_id, revision}</code>): the tenants opted in to it, their projects, members and role links, and the directory’s keys; <code>304</code> when the cluster’s revision is current</td></tr>
+<tr><td><code>POST</code></td><td><code>/d/{directory}/feed/v1/report</code></td><td>At a directory: a cluster’s report on the tenants opted in to it (<code>{cluster_id, report, ui_callback}</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="scim-20-for-identity-providers"><a class="header" href="#scim-20-for-identity-providers">SCIM 2.0, for identity providers</a></h3>
+<p>A connector with <code>provisioning: scim</code> serves a SCIM 2.0 endpoint for its
+IdP (see <a href="../operator-guide/authentication.html#provisioning-with-scim">Provisioning with
+SCIM</a>):</p>
+<ul>
+<li><code>https://host.example.org:8841/scim/v2/c/{id}</code> on the API, and
+<code>https://host.example.org:5173/api/scim/v2/c/{id}</code> through the web UI.</li>
+<li>The IdP sends one of the connector’s tokens:
+<code>Authorization: Bearer gxs_&lt;token&gt;</code>. Nothing else opens it: not an API
+token, not a session, not another connector’s SCIM token.</li>
+<li>Bodies and answers are <code>application/scim+json</code>; errors are SCIM error
+bodies (<code>{"schemas": [...], "status": "400", "scimType": "invalidFilter", "detail": "..."}</code>),
+not Glidex errors.</li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path (under <code>/scim/v2/c/{id}</code>)</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/ServiceProviderConfig</code>, <code>/Schemas</code>, <code>/ResourceTypes</code></td><td>What the endpoint supports</td></tr>
+<tr><td><code>GET</code></td><td><code>/Users</code></td><td>The connector’s users (<code>filter</code>, <code>startIndex</code>, <code>count</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/Users</code></td><td>Create a user; adopts a user that logged in through the connector before it was provisioned, with the same user name or email</td></tr>
+<tr><td><code>GET</code>, <code>PUT</code>, <code>PATCH</code>, <code>DELETE</code></td><td><code>/Users/{uid}</code></td><td>Read, replace, change, or remove a user</td></tr>
+<tr><td><code>GET</code></td><td><code>/Groups</code></td><td>The connector’s groups (<code>filter</code>, <code>startIndex</code>, <code>count</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/Groups</code></td><td>Create a group</td></tr>
+<tr><td><code>GET</code>, <code>PUT</code>, <code>PATCH</code>, <code>DELETE</code></td><td><code>/Groups/{gid}</code></td><td>Read, replace, change (members too), or delete a group</td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li><strong>Filters</strong>: <code>eq</code> only. Users by <code>userName</code>, <code>externalId</code>, <code>emails</code>
+(or <code>emails.value</code>) and <code>displayName</code>; groups by <code>displayName</code> and
+<code>externalId</code>.</li>
+<li><strong>Paging</strong>: <code>startIndex</code> (from 1) and <code>count</code>, at most 200 a page
+(100 by default).</li>
+<li><strong>PATCH</strong>: <code>add</code>, <code>replace</code> and <code>remove</code>, with or without a <code>path</code>, in
+the forms Entra, Okta and JumpCloud send: <code>active</code> (also as the string
+<code>"False"</code>), <code>userName</code>, <code>externalId</code>, <code>displayName</code>, <code>name.givenName</code>,
+<code>name.familyName</code>, <code>emails[type eq "work"].value</code>; a group’s
+<code>displayName</code> and <code>members</code> (a list, or <code>members[value eq "&lt;id&gt;"]</code>).
+Attributes Glidex doesn’t keep are ignored.</li>
+<li><strong>Not supported</strong>: bulk, sorting, ETags, <code>/Me</code>, password changes.</li>
+<li><strong>Users</strong>: <code>active: false</code> disables the user (sessions end, personal
+tokens are revoked, it leaves the IdP’s teams); <code>active: true</code> enables
+it again only if the IdP disabled it, never after an administrator
+did. <code>DELETE /Users/{uid}</code> disables the user and ends its link to the
+IdP; the user and its history stay.</li>
+<li><strong>Groups</strong>: with <code>group_mode: auto</code> each group is a managed team;
+with <code>mapped</code>, a group named in <code>group_teams</code> fills that team.</li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th><code>scimType</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>400</td><td><code>invalidFilter</code></td><td>A filter other than those above</td></tr>
+<tr><td>400</td><td><code>invalidSyntax</code>, <code>invalidValue</code>, <code>noTarget</code></td><td>A body that isn’t JSON, a bad value, a <code>remove</code> without a path</td></tr>
+<tr><td>401</td><td></td><td>No token, or a wrong, expired or revoked one (the same answer each time)</td></tr>
+<tr><td>403</td><td></td><td>The connector is disabled or isn’t <code>provisioning: scim</code></td></tr>
+<tr><td>404</td><td></td><td>No such user or group of this connector</td></tr>
+<tr><td>409</td><td><code>uniqueness</code></td><td>A <code>userName</code> or group the connector already has</td></tr>
+<tr><td>413</td><td></td><td>A body over 1 MiB</td></tr>
+<tr><td>429</td><td><code>tooMany</code></td><td>Over 20 requests a second (with a short burst) per connector; retry after <code>Retry-After</code> seconds</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every write is in the <a href="../operator-guide/access-control.html#audit-log">audit log</a>
+as <code>system:scim:&lt;connector-id&gt;</code>, never with the token.</p>
+<h3 id="token-exchange-for-workloads"><a class="header" href="#token-exchange-for-workloads">Token exchange, for workloads</a></h3>
+<p><code>POST /auth/exchange</code> takes a workload’s JWT (from GitHub Actions,
+GitLab CI, Kubernetes or another OIDC issuer) and answers a Glidex token
+acting as a service account, through one of a tenant’s <a href="../operator-guide/workload-federation.html">workload
+federations</a>. It needs no
+other credential: the JWT is the credential. The shape is RFC 8693’s,
+as <code>application/x-www-form-urlencoded</code> or JSON:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td><code>grant_type</code></td><td><code>urn:ietf:params:oauth:grant-type:token-exchange</code></td></tr>
+<tr><td><code>subject_token_type</code></td><td><code>urn:ietf:params:oauth:token-type:jwt</code></td></tr>
+<tr><td><code>subject_token</code></td><td>The workload’s JWT (at most 16 KiB)</td></tr>
+<tr><td><code>federation</code></td><td><code>&lt;tenant slug&gt;/&lt;federation id&gt;</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-bash">curl --fail-with-body --cacert tls.crt https://host.example.org:8841/auth/exchange \
+  --data-urlencode grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  --data-urlencode subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+  --data-urlencode subject_token=&lt;oidc-token&gt; \
+  --data-urlencode federation=acme/github
+# {"access_token": "&lt;token&gt;", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+#  "token_type": "Bearer", "expires_in": 900}
+</code></pre>
+<p>Answers carry <code>Cache-Control: no-store</code>. Errors are OAuth error bodies
+(<code>{"error": "invalid_grant", "error_description": "..."}</code>), not Glidex
+errors:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th><code>error</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>400</td><td><code>invalid_request</code></td><td>A wrong <code>grant_type</code> or <code>subject_token_type</code>, no <code>subject_token</code>, or <code>federation</code> not <code>&lt;tenant&gt;/&lt;id&gt;</code>; a body that isn’t a form or a JSON object</td></tr>
+<tr><td>400</td><td><code>invalid_grant</code></td><td>The token can’t be exchanged: the same answer for every reason (an unknown or disabled federation, a bad signature, a wrong issuer or audience, an expired or over-long token, no matching rule, a token already exchanged, a gone service account). The reason is in the audit log</td></tr>
+<tr><td>429</td><td><code>slow_down</code></td><td>Over 30 exchanges a minute for this federation</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each workload token is exchanged once. Every exchange is in the
+<a href="../operator-guide/access-control.html#audit-log">audit log</a> as
+<code>exchangeToken</code> by <code>system:federation:&lt;tenant&gt;/&lt;id&gt;</code>, never with the
+JWT.</p>
+<h3 id="passkeys"><a class="header" href="#passkeys">Passkeys</a></h3>
+<p>The web UI’s passkey ceremonies are REST only, WebAuthn JSON in and out
+(see <a href="../operator-guide/authentication.html#passkeys">Passkeys</a>). Each
+needs a browser <code>Origin</code> on an <code>https</code> page (or <code>http://localhost</code>)
+under the passkeys’ domain (<code>400 invalid</code> otherwise), and a start sets a
+short-lived cookie its finish must send back.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Step</th><th>Body</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POST /auth/passkeys/register/start</code></td><td><code>{name}</code> (empty: <code>Passkey</code>; up to 64 characters)</td><td><code>PublicKeyCredentialCreationOptions</code>. From a browser session only (a token is <code>403</code>), after a recent login; at most 10 per user (<code>409 too_many_passkeys</code>)</td></tr>
+<tr><td><code>POST /auth/passkeys/register/finish</code></td><td>The browser’s credential (<code>PublicKeyCredential.toJSON()</code>)</td><td><code>201 {passkey: {id, name}}</code>, or <code>400 passkey_not_added</code></td></tr>
+<tr><td><code>POST /auth/passkeys/login/start</code></td><td>none</td><td><code>PublicKeyCredentialRequestOptions</code>, with user verification required</td></tr>
+<tr><td><code>POST /auth/passkeys/login/finish</code></td><td>The browser’s credential, likewise</td><td><code>whoami</code> and a session cookie (method <code>passkey</code>, multi-factor), or <code>401 passkey_refused</code>; <code>429 slow_down</code> after 10 attempts a minute</td></tr>
+</tbody>
+</table>
+</div>
+<p>A passkey (<code>GET /users/{id}/passkeys</code>) has <code>id</code> (its credential id,
+base64url), <code>name</code>, <code>algorithm</code> (<code>ES256</code>, <code>EdDSA</code> or <code>RS256</code>),
+<code>backed_up</code> (synced by its provider), <code>created_at</code> and <code>last_used_at</code>.
+With <code>auth.passkeys.enabled</code> off, the ceremonies are
+<code>404 passkeys_disabled</code>.</p>
+<h3 id="cluster-and-nodes"><a class="header" href="#cluster-and-nodes">Cluster and nodes</a></h3>
+<p>Administrator operations; see <a href="../operator-guide/clusters.html">Clusters</a>.
+<code>gxctl cluster …</code> and <code>gxctl node …</code> wrap them. A node’s <code>{id}</code> is its
+id or its name.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/cluster/status</code></td><td>Raft group, nodes, versions, CA rotation (<code>?ports=true</code>: port reachability)</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/init</code></td><td>Turn this host into a cluster of one</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/join</code></td><td>Join this host to a cluster with a join token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/import</code></td><td>Join with this host’s VMs and disks (waits for approval)</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rejoin</code></td><td>Come back as the same node with a rejoin token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/leave</code></td><td>Go back to standalone after this node was removed</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/dissolve</code></td><td>The last node ends the cluster, keeping everything</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/join-tokens</code></td><td>Create a one-time join token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/promote</code></td><td>Promote agents to servers</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rotate-ca</code></td><td>Rotate the cluster CA</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rotate-secrets-key</code></td><td>Rotate the key that protects connector secrets</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/snapshot</code></td><td>Download a snapshot of the replicated store (store it like the database)</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/settings/ovn</code></td><td>Whether cluster networks use OVN, and its settings</td></tr>
+<tr><td><code>PUT</code></td><td><code>/cluster/settings/ovn</code></td><td>Turn OVN on or off and set the shared edge</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/settings/ovn/edge-defaults</code></td><td>A suggested shared edge from what the nodes report</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/ovn</code></td><td>OVN as it is now: databases, chassis, gateways</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/ovn/tunnels</code></td><td>Each node’s Geneve tunnels and their state</td></tr>
+<tr><td><code>GET</code></td><td><code>/nodes</code></td><td>List nodes; a server’s status has <code>ui_url</code>, the web UI address it publishes</td></tr>
+<tr><td><code>GET</code></td><td><code>/nodes/{id}</code></td><td>Get a node</td></tr>
+<tr><td><code>GET</code></td><td><code>/nodes/{id}/topology</code></td><td>A node’s NUMA nodes and PCIe tree, read on that node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/devices/{address}/prepare</code></td><td>Bind a device’s IOMMU group to vfio-pci on its node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/devices/{address}/sriov</code></td><td>Set a physical function’s SR-IOV virtual functions: <code>{"vfs": N}</code> (0 removes them)</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/devices/{address}/release</code></td><td>Put a prepared device back on its drivers</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/devices/{address}/cordon</code></td><td>No new VM gets the device</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/devices/{address}/uncordon</code></td><td>Give it to new VMs again</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/drain</code></td><td>Stop placing VMs on a node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/undrain</code></td><td>Place VMs on it again</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/remove</code></td><td>Remove an empty node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/forget</code></td><td>Forget a node that is gone for good</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/purge</code></td><td>Drop a forgotten node’s record</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/rejoin-token</code></td><td>Token for a node to rejoin as itself</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/detach</code></td><td>Detach a node with its resources, back to standalone (<code>map_networks</code>, <code>with_access</code>); the answer names the networks it maps or drops in <code>network_names</code> (id → name). With <code>abort</code>: cancel a detach; with <code>departed</code>: forget the departed node</td></tr>
+<tr><td><code>PUT</code></td><td><code>/nodes/{id}/ovn</code></td><td>A node’s <code>br-int</code> datapath and physical network mappings</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/spare-image-files/delete</code></td><td>Delete image files a node holds that nothing records</td></tr>
+<tr><td><code>GET</code></td><td><code>/departures</code></td><td>Detaches in progress or done, with <code>network_names</code> as the detach saw them</td></tr>
+<tr><td><code>GET</code></td><td><code>/imports</code></td><td>Import plans</td></tr>
+<tr><td><code>GET</code></td><td><code>/imports/{plan}</code></td><td>One plan and what it brings</td></tr>
+<tr><td><code>POST</code></td><td><code>/imports/{plan}/approve</code></td><td>Approve a plan with mappings (<code>dry_run</code> checks only)</td></tr>
+<tr><td><code>POST</code></td><td><code>/imports/{plan}/reject</code></td><td>Reject a plan</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="system"><a class="header" href="#system">System</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/watch</code></td><td>Live change events (server-sent events; above)</td></tr>
+<tr><td><code>GET</code></td><td><code>/system/reconcile</code></td><td>Controller status: runner, networking helper, queue, unknown VMs (host administrators)</td></tr>
+</tbody>
+</table>
+</div>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../api/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../api/rpc.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../api/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../api/rpc.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

@@ -1,0 +1,561 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Installation - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/installation.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
+<p><code>glidex-install</code> installs Glidex and everything it needs on one host, and
+brings an existing install up to date. Run it again at any time: it only
+changes what is missing or outdated.</p>
+<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
+<ul>
+<li>Linux on x86_64 or aarch64, with KVM enabled (<code>/dev/kvm</code>). QEMU is
+installed on x86_64 only; on aarch64 VMs run on Cloud Hypervisor.</li>
+<li>systemd, for the services. Without it the installer still builds and
+installs the binaries, and you start them by hand.</li>
+<li>A package manager the installer knows: <code>apt-get</code>, <code>dnf</code>, <code>yum</code> or
+<code>pacman</code>.</li>
+<li><code>sudo</code> rights. Run the installer as your normal user; it asks for your
+sudo password when it first needs root.</li>
+<li><code>git</code> and a Rust toolchain (<code>cargo</code>) to build and run the installer
+itself. The installer keeps Rust up to date with <code>rustup</code> afterwards.</li>
+<li>Internet access to the distribution’s package mirrors and to GitHub
+(Cloud Hypervisor, its firmware, Bun). Rustup, Bun, Cloud Hypervisor
+and its firmware are checked against a pinned SHA-256 before use.
+Once running, Glidex itself also connects out for image downloads,
+logins and, if you use them, directory sync and kernel extraction:
+see <a href="configuration.html#outbound-connections">Outbound connections</a>.</li>
+</ul>
+<p>For <a href="datastores.html#lvm-thin">LVM-thin datastores</a> only: LVM with
+thin-pool support (<code>lvm2</code> and the thin-provisioning tools), and a volume
+group with a thin pool that you make. The installer installs neither.</p>
+<p>If <code>/dev/kvm</code> is missing, the installer says how to enable it (CPU
+virtualization in the firmware setup, then <code>modprobe kvm_intel</code> or
+<code>kvm_amd</code>) and carries on; no VM can start until it is there.</p>
+<h2 id="install"><a class="header" href="#install">Install</a></h2>
+<pre><code class="language-bash">git clone https://github.com/CMKL-APEX/glidex.git &amp;&amp; cd glidex
+cargo run -p glidex-install
+</code></pre>
+<p>The installer prints its plan, then:</p>
+<ol>
+<li>Installs or updates system packages: build tools, OpenSSL headers,
+the disk and cloud-init tools (<code>qemu-img</code>, <code>sgdisk</code>, <code>growpart</code>,
+<code>mkdosfs</code>, <code>mtools</code>), QEMU and OVMF, <code>setcap</code>, and OVN and
+<code>conntrack</code> for cluster networks.</li>
+<li>Installs Rust (if missing) and a pinned Bun release, then builds the
+Glidex binaries and the web UI. With <code>--prebuilt</code> it skips this step.</li>
+<li>Creates the service users and groups (see <a href="#users-and-groups">Users and
+groups</a>).</li>
+<li>Installs a pinned Cloud Hypervisor release, <a href="#pylon">Pylon</a> when
+asked for or found, the Glidex binaries and the web UI, and the
+UEFI firmware.</li>
+<li>Sets up VM networking: Open vSwitch, <code>glidex-netd</code> and the boot
+devices, if any (see <a href="host-networking.html">Host networking</a>).</li>
+<li>Writes the systemd units and configuration files, then starts or
+restarts the services.</li>
+<li>Joins a cluster (with <code>--join</code>), registers datastores, and on a
+cluster member brings OVN up to the cluster’s version (see <a href="#ovn-on-cluster-members">OVN on
+cluster members</a>).</li>
+</ol>
+<p>At the end it prints where the web UI and the API are, and the SHA-256
+fingerprints of their certificates:</p>
+<pre><code class="language-text">     web UI:  https://&lt;host&gt;:5173
+     API:     /run/glidex-cp/api.sock (members of glidex-users), https://&lt;host&gt;:8841 (tokens)
+     web UI certificate SHA-256: &lt;fingerprint&gt;
+     API certificate SHA-256: &lt;fingerprint&gt;
+</code></pre>
+<p>Compare these with what your browser shows before you accept the
+certificate warning (see <a href="tls.html">TLS certificates</a>). With
+<code>--tailscale-cert</code>, the summary also gives the
+<code>https://&lt;node&gt;.&lt;tailnet&gt;.ts.net:5173</code> address, and says whether the
+UI already serves the Tailscale certificate there.</p>
+<p>The installer added you to <code>glidex-users</code> and <code>glidex-admin</code>. Log out and
+back in so your session has the new groups, then check:</p>
+<pre><code class="language-bash">systemctl status glidex-control-plane glidex-ui glidex-authd.socket
+gxctl whoami
+</code></pre>
+<p>The installer does not change the firewall. Open what remote clients
+need: TCP 5173 for the web UI, 8841 for the API (remote <code>gxctl</code> and API
+clients), and 8842 between the nodes of a cluster.</p>
+<h2 id="options"><a class="header" href="#options">Options</a></h2>
+<p>Choices are saved in <code>/etc/glidex/install.conf</code> and reused by later runs;
+a flag on the command line overrides the saved choice. Pass options after
+<code>--</code>:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--no-qemu</code></td><td>Skip QEMU and OVMF (Cloud Hypervisor only).</td></tr>
+<tr><td><code>--no-networking</code></td><td>Skip Open vSwitch, <code>glidex-netd</code> and the host network settings. VMs then have no NICs.</td></tr>
+<tr><td><code>--no-services</code></td><td>Don’t install the systemd units, users and groups. You run <code>glidex-control-plane</code> and <code>glidex-ui</code> yourself.</td></tr>
+<tr><td><code>--ovs-profile kernel|dpdk</code></td><td>Open vSwitch datapath. <code>kernel</code> (default) needs nothing special, and turns off DPDK an earlier <code>dpdk</code> profile left on; <code>dpdk</code> reserves hugepages and PMD cores. See <a href="host-networking.html#back-to-the-kernel-profile">Back to the kernel profile</a>.</td></tr>
+<tr><td><code>--pmd-cpu-mask MASK</code></td><td>OVS-DPDK PMD CPU mask, in hex. <code>auto</code> clears it.</td></tr>
+<tr><td><code>--allow-ovs-restart</code></td><td>Allow restarting <code>ovs-vswitchd</code> while it has bridges (interrupts their traffic), also to turn DPDK off under the kernel profile. Not saved.</td></tr>
+<tr><td><code>--release-hugepages</code></td><td>Kernel profile only: give back the hugepages an earlier <code>dpdk</code> profile reserved, once DPDK is off. Kept by default. Not saved.</td></tr>
+<tr><td><code>--no-ovn</code></td><td>Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster.</td></tr>
+<tr><td><code>--tailscale-cert</code></td><td>Serve the web UI with this node’s Tailscale certificate, trusted by browsers at <code>https://&lt;node&gt;.&lt;tailnet&gt;.ts.net:5173</code>. Grants <code>glidex-ui</code> <code>TS_PERMIT_CERT_UID</code> in a <code>tailscaled</code> drop-in and restarts <code>tailscaled</code> once; refused, changing nothing, when another user already holds it or there is no <code>tailscaled</code>. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See <a href="tls.html#tailscale-certificates">Tailscale certificates</a>.</td></tr>
+<tr><td><code>--no-tailscale-cert</code></td><td>Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts <code>tailscaled</code> if it removed its grant.</td></tr>
+<tr><td><code>--with-pylon</code> (or <code>--pylon</code>)</td><td>Install the <a href="../user-guide/vms.html#elastic-cpu">Pylon</a> hypervisor and its <code>pylond</code> core arbiter. You build them first from the <code>CMKL-APEX/pylon</code> repository, checked out next to this one (<code>cargo build --release -p cloud-hypervisor -p pylond</code>): the installer takes <code>target/release/pylon</code> (or <code>cloud-hypervisor</code>) and <code>pylond</code> from there, or from this checkout’s <code>target/release</code>. Without the option, they are installed when found there. Refused when asked for and not found. See <a href="#pylon">Pylon</a>.</td></tr>
+<tr><td><code>--no-pylon</code></td><td>Skip Pylon and <code>pylond</code>.</td></tr>
+<tr><td><code>--qemu</code>, <code>--networking</code>, <code>--services</code>, <code>--ovn</code></td><td>Undo an earlier <code>--no-…</code>.</td></tr>
+<tr><td><code>--datastore NAME=PATH</code></td><td>Register <code>PATH</code> (a directory under <code>/srv/glidex</code>, mounted on every node) as shared datastore <code>NAME</code>. Repeatable. Not saved. See <a href="datastores.html#registering-at-install-time">Registering at install time</a>.</td></tr>
+<tr><td><code>--local-datastore NAME=PATH</code></td><td>Register <code>PATH</code> as a node-local datastore <code>NAME</code>. Repeatable. Not saved.</td></tr>
+<tr><td><code>--datastore-default</code></td><td>Make the first of these datastores the default for new disks. Not saved.</td></tr>
+<tr><td><code>--stord-allow-vg VG</code></td><td>Let <code>glidex-stord</code> make LVM-thin volumes in volume group <code>VG</code>: adds it to <code>allowed_vgs</code> in <code>/etc/glidex/stord.json</code> (never removes one) and restarts <code>glidex-stord</code>. Repeatable. Not saved; the file keeps the list. You make the volume group and its thin pool. See <a href="datastores.html#lvm-thin">LVM-thin</a>.</td></tr>
+<tr><td><code>--vfio-devices LIST</code></td><td>Bind these to <code>vfio-pci</code> at every boot, before glidex and other hypervisors start: pools of <code>control-plane.json</code> or PCI addresses, comma-separated, each with its IOMMU group. A device already on <code>vfio-pci</code> is left alone. Recorded and enabled only (<code>glidex-vfio-boot.service</code>, <code>/etc/glidex/vfio-devices.json</code>, <code>/etc/modules-load.d/glidex-vfio.conf</code>); applied at the next boot. Not with <code>--no-networking</code>. See <a href="pci-passthrough.html#keep-it-across-reboots">Keep it across reboots</a>.</td></tr>
+<tr><td><code>--sriov PF=N</code></td><td>Give physical function <code>PF</code> <code>N</code> SR-IOV VFs at every boot, before the binding. Repeatable or comma-separated; the last count for a PF wins.</td></tr>
+<tr><td><code>--no-vfio-devices</code></td><td>Stop both at boot, and remove the unit and its files (what is bound now stays so until the next boot).</td></tr>
+<tr><td><code>--now</code></td><td>Apply <code>--vfio-devices</code> and <code>--sriov</code> now as well, not only at the next boot. Never touches a device on <code>vfio-pci</code>, nor the VF count of a PF with a VF on <code>vfio-pci</code>. Not saved.</td></tr>
+<tr><td><code>--prebuilt</code></td><td>Install the binaries already in <code>target/release</code> (or <code>$CARGO_TARGET_DIR/release</code>) and the built UI in <code>crates/glidex-ui/ui/dist</code> (built on another host with the same OS) instead of installing Rust and Bun and building. Refused, naming what is missing, unless every binary and the UI are there. Not saved. Installing one build on several servers keeps their UI files the same, which a load balancer needs (see <a href="clusters.html#behind-a-load-balancer-or-tunnel">Behind a load balancer or tunnel</a>).</td></tr>
+<tr><td><code>-h</code>, <code>--help</code></td><td>Show the options.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>/etc/glidex/install.conf</code> holds <code>qemu</code>, <code>networking</code>, <code>services</code>,
+<code>ovs_profile</code>, <code>pmd_cpu_mask</code>, <code>ovn</code>, and, once chosen,
+<code>tailscale_cert</code>, <code>with_pylon</code>, <code>vfio_devices</code> and <code>sriov</code>. The options
+marked <em>not saved</em> above apply to the run they are given on only.</p>
+<p>Without <code>--datastore</code> or <code>--local-datastore</code>, an interactive run
+offers each filesystem mounted directly under <code>/srv/glidex</code> that isn’t
+a datastore yet: register it as a shared datastore named after its
+directory (default no), and make it the default for new disks (default
+no). Datastores are registered only when the services are installed
+(not with <code>--no-services</code>); if that fails, the installer warns and goes
+on.</p>
+<p>Options for joining or leaving a cluster (<code>--join</code>, <code>--role</code>,
+<code>--token-file</code>, <code>--advertise</code>, <code>--node-name</code>, <code>--import</code>, <code>--rejoin</code>,
+<code>--node-id</code>, <code>--leave</code>, <code>--keep-resources --offline</code>) are described in
+<a href="clusters.html">Clusters</a>. None of them is saved.</p>
+<h3 id="ovn-on-cluster-members"><a class="header" href="#ovn-on-cluster-members">OVN on cluster members</a></h3>
+<p>A member’s OVN must be at least as new as the cluster’s <code>ovn-northd</code>:
+an older <code>ovn-controller</code> can’t run the flows a newer northd compiles,
+and VMs on that node lose their traffic on cluster networks. On a
+cluster member with OVN on, the installer checks this after a join and
+on every re-run:</p>
+<ol>
+<li>It reads northd’s version from the cluster’s southbound database,
+with the node’s own certificate. Until the cluster’s OVN is on here,
+it says so and skips the check; re-run the installer later.</li>
+<li>If the local <code>ovn-controller</code> is older, on <code>apt-get</code> hosts it
+upgrades <code>ovn-host</code> (and <code>ovn-common</code>, <code>ovn-central</code> where
+installed): from the distribution when it has a new enough version,
+else, on Ubuntu, from the Ubuntu Cloud Archive pocket that has one.
+For the Cloud Archive it installs <code>ubuntu-cloud-keyring</code> and writes
+<code>/etc/apt/sources.list.d/glidex-uca-ovn.list</code> and
+<code>/etc/apt/preferences.d/glidex-uca-ovn</code>, pinned so that only OVN
+comes from there.</li>
+<li>It refuses to upgrade when the upgrade would remove another package
+(a vendor’s OVS, say), and on other package managers it asks you to
+install the right OVN version yourself. Both stop the installer with
+the version needed.</li>
+</ol>
+<p>An agent installs <code>ovn-host</code> only; servers and standalone hosts also get
+<code>ovn-central</code>.</p>
+<h2 id="what-gets-installed"><a class="header" href="#what-gets-installed">What gets installed</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Path</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr><td><code>/usr/local/bin/glidex-control-plane</code></td><td>The control plane (API server).</td></tr>
+<tr><td><code>/usr/local/bin/gxctl</code></td><td>The CLI.</td></tr>
+<tr><td><code>/usr/local/bin/glidex-ui</code></td><td>The web UI server.</td></tr>
+<tr><td><code>/usr/local/bin/glidex-vm-shim</code></td><td>Supervises one VM’s hypervisor.</td></tr>
+<tr><td><code>/usr/local/bin/glidex-netd</code></td><td>The host networking helper (unless <code>--no-networking</code>).</td></tr>
+<tr><td><code>/usr/local/bin/glidex-authd</code></td><td>The PAM helper for local passwords (unless <code>--no-services</code>).</td></tr>
+<tr><td><code>/usr/local/bin/glidex-stord</code></td><td>The storage helper for LVM-thin datastores (unless <code>--no-services</code>).</td></tr>
+<tr><td><code>/usr/local/bin/glidex-metad</code></td><td>The metadata endpoint for guests (unless <code>--no-networking</code> or <code>--no-services</code>).</td></tr>
+<tr><td><code>/usr/local/bin/cloud-hypervisor</code></td><td>The pinned Cloud Hypervisor.</td></tr>
+<tr><td><code>/usr/local/bin/pylon</code>, <code>/usr/local/bin/pylond</code></td><td>Pylon and its core arbiter, with <code>--with-pylon</code>.</td></tr>
+<tr><td><code>/usr/local/share/glidex/ui/</code></td><td>The built web UI.</td></tr>
+<tr><td><code>/etc/systemd/system/glidex-*.service</code>, <code>glidex-authd.socket</code>, <code>glidex-vm@.service</code>, <code>glidex-vms.slice</code></td><td>The systemd units (see <a href="README.html#components">Operator guide</a>).</td></tr>
+<tr><td><code>/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf</code>, <code>/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf</code></td><td>With <code>--tailscale-cert</code>: the drop-ins that turn the UI’s Tailscale certificate on and let <code>glidex-ui</code> fetch it.</td></tr>
+<tr><td><code>/etc/polkit-1/rules.d/50-glidex-vm.rules</code></td><td>Lets the <code>glidex</code> user start and stop its own <code>glidex-vm@</code> units.</td></tr>
+<tr><td><code>/etc/glidex/control-plane.json.example</code></td><td>Every control plane setting with its default. The installer never writes <code>control-plane.json</code> itself.</td></tr>
+<tr><td><code>/etc/glidex/authd.json</code></td><td><code>glidex-authd</code> settings, written once and then left alone.</td></tr>
+<tr><td><code>/etc/glidex/stord.json</code></td><td>The volume groups <code>glidex-stord</code> may use (<code>allowed_vgs</code>). Written only with <code>--stord-allow-vg</code>; without it stord allows none. Yours to edit; kept on uninstall like your other files there.</td></tr>
+<tr><td><code>/etc/glidex/vm-shim.json</code></td><td>The hypervisor binaries VMs may run.</td></tr>
+<tr><td><code>/etc/glidex/policies/</code></td><td>Site policy files (<code>root:glidex</code>, mode 0750), empty.</td></tr>
+<tr><td><code>/etc/glidex/install.conf</code></td><td>The installer’s saved choices.</td></tr>
+<tr><td><code>/etc/pam.d/glidex</code></td><td>The PAM service for web logins with local passwords.</td></tr>
+<tr><td><code>/etc/sysctl.d/90-glidex.conf</code></td><td><code>net.ipv4.ip_forward=1</code> for NAT networks and, with <code>--ovs-profile dpdk</code>, <code>vm.nr_hugepages</code> (kept after going back to the kernel profile unless <code>--release-hugepages</code>). The previous values are recorded for the uninstaller.</td></tr>
+<tr><td><code>/etc/modules-load.d/glidex.conf</code></td><td>Loads <code>vfio-pci</code> at boot, with <code>--ovs-profile dpdk</code>.</td></tr>
+<tr><td><code>/etc/glidex/vfio-devices.json</code>, <code>/etc/modules-load.d/glidex-vfio.conf</code>, <code>/etc/systemd/system/glidex-vfio-boot.service</code></td><td>With <code>--vfio-devices</code> or <code>--sriov</code>: what to bind and set at boot, and the unit that does it.</td></tr>
+<tr><td><code>/srv/glidex/</code></td><td>The datastore root (<code>root:root</code>, mode 0755), empty: mount or create <a href="datastores.html">datastores</a> under it.</td></tr>
+<tr><td><code>/var/lib/glidex-control-plane/</code></td><td>The <code>glidex</code> user’s home. Its <code>.glidex/</code> holds the database, images, disks, firmware and the self-signed certificate.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The installer also puts a copy of the Cloud Hypervisor firmware in your
+own <code>~/.glidex/</code>, for a control plane you run by hand.</p>
+<h2 id="pylon"><a class="header" href="#pylon">Pylon</a></h2>
+<p>With <code>--with-pylon</code>, the host runs <code>glidex-pylond.service</code>. It listens
+on <code>/run/pylon/pylond.sock</code> (group <code>glidex</code>) and starts before the
+control plane. Pylon VMs register with it, and it parks and wakes their
+vCPUs (see <a href="../user-guide/vms.html#elastic-cpu">Elastic CPU</a>).</p>
+<ul>
+<li>
+<p><strong>Which CPUs it manages.</strong> <code>pylond</code> arbitrates the host CPUs in
+<code>PYLON_CORES</code>, <code>2-7</code> by default. To change it, write
+<code>PYLON_CORES=&lt;list&gt;</code> (such as <code>PYLON_CORES=4-31</code>) to
+<code>/etc/default/glidex-pylond</code> and restart <code>glidex-pylond</code>.</p>
+</li>
+<li>
+<p><strong>CPUs it reserves.</strong> While <code>pylond</code> runs, the control plane reserves
+the first two cores of the host for it, with their hyperthreads: no VM
+is placed on them, and <code>gxctl node topology</code> shows them as reserved
+for <code>pylon</code>. See <a href="host-resources.html">Host resources</a>.</p>
+</li>
+<li>
+<p><strong>The <code>sched_ext</code> scheduler.</strong> On a kernel built with <code>sched_ext</code>
+(6.12 or later), <code>pylond</code> attaches Pylon’s <code>scx_pylon</code> kernel
+scheduler when it starts, and falls back to its own core table if
+that fails. This needs a <code>pylond</code> built from Pylon with
+<a href="https://github.com/CMKL-APEX/pylon/pull/9">CMKL-APEX/pylon#9</a>; an
+earlier one never attaches it from this service. <code>scx_pylon</code> then
+schedules every task on the host, not only VMs, until <code>pylond</code> stops.
+Check it with <code>cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops</code>
+(<code>enabled</code>, <code>pylon</code>). To keep it off, start <code>pylond</code> with
+<code>--no-scx</code> in a drop-in (<code>sudo systemctl edit glidex-pylond</code>), if
+your <code>pylond</code> has that option:</p>
+<pre><code class="language-ini">[Service]
+ExecStart=
+ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES} --no-scx
+</code></pre>
+</li>
+</ul>
+<p>A host offers Pylon when <code>/usr/local/bin/pylon</code> is there; Pylon VMs also
+need <code>pylond</code> running to scale. Elastic VMs run on any host with Cloud
+Hypervisor or QEMU.</p>
+<h2 id="users-and-groups"><a class="header" href="#users-and-groups">Users and groups</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Name</th><th>Kind</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>glidex</code></td><td>system user and group</td><td>Runs the control plane and the VM units. Only this user is in the <code>glidex</code> group, which opens <code>glidex-netd</code>’s, <code>glidex-authd</code>’s and <code>glidex-stord</code>’s sockets.</td></tr>
+<tr><td><code>glidex-ui</code></td><td>system user and group</td><td>Runs the web UI. It may only use the control plane’s UI socket.</td></tr>
+<tr><td><code>glidex-metad</code></td><td>system user and group</td><td>Runs the metadata endpoint. It may only use the control plane’s <code>metad.sock</code>.</td></tr>
+<tr><td><code>glidex-users</code></td><td>group</td><td>People who may use <code>gxctl</code> on the local socket, <code>/run/glidex-cp/api.sock</code>, and log in to the web UI with their local password.</td></tr>
+<tr><td><code>glidex-admin</code></td><td>group</td><td>Break-glass administrators: full rights on the local socket, whatever the policies say.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The installer adds you to <code>glidex-users</code> and <code>glidex-admin</code>, and takes you
+out of <code>glidex</code> if an earlier install put you there. Add other people with
+<code>usermod</code>:</p>
+<pre><code class="language-bash">sudo usermod -aG glidex-users alice     # gxctl on this host, web UI login
+sudo usermod -aG glidex-admin bob       # break-glass administrator
+</code></pre>
+<p>Keep <code>glidex-admin</code> small. On the first start, every member of
+<code>glidex-admin</code> becomes a Glidex administrator (see <a href="access-control.html#the-first-administrators">Access
+control</a>); after that, give
+people roles instead of adding them to this group.</p>
+<h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
+<p>Pull the new source and run the installer again:</p>
+<pre><code class="language-bash">git pull
+cargo run -p glidex-install
+</code></pre>
+<p>It updates system packages that came from its own list, Rust, Bun,
+Cloud Hypervisor, the binaries and the UI, and restarts the services
+whose binary or unit changed. Running VMs keep running across a control
+plane restart: each runs in its own <code>glidex-vm@&lt;id&gt;</code> unit. A running VM
+keeps the Cloud Hypervisor binary it started with until it is restarted.
+Reload web UI tabs that were open before the update to get the new UI.</p>
+<p>With the kernel profile saved, the installer also turns off DPDK it
+finds on in <code>ovs-vswitchd</code>, for example after <code>gxctl ovs dpdk-init</code> or
+a profile switch in the web UI, which don’t change the saved profile.
+With bridges it only says so unless you pass <code>--allow-ovs-restart</code>. To
+keep DPDK, save the profile once with <code>--ovs-profile dpdk</code>.</p>
+<p>On a cluster member, a re-run also brings OVN up to the cluster’s
+<code>ovn-northd</code> (see <a href="#ovn-on-cluster-members">OVN on cluster members</a>).</p>
+<p>If something else listens on port 8841 or 5173 (a control plane or UI you
+started by hand), the installer leaves the service stopped and tells you
+how to start it once the port is free.</p>
+<h2 id="uninstall"><a class="header" href="#uninstall">Uninstall</a></h2>
+<p>See what would be removed, then remove it:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- uninstall --dry-run
+cargo run -p glidex-install -- uninstall
+</code></pre>
+<p>The uninstaller stops every VM (each gets its power button and grace
+period), the services and <code>glidex-netd</code>; tears down Glidex host
+networking (uplinks give the host’s address back to its NIC, NAT,
+bridges and VM ports are removed); then removes the units, binaries,
+installer-written configuration, runtime directories, the users and the
+groups. It also removes the boot devices’ unit and files (devices stay
+on <code>vfio-pci</code> until the next boot). Kernel settings the installer
+changed go back to their previous values. With <code>--tailscale-cert</code> on, it also removes the installer’s
+<code>tailscaled</code> drop-in and restarts <code>tailscaled</code>; a <code>TS_PERMIT_CERT_UID</code>
+you set yourself stays.</p>
+<p>By default it keeps your data and site configuration, and says so:</p>
+<ul>
+<li><code>/var/lib/glidex-control-plane</code> and <code>~/.glidex</code> (VM database,
+credentials, images, disks, firmware);</li>
+<li>your files in <code>/etc/glidex</code> (<code>control-plane.json</code>, <code>netd.json</code>,
+policies, certificates);</li>
+<li>a locally edited <code>/etc/pam.d/glidex</code>;</li>
+<li>Open vSwitch, its DPDK settings and the hugepages they need, and the
+<code>cloud-hypervisor</code>, <code>pylon</code> and <code>pylond</code> binaries.</li>
+</ul>
+<p>It never touches <code>/srv/glidex</code> and the datastores under it, nor the
+volume groups of LVM-thin datastores and the volumes in them, not even
+with <code>--purge-user-data</code>: unmount and remove them yourself.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>-n</code>, <code>--dry-run</code></td><td>Show the plan and change nothing.</td></tr>
+<tr><td><code>-y</code>, <code>--yes</code></td><td>Don’t ask for confirmation.</td></tr>
+<tr><td><code>--remove-ovs</code></td><td>Also remove Open vSwitch: the <code>openvswitch-switch</code> / <code>openvswitch-switch-dpdk</code> packages (via <code>apt-get</code>), or the source build in <code>/opt/glidex</code>.</td></tr>
+<tr><td><code>--reset-dpdk</code></td><td>Clear the DPDK settings Glidex put in Open vSwitch.</td></tr>
+<tr><td><code>--remove-cloud-hypervisor</code></td><td>Also delete the <code>cloud-hypervisor</code> binary.</td></tr>
+<tr><td><code>--remove-pylon</code></td><td>Also delete the <code>pylon</code> and <code>pylond</code> binaries.</td></tr>
+<tr><td><code>--purge-user-data</code></td><td>Also delete <code>~/.glidex</code>, <code>/var/lib/glidex-control-plane</code> (every VM, disk, image and credential) and the site configuration in <code>/etc/glidex</code>. This can’t be undone.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Take a host out of its cluster before you uninstall it (see
+<a href="clusters.html">Clusters</a>).</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/configuration.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/configuration.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

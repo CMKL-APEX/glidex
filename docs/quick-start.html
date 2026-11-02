@@ -1,0 +1,452 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Quick start - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/quick-start.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="quick-start"><a class="header" href="#quick-start">Quick start</a></h1>
+<p>This page takes one Linux host from nothing to a running VM: install
+Glidex, log in, create a NAT network, pull a cloud image, add a login
+for the guest, then create, start, use and stop a VM. Each step shows
+<code>gxctl</code> and, where it helps, the web UI.</p>
+<p>For more choices at any step, see the <a href="user-guide/README.html">User guide</a>
+and the <a href="operator-guide/README.html">Operator guide</a>.</p>
+<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
+<ul>
+<li>Linux on x86_64 or aarch64, with KVM enabled (<code>/dev/kvm</code> exists).</li>
+<li>A package manager the installer knows: <code>apt-get</code>, <code>dnf</code>/<code>yum</code> or
+<code>pacman</code>.</li>
+<li>An account with <code>sudo</code> rights. The installer asks for your sudo
+password, and nothing else unless the host is on a Tailscale tailnet
+(see step 3).</li>
+<li><code>git</code>, and a Rust toolchain to run the installer from source (for
+example from <a href="https://rustup.rs">rustup.rs</a>). The installer then
+installs or updates everything else, including Rust itself.</li>
+<li>Internet access, to download packages, the hypervisors and images.</li>
+</ul>
+<p>Check KVM first:</p>
+<pre><code class="language-bash">ls -l /dev/kvm
+</code></pre>
+<p>If it’s missing, enable virtualization in the firmware settings and load
+the module (<code>sudo modprobe kvm_intel</code> or <code>sudo modprobe kvm_amd</code>).</p>
+<h2 id="1-install"><a class="header" href="#1-install">1. Install</a></h2>
+<pre><code class="language-bash">git clone https://github.com/CMKL-APEX/glidex.git &amp;&amp; cd glidex
+cargo run -p glidex-install
+</code></pre>
+<p>The installer installs what is missing and updates what is outdated:
+system packages, Cloud Hypervisor and its UEFI firmware, QEMU with OVMF,
+Open vSwitch for VM networking, and the Glidex binaries and web UI. It
+sets up these systemd services:</p>
+<ul>
+<li><code>glidex-control-plane</code>: the API, running as the <code>glidex</code> system user.</li>
+<li><code>glidex-ui</code>: the web UI, running as <code>glidex-ui</code>.</li>
+<li><code>glidex-authd</code>: checks local account passwords (PAM) for the web UI.</li>
+</ul>
+<p>It also sets up helper services the control plane uses: <code>glidex-netd</code>
+(host networking), <code>glidex-stord</code> (LVM-thin volumes) and <code>glidex-metad</code>
+(the metadata endpoint VMs reach).</p>
+<p>When it finishes, it prints a summary like this:</p>
+<pre><code class="language-text">glidex runs as systemd services (control plane as 'glidex', web UI as 'glidex-ui'):
+     web UI:  https://host.example.org:5173
+     API:     /run/glidex-cp/api.sock (members of glidex-users), https://host.example.org:8841 (tokens)
+     web UI certificate SHA-256: 3A:7F:…:C2
+     API certificate SHA-256: 91:0B:…:5E
+</code></pre>
+<p>Keep the two certificate fingerprints: you check them in step 3. The
+installer doesn’t open any firewall ports; if you’ll use the web UI
+from another machine, allow TCP 5173 (and 8841 for the API) yourself.</p>
+<p>Re-run <code>cargo run -p glidex-install</code> at any time to update. See
+<a href="operator-guide/installation.html">Installation</a> for its options.</p>
+<h2 id="2-log-out-and-back-in"><a class="header" href="#2-log-out-and-back-in">2. Log out and back in</a></h2>
+<p>The installer adds you to two groups:</p>
+<ul>
+<li><code>glidex-users</code>: lets you use <code>gxctl</code> on this host and log in to the
+web UI with your account’s password.</li>
+<li><code>glidex-admin</code>: makes you an administrator of this Glidex host, and
+owner of its <code>default</code> project.</li>
+</ul>
+<p>Group changes apply to new logins only, so log out and back in (or
+reconnect your SSH session). Then check:</p>
+<pre><code class="language-bash">id -nG            # lists glidex-users and glidex-admin
+gxctl whoami
+</code></pre>
+<p>On the host, <code>gxctl</code> talks to the control plane over its Unix socket
+(<code>/run/glidex-cp/api.sock</code>) and identifies you by your Unix account:
+there is no separate login.</p>
+<p><code>gxctl</code> with no arguments starts an interactive shell (<code>gxctl&gt;</code>, with
+Tab completion and <code>help</code>). With arguments it runs one command and
+exits. This page uses the one-command form; inside the shell, type the
+same words without <code>gxctl</code>.</p>
+<h2 id="3-open-the-web-ui"><a class="header" href="#3-open-the-web-ui">3. Open the web UI</a></h2>
+<p>Print its address:</p>
+<pre><code class="language-bash">gxctl ui
+</code></pre>
+<p>Open <code>https://&lt;host&gt;:5173</code> in a browser. Unless an administrator
+configured a certificate, the UI uses a self-signed one, so the browser
+warns you. Before you accept the warning, open the certificate details
+in the browser and compare its SHA-256 fingerprint with the
+<code>web UI certificate SHA-256</code> line the installer printed. Accept only if
+they match.</p>
+<p>If you no longer have the installer’s output, print the fingerprint on
+the host:</p>
+<pre><code class="language-bash">sudo openssl x509 -in /var/lib/glidex-ui/tls/ui.crt -noout -fingerprint -sha256
+</code></pre>
+<p>On a host on a <a href="https://tailscale.com">Tailscale</a> tailnet with HTTPS
+certificates, the installer asks once whether the web UI should serve
+the node’s Tailscale certificate (<code>--tailscale-cert</code> turns it on
+without asking). With it on, open the <code>https://&lt;node&gt;.&lt;tailnet&gt;.ts.net:5173</code>
+address the installer printed: browsers trust that certificate, so
+there is no warning and no fingerprint to compare. Other names and
+addresses keep the self-signed certificate. See
+<a href="operator-guide/tls.html#tailscale-certificates">Tailscale certificates</a>.</p>
+<p>Sign in with your Unix username and password. The header shows the
+pages you can use (<strong>VMs</strong>, <strong>Images</strong>, <strong>Disks</strong>, <strong>Credentials</strong>,
+<strong>Networking</strong>, <strong>Projects</strong> and, as an administrator, more) and a
+<strong>Project</strong> selector; leave it on <code>default</code>.</p>
+<p>To replace the self-signed certificates, see <a href="operator-guide/tls.html">TLS</a>.</p>
+<h2 id="4-create-a-nat-network"><a class="header" href="#4-create-a-nat-network">4. Create a NAT network</a></h2>
+<p>Glidex creates no network by itself. Create a NAT network: VMs on it get
+an address by DHCP and reach the outside through the host. Name it
+<code>default</code> and the VM forms preselect it.</p>
+<pre><code class="language-bash">gxctl network-add default
+</code></pre>
+<p><code>network-add</code> makes a NAT network unless you pass <code>--isolated</code> or
+<code>--bridged &lt;bridge&gt;</code>. Its subnet is the first free <code>/24</code> in
+<code>10.88.0.0/16</code> unless you pass <code>--subnet &lt;cidr&gt;</code>. Only your default
+project (here, <code>default</code>) may use it until you grant it to others.</p>
+<p>In the web UI: <strong>Networking</strong> → <strong>Add Network</strong>, enter the name
+<code>default</code>, keep <strong>Mode</strong> at <strong>NAT (DHCP + masquerade)</strong>, and click
+<strong>Create</strong>.</p>
+<p>More in <a href="user-guide/networks.html">Networks</a> and
+<a href="operator-guide/host-networking.html">Host networking</a>.</p>
+<h2 id="5-pull-a-cloud-image"><a class="header" href="#5-pull-a-cloud-image">5. Pull a cloud image</a></h2>
+<p>List the catalog, then pull an image. <code>gxctl</code> follows the download until
+the image is verified and ready.</p>
+<pre><code class="language-bash">gxctl image catalog
+gxctl image pull ubuntu-26.04
+</code></pre>
+<p>The catalog also lists UEFI firmware. The control plane imports the
+firmware the installer set up (<code>cloudhv-edk2</code> for Cloud Hypervisor,
+<code>ovmf</code> for QEMU) at its first start, so you don’t need to pull it.
+<code>gxctl image list</code> shows both.</p>
+<p>In the web UI: <strong>Images</strong> → <strong>Cloud image catalog</strong>, then <strong>Pull</strong> on
+the image you want.</p>
+<p>More in <a href="user-guide/images-and-disks.html">Images and disks</a>.</p>
+<h2 id="6-add-a-guest-credential"><a class="header" href="#6-add-a-guest-credential">6. Add a guest credential</a></h2>
+<p>A credential is a username with a password, SSH public keys, or both.
+Glidex sets it up in the guest when the VM first boots. Without one, you
+can’t log in to the VM.</p>
+<pre><code class="language-bash">gxctl credential-add
+</code></pre>
+<p>It asks for a username (default: yours), a password (twice; leave it
+empty for SSH-key-only login), and SSH public key files (default: your
+<code>~/.ssh/*.pub</code>). Give it a password if you want to log in on the
+console in step 8.</p>
+<p>In the web UI: <strong>Credentials</strong> → <strong>Add Credential</strong>, fill in
+<strong>Username</strong>, a password and/or <strong>SSH public keys (optional)</strong>, and
+click <strong>Add</strong>.</p>
+<p>More in <a href="user-guide/credentials.html">Guest credentials</a>.</p>
+<h2 id="7-create-and-start-a-vm"><a class="header" href="#7-create-and-start-a-vm">7. Create and start a VM</a></h2>
+<p><code>gxctl create</code> asks its questions one by one; press Enter to take the
+default shown in brackets. For an Ubuntu VM on Cloud Hypervisor:</p>
+<pre><code class="language-text">$ gxctl create
+VM name: my-vm
+GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional):
+vCPU count [1]: 2
+Memory (MiB) [512]: 2048
+Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor):
+Configure elastic CPU scaling (min/max vCPUs, weight)? [y/N] [n]:
+UEFI firmware [...] [cloudhv-edk2]:
+Boot disk from [image/disk/path] [image]:
+Image (ubuntu-26.04) [ubuntu-26.04]:
+Root disk size in GiB [10]: 20
+Data disks (optional, comma-separated disk names):
+cloud-init seed image (optional, default: auto-generated):
+Login credential (...) [alice]:
+Networks (comma-separated; available: default; 'none' for no NIC) [default]:
+VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
+Device pools (comma-separated pool[:count], e.g. a100:2; optional):
+VM created successfully!
+</code></pre>
+<p>An empty answer for the root disk size gives 10 GiB, or the image’s own
+size if that is larger.</p>
+<p>The VM is created stopped. Start it; <code>start</code> waits until it runs:</p>
+<pre><code class="language-bash">gxctl start my-vm
+gxctl list
+</code></pre>
+<p>In the web UI: <strong>VMs</strong> → <strong>+ Create VM</strong>. Fill in <strong>VM Name</strong>, set
+<strong>vCPU Count</strong> and <strong>Memory (MiB)</strong>, keep <strong>Boot Mode</strong> at <strong>UEFI
+firmware (distro cloud image)</strong> and <strong>Boot Disk</strong> at <strong>New disk from an
+image</strong>, pick the <strong>Image</strong>, set <strong>Root disk (GiB)</strong>, pick your
+<strong>Login Credential</strong>, and check the <code>default</code> network under
+<strong>Networks</strong>. Check <strong>Start it now</strong> to skip the separate start, then
+click <strong>Create VM</strong>. Without <strong>Start it now</strong>, click <strong>Start</strong> on the
+VM’s card.</p>
+<p>More in <a href="user-guide/vms.html">Virtual machines</a>.</p>
+<h2 id="8-open-the-console"><a class="header" href="#8-open-the-console">8. Open the console</a></h2>
+<pre><code class="language-bash">gxctl connect my-vm
+</code></pre>
+<p>You’re on the VM’s serial console. The first boot takes a little while
+for cloud-init to apply the credential; then log in with its username
+and password. Press <code>Ctrl+]</code> to detach; the VM keeps running.
+<code>gxctl log my-vm</code> prints what the console showed so far.</p>
+<p>In the web UI: <strong>Open Console</strong> on the VM’s card or its detail page.</p>
+<p>Once the guest has an address on the NAT network (<code>gxctl get my-vm</code>
+shows it), you can also SSH to it from the host with the keys in your
+credential.</p>
+<p>More in <a href="user-guide/console.html">The console</a>.</p>
+<h2 id="9-stop-the-vm"><a class="header" href="#9-stop-the-vm">9. Stop the VM</a></h2>
+<pre><code class="language-bash">gxctl stop my-vm --graceful
+</code></pre>
+<p><code>--graceful</code> presses the guest’s power button and waits up to 60 seconds
+(<code>--graceful &lt;secs&gt;</code> to change that) for it to shut down, then stops it.
+Without <code>--graceful</code>, <code>stop</code> ends the VM at once, like pulling the plug.</p>
+<p>In the web UI: <strong>Shut down</strong> for the graceful stop, <strong>Force off</strong> for
+the immediate one.</p>
+<p>To remove the VM and the root disk made for it (it asks first; add
+<code>--keep-disk</code> to keep the disk):</p>
+<pre><code class="language-bash">gxctl delete my-vm
+</code></pre>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next steps</a></h2>
+<ul>
+<li>Read <a href="concepts.html">Concepts</a> for how projects, images, disks,
+networks and VMs fit together.</li>
+<li>Use Glidex from another machine: <a href="user-guide/logging-in.html">Logging in</a>.</li>
+<li>Invite other people and set quotas: <a href="user-guide/projects.html">Projects</a>
+and <a href="operator-guide/access-control.html">Access control</a>.</li>
+<li>Add more hosts: <a href="operator-guide/clusters.html">Clusters</a>.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="concepts.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="concepts.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

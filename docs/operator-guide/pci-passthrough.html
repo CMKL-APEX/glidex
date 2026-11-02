@@ -1,0 +1,596 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>PCI passthrough - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/pci-passthrough.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="pci-passthrough"><a class="header" href="#pci-passthrough">PCI passthrough</a></h1>
+<p>A VM can take a host PCI device (a GPU, a NIC, an NVMe drive) through
+VFIO. Both hypervisors support it: Cloud Hypervisor with <code>--device</code>,
+QEMU with <code>-device vfio-pci</code>. Glidex lists the host’s devices, records
+which VM claims which device, checks who may use it, and hot-plugs it
+into a running guest.</p>
+<p>Enabling the IOMMU is up to you. Glidex can bind a device to <code>vfio-pci</code>
+and give the <code>glidex</code> user access to it, or you do that by hand. Device
+pools, NUMA placement, device health and cordoning are in
+<a href="host-resources.html">Host resources</a>.</p>
+<h2 id="host-prerequisites"><a class="header" href="#host-prerequisites">Host prerequisites</a></h2>
+<h3 id="iommu"><a class="header" href="#iommu">IOMMU</a></h3>
+<p>Turn on VT-d (Intel) or AMD-Vi (AMD) in the firmware, then on the kernel
+command line:</p>
+<pre><code class="language-text">intel_iommu=on iommu=pt     # Intel
+amd_iommu=on iommu=pt       # AMD (often on by default)
+</code></pre>
+<p>After a reboot, the IOMMU groups exist:</p>
+<pre><code class="language-bash">ls /sys/kernel/iommu_groups/
+</code></pre>
+<p>A device can only be passed through with every other device in its
+IOMMU group (except PCI bridges). <code>gxctl pci</code> shows each device’s group.</p>
+<h3 id="bind-the-device-to-vfio-pci"><a class="header" href="#bind-the-device-to-vfio-pci">Bind the device to <code>vfio-pci</code></a></h3>
+<p>Glidex can do this and the next step for you, per device, on any node:</p>
+<pre><code class="language-bash">gxctl node prepare-device &lt;node&gt; 0000:41:00.0   # its whole IOMMU group to vfio-pci; /dev/vfio/&lt;group&gt; to glidex
+gxctl node release-device &lt;node&gt; 0000:41:00.0   # back on the drivers it had
+</code></pre>
+<p>Preparing loads <code>vfio-pci</code> if needed, binds every function of the
+device’s IOMMU group (bridges aside) to it, and writes a udev rule
+giving <code>/dev/vfio/&lt;group&gt;</code> to <code>glidex</code>, so the next step is done too.
+For a GPU with a resizable BAR it also shrinks the memory window when
+the host’s GPU windows would add up to its memory or more (see
+<a href="host-resources.html#prepare-devices">Prepare devices</a>); the boot binding
+and pools with <code>prepare: true</code> do the same. It refuses a group with a NIC
+the host uses or an OVS-DPDK uplink, and needs <code>net-admin</code> or
+<code>system-admin</code> on that host. The host’s page in the web UI has <strong>Prepare</strong> and
+<strong>Release</strong> buttons. Like the manual way below, it doesn’t survive a
+reboot; a pool with <code>prepare: true</code> prepares its devices each time
+glidex starts, and the installer can bind them at boot (see <a href="#keep-it-across-reboots">Keep it
+across reboots</a>). See
+<a href="host-resources.html#prepare-devices">Prepare devices</a>.</p>
+<p>To do it by hand, load the module, and bind the device to it instead of
+its usual driver. For a device at <code>0000:41:00.0</code>:</p>
+<pre><code class="language-bash">sudo modprobe vfio-pci
+echo vfio-pci | sudo tee /sys/bus/pci/devices/0000:41:00.0/driver_override
+echo 0000:41:00.0 | sudo tee /sys/bus/pci/devices/0000:41:00.0/driver/unbind
+echo 0000:41:00.0 | sudo tee /sys/bus/pci/drivers_probe
+</code></pre>
+<p>This doesn’t survive a reboot; see the next section.</p>
+<h3 id="keep-it-across-reboots"><a class="header" href="#keep-it-across-reboots">Keep it across reboots</a></h3>
+<p>The installer can bind devices to <code>vfio-pci</code>, and set SR-IOV VF counts,
+at every boot, before glidex, glidex-netd or any other hypervisor
+starts:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --vfio-devices a100     # a pool from control-plane.json
+cargo run -p glidex-install -- --vfio-devices 0000:41:00.0,0000:42:00.0
+cargo run -p glidex-install -- --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
+cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--vfio-devices LIST</code></td><td>Pools of <code>control-plane.json</code> or PCI addresses, comma-separated. Each device and the rest of its IOMMU group go to <code>vfio-pci</code>. A new list replaces the old one.</td></tr>
+<tr><td><code>--sriov PF=N</code></td><td><code>N</code> VFs on physical function <code>PF</code>, set before the binding so its VFs can be bound (by a pool with <code>match.vf_of</code>). Repeatable, or comma-separated; the last count for a PF wins.</td></tr>
+<tr><td><code>--no-vfio-devices</code></td><td>Forget both. What is bound now stays so until the next boot.</td></tr>
+<tr><td><code>--now</code></td><td>Apply them now as well. Not saved.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The settings are saved with the installer’s other choices, so a later
+run without these flags keeps them.</p>
+<p>At boot, <code>glidex-vfio-boot.service</code> (a one-shot unit, there only while
+settings exist) runs after the kernel modules load and before
+glidex-netd, the control plane and libvirt:</p>
+<ol>
+<li>It sets the VF counts.</li>
+<li>It binds each selected device not yet on <code>vfio-pci</code>, with the same
+udev rule and refusals as <strong>Prepare</strong>, so <strong>Release</strong> works on it
+later.</li>
+<li>It prints what it bound, skipped and couldn’t do
+(<code>journalctl -u glidex-vfio-boot</code>). A device that fails stays on its
+driver; the boot goes on.</li>
+</ol>
+<ul>
+<li><strong>A device already on <code>vfio-pci</code> is never touched</strong>, at boot or with
+<code>--now</code>, so a running VM keeps its device.</li>
+<li><strong>With <code>--now</code></strong>, a VF count is left as it is when a VF of that PF is
+on <code>vfio-pci</code>, since changing the count would remove that VF from its
+VM. Asking for the count it already has is fine.</li>
+<li><strong>Pools are copied as their <code>match</code>.</strong> Re-run the installer after
+changing a pool’s match. A pool needs <code>/etc/glidex/control-plane.json</code>
+on that host; addresses don’t.</li>
+<li><strong>Files:</strong> the settings are in <code>/etc/glidex/vfio-devices.json</code>, and
+<code>vfio-pci</code> is loaded from <code>/etc/modules-load.d/glidex-vfio.conf</code>.
+Uninstall and <code>--no-vfio-devices</code> remove both and the unit; devices
+stay where they are until the next boot.</li>
+<li><strong>Host drivers:</strong> for a GPU whose host driver loads first (<code>nvidia</code>,
+<code>nouveau</code>), binding at boot takes it from that driver. Make sure
+nothing on the host uses it.</li>
+<li>The boot devices are set up with the host networking: an install with
+<code>--no-networking</code> doesn’t apply them.</li>
+</ul>
+<h3 id="let-the-glidex-user-open-it"><a class="header" href="#let-the-glidex-user-open-it">Let the <code>glidex</code> user open it</a></h3>
+<p>VMs run in <code>glidex-vm@&lt;id&gt;.service</code> units as the <code>glidex</code> user. The unit
+allows the VFIO devices (<code>/dev/vfio/vfio</code> and the per-group
+<code>/dev/vfio/&lt;group&gt;</code>), but the group device must also be readable and
+writable by <code>glidex</code> through its owner, group or mode. Glidex reads
+those to decide whether a device is ready, as the VM’s unit would open
+it; ACLs aren’t considered. By default the group device belongs to
+<code>root</code>. <strong>Prepare</strong> and the boot binding write a rule per group; a udev
+rule of your own covers every group:</p>
+<pre><code class="language-text"># /etc/udev/rules.d/90-glidex-vfio.rules
+SUBSYSTEM=="vfio", GROUP="glidex", MODE="0660"
+</code></pre>
+<pre><code class="language-bash">sudo udevadm control --reload &amp;&amp; sudo udevadm trigger --subsystem-match=vfio
+ls -l /dev/vfio/
+</code></pre>
+<p>The VM’s unit also lets the hypervisor lock all of the VM’s memory
+(<code>LimitMEMLOCK=infinity</code>): VFIO pins the guest’s RAM so the device can
+reach it. Without it, Cloud Hypervisor stops at <code>Failed to DMA map VFIO device … Out of memory</code>. A unit installed by an older Glidex lacks the
+line: run <code>glidex-install</code> again. The VM’s memory is still bounded by its
+size.</p>
+<h2 id="find-devices"><a class="header" href="#find-devices">Find devices</a></h2>
+<pre><code class="language-bash">gxctl pci                    # every host PCI device: address, ids, class, driver, IOMMU group, NUMA node, ready
+gxctl pci 0000:41:00.0       # one device, with its sysfs path and why it isn't ready
+gxctl node topology &lt;node&gt;   # a node's NUMA nodes with their CPUs, memory, hugepages and devices
+gxctl node topology &lt;node&gt; --devices   # its devices with their root port, switch, link and VFs
+</code></pre>
+<p>A device is <strong>ready</strong> for passthrough when the host has an IOMMU, the
+device is bound to <code>vfio-pci</code>, every other device in its IOMMU group
+(bridges aside) is too, the <code>glidex</code> user can open <code>/dev/vfio/&lt;group&gt;</code>,
+it isn’t an OVS-DPDK uplink, and no other hypervisor on the host is
+using it. A device that isn’t says why; the reasons are listed in
+<a href="host-resources.html#ready-devices">Ready devices</a>. Over the API it is <code>GET /pci-devices</code>
+for this host, and <code>GET /nodes/{id}/topology</code> for any node. Both need a
+host role (<code>auditor</code>, <code>net-admin</code> or <code>system-admin</code>) on that host. In
+the web UI, a host’s page (<strong>Hosts</strong>, or <strong>Cluster</strong> → a node) has a <strong>Topology</strong>
+card. The topology’s fields and warnings are explained in
+<a href="host-resources.html#host-topology">Host topology</a>.</p>
+<p>Glidex names a device by its sysfs path,
+<code>/sys/bus/pci/devices/0000:41:00.0</code>. The API also accepts the bare
+address <code>0000:41:00.0</code>, but use the full path: it is what Glidex stores
+and hands to the hypervisor. Claims and placement compare PCI
+addresses, so the path and the bare address are the same device.</p>
+<h2 id="devices-another-hypervisor-holds"><a class="header" href="#devices-another-hypervisor-holds">Devices another hypervisor holds</a></h2>
+<p>On a host that also runs libvirt, OpenNebula or another hypervisor, a
+device can be on <code>vfio-pci</code> and still be in a running VM that isn’t
+Glidex’s. Such a VM may not show up with <code>fuser /dev/vfio/&lt;group&gt;</code>:
+libvirt gives each QEMU its own <code>/dev</code>. Glidex looks at every process’s
+open files instead (through glidex-netd), and:</p>
+<ul>
+<li>marks the device not ready: <code>in use by qemu-kvm-one (pid 37226)</code>.
+Pools and the scheduler skip it;</li>
+<li>refuses <strong>Release</strong> of its group, and a VF count change on its PF:
+<code>IOMMU group 30 is in use by qemu-kvm-one (pid 37226)</code>;</li>
+<li>leaves it alone in the boot binding and <code>--now</code>, since it is on
+<code>vfio-pci</code> already;</li>
+<li>shows it greyed out, with that reason, in the web UI’s VM form, where
+a node’s GPUs are picked, so nobody picks it.</li>
+</ul>
+<p>Glidex’s own VMs (run as the <code>glidex</code> user) don’t count against
+readiness. Without glidex-netd, nothing is known about other holders.
+While another hypervisor keeps a device, cordon it in Glidex too
+(<code>gxctl node cordon-device</code>), so it stays out of pools once that VM
+stops until you hand it over.</p>
+<h2 id="who-may-use-a-device"><a class="header" href="#who-may-use-a-device">Who may use a device</a></h2>
+<p>Passing a device through needs the <code>usePciDevice</code> permission on it. By
+default:</p>
+<ul>
+<li><code>net-admin</code> and <code>system-admin</code> may use any device. Given on one host
+(a per-host role), they cover that host’s devices only.</li>
+<li>A project may use the devices granted to it in
+<code>/etc/glidex/control-plane.json</code>, by project or by tenant:</li>
+</ul>
+<pre><code class="language-json">{
+  "pci": {
+    "allow": [
+      { "bdf": "0000:41:00.0", "projects": ["ml-team"] },
+      { "bdf": "0000:42:00.0", "tenants": ["research"] },
+      { "bdf": "0000:87:00.0", "projects": ["vision"], "node": "gpu-02" }
+    ]
+  }
+}
+</code></pre>
+<p><code>projects</code> takes project ids or names, <code>tenants</code> tenant ids or slugs.
+In a cluster, the same address on two hosts is two devices: <code>node</code> (a
+node id or name) grants the one on that node; without it, the grant
+covers the device at that address on every node. A VM is then placed
+only on a node where the project may use all its devices (otherwise:
+<code>its PCI devices are not granted to the project on this node</code>); which
+nodes those are is worked out when its devices are set, so a later
+change to <code>pci.allow</code> applies to a waiting VM once its devices are set
+again. In Cedar a device is <code>PciDevice::"&lt;node&gt;/&lt;address&gt;"</code>, in that
+node’s <code>Host</code>.
+Restart the control plane after changing the file. Site policies can
+widen or narrow this; see <a href="access-control.html">Access control</a>.</p>
+<p>Adding a device to an existing VM also needs <code>attachDevice</code> on the VM,
+and removing one <code>detachDevice</code> (both part of the <code>editor</code> role).</p>
+<h2 id="attach-a-device"><a class="header" href="#attach-a-device">Attach a device</a></h2>
+<p>At creation, in the web UI’s VM form, <strong>VFIO PCI Devices (optional)</strong>
+takes comma-separated sysfs paths. Over the API, <code>vfio_devices</code>:</p>
+<pre><code class="language-bash">api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{
+  "name": "gpu-vm", "vcpu_count": 8, "mem_size_mib": 16384,
+  "image": "ubuntu-26.04", "root_disk_size_gib": 40, "credential": "alice",
+  "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]
+}'
+</code></pre>
+<p>On an existing VM, stopped or running:</p>
+<pre><code class="language-bash">gxctl attach-device gpu-vm /sys/bus/pci/devices/0000:41:00.0
+gxctl detach-device gpu-vm /sys/bus/pci/devices/0000:41:00.0
+</code></pre>
+<p>Over the API these are <code>POST</code> and <code>DELETE /vms/{id}/devices</code>, or a
+<code>PATCH</code> whose <code>change</code> sets <code>vfio_devices</code> (with <code>update_mask</code>
+<code>vfio_devices</code>). The VM’s page lists its <strong>VFIO PCI Devices</strong>.</p>
+<p>What happens:</p>
+<ul>
+<li>A <strong>stopped</strong> VM gets the device at its next start.</li>
+<li>A <strong>running</strong> VM gets it hot-plugged (Cloud Hypervisor’s API, QEMU’s
+<code>device_add</code>), and hot-unplugged on detach. While the guest is
+paused, the change waits (the VM shows <code>DevicesPending</code> with reason
+<code>GuestPaused</code>) and is applied once it runs. If the hypervisor refuses,
+the VM shows <code>DevicesPending</code> with reason <code>HotplugFailed</code> and the
+error; stop and start the VM to apply the change at boot.</li>
+<li>One device belongs to one VM on its host. A second VM on the same
+host asking for it is refused (<code>PCI device … is used by VM …</code>), and
+the claim lasts until the instance that holds it is gone, not just
+until the spec drops it.</li>
+<li>A device takes its IOMMU group with it: another VM can’t have a
+device of the same group (<code>PCI device … shares IOMMU group … with …, used by VM …</code>). The VM that holds the group may add the group’s other
+devices. PCI bridges in the group don’t count.</li>
+<li>Both refusals are <code>409 conflict</code>, at creation and when a device is
+added (<code>attach-device</code>, or a <code>PATCH</code> of <code>vfio_devices</code>).</li>
+<li>A NIC that is a DPDK uplink of a glidex bridge can’t be passed
+through.</li>
+</ul>
+<p>The guest sees the device on its PCI bus; install the guest driver
+there as on bare metal.</p>
+<p>GPUs have large memory windows (BARs), up to the size of their memory.
+QEMU’s guest has room for 32 GiB of them by default; when a QEMU VM’s
+devices need more, Glidex gives the guest a 64-bit PCI window that holds
+them (<code>-global q35-pcihost.pci-hole64-size=</code>), sized from the devices it
+has when it starts. A device added to a running QEMU VM must fit what is
+left: if it doesn’t, stop and start the VM.</p>
+<h2 id="in-a-cluster"><a class="header" href="#in-a-cluster">In a cluster</a></h2>
+<p>Devices are per host. The scheduler places a VM with <code>vfio_devices</code>
+only on a node that reports every one of those devices (otherwise:
+<code>no PCI device …</code>) and where no other VM holds them. Identical hosts
+with a GPU at the same address each take a VM with it. When every such
+node’s device is taken, a new VM waits as <strong>Unschedulable</strong> (its page
+says <strong>Waiting for a node</strong>) with the VM holding each one in its
+reason, and is placed once one is free. To choose the host, pin the VM:
+<strong>Placement</strong> in the VM form, or <code>node</code> (a node name or id) in the API
+request. A pinned VM asking for a device already taken on that node is
+refused. A node is also skipped where the device is cordoned, or where
+the project has no grant for it (<code>its PCI devices are not granted to the project on this node</code>). Prepare each host (IOMMU, <code>vfio-pci</code>, the udev
+rule) the same way.</p>
+<p>Claims are per node: a VM on one node doesn’t hold the device at the
+same address on another. Adding a device to a placed VM is checked
+against its node’s VMs; a VM still waiting for a node is checked when
+the scheduler places it. A node running an older Glidex version reports
+no IOMMU groups, so until it is updated its claims are by address only.</p>
+<p><code>gxctl pci</code> lists the devices of the host it is connected to. For an
+agent’s, use <code>gxctl node topology &lt;agent&gt;</code>: the server asks the agent.</p>
+<h2 id="numa"><a class="header" href="#numa">NUMA</a></h2>
+<p>A device is attached to one NUMA node of the host (<code>cat /sys/bus/pci/devices/0000:41:00.0/numa_node</code>, or the NUMA column of
+<code>gxctl pci</code>). A VM with <code>numa_policy</code> (and, for pinned vCPUs,
+<code>cpu_policy: CPU_POLICY_DEDICATED</code>) gets its memory and vCPUs on its
+devices’ NUMA node. With <code>NUMA_POLICY_STRICT</code>, devices on two NUMA
+nodes, or a device whose firmware reports <code>-1</code>, are refused. With
+<code>NUMA_POLICY_ALIGNED</code> (what a GPU request sets), a VM whose devices are
+on several NUMA nodes is split over exactly those, and its guest gets
+one NUMA node and PCI root per host node. See
+<a href="host-resources.html#numa-nodes">NUMA nodes</a> and, for users,
+<a href="../user-guide/vms.html#numa-and-dedicated-cpus">NUMA and dedicated CPUs</a>.</p>
+<h2 id="device-pools"><a class="header" href="#device-pools">Device pools</a></h2>
+<p>Instead of naming devices by address, a VM can ask for a number of
+devices from a pool (<code>devices: [{"pool": "a100", "count": 2}]</code>), and
+Glidex picks ready, uncordoned devices no other VM holds, near each
+other and the VM’s memory. Pools are defined in <code>pci.pools</code> and granted
+with <code>pci.allow</code> entries that name a <code>pool</code>:</p>
+<pre><code class="language-json">{ "pool": "a100", "tenants": ["research"] }
+</code></pre>
+<p>The picked devices are claimed and passed through like devices named by
+address. For GPUs, <code>"gpus": {"count": 4}</code> also places and sizes the VM
+from the pool’s <code>per_device</code>. Pools, their grants, quotas, tenant
+pools, GPU requests and metering are in
+<a href="host-resources.html#device-pools">Device pools</a>.</p>
+<h2 id="nvlink-fabric-nvswitch"><a class="header" href="#nvlink-fabric-nvswitch">NVLink fabric (NVSwitch)</a></h2>
+<p>On an NVSwitch board (HGX A100, say), the host page’s <strong>Topology</strong> card
+lists the NVSwitches under <strong>NVLink fabric</strong>: their driver, IOMMU group
+and NUMA node. <code>gxctl node topology &lt;node&gt;</code> prints them too. They are
+never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
+a service VM (spec/27-gpu-vms.md). Today glidex VMs on such a board get
+their GPUs without NVLink between them.</p>
+<h2 id="sr-iov-virtual-functions"><a class="header" href="#sr-iov-virtual-functions">SR-IOV virtual functions</a></h2>
+<p>A NIC (or GPU) with SR-IOV can be split into virtual functions (VFs),
+each passed through to its own VM. <code>gxctl node topology &lt;node&gt; --devices</code> shows a physical function’s <code>vfs enabled/total</code> and how many
+are ready.</p>
+<pre><code class="language-bash">gxctl node sriov gpu-01 0000:61:00.0 8     # 8 VFs on the PF
+gxctl node sriov gpu-01 0000:61:00.0 0     # none
+</code></pre>
+<p>(<code>POST /nodes/{id}/devices/{pf}/sriov</code> with <code>{"vfs": 8}</code>, <code>net-admin</code>
+or <code>system-admin</code>; also the <strong>VFs…</strong> button on the host’s page.) A change
+removes every VF the PF had, so it is refused while a VM holds the PF or
+one of its VFs, and for a PF that is an OVS-DPDK uplink. To keep a VF
+count across reboots, give it to the installer: <code>--sriov 0000:61:00.0=8</code> (see <a href="#keep-it-across-reboots">Keep it across reboots</a>).</p>
+<p>A PF with VFs enabled is no longer offered itself (passing it through
+would take its VFs with it). A pool takes VFs with <code>match.vf_of</code>, which
+matches their PF:</p>
+<pre><code class="language-json">{ "name": "cx7-vfs", "class": "nic", "prepare": true,
+  "match": { "vf_of": { "vendor_id": "0x15b3", "device_id": "0x1021" } } }
+</code></pre>
+<p>New VFs come up on the NIC’s own driver; <code>prepare: true</code> binds a pool’s
+VFs to <code>vfio-pci</code> at start and right after <code>node sriov</code>. Only VFs on
+<code>vfio-pci</code> are listed as pool devices. A VF inherits its PF’s NUMA node.
+Its MAC, VLAN and spoof checking are the PF’s defaults for now.</p>
+<h2 id="device-health-and-cordoning"><a class="header" href="#device-health-and-cordoning">Device health and cordoning</a></h2>
+<p>Glidex watches the devices of running VMs: if one falls off the bus or
+has uncorrectable PCIe errors after the VM started, the VM’s
+<code>DeviceHealthy</code> condition turns <code>False</code> and a <code>DeviceError</code> event is
+recorded. It doesn’t stop the VM or take the device away.</p>
+<p>A device you no longer trust can be cordoned: no new VM gets it, and the
+VM that has it keeps it.</p>
+<pre><code class="language-bash">gxctl node cordon-device &lt;node&gt; 0000:41:00.0     # new VMs asking for it: PCI device 0000:41:00.0 is cordoned
+gxctl node uncordon-device &lt;node&gt; 0000:41:00.0
+</code></pre>
+<p>See <a href="host-resources.html#device-health-and-cordoning">Device health and cordoning</a>.</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Check</th></tr>
+</thead>
+<tbody>
+<tr><td><code>invalid_config: … is not a PCI device</code></td><td>Use <code>/sys/bus/pci/devices/DDDD:BB:DD.F</code>.</td></tr>
+<tr><td>The VM fails to start: VFIO group not viable</td><td>Another device in the IOMMU group is still on a host driver. Bind all of them to <code>vfio-pci</code>, or move the card to another slot.</td></tr>
+<tr><td>The VM fails to start: permission denied on <code>/dev/vfio/&lt;n&gt;</code></td><td>The udev rule above; <code>ls -l /dev/vfio/</code>.</td></tr>
+<tr><td>No IOMMU group in <code>gxctl pci</code></td><td>The IOMMU is off: firmware setting and kernel command line.</td></tr>
+<tr><td><code>forbidden</code></td><td>The project has no grant for the device in <code>pci.allow</code>, and you are not <code>net-admin</code>.</td></tr>
+<tr><td><code>PCI device … is cordoned</code></td><td>An administrator cordoned it: <code>gxctl node uncordon-device</code>.</td></tr>
+<tr><td>The VM shows <code>DeviceHealthy=False</code></td><td>The device fell off the bus or had PCIe errors: <code>gxctl node topology &lt;node&gt; --devices</code>, the host’s <code>dmesg</code>.</td></tr>
+<tr><td><code>conflict</code>: <code>PCI device … is used by VM …</code></td><td>Another VM on that host holds the device, or its instance still does. Detach it from that VM. If the hot-unplug failed (<code>DevicesPending</code>), the device stays held until that VM stops. In a cluster, leave the VM unpinned so the scheduler can pick a node where the device is free.</td></tr>
+<tr><td><code>conflict</code>: <code>PCI device … shares IOMMU group … with …</code></td><td>Another VM holds a device in the same IOMMU group. Give the whole group to one VM, or move the card to a slot with its own group.</td></tr>
+<tr><td><code>in use by qemu-kvm-one (pid …)</code> on a device, or <code>IOMMU group … is in use by …</code> from Release or a VF count</td><td>A VM has the group open: another hypervisor’s (libvirt, OpenNebula), or for Release and VF counts also Glidex’s. Being on <code>vfio-pci</code> doesn’t mean it’s free: check <code>virsh list</code> and <code>virsh dumpxml &lt;vm&gt;</code> (<code>&lt;hostdev&gt;</code>), and cordon the device in Glidex while the other VM keeps it. See <a href="#devices-another-hypervisor-holds">Devices another hypervisor holds</a>.</td></tr>
+<tr><td><code>/dev/vfio/&lt;n&gt; can't be opened by this user</code></td><td>The group device’s owner, group and mode don’t give <code>glidex</code> read and write. <strong>Prepare</strong> the device, or add the udev rule above; <code>ls -l /dev/vfio/</code>.</td></tr>
+<tr><td>After a reboot, devices are back on their host drivers, or VFs are gone</td><td>Keep them with the installer’s <code>--vfio-devices</code> and <code>--sriov</code>. <code>journalctl -u glidex-vfio-boot</code> shows what the boot unit did.</td></tr>
+<tr><td><code>pool …: 1 of 2 free</code>, <code>no device pool …</code></td><td>See <a href="host-resources.html#troubleshooting">Host resources</a>.</td></tr>
+<tr><td>A VM stays <strong>Waiting for a node</strong> with <code>PCI device …</code> in a node’s reason</td><td><code>no PCI device …</code>: the node doesn’t report it. <code>… is used by VM …</code> or <code>… shares IOMMU group …</code>: every node with it has it taken. The VM is placed once a device is free.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The hypervisor’s own error is in the VM’s events (<code>gxctl events &lt;vm&gt;</code>)
+and in <code>journalctl -u glidex-vm@&lt;id&gt;</code>. See also
+<a href="troubleshooting.html">Troubleshooting</a>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/datastores.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/host-resources.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/datastores.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/host-resources.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

@@ -1,0 +1,861 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Datastores - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-47cd1a50.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-f6a16179.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/datastores.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="datastores"><a class="header" href="#datastores">Datastores</a></h1>
+<p>A <strong>datastore</strong> is a place where disks live. Every disk is on exactly
+one. Every host has the built-in datastore <code>local</code>: the control plane’s
+own disk directory on each node. You can register more:</p>
+<ul>
+<li>a <strong>node-local</strong> datastore (driver <code>dir</code>): a directory each node has its
+own of, such as a faster SSD. A disk on it lives on one node, and its
+VM runs there;</li>
+<li>an <strong>LVM-thin</strong> datastore (driver <code>lvm</code>): a volume group and thin pool
+on each node. A disk on it is a raw logical volume on one node, and
+its VM runs there (see <a href="#lvm-thin">LVM-thin</a>);</li>
+<li>a <strong>shared</strong> datastore (driver <code>shared-dir</code>): one filesystem that every
+node mounts, such as NFS or CephFS. A disk on it isn’t tied to a node,
+so its VM can run on any node that reaches the datastore, and can be
+placed on another node when it is stopped or its node is lost;</li>
+<li>a <strong>hyperstor</strong> datastore (driver <code>hyperstor</code>): a pool of a
+<a href="https://github.com/CMKL-APEX/hyperstor">hyperstor</a> cluster. A disk on
+it is a hyperstor volume, shared like a disk on a shared filesystem
+(see <a href="#hyperstor">Hyperstor</a>).</li>
+</ul>
+<p>Glidex doesn’t mount anything or make volume groups. You mount the
+filesystem (or make the volume group) on each node, and Glidex checks
+what it finds there. Datastores belong to the cluster
+(or to the standalone host): register one once, from any server, and
+every node checks it.</p>
+<p>Registering, changing and deleting datastores needs the <code>system-admin</code>
+role. Everyone can see them, and put disks on them unless a
+<a href="#who-may-use-a-datastore">site policy</a> says otherwise.</p>
+<p><code>local</code> is listed with the others, marked <em>built in</em>. It can’t be
+changed or deleted (<code>409 conflict</code>), and it is the default for new disks
+until you <a href="#the-default-for-new-disks">make another the default</a>. Its
+disks stay where they always were: nothing moves when you add
+datastores.</p>
+<h2 id="mount-it-under-srvglidex"><a class="header" href="#mount-it-under-srvglidex">Mount it under /srv/glidex</a></h2>
+<p>This and the next sections are about directories (<code>dir</code> and
+<code>shared-dir</code>). An LVM-thin datastore needs no mount: see
+<a href="#lvm-thin">LVM-thin</a>.</p>
+<p>The installer creates <code>/srv/glidex</code> (<code>root:root 0755</code>) and leaves it in
+place on uninstall. The control plane and the VMs may write only there
+and in their own directories, so datastores go below it, one directory
+each, owned by the <code>glidex</code> user. A path elsewhere, or <code>/srv/glidex</code>
+itself, is refused (<code>400 invalid_datastore</code>).</p>
+<pre><code class="language-bash">sudo mkdir /srv/glidex/nfs1
+sudo mount -t nfs4 -o hard nfs.example.org:/export/glidex /srv/glidex/nfs1
+sudo chown glidex:glidex /srv/glidex/nfs1
+</code></pre>
+<p>Add it to <code>/etc/fstab</code> so it comes back after a reboot. A mount made
+while Glidex runs is seen at once; nothing needs restarting. For a
+node-local datastore, create the directory on each node that should have
+it:</p>
+<pre><code class="language-bash">sudo install -d -o glidex -g glidex -m 0750 /srv/glidex/fast
+</code></pre>
+<p>Glidex never creates the datastore’s directory itself. It creates what it
+needs inside: <code>disks/</code>, and on a shared datastore also <code>images/</code> and
+<code>.locks/</code>. A shared datastore’s directory must be <strong>empty</strong> when you
+register it (<code>lost+found</code> is ignored); Glidex never takes over a
+directory with files in it.</p>
+<p>For NFS:</p>
+<ul>
+<li>export the directory owned by the <code>glidex</code> uid, which must be the same
+number on every node. Root squash is fine: Glidex never writes as root;</li>
+<li>mount it <strong>hard</strong>. With <code>soft</code>, a server outage fails the guests’ disk
+writes, which can leave a qcow2 disk corrupt;</li>
+<li>keep NFS locking on (no <code>nolock</code>, no <code>local_lock=</code>). Glidex locks each
+disk file so that two nodes can’t run it at once, and that only works
+when the lock reaches the server.</li>
+</ul>
+<p>Glidex warns about <code>soft</code> and local locks: the datastore stays usable,
+but <code>gxctl datastore show</code> and the <strong>Datastores</strong> page show the warning
+for that node (see <a href="#mount-warnings">Mount warnings</a>).</p>
+<blockquote>
+<p><strong>Note:</strong> a filesystem mounted after the services started is writable
+by them wherever it is mounted, even outside <code>/srv/glidex</code>: the
+sandbox only covers what was mounted when they started. Use file
+ownership to decide what <code>glidex</code> may write.</p>
+</blockquote>
+<h2 id="register-it"><a class="header" href="#register-it">Register it</a></h2>
+<p><strong>Web UI:</strong> <strong>Datastores</strong>, <strong>Add Datastore</strong>: a <strong>Name</strong>, the <strong>Path</strong>
+(default <code>/srv/glidex/&lt;name&gt;</code>), and <strong>Shared</strong> for a filesystem every
+node mounts. You can limit it to some <strong>Nodes</strong> (none ticked: every
+node, including nodes that join later), give some nodes <strong>Paths of
+their own</strong> (one <code>node=path</code> per line), make it the default for new
+disks, and turn overcommit off.</p>
+<p><strong>gxctl:</strong></p>
+<pre><code class="language-bash">gxctl datastore create nfs1 --path /srv/glidex/nfs1 --shared
+gxctl datastore create fast --path /srv/glidex/fast --nodes node1,node2
+gxctl datastore create fast2 --path /srv/glidex/fast --node-path node3=/srv/glidex/nvme
+</code></pre>
+<ul>
+<li><code>--shared</code>: one filesystem on every node (<code>shared-dir</code>); without it,
+each node has its own directory (<code>dir</code>).</li>
+<li><code>--nodes N,M</code>: only these nodes have it (names or ids; default: every
+node).</li>
+<li><code>--node-path NODE=PATH</code>: this node mounts it elsewhere (repeatable).</li>
+<li><code>--default</code>: new disks go here unless they name a datastore.</li>
+<li><code>--no-overcommit</code>: refuse a disk that doesn’t fit in the free space
+(see <a href="#overcommit-and-capacity">Overcommit and capacity</a>). By default
+disks are thin files and may promise more than there is.</li>
+</ul>
+<p>A name is 1-64 letters, digits, <code>.</code>, <code>_</code> and <code>-</code>, not starting with <code>.</code>,
+and unique (<code>local</code> included). Over the API it is <code>POST /datastores</code>
+with <code>name</code>, <code>driver</code> (<code>DATASTORE_DRIVER_DIR</code> or
+<code>DATASTORE_DRIVER_SHARED_DIR</code>; for LVM-thin see
+<a href="#register-an-lvm-thin-datastore">Register an LVM-thin datastore</a>),
+<code>path</code>, and optionally <code>node_paths</code>,
+<code>nodes</code>, <code>default_for_disks</code> and <code>overcommit</code>; see the
+<a href="../api/rest.html">REST API</a>. In a cluster, datastores can be registered
+only once every server runs a release that has them; until then the
+request is refused with <code>409 conflict</code>.</p>
+<h3 id="registering-at-install-time"><a class="header" href="#registering-at-install-time">Registering at install time</a></h3>
+<p>The installer can register datastores too, once:
+<code>--datastore NAME=PATH</code> (shared), <code>--local-datastore NAME=PATH</code>, and
+<code>--datastore-default</code> (the first of them becomes the default). They are
+not saved for later runs. Run interactively without them, it offers each
+unregistered mount point directly under <code>/srv/glidex</code> as a shared
+datastore named after its directory, and asks whether it becomes the
+default (suggested answer: no). Unattended runs ask nothing. If
+registering fails, the installer prints a warning and goes on; register
+the datastore with <code>gxctl</code> on a server. See
+<a href="installation.html">Installation</a>.</p>
+<h3 id="what-reachable-means"><a class="header" href="#what-reachable-means">What “reachable” means</a></h3>
+<p>Each node checks every datastore it should have: at start, every
+minute, when a datastore is added or changed, and when another node’s
+view changes. A node reaches it when the directory exists under
+<code>/srv/glidex</code>, is a directory, and is writable; it also reports the
+filesystem’s total and free space.</p>
+<p>A shared datastore also has a marker file, <code>.glidex-datastore</code>, with the
+datastore’s and the cluster’s id. One node writes it into the empty
+directory when the datastore is new (the first ready node, by id, and
+only while no node reaches the datastore yet), and every other node
+must find it. That catches the usual mistake: a node where the NFS
+export isn’t mounted sees an empty directory on its own disk, and
+writing disks there would hide them from every other node. It shows as
+unreachable with <code>NoMarker</code> instead. The marker also keeps two clusters,
+or two datastores, from sharing one directory by mistake
+(<code>ForeignMarker</code>).</p>
+<p>So <strong>mount the filesystem on every node before registering it</strong>. If the
+node that writes the marker hadn’t mounted it, the marker lands on its
+own disk and only that node reaches the datastore (“1 of N”). Then,
+while no disk is on it, delete the datastore, remove the marker on that
+node, mount, and register it again.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Meaning</th><th>What to do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Missing</code></td><td>The directory doesn’t exist on this node</td><td>Create it, or mount the filesystem</td></tr>
+<tr><td><code>NotADirectory</code></td><td>The path is a file</td><td>Fix the path</td></tr>
+<tr><td><code>OutsideRoot</code></td><td>The path isn’t under <code>/srv/glidex</code></td><td>Fix the path or the node’s own path</td></tr>
+<tr><td><code>ReadOnly</code></td><td>Glidex can’t write there (mounted read-only, or the wrong owner)</td><td>Give <code>glidex</code> write access</td></tr>
+<tr><td><code>NoMarker</code></td><td>Shared: no marker, so probably not mounted on this node</td><td>Mount it</td></tr>
+<tr><td><code>NotEmpty</code></td><td>Shared: files but no marker; not claimed, since they aren’t Glidex’s</td><td>Register an empty directory</td></tr>
+<tr><td><code>ForeignMarker</code></td><td>Shared: another datastore’s or another cluster’s directory</td><td>Use another export or directory</td></tr>
+</tbody>
+</table>
+</div>
+<p>An LVM-thin datastore has reasons of its own; see
+<a href="#node-status">Node status</a>.</p>
+<pre><code class="language-bash">gxctl datastore list          # each datastore, how many nodes reach it, free space
+gxctl datastore show nfs1     # each node's path, free space, or why it can't
+</code></pre>
+<p><code>gxctl datastore list</code> shows how many nodes reach each datastore
+(<code>NODES OK</code>, such as <code>2/3</code>) and the most free space on one of them. On
+the <strong>Datastores</strong> page that is <em>Nodes reaching it</em> (<code>2 of 3</code>, in amber
+when some don’t); click a datastore’s name for each node’s path, status
+and free space.</p>
+<p>The VMs of a disk on a registered datastore are placed only on nodes
+that reach it; other nodes are refused with <em>datastore … is not
+reachable here</em> (see the VM form’s <strong>Placement</strong>).</p>
+<h3 id="mount-warnings"><a class="header" href="#mount-warnings">Mount warnings</a></h3>
+<p>A node that reaches a shared datastore on NFS also looks at the mount’s
+options, and records a warning for:</p>
+<ul>
+<li><code>soft</code> or <code>softerr</code>: <em>mounted soft: an NFS server outage fails the
+guests’ disk writes; mount it hard</em>;</li>
+<li>node-local locks, <code>nolock</code> or <code>local_lock=</code> other than <code>none</code>: <em>NFS
+locks are local to this node (…): disk locks don’t keep other nodes
+off a disk</em>. The <a href="#volume-locks">volume locks</a> then no longer keep two
+nodes’ hypervisors off one disk.</li>
+</ul>
+<p>The datastore stays reachable. <code>gxctl datastore show</code> prints the
+warnings under the node; on the <strong>Datastores</strong> page the node shows
+<em>reachable, with warnings</em>, with the warnings listed. Remount with the
+right options; the warning goes at the node’s next check.</p>
+<h2 id="disks-on-a-shared-datastore"><a class="header" href="#disks-on-a-shared-datastore">Disks on a shared datastore</a></h2>
+<h3 id="workers"><a class="header" href="#workers">Workers</a></h3>
+<p>A disk on a shared datastore isn’t bound to a node. One node at a time,
+its <strong>worker</strong>, does the work on its file (making, resizing, deleting
+it): the node of its VM once the VM is placed, otherwise a ready node
+that reaches the datastore, chosen again when nodes come and go. The
+<strong>Disks</strong> page’s <em>Node</em> column shows it as <code>shared · node2</code>.</p>
+<h3 id="volume-locks"><a class="header" href="#volume-locks">Volume locks</a></h3>
+<p>Glidex locks every disk on a shared datastore while a VM runs it or the
+worker works on it, with a lock file in the datastore’s <code>.locks/</code>
+directory. A VM whose disk is locked by another node doesn’t start
+(reason <code>DiskBusy</code>: <em>disk … is in use elsewhere (… is locked)</em>), and a
+disk operation waits until the lock is free. This keeps two nodes from
+writing one disk, for example if a node that seemed gone still runs the
+VM.</p>
+<p>The locks are POSIX record locks on the shared filesystem. Use a
+filesystem that enforces them between nodes (NFSv4 does, with locking
+on; see <a href="#mount-warnings">Mount warnings</a>).</p>
+<!-- TODO(verify): which filesystems besides NFSv4 were tested for cluster-wide OFD locks (CephFS, vendor NAS). -->
+<h2 id="the-default-for-new-disks"><a class="header" href="#the-default-for-new-disks">The default for new disks</a></h2>
+<p>New disks go to <code>local</code> unless they name a datastore, or another one is
+the default. A VM’s root disk made along with the VM goes there too.
+Keeping <code>local</code> (fastest, but its disks tie VMs to their node) or
+choosing shared storage (VMs can move, at network-storage speed) is
+your call.</p>
+<pre><code class="language-bash">gxctl datastore set nfs1 --default        # takes it from any other
+gxctl datastore set nfs1 --no-default     # back to local
+</code></pre>
+<p>In the web UI it is <strong>Make default</strong> on the datastore’s row (on
+<code>local</code>’s row to go back). Disks that already exist stay where they are.</p>
+<h2 id="overcommit-and-capacity"><a class="header" href="#overcommit-and-capacity">Overcommit and capacity</a></h2>
+<p>Disk files and LVM-thin volumes are thin, so by default (overcommit on)
+a datastore accepts
+disks bigger than its free space, as <code>local</code> always has. With overcommit
+off, a new disk, or a disk moved in, that doesn’t fit in the free space
+of the best node (less the disks still being made there) is refused
+with <code>507 insufficient_storage</code>, with <code>free_bytes</code> and <code>needed_bytes</code>
+in the error’s details.</p>
+<p><strong>Web UI:</strong> <strong>Stop overcommit</strong> / <strong>Allow overcommit</strong> on the row.
+<strong>gxctl:</strong> <code>gxctl datastore set fast --no-overcommit</code> (or
+<code>--overcommit</code>).</p>
+<p>The check happens when a disk is created or moved; files that grow
+later can still fill the datastore. Project <code>disk_gib</code> quotas count
+disks on every datastore together.</p>
+<h2 id="changing-and-deleting"><a class="header" href="#changing-and-deleting">Changing and deleting</a></h2>
+<pre><code class="language-bash">gxctl datastore set fast --nodes node1,node2,node4
+gxctl datastore set fast --all-nodes
+gxctl datastore set fast --node-path node4=/srv/glidex/ssd
+gxctl datastore set nfs1 --no-overcommit
+gxctl datastore rm fast
+</code></pre>
+<p>You can change the nodes, the nodes’ own paths, the default and
+overcommit (<code>PATCH /datastores/{id}</code>). The name, the path and whether it
+is shared can’t be changed: register a new datastore and
+<a href="#moving-a-disk-between-datastores">move the disks</a>.</p>
+<p>Refused, with <code>409 conflict</code> and the reason:</p>
+<ul>
+<li>changing a node’s path while a running VM there has a disk on the
+datastore open: stop it first;</li>
+<li>taking a node out of <code>nodes</code> while a disk on the datastore is bound
+to it;</li>
+<li>deleting a datastore while disks are on it: move or delete them
+first. On the <strong>Datastores</strong> page, <strong>Delete</strong> is disabled meanwhile;</li>
+<li>deleting an LVM-thin datastore while a node keeps an image’s volume
+in it (<code>gxctl datastore show</code> lists them as <em>image volumes</em>): delete
+those images first, or remove their <code>gx-i-…</code> volumes with <code>lvremove</code>.
+It can go once each node has looked again, within a minute (see
+<a href="#deleting-an-lvm-thin-datastore">Deleting an LVM-thin datastore</a>).</li>
+</ul>
+<p>Deleting a datastore leaves its directory and files, or its volume group
+and pool, alone; clean them up yourself.</p>
+<h2 id="moving-vms-and-disks"><a class="header" href="#moving-vms-and-disks">Moving VMs and disks</a></h2>
+<ul>
+<li>A stopped VM whose disks are all on shared datastores can be placed on
+another node: <strong>Place on another node</strong> on its page, or
+<code>gxctl place &lt;vm&gt; --node node2</code>.</li>
+<li>When a node is gone for good, <code>gxctl node forget &lt;node&gt; --fenced</code> marks
+its VMs lost; those on shared datastores can then be placed on a live
+node the same way (<strong>Place on a live node</strong>).</li>
+<li>A disk can be moved to another datastore while no running VM uses it:
+<code>gxctl disk move &lt;disk&gt; --datastore nfs1</code>. Moving a node-local disk to
+a shared datastore is how a VM on a node’s own disk becomes free to
+move. Moving it straight to another node’s own disk isn’t possible:
+move it to a shared datastore first, then from there.</li>
+</ul>
+<p>See <a href="../user-guide/images-and-disks.html#moving-a-disk">Images and disks</a>
+for moving disks, and <a href="clusters.html">Clusters</a> for nodes. Nothing moves
+by itself, and running VMs don’t move.</p>
+<h3 id="placing-a-stopped-or-lost-vm-again"><a class="header" href="#placing-a-stopped-or-lost-vm-again">Placing a stopped or lost VM again</a></h3>
+<p>A VM stays on the node it was placed on. A <strong>stopped</strong> VM can be placed
+again on another node, and so can a <strong>lost</strong> one, whose node was
+forgotten (see <a href="clusters.html#a-node-is-gone-for-good">A node is gone for good</a>).</p>
+<p><strong>Web UI:</strong> the VM’s page, <strong>Place on another node</strong> (<strong>Place on a
+live node</strong> for a lost VM): pick a ready node, or <em>Where there is room</em>.</p>
+<p><strong>gxctl:</strong></p>
+<pre><code class="language-bash">gxctl place web1 --node node2      # on node2
+gxctl place web1                   # wherever the scheduler finds room
+</code></pre>
+<p>It prints where the VM went, or <em>Not placed yet</em> with the reason it
+waits. Over the API: <code>POST /vms/{id}/place</code> with an optional <code>node</code>.</p>
+<p>What can go with the VM:</p>
+<ul>
+<li>disks on shared datastores (their worker follows the VM);</li>
+<li>a disk on a node-local datastore only if it is already on the target
+node, and never for a lost VM: <a href="#moving-a-disk-between-datastores">move it</a>
+to a shared datastore first;</li>
+<li>no host-path root disk, no PCI devices, and no networks that exist on
+one node only (use a cluster network).</li>
+</ul>
+<p>Anything else is refused with <code>400 invalid_config</code>, naming the cause. A
+VM that isn’t stopped is refused with <code>400 invalid_state</code>: stop it
+first. On a standalone host there is nowhere else to go
+(<code>400 invalid_config</code>).</p>
+<p>Placing a VM with <code>--node</code> pins it to that node, as choosing a node
+when creating it does; without <code>--node</code> it loses its old pin. Start it
+again afterwards. Files the VM kept on its old node stay there: its
+runtime directory (console log) and, for QEMU, its UEFI variable store;
+on the new node it starts with fresh UEFI variables from its firmware.</p>
+<p>Placing VMs needs the <code>system-admin</code> role.</p>
+<h3 id="moving-a-disk-between-datastores"><a class="header" href="#moving-a-disk-between-datastores">Moving a disk between datastores</a></h3>
+<p>A disk moves while no running VM uses it: from <code>local</code> to a shared
+datastore and back, or onto another node-local datastore, LVM-thin
+included. Users with the
+<code>editor</code> role in its project move it, on the <strong>Disks</strong> page or with
+<code>gxctl disk move</code>; see
+<a href="../user-guide/images-and-disks.html#moving-a-disk">Moving a disk</a> for the
+commands and what is refused.</p>
+<ul>
+<li>One node, the one that has the disk’s file and reaches the
+destination, copies it into the destination, checks the copy, and
+only then switches the disk over and removes the old file. If the copy
+fails, the disk stays where it was (event <code>MoveFailed</code>).</li>
+<li>Onto or off an LVM-thin datastore, the copy is always full, and raw
+on it (see <a href="#moving-disks-on-and-off">Moving disks on and off</a>).</li>
+<li>A linked disk that isn’t flattened is rebased onto the image’s copy
+at the destination; on a shared datastore Glidex makes that copy
+first (see <a href="#images-on-a-shared-datastore">Images on a shared datastore</a>).</li>
+<li>A destination without overcommit that lacks the space refuses the
+move (<code>507 insufficient_storage</code>).</li>
+<li>A disk can’t go straight from one node’s datastore to another node’s
+(for example from <code>local</code> on node1 to <code>local</code> on node2): move it to a
+shared datastore, then from there.</li>
+</ul>
+<h2 id="lvm-thin"><a class="header" href="#lvm-thin">LVM-thin</a></h2>
+<p>An LVM-thin datastore (driver <code>lvm</code>) keeps each disk as a raw thin
+logical volume in a volume group and thin pool on each node. It is
+node-local: a disk on it lives on one node, and its VM runs there.</p>
+<p>Glidex runs as an unprivileged user, so a small root helper,
+<code>glidex-stord</code>, makes, activates, grows and removes the volumes for it.
+stord acts only on the volume groups you allow, and only on Glidex’s
+own volumes: <code>gx-d-&lt;disk-id&gt;</code> for disks and <code>gx-i-&lt;image-id&gt;</code> for
+images. It never touches physical volumes, other logical volumes, or a
+volume group you didn’t list. The installer sets it up on every host
+(see <a href="installation.html">Installation</a>); it keeps no state of its own.</p>
+<h3 id="prepare-the-volume-group"><a class="header" href="#prepare-the-volume-group">Prepare the volume group</a></h3>
+<p>You make the volume group and its thin pool, on each node that should
+have the datastore. Give Glidex a volume group of its own:</p>
+<pre><code class="language-bash">sudo apt-get install lvm2 thin-provisioning-tools   # dnf: lvm2 device-mapper-persistent-data
+sudo vgcreate vg-glidex /dev/nvme1n1
+sudo lvcreate --type thin-pool -l 95%FREE -n pool vg-glidex
+</code></pre>
+<!-- TODO(verify): the installer doesn't install lvm2 or the thin-provisioning tools; check the package names on dnf, yum and pacman hosts. -->
+<p>Leaving some of the volume group free lets you grow the pool, or its
+metadata, later.</p>
+<h3 id="allow-it-in-glidex-stord"><a class="header" href="#allow-it-in-glidex-stord">Allow it in glidex-stord</a></h3>
+<p>stord allows no volume group by default. List yours in
+<code>/etc/glidex/stord.json</code>, on each node:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --stord-allow-vg vg-glidex
+</code></pre>
+<p>The installer adds the group to the file (repeat the flag for more
+than one; it is not saved for later runs, but the file keeps the list)
+and restarts <code>glidex-stord</code>. Or edit the file and restart stord
+yourself:</p>
+<pre><code class="language-json">{ "allowed_vgs": ["vg-glidex"] }
+</code></pre>
+<pre><code class="language-bash">sudo systemctl restart glidex-stord
+</code></pre>
+<p>A missing file means no volume group. A file stord can’t read or parse
+stops it from starting (<code>journalctl -u glidex-stord</code>); every node then
+shows the datastore as <code>StordUnavailable</code>. Restarting stord doesn’t
+disturb running VMs: they keep their devices open.</p>
+<h3 id="register-an-lvm-thin-datastore"><a class="header" href="#register-an-lvm-thin-datastore">Register an LVM-thin datastore</a></h3>
+<p><strong>Web UI:</strong> <strong>Datastores</strong>, <strong>Add Datastore</strong>, <em>LVM-thin on each node</em>:
+the <strong>Name</strong>, the <strong>Volume group</strong> and the <strong>Thin pool</strong>. In a cluster,
+<strong>Volume groups of their own</strong> takes one <code>node=volume-group</code> per line
+for nodes whose group is named otherwise.</p>
+<p><strong>gxctl:</strong></p>
+<pre><code class="language-bash">gxctl datastore create thin1 --lvm vg-glidex/pool
+gxctl datastore create thin2 --lvm vg-glidex/pool --nodes node1,node2 --node-path node3=vg-nvme
+</code></pre>
+<ul>
+<li><code>--lvm VG/POOL</code>: the volume group and its thin pool, instead of
+<code>--path</code>.</li>
+<li><code>--node-path NODE=VG</code>: this node’s own volume group (same pool name).</li>
+<li><code>--nodes</code>, <code>--default</code> and <code>--no-overcommit</code> work as for a directory.</li>
+</ul>
+<p>Over the API: <code>POST /datastores</code> with <code>driver</code>
+<code>DATASTORE_DRIVER_LVM</code>, <code>volume_group</code> and <code>thin_pool</code>, and no <code>path</code>
+(<code>400 invalid_datastore</code> otherwise); <code>node_paths</code> then maps nodes to
+their volume groups. Volume group and pool names are plain LVM names:
+letters, digits, <code>.</code>, <code>_</code>, <code>-</code> and <code>+</code>, not starting with <code>-</code>.</p>
+<p>The volume group and the pool can’t be changed afterwards; a node’s own
+volume group can (<code>gxctl datastore set thin1 --node-path node3=vg-nvme</code>),
+but Glidex doesn’t move volumes from the old group.</p>
+<h3 id="node-status"><a class="header" href="#node-status">Node status</a></h3>
+<p>Each node asks its <code>glidex-stord</code> about the pool, as it checks a
+directory (see <a href="#what-reachable-means">What “reachable” means</a>). A node
+that reaches it reports the pool’s size and free space; <code>gxctl datastore show</code> prints its path as <code>vg-glidex/pool</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Meaning</th><th>What to do</th></tr>
+</thead>
+<tbody>
+<tr><td><code>StordUnavailable</code></td><td><code>glidex-stord</code> isn’t running on this node, or doesn’t answer</td><td><code>systemctl status glidex-stord</code>; it isn’t installed with <code>--no-services</code></td></tr>
+<tr><td><code>NotAllowed</code></td><td>The volume group isn’t in <code>/etc/glidex/stord.json</code></td><td><a href="#allow-it-in-glidex-stord">Allow it</a></td></tr>
+<tr><td><code>NoVolumeGroup</code></td><td>No volume group of that name on this node, or the LVM tools failed (the message says which)</td><td>Create it, fix the node’s own volume group, or install <code>lvm2</code></td></tr>
+<tr><td><code>NoThinPool</code></td><td>The volume group has no thin pool of that name</td><td>Create the pool, or fix the name</td></tr>
+</tbody>
+</table>
+</div>
+<p>It also warns, while the datastore stays usable, when the pool’s data
+or its metadata is 80% full (see <a href="#thin-pool-space">Thin pool space</a>).</p>
+<h3 id="what-is-different-from-a-directory"><a class="header" href="#what-is-different-from-a-directory">What is different from a directory</a></h3>
+<ul>
+<li><strong>Raw only.</strong> Every disk is a raw volume; asking for qcow2 is refused
+(<code>400 invalid_disk</code>).</li>
+<li><strong>Linked disks are thin snapshots.</strong> The first linked disk from an
+image on a node makes that node’s image volume, <code>gx-i-&lt;image-id&gt;</code>,
+from the verified image, and seals it read-only. Each linked disk is
+a thin snapshot of it: quick to make, and it takes pool space only
+for what the guest changes. A full disk is a converted copy.</li>
+<li><strong>Image volumes stay with their image.</strong> A node keeps an image’s
+volume until the image is deleted, even when no linked disk uses it
+any more. Deleting the image removes its volumes on every node.</li>
+<li><strong>Disks grow but never shrink</strong> (<code>400 invalid_disk</code>). Growing a disk
+made from an image extends its root partition as usual.</li>
+<li><strong>Device access per VM.</strong> Before a VM starts, stord lets that VM’s
+unit open exactly its own volumes; deleting the VM takes that away.</li>
+<li><strong>No volume lock of Glidex’s own.</strong> The volumes are on one node, and
+the hypervisors’ own locks refuse a second instance of a disk.</li>
+</ul>
+<h3 id="moving-disks-on-and-off"><a class="header" href="#moving-disks-on-and-off">Moving disks on and off</a></h3>
+<p>A disk moves onto or off an LVM-thin datastore like any other (see
+<a href="#moving-a-disk-between-datastores">Moving a disk between datastores</a>),
+always as a full, standalone copy: a raw volume has no backing file.
+A disk moved onto it becomes raw. A disk moved off it to a directory
+stays raw, as a raw file.</p>
+<p>Volumes are on one node, so the usual rules hold: a disk can’t go
+straight from one node’s volume group to another node’s; move it
+through a shared datastore. A VM with a disk on an LVM-thin datastore
+can be placed again only on the node that has the volume.</p>
+<h3 id="metering"><a class="header" href="#metering">Metering</a></h3>
+<p><code>disk.stored</code> for a volume is the pool space it holds, not its size.
+For a file it is still the file’s allocated size. For a linked volume
+it is what LVM reports as mapped, which includes the blocks it still
+shares with its image volume, so the linked disks of one image together
+can count more than the pool holds.</p>
+<h3 id="thin-pool-space"><a class="header" href="#thin-pool-space">Thin pool space</a></h3>
+<p>Volumes are thin, so the pool, like a directory with overcommit on, can
+promise more than it has. With overcommit off, a new or moved disk that
+doesn’t fit in the pool’s free space is refused
+(<code>507 insufficient_storage</code>). Either way, keep an eye on it:</p>
+<ul>
+<li>
+<p>when the pool’s data or metadata is 80% full, the node shows a
+warning (<em>reachable, with warnings</em> on the <strong>Datastores</strong> page,
+<code>warning:</code> under the node in <code>gxctl datastore show</code>);</p>
+</li>
+<li>
+<p><strong>a full thin pool stops every guest on it at its next write.</strong> Grow
+the pool before that, from free space in the volume group:</p>
+<pre><code class="language-bash">sudo lvextend -L +100G vg-glidex/pool                  # data
+sudo lvextend --poolmetadatasize +1G vg-glidex/pool    # metadata
+</code></pre>
+<p>LVM can also grow it by itself (<code>thin_pool_autoextend_threshold</code> in
+<code>lvm.conf</code>), as long as the volume group has room.</p>
+</li>
+</ul>
+<h3 id="deleting-an-lvm-thin-datastore"><a class="header" href="#deleting-an-lvm-thin-datastore">Deleting an LVM-thin datastore</a></h3>
+<p>Besides the disks, its image volumes keep an LVM-thin datastore: the
+delete is refused (<code>409 conflict</code>, naming the images and nodes) while
+any node keeps one. <code>gxctl datastore show</code> lists them under each node
+as <em>image volumes</em> (image ids). Delete those images, or remove the
+volumes on the node:</p>
+<pre><code class="language-bash">sudo lvremove vg-glidex/gx-i-&lt;image-id&gt;
+</code></pre>
+<p>The delete goes through once each node has looked again, within a
+minute. The volume group, the pool and anything else in them stay.</p>
+<h2 id="hyperstor"><a class="header" href="#hyperstor">Hyperstor</a></h2>
+<p>A hyperstor datastore (driver <code>hyperstor</code>) keeps each disk as a volume
+of a hyperstor cluster’s pool, replicated across that cluster’s nodes.
+It is shared: a disk on it isn’t tied to a node, and its VM can run on
+any node that runs <code>hyperstor-vhost</code>, hyperstor’s vhost-user-blk
+service. The VM’s hypervisor opens the volume through that service’s
+socket, as a disk with 512-byte sectors.</p>
+<p>Glidex manages the volumes (create, clone, grow, delete) through the
+cluster’s API, as a management identity of its own. A hyperstor volume
+is held by one node at a time: the node whose VM uses it holds its
+lease, and another node can’t attach it meanwhile.</p>
+<p>A hold can outlive its VM there: the VM’s node crashed, or a detach
+failed. Each node lets go, within a minute, of the volumes it holds for
+VMs placed elsewhere. And a VM starting on a node takes its disks from
+another node’s <code>hyperstor-vhost</code> that still holds them, which cuts off
+only those volumes there; the node’s other VMs carry on. A disk that a
+Glidex disk operation holds (<code>hyperstorctl</code>, on a server) is waited for:
+the VM shows <code>DiskBusy</code> until it ends. This needs hyperstor with
+per-volume fencing on every node; with an older <code>hyperstor-vhost</code>, a
+held disk is waited for as before.</p>
+<h3 id="prepare-the-nodes"><a class="header" href="#prepare-the-nodes">Prepare the nodes</a></h3>
+<p>On each node that should run VMs from hyperstor disks:</p>
+<ul>
+<li>run hyperstor’s <code>hyperstor-vhost</code> for the cluster’s map service, with
+its default directory (<code>/run/hyperstor/vhost</code>), letting the <code>glidex</code>
+user use its control socket and giving its disks’ sockets the
+<code>glidex</code> group, so that the hypervisors may open them. hyperstor’s
+installer does this: <code>hyperstor-install install --vhost --vhost-user glidex</code> on a host that already runs a hyperstor role, or
+<code>hyperstor-install install --role vhost --map ADDR[,ADDR...] --vhost-user glidex</code> on a host that only runs VMs;</li>
+<li>install <code>hyperstorctl</code>: Glidex writes images into volumes and edits
+their partitions with it.</li>
+</ul>
+<p>Servers also need to reach the cluster’s API (port 8850 by default):
+they do the volume operations, because only they hold Glidex’s
+identity.</p>
+<h3 id="register-a-hyperstor-datastore"><a class="header" href="#register-a-hyperstor-datastore">Register a hyperstor datastore</a></h3>
+<p>Make a single-use management token on the hyperstor cluster, and give
+it to Glidex in a file:</p>
+<pre><code class="language-bash">hyperstorctl token create --role mgmt --name glidex &gt; glidex.token
+gxctl datastore create hs1 --hyperstor 192.0.2.21:8850,192.0.2.22:8850 --pool 1 --token-file glidex.token
+</code></pre>
+<ul>
+<li><code>--hyperstor API,...</code>: the cluster API’s addresses, tried in turn.</li>
+<li><code>--pool N</code>: the hyperstor pool for the disks (<code>hyperstorctl pools</code>).</li>
+<li><code>--token-file F</code>: the token. Glidex enrolls with it once, from the
+server that takes the request: it makes a key, gets a certificate for
+the identity the token names, and keeps the key sealed with the
+cluster’s secrets key. The token is used up and isn’t kept.</li>
+<li><code>--nodes</code>, <code>--default</code> and <code>--no-overcommit</code> work as for a directory.
+With <code>--no-overcommit</code>, a disk larger than the pool’s free space is
+refused (<code>507 insufficient_storage</code>).</li>
+</ul>
+<p>While the pool is <strong>full</strong> (past hyperstor’s full ratio), new disks on
+the datastore are refused with <code>507 insufficient_storage</code>, overcommit
+or not, and <code>gxctl datastore show</code> says so on each server’s line. A
+disk whose creation hyperstor refuses for it waits (<code>DatastoreFull</code>)
+and is tried again each minute, so freeing space (purging hyperstor’s
+trash, adding a device) lets it finish. Disks already there keep
+working. A nearly full pool is a warning only.</p>
+<p><strong>Web UI:</strong> <strong>Datastores</strong>, <strong>Add Datastore</strong>, <em>hyperstor cluster</em>: the
+<strong>Name</strong>, the <strong>Cluster API</strong> addresses, the <strong>Pool</strong> and the <strong>Token</strong>.</p>
+<p>Over the API: <code>POST /datastores</code> with <code>driver</code>
+<code>DATASTORE_DRIVER_HYPERSTOR</code>, <code>hyperstor_api</code>, <code>hyperstor_pool</code> and
+<code>hyperstor_token</code>, and no <code>path</code>. <code>gxctl datastore show</code> prints the
+identity and when its certificate expires; the leader renews it when a
+third of its life is left.</p>
+<h3 id="node-status-1"><a class="header" href="#node-status-1">Node status</a></h3>
+<p>Each node reports whether its <code>hyperstor-vhost</code> answers
+(<code>VhostUnavailable</code> otherwise), and each server whether the cluster’s
+API answers with Glidex’s identity (<code>ApiUnavailable</code>).</p>
+<p>Free and total space are the pool’s, as hyperstor reports them: usable
+space, after its copies or erasure coding. Servers read them from the
+cluster’s API; other nodes report none (<code>0</code> in <code>gxctl datastore show</code>,
+<code>—</code> on the <strong>Datastores</strong> page), and so does a server whose hyperstor
+doesn’t report space yet (a hyperstor too old to report it, or while one of the
+pool’s devices is yet to report). <code>gxctl datastore list</code> and the
+<strong>Datastores</strong> page show the most any node reports. Pools of one hyperstor cluster that share devices each
+count the same free space.</p>
+<h3 id="what-is-different-from-a-directory-1"><a class="header" href="#what-is-different-from-a-directory-1">What is different from a directory</a></h3>
+<ul>
+<li><strong>Disks are raw.</strong> A request for qcow2 is refused; a linked disk is a
+hyperstor clone of the image’s volume, made at once.</li>
+<li><strong>Images</strong> are written into one volume per image and datastore, the
+first time a linked disk needs it, and kept as its snapshot <code>golden</code>.</li>
+<li><strong>Disks grow, and never shrink.</strong> Growing and the root partition’s
+extension work as for a file; the partition is edited through
+<code>hyperstorctl</code>, not a block device.</li>
+<li><strong>Moves</strong> onto or off a hyperstor datastore aren’t supported yet.</li>
+<li><strong>Placing a lost VM again</strong> (<code>--fenced</code>) takes its disks’ leases from
+the forgotten node at its next start. Otherwise a VM takes only holds
+that another node’s <code>hyperstor-vhost</code> left behind (see above); a hold
+of a disk operation is waited for.</li>
+<li><strong>Metering</strong> reports the disks’ size, not the space they use.</li>
+</ul>
+<h3 id="deleting"><a class="header" href="#deleting">Deleting</a></h3>
+<p>A deleted disk’s volume goes to hyperstor’s trash, where hyperstor’s
+operators can bring it back until its grace period ends. A volume left
+by a disk or image that failed to be made holds no one’s data: Glidex
+deletes it for good (purging it from the trash), so that a retry can
+make it again. A clone there
+still needs its image’s volume, so when the image is deleted that
+volume stays until the clone is purged; the leader then removes it,
+within a minute. Deleting the datastore removes Glidex’s sealed key; it
+needs no disks on it, and leaves the identity’s certificate to expire
+(revoke it with <code>hyperstorctl cert revoke</code>).</p>
+<h2 id="images-on-a-shared-datastore"><a class="header" href="#images-on-a-shared-datastore">Images on a shared datastore</a></h2>
+<p>A linked disk (a thin overlay on an image) on a shared datastore needs
+the image on that datastore too. Glidex copies it there by itself, as
+<code>images/&lt;image-id&gt;.qcow2</code> next to <code>disks/</code>, the first time a linked disk
+needs it, and checks it against the image’s checksum; the disk waits
+meanwhile (<em>image … has not been copied into datastore … yet</em>). Full
+copies, and disks on node-local datastores, use the node’s own copy of
+the image.</p>
+<p>The <strong>Images</strong> page lists these copies apart from the node copies (<em>in
+1 shared datastore</em>). They have no <strong>Remove</strong> button: they go when the
+image is deleted, which isn’t possible while a linked disk uses it.</p>
+<h2 id="who-may-use-a-datastore"><a class="header" href="#who-may-use-a-datastore">Who may use a datastore</a></h2>
+<p>Every user who can create disks in a project can put them on any
+datastore. To keep one for some tenants, add a
+<a href="access-control.html#site-policies">site policy</a> that forbids
+<code>useDatastore</code> on it:</p>
+<pre><code class="language-cedar">@id("site.fast-for-research")
+forbid (principal, action == Glidex::Action::"useDatastore", resource == Glidex::Datastore::"&lt;datastore-id&gt;")
+unless { principal in Glidex::Tenant::"&lt;tenant-id&gt;" };
+</code></pre>
+<p><code>gxctl datastore show &lt;name&gt;</code> prints the datastore’s id. The check
+applies when a disk is created on the datastore (including a VM’s root
+disk on the default datastore) and when a disk is moved to it.</p>
+<h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
+<ul>
+<li>No live migration: a VM moves only while stopped, and only when you
+ask.</li>
+<li>A node that leaves the cluster with its VMs
+(<a href="clusters.html#detach-a-node-with-its-vms">detach</a>) can’t take its disks
+on node-local datastores other than <code>local</code> along: move them to
+<code>local</code> first.</li>
+<li>A node that leaves the cluster drops out of each datastore’s status
+within a minute; a node that is only down keeps its last status.</li>
+<li>Existing data can’t be registered as a datastore: Glidex doesn’t take
+over a directory that already has files in it.</li>
+<li>Block storage is node-local LVM-thin only: no shared LVM, no Ceph
+RBD, no CSI plugins, no disk snapshots, and no per-datastore quotas
+yet.</li>
+<li>A VM’s root disk made along with the VM always goes to the default
+datastore. To put it elsewhere, create the disk first
+(<code>gxctl disk create … --datastore</code>) and boot the VM from it.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/host-networking.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/pci-passthrough.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/host-networking.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/pci-passthrough.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
