@@ -309,12 +309,24 @@ with `gxctl directory settings`, or with `PUT /directory/settings`:
   administrator* if nobody holds `tenant-admin` on one any more: add
   one. Site policies can narrow who may (`forbid` on
   `createOwnTenant`), not widen it.
+- **A tenant at first sign-in** (`--auto-create on`, off by default).
+  A user who may create tenants and is a member of none (the
+  connector's default tenant aside) gets one of their own when they
+  sign in through one of the directory's connectors: the slug prefix
+  and their address before `@` (`lab-somchai-k`, `-2` when taken),
+  named *&lt;their name&gt;'s &lt;label&gt;*. It is made as if they had
+  created it (the limits, approval and automatic admission apply), once
+  per user: if they delete it, they don't get another. A user invited
+  to a tenant, or added to one before signing in, gets none. A refusal
+  (a limit, a site `forbid`) doesn't stop the sign-in; the audit log
+  has it (`createOwnTenant`, `auto: true`).
 
 ```bash
 gxctl directory settings                                   # show them
 gxctl directory settings --label Lab/Labs
 gxctl directory settings --self-service on --creators staff,faculty \
   --max-per-user 2 --max-total 200 --approval required --slug-prefix lab-
+gxctl directory settings --auto-create on                  # one for each new user
 ```
 
 `gxctl directory settings` changes only the options given. Each answer

@@ -17,6 +17,7 @@ interface Form {
   approval: boolean;
   slugPrefix: string;
   adminsMayDelete: boolean;
+  autoCreate: boolean;
 }
 
 function toForm(s: api.DirectorySettings): Form {
@@ -32,6 +33,7 @@ function toForm(s: api.DirectorySettings): Form {
     approval: !!ss.approval_required,
     slugPrefix: ss.slug_prefix ?? "",
     adminsMayDelete: ss.admins_may_delete ?? true,
+    autoCreate: !!ss.auto_create,
   };
 }
 
@@ -46,6 +48,7 @@ function fromForm(f: Form): api.DirectorySettings {
       approval_required: f.approval,
       slug_prefix: f.slugPrefix.trim(),
       admins_may_delete: f.adminsMayDelete,
+      auto_create: f.autoCreate,
     },
   };
 }
@@ -230,6 +233,19 @@ export default function DirectorySettings() {
                   onChange={(e) => set({ adminsMayDelete: e.target.checked })}
                 />
                 <span>Their administrators may delete them once they hold nothing.</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  id="self-service-auto-create"
+                  type="checkbox"
+                  className="mt-1"
+                  checked={form.autoCreate}
+                  onChange={(e) => set({ autoCreate: e.target.checked })}
+                />
+                <span>
+                  A user who is a member of none gets one of their own when they first sign in, named after them (once; it counts
+                  toward their limit).
+                </span>
               </label>
               <p className="text-xs text-gray-500">
                 A new one can hold projects; it runs VMs on a cluster once that cluster admits it: by hand, or automatically with a default cap (its Admissions page).

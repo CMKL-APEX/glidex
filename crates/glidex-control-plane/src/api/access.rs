@@ -185,7 +185,10 @@ pub async fn login(
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     let user = match result {
-        Ok((u, _)) => u,
+        Ok((u, c)) => {
+            crate::service::tenancy::tenant_at_sign_in(&app, &c, &u, None, &rid.0);
+            u
+        }
         Err(e) => {
             audit_login(&app, None, &rid.0, "pam", "denied", &body.username);
             return Err(auth_error(e));
@@ -630,7 +633,14 @@ async fn finish_oidc(
         After::Login => None,
     };
     let user = match oidc_user_invited(&app, &c, &identity, invite.as_ref()) {
-        Ok(u) => u,
+        Ok(u) => {
+            let email = identity
+                .email
+                .as_deref()
+                .filter(|_| identity.email_verified);
+            crate::service::tenancy::tenant_at_sign_in(&app, &c, &u, email, &rid.0);
+            u
+        }
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", &identity.subject);
             return Err(e.into());

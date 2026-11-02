@@ -1446,6 +1446,133 @@ async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
     assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
 }
 
+/// D82: a tenant at a user's first sign-in, when the directory makes one:
+/// off by default, once per user, not for a member of a tenant (the
+/// connector's default tenant aside), a taken slug, the limits.
+#[tokio::test]
+async fn a_user_in_no_tenant_gets_one_at_first_sign_in() {
+    use glidex_control_plane::service::tenancy::tenant_at_sign_in;
+    let h = harness_with(|c| c.auth.pam.enabled = true);
+    let at = h.session(&h.admin("ada"));
+    let c = h.app.auth.pam_connector(None).unwrap();
+    let sign_in = |name: &str, email: Option<&str>| {
+        let id = h.user(name);
+        let u = h.app.auth.store.user(&id).unwrap().unwrap();
+        tenant_at_sign_in(&h.app, &c, &u, email, "test");
+        id
+    };
+    let made_by = |id: &str| -> Vec<String> {
+        let mut v: Vec<String> = h
+            .app
+            .auth
+            .tenants
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.created_by.as_deref() == Some(id))
+            .map(|t| t.slug)
+            .collect();
+        v.sort();
+        v
+    };
+    let set = |ss: Value| {
+        let h = &h;
+        let at = at.clone();
+        async move {
+            let (s, v) = h
+                .rest(
+                    "PUT",
+                    "/directory/settings",
+                    Some(json!({ "settings": { "self_service": ss } })),
+                    &at,
+                )
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+        }
+    };
+
+    // Self-service on, but not at sign-in: nothing.
+    set(json!({ "enabled": true, "slug_prefix": "lab-" })).await;
+    let alice = sign_in("alice", Some("Alice.Smith@example.test"));
+    assert!(made_by(&alice).is_empty());
+
+    set(json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true })).await;
+    let (_, v) = h.rest("GET", "/directory/settings", None, &at).await;
+    assert_eq!(v["settings"]["self_service"]["auto_create"], true, "{v}");
+
+    // Named from the address, the user its admin; once.
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert_eq!(made_by(&alice), ["lab-alice-smith"]);
+    let t = h.app.auth.tenants.resolve("lab-alice-smith").unwrap();
+    assert_eq!(t.display_name, "alice's Tenant");
+    assert!(t.self_service);
+    let (_, v) = h.rest("GET", "/tenants", None, &h.session(&alice)).await;
+    assert!(v["tenants"].to_string().contains("lab-alice-smith"), "{v}");
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert_eq!(made_by(&alice).len(), 1);
+    // A taken slug.
+    let erin = sign_in("erin", Some("alice.smith@other.test"));
+    assert_eq!(made_by(&erin), ["lab-alice-smith-2"]);
+    let (s, v) = h
+        .rest(
+            "DELETE",
+            &format!("/tenants/{}", t.id),
+            None,
+            &h.session(&alice),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert!(made_by(&alice).is_empty(), "not again once deleted");
+
+    // No address: the display name.
+    let frank = sign_in("Frank Lee", None);
+    assert_eq!(made_by(&frank), ["lab-frank-lee"]);
+
+    // A member of a tenant gets none; of the connector's default one alone, does.
+    let bob = h.user("bob");
+    h.app
+        .auth
+        .tenants
+        .add_member(
+            &t_id(&h, "lab-alice-smith-2"),
+            Ent::User(bob.clone()),
+            "test",
+        )
+        .unwrap();
+    sign_in("bob", None);
+    assert!(made_by(&bob).is_empty());
+    let dave = h.user("dave");
+    h.app
+        .auth
+        .tenants
+        .add_member(DEFAULT_TENANT, Ent::User(dave.clone()), "test")
+        .unwrap();
+    sign_in("dave", None);
+    assert!(made_by(&dave).is_empty(), "default isn't the connector's");
+    let mut dc = c.clone();
+    dc.default_tenant = Some(DEFAULT_TENANT.into());
+    let u = h.app.auth.store.user(&dave).unwrap().unwrap();
+    tenant_at_sign_in(&h.app, &dc, &u, None, "test");
+    assert_eq!(made_by(&dave), ["lab-dave"]);
+
+    // Over a limit: none, and tried again at the next sign-in.
+    set(
+        json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true,
+                "max_total": 3 }),
+    )
+    .await;
+    let gil = sign_in("gil", None);
+    assert!(made_by(&gil).is_empty());
+    set(json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true })).await;
+    sign_in("gil", None);
+    assert_eq!(made_by(&gil), ["lab-gil"]);
+}
+
+fn t_id(h: &H, slug: &str) -> String {
+    h.app.auth.tenants.resolve(slug).unwrap().id
+}
+
 /// Automatic admission (spec/19-tenancy.md D79): a hosted directory's
 /// self-service (or all new) tenants are admitted as they become active,
 /// with a default cap they follow until the operator sets theirs by hand.

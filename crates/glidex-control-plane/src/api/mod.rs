@@ -2191,6 +2191,37 @@ impl Caller {
     }
 }
 
+impl Caller {
+    /// A caller for what the server does for `p` outside a request of
+    /// theirs (a tenant at sign-in, spec/19-tenancy.md D82): their policies
+    /// apply, and [`Caller::write_audit`] records it like a request.
+    pub fn on_behalf(app: &AppState, p: Principal, action: &'static str, request_id: &str) -> Self {
+        Caller {
+            p,
+            action,
+            app: app.clone(),
+            request_id: request_id.to_string(),
+            audit: AuditSlot::default(),
+            pre: Vec::new(),
+        }
+    }
+
+    /// The audit entry of an [`on_behalf`](Self::on_behalf) caller's
+    /// write; `failure` is its error code.
+    pub fn write_audit(&self, failure: Option<&str>, how: &str) {
+        write_audit(
+            &self.app,
+            Some(&self.p),
+            &self.request_id,
+            self.action,
+            true,
+            &self.audit,
+            failure.map(|c| ("error".to_string(), c.to_string())),
+            ("via", how.to_string()),
+        );
+    }
+}
+
 /// `401 reauth_required` for step-up, else `403`.
 fn deny_response(action: &str, d: &Decision) -> ApiErr {
     if d.denied_by("base.step-up") {
