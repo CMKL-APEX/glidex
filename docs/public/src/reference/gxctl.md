@@ -214,7 +214,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 |---|---|
 | `project list`, `projects` | Projects you can see |
 | `project show <p>` | Quotas and usage |
-| `project create <name> [--description TEXT]` | Create a project |
+| `project create <name> [--description TEXT] [--tenant T]` | Create a project, in tenant `T` (slug or id; default `default`) |
 | `project delete <p>` | Delete after confirmation |
 | `project quota <p> [key=value…]` | Show, or set limits: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `devices.<pool>`; `none` means unlimited |
 | `project use <p>` | Set your default project (`-` or `none` clears it) |

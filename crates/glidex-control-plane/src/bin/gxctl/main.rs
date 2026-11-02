@@ -820,7 +820,8 @@ fn print_help() {
     );
     println!(
         "  {} - Projects",
-        "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
+        "project list | show <p> | create <name> [--description D] [--tenant T] | delete <p>"
+            .cyan()
     );
     println!(
         "  {} - Quotas (none = unlimited)",

@@ -419,7 +419,7 @@ async fn get_project(
 }
 
 pub async fn project(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: project list | show <p> | create <name> [--description TEXT] | delete <p> | quota <p> key=value... | use <p>";
+    let u = "Usage: project list | show <p> | create <name> [--description TEXT] [--tenant T] | delete <p> | quota <p> key=value... | use <p>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => match list_projects(client).await {
             Ok(ps) if ps.is_empty() => println!("No projects visible to you."),
@@ -448,6 +448,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                     Ok(p) => {
                         println!("  Name:        {}", p.name.yellow());
                         println!("  Id:          {}", p.id);
+                        println!("  Tenant:      {}", p.tenant_id);
                         println!("  Description: {}", p.description);
                         println!("  Created:     {}", ts(p.created_at.as_option()));
                         println!(
@@ -461,7 +462,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         "create" => {
-            let pos = positional(&args[1..], &["--description"]);
+            let pos = positional(&args[1..], &["--description", "--tenant"]);
             let Some(name) = pos.first() else {
                 return usage(u);
             };
@@ -470,6 +471,7 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                 .create_project(CreateProjectRequest {
                     name: name.to_string(),
                     description: flag_value(args, "--description").unwrap_or("").to_string(),
+                    tenant: flag_value(args, "--tenant").map(str::to_string),
                     ..Default::default()
                 })
                 .await

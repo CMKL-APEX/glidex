@@ -15,7 +15,9 @@ plane's first start are made its owners.
 
 **Web UI:** **Projects** in the header lists the projects you are a
 member of, with each one's use against its quotas. Click a project for
-its page: quotas, members, networks.
+its page: quotas, members, networks. When your projects are in more than
+one tenant, a **Tenant** filter above the list shows one tenant's
+projects.
 
 **gxctl:**
 
@@ -33,7 +35,8 @@ Most commands work in one project at a time: lists show its VMs and
 disks, and new resources are created in it.
 
 **Web UI:** the **Project** selector in the header. Every page then shows
-that project's resources. On a project's page, **Select this project**
+that project's resources. When your projects are in more than one
+tenant, the selector groups them under each tenant's name. On a project's page, **Select this project**
 does the same. Your choice is also saved as your default project.
 
 **gxctl:** a project is chosen, in this order, by
@@ -205,13 +208,18 @@ How a VM asks for devices is in
 
 If you may create projects, **Projects** shows **+ Create Project**:
 give a **Name** (1-32 lowercase letters, digits and dashes), an optional
-**Description** and, optionally, an **Owner**. Or:
+**Description** and, optionally, an **Owner**. If you may create
+projects in more than one tenant, choose its **Tenant**: it starts at
+the tenant of the project selected in the header. Or:
 
 ```bash
 gxctl project create lab --description "Lab VMs"
+gxctl project create lab --tenant cs-lab    # in tenant cs-lab (slug or id)
 ```
 
-`gxctl project create` adds no owner; add one with `binding add`.
+Without `--tenant`, gxctl creates the project in tenant `default`. It
+adds no owner; add one with `binding add`. `gxctl project show` names
+the project's tenant.
 
 To delete a project it must not own any VMs, disks or credentials:
 **Delete project** on its page, or `gxctl project delete lab` (it asks

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { healthCheck, listTenants } from "../api";
+import { healthCheck } from "../api";
+import { byTenant, useTenants } from "../hooks";
 import { isHostedDirectory, useSession } from "../session";
 import Activity from "./Activity";
 import { AccountMenu } from "./Accounts";
@@ -22,19 +23,11 @@ export default function Header() {
   }, []);
 
   // Directory readers see every tenant; others see the tenants they hold a
-  // role on, so ask whether there are any.
-  const [readsATenant, setReadsATenant] = useState(false);
+  // role on. Their names also head the project picker's groups.
+  const tenants = useTenants();
+  const readsATenant = !me.token && tenants.length > 0;
   const directoryReader = host.listTenants || host.createTenant;
-  useEffect(() => {
-    if (directoryReader || me.token) return;
-    let live = true;
-    listTenants()
-      .then((t) => live && setReadsATenant(t.length > 0))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [directoryReader, me.token]);
+  const groups = byTenant(projects, (id) => tenants.find((t) => t.id === id)?.slug ?? id);
 
   const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
   // A hosted directory keeps its own audit (spec/19-tenancy.md D74).
@@ -101,11 +94,20 @@ export default function Header() {
                 disabled={projects.length === 0}
               >
                 {projects.length === 0 && <option value="">none</option>}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
+                {groups.map(({ label, projects }) => {
+                  const options = projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ));
+                  return label ? (
+                    <optgroup key={label} label={label}>
+                      {options}
+                    </optgroup>
+                  ) : (
+                    options
+                  );
+                })}
               </select>
             </label>
             <div className="flex items-center text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>

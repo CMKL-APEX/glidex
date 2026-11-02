@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import * as api from "../api";
 import type { ProjectView, Tenant } from "../types";
 import { QUOTA_KEYS, QUOTA_LABELS } from "../types";
@@ -7,7 +7,7 @@ import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { ErrorBanner, Field, PageHeader, errorMessage, inputClass, primaryButton, selectClass } from "../components/ui";
 import { useSession } from "../session";
-import { useDirectory } from "../hooks";
+import { useDirectory, useProjectTenants, useTenants } from "../hooks";
 
 /** `used / limit` (or `used` when unlimited). */
 export function UsageCell({ used = 0, limit }: { used?: number; limit?: number | null }) {
@@ -22,8 +22,27 @@ export function UsageCell({ used = 0, limit }: { used?: number; limit?: number |
   );
 }
 
-function CreateProjectForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+/** The tenant a new project goes in: the selected project's, else `default`,
+ *  else the first the caller may create projects in. */
+function initialTenant(tenants: Tenant[], selected: string | undefined): string {
+  const ids = tenants.map((t) => t.id);
+  return [selected, "default"].find((id) => id && ids.includes(id)) ?? ids[0] ?? "";
+}
+
+function CreateProjectForm({
+  tenants,
+  selectedTenant,
+  onDone,
+  onCancel,
+}: {
+  /** The tenants the caller may create projects in; the field shows for more than one. */
+  tenants: Tenant[];
+  selectedTenant?: string;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
   const [dir] = useDirectory();
+  const [tenant, setTenant] = useState(() => initialTenant(tenants, selectedTenant));
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [owner, setOwner] = useState("");
@@ -35,7 +54,7 @@ function CreateProjectForm({ onDone, onCancel }: { onDone: () => void; onCancel:
     setBusy(true);
     setError(null);
     try {
-      await api.createProject({ name, description, owners: owner ? [owner] : [] });
+      await api.createProject({ name, description, owners: owner ? [owner] : [], tenant: tenant || undefined });
       onDone();
     } catch (err) {
       setError(errorMessage(err));
@@ -57,6 +76,17 @@ function CreateProjectForm({ onDone, onCancel }: { onDone: () => void; onCancel:
           onChange={(e) => setName(e.target.value)}
         />
       </Field>
+      {tenants.length > 1 && (
+        <Field label="Tenant" htmlFor="project-tenant">
+          <select id="project-tenant" className={selectClass} value={tenant} onChange={(e) => setTenant(e.target.value)}>
+            {tenants.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.display_name ? `${t.display_name} (${t.slug})` : t.slug}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Field label="Description" htmlFor="project-description">
         <input id="project-description" className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
@@ -90,7 +120,10 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const tenants = useTenants();
+  const projectTenants = useProjectTenants(tenants);
+  const [params, setParams] = useSearchParams();
+  const filter = params.get("tenant") ?? "";
 
   const refresh = useCallback(() => {
     api
@@ -103,26 +136,45 @@ export default function Projects() {
     refresh();
   }, [refresh]);
   // Tenant slugs, for those the caller may read; the id otherwise.
-  useEffect(() => {
-    api
-      .listTenants()
-      .then(setTenants)
-      .catch(() => setTenants([]));
-  }, []);
   const tenantName = (id: string) => tenants.find((t) => t.id === id)?.slug ?? id;
   const showTenant = !!projects?.some((p) => p.tenant_id);
+  // The tenants the caller's projects are in, for the filter: shown for two or more.
+  const projectTenantIds = [...new Set((projects ?? []).map((p) => p.tenant_id ?? ""))]
+    .filter(Boolean)
+    .sort((a, b) => tenantName(a).localeCompare(tenantName(b)));
+  const shown = filter ? (projects ?? []).filter((p) => p.tenant_id === filter) : projects;
+  const selectedTenant = session.projects.find((p) => p.id === session.project)?.tenant_id;
+  const canCreate = session.host.createProject || (projectTenants?.length ?? 0) > 0;
 
   return (
     <div>
       <PageHeader title="Projects" subtitle="Projects own VMs, disks, guest credentials and project networks, within their quotas.">
-        {session.host.createProject && (
+        {canCreate && (
           <button className={primaryButton} onClick={() => setCreating(true)}>
             + Create Project
           </button>
         )}
       </PageHeader>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
-      {projects === null ? (
+      {projectTenantIds.length > 1 && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-gray-600">
+          <label htmlFor="projects-tenant">Tenant</label>
+          <select
+            id="projects-tenant"
+            className="px-2 py-1 border border-gray-300 rounded-lg bg-white text-sm"
+            value={filter}
+            onChange={(e) => setParams(e.target.value ? { tenant: e.target.value } : {}, { replace: true })}
+          >
+            <option value="">All tenants</option>
+            {projectTenantIds.map((id) => (
+              <option key={id} value={id}>
+                {tenantName(id)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {projects === null || shown === null ? (
         <LoadingCard />
       ) : projects.length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
@@ -143,7 +195,7 @@ export default function Projects() {
               </tr>
             </thead>
             <tbody>
-              {projects.map((p) => (
+              {shown.map((p) => (
                 <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <Link to={`/projects/${p.id}`} className="font-medium text-sky-700 hover:underline">
@@ -171,6 +223,8 @@ export default function Projects() {
       {creating && (
         <Modal title="Create Project" onClose={() => setCreating(false)}>
           <CreateProjectForm
+            tenants={projectTenants ?? []}
+            selectedTenant={selectedTenant}
             onCancel={() => setCreating(false)}
             onDone={() => {
               setCreating(false);
