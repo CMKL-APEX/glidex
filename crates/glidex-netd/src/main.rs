@@ -23,6 +23,8 @@ struct FileConfig {
     policy: Option<auth::Policy>,
     /// Router SNAT zones to meter (`ovn.snat_ct_zones` of the control plane).
     ct_zones: Option<(u16, u16)>,
+    /// Source routes for ports that share a subnet (spec/09-networking.md §8.6).
+    source_routes: Option<glidex_ovs::srcroute::Config>,
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -31,6 +33,59 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .chain(["/usr/local/bin".into(), "/usr/bin".into()])
         .map(|d| d.join(name))
         .find(|p| p.is_file())
+}
+
+/// Keep source routes current (spec/09-networking.md §8.6.4): a pass after
+/// each burst of address changes (`ip monitor address`, debounced 1 s),
+/// and every 60 s for anything missed.
+fn watch_source_routes(netd: Arc<Netd>) {
+    use std::io::BufRead;
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::time::Duration;
+    let (tx, rx) = channel::<()>();
+    std::thread::spawn(move || {
+        loop {
+            match std::process::Command::new("ip")
+                .args(["-o", "monitor", "address"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    if let Some(out) = child.stdout.take() {
+                        for _ in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                            if tx.send(()).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    let _ = child.wait();
+                    tracing::warn!("ip monitor address ended; restarting it");
+                }
+                Err(e) => tracing::warn!(error = %e, "cannot run ip monitor address"),
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+    std::thread::spawn(move || {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    while rx.try_recv().is_ok() {}
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            let pass = netd.source_routes_pass();
+            for c in &pass.applied {
+                tracing::info!(command = %c, "source routes");
+            }
+            for e in &pass.errors {
+                tracing::warn!(error = %e, "source routes");
+            }
+        }
+    });
 }
 
 fn main() {
@@ -79,6 +134,9 @@ fn main() {
     }
     if let Some(z) = file.ct_zones {
         config.ct_zones = z;
+    }
+    if let Some(s) = file.source_routes {
+        config.source_routes = s;
     }
     config.probe.ch_binary = find_in_path("cloud-hypervisor");
     if let Some(s) = file.commit_window_secs {
@@ -163,6 +221,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = netd.check_source_routes() {
+        eprintln!("glidex-netd: {}: {e}", config_path.display());
+        std::process::exit(1);
+    }
 
     if let Some(gid) = group_gid {
         let _ = nix::unistd::chown(
@@ -223,6 +285,9 @@ fn main() {
             expiry_netd.expire_pending();
         }
     });
+    if !config.source_routes.subnets.is_empty() {
+        watch_source_routes(netd.clone());
+    }
     let status_netd = netd.clone();
     std::thread::spawn(move || server::serve(status_netd, status, Access::Status, None));
     server::serve(netd, full, Access::Full, group_gid);

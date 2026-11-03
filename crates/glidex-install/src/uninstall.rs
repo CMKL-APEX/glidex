@@ -377,6 +377,11 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     if host.exists(Path::new(crate::POLKIT_RULE)) {
         steps.push(Step::Remove(PathBuf::from(crate::POLKIT_RULE)));
     }
+    if host.exists(Path::new(glidex_ovs::srcroute::RT_PROTOS_FILE)) {
+        steps.push(Step::Remove(PathBuf::from(
+            glidex_ovs::srcroute::RT_PROTOS_FILE,
+        )));
+    }
     if removed_units {
         steps.push(run(&["systemctl", "daemon-reload"]));
     }

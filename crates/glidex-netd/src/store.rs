@@ -13,6 +13,10 @@ pub const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 pub const UPLINKS: TableDefinition<&str, &[u8]> = TableDefinition::new("uplinks");
 /// Devices prepared for passthrough, by IOMMU group.
 pub const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices");
+/// ifname → its source-route table (spec §8.6.3).
+pub const SOURCE_TABLES: TableDefinition<&str, &[u8]> = TableDefinition::new("source_tables");
+/// ifname → the ARP settings it had before netd set them (spec §8.6.6).
+pub const ARP_SAVED: TableDefinition<&str, &[u8]> = TableDefinition::new("arp_saved");
 
 pub struct Store {
     db: Database,
@@ -33,7 +37,16 @@ impl Store {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(err)?;
         }
         let txn = db.begin_write().map_err(err)?;
-        for t in [BRIDGES, NAT, VM_PORTS, META, UPLINKS, DEVICES] {
+        for t in [
+            BRIDGES,
+            NAT,
+            VM_PORTS,
+            META,
+            UPLINKS,
+            DEVICES,
+            SOURCE_TABLES,
+            ARP_SAVED,
+        ] {
             txn.open_table(t).map_err(err)?;
         }
         txn.commit().map_err(err)?;

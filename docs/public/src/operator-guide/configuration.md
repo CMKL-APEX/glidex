@@ -213,6 +213,9 @@ keep running.
 | `gateway_check_secs` | integer | `20` | How long a [moved host address](host-networking.md#moving-the-hosts-address-onto-the-bridge) waits for the gateway to answer through the bridge. |
 | `commit_window_secs` | integer | `60` | How long an address move waits for the client's commit before netd rolls it back. |
 | `ovs_bin_dir` | path | unset | Where `ovs-vsctl` and the other OVS tools are, when not on `PATH`. |
+| `source_routes.subnets` | list of CIDRs | `[]` | Subnets where netd gives each port its own routes ([Ports that share a subnet](host-networking.md#ports-that-share-a-subnet)). Empty: netd only reports. |
+| `source_routes.rule_priority` | integer | `1000` | The rules' priority, 1–32765. One of the host's own rules at this priority stops netd. |
+| `source_routes.table_range` | `[from, to]` | `[4200, 4299]` | The routing table numbers netd gives ports. It must stay clear of 253–255. |
 
 ### Example
 

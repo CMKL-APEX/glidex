@@ -299,6 +299,45 @@ The bridge must be a glidex bridge. Glidex doesn't hand out addresses on
 a bridged network: the LAN's DHCP server, or a static address in the
 guest, does.
 
+## Ports that share a subnet
+
+When several ports of a host have addresses in one subnet (an HGX
+host's IPoIB ports, say), Linux sends everything for that subnet out of
+one port, so the others carry nothing outbound. Name the subnet in
+`/etc/glidex/netd.json` and restart netd:
+
+```json
+{ "source_routes": { "subnets": ["10.40.0.0/16"] } }
+```
+
+For each address on a port in that subnet, netd then keeps:
+
+- a routing table for the port (from 4200 on) with the subnet's route
+  through it, and a rule `from <address> lookup <table>` at priority
+  1000. Both show `proto glidex` in `ip rule` and `ip route show table
+  all`. netd changes or deletes only routes and rules with that mark;
+- `arp_ignore=1` and `arp_announce=2` on the port, so each port answers
+  ARP only for its own addresses. netd saves the values the port had and
+  puts them back when the port leaves the subnet or the subnet leaves
+  the file.
+
+netd applies this at start, within a second of an address change, and
+every minute. If an address already has a `from` rule from someone else
+(netplan's `routing-policy`, NetworkManager, a rule made by hand), netd
+leaves that address alone and reports a conflict. IPv6 subnets work the
+same way, without the ARP settings.
+
+To see the shared subnets, managed or not, and the state of each
+address (`ok`, `missing`, `unmanaged`, `conflict`), ask netd's
+`list_source_routes`:
+
+```bash
+echo '{"id":1,"op":"hello","args":{"protocol":1}}
+{"id":2,"op":"list_source_routes"}' | sudo nc -U -q 2 /run/glidex/netd.sock
+```
+
+The other settings are in [Configuration](configuration.md#glidex-netd).
+
 ## Clusters: OVN on the host
 
 In a cluster with OVN on, *cluster networks* span every node: each node

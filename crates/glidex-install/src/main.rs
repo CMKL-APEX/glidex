@@ -3016,6 +3016,12 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     configure_host(profile, opts, ovs_ok, &exec, &probe)?;
 
     // 3. glidex-netd (root: it is the privileged helper the rest use).
+    // Its routing protocol's name, so `ip rule` shows `glidex` (spec §8.6.3).
+    let protos = glidex_ovs::srcroute::RT_PROTOS_FILE;
+    sudo(&argv(&["mkdir", "-p", "/etc/iproute2/rt_protos.d"]))?;
+    if write_if_changed(protos, &glidex_ovs::srcroute::rt_protos_conf())? {
+        println!("{} {}", "Updated:".green(), protos);
+    }
     let netd_unit = workspace_root().join("packaging/glidex-netd.service");
     let unit_changed = install_if_changed(&netd_unit, NETD_UNIT, "0644")?;
     if unit_changed {
