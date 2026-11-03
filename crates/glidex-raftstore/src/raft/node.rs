@@ -26,8 +26,30 @@ impl Default for RaftSettings {
         RaftSettings {
             heartbeat_ms: 250,
             election_ms: (1000, 2000),
-            log_keep_entries: 10_000,
+            log_keep_entries: 70_000,
         }
+    }
+}
+
+/// Purge the log to `keep` entries behind the snapshot. openraft purges
+/// after it builds a snapshot, which `LogsSinceLast` asks for only once that
+/// many entries were applied since the last one; a restart makes the live
+/// database the snapshot and starts that count again. A member restarted
+/// more often than that never purged: the prism servers kept every entry,
+/// 27,000 in three days (2026-11-03). Run once the member has loaded its
+/// state: its metrics then show the snapshot.
+async fn trim_log<S: Schema>(raft: Raft<S>, keep: u64) {
+    let Ok(m) = raft
+        .wait(Some(Duration::from_secs(60)))
+        .metrics(|m| m.snapshot.is_some(), "a snapshot to trim behind")
+        .await
+    else {
+        return;
+    };
+    let Some(snapshot) = m.snapshot else { return };
+    let upto = snapshot.index.saturating_sub(keep);
+    if upto > m.purged.map(|l| l.index).unwrap_or(0) {
+        let _ = raft.trigger().purge_log(upto).await;
     }
 }
 
@@ -70,7 +92,11 @@ impl<S: Schema> ClusterNode<S> {
             election_timeout_max: settings.election_ms.1,
             // Snapshots are views of the live database, built when a follower
             // needs one (§6.2); the policy only tells Raft when it may purge.
-            snapshot_policy: SnapshotPolicy::LogsSinceLast(settings.log_keep_entries.max(100)),
+            // Recording a position costs nothing: often, so the log stays
+            // near `log_keep_entries` rather than twice that.
+            snapshot_policy: SnapshotPolicy::LogsSinceLast(
+                (settings.log_keep_entries / 10).max(100),
+            ),
             max_in_snapshot_log_to_keep: settings.log_keep_entries,
             purge_batch_size: (settings.log_keep_entries / 10).max(1),
             // So that an append stays within what members take.
@@ -89,6 +115,7 @@ impl<S: Schema> ClusterNode<S> {
         let raft = Raft::<S>::new(id, cfg, net, log.clone(), sm)
             .await
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        tokio::spawn(trim_log(raft.clone(), settings.log_keep_entries));
         let service = Arc::new(RaftService {
             raft: raft.clone(),
             dir: dir.join("snapshots"),

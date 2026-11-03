@@ -133,7 +133,8 @@ impl Default for RaftConfig {
             // An append must arrive within a heartbeat (D24).
             heartbeat_ms: 1000,
             election_ms: (3000, 6000),
-            log_keep_entries: 10_000,
+            // About a week of history at a few VMs (D25).
+            log_keep_entries: 70_000,
         }
     }
 }
