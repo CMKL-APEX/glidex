@@ -95,6 +95,9 @@ Non-goals for this revision (each in §18):
 | D23 | **A node network is made for a named node, by that node.** `node` on create names it (default: the node serving the request, the leader once forwarded). For another node the leader only records the network, `pending`; that node's network controller makes its bridge and NAT (09-networking.md §11.2a), with a subnet netd picks there. A `subnet` and bridged networks are refused for another node. | A node network's bridge and NAT are its node's netd's, which only that node reaches; writes go to the leader, so without `node` every node network landed on the leader. The controller already re-creates a lost bridge and NAT, so making them is the same step. |
 | D24 | **An append fits in a heartbeat.** A write set is at most 1 MiB of JSON, an append carries at most 4 entries (5 MiB in all), the Raft endpoints take that much once the peer is known, and the default heartbeat is 1 s (election 3–6 s). | openraft 0.9 cancels an append that takes longer than the heartbeat interval and sends it again, for ever: one large entry stopped the log on every follower, and axum's 2 MB body limit refused larger ones outright (prism, 2026-11-03). A failover of 3–6 s is fine for a control plane; a write over 1 MiB is refused up front rather than stalling the cluster. |
 | D25 | **The log keeps about a week, and is trimmed whatever the restarts.** `log_keep_entries` defaults to 70,000; a member trims its log to that many behind its snapshot when it starts, and records a snapshot every tenth of that, so the log stays near the setting. | A restart makes the live database the snapshot and restarted openraft's count towards the next one: servers restarted every few hours never trimmed (27,000 entries in three days on prism, 2026-11-03). During development the history helps trace a change; 70,000 entries are about a week at today's ~9,000 a day, about 300 MB. |
+| D26 | **Three tiers of data; Raft carries only the cluster's.** The replicated store holds desired state, decisions and *closed* results. What one host observes or is still accumulating stays in that host's own database. Append-only history read by time range (usage, audit) moves to a history tier outside the Raft snapshot before the cluster grows past about 100 VMs (§6.7). All three stay embedded ReDB: no database server. | Measured on the test cluster (§6.7), about 90% of Raft writes were one host's metering slots and VM bookkeeping, which no other server needs at that detail, while the history tables are what make the snapshot large at scale (§4.1). An external database (PostgreSQL, a time-series store) would add a service to install, secure and make highly available without changing what is replicated; it fits as an optional export target. |
+| D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement or an error changes; a change only to `status.conditions` or `last_reconciled_at` waits until 10 minutes after the record's last write. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
+| D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
 
 ## 4. Topology
 
@@ -720,6 +723,59 @@ becomes one of its subscribers.
   them, and run **as a single write** on the leader.
 - Version skew: servers at N; agents at N or N−1. The node API on :8842
   is versioned (`/cluster/v1`), like netd's `hello`.
+
+### 6.7 What the replicated store holds (D26)
+
+| Tier | Holds | Where | Examples |
+|---|---|---|---|
+| **Cluster** | Desired state, decisions, closed results: what any server must answer or act on | `glidex.db`, through Raft | VM, disk and network specs; tenants, users, roles, policies, admissions; nodes; closed `usage_hourly` rows, `usage_monthly_rates`; VM status as scheduling and the UI need it, written on change |
+| **Host** | What one host observes or is still accumulating | the host's own ReDB (`node.db`; `meter.db` on hosts installed today) | metering cursors, open hours and open 5-minute slots (§13.1); detailed live VM state; device and datastore probes between changes |
+| **History** (later) | Append-only records read by time range and dropped by retention | ReDB files outside the Raft snapshot, one per month, copied between servers as files once closed | `usage_hourly` past the current months, `usage_daily`, `audit` |
+
+A table belongs to the cluster tier only if another server must read it
+or decide on it. A record that changes faster than people or the
+scheduler act on it is written to the cluster tier only when it changes
+in a way they act on.
+
+**Measured on the test cluster** (three servers, three VMs, 2026-10-31 to
+2026-11-03, about 9,000 Raft entries a day, 38 MB of log a day; the store
+itself 2.6 MB):
+
+| Table | Writes in 3 days | Share of bytes written | Rows held |
+|---|---|---|---|
+| `rate_5m` | 107,000 | 55% | 450 |
+| `vms` | 11,300 | 36% | 3 |
+| all other tables | | 9% | |
+
+Two departures from this spec explain most of it, and C9 fixes them:
+
+- **Slot rows are shipped again every minute.** A node ships every 60 s,
+  and its export carries every slot row of the closed hours it still
+  keeps for late samples (3 hours); the leader's merge rewrites each of
+  them, changed or not (`Ledger::import`). 27% of `rate_5m` writes
+  rewrote a row with exactly the same contents. Shipping ran at about
+  540 KB an hour for three VMs, against the 4.5 MB an hour per 1,000 VMs
+  of §4.1.
+- **VM records are written for bookkeeping.** About 3,450 of the 11,300
+  writes changed only `status.conditions` and `status.last_reconciled_at`
+  (and the resource version); fewer than 100 changed the phase, power or
+  instance. §4.1 requires `last_reconciled_at` to be written only with
+  another change or at most every 10 minutes; a condition field that
+  changes on every round defeats that. What the remaining writes changed
+  was not established by the measurement.
+
+**Settled for C9** (2026-11-03):
+
+1. *VM bookkeeping* (D27): `status.conditions` and `last_reconciled_at`
+   are written with a change people or the scheduler act on, or else at
+   most every 10 minutes per VM, as §4.1 asks of `last_reconciled_at`.
+   They stay in the record, about 144 writes per idle VM a day.
+2. *Unchanged slot rows* (D28): skipped on both sides. The node ships a
+   closed hour's slot row once, and again only if a late sample changed
+   it; the leader skips a row equal to the one it holds.
+3. *The history tier's spec* is written after C9, once §6.7's
+   measurement has been repeated, and before the cluster grows past
+   about 100 VMs.
 
 ## 7. Nodes
 
@@ -1446,6 +1502,11 @@ every 30 s with nothing but cursors in it. Instead:
   Shipping is at-least-once, and applying is idempotent by key, so the
   ledger stays **exactly once** (13-metering.md D8).
 - Live rates (`GET /vms/{id}/stats`) come from the node (§8.4).
+- **A slot row reaches the store only when it changed** (C9, D28): the node
+  ships a slot row of a closed hour once, and again only if a late
+  sample changed it, and the leader's merge skips a row equal to the one
+  it holds. Hourly rows are already shipped once and deleted when
+  acknowledged.
 
 ### 13.2 Meters on OVN networks
 
@@ -1658,7 +1719,10 @@ passing in CI. C0 and C1 change nothing for standalone users.
 | **C5** OVN foundation | `ovn-central`/`ovn-host` 26.03 install, OVN PKI, `ensure_ovn_chassis`, `glidex-ovn` crate with `ovn-nbctl` in daemon mode, cluster IPAM, isolated and NAT networks on `gx-edge` with an HA gateway, port security, DHCP and MTU, cluster `default` network | §15 OVN e2e tests 1–4. |
 | **C6** Provider networks, VPC routers and metering on OVN | localnet with VLAN tags, physnet mapping onto netd bridges, scheduler physnet filter; VPC routers, external pool, `routers`/`external_ips` quotas (§11.2a); `snat-ct-zone`, `ct_external_counters`, network totals (§13.2–13.3), with the host checks of §13.3 done first | e2e test 5; §15 VPC router and external metering tests. |
 | **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; CA on every server and rotation (§12.5); rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade, membership and CA rotation tests; §15 scale run with figures recorded in §4.1; certificate renewal under load; documented recovery exercised on the test cluster. |
+| **C9** Store diet (D26–D28) | slot rows shipped and merged only when they changed (§13.1, D28); VM bookkeeping (`conditions`, `last_reconciled_at`) written with a change that is acted on or at most every 10 minutes (D27), and what changes in the other VM writes found; the measurement of §6.7 as a repeatable check | §6.7's measurement repeated on the test cluster: `rate_5m` writes per hour within 2× of one per subject and closed hour, no `rate_5m` write equal to the row before it; an idle VM's record written at most every 10 minutes (the C0 test extended to conditions); Raft write volume at least 80% lower than §6.7's. |
 | **C8** Detach and import | departure bundle, two-phase detach with receipt, offline detach and `forget --departed`, import plans with checks and mappings, approval, staged commit, `move_vm_port`, `leave_ovn`, `cluster dissolve` | §15 detach, import and round-trip tests, all with running VMs. |
+
+C9 needs C3 and comes before the history tier (§18).
 
 Dependencies: C0 → C1 → C2 → C3 → C4. C5 needs C3 (node role) and
 C1 (scope). C6 needs C5. C7 needs C2–C5. C8 needs C7; its parts without
@@ -1728,7 +1792,10 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
   at another address, with DHCP classless static routes, option 121,
   for the other router's networks). Guests only learn those routes at
   their next lease, and egress through two routers breaks SNAT symmetry.
-- **Metering history outside the replicated store**, follower-served
+- **The history tier** (D26, §6.7): usage history and audit in monthly
+  ReDB files outside the Raft snapshot, closed months copied between
+  servers as files, queries reading the months they cover. Its own
+  spec, before the cluster grows past about 100 VMs. Then follower-served
   watches and the other steps past the §4.1 ceiling.
 
 ## 19. Resolved questions

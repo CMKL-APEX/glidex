@@ -713,7 +713,10 @@ kept.
 ### 7.1 Tables
 
 The tables are in the shared ReDB database (`~/.glidex/glidex.db`),
-serde-JSON values, and declared in `metering/ledger.rs`:
+serde-JSON values, and declared in `metering/ledger.rs`. In a cluster,
+cursors, open hours and open slots stay on each host, and only closed
+rows reach the replicated store, each once (14-clustering.md §13.1,
+§6.7, D26):
 
 | Table | Key | Value |
 |---|---|---|
