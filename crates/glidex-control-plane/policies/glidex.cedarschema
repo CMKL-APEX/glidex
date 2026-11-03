@@ -242,7 +242,11 @@ namespace Glidex {
   // Placing a VM on another node is the cluster operator's (spec/24-storage.md S10).
   action placeVm in ["node.drain", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
-  action startVm, stopVm, pauseVm, updateVm in ["vm.operate", "tenant-scoped"]
+  action startVm, stopVm, pauseVm in ["vm.operate", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  // Changing a VM (vCPUs, memory, kernel, policies) is an editor's
+  // (spec/11-security.md §7.2); an operator only runs it.
+  action updateVm in ["vm.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };

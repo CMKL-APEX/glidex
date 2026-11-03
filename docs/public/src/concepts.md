@@ -350,8 +350,8 @@ resource. Project roles, each including the one before it:
 | Role | Can |
 |---|---|
 | `viewer` | See the project, its VMs, disks and usage. |
-| `operator` | Also start, stop, pause and change VMs, and use their consoles. |
-| `editor` | Also create and delete VMs and disks, attach disks and networks, and manage guest credentials. |
+| `operator` | Also start, stop and pause VMs, and use their consoles. |
+| `editor` | Also create, change and delete VMs and disks, attach disks and networks, and manage guest credentials. |
 | `owner` | Also manage members and service-account tokens, read the project's audit log, and manage and share project networks and routers. |
 
 Host roles cover the host or cluster itself: `auditor` (read-only,

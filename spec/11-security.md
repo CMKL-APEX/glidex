@@ -597,9 +597,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action listVms in ["vm.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action startVm, stopVm, pauseVm in ["vm.operate"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   // updateVm: PATCH of spec fields other than power, devices, disks and
-  // networks (12-reconciliation.md §12.1).
-  action startVm, stopVm, pauseVm, updateVm in ["vm.operate"]
+  // networks (12-reconciliation.md §12.1). An editor's since 2026-11-04:
+  // an operator runs VMs, an editor changes them.
+  action updateVm in ["vm.write"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
@@ -687,9 +690,9 @@ Rules for the schema:
 | Group | Scope (link resource) | Covers |
 |---|---|---|
 | `vm.read` | project | List and get VMs, their events, console info |
-| `vm.operate` | project | Start, stop, pause; other spec edits (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel args, hugepages, credential) |
+| `vm.operate` | project | Start, stop, pause (also through `PATCH` of `power`) |
 | `vm.console` | project | Console tickets / WebSocket |
-| `vm.write` | project | Create and delete VMs; attach and detach disks, devices and networks; use project disks and credentials |
+| `vm.write` | project | Create and delete VMs; change them (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel and its args, hugepages, credential; extracting a kernel); attach and detach disks, devices and networks; use project disks and credentials |
 | `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root, move to another datastore (`moveDisk`, 24-storage.md §8.3) |
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |

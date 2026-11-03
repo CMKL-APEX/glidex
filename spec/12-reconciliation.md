@@ -998,8 +998,10 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
 
-`updateVm` joins the permission group of `startVm`/`stopVm`
-(11-security.md §7.2) and the schema in `policies/glidex.cedarschema`.
+`updateVm` joined the permission group of `startVm`/`stopVm`
+(11-security.md §7.2) and the schema in `policies/glidex.cedarschema`;
+since 2026-11-04 it is in `vm.write` (editors), so operators run VMs
+without changing them.
 `PATCH` refuses immutable fields with `400 invalid_config` before
 authorization of the remaining fields.
 

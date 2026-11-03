@@ -1958,6 +1958,71 @@ async fn oidc_login_rules_and_device_grant() {
     assert_eq!(who["user"]["display_name"], "Alice");
 }
 
+/// An operator runs a project's VMs (power, console) but doesn't change
+/// them: vCPUs, memory and the like are an editor's (`updateVm` in
+/// `vm.write`, spec/11-security.md §7.2).
+#[tokio::test]
+async fn operators_run_vms_and_editors_change_them() {
+    let h = harness();
+    let pa = h.project("pa");
+    let (op, ed) = (h.user("op"), h.user("ed"));
+    h.link(
+        "role.operator",
+        Ent::User(op.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let vm = h
+        .app
+        .manager
+        .create_vm_in(
+            &pa,
+            "v".into(),
+            serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": ""})).unwrap(),
+            Default::default(),
+            glidex_control_plane::tenancy::QuotaMode::MayExceed,
+        )
+        .await
+        .unwrap()
+        .0;
+    let path = format!("/vms/{}", vm.id);
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"vcpu_count": 2}})),
+            &h.session(&op),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an operator changes no VM: {v}");
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"vcpu_count": 2}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "an editor does: {v}");
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/vms/{}/console/ticket", vm.id),
+            None,
+            &h.session(&op),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "an operator still opens the console: {v}"
+    );
+}
+
 #[tokio::test]
 async fn console_tickets_need_vm_console() {
     let h = harness();
