@@ -892,27 +892,65 @@ async fn status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
     Json(super::manage::status_of(&c)).into_response()
 }
 
-async fn raft_append(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    body: bytes::Bytes,
-) -> Response {
-    raft_rpc(c, p, Rpc::Append, body).await
+/// A request's body, at most `limit` bytes (`413` past it). Read only once
+/// the caller is known, so a stranger's body is never taken in.
+async fn body_within(req: Request, limit: usize) -> Result<bytes::Bytes, Response> {
+    axum::body::to_bytes(req.into_body(), limit)
+        .await
+        .map_err(|e| {
+            fail(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                format!("body over {limit} bytes, or unreadable: {e}"),
+            )
+        })
 }
 
-async fn raft_vote(State(c): Ctx, p: Option<Extension<PeerCert>>, body: bytes::Bytes) -> Response {
-    raft_rpc(c, p, Rpc::Vote, body).await
+/// A write set as a member forwards it, and room around it.
+const WRITE_SET_BODY: usize = crate::store::MAX_WRITE_SET_BYTES + 64 * 1024;
+
+/// A JSON body of at most `limit` bytes.
+async fn json_within<T: serde::de::DeserializeOwned>(
+    req: Request,
+    limit: usize,
+) -> Result<T, Response> {
+    let body = body_within(req, limit).await?;
+    serde_json::from_slice(&body)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))
+}
+
+/// Appends up to the leader's largest (`MAX_APPEND_BYTES`): axum's default
+/// of 2 MB refused a write set over it on every retry, and the log stopped
+/// there (prism, 2026-11-03).
+async fn raft_append(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
+    raft_rpc(
+        c,
+        p,
+        Rpc::Append,
+        req,
+        glidex_raftstore::store::MAX_APPEND_BYTES,
+    )
+    .await
+}
+
+async fn raft_vote(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
+    raft_rpc(c, p, Rpc::Vote, req, 64 * 1024).await
 }
 
 async fn raft_rpc(
     c: Arc<Cluster>,
     p: Option<Extension<PeerCert>>,
     rpc: Rpc,
-    body: bytes::Bytes,
+    req: Request,
+    limit: usize,
 ) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
     }
+    let body = match body_within(req, limit).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let Some(node) = &c.node else {
         return fail(StatusCode::CONFLICT, "not_a_server", "not a server");
     };
@@ -1194,13 +1232,13 @@ const RAW_TABLES: [TableId; 6] = [
     TableId::Teams,
 ];
 
-async fn raw_write(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    Json(ops): Json<Vec<crate::store::Op>>,
-) -> Response {
+async fn raw_write(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let me = match peer(&c, p, true) {
         Ok(p) => p,
+        Err(r) => return r,
+    };
+    let ops: Vec<crate::store::Op> = match json_within(req, WRITE_SET_BODY).await {
+        Ok(v) => v,
         Err(r) => return r,
     };
     if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
@@ -1449,13 +1487,13 @@ async fn metadata(
     }
 }
 
-async fn status_write(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    Json(ws): Json<crate::store::WriteSet>,
-) -> Response {
+async fn status_write(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let me = match caller(&c, p) {
         Ok(p) => p,
+        Err(r) => return r,
+    };
+    let ws: crate::store::WriteSet = match json_within(req, WRITE_SET_BODY).await {
+        Ok(v) => v,
         Err(r) => return r,
     };
     if !c.node.as_ref().is_some_and(|n| n.is_leader()) {

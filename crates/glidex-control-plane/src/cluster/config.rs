@@ -130,8 +130,9 @@ impl Default for ClusterConfig {
 impl Default for RaftConfig {
     fn default() -> Self {
         RaftConfig {
-            heartbeat_ms: 250,
-            election_ms: (1000, 2000),
+            // An append must arrive within a heartbeat (D24).
+            heartbeat_ms: 1000,
+            election_ms: (3000, 6000),
             log_keep_entries: 10_000,
         }
     }
