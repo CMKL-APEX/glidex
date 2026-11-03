@@ -332,6 +332,8 @@ renamed, because code cites them by path.
 - REST bodies are the proto3 JSON form of the same messages: enum
   values take their full names (`HYPERVISOR_QEMU`), and an unknown
   field is refused with `422` and code `invalid`.
+- Proto comments become rustdoc: put a placeholder such as `<id>` in
+  backquotes, since rustdoc rejects it bare.
 - After changing a proto, regenerate the UI's TypeScript and commit it:
 
   ```bash

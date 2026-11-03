@@ -33,6 +33,10 @@ tab each, shown to those allowed to see it:
 | **Policies** | Base and site policies (see [Site policies](#site-policies)). |
 | **Settings** | What the web UI calls a tenant, and self-service tenants (see [Directory settings](#directory-settings)). |
 
+A user who may create tenants of their own (see [Directory
+settings](#directory-settings)) sees the **Directory** page too, with
+its **Tenants** tab and the form to create one.
+
 The directory holds users, teams, connectors, tenants, projects, tenant
 and project roles, and tokens; every server of a cluster has the same
 copy. System roles, site policies and admissions belong to the cluster.
@@ -271,6 +275,8 @@ doesn't change that. The Admissions page has the same as its
 **Automatic admission** card, and marks the admissions that follow it
 *default cap*. Tenants of other organizations' directories are still
 admitted by offer ([Clusters](clusters.md#admitting-another-organizations-tenant)).
+Setting and removing it needs `system-admin` and a recent login
+(action `manageAdmissions`), as admitting by hand does.
 
 #### A new tenant's first administrator
 
@@ -330,7 +336,9 @@ gxctl directory settings --auto-create on                  # one for each new us
 ```
 
 `gxctl directory settings` changes only the options given. Each answer
-is the settings as stored, teams by id.
+is the settings as stored, teams by id. `--creators all` lets every user
+of the directory; `--max-total none` and `--slug-prefix none` remove
+those; `--approval none|required`; `--admins-may-delete on|off`.
 
 ## Removing people
 
@@ -506,7 +514,7 @@ Actions of these features, and who has them out of the box:
 | `placeVm` | `Glidex::Vm` | `system-admin`. |
 | `readHostTopology`, `listPciPools` | the host | `auditor`, `net-admin`. |
 | `prepareDevice`, `releaseDevice`, `cordonDevice` (also uncordons), `setSriovVfs` | the host | `net-admin`, on the cluster or that host. |
-| `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow` (base policy `base.pci-pool-grant`). |
+| `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow`, directly or through their tenant; an [open pool](host-resources.md#who-may-use-a-pool) (`"tenants": ["*"]`) is granted to every admitted tenant (base policy `base.pci-pool-grant`). |
 | `readTenantDevicePools` | `Glidex::Tenant` | `tenant-auditor`, `tenant-admin`. |
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
 | `syncConnector` | the directory | `directory-admin`. |
@@ -519,6 +527,19 @@ Actions of these features, and who has them out of the box:
 same address on two nodes is two devices, and a role on one host covers
 that host's devices. A site policy that names devices by their address
 alone no longer matches them: name the node too.
+
+### Self-service tenant actions
+
+| Action | Resource | Who |
+|---|---|---|
+| `createOwnTenant` | `Glidex::Directory` | Only base policy `base.self-service-tenant`: a user of the directory when its [settings](#directory-settings) allow them (everyone, or members of the creator teams), or a personal token of such a user that isn't narrowed to some roles (a service account can't). No role gives it; a site `forbid` can narrow it. |
+| `deleteOwnTenant` | `Glidex::Tenant` | `tenant-admin` of a self-service tenant, with a recent login, when the directory lets its administrators delete it. Others need `deleteTenant`. |
+| `approveTenant` | `Glidex::Tenant` | `directory-admin`. |
+| `readDirectorySettings` | `Glidex::Directory` | `directory-auditor`, `directory-admin`. |
+| `updateDirectorySettings` | `Glidex::Directory` | `directory-admin`. |
+
+The `Glidex::Directory` entity carries `self_service`,
+`self_service_all` and `self_service_teams` for policies to read.
 
 ### Workload federation actions
 

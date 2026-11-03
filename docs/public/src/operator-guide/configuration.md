@@ -98,7 +98,7 @@ sudo systemctl restart glidex-control-plane
 | `authz.policy_history` | integer, 1–1000 | `50` | Versions kept of each site policy. |
 | `quotas.default` | object | `{"networks": 2}` | Quotas of new projects, and of the `default` project when it is first created. Keys: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, and `devices` (`{"a100": 2}`: devices per pool). An omitted key is unlimited, except `networks` (2), `routers` (1) and `external_ips` (1); `null` is unlimited. |
 | `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool; `"tenants": ["*"]` on a pool grants it to every admitted tenant ([open pools](host-resources.md#who-may-use-a-pool)). See [PCI passthrough](pci-passthrough.md). |
-| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
+| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `match` takes `vendor_id`, `device_id`, `class_code` and `addresses` (PCI addresses); `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
 | `trust.default_max_staleness_minutes` | integer | `60` | How long a trusted directory's sessions and tokens stay good here after its last feed, unless set for that directory (`gxctl admission staleness`); see [Clusters](clusters.md#admitting-another-organizations-tenant). |
 
@@ -107,6 +107,7 @@ up, with one of:
 
 - `pci.pools: pool names must be set and unique (…)`;
 - `pci.pools: pool <name> matches every device; give it a match`;
+- `pci.pools: pool <name>: vf_of matches every PF; give it ids or addresses`;
 - `pci.pools: pools <a> and <b> match the same devices`;
 - `pci.allow: no pool <name>`: a grant names an unknown pool;
 - `pci.allow: each grant names one bdf or one pool`;
@@ -149,7 +150,7 @@ See [Clusters](clusters.md).
 | `cluster.advertise` | `"addr:port"` | `listen`, with this host's first non-loopback address | Where other nodes reach this one. |
 | `cluster.node_grace_secs` | integer, 5–3600 | `40` | How long a node may be silent before it counts as unreachable. Every node, servers included, reports to the leader every 5 seconds: keep this well above that. |
 | `cluster.shared_local_accounts` | bool | `false` | Treat a local account name as the same person on every node (only if your hosts share one account database). |
-| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `1000` | Raft heartbeat. Each Raft append between servers must arrive within it (up to 5 MiB), so keep it above the slowest link's transfer time. |
+| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `1000` | Raft heartbeat. Each Raft append between servers must arrive within it (at most 4 entries of up to 1 MiB each, 5 MiB in all), so keep it above the slowest link's transfer time for that much. |
 | `cluster.raft.election_ms` | `[min, max]` | `[3000, 6000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
 | `cluster.raft.log_keep_entries` | integer, ≥ 100 | `10000` | Raft log entries kept once every server has applied them. |
 | `cluster.scheduler.cpu_overcommit` | number, ≥ 1.0 | `4.0` | vCPUs placed per host CPU. |

@@ -70,6 +70,33 @@ was the leader, another one takes over while it restarts. If a build
 with those fixes still hangs, report it with the journal from before
 the restart.
 
+## A cluster stops committing
+
+The servers answer, but changes fail on every one of them: with
+`cluster_unavailable` or `leader_changed`, or with *the write was not
+committed within …s (no leader commits); it may still be applied
+later*. Run this on each server, twice, a minute apart:
+
+```bash
+gxctl cluster status
+```
+
+Its `Raft:` line gives the server's state, `term`, `leader`, `applied`
+(the last entry it applied) and `last log`. Compare them:
+
+| You see | Means | Do |
+| --- | --- | --- |
+| `applied` stays the same on every server, while `term` climbs and the leader keeps changing (or is `none`) | Elections without end: no leader gets its next entry to a majority. Releases before v0.0.6 stopped this way on one large entry: openraft sends an append again for ever when it takes longer than a heartbeat, and the node API refused bodies over 2 MB. | Update every server to v0.0.6 or later, one at a time; it limits a change to 1 MiB and an append to 4 entries (see [How changes are replicated](clusters.md#how-changes-are-replicated)). Check TCP 8842 between every pair of servers. If the servers are far apart, raise `cluster.raft.heartbeat_ms` and `cluster.raft.election_ms` together on every server. |
+| One server's `applied` stays behind while the others' moves on | That server doesn't get the leader's appends. | Check TCP 8842 from the leader to it, and `journalctl -u glidex-control-plane` there. |
+| `leader: none` and `term` doesn't move | Fewer than a majority of voters are up. | Bring the servers back; if a majority is gone for good, see [Backups and lost quorum](clusters.md#backups-and-lost-quorum). |
+
+Releases before v0.0.6 could also leave a server's control plane
+hanging at start during a rolling restart: a write waited for Raft with
+no limit, and every later write waited behind it. In v0.0.6 a write
+gives up after 10 election timeouts (60 seconds with the defaults).
+Restart such a server with `sudo systemctl restart
+glidex-control-plane`; its VMs keep running.
+
 ## gxctl can't connect
 
 | Message | Cause and fix |

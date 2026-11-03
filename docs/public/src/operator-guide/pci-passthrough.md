@@ -239,8 +239,14 @@ and removing one `detachDevice` (both part of the `editor` role).
 
 ## Attach a device
 
-At creation, in the web UI's VM form, **VFIO PCI Devices (optional)**
-takes comma-separated sysfs paths. Over the API, `vfio_devices`:
+At creation, in the web UI's VM form, **GPUs** lists a node's GPUs (on
+a single host, its own; in a cluster, the node chosen under
+**Placement**) with their vendor, ids, NUMA node and whether each is
+available. Tick the ones the VM gets. A GPU that isn't ready or is held
+by a VM is greyed out with the reason; the list needs a host role to
+read the node's topology. Other devices go in **VFIO PCI Devices
+(optional)** under **Advanced options**, as comma-separated sysfs paths.
+Over the API both are `vfio_devices`:
 
 ```bash
 api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{

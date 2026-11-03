@@ -600,7 +600,8 @@ On each node that should run VMs from hyperstor disks:
   `hyperstor-install install --role vhost --map ADDR[,ADDR...]
   --vhost-user glidex` on a host that only runs VMs;
 - install `hyperstorctl`: Glidex writes images into volumes and edits
-  their partitions with it.
+  their partitions with it, and reads a disk's partition table with it
+  for `gxctl disk show` and the disk's details in the web UI.
 
 Servers also need to reach the cluster's API (port 8850 by default):
 they do the volume operations, because only they hold Glidex's
@@ -730,9 +731,10 @@ disk on the default datastore) and when a disk is moved to it.
   within a minute; a node that is only down keeps its last status.
 - Existing data can't be registered as a datastore: Glidex doesn't take
   over a directory that already has files in it.
-- Block storage is node-local LVM-thin only: no shared LVM, no Ceph
-  RBD, no CSI plugins, no disk snapshots, and no per-datastore quotas
-  yet.
+- Block storage is node-local LVM-thin or a hyperstor pool: no shared
+  LVM, no Ceph RBD, no CSI plugins, no disk snapshots, and no
+  per-datastore quotas yet.
+- Disks can't move onto or off a hyperstor datastore yet.
 - A VM's root disk made along with the VM always goes to the default
   datastore. To put it elsewhere, create the disk first
   (`gxctl disk create … --datastore`) and boot the VM from it.

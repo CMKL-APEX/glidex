@@ -21,6 +21,7 @@ crate is named.
 - [Images and disks](#images-and-disks)
 - [Kernel extraction](#kernel-extraction)
 - [Disk move and volume locks](#disk-move-and-volume-locks)
+- [Self-service tenants](#self-service-tenants)
 - [Directory pull sync](#directory-pull-sync)
 - [Console log replay filter](#console-log-replay-filter)
 - [IPAM](#ipam)
@@ -366,13 +367,15 @@ The leader computes write sets. `Db::write(origin, f)` works like this:
 
 ```text
 take the single write lane
-new leader? first apply everything committed before it (ensure_linearizable)
+new leader? first apply everything committed before it (ensure_linearizable),
+             waiting at most 4 election timeouts, else answer "not the leader"
 open a real redb write transaction; run f against it
     every insert/remove is recorded as an Op; reads see the transaction's writes
 empty write set   -> abort, nothing happens
 local mode        -> commit
 replicated mode   -> abort the local transaction, propose the write set,
-                     return once it is committed and applied
+                     return once it is committed and applied, or fail
+                     after 10 election timeouts
 ```
 
 Application logic runs only on the leader. The Raft log entry holds the
@@ -385,9 +388,20 @@ crash therefore never applies an entry twice and never skips one. After
 the commit, the revision becomes the Raft index and subscribers are told.
 
 Constraints:
-- A write set larger than the schema's limit (1 MiB of JSON) is refused,
-  and an append carries at most 4 entries: openraft gives an append one
-  heartbeat to arrive.
+- A write set larger than 1 MiB of JSON (`MAX_WRITE_SET_BYTES`) is
+  refused before it is proposed, and an append carries at most 4 entries
+  (`MAX_APPEND_ENTRIES`): openraft 0.9 gives an append one heartbeat to
+  arrive and resends one that doesn't, for ever.
+- The Raft endpoints on the cluster port read a request's body only after
+  the peer's certificate is checked, and only up to what a member can be
+  sent: an append up to `MAX_APPEND_BYTES` (5 MiB), a vote up to 64 KiB,
+  a forwarded status or raw write up to a write set and 64 KiB. Past
+  that they answer `413`.
+- No write waits for Raft for ever. A member that lost its leadership
+  while no other leader commits would otherwise hold the write lane, and
+  every later write on it would queue behind. The leader's read barrier
+  waits at most 4 election timeouts; a proposal waits at most 10, then
+  fails with a timeout that says the entry may still be applied later.
 - Table ids are append-only, because they are stored in the log.
 - The lane is held across the Raft round trip, which needs the runtime's
   I/O. `Db::begin` tries the lane first and, when it is held, waits in
@@ -413,8 +427,10 @@ This pins the invariant that the write set alone reproduces the state
 - The log is a separate redb file, `raft/log.redb`. Entries are durable
   before they are acknowledged.
 
-**Defaults.** Heartbeat 250 ms, election timeout 1000–2000 ms, 10,000 log
-entries kept.
+**Defaults.** Heartbeat 1 s, election timeout 3–6 s, 10,000 log entries
+kept (`cluster.raft.*`). The heartbeat is long enough for an append of 4
+write sets at their limit to arrive
+([14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) D24).
 
 ### Writes on a follower
 
@@ -828,6 +844,68 @@ Moving a node-local disk to another node goes through a shared datastore.
 **Spec.**
 - [24-storage.md §8.3](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#83-moving-a-disk-between-datastores)
 - [24-storage.md §10](https://github.com/CMKL-APEX/glidex/blob/main/spec/24-storage.md#10-exclusive-access)
+
+## Self-service tenants
+
+**Problem.** Let a directory's users create tenants of their own within
+the directory's limits, and have the cluster admit them without an
+operator in the loop, while an operator can still treat one tenant
+differently. Code: `service::tenancy` (`make_own_tenant`,
+`tenant_at_sign_in`, `approve_tenant`) and `tenants.rs`
+(`TenantStore::create_own`, `auto_admit`, `set_auto_admission`). Design:
+[19-tenancy.md §11.1](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md)
+D78–D82.
+
+**Creating one's own tenant.**
+
+```text
+Cedar: createOwnTenant on the directory (only base.self-service-tenant permits it)
+count the caller's self-service tenants, and the directory's
+    >= max_per_user (default 3)   -> 409 tenant_limit
+    >= max_total, when set        -> 409 tenant_limit
+slug = prefix + slug, unless it already starts with the prefix
+create it: self_service, created_by = caller, pending if approval_required
+link the caller as tenant-admin (on failure, delete the tenant again)
+auto_admit(tenant)
+```
+
+A pending tenant can make no projects (`403 tenant_pending`) until a
+directory administrator approves it; approving runs `auto_admit` again.
+
+**Automatic admission.** A directory has at most one `AutoAdmission`
+(mode `self_service` or `all`, a cap, `follow_default`). `auto_admit`
+admits a tenant when the tenant is of that directory, not pending, not
+an operator or owner tenant, has no admission yet, and is self-service
+(or the mode is `all`). The admission records `follows_default`.
+Setting the automatic admission again writes, in the same transaction,
+the new cap to every admission of that directory that still follows it.
+Setting one tenant's admission by hand to another cap clears its
+`follows_default`.
+
+**A tenant at first sign-in.** With `auto_create` on, after a sign-in
+through a connector:
+
+```text
+skip if self-service is off, auto_create is off, or this user already had one
+skip if the user is a member of any tenant of the directory
+     (the connector's default_tenant aside)
+base = prefix + the sign-in name (the address before @), lower-cased,
+       other characters turned into single '-', cut to fit 32 with a suffix
+       ("user" if nothing is left)
+slug = base, else base-2 … base-99, the first not taken
+display name = "<user's name>'s <tenant label>"
+make_own_tenant as above, as the user; mark "done" for the user on success
+```
+
+A failure never stops the sign-in: it is audited under the connector.
+Deleting the tenant doesn't bring it back at the next sign-in.
+
+**Tests.** `tests/tenancy_tests.rs`:
+`users_create_tenants_of_their_own_within_the_directorys_limits`,
+`a_user_in_no_tenant_gets_one_at_first_sign_in`,
+`new_tenants_are_admitted_with_the_default_cap`,
+`an_open_pool_is_granted_to_every_admitted_tenant`; UI e2e
+`self-service.spec.ts`.
 
 ## Directory pull sync
 

@@ -146,7 +146,7 @@ a delete with nothing left to do). Add `?wait=<secs>` (at most
 | The resource is gone (a delete) | `204` |
 
 `?wait` applies to VM create, start, stop, pause, `PATCH`, delete,
-device and disk attach/detach; disk create, resize, move and extend-root;
+device, disk and network attach/detach; disk create, resize, move and extend-root;
 image delete; network delete. `gxctl` waits 60 s by default.
 
 A VM's `state` is what the controller last saw and `desired_state`
@@ -313,7 +313,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
-| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)) |
+| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)); `service_account` (a token id) gives the VM that service account's tokens from its metadata endpoint (see [Workload identity](../user-guide/vms.md#workload-identity)); `min_vcpus`, `max_vcpus` and `cpu_weight` make it elastic (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)) |
 | `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU, `devices` and `gpus` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
 | `GET` | `/vms/{id}` | Get a VM |
 | `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy`, `devices`, `service_account`, `min_vcpus`, `max_vcpus` and `cpu_weight`. A change to `mem_size_mib` or `data_disks` of a running VM applies at its next start |
@@ -328,6 +328,8 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `DELETE` | `/vms/{id}/devices` | Detach a PCI device |
 | `POST` | `/vms/{id}/disks` | Attach a data disk: `{disk}` (id, or a name in the VM's tenant); on a running VM at its next start (`?wait=`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk |
+| `POST` | `/vms/{id}/networks` | Add a NIC on a network, after the others: `{network, mac?, queue_pairs?}` (a network id, or a name the VM's project may use); without `mac`, one derived from the VM's id that no other NIC has; on a running VM at its next start (`?wait=`) |
+| `DELETE` | `/vms/{id}/networks/{network}` | Remove a NIC (`?mac=`: which one, when the VM has more than one on the network); on a running VM at its next start (`?wait=`) |
 | `GET` | `/vms/{id}/console` | Console availability and WebSocket path |
 | `POST` | `/vms/{id}/console/ticket` | Single-use console ticket for a browser session |
 | `GET` | `/vms/{id}/console/ws` | Console WebSocket |
@@ -415,7 +417,7 @@ shared datastore has `datastore` and `datastore_name` instead of a
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/networks` | List networks |
-| `POST` | `/networks` | Create a host or cluster network (NAT, isolated or bridged) |
+| `POST` | `/networks` | Create a host or cluster network (NAT, isolated or bridged). A node network's `node` (id or name) defaults to the node that answers, the leader in a cluster; on another node, that node makes the bridge and its NAT, and the network is `PENDING` until it has (`subnet` and bridged networks aren't supported there) |
 | `GET` | `/networks/{id}` | Get a network |
 | `DELETE` | `/networks/{id}` | Delete (`?wait=`; `409` while a VM uses it) |
 | `GET` | `/networks/{id}/events` | The network's last events |

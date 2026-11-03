@@ -107,6 +107,13 @@ address: your first sign-in takes the account, with the tenant and role
 they gave it. The provider must say your address is verified. Until you
 sign in, administrators see you as *not signed in yet*.
 
+### A tenant at your first sign-in
+
+Your directory may give you a tenant of your own the first time you sign
+in, if you aren't yet a member of any: you then land as its
+administrator, ready to create projects (see [A tenant of your
+own](projects.md#a-tenant-of-your-own)).
+
 ### Your account
 
 Click your name in the header and choose **Account settings** for
@@ -315,8 +322,21 @@ gxctl auth login --profile lab --pin sha256/<new fingerprint> --rebind
 answers for a different cluster than the one it first saw; without it
 `gxctl` refuses.
 
-`gxctl auth trust list` shows a profile's pins and extra CAs.
-<!-- TODO(verify): `auth trust fetch` and `auth trust remove <pin>|--all` are documented in gxctl's usage text, but auth_trust reads its subcommand from the wrong argument index, so only `list` works today. Add them here once fixed. -->
+To see and change what a profile trusts:
+
+```bash
+gxctl auth trust list                        # its pins and extra CAs
+gxctl auth trust fetch                       # what the server claims, checked against what it presented
+gxctl auth trust remove sha256/<fingerprint> # drop one pin
+gxctl auth trust remove --all                # drop every pin and CA: the system store alone
+```
+
+`fetch` connects with the profile's own trust and sends nothing else. It
+prints the fingerprint the server claims and the one the connection
+presented; if they differ, it says *MISMATCH*: something between you and
+the host presents its own certificate, so ask the operator before
+trusting it. `remove --all` asks first; without a terminal, add `--yes`.
+All of them take `--profile <name>`.
 
 Instead of a profile, a one-off `--url` connection trusts a self-signed
 certificate through `GLIDEX_CA_CERT`, the path of a PEM copy of the

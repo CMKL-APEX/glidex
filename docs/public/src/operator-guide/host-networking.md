@@ -269,7 +269,15 @@ gxctl network-add lab-fast --vhost-user        # vhost-user NICs (needs the dpdk
 - An isolated network (`--isolated`) has no way out: its VMs reach only
   each other.
 - In a cluster with OVN on, `network-add` makes a cluster network unless
-  you pass `--node` (a bridge on this host only).
+  you pass `--node` (a bridge on the node that serves the request) or
+  `--node <node>` (a bridge on that node, which makes it within a
+  resync; you can't choose its subnet or make it bridged). In the web
+  UI's network form it is **Node**.
+- Guests reach only DHCP, DNS, ping on the gateway and the metadata
+  endpoint on their own host. To open the host's API to one network's
+  guests, `gxctl network host-api <net> on`; for every NAT network of a
+  host, `"nat_host_api": true` in its `control-plane.json`. See
+  [The host from a NAT network](../user-guide/networks.md#the-host-from-a-nat-network).
 
 If `ufw` or `firewalld` is active, the host's page warns that it may
 drop forwarded NAT traffic. `glidex-netd` adds its own nftables table

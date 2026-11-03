@@ -68,9 +68,20 @@ has an operator tenant `admin`, which runs the host, and a tenant
 `default`, which holds the `default` project. Most single-site installs
 don't need more than that.
 
+A tenant's projects may use a cluster only while the tenant has an
+**admission** there: a **cap** on what all its projects together may
+use. The operator admits tenants by hand, or **automatically** with a
+default cap. See [Tenants and
+admissions](operator-guide/access-control.md#tenants-and-admissions).
+
 The **directory** is where users, teams, login connectors and tenants
 are kept; a control plane hosts one, shared by every server of a
-cluster. The web UI's **Directory** page shows it.
+cluster. The web UI's **Directory** page shows it. A directory's
+**settings** can let its users create **self-service tenants** of their
+own (a lab, a team), with limits and optional approval, and choose what
+the web UI calls a tenant. See [A tenant of your
+own](user-guide/projects.md#a-tenant-of-your-own) and [Directory
+settings](operator-guide/access-control.md#directory-settings).
 
 ## Virtual machines
 
@@ -239,7 +250,8 @@ hugepages and PCIe tree. See
   per node; a VM's `page_kib` says what it got.
 - A **device pool** is a named set of like devices (GPUs, NICs) a VM
   asks for by count. A **tenant pool** is a tenant's share of one,
-  split among its projects. A pool's **per-device sizing**
+  split among its projects. An **open pool** is granted to every
+  tenant the cluster admits. A pool's **per-device sizing**
   (`per_device`) is the vCPUs and memory a VM gets with each device.
 - A **GPU request** (`gpus`) asks for N GPUs from a pool: the VM gets
   the aligned NUMA policy and, unless it sizes itself, the pool's
@@ -278,9 +290,13 @@ projects allowed to use it. A **project network** belongs to a project,
 and its owner can share it with other projects.
 
 On a standalone host, networks are Open vSwitch bridges on that host.
-In a cluster with OVN enabled, a **cluster network** spans every node.
+In a cluster, a **cluster network** (with OVN enabled) spans every
+node; a **node network** is a bridge on one node, which the
+administrator picks, and only VMs placed there can use it.
 A VM's interface is a **tap** device (the default) or a **vhost-user**
-port (with OVS-DPDK).
+port (with OVS-DPDK). Networks can be attached to and detached from a
+VM after it is created; a running VM takes the change at its next
+start.
 
 A network is **pending**, **ready** or **degraded**, or reports that the
 host's network helper is unavailable. See [Networks](user-guide/networks.md)

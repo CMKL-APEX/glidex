@@ -71,7 +71,7 @@ everything of the roles above it.
 | `viewer` | See the project, its VMs, disks and usage |
 | `operator` | Also start, stop, pause and change VMs, and open their consoles |
 | `editor` | Also create and delete VMs and disks, attach disks and networks to VMs, and see and manage guest credentials |
-| `owner` | Also manage members and service-account tokens, read the project's audit log, and create and share project networks |
+| `owner` | Also manage members and service-account tokens, give a VM one of the project's service accounts, read the project's audit log, and create and share project networks |
 
 Viewers and operators don't see guest credentials.
 
@@ -233,17 +233,18 @@ belongs to one tenant, shown in the **Tenant** column. See
 
 Where your directory allows it, you can create tenants yourself: for a
 lab, a course or a team. Your directory may call them something else
-(*Labs*, say); the web UI uses its word. On **Directory**, the
-**Tenants** tab shows **+ Create Tenant** when you may: give a slug and
-a name. Or:
+(*Labs*, say); the web UI uses its word. When you may, the header shows
+**Directory**, and its **Tenants** tab shows **+ Create Tenant**: give a
+slug and a name. The form says how many more you may create, and whether
+a directory administrator approves it first. Or:
 
 ```bash
 gxctl tenant create ml-lab --name "Machine learning lab"
 ```
 
 Your directory may also make one for you the first time you sign in, if
-you aren't yet a member of any; it is named after you, and you can
-rename it. You become its `tenant-admin`: you add its members, give them roles and
+you aren't yet a member of any; it is named after you (only a directory
+administrator can rename a tenant). You become its `tenant-admin`: you add its members, give them roles and
 create its projects. The directory decides:
 
 - who may (everyone, or members of some teams);

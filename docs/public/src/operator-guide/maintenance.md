@@ -81,7 +81,7 @@ restarts and adoptions.
 | `/var/lib/glidex/netd.db` | `glidex-netd`'s state: bridges, uplinks (with the host addresses they moved), NAT networks. |
 | `/var/lib/glidex/dnsmasq/` | DHCP leases of NAT networks. |
 | `/var/lib/glidex-ui/` | The web UI's self-signed certificate. |
-| `/run/glidex-cp/` | Runtime: `api.sock`, `ui.sock`, `tls.crt`, and per-VM directories `vms/<id>/` (sockets, console log, cloud-init seed). |
+| `/run/glidex-cp/` | Runtime: `api.sock`, `ui.sock`, `metad.sock`, `tls.crt`, and per-VM directories `vms/<id>/` (sockets, console log, cloud-init seed). |
 | `/run/glidex/` | `glidex-netd`'s sockets and vhost-user sockets. |
 
 ## Backups
