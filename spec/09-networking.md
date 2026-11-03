@@ -1,6 +1,7 @@
 # VM Networking with Open vSwitch (DPDK / AF_XDP)
 
-**Status: implemented (M1–M8); M9 (§8.6) specified, not built.** All
+**Status: implemented (M1–M9); M9's real check on a pilot GPU host
+not run yet.** All
 design questions are decided (§1).
 This document is the implementation spec: component boundaries, wire
 protocol, data models, host commands, and milestones with acceptance
