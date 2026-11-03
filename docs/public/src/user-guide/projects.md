@@ -69,8 +69,8 @@ everything of the roles above it.
 | Role | Can |
 |------|-----|
 | `viewer` | See the project, its VMs, disks and usage |
-| `operator` | Also start, stop, pause and change VMs, and open their consoles |
-| `editor` | Also create and delete VMs and disks, attach disks and networks to VMs, and see and manage guest credentials |
+| `operator` | Also start, stop and pause VMs, and open their consoles |
+| `editor` | Also create, change (vCPUs, memory, kernel, policies) and delete VMs and disks, attach disks and networks to VMs, and see and manage guest credentials |
 | `owner` | Also manage members and service-account tokens, give a VM one of the project's service accounts, read the project's audit log, and create and share project networks |
 
 Viewers and operators don't see guest credentials.
