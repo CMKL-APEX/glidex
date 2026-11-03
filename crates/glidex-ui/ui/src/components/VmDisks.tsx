@@ -7,7 +7,18 @@ import type { DiskInfo, VmResponse } from "../types";
  * running VM at its next start; the disk stays claimed until then); and
  * attaching another of the project's free disks (also from the next
  * start on a running VM). */
-export default function VmDisks({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {
+export default function VmDisks({
+  vm,
+  onChanged,
+  canAttach = true,
+  canDetach = true,
+}: {
+  vm: VmResponse;
+  onChanged: () => void;
+  /** What the caller may do here; without it the list is only shown. */
+  canAttach?: boolean;
+  canDetach?: boolean;
+}) {
   const [disks, setDisks] = useState<DiskInfo[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +65,7 @@ export default function VmDisks({ vm, onChanged }: { vm: VmResponse; onChanged: 
   // Free disks: not attached anywhere, ready, not on their way out.
   const free = disks.filter((d) => !d.attached_to && !d.deleting && d.status === "ready" && d.id !== vm.root_disk && !data.includes(d.id));
 
-  if (!vm.root_disk && data.length === 0 && free.length === 0) return null;
+  if (!vm.root_disk && data.length === 0 && (!canAttach || free.length === 0)) return null;
   return (
     <div data-testid="vm-disks">
       <h3 className="text-sm font-medium text-gray-500">Disks</h3>
@@ -74,17 +85,19 @@ export default function VmDisks({ vm, onChanged }: { vm: VmResponse; onChanged: 
           <li key={id} className="flex flex-wrap items-center gap-2">
             <span className="font-mono break-all">{name(id)}</span>
             <span className="text-gray-500">data · kept when the VM is deleted</span>
-            <button
-              className="px-2 py-0.5 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg disabled:opacity-50"
-              disabled={busy !== null || !!vm.deleting}
-              onClick={() => detach(id)}
-            >
-              {busy === id ? "Detaching…" : "Detach"}
-            </button>
+            {canDetach && (
+              <button
+                className="px-2 py-0.5 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg disabled:opacity-50"
+                disabled={busy !== null || !!vm.deleting}
+                onClick={() => detach(id)}
+              >
+                {busy === id ? "Detaching…" : "Detach"}
+              </button>
+            )}
           </li>
         ))}
       </ul>
-      {free.length > 0 && !vm.deleting && (
+      {canAttach && free.length > 0 && !vm.deleting && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label htmlFor="attach-disk" className="sr-only">
             Disk to attach

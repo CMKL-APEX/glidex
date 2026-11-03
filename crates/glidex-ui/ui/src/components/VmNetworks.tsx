@@ -6,7 +6,18 @@ import { networkModeLabel, networkUsableBy, nicNetworkLabel } from "../types";
 /** A VM's NICs: each detachable, and attaching one more on a network the
  * project may use. On a running VM both apply at its next start; until
  * then the NICs listed are the ones it runs with. */
-export default function VmNetworks({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {
+export default function VmNetworks({
+  vm,
+  onChanged,
+  canAttach = true,
+  canDetach = true,
+}: {
+  vm: VmResponse;
+  onChanged: () => void;
+  /** What the caller may do here; without it the list is only shown. */
+  canAttach?: boolean;
+  canDetach?: boolean;
+}) {
   const [networks, setNetworks] = useState<Network[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +60,7 @@ export default function VmNetworks({ vm, onChanged }: { vm: VmResponse; onChange
     }
   };
 
-  if (nics.length === 0 && networks.length === 0) return null;
+  if (nics.length === 0 && (!canAttach || networks.length === 0)) return null;
   const button = "px-2 py-0.5 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg disabled:opacity-50";
   return (
     <div data-testid="vm-networks">
@@ -62,13 +73,15 @@ export default function VmNetworks({ vm, onChanged }: { vm: VmResponse; onChange
             </span>
             <span className="text-gray-500">{nic.mac}</span>
             <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>{nic.ipv4 ?? "no address"}</span>
-            <button className={`${button} font-sans`} disabled={busy !== null || !!vm.deleting} onClick={() => detach(nic)}>
-              {busy === nic.mac ? "Removing…" : "Detach"}
-            </button>
+            {canDetach && (
+              <button className={`${button} font-sans`} disabled={busy !== null || !!vm.deleting} onClick={() => detach(nic)}>
+                {busy === nic.mac ? "Removing…" : "Detach"}
+              </button>
+            )}
           </li>
         ))}
       </ul>
-      {networks.length > 0 && !vm.deleting && (
+      {canAttach && networks.length > 0 && !vm.deleting && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label htmlFor="attach-network" className="sr-only">
             Network to attach

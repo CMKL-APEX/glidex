@@ -13,6 +13,21 @@ interface VmActionsProps {
   deleting?: boolean;
   onAction: (vmId: string, action: VmAction) => void;
   loading?: boolean;
+  /** What the caller may do (startVm, pauseVm, stopVm, deleteVm); a button
+   * the caller can't use isn't shown. Absent: all are. */
+  allow?: VmAllow;
+}
+
+/** The caller's VM power and delete rights, as `useCan` answers them. */
+export type VmAllow = { start: boolean; pause: boolean; stop: boolean; delete: boolean };
+
+/** The actions behind `VmAllow`, in its order. */
+export const VM_ALLOW_ACTIONS = ["startVm", "pauseVm", "stopVm", "deleteVm"] as const;
+
+/** `VmAllow` from `useCan`'s answers to `VM_ALLOW_ACTIONS`; all false while loading. */
+export function vmAllow(allowed: boolean[] | null | undefined): VmAllow {
+  const a = allowed ?? [];
+  return { start: !!a[0], pause: !!a[1], stop: !!a[2], delete: !!a[3] };
 }
 
 export default function VmActions({
@@ -22,21 +37,25 @@ export default function VmActions({
   deleting = false,
   onAction,
   loading = false,
+  allow,
 }: VmActionsProps) {
   const [confirmForceOff, setConfirmForceOff] = useState(false);
   if (deleting) return <span className="text-sm text-gray-500">Being deleted…</span>;
+  const may = (k: keyof VmAllow) => !allow || allow[k];
   const canStart =
+    may("start") &&
     state === "created" || state === "stopped" || state === "paused" || (state === "failed" && desired !== "running");
   // Also while stopping: a guest that ignores the power button would
   // otherwise keep the page waiting out the whole grace.
   const canStop =
-    state === "running" ||
+    may("stop") &&
+    (state === "running" ||
     state === "paused" ||
     state === "stopping" ||
-    (desired !== undefined && desired !== "stopped");
-  const canPause = state === "running";
+      (desired !== undefined && desired !== "stopped"));
+  const canPause = may("pause") && state === "running";
   // The power button only reaches a running guest.
-  const canShutdown = state === "running";
+  const canShutdown = may("stop") && state === "running";
 
   return (
     <div className="flex items-center space-x-2">
@@ -79,13 +98,15 @@ export default function VmActions({
           Force off
         </button>
       )}
-      <button
-        className="px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50"
-        disabled={loading}
-        onClick={() => onAction(vmId, "delete")}
-      >
-        Delete
-      </button>
+      {may("delete") && (
+        <button
+          className="px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50"
+          disabled={loading}
+          onClick={() => onAction(vmId, "delete")}
+        >
+          Delete
+        </button>
+      )}
       {confirmForceOff && (
         <ConfirmDialog
           title="Force off"
